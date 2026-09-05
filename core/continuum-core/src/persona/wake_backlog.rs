@@ -53,6 +53,17 @@ pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64)
     }
 }
 
+/// Can this drained line be the TRIGGER of a turn at all? A directed line
+/// (human, or anyone naming her) always; an undirected line from a fellow
+/// CITIZEN yes — that is conversation among citizens; an undirected line from
+/// an AGENT (neither human nor citizen) NEVER — it is perceived (transcript,
+/// digest) and takes no lane. Measured 2026-09-05: 34 of Joaquin's last 60
+/// turns were message turns on BigMama's and IntelMac's walls in the project
+/// room; her held card had zero edits in eight hours (card ae4bb4fd).
+pub(crate) fn triggers_a_turn(directed: bool, sender_is_citizen: bool) -> bool {
+    directed || sender_is_citizen
+}
+
 /// The trigger for ONE turn over the drained backlog: the newest DIRECTED line
 /// (a question put to her outranks newer ambient chatter — she answers it with
 /// the newer context visible in the transcript), else the newest overall.
@@ -102,6 +113,16 @@ mod tests {
             room_id: Uuid::from_u128(7),
             text: text.to_string(),
         }
+    }
+
+    // what this catches: an undirected AGENT line is perceived but never a
+    // trigger; a citizen's ambient line and any directed line still are.
+    #[test]
+    fn an_undirected_agent_line_never_triggers_a_turn() {
+        assert!(!triggers_a_turn(false, false), "agent wall, no mention: perceived only");
+        assert!(triggers_a_turn(true, false), "agent naming her: a turn");
+        assert!(triggers_a_turn(false, true), "citizen chatter: conversation, a turn");
+        assert!(triggers_a_turn(true, true));
     }
 
     // what this catches: the per-publisher lamport read a human line as stale
