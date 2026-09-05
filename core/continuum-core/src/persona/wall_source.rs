@@ -295,6 +295,23 @@ impl RagSource for WallSource {
             return empty(ResolutionPreference::Placeholder);
         }
 
+        // BREADCRUMB BEFORE THE READ, for the same reason as RoomBoardSource: this
+        // runs under workspace.rs's 30s PERCEPTION_DEADLINE, and the ticks worth
+        // diagnosing are the CANCELLED ones, which never reach a probe placed after
+        // the await. Measured 2026-09-05: `room-board` (this source's SOURCE_ID) is
+        // the slowest faculty on ~27% of ticks, pinned at 30.00s. `wall_posts` reads
+        // via `wall_posts_in`, which calls `room_transcripts_since` from a ZERO
+        // cursor with no cursor cache — and that helper PAGES UNTIL EXHAUSTED, so on
+        // the store path it replays the room's whole transcript on every tick, for
+        // every citizen. Its sibling projection (the work board) resumes from a
+        // persisted snapshot and completes in 1.4-9.9s; this one has no such cache.
+        crate::probe!(
+            class = "wall.read.phase",
+            persona = %self.persona_id,
+            phase = "enter",
+            "entering wall_posts — no `exit` mark for this persona means the wall read              is where the tick was cancelled"
+        );
+        let wall_started = std::time::Instant::now();
         let posts = match self.reader.wall_posts().await {
             Ok(posts) => posts,
             Err(err) => {
@@ -306,6 +323,14 @@ impl RagSource for WallSource {
                 return empty(ResolutionPreference::Placeholder);
             }
         };
+        crate::probe!(
+            class = "wall.read.phase",
+            persona = %self.persona_id,
+            phase = "exit",
+            wall_ms = wall_started.elapsed().as_millis() as u64,
+            posts = posts.len(),
+            "wall read returned — this duration is what the 30s deadline is spent on              when it is spent here"
+        );
         // No pinned posts → no block (normal: most rooms have an empty wall).
         if posts.is_empty() {
             return empty(resolution);

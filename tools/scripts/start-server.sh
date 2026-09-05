@@ -62,12 +62,38 @@ fi
 # target); we only supply the default so the unattended path can't diverge.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
 
+# ORT_DYLIB_PATH — the ort crate is built with `load-dynamic`, so it dlopens
+# ONNX Runtime BY NAME at runtime. Naming it explicitly is not a nicety on
+# Windows: the OS search order finds C:\Windows\System32\onnxruntime.dll, which
+# Edge WebView ships at 1.17.1, and ort 2.0.0-rc.11 requires >= 1.23.x. The
+# result is a panic on a tokio worker — which does NOT kill the core, so voice
+# (Silero VAD / STT / TTS) is simply dead and nothing says so unless you read
+# the start log. Measured on BigMama 2026-09-05; the .so and .dylib arms existed
+# and the .dll arm did not, so every Windows citizen was mute by omission.
 if [ -z "$ORT_DYLIB_PATH" ]; then
   if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
     export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
+  elif [ -f "$HOME/.continuum/lib/onnxruntime.dll" ]; then
+    export ORT_DYLIB_PATH="$HOME/.continuum/lib/onnxruntime.dll"
   fi
+fi
+
+# Say it when the runtime is MISSING rather than letting the OS hand us a
+# wrong-version stranger. An absent ORT is a named, fixable condition; a silent
+# fallback to whatever DLL the host happens to own is the bug class this whole
+# block exists to close ([[no-masking-fallbacks]]).
+if [ -z "$ORT_DYLIB_PATH" ]; then
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "⚠ ONNX Runtime not provisioned (~/.continuum/lib/onnxruntime.dll absent)." >&2
+      echo "  ort will dlopen by name and Windows will hand it System32's copy," >&2
+      echo "  which Edge ships at 1.17.1 — ort needs >= 1.23.x, so voice will be" >&2
+      echo "  dead with only a worker-thread panic in the start log to say so." >&2
+      echo "  Fix: re-run the installer (onnxruntime module in install-manifest.toml)." >&2
+      ;;
+  esac
 fi
 
 # Launcher runtime PATH — manifest-driven. The install manifest
