@@ -859,12 +859,25 @@ const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 /// warning on every successful deploy.
 async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
     let socket = socket_path();
-    // The RUNNING core's provenance, from the process itself.
-    let reply = connection()
-        .commands()
-        .execute_value("ping", Value::Object(Default::default()))
-        .await
-        .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
+    // The RUNNING core's provenance, from the process itself. BOUNDED: a core
+    // that accepts the socket mid-boot but never answers made `continuum
+    // reboot` hang for good (IntelMac's node, 50 min, 2026-09-05) — the same
+    // wall-clock-forever shape as the 300 s boot watchdog, on the other side of
+    // the socket. A named failure beats a silent hang.
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection()
+            .commands()
+            .execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "deploy-verify: the core on {socket} accepted the socket but did not answer `ping` \
+             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
+        )
+    })?
+    .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
     let actual = reply
         .get("buildSha")
         .and_then(|v| v.as_str())
