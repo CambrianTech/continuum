@@ -2142,7 +2142,7 @@ impl ServingDaemonModule {
             adapters: desired_adapters,
             // The living persona lane: GPU-resident for throughput (every
             // offloadable layer). [[LanePlacement]].
-            placement: crate::inference::llama_server::LanePlacement::Gpu,
+            placement: crate::inference::llama_server::main_lane_placement(),
             expert_placement,
             resident_override,
             // The MAIN persona lane — the withhold rule's actual subject.

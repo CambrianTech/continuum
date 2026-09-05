@@ -568,6 +568,21 @@ pub enum LanePlacement {
     Cpu,
 }
 
+/// Where the host's serving plan places MAIN lanes. `CONTINUUM_SERVING_PLACEMENT=cpu` in
+/// config.env (the layer the installer writes — #3729's Intel-Mac arm builds the server
+/// with Metal OFF and records the decision here) pins every main lane to the CPU; anything
+/// else is the GPU. A decision, read from config, never a raw env var (concurrency guide).
+pub fn main_lane_placement() -> LanePlacement {
+    placement_from_config(crate::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
+}
+
+pub fn placement_from_config(value: Option<&str>) -> LanePlacement {
+    match value.map(|v| v.trim().to_ascii_lowercase()) {
+        Some(v) if v == "cpu" => LanePlacement::Cpu,
+        _ => LanePlacement::Gpu,
+    }
+}
+
 /// One LoRA genome layer to load into the serving catalog at spawn. The `path`
 /// is llama.cpp's load identity (what `--lora` takes and what the per-request
 /// resolver matches against); the `alias` is ours, for logs and the snapshot.
@@ -3085,8 +3100,12 @@ impl LlamaServerControl for LlamaServerProcess {
                 None
             }
         };
-        let verdict =
-            crate::inference::backend_receipt::backend_verdict(&self.bin, receipt.as_ref());
+        let cpu_by_plan = target.placement == LanePlacement::Cpu;
+        let verdict = crate::inference::backend_receipt::backend_verdict(
+            &self.bin,
+            receipt.as_ref(),
+            cpu_by_plan,
+        );
         crate::probe!(
             class = "serving.backend_receipt",
             bin = %self.bin,
@@ -3112,7 +3131,8 @@ impl LlamaServerControl for LlamaServerProcess {
                 // Last flag wins in llama-server's parser: pin the lane to the CPU.
                 cmd.arg("--n-gpu-layers").arg("0");
             }
-            crate::inference::backend_receipt::BackendVerdict::Gpu { .. } => {}
+            crate::inference::backend_receipt::BackendVerdict::Gpu { .. }
+            | crate::inference::backend_receipt::BackendVerdict::CpuByPlan => {}
         }
         let mut child = cmd
             .stdout(Stdio::null())
@@ -4583,5 +4603,14 @@ mod tests {
             elapsed < PROBE_TIMEOUT + Duration::from_secs(4),
             "probe must be bounded by PROBE_TIMEOUT, took {elapsed:?}"
         );
+    }
+    // what this catches: the host's CPU placement decision must be one config key, read
+    // once, defaulting to the GPU — never a raw env var and never a spelling guess.
+    #[test]
+    fn main_lane_placement_reads_the_config_decision() {
+        assert_eq!(placement_from_config(Some("cpu")), LanePlacement::Cpu);
+        assert_eq!(placement_from_config(Some(" CPU ")), LanePlacement::Cpu);
+        assert_eq!(placement_from_config(Some("gpu")), LanePlacement::Gpu);
+        assert_eq!(placement_from_config(None), LanePlacement::Gpu);
     }
 }
