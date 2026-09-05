@@ -2249,7 +2249,7 @@ impl WorkspaceCycle {
                 .iter()
                 .max_by_key(|t| t.elapsed_us)
                 .map(|t| (format!("{:?}", t.faculty), (t.elapsed_us / 1000) as u64))
-                .unwrap_or_else(|| ("none".to_string(), 0));
+                .unwrap_or_else(|| ("none".to_string(), 0)); // unwrap_or_else: an EMPTY timings vec means no faculty ran, so "none"/0 is the honest reading of a tick that measured nothing — it is not a slowest faculty rendered as fast, and `faculties = 0` alongside it says so
             let total_ms: u64 = (timings.iter().map(|t| t.elapsed_us).sum::<u128>() / 1000) as u64;
             crate::probe!(
                 class = "cognition.faculty.slowest",

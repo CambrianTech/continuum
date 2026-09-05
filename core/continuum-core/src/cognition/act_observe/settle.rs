@@ -694,12 +694,12 @@ pub async fn settle_step(
         class = "cognition.cycle.cost",
         room = %room_id,
         cycle_ms,
-        model_ms = metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0),
+        model_ms = metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0), // unwrap_or: no metrics = no model call THIS cycle, so 0ms of model time is the true reading, not a guess — and `had_metrics` below carries the distinction so a reader never mistakes it for a fast call
         // cycle MINUS model: RAG assembly, genome activation, compose, evaluate —
         // everything the brain does around the generation. Subtract this from the
         // act's residue_ms and what remains is tool execution plus bookkeeping.
         around_model_ms = cycle_ms
-            .saturating_sub(metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0)),
+            .saturating_sub(metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0)), // unwrap_or: same 0 as above; with no model call the WHOLE cycle is around-model, which is exactly what this field should then report
         had_metrics = metrics.is_some(),
         "cognition cycle cost, split from the model call it contains — the second half of the act's residue ledger"
     );
