@@ -294,7 +294,7 @@ fn parse_room_name_from_room_output(stdout: &str) -> Result<String, DiscoveryErr
 /// Output today (from airc rust-rewrite branch, as of this PR):
 /// ```text
 /// room:    continuum
-/// wire:    /Users/joel/.airc/wires/continuum
+/// wire:    ~/.airc/wires/<room>
 /// channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
 /// ```
 ///
@@ -437,7 +437,7 @@ mod tests {
     fn parses_channel_from_typical_airc_room_output() {
         let stdout = "\
 room:    continuum
-wire:    /Users/joel/.airc/wires/continuum
+wire:    ~/.airc/wires/<room>
 channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
 ";
         let uuid = parse_channel_from_room_output(stdout).expect("parse channel");

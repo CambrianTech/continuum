@@ -114,6 +114,35 @@ pub async fn ensure_operator_peer(
                     "operator self-peer could not subscribe the airc lobby — the human cannot be heard in #general until room/join"
                 );
             }
+            // THE PROJECT TREE (Joel, 2026-09-05: "You never work in rooms… you were
+            // building continuum in its academy"): the org room airc derives from the
+            // checkout's git remote (the repo OWNER's channel, whoever that is) is the base of the project
+            // tree — project rooms nest under it, card rooms under those. The human's
+            // desktop lists the rooms the operator peer is SUBSCRIBED to, so until the
+            // operator subscribes the org room the whole project tree is invisible and
+            // every project line lands in the lobby or the commons. Subscribe without
+            // promoting (Keep): the commons join below still decides the focus.
+            for channel in airc_lib::JoinContext::from_cwd(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            )
+            .channels
+            .iter()
+            .filter(|c| c.as_str() != airc_lib::GENERAL_CHANNEL)
+            {
+                match rt.subscribe_room(channel.as_str()).await {
+                    Ok(()) => crate::probe!(
+                        class = "operator.peer.project_base_subscribed",
+                        room = %channel.as_str(),
+                        "operator self-peer subscribed the project base room (the org room from the git remote)"
+                    ),
+                    Err(e) => crate::probe!(
+                        class = "operator.peer.project_base_subscribe_failed",
+                        room = %channel.as_str(),
+                        error = %e.to_string(),
+                        "operator self-peer could not subscribe the project base room — the project tree stays invisible on this desktop until room/join"
+                    ),
+                }
+            }
             if let Err(e) = rt
                 .join_room(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
                 .await
