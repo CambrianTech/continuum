@@ -2230,6 +2230,41 @@ impl WorkspaceCycle {
         // decider saw, the final broadcast, and the decision.
         let mut all_bids = context_bids;
         all_bids.extend(decision_bids);
+        // WHERE THIS TICK'S LATENCY WENT, on the always-on probe stream.
+        //
+        // `timings` already holds per-faculty wall-clock for every faculty across
+        // both phases — it has for a long time. But its only consumer is the
+        // capture sink below, which is Noop by default, so in a default
+        // deployment the answer to "which faculty owned the tick" is computed and
+        // then discarded. Measured on BigMama: two acts spent 32.7 s and 36.1 s
+        // inside this cycle around a 4-9 s model call, and nothing on a running
+        // node could say which faculty held it.
+        //
+        // Emitting the slowest one is O(n) over a handful of entries, costs
+        // nothing when no sink is attached, and turns a discarded measurement
+        // into a readable one. `("none", 0)` when a tick recorded no timings —
+        // an honest empty rather than a zero that reads as "fast".
+        {
+            let slowest = timings
+                .iter()
+                .max_by_key(|t| t.elapsed_us)
+                .map(|t| (format!("{:?}", t.faculty), (t.elapsed_us / 1000) as u64))
+                .unwrap_or_else(|| ("none".to_string(), 0));
+            let total_ms: u64 = (timings.iter().map(|t| t.elapsed_us).sum::<u128>() / 1000) as u64;
+            crate::probe!(
+                class = "cognition.faculty.slowest",
+                room = %ws.room_id,
+                slowest_faculty = %slowest.0,
+                slowest_ms = slowest.1,
+                // Sum across faculties, NOT wall-clock: phase 1 runs concurrently
+                // on a barrier, so this exceeds the tick's real duration whenever
+                // faculties overlap. It is the total WORK, and the ratio against
+                // slowest_ms says whether one faculty dominated or many shared it.
+                summed_ms = total_ms,
+                faculties = timings.len(),
+                "which faculty owned this tick — per-faculty timings already collected, now on the probe stream instead of only a Noop sink"
+            );
+        }
         self.capture.record(&WorkspaceTrace {
             world_state: ws.world_state.clone(),
             room_id: ws.room_id,
