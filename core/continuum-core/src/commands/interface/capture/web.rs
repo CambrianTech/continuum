@@ -84,7 +84,59 @@ impl WebShot {
 /// Shared so the `web/*` hands can drive the SAME real browser for page CONTENT
 /// (`--dump-dom`) that this module drives for screenshots — a real browser renders JS
 /// and isn't bot-blocked the way a raw HTTP scrape is. `None` ⟹ no browser installed.
+/// Windows install locations, built from the environment rather than hardcoded.
+///
+/// BROWSER_CANDIDATES is macOS bundles + Linux `$PATH` names and had NO Windows
+/// arm, so `locate_browser()` returned None on every Windows host — including
+/// hosts that DO satisfy the "every machine has a Chromium" expectation, because
+/// Windows ships Microsoft Edge (Chromium) with the OS. Measured on BigMama
+/// 2026-09-05: Edge present at
+/// `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`, `web/search`
+/// failing 100% with "no web-search provider is available" and citizens burning
+/// turns on it.
+///
+/// Paths are composed from `%ProgramFiles%` / `%ProgramFiles(x86)%` /
+/// `%LOCALAPPDATA%` — never a literal `C:\`, which is wrong on any machine whose
+/// system drive is not C: and is the hardcoded-path trap this repo has been bitten
+/// by before. Forward slashes so `find_binary`'s `contains('/')` path branch takes
+/// them; Windows APIs accept either separator.
+#[cfg(windows)]
+fn windows_browser_candidates() -> Vec<String> {
+    // Chrome first (best-tested headless), then Edge — universally present, which
+    // is what makes the expectation true on this platform — then the rest.
+    const RELATIVE: &[&str] = &[
+        "Google/Chrome/Application/chrome.exe",
+        "Chromium/Application/chrome.exe",
+        "Microsoft/Edge/Application/msedge.exe",
+        "BraveSoftware/Brave-Browser/Application/brave.exe",
+        "Vivaldi/Application/vivaldi.exe",
+    ];
+    let roots: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|r| r.replace('\\', "/"))
+        .collect();
+    let mut out = Vec::with_capacity(roots.len() * RELATIVE.len());
+    for rel in RELATIVE {
+        for root in &roots {
+            out.push(format!("{root}/{rel}"));
+        }
+    }
+    out
+}
+
 pub(crate) fn locate_browser() -> Option<std::path::PathBuf> {
+    // The env override wins everywhere; then this platform's real install
+    // locations; then the shared list. Windows was previously unrepresented in
+    // that list, so it fell straight through to None.
+    #[cfg(windows)]
+    {
+        let owned = windows_browser_candidates();
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        if let Some(p) = find_binary(Some(BROWSER_BIN_ENV), &refs) {
+            return Some(p);
+        }
+    }
     find_binary(Some(BROWSER_BIN_ENV), BROWSER_CANDIDATES)
 }
 
@@ -219,5 +271,65 @@ mod tests {
             // this could be Ready — accept that rather than fail spuriously.
             Availability::Ready => {}
         }
+    }
+
+    // what this catches: BROWSER_CANDIDATES is macOS bundle paths + Linux $PATH
+    // names and has NO Windows entry, so `locate_browser()` returned None on
+    // EVERY Windows host — including the ones that satisfy the "every machine has
+    // a Chromium" expectation, because Windows ships Edge with the OS. That made
+    // `web/search` (registered ai-safe, so offered to every citizen) fail 100% of
+    // the time on this platform. Found on BigMama 2026-09-05 with Edge installed
+    // at "%ProgramFiles(x86)%/Microsoft/Edge/Application/msedge.exe".
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_browser_candidates_built_from_the_environment() {
+        let cands = super::windows_browser_candidates();
+        assert!(
+            !cands.is_empty(),
+            "Windows had ZERO browser candidates — the regression this pins"
+        );
+        // DERIVED from %ProgramFiles%/%ProgramFiles(x86)%/%LOCALAPPDATA%, so a
+        // machine whose system drive is not C: still gets correct paths. Asserting
+        // "does not start with C:/" would be the wrong test — on this box those env
+        // vars ARE C:\Program Files, so that assertion fails on a correct
+        // implementation and cannot tell a hardcoded drive from an env var that
+        // happens to hold one. (Written, failed exactly that way, and rewritten —
+        // 2026-09-05.) The property that actually matters is derivation:
+        let roots: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+            .iter()
+            .filter_map(|k| std::env::var(k).ok())
+            .map(|r| r.replace('\\', "/"))
+            .collect();
+        assert!(!roots.is_empty(), "Windows always sets at least one of these");
+        assert!(
+            cands
+                .iter()
+                .all(|c| roots.iter().any(|r| c.starts_with(r.as_str()))),
+            "every candidate must be rooted at an environment path {roots:?}: {cands:?}"
+        );
+        assert!(
+            cands.iter().any(|c| c.ends_with("msedge.exe")),
+            "Edge is the one browser Windows always ships; it must be a candidate"
+        );
+        // find_binary() routes anything containing '/' down its path branch.
+        assert!(
+            cands.iter().all(|c| c.contains('/')),
+            "forward slashes required or find_binary treats these as $PATH names"
+        );
+
+        // THE END-TO-END CLAIM, not just that candidates were generated: Windows
+        // ships Edge (Chromium) with the OS, so the "every machine has a Chromium"
+        // expectation is SATISFIED here and `locate_browser()` must find it. Before
+        // this change it returned None on every Windows host regardless of what was
+        // installed, because the candidate list had no Windows arm at all.
+        //
+        // If this ever fails on a real Windows box, that is worth knowing loudly:
+        // it means either Edge was removed or the install layout moved, and
+        // `web/search` is dark for every citizen on that host.
+        assert!(
+            super::locate_browser().is_some(),
+            "no Chromium found on a Windows host — Edge ships with the OS, so either \
+             the layout moved or CONTINUUM_BROWSER_BIN is needed. Candidates: {cands:?}"
+        );
     }
 }
