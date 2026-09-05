@@ -1294,6 +1294,32 @@ fn processes_with_cmdline(fragment: &str) -> Vec<i32> {
         .collect()
 }
 
+/// Is a still-running start script PROGRESSING or STALLED?
+///
+/// The whole point of `launch_core`'s wait, reduced to the one decision that is not IO. A
+/// wall-clock bound cannot answer it: measured 2026-09-05, a full CUDA rebuild took 1,404s on
+/// the 5090 and SUCCEEDED, while a cold build on the Intel Mac exceeded the 1,800s ceiling and
+/// ALSO succeeded — the core came up roughly forty minutes after the CLI had already returned
+/// Err. Any number long enough for the slowest cold build is far too long to catch a real stall
+/// on the fastest, so elapsed time carries no verdict on either machine.
+///
+/// Time-since-last-output does. A script still emitting is working however long it takes; a
+/// script silent past `stall_limit` has stopped, whatever the total. Pure so the priority can be
+/// pinned without spawning a build.
+#[derive(Debug, PartialEq, Eq)]
+enum WaitVerdict {
+    Progressing,
+    Stalled,
+}
+
+fn wait_verdict(silent_for_secs: u64, stall_limit_secs: u64) -> WaitVerdict {
+    if silent_for_secs >= stall_limit_secs {
+        WaitVerdict::Stalled
+    } else {
+        WaitVerdict::Progressing
+    }
+}
+
 /// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
 /// Node). Empty on no match or if pgrep is unavailable.
 fn running_core_pids() -> Vec<i32> {
@@ -1894,21 +1920,47 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     // only ever applies to a build that is genuinely still making progress.
     const TICK_SECS: u64 = 2;
     const MAX_WAIT_SECS: u64 = 30 * 60;
+    // A WALL-CLOCK bound on a BUILD is the wrong instrument, and no constant can be the right
+    // one: a full rebuild with CUDA measured 1,404s on the 5090 (BigMama) and SUCCEEDED, while a
+    // cold build on the Intel Mac exceeded even the 30-minute ceiling below and ALSO succeeded —
+    // the core came up ~40 minutes after this function had already returned Err. Any number safe
+    // for the slowest cold build is uselessly long for detecting a real stall on the fastest.
+    //
+    // So bound PROGRESS instead: a script that is still emitting log lines is working, however
+    // long it takes; a script that has emitted nothing for `STALL_SECS` has stopped, whatever the
+    // elapsed total. The absolute ceiling stays only as a backstop for a script that babbles
+    // forever without ever becoming ready.
+    const STALL_SECS: u64 = 5 * 60;
     let mut last_progress = String::new();
+    let mut last_progress_at = std::time::Instant::now();
     for i in 0..(MAX_WAIT_SECS / TICK_SECS) {
         tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         let old_still_alive = wait_for_death.iter().any(|p| pid_alive(*p));
         if !old_still_alive && core_is_up().await {
             return Ok((i + 1) * TICK_SECS);
         }
-        // Show the build advancing. A multi-minute silent wait is indistinguishable from a hang,
-        // and guessing which one you are in is how a long build gets killed and hand-worked around.
-        if (i + 1) % 15 == 0 {
-            let line = tail(&logfile, 1).trim().to_string();
-            if !line.is_empty() && line != last_progress {
+        // Sample EVERY tick (printing stays throttled below): the log line is now load-bearing
+        // evidence that the build is alive, not just something nice to show, so it cannot be read
+        // once every fifteen ticks and still bound a stall to five minutes.
+        let line = tail(&logfile, 1).trim().to_string();
+        if !line.is_empty() && line != last_progress {
+            last_progress = line.clone();
+            last_progress_at = std::time::Instant::now();
+            // Show the build advancing. A multi-minute silent wait is indistinguishable from a
+            // hang, and guessing which one you are in is how a long build gets killed and
+            // hand-worked around.
+            if (i + 1) % 15 == 0 {
                 eprintln!("  … {line}");
-                last_progress = line;
             }
+        }
+        let stalled_for = last_progress_at.elapsed().as_secs();
+        if matches!(wait_verdict(stalled_for, STALL_SECS), WaitVerdict::Stalled) {
+            return Err(format!(
+                "the start script has emitted nothing for {stalled_for}s (still running, {}s \
+                 elapsed) — it is stalled, not slow.\n{}",
+                (i + 1) * TICK_SECS,
+                start_log_report(&logfile)
+            ));
         }
         // The start script EXITING is the fast, certain answer, and not checking for it was the
         // defect: a script that died in 200ms was indistinguishable from one still doing a
@@ -1924,8 +1976,16 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             ));
         }
     }
+    // The literal here said "300s" while MAX_WAIT_SECS was already 30*60 — the string was left
+    // behind when the ceiling was raised, so the message under-reported the budget by 6x. That is
+    // not cosmetic: it is the number an operator reasons from. Measured 2026-09-05 — a reboot on
+    // the Intel Mac reported "did not become ready within 300s" after waiting THIRTY MINUTES, and
+    // a card was filed against the wrong budget by two nodes before anyone read the constant.
+    // Interpolated now so the message cannot drift from the bound again.
     Err(format!(
-        "core did not become ready within 300s (start script still running).\n{}",
+        "core did not become ready within {MAX_WAIT_SECS}s, and the start script is STILL RUNNING \
+         and still emitting output — so it is progressing, not hung. This is the absolute ceiling, \
+         not a stall: the build may well finish on its own after this command gives up.\n{}",
         start_log_report(&logfile)
     ))
 }
@@ -2414,6 +2474,39 @@ mod tests {
                 !hint.contains("NOT wedged"),
                 "pid 7 IS on our socket and unresponsive — the hint must not deny it: {hint}"
             );
+        }
+    }
+
+    /// The deploy watchdog: is a slow build failing, or just slow?
+    mod launch_wait {
+        use super::*;
+
+        /// what this catches: a WALL-CLOCK bound standing in for a liveness check.
+        ///
+        /// Both of these are REAL measurements from 2026-09-05 and both deploys SUCCEEDED —
+        /// 1,404s for a full CUDA rebuild on the 5090, and an Intel Mac cold build that ran
+        /// past the 1,800s ceiling and brought the core up about forty minutes after the CLI
+        /// had already reported failure. A verdict keyed on elapsed time calls both of those
+        /// dead. Keyed on silence, both are alive, which is the only answer that is correct
+        /// on both machines.
+        #[test]
+        fn a_long_build_that_is_still_talking_is_not_a_failure() {
+            let stall = 5 * 60;
+            // 23 minutes elapsed means nothing; 10s since the last log line means everything.
+            assert_eq!(wait_verdict(10, stall), WaitVerdict::Progressing);
+            // Even at the far end of a 40-minute build, recent output is life.
+            assert_eq!(wait_verdict(stall - 1, stall), WaitVerdict::Progressing);
+        }
+
+        /// what this catches: the opposite failure — never giving up. A script that has said
+        /// nothing for the full stall window has stopped, and the operator needs to be told
+        /// that rather than left watching a spinner. The boundary is inclusive so the limit
+        /// means "this long is too long", not "this long is fine".
+        #[test]
+        fn silence_past_the_limit_is_a_stall_and_the_boundary_is_inclusive() {
+            let stall = 5 * 60;
+            assert_eq!(wait_verdict(stall, stall), WaitVerdict::Stalled);
+            assert_eq!(wait_verdict(stall + 1, stall), WaitVerdict::Stalled);
         }
     }
 
