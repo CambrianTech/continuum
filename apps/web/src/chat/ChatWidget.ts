@@ -5875,7 +5875,7 @@ export class ChatWidget extends LitElement {
         this._intentBusy = true;
         this._intentTries += 1;
         void call.startMic(this.micMode).then((ok) => {
-          console.info(`[live-intent] mic try ${this._intentTries} mode=${this.micMode} ok=${ok}`);
+          console.warn(`[live-intent] mic try ${this._intentTries} mode=${this.micMode} ok=${ok}`);
           this._intentBusy = false;
           if (ok) {
             this._micOn = true;

@@ -240,13 +240,13 @@ export class CallClient {
   async startMic(mode: 'auto' | 'lk' | 'ws' = 'auto'): Promise<boolean> {
     // REAL plane first: the bridge's STT listener sits in the LiveKit room, so
     // a published mic track reaches citizens' ears with no WS PCM leg.
-    console.info(`[live-mic] start mode=${mode} lkRoom=${this.lkRoom !== undefined} lkLive=${this.lkLive} ws=${this.ws?.readyState}`);
+    console.warn(`[live-mic] start mode=${mode} lkRoom=${this.lkRoom !== undefined} lkLive=${this.lkLive} ws=${this.ws?.readyState}`);
     if (mode !== 'ws' && this.lkRoom !== undefined && this.lkLive) {
       try {
         this.lkMic = await createLocalAudioTrack();
         await this.lkRoom.localParticipant.publishTrack(this.lkMic);
         this.micLive = true;
-        console.info('[live-mic] livekit track published');
+        console.warn('[live-mic] livekit track published');
         return true;
       } catch (err) {
         console.warn('[live-mic] livekit publish failed:', err);
