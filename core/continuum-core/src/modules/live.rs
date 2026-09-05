@@ -86,6 +86,43 @@ impl VoiceState {
     /// client-minted `session_id` resolves to the canonical airc `room_id` it was
     /// aliased to at register time; any other id (already canonical, or unknown)
     /// passes through unchanged.
+    /// Is a voice session live for this canonical call/room id? The reply
+    /// speaker asks this before turning a room line into speech.
+    pub fn has_active_session(&self, call_id: &str) -> bool {
+        self.active_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(call_id)
+    }
+
+    /// Synthesize `text` in `user_id`'s voice into the call (LiveKit track) and
+    /// tee the SAME samples into the native call plane so native clients hear
+    /// her too. ONE speak path — the `voice/speak-in-call` verb and the reply
+    /// speaker both come through here. Returns (samples, duration_ms, rate).
+    pub async fn speak_in_room(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        text: &str,
+        voice: Option<&str>,
+        adapter: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<(usize, u64, u32), String> {
+        let (samples, duration_ms, sample_rate) = self
+            .livekit_manager
+            .speak_in_call(call_id, user_id, text, voice, adapter, display_name)
+            .await?;
+        let num_samples = samples.len();
+        // #193 audio convergence: tee the SAME synthesized voice into the
+        // native call plane so native clients (positron web, glass-box harness)
+        // HEAR her instead of the hold-music the lonely-listener mixer plays.
+        // Sibling of the avatar-video tee. No-op if no native client is on the call.
+        self.call_manager
+            .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples)
+            .await;
+        Ok((num_samples, duration_ms, sample_rate))
+    }
+
     fn canonical_call_id(&self, id: &str) -> String {
         let aliases = self
             .legacy_call_aliases
@@ -184,9 +221,12 @@ impl ServiceModule for VoiceModule {
         self.state.executor.install(executor);
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
+        // A hosted persona's room line becomes her VOICE while the room has a
+        // live call (Joel, 2026-09-05: "they say they're talking … no output").
+        super::voice_reply_speaker::spawn(ctx.bus.clone(), self.state.clone());
         // Safety net: detect orphaned sessions (browser crash, lost WebSocket, deploy)
         self.state.resource_lifecycle.spawn_orphan_watchdog();
 
@@ -529,10 +569,9 @@ impl ServiceModule for VoiceModule {
                 // TODO: Use for Rust-side TTS output scheduling (ordering + stale detection).
                 let _timeline_seq = p.u64_opt("timeline_seq");
 
-                let (samples, duration_ms, sample_rate) = self
+                let (num_samples, duration_ms, sample_rate) = self
                     .state
-                    .livekit_manager
-                    .speak_in_call(&call_id, user_id, text, voice, adapter, display_name)
+                    .speak_in_room(&call_id, user_id, text, voice, adapter, display_name)
                     .await
                     .map_err(|e| {
                         log_error!(
@@ -543,16 +582,6 @@ impl ServiceModule for VoiceModule {
                         );
                         format!("Speak-in-call failed: {}", e)
                     })?;
-                let num_samples = samples.len();
-
-                // #193 audio convergence: tee the SAME synthesized voice into the
-                // native call plane so native clients (positron web, glass-box harness)
-                // HEAR her instead of the hold-music the lonely-listener mixer plays.
-                // Sibling of the avatar-video tee. No-op if no native client is on the call.
-                self.state
-                    .call_manager
-                    .push_persona_audio(&call_id, user_id, display_name.unwrap_or(user_id), samples)
-                    .await;
 
                 log_info!(
                     "module",

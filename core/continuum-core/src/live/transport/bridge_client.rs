@@ -71,6 +71,8 @@ pub struct LiveKitAgentManager {
     /// Frames dropped because the media queue was full (bridge stalled). Loud
     /// via rate-limited warn in [`Self::send_media`]; MUST stay 0 steady-state.
     media_dropped: Arc<AtomicU64>,
+    /// Enqueue-side per-second tally (probe summary, never a row per frame).
+    enqueue_tally: Mutex<super::pump_tally::PumpTally>,
     /// Bridge socket path.
     bridge_socket_path: String,
     /// LiveKit URL (for logging only — bridge has the actual connection).
@@ -166,6 +168,7 @@ impl LiveKitAgentManager {
             out_channels: Mutex::new(std::collections::HashMap::new()),
             next_out_channel: AtomicU64::new(1),
             media_dropped: Arc::new(AtomicU64::new(0)),
+            enqueue_tally: Mutex::new(super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1))),
             bridge_socket_path,
             livekit_url,
             next_request_id: AtomicU64::new(1),
@@ -285,12 +288,19 @@ impl LiveKitAgentManager {
         let kind = label;
         match tx.try_send(item) {
             Ok(()) => {
-                crate::probe!(
-                    class = "media.pump.enqueue",
-                    module = "livekit-bridge",
-                    kind = kind,
-                    bytes = frame_bytes
-                );
+                // One summary row per second, not one per frame (12 pumps ×
+                // 30 fps blinded the ledger — see pump_tally.rs).
+                let summary = self.enqueue_tally.lock().unwrap().record(frame_bytes as u64, 0);
+                if let Some(s) = summary {
+                    crate::probe!(
+                        class = "media.pump.enqueue",
+                        module = "livekit-bridge",
+                        kind = kind,
+                        frames = s.frames,
+                        bytes = s.bytes,
+                        span_ms = s.span_ms
+                    );
+                }
                 Ok(())
             }
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -762,6 +772,7 @@ fn media_pump_loop(
     rx: std::sync::mpsc::Receiver<MediaFrame>,
     writer: Arc<Mutex<Option<UnixStream>>>,
 ) {
+    let mut tally = super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1));
     while let Ok(item) = rx.recv() {
         let start = std::time::Instant::now();
         let mut guard = writer.lock().unwrap();
@@ -786,13 +797,17 @@ fn media_pump_loop(
                 // state is tens of µs; a growing write_us trend means the
                 // bridge socket buffer is backing up — the drop counter's
                 // leading indicator.
-                crate::probe!(
-                    class = "media.pump.write",
-                    module = "livekit-bridge",
-                    kind = item.kind,
-                    bytes = item.wire_len(),
-                    write_us = start.elapsed().as_micros() as u64
-                );
+                if let Some(s) = tally.record(item.wire_len() as u64, start.elapsed().as_micros() as u64) {
+                    crate::probe!(
+                        class = "media.pump.write",
+                        module = "livekit-bridge",
+                        kind = item.kind,
+                        frames = s.frames,
+                        bytes = s.bytes,
+                        max_write_us = s.max_us,
+                        span_ms = s.span_ms
+                    );
+                }
             }
             None => {
                 // Connection died under us — this pump's generation is over.

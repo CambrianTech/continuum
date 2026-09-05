@@ -18,6 +18,7 @@ pub mod airc_admission;
 pub mod airc_citizen;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
+pub mod operator_avatar_seed;
 pub mod operator_peer;
 pub mod command_inbound_pump;
 // `scripted_*` are SYSTEM-level test/replay primitives per

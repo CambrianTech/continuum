@@ -844,6 +844,14 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
+                        crate::probe!(
+                            class = "live.stt.speech_ended",
+                            module = "live",
+                            call_id = call_id.as_str(),
+                            speaker = user_id.as_str(),
+                            samples = speech_samples.len() as u64,
+                            "VAD closed an utterance — whisper runs next (or the semaphore refuses)"
+                        );
                         // Try to acquire semaphore permit (non-blocking)
                         // If we can't, drop this audio to prevent backlog
                         let semaphore = TRANSCRIPTION_SEMAPHORE.clone();
@@ -863,6 +871,15 @@ impl CallManager {
                                         speech_samples,
                                     )
                                     .await;
+                                    crate::probe!(
+                                        class = "live.stt.transcribed",
+                                        module = "live",
+                                        call_id = room.as_str(),
+                                        speaker = user_id.as_str(),
+                                        chars = text.as_ref().map(|t| t.chars().count()).unwrap_or(0) as u64,
+                                        to_minds = sink.is_some(),
+                                        "whisper returned (chars 0 = empty/failed); to_minds = a transcript sink turns it into a room line"
+                                    );
                                     if let (Some(sink), Some(text)) = (sink, text) {
                                         sink(&room, &user_id, &display_name, &text);
                                     }
@@ -872,6 +889,13 @@ impl CallManager {
                             }
                             Err(_) => {
                                 // Queue full - drop this audio to stay current
+                                crate::probe!(
+                                    class = "live.stt.refused",
+                                    module = "live",
+                                    call_id = call_id.as_str(),
+                                    speaker = user_id.as_str(),
+                                    reason = "transcription_queue_full"
+                                );
                                 clog_warn!(
                                     "🚨 Dropping audio from {} - transcription queue full ({} max)",
                                     display_name,
@@ -1032,7 +1056,13 @@ impl CallManager {
             calls.get(call_id).cloned()
         };
         let Some(call) = call else {
-            return; // no native Call — nobody has this call open on this node
+            // No native Call — nobody has this call open on this node. Silent
+            // once; on 2026-09-05 Joel spoke into a live call and no caption
+            // ever appeared, and this return was one of two places the audio
+            // could vanish without a trace. Now it says so (once per speaker
+            // per call, not per 10 ms frame).
+            Self::note_remote_audio_dropped(call_id, user_id, "no_native_call");
+            return;
         };
         let handle = {
             let call = call.read().await;
@@ -1042,10 +1072,37 @@ impl CallManager {
             // Media arrived before (or without) the WS-control join that mints
             // her handle + VAD — a real ordering that self-heals when the join
             // lands; frames until then are honestly droppable (they predate
-            // her being a participant here).
+            // her being a participant here). The bridge's speaker id is the
+            // LiveKit identity; the mixer's is the WS join's user id — when the
+            // two vocabularies differ this is where captions die.
+            Self::note_remote_audio_dropped(call_id, user_id, "no_mixer_handle");
             return;
         };
         self.push_audio(&handle, samples).await;
+    }
+
+    /// One `live.stt.audio_dropped` probe per (call, speaker, reason) — the
+    /// forwarder delivers ~100 chunks/s, so a per-chunk probe would blind the
+    /// ledger the way the video pump did (pump_tally.rs).
+    fn note_remote_audio_dropped(call_id: &str, user_id: &str, reason: &'static str) {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static SEEN: OnceLock<Mutex<HashSet<(String, String, &'static str)>>> = OnceLock::new();
+        let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+        let fresh = seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((call_id.to_string(), user_id.to_string(), reason));
+        if fresh {
+            crate::probe!(
+                class = "live.stt.audio_dropped",
+                module = "live",
+                call_id = call_id,
+                speaker = user_id,
+                reason = reason,
+                "remote human audio dropped before VAD — captions cannot happen for this speaker"
+            );
+        }
     }
 
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)

@@ -170,12 +170,28 @@ struct AircChatHeard {
 /// emit `chat:posted` without knowing continuum's identity model.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AircChatPosted {
-    message_id: Uuid,
-    room_id: Uuid,
-    sender_id: Uuid,
-    content: String,
-    timestamp: u64,
+pub(crate) struct AircChatPosted {
+    pub(crate) message_id: Uuid,
+    pub(crate) room_id: Uuid,
+    pub(crate) sender_id: Uuid,
+    pub(crate) content: String,
+    pub(crate) timestamp: u64,
+}
+
+/// The airc bus wraps event bodies under a `payload` key (see
+/// `airc_bridge_directive::str_field`); accept a nested `payload` object,
+/// else the top-level value. ONE envelope rule for every bus consumer.
+pub(crate) fn bus_event_body(payload: &serde_json::Value) -> &serde_json::Value {
+    payload.get("payload").unwrap_or(payload)
+}
+
+/// Parse a `chat:posted` bus event — shared by the chat projection and the
+/// voice module's reply speaker (compression: one wire shape, one parser).
+pub(crate) fn parse_chat_posted(name: &str, payload: &serde_json::Value) -> Option<AircChatPosted> {
+    if name != CHAT_POSTED {
+        return None;
+    }
+    serde_json::from_value::<AircChatPosted>(bus_event_body(payload).clone()).ok()
 }
 
 /// Typed `presence:updated` payload — a full roster snapshot for a room.
@@ -1022,10 +1038,7 @@ enum ProjectionInput {
 }
 
 fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> {
-    // The airc bus wraps event bodies under a `payload` key (see
-    // `airc_bridge_directive::str_field`); accept a nested `payload`
-    // object, else the top-level value.
-    let body = payload.get("payload").unwrap_or(payload);
+    let body = bus_event_body(payload);
     match name {
         CHAT_HEARD => serde_json::from_value::<AircChatHeard>(body.clone())
             .ok()
