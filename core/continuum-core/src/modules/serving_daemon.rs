@@ -1739,12 +1739,20 @@ impl ServingDaemonModule {
             ),
             None => {
                 // Nothing servable on disk → publish "nothing live" so readers
-                // (and a grid allocator) see the gap and route elsewhere.
+                // (and a grid allocator) see the gap and route elsewhere — WITH the
+                // cause named. This is the state a fresh install sits in before any
+                // weights are pulled, and it is the one place an operator most needs
+                // the surface to distinguish "no model on this box yet" from "the
+                // serving daemon is broken". `empty()` rendered both identically.
                 self.set_active_artifact(None);
                 if self.serving_tx.borrow().active_model.is_some() {
-                    let empty = ServingSnapshot::empty();
-                    Self::emit_serving(self.bus.get(), &empty);
-                    let _ = self.serving_tx.send_replace(empty);
+                    let flipped = ServingSnapshot::degraded(
+                        "no servable model on disk — the planner found no local weights \
+                         to bring up (pull one with `continuum models/pull`)"
+                            .to_string(),
+                    );
+                    Self::emit_serving(self.bus.get(), &flipped);
+                    let _ = self.serving_tx.send_replace(flipped);
                 }
                 return None;
             }
@@ -2067,13 +2075,18 @@ impl ServingDaemonModule {
             crate::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
-                "plan named a model the registry can't resolve — publishing empty snapshot",
+                "plan named a model the registry can't resolve — publishing degraded snapshot",
             );
             self.set_active_artifact(None);
             if self.serving_tx.borrow().active_model.is_some() {
-                let empty = ServingSnapshot::empty();
-                Self::emit_serving(self.bus.get(), &empty);
-                let _ = self.serving_tx.send_replace(empty);
+                // Name the killer on the SNAPSHOT, not just in the log: this is a
+                // config/catalog fault an operator must act on, and `empty()` would
+                // render it as a plain "nothing served".
+                let flipped = ServingSnapshot::degraded(format!(
+                    "the plan named model '{desired}', which the registry cannot resolve"
+                ));
+                Self::emit_serving(self.bus.get(), &flipped);
+                let _ = self.serving_tx.send_replace(flipped);
             }
             return None;
         };
@@ -2604,9 +2617,21 @@ impl ServingDaemonModule {
         reason: &str,
     ) {
         force_relaunch.store(true, Ordering::Release);
-        let empty = ServingSnapshot::empty();
-        Self::emit_serving(bus, &empty);
-        let _ = serving_tx.send_replace(empty);
+        // The reason is a PARAMETER here — publish it ON the snapshot, not only into
+        // the log. `empty()` hardcodes `degraded_reason: None`, so for the whole
+        // kill+respawn window `serving/status` read `ready:false, active_model:null,
+        // lanes:0, degraded_reason:null` — absence with no stated cause, which is
+        // indistinguishable from a node that has no brain at all. Measured live
+        // 2026-09-05 (BigMama): a wedge-heal cycle with a healthy `/health` answering
+        // on the doomed lane, recovering by itself inside 120s, three times read as a
+        // possible dead-serving defect because the surface never said "relaunching".
+        // The pre-flight guard already reserves a `degraded=` probe field for exactly
+        // this string (added 2026-08-15: "serving/status knew the exact cause and
+        // nothing surfaced it") and was being handed "" every time.
+        // [[absence-rendered-as-positive-fact]] [[fallbacks-are-illegal-fail-loud]]
+        let flipped = ServingSnapshot::degraded(reason.to_string());
+        Self::emit_serving(bus, &flipped);
+        let _ = serving_tx.send_replace(flipped);
         crate::probe!(
             class = "serving.health",
             action = "relaunch",
@@ -4054,6 +4079,47 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: a self-heal that renders as a dead node. `declare_lane_wedged`
+    // TAKES the reason as a parameter, logged it, then published `ServingSnapshot::empty()`
+    // — which hardcodes `degraded_reason: None`. For the whole kill+respawn window
+    // `serving/status` showed `ready:false, active_model:null, lanes:0,
+    // degraded_reason:null`: absence with no stated cause, byte-identical to a node that
+    // never had a brain. Measured 2026-09-05 on BigMama, where a wedge-heal recovering by
+    // itself inside 120s was read three times as a possible serving-is-dead defect, and
+    // the pre-flight guard's `degraded=` probe field (added 2026-08-15 precisely to carry
+    // this string) was handed "" on every wait. The reason is IN HAND at the call site;
+    // dropping it is the silent-failure class, not a formatting nit.
+    #[test]
+    fn declaring_a_wedge_publishes_the_reason_not_a_bare_empty_snapshot() {
+        use super::*;
+
+        let (tx, _rx) = watch::channel(ServingSnapshot::empty());
+        let force = Arc::new(AtomicBool::new(false));
+
+        ServingDaemonModule::declare_lane_wedged(
+            &force,
+            &tx,
+            None,
+            "consecutive REAL generations failed on the live lane",
+        );
+
+        let snap = tx.borrow();
+        // the heal still fires: not-ready, nothing active, relaunch armed
+        assert!(!snap.ready, "a declared wedge must flip the lane not-ready");
+        assert!(snap.active_model.is_none());
+        assert!(
+            force.load(Ordering::Relaxed),
+            "the relaunch flag is what makes this a HEAL — populating the reason must \
+             not change the control path"
+        );
+        // ...and the operator is told WHY, verbatim
+        assert_eq!(
+            snap.degraded_reason.as_deref(),
+            Some("consecutive REAL generations failed on the live lane"),
+            "the wedge reason must reach the snapshot, not only the log"
+        );
+    }
 
     // what this catches (2026-09-01 live): the re-home guard measured only the
     // per-slot window, so a plan that GREW total token-space by adding lanes

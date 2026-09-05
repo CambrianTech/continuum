@@ -297,12 +297,12 @@ async fn resolve_card_id(
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
-    let board = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+    let candidates: Vec<Uuid> = subscribed_boards(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?
-        .snapshot();
-    let candidates: Vec<Uuid> = board.cards.iter().map(|c| c.card_id.as_uuid()).collect();
+        .iter()
+        .flat_map(|(_, board)| board.snapshot().cards.iter().map(|c| c.card_id.as_uuid()).collect::<Vec<_>>())
+        .collect();
     crate::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
         .map_err(CommandError::Invalid)
@@ -322,15 +322,18 @@ async fn resolve_claim_id(
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(ClaimId::from_uuid(id));
     }
-    let board = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+    let candidates: Vec<Uuid> = subscribed_boards(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?
-        .snapshot();
-    let candidates: Vec<Uuid> = board
-        .cards
         .iter()
-        .filter_map(|c| c.claim_id.map(|id| id.as_uuid()))
+        .flat_map(|(_, board)| {
+            board
+                .snapshot()
+                .cards
+                .iter()
+                .filter_map(|c| c.claim_id.map(|id| id.as_uuid()))
+                .collect::<Vec<_>>()
+        })
         .collect();
     crate::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
@@ -379,17 +382,43 @@ pub(crate) async fn card_in_subscribed_rooms(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
 ) -> Option<(airc_lib::Room, airc_lib::WorkCard)> {
-    let set = airc.subscription_set().await.ok()?;
+    subscribed_boards(airc)
+        .await
+        .ok()?
+        .into_iter()
+        .find_map(|(room, board)| {
+            board
+                .snapshot()
+                .cards
+                .iter()
+                .find(|c| c.card_id == card_id)
+                .map(|card| (room, card.clone()))
+        })
+}
+
+/// Every board the caller can SEE: one fold per subscribed room, in subscription
+/// order. This is the ONE definition of "a card I can address" for this scope.
+///
+/// The scope's current room is a cwd-derived default, not a horizon: a citizen
+/// resident in the academy AND a run room addresses a card by prefix meaning
+/// "a card on any board I am in". Resolving prefixes against the current room
+/// alone answered Joaquin's `work/get 0c4317e1` with "available: the 12 bench
+/// cards" — the run room's board — while her academy board held the card the
+/// whole time (2026-09-05; the fold, the cursor and the page size were all
+/// exonerated before the resolver was read). A room whose board fails to read
+/// is skipped, never fatal: a stale run room must not hide the academy.
+pub(crate) async fn subscribed_boards(
+    airc: &Arc<Airc>,
+) -> Result<Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>, airc_lib::AircError> {
+    let set = airc.subscription_set().await?;
+    let mut boards = Vec::new();
     for sub in set.all() {
         let room = sub.as_room();
-        let Ok(board) = airc.work_board_in(&room).await else {
-            continue;
-        };
-        if let Some(card) = board.snapshot().cards.iter().find(|c| c.card_id == card_id) {
-            return Some((room, card.clone()));
+        if let Ok(board) = airc.work_board_in(&room).await {
+            boards.push((room, board));
         }
     }
-    None
+    Ok(boards)
 }
 
 /// Locate `card_id`'s room, switch the caller's current room there, and retry the
@@ -2816,5 +2845,41 @@ mod tests {
             );
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
+    }
+    /// what this catches: a short card id is resolved against the boards the caller
+    /// can SEE, not the scope's cwd-derived current room. Regression for Joaquin's
+    /// `work/get 0c4317e1` (2026-09-05): her current room was a bench run room, the
+    /// card sat on the academy board she was also subscribed to, and the resolver
+    /// answered "no card matches — available: the 12 bench cards".
+    #[tokio::test]
+    async fn a_card_prefix_resolves_on_any_subscribed_board_not_only_the_current_room() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        airc.join("academy").await.expect("join the academy");
+        let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+        let card = airc
+            .create_work_card(CreateWorkCard::new(
+                repo,
+                "serve-time pin match gap",
+                parse_priority("p1"),
+            ))
+            .await
+            .expect("card created on the academy board");
+        // Focus moves to a run room: the card is no longer on the CURRENT board.
+        airc.join("bench-run-1").await.expect("join the run room");
+
+        let prefix = card.as_uuid().simple().to_string()[..8].to_string();
+        let resolved = resolve_card_id(&airc, &prefix)
+            .await
+            .expect("the academy card resolves by prefix from the run room");
+        assert_eq!(resolved, card);
+        assert!(
+            card_in_subscribed_rooms(&airc, card).await.is_some(),
+            "the same fold answers which room holds the card"
+        );
     }
 }

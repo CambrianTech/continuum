@@ -104,10 +104,15 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
             ))
         }
     };
-    let matches: Vec<&Uuid> = candidates
+    // Candidates are a SET: the same id folded from two boards (a card visible
+    // from two subscribed rooms, 2026-09-05, #3722 review) is one card, never an
+    // ambiguity between two.
+    let mut matches: Vec<&Uuid> = candidates
         .iter()
         .filter(|id| id.simple().to_string().starts_with(&needle))
         .collect();
+    matches.sort();
+    matches.dedup();
     match matches.as_slice() {
         [one] => Ok(**one),
         // Zero match — the live failure mode (2026-07-13: a persona claimed a
@@ -235,5 +240,13 @@ mod tests {
             e.contains(&format!("among {} card", many.len())) && !e.contains("available card ids"),
             "counts instead of listing: {e}"
         );
+    }
+    /// what this catches: one id present twice in the candidates (the same card
+    /// folded from two boards) must resolve, not read as an ambiguity between two.
+    #[test]
+    fn the_same_id_listed_twice_is_one_candidate_not_an_ambiguity() {
+        let id = Uuid::new_v4();
+        let prefix = id.simple().to_string()[..8].to_string();
+        assert_eq!(resolve(&prefix, &[id, id], "card"), Ok(id));
     }
 }

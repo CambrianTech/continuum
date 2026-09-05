@@ -197,6 +197,7 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let boot_entry = std::time::Instant::now();
     // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
     // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
     // so `continuum reboot` can prove the running core is the freshly-built one — not a stale cached
@@ -478,6 +479,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_disk_pressure_monitor = disk_pressure_monitor.clone();
     let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
+    continuum_core::probe!(
+        class = "boot.phase",
+        phase = "main_to_ipc_thread",
+        ms = boot_entry.elapsed().as_millis() as u64,
+        "everything main did before starting the IPC thread"
+    );
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
             &socket_path,
