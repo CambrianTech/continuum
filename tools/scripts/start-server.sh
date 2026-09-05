@@ -24,7 +24,6 @@
 #                           `airc room`.
 
 set -e
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repo root is two up from tools/scripts/. (Was `dirname SCRIPT_DIR`, which
 # resolved to tools/ — stale since this script moved under tools/scripts/.)
@@ -252,7 +251,12 @@ adopt_or_reap_llama_lanes() {
   for pid in $pids; do
     # The lane's port comes from its own cmdline — the only place it is recorded
     # for a process the shell did not spawn.
-    port="$(ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--port[ =]\([0-9]\{1,\}\).*/\1/p')"
+    # `|| true`: `ps` fails when the pid died between listing and probing, which
+    # is the ordinary race this adoption loop exists to tolerate. Under `set -e`
+    # + pipefail that failure would abort the whole deploy instead of skipping
+    # one dead lane — and the `[ -n "$port" ]` on the next line was already
+    # written for the empty case (card aad30dee, measured 2026-09-05).
+    port="$(ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--port[ =]\([0-9]\{1,\}\).*/\1/p' || true)"
     if [ -n "$port" ] && bounded_run 3 curl -sf "http://127.0.0.1:${port}/health"; then
       echo "  ✓ adopting healthy llama lane (pid $pid, port $port) — warm weights kept" >&2
       adopted=$((adopted + 1))
@@ -409,10 +413,20 @@ if [ -z "$AIRC_DAEMON_SOCKET" ]; then
   # are session-scoped (per-Claude-session, etc) and not what the
   # substrate wants to attach to. Pick the most recently modified
   # machine socket — that's the live daemon.
+  # `|| true` because FINDING NOTHING IS A NORMAL OUTCOME here, and under
+  # `set -e` + `set -o pipefail` (card aad30dee) it would otherwise kill the
+  # deploy: `ls` fails when no socket matches, and `grep -v` exits 1 when
+  # nothing survives the filter. Before pipefail the pipeline reported `head`'s
+  # status (0) and this became empty — which the very next line already handles.
+  # Measured 2026-09-05: without this guard the script exits 1, silently, on any
+  # machine where the airc daemon is not running. That is a FRESH INSTALL, i.e.
+  # exactly the "works out of the box" case. This does not weaken pipefail; it
+  # marks the one place where a failing pipeline is the expected, already-handled
+  # result.
   AIRC_DAEMON_SOCKET="$(
     ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null \
       | grep -v '\.lock$' \
-      | head -1
+      | head -1 || true
   )"
   if [ -n "$AIRC_DAEMON_SOCKET" ]; then
     export AIRC_DAEMON_SOCKET

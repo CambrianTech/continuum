@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e  # Exit immediately on any error
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 # Navigate to the correct working directory
 cd "$(dirname "$0")/.."

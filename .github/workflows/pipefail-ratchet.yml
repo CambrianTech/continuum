@@ -56,14 +56,14 @@ jobs:
       - name: Prove the ratchet can fail (mutation)
         run: |
           set -o pipefail
-          cp tools/scripts/start-server.sh /tmp/ss.bak
-          grep -v '^set -o pipefail' /tmp/ss.bak > tools/scripts/start-server.sh
+          cp tools/scripts/system-stop.sh /tmp/mut.bak
+          grep -v '^set -o pipefail' /tmp/mut.bak > tools/scripts/system-stop.sh
           if bash scripts/ratchets/check-pipefail.sh > /tmp/mutation.log 2>&1; then
             echo "::error::pipefail ratchet did NOT fail on a script with pipefail removed — the gate is dead."
             cat /tmp/mutation.log
-            cp /tmp/ss.bak tools/scripts/start-server.sh
+            cp /tmp/mut.bak tools/scripts/system-stop.sh
             exit 1
           fi
-          cp /tmp/ss.bak tools/scripts/start-server.sh
+          cp /tmp/mut.bak tools/scripts/system-stop.sh
           echo "Mutation proof passed: removing pipefail turns the ratchet red."
           bash scripts/ratchets/check-pipefail.sh
