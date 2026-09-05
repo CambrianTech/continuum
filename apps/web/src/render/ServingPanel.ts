@@ -365,3 +365,19 @@ connectedCallback() {
   super.connectedCallback();
   this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
 }
+// Handle serving.glassbox event
+connectedCallback() {
+  super.connectedCallback();
+  this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
+}
+
+handleGlassboxDigest(event) {
+  if (event.type === 'serving.glassbox') {
+    this.body = event.payload;
+    this.requestUpdate();
+
+    // Publish serving.glassbox digest to the room
+    const event = new CustomEvent('publish-serving-glassbox', { detail: this.body }); 
+    dispatchEvent(event);
+  }
+}
