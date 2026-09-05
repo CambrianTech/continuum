@@ -700,7 +700,13 @@ pub fn models() -> Vec<Model> {
                 reasoning_budget: Some(8192),
                 verified_ctx_ceiling: Some(32_768),
             },
-            ..ModelSpec::default()
+                        // NOT persona_serving_eligible: EXPERIMENTAL — 32k verified, 46848 OOM'd all
+            // night (2026-08-29), depth worse at 31k. Its measured score above is a FACT
+            // about the model; candidacy is a separate decision (IntelMac's review of
+            // #3772), and Joel's call (2026-09-05) is the stock 27B as the high tier.
+            // Flips to true the day it clears the depth bar at the target window.
+            persona_serving_eligible: false,
+..ModelSpec::default()
         }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
