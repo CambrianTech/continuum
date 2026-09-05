@@ -560,3 +560,98 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
 
     parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
 }
+use std::process::{Command, Output};
+use tokio::process::Command as TokioCommand;
+use uuid::Uuid;
+use std::time::Duration;
+
+const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+#[derive(thiserror::Error, Debug)]
+pub enum DiscoveryError {
+    #[error("failed to discover AIRC daemon IPC socket: {0}")]
+    IpcEndpointDiscoveryFailed(String),
+    #[error("failed to discover default channel: {0}")]
+    DefaultChannelDiscoveryFailed(String),
+    #[error("room command failed: {0}")]
+    RoomCommandFailed(String),
+    #[error("channel not found in room output")]
+    ChannelNotFound,
+    #[error("unparseable channel: {0}")]
+    UnparseableChannel(String),
+    #[error("room name not found")]
+    RoomNameNotFound,
+    #[error("unparseable room name: {0}")]
+    UnparseableRoomName(String),
+}
+
+pub async fn discover_default_channel() -> Result<Uuid, DiscoveryError> {
+    if let Some(room_name_raw) = std::env::var_os("AIRC_DEFAULT_ROOM_NAME") {
+        let room_name = room_name_raw.to_string_lossy().trim().to_string();
+        if !room_name.is_empty() {
+            // Resolve the room name to a channel UUID
+            let call = TokioCommand::new("airc").arg("room").output();
+            let out = tokio::time::timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+                .await
+                .map_err(|_| {
+                    DiscoveryError::RoomCommandFailed(format!(
+                        "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                         — substrate is unresponsive, refusing to wait",
+                    ))
+                })?
+                .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+
+            if !out.status.success() {
+                return Err(DiscoveryError::RoomCommandFailed(format!(
+                    "exit {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim(),
+                )));
+            }
+
+            let stdout = String::from_utf8_lossy(&out.stdout); 
+            if let Some(channel) = parse_channel_from_room_output(&stdout) {
+                return Ok(channel);
+            } else {
+                return Err(DiscoveryError::ChannelNotFound);
+            }
+        }
+    }
+
+    // Fall back to the original behavior if no room name or channel was found
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = tokio::time::timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+        .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
+        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+
+    if !out.status.success() {
+        return Err(DiscoveryError::RoomCommandFailed(format!(
+            "exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim(),
+        )));
+    }
+
+    parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_channel_from_room_output(output: &str) -> Result<Uuid, DiscoveryError> {
+    let lines: Vec<&str> = output.lines().collect();
+    for line in lines {
+        if line.starts_with("channel:") {
+            let parts: Vec<&str> = line.splitn(2, ":").collect();
+            if parts.len() == 2 {
+                let channel_id = parts[1].trim();
+                return Uuid::parse_str(channel_id)
+                    .map_err(|_| DiscoveryError::UnparseableChannel(channel_id.to_string()));
+            }
+        }
+    }
+    Err(DiscoveryError::ChannelNotFound)
+}
