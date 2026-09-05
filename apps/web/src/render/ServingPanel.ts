@@ -98,7 +98,7 @@ export class ServingPanel extends LitElement {
   }
 
   override render(): TemplateResult {
-    const body = this.body;
+    const body = this.getAttribute('body');
     if (!body) return html``;
     return html`
       <section class="rail-widget" data-widget="serving" data-id="serving">
