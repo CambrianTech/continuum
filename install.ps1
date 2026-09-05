@@ -127,6 +127,3 @@ Write-Host '  Test:   cu ping'
 Write-Host ''
 # Add supervised service path and uu.cmd shim
     Mod-ServicePath -RepoRoot $RepoRoot
-# Add supervised service path and uu.cmd shim
-    Mod-ServicePath -RepoRoot $RepoRoot
-
