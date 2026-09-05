@@ -3044,6 +3044,76 @@ impl LlamaServerControl for LlamaServerProcess {
                 self.bin
             )));
         }
+        // BACKEND RECEIPT (card c0bc4027): what does this binary actually LOAD?
+        // 2026-09-05: BigMama's 5090 served a 24B model on the CPU because the
+        // installed server could not load ggml-cuda.dll and fell back silently
+        // (13 lane kills in 106 minutes before anyone read its log); IntelMac's
+        // Intel-GPU Mac hangs in Metal initialisation. Ask `--list-devices`, bounded
+        // like `--version` above: a GPU device → serve on it and name it; answered
+        // with none → REFUSE (a warning on a CUDA host is the CPU-forever outage);
+        // hung → CPU placement, said out loud. See inference/backend_receipt.rs.
+        let devices_probe = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(&self.bin)
+                .arg("--list-devices")
+                .output(),
+        )
+        .await;
+        let receipt = match devices_probe {
+            Ok(Ok(out)) => {
+                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                text.push('\n');
+                text.push_str(&String::from_utf8_lossy(&out.stderr));
+                Some(crate::inference::backend_receipt::parse_list_devices(&text))
+            }
+            Ok(Err(e)) => {
+                crate::probe!(
+                    class = "serving.backend_probe_failed",
+                    bin = %self.bin,
+                    error = %e,
+                    "`--list-devices` could not run — the spawn below reports the real failure"
+                );
+                None
+            }
+            Err(_) => {
+                crate::probe!(
+                    class = "serving.backend_probe_timeout",
+                    bin = %self.bin,
+                    "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
+                     this host; the lane serves on the CPU and says so"
+                );
+                None
+            }
+        };
+        let verdict =
+            crate::inference::backend_receipt::backend_verdict(&self.bin, receipt.as_ref());
+        crate::probe!(
+            class = "serving.backend_receipt",
+            bin = %self.bin,
+            backend = verdict.backend_label(),
+            device = %match &verdict {
+                crate::inference::backend_receipt::BackendVerdict::Gpu { device } => device.as_str(),
+                _ => "",
+            },
+            load_errors = receipt.as_ref().map(|r| r.load_errors.len()).unwrap_or(0), // probe field: 0 = none or no transcript
+            "the serving binary named the backend it loads"
+        );
+        match &verdict {
+            crate::inference::backend_receipt::BackendVerdict::Refused { reason } => {
+                crate::probe!(
+                    class = "serving.backend_refused",
+                    bin = %self.bin,
+                    reason = %reason,
+                    "refused to serve from a binary that loads no GPU backend on a GPU host"
+                );
+                return Err(LlamaServerError::Spawn(reason.clone()));
+            }
+            crate::inference::backend_receipt::BackendVerdict::ProbeHung => {
+                // Last flag wins in llama-server's parser: pin the lane to the CPU.
+                cmd.arg("--n-gpu-layers").arg("0");
+            }
+            crate::inference::backend_receipt::BackendVerdict::Gpu { .. } => {}
+        }
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
