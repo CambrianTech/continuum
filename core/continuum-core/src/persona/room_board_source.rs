@@ -149,18 +149,56 @@ impl RoomBoardReader for airc_lib::Airc {
             // whole bug class ([[fail-loud-never-swallow]]).
             Some(id) => {
                 let channel = airc_core::RoomId::from_uuid(id);
+                // A BREADCRUMB BEFORE EACH PHASE, not one duration after both. This
+                // read runs inside workspace.rs's 30s PERCEPTION_DEADLINE, so the ticks
+                // worth diagnosing are exactly the ones whose future is CANCELLED — and
+                // a cancelled future never reaches a probe placed after its await.
+                // What these marks actually established, 2026-09-05: they EXONERATED
+                // this read. Chasing a faculty rendered as `[room-board]` that pins at
+                // the 30s deadline, I assumed it was this one. It is not — that
+                // SOURCE_ID belongs to `wall_source.rs`. The proof is an ABSENCE: every
+                // read that emitted `resolve_room` here also reached `complete`
+                // (1.4-9.9s), while the 30s deadline events carry no mark at all, not
+                // even the first. A faculty cancelled before the first line of this
+                // branch is not stalling in this branch. Keep the marks: they are cheap,
+                // and "which projection did the tick actually spend itself in" is a
+                // question two sources with confusable names will raise again.
+                crate::probe!(
+                    class = "board.read.phase",
+                    room = %id,
+                    phase = "resolve_room",
+                    "entering room_by_channel — if no project_board mark follows for this                      room, room resolution is where the read hung"
+                );
+                let resolve_started = std::time::Instant::now();
                 let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
                     return Err(AircError::NotSubscribed(format!(
-                        "work board requested for room {id}, which this scope is not \
-                         subscribed to — refusing to substitute the default room's board"
+                        "work board requested for room {id}, which this scope is not                          subscribed to — refusing to substitute the default room's board"
                     )));
                 };
-                airc_lib::Airc::project_room_work_board(
+                let resolve_ms = resolve_started.elapsed().as_millis() as u64;
+                crate::probe!(
+                    class = "board.read.phase",
+                    room = %id,
+                    phase = "project_board",
+                    resolve_ms,
+                    "room resolved; entering project_room_work_board — a missing complete                      mark for this room means the projection hung"
+                );
+                let project_started = std::time::Instant::now();
+                let projection = airc_lib::Airc::project_room_work_board(
                     self,
                     &resolved,
                     airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
                 )
-                .await?
+                .await?;
+                crate::probe!(
+                    class = "board.read.phase",
+                    room = %id,
+                    phase = "complete",
+                    resolve_ms,
+                    project_ms = project_started.elapsed().as_millis() as u64,
+                    "both halves finished — the pair of durations is the distribution a                      stalled tick is measured against"
+                );
+                projection
             }
             // UNBOUND: the caller genuinely means "my current room" (the CLI's
             // intent). Same behaviour as before this parameter existed.
