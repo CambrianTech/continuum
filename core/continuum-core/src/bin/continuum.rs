@@ -324,7 +324,7 @@ fn socket_path() -> String {
 async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
     ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
-    let params = params_from_args(&args, &canonical)?;
+    let params = params_from_args(command, &args, &canonical)?;
     let result = connection()
         .commands()
         .execute_value(command, params)
@@ -366,7 +366,7 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
 ///
 /// Schema-AWARE coercion/validation (knowing each field's exact type) is the next
 /// step on the same `commands/list` schema; this canonicalizes the KEY today.
-fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, String> {
+fn params_from_args(command: &str, args: &[String], canonical: &[String]) -> Result<Value, String> {
     if args.is_empty() {
         return Ok(Value::Object(Default::default()));
     }
@@ -390,10 +390,12 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
     // standard, aliases resolve). Only consulted when the raw flag is NOT itself a
     // canonical field; data-driven, so it never overrides a command's real param.
     const SYNONYMS: &[(&str, &str)] = &[("command", "cmd")];
-    let field = |raw: &str| -> String {
+    // Returns `None` for a flag the command's schema does not have — see the
+    // unknown-flag arm at the end of the closure.
+    let field = |raw: &str| -> Option<String> {
         let norm = normalize_key(raw);
         if let Some(c) = canon_by_norm.get(&norm) {
-            return (*c).to_string();
+            return Some((*c).to_string());
         }
         for (a, b) in SYNONYMS {
             let other = if normalize_key(a) == norm {
@@ -405,11 +407,26 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
             };
             if let Some(o) = other {
                 if let Some(c) = canon_by_norm.get(&normalize_key(o)) {
-                    return (*c).to_string();
+                    return Some((*c).to_string());
                 }
             }
         }
-        to_camel_case(raw)
+        // NOT a schema field, and not a synonym of one.
+        //
+        // When `canonical` is EMPTY we do not know the schema — the registry was
+        // unreachable, or this command publishes no params — so "unknown" is
+        // unprovable and the historical camelCase guess stands. When it is
+        // NON-empty we DO know, and a flag matching nothing is a typo the caller
+        // wants told about, not silently coerced into a junk key the command
+        // ignores. `continuum ping --nonsense-flag` returned a healthy pong on
+        // 2026-09-05: a successful-looking answer to a question nobody asked.
+        //
+        // Same unset-vs-unknown ladder as #3717's room probe: refuse only where
+        // the knowledge to refuse actually exists.
+        if canon_by_norm.is_empty() {
+            return Some(to_camel_case(raw));
+        }
+        None
     };
 
     let mut map = serde_json::Map::new();
@@ -424,18 +441,44 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
         // Support BOTH `--key value` and the muscle-memory `--key=value` form.
         // Splitting on the first `=` means `--filter=data/` parses to
         // {filter: "data/"} instead of a junk `{"filter=data/": true}` key.
+        // Name the flag AND what the command actually takes. A refusal that only
+        // says "unknown" makes the caller go read `--help`; one that lists the
+        // fields is the answer they were about to look up.
+        let unknown = |k: &str| -> String {
+            let mut known: Vec<&str> = canon_by_norm.values().copied().collect();
+            known.sort_unstable();
+            format!(
+                "unknown flag `--{k}` for `{command}`.\n  accepted: {}\n                   (or pass a single JSON object; `continuum {command} --help` \
+                 shows types and which are required)",
+                if known.is_empty() {
+                    "(this command takes no params)".to_string()
+                } else {
+                    known
+                        .iter()
+                        .map(|f| format!("--{f}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+            )
+        };
         if let Some((k, v)) = raw_key.split_once('=') {
-            map.insert(field(k), coerce(v));
+            map.insert(field(k).ok_or_else(|| unknown(k))?, coerce(v));
             i += 1;
             continue;
         }
         // A value follows unless the next arg is another flag (or there is none).
         let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
         if has_value {
-            map.insert(field(raw_key), coerce(&args[i + 1]));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                coerce(&args[i + 1]),
+            );
             i += 2;
         } else {
-            map.insert(field(raw_key), Value::Bool(true));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                Value::Bool(true),
+            );
             i += 1;
         }
     }
@@ -1202,7 +1245,8 @@ fn record_repo_checkout() {
     ) else {
         return;
     };
-    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common) else {
+    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common)
+    else {
         return;
     };
     if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
@@ -1295,10 +1339,7 @@ fn running_core_pids() -> Vec<i32> {
 /// guess: a diagnostic that confidently names the wrong socket is what this whole helper
 /// exists to stop.
 fn socket_from_core_argv(argv: &[String]) -> Option<String> {
-    argv.iter()
-        .skip(1)
-        .find(|a| !a.starts_with('-'))
-        .cloned()
+    argv.iter().skip(1).find(|a| !a.starts_with('-')).cloned()
 }
 
 /// Every running core paired with the socket it is actually bound to.
@@ -1315,11 +1356,7 @@ fn running_core_sockets() -> Vec<(i32, String)> {
     );
     sys.processes()
         .values()
-        .filter(|p| {
-            p.name()
-                .to_string_lossy()
-                .contains("continuum-core-server")
-        })
+        .filter(|p| p.name().to_string_lossy().contains("continuum-core-server"))
         .filter_map(|p| {
             let argv: Vec<String> = p
                 .cmd()
@@ -2274,7 +2311,10 @@ mod tests {
         #[test]
         fn no_hint_when_the_running_core_is_bound_to_the_socket_we_asked_for() {
             let bound = vec![(1, "/tmp/continuum-core.sock".to_string())];
-            assert_eq!(bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock"), None);
+            assert_eq!(
+                bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock"),
+                None
+            );
             assert_eq!(bound_elsewhere_hint(&[], "/tmp/continuum-core.sock"), None);
         }
 
@@ -2283,7 +2323,10 @@ mod tests {
         /// client's is what cost four commands and a wrong "wedged" hypothesis.
         #[test]
         fn hint_names_the_cores_path_and_the_command_that_reaches_it() {
-            let bound = vec![(83712, "/Users/joel/.continuum/intelmac-core.sock".to_string())];
+            let bound = vec![(
+                83712,
+                "/Users/joel/.continuum/intelmac-core.sock".to_string(),
+            )];
             let hint = bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock")
                 .expect("a core bound elsewhere must produce a hint");
             assert!(
@@ -2291,9 +2334,7 @@ mod tests {
                 "must name which pid is where: {hint}"
             );
             assert!(
-                hint.contains(
-                    "CONTINUUM_CORE_SOCKET=/Users/joel/.continuum/intelmac-core.sock"
-                ),
+                hint.contains("CONTINUUM_CORE_SOCKET=/Users/joel/.continuum/intelmac-core.sock"),
                 "the remedy must carry the core's path, not the client's: {hint}"
             );
             assert!(
@@ -2312,7 +2353,10 @@ mod tests {
                 (9, "/Users/joel/.continuum/intelmac-core.sock".to_string()),
             ];
             let hint = bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock").expect("hint");
-            assert!(hint.contains("pid 9"), "the unreachable core must appear: {hint}");
+            assert!(
+                hint.contains("pid 9"),
+                "the unreachable core must appear: {hint}"
+            );
             assert!(
                 !hint.contains("pid 7"),
                 "a core on the asked-for socket is not 'elsewhere': {hint}"
@@ -2474,17 +2518,55 @@ mod tests {
         let no_schema: &[String] = &[];
 
         // 1. nothing → empty object
-        assert_eq!(params_from_args(&[], no_schema).unwrap(), json!({}));
+        assert_eq!(params_from_args("ping", &[], no_schema).unwrap(), json!({}));
+    }
+
+    /// what this catches: a typo'd flag being silently coerced into a junk param
+    /// the command ignores, so the caller gets a successful-looking answer to a
+    /// question they did not ask. Measured 2026-09-05: `continuum ping
+    /// --nonsense-flag` returned a healthy pong, exit 0.
+    ///
+    /// The ladder is the point, and it is the unset-vs-unknown distinction:
+    /// refuse ONLY when the schema is known. With no schema we cannot prove a
+    /// flag is unknown, so the historical camelCase guess must still stand —
+    /// otherwise every command whose params the registry cannot describe becomes
+    /// uncallable.
+    #[test]
+    fn an_unknown_flag_is_refused_by_name_only_when_the_schema_is_known() {
+        let schema = &["message".to_string()];
+        let err = params_from_args("ping", &["--nonsense-flag".into()], schema)
+            .expect_err("a flag the schema does not have must be refused, not coerced");
+        assert!(
+            err.contains("--nonsense-flag"),
+            "names the offending flag: {err}"
+        );
+        assert!(err.contains("ping"), "names the command: {err}");
+        assert!(err.contains("--message"), "lists what IS accepted: {err}");
+
+        // A real field still parses, and still canonicalizes across separators.
+        assert_eq!(
+            params_from_args("ping", &["--message".into(), "hi".into()], schema).unwrap(),
+            json!({"message": "hi"})
+        );
+
+        // NO schema → cannot prove unknown → the pre-schema behaviour is preserved.
+        let no_schema: &[String] = &[];
+        assert_eq!(
+            params_from_args("ping", &["--nonsense-flag".into()], no_schema).unwrap(),
+            json!({"nonsenseFlag": true}),
+            "without a schema an unrecognised flag must NOT be refused"
+        );
 
         // 2. positional JSON verbatim (the AI / tool-call path)
         assert_eq!(
-            params_from_args(&[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
+            params_from_args("ping", &[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
             json!({ "message": "hi" })
         );
 
         // 3. --key value with coercion: string stays string, number→number,
         //    bool→bool; keys camelCased from kebab/snake.
         let p = params_from_args(
+            "ping",
             &[
                 "--message".into(),
                 "hi".into(),
@@ -2504,24 +2586,24 @@ mod tests {
 
         // bare flag (no value) → true
         assert_eq!(
-            params_from_args(&["--verbose".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--verbose".into()], no_schema).unwrap(),
             json!({ "verbose": true })
         );
 
         // `--key=value` form (muscle memory) — split on first `=`, NOT a junk key.
         assert_eq!(
-            params_from_args(&["--filter=data/".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--filter=data/".into()], no_schema).unwrap(),
             json!({ "filter": "data/" }),
             "--key=value splits correctly (regression: was {{\"filter=data/\": true}})"
         );
         assert_eq!(
-            params_from_args(&["--round-trip-ms=5".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--round-trip-ms=5".into()], no_schema).unwrap(),
             json!({ "roundTripMs": 5 }),
             "--key=value coerces + camelCases"
         );
 
         // a non-flag, non-JSON arg is a clear error (not silently swallowed)
-        assert!(params_from_args(&["oops".into()], no_schema).is_err());
+        assert!(params_from_args("ping", &["oops".into()], no_schema).is_err());
     }
 
     // what this catches: snake_case Rust-native command fields (e.g. cognition/eval's
@@ -2541,23 +2623,23 @@ mod tests {
             "--personaId",
             "--PERSONA_ID",
         ] {
-            let p = params_from_args(&[spelling.into(), "abc".into()], &canonical).unwrap();
+            let p = params_from_args("ping", &[spelling.into(), "abc".into()], &canonical).unwrap();
             assert_eq!(p, json!({ "persona_id": "abc" }), "{spelling} → persona_id");
         }
         // `--key=value` form canonicalizes too
         assert_eq!(
-            params_from_args(&["--eval-set=x.jsonl".into()], &canonical).unwrap(),
+            params_from_args("ping", &["--eval-set=x.jsonl".into()], &canonical).unwrap(),
             json!({ "eval_set": "x.jsonl" })
         );
         // a flag NOT in the schema falls back to camelCase (base fields — no regression)
         assert_eq!(
-            params_from_args(&["--room-id".into(), "r1".into()], &canonical).unwrap(),
+            params_from_args("ping", &["--room-id".into(), "r1".into()], &canonical).unwrap(),
             json!({ "roomId": "r1" }),
             "non-schema flag → legacy camelCase"
         );
         // with no schema at all, everything is legacy camelCase
         assert_eq!(
-            params_from_args(&["--persona-id".into(), "abc".into()], &[]).unwrap(),
+            params_from_args("ping", &["--persona-id".into(), "abc".into()], &[]).unwrap(),
             json!({ "personaId": "abc" }),
             "no schema → legacy camelCase (pre-schema behavior preserved)"
         );
