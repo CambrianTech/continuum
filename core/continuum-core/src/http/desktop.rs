@@ -64,9 +64,17 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
         .unwrap_or(8975); // unwrap_or: the documented default port, beside WS 8974
     let index = dist.join("index.html");
     rt.spawn(async move {
-        let app = Router::new().fallback_service(
-            ServeDir::new(&dist).fallback(ServeFile::new(index)),
-        );
+        // The avatar store (`~/.continuum/avatars/<peer>.png`, the same directory
+        // the roster's `avatar_url` names) is served AHEAD of the SPA fallback.
+        // Without this, `/avatars/*` answered 200 text/html (index.html, 1.5 KB)
+        // and every tile on the served desktop — the path `uu desktop` opens —
+        // degraded to a glyph while the Vite dev server showed the pictures
+        // through a dev-only plugin (measured by the eye-node, 2026-09-05).
+        let mut app = Router::new();
+        if let Some(avatars) = crate::ipc::positron_presence::avatar_store_dir() {
+            app = app.nest_service("/avatars", ServeDir::new(avatars));
+        }
+        let app = app.fallback_service(ServeDir::new(&dist).fallback(ServeFile::new(index)));
         let bind = format!("127.0.0.1:{port}");
         let listener = match tokio::net::TcpListener::bind(&bind).await {
             Ok(l) => l,
