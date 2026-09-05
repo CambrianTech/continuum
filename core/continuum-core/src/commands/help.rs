@@ -126,7 +126,27 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
             // `EditMode` enum) collapsed to a useless `"any"`, so a model literally
             // could not tell what to pass — the invisible-contract bug.
             let (ty, placeholder) = param_shape(spec, schema);
-            example.insert(key.clone(), placeholder);
+            // The example is the MINIMAL VALID CALL — required arguments only. Every
+            // optional one stays in the argument list below, documented, and out of the
+            // envelope a caller is told to copy.
+            //
+            // Because a caller copies the example. Measured 2026-09-05, a citizen
+            // emitted `code/edit`'s ENTIRE manual back as a tool call:
+            //
+            //   [code/edit(all=<any>, content=<any>, description=<any>, edit_mode=<any>,
+            //    end_line=<any>, file_path=<string>, line=<any>, new_content=<any>,
+            //    replace=<any>, search=<any>)]
+            //
+            // Ten arguments, nine of them optional, every one a placeholder. She was not
+            // guessing — she pasted exactly what she was shown. An example that carries
+            // every optional argument teaches the caller to send every optional argument,
+            // and for a union-typed param the placeholder cannot even deserialize.
+            //
+            // Required-only cuts that call to `{"file_path": "<string>"}`, which is the
+            // shape the manual is trying to teach in the first place.
+            if req {
+                example.insert(key.clone(), placeholder);
+            }
             arg_lines.push(format!(
                 "- {key} ({ty}, {}){}",
                 if req { "required" } else { "optional" },
@@ -399,6 +419,39 @@ mod param_shape_tests {
             };
             assert!(ok, "{field} ({ty}) placeholder is not a {ty}: {placeholder}");
         }
+    }
+
+    // what this catches: the example envelope carrying OPTIONAL arguments, which a
+    // caller then copies wholesale. Measured 2026-09-05: a citizen emitted all ten of
+    // `code/edit`'s arguments back as a tool call — nine optional, every one a
+    // placeholder — because that is what the manual showed her. The example must be
+    // the minimal valid call; the optional arguments stay documented in the list.
+    #[test]
+    fn the_example_carries_required_arguments_only() {
+        let schema = json!({
+            "type": "object",
+            "required": ["file_path"],
+            "properties": {
+                "file_path": {"type": "string"},
+                "replace":   {"type": "boolean"},
+                "line":      {"type": "integer"},
+            }
+        });
+        let out = render_ai_help("code/edit", "edit a file", &schema);
+        let envelope: Value = {
+            let start = out.find('{').expect("an envelope is rendered");
+            let end = out.rfind('}').expect("an envelope is rendered");
+            serde_json::from_str(&out[start..=end]).expect("the rendered envelope is valid JSON")
+        };
+        let args = &envelope["tool_call"]["arguments"];
+        assert!(args.get("file_path").is_some(), "the required arg is in the example: {args}");
+        assert!(
+            args.get("replace").is_none() && args.get("line").is_none(),
+            "optional args must NOT be in the copyable example: {args}"
+        );
+        // …but they are still DOCUMENTED, or the caller cannot discover them.
+        assert!(out.contains("replace (boolean, optional)"), "{out}");
+        assert!(out.contains("line (integer, optional)"), "{out}");
     }
 }
 
