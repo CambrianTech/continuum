@@ -1029,6 +1029,12 @@ pub fn start_server(
         ms = registry_started.elapsed().as_millis() as u64,
         "model registry scan (pre-bind; header reads + size walk)"
     );
+    // BOOT PHASES, each with a name: the additive model "pre-bind ≈ registry +
+    // module init" was refuted by measured time-to-answer on two hosts
+    // (IntelMac, 2026-09-04) — the third thing had no probe. Now every
+    // pre-bind step reports its wall time: construction of the 59 modules,
+    // initialize, load_state, bind.
+    let phase_started = std::time::Instant::now();
     match registry_init {
         Ok(reg) => {
             log_info!(
@@ -3216,6 +3222,13 @@ pub fn start_server(
     runtime.register(grid_module);
 
     // Initialize modules (runs async init in sync context)
+    crate::probe!(
+        class = "boot.phase",
+        phase = "construct_modules",
+        ms = phase_started.elapsed().as_millis() as u64,
+        "pre-bind phase"
+    );
+    let phase_started = std::time::Instant::now();
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {
             log_error!("ipc", "server", "Runtime initialization failed: {}", e);
@@ -3225,8 +3238,22 @@ pub fn start_server(
         // and the SIGNAL handlers run the parallel save-and-join broadcast
         // before exit — a stop finally saves, a boot finally loads, both
         // receipted per node (boot.load_state / shutdown.step).
+        crate::probe!(
+            class = "boot.phase",
+            phase = "initialize",
+            ms = phase_started.elapsed().as_millis() as u64,
+            "pre-bind phase"
+        );
+        let load_started = std::time::Instant::now();
         runtime.load_all_state().await;
+        crate::probe!(
+            class = "boot.phase",
+            phase = "load_state",
+            ms = load_started.elapsed().as_millis() as u64,
+            "pre-bind phase"
+        );
     });
+    let phase_started = std::time::Instant::now();
     crate::runtime::install_signal_shutdown(runtime.clone());
 
     // Start periodic tick loops for modules that declare a tick_interval.
@@ -3396,8 +3423,30 @@ pub fn start_server(
     // Unix: bind the primary Unix-domain socket. On Windows this is skipped
     // entirely — the server's primary IPC is the TCP loopback listener in the
     // accept section below (Windows has no Unix-domain sockets).
+    // Everything between init's end and the bind call: signal handlers and every
+    // module's periodic loop start (IntelMac's review of #3714 — the row is named
+    // for what it measures, and the bind itself gets its own instant). The
+    // `#[cfg(unix)]` sits on the BIND, not on the probe before it: an attribute
+    // gates exactly one statement, and gating the probe left the Unix bind
+    // compiling on Windows (the windows-msvc check caught it on the rebase).
+    #[cfg(unix)]
+    crate::probe!(
+        class = "boot.phase",
+        phase = "post_init_to_bind",
+        ms = phase_started.elapsed().as_millis() as u64,
+        "pre-bind phase"
+    );
+    #[cfg(unix)]
+    let bind_started = std::time::Instant::now();
     #[cfg(unix)]
     let listener = UnixListener::bind(socket_path)?;
+    #[cfg(unix)]
+    crate::probe!(
+        class = "boot.phase",
+        phase = "bind",
+        ms = bind_started.elapsed().as_millis() as u64,
+        "the bind call itself — the socket exists after this"
+    );
     // Make the socket world-rw so callers running under a different UID
     // than the server can connect. Concrete failure (#1008): on Windows
     // WSL2 + Docker Desktop, continuum-core runs as root inside the
