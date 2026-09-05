@@ -114,7 +114,11 @@ async function main(): Promise<void> {
   // call through the eye-node's fake media device; a human still gets the
   // browser's permission prompt once, then it is remembered).
   const intents = new URLSearchParams(location.search);
-  if (intents.has('mic')) widget.autoMic = true;
+  if (intents.has('mic')) {
+    widget.autoMic = true;
+    const mode = intents.get('mic');
+    if (mode === 'lk' || mode === 'ws') widget.micMode = mode;
+  }
   if (intents.has('cam')) widget.autoCam = true;
   // The call binds to the URL's room, never to whatever room the daemon happened
   // to focus first: `/room/academy?live` joined #general once because the face

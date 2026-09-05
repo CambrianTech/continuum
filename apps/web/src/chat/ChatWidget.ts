@@ -278,6 +278,8 @@ export class ChatWidget extends LitElement {
   /** Deep-link intents (`?mic`, `?cam`): publish as soon as the call connects. */
   autoMic = false;
   autoCam = false;
+  /** Which capture path `?mic=` asked for (self-exercise isolation); 'auto' for humans. */
+  micMode: 'auto' | 'lk' | 'ws' = 'auto';
   /** The room a `?live` deep link named — the call connects only once the
    *  focused state IS that room (by name or id), never the daemon's prior focus. */
   liveRoom?: string;
@@ -546,7 +548,7 @@ export class ChatWidget extends LitElement {
         if (!ok) this._mediaAsk = { kind: 'camera', denied: true };
       });
     } else {
-      void call.startMic().then((ok) => {
+      void call.startMic(this.micMode).then((ok) => {
         this._micOn = ok;
         if (!ok) this._mediaAsk = { kind: 'mic', denied: true };
       });

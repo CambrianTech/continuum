@@ -234,10 +234,13 @@ export class CallClient {
 
   /** Start mic capture (AudioWorklet) and publish 16k PCM16 frames. Returns
    *  false with no side effects when the user denies the mic. */
-  async startMic(): Promise<boolean> {
+  /** `mode` isolates the two capture paths for the node's self-exercise:
+   *  'auto' (default) = LiveKit track when the media plane is live, else the
+   *  worklet over the call socket; 'lk' / 'ws' force one path. */
+  async startMic(mode: 'auto' | 'lk' | 'ws' = 'auto'): Promise<boolean> {
     // REAL plane first: the bridge's STT listener sits in the LiveKit room, so
     // a published mic track reaches citizens' ears with no WS PCM leg.
-    if (this.lkRoom !== undefined && this.lkLive) {
+    if (mode !== 'ws' && this.lkRoom !== undefined && this.lkLive) {
       try {
         this.lkMic = await createLocalAudioTrack();
         await this.lkRoom.localParticipant.publishTrack(this.lkMic);
@@ -247,6 +250,7 @@ export class CallClient {
         return false;
       }
     }
+    if (mode === 'lk') return false; // LiveKit-only was asked for and the plane is not live
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
