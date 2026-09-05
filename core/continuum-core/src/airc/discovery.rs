@@ -1,4 +1,3 @@
-    // Fall back to the original behavior if no room name or channel is provided
     if let Some(room_name_raw) = std::env::var_os(AIRC_DEFAULT_ROOM_NAME_ENV) {
         let room_name = room_name_raw.to_string_lossy().trim().to_string();
         if !room_name.is_empty() {
