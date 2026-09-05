@@ -125,3 +125,6 @@ Write-Ok 'Continuum native install complete.'
 Write-Host '  Start:  .\start.ps1     (ensures grid inbound every start, then launches)'
 Write-Host '  Test:   cu ping'
 Write-Host ''
+# Add supervised service path and uu.cmd shim
+    Mod-ServicePath -RepoRoot $RepoRoot
+
