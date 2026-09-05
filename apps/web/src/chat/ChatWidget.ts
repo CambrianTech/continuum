@@ -5881,7 +5881,7 @@ export class ChatWidget extends LitElement {
     if (this.liveFace) {
       this.setAttribute(
         'data-live-intent',
-        `mic=${this.autoMic ? this.micMode : 'off'} cam=${this.autoCam} call=${this._call !== undefined} conn=${this._mediaConnected} micOn=${this._micOn} tries=${this._intentTries} busy=${this._intentBusy}`,
+        `mic=${this.autoMic ? this.micMode : 'off'} cam=${this.autoCam} call=${this._call !== undefined} conn=${this._mediaConnected} micOn=${this._micOn} tries=${this._intentTries} busy=${this._intentBusy} lk=${this._call?.lkLive}`,
       );
     }
     if (this.liveFace && this._call && this._mediaConnected && (this.autoMic || this.autoCam)) {
