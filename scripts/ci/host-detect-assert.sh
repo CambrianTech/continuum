@@ -73,6 +73,28 @@ if [ -n "${HOST_DETECT_MUTATE_RAM:-}" ]; then
 fi
 
 echo ""
+# WHICH ARM PRODUCED THE ANSWER, not just what the answer was (ce8b9074's gap
+# on #3748). A passing RAM check does not say HOW the figure was obtained, and
+# on Windows that is the whole question: `wmic` was removed in 11 24H2, so a
+# green leg means the CIM fallback worked ONLY IF wmic was absent. With wmic
+# present the leg exercises the old path and proves nothing about the fix —
+# and I claimed it proved the fallback before checking. Recording the
+# precondition makes the log answer that instead of the reader assuming.
+echo "arm evidence:"
+case "${IC_PLATFORM:-}" in
+  windows)
+    if command -v wmic >/dev/null 2>&1; then
+      note "wmic PRESENT — the RAM figure came from the legacy wmic arm; this run does NOT exercise the Get-CimInstance fallback (#3739)"
+    else
+      note "wmic ABSENT (removed in Win11 24H2) — the RAM figure came from the Get-CimInstance fallback (#3739)"
+    fi
+    ;;
+  macos) note "sysctl hw.memsize arm" ;;
+  linux|wsl) note "/proc/meminfo awk arm" ;;
+  *) note "no known arm for platform '${IC_PLATFORM:-<unset>}'" ;;
+esac
+
+echo ""
 echo "detected:"
 note "IC_PLATFORM = ${IC_PLATFORM:-<unset>}"
 note "IC_ARCH     = ${IC_ARCH:-<unset>}"
