@@ -119,8 +119,8 @@ async function main(): Promise<void> {
   // The call binds to the URL's room, never to whatever room the daemon happened
   // to focus first: `/room/academy?live` joined #general once because the face
   // connected on the first render, before the route's focus landed (2026-09-05).
-  const routed = /^\/room\/([^/]+)/.exec(location.pathname);
-  if (routed && intents.has('live')) widget.liveRoom = decodeURIComponent(routed[1]);
+  const routedRoom = /^\/room\/([^/]+)/.exec(location.pathname)?.[1];
+  if (routedRoom !== undefined && intents.has('live')) widget.liveRoom = decodeURIComponent(routedRoom);
   // The viewer's call identity: the same uuid the session is scoped by. The
   // name upgrades to the directory's real one when the seed resolves it.
   widget.viewerId = senderId;
