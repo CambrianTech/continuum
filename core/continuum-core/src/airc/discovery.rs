@@ -92,7 +92,7 @@ impl StubAircCitizen {
                 let parts: Vec<&str> = trimmed_channel.split(':').collect();
                 if parts.len() == 2 {
                     let uuid_str = parts[1].trim();
-                    return uuid_str.parse::<uuid::Uuid>().map_err(|e| {
+                    return uuid_str.parse::<Uuid>().map_err(|e| {
                         DiscoveryError::UnparseableChannel(format!("channel: {} is not a valid UUID: {}", uuid_str, e))
                     });
                 }
