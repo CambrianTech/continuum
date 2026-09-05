@@ -26,6 +26,8 @@ pub const WAKE_MID_WORK: &str = "You are mid-work — cards you hold:";
 
 /// A wake sentence ECHOED leads the response; one DISCUSSED sits inside it.
 /// Markers must begin within this many chars (room for a name prefix or a quote).
+// context-budget-exempt: an ANCHOR width for an echo test (how far into a reply a wake sentence may
+// start and still count as leading), not a prompt or context size — it does not scale with the window.
 const ECHO_LEAD_CHARS: usize = 24;
 
 /// Which framing marker a response reflects, if any. `None` = it reads as speech.
