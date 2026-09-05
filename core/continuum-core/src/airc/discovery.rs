@@ -680,3 +680,65 @@ fn parse_channel_from_room_output(output: &str, room_name: &str) -> Option<Uuid>
     }
     None
 }
+use std::process::{Command, Output};
+use tokio::process::Command as TokioCommand;
+use uuid::Uuid;
+use std::time::Duration;
+
+const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+pub async fn discover_default_channel() -> Result<Uuid, DiscoveryError> {
+    if let Some(channel_id) = std::env::var_os("AIRC_DEFAULT_CHANNEL") {
+        return Ok(Uuid::parse_str(&channel_id.to_string_lossy().trim().to_string())
+            .map_err(|_| DiscoveryError::UnparseableChannel(channel_id.to_string()))?);
+    }
+
+    if let Some(room_name_raw) = std::env::var_os("AIRC_DEFAULT_ROOM_NAME") {
+        let room_name = room_name_raw.to_string_lossy().trim().to_string();
+        if !room_name.is_empty() {
+            // Resolve the room name to a channel UUID
+            let call = TokioCommand::new("airc").arg("room").output();
+            let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+                .await
+                .map_err(|_| {
+                    DiscoveryError::RoomCommandFailed(format!(
+                        "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                         — substrate is unresponsive, refusing to wait",
+                    ))
+                })?
+                .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+
+            if !out.status.success() {
+                return Err(DiscoveryError::RoomCommandFailed(format!(
+                    "exit {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+
+            parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
+        }
+    }
+
+    // Fall back to the original behavior if no room name or channel was found
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+        .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
+        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+
+    if !out.status.success() {
+        return Err(DiscoveryError::RoomCommandFailed(format!(
+            "exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+
+    parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
+}
