@@ -39,15 +39,39 @@ SCOPE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PROJECT="$(basename "$SCOPE_DIR")"
 
 # Pull the transcript path from the hook payload, then the last assistant
-# message text from the JSONL transcript. python3 parses; it never BUILDS
+# message text from the JSONL transcript. Python parses; it never BUILDS
 # JSON for the wire (the CLI's flat --key value coercion does the escaping).
-CONTENT="$(printf '%s' "$HOOK_INPUT" | python3 -c '
+# Every I/O boundary below pins UTF-8 EXPLICITLY. Python's `open()`, `sys.stdin`
+# and `sys.stdout` all default to the platform's preferred encoding — UTF-8 on
+# Linux/macOS but cp1252 on Windows — so a transcript containing an em-dash or a
+# star (i.e. every real transcript) raised UnicodeDecodeError on Windows ONLY.
+# This is the same defect class as the `python3` alias resolved just below:
+# the hook worked on the Macs and was silently dead on the Windows node.
+# Resolve a Python that RUNS, not one that merely EXISTS. On Windows `python3`
+# is a Microsoft Store "App Execution Alias": a real file on PATH that ignores
+# its arguments, prints an install ad, and exits 49. So `command -v python3`
+# SUCCEEDS on a box with no python3, and this hook failed every turn on such a
+# box with "Python was not found" landing in the receipt — capture silently off
+# on the machine that most needed it. Presence is not liveness; probe by
+# EXECUTING a sentinel.
+# Order: python3 first (right on Linux/macOS, where bare `python` may be absent
+# or Python 2), then python, then the Windows `py` launcher.
+_probe_py() { [ "$("$@" -c 'print("ok")' 2>/dev/null)" = "ok" ]; }
+if   _probe_py python3; then BRIDGE_PY=(python3)
+elif _probe_py python;  then BRIDGE_PY=(python)
+elif _probe_py py -3;   then BRIDGE_PY=(py -3)
+else
+    bridge_receipt session-capture failed "no working python (python3, python, py -3 all failed to execute)"
+    exit 0
+fi
+
+CONTENT="$(printf '%s' "$HOOK_INPUT" | "${BRIDGE_PY[@]}" -c '
 import json, sys
 try:
-    payload = json.load(sys.stdin)
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
     path = payload.get("transcript_path", "")
     last = ""
-    with open(path) as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             try:
                 entry = json.loads(line)
@@ -63,7 +87,7 @@ try:
     out = last.strip()
     if len(out) > 900:
         out = out[:900] + " …[truncated]"
-    print(out)
+    sys.stdout.buffer.write(out.encode("utf-8"))
 except Exception as e:
     print("__CAPTURE_ERROR__" + type(e).__name__ + ": " + str(e)[:120], file=sys.stderr)
 ' 2>"${TMPDIR:-/tmp}/memory-bridge-capture.$$.err")"
