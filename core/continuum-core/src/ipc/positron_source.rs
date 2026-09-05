@@ -182,7 +182,7 @@ pub(crate) struct AircChatPosted {
 /// `airc_bridge_directive::str_field`); accept a nested `payload` object,
 /// else the top-level value. ONE envelope rule for every bus consumer.
 pub(crate) fn bus_event_body(payload: &serde_json::Value) -> &serde_json::Value {
-    payload.get("payload").unwrap_or(payload)
+    payload.get("payload").unwrap_or(payload) // unwrap_or: no envelope = the value IS the body (both shapes are on the wire)
 }
 
 /// Parse a `chat:posted` bus event — shared by the chat projection and the

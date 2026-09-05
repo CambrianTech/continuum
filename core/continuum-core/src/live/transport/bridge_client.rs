@@ -290,7 +290,7 @@ impl LiveKitAgentManager {
             Ok(()) => {
                 // One summary row per second, not one per frame (12 pumps ×
                 // 30 fps blinded the ledger — see pump_tally.rs).
-                let summary = self.enqueue_tally.lock().unwrap().record(frame_bytes as u64, 0);
+                let summary = self.enqueue_tally.lock().unwrap().record(frame_bytes as u64, 0); // unwrap: tally mutex holds three counters; a poisoned lock here means a panic mid-record, and dropping the probe row is the honest outcome
                 if let Some(s) = summary {
                     crate::probe!(
                         class = "media.pump.enqueue",

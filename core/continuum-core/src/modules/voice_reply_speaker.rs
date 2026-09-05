@@ -24,6 +24,8 @@ use crate::runtime::message_bus::MessageBus;
 /// Longest utterance spoken from one room line. A 500-token reply is minutes
 /// of TTS on a laptop; the first sentences carry the answer, the rest stays
 /// on screen as text.
+// context-budget-exempt: an UTTERANCE length for TTS, not a prompt/context size — it scales with a
+// listener's patience (~40 s of speech), not with the served window; the rest of the line stays on screen.
 pub(crate) const MAX_SPOKEN_CHARS: usize = 600;
 
 /// A line older than this at SPEAK time is dropped, not spoken. Speech is
@@ -158,7 +160,7 @@ pub(crate) fn speakable_text(content: &str) -> Option<(String, bool)> {
         .rfind(['.', '!', '?'])
         .map(|i| i + 1)
         .filter(|&i| i > MAX_SPOKEN_CHARS / 3)
-        .unwrap_or(head.len());
+        .unwrap_or(head.len()); // unwrap_or: no sentence end in the head → cut at the cap itself, still marked truncated
     Some((head[..cut].trim_end().to_string(), true))
 }
 

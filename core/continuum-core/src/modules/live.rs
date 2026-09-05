@@ -91,7 +91,7 @@ impl VoiceState {
     pub fn has_active_session(&self, call_id: &str) -> bool {
         self.active_sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned set still answers membership; refusing would mute every call
             .contains(call_id)
     }
 
@@ -118,7 +118,7 @@ impl VoiceState {
         // HEAR her instead of the hold-music the lonely-listener mixer plays.
         // Sibling of the avatar-video tee. No-op if no native client is on the call.
         self.call_manager
-            .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples)
+            .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples) // unwrap_or: no display name → the identity string labels the audio, honest and unique
             .await;
         Ok((num_samples, duration_ms, sample_rate))
     }

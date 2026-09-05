@@ -138,7 +138,7 @@ pub fn parse_dscl_hex(out: &str) -> Option<Vec<u8>> {
 /// next line (or on the same line after a space).
 pub fn parse_dscl_path(out: &str) -> Option<PathBuf> {
     let rest = out.split_once("Picture:")?.1.trim();
-    (!rest.is_empty()).then(|| PathBuf::from(rest.lines().next().unwrap_or("").trim()))
+    (!rest.is_empty()).then(|| PathBuf::from(rest.lines().next().unwrap_or("").trim())) // unwrap_or: rest is non-empty so a first line exists; "" only guards the type
 }
 
 #[cfg(test)]

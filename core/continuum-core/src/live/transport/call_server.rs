@@ -876,7 +876,7 @@ impl CallManager {
                                         module = "live",
                                         call_id = room.as_str(),
                                         speaker = user_id.as_str(),
-                                        chars = text.as_ref().map(|t| t.chars().count()).unwrap_or(0) as u64,
+                                        chars = text.as_ref().map(|t| t.chars().count()).unwrap_or(0) as u64, // unwrap_or: None = whisper returned nothing; 0 chars IS that fact, the row says so
                                         to_minds = sink.is_some(),
                                         "whisper returned (chars 0 = empty/failed); to_minds = a transcript sink turns it into a room line"
                                     );
@@ -1091,7 +1091,7 @@ impl CallManager {
         let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
         let fresh = seen
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned dedupe set still dedupes; the probe must fire once, never never
             .insert((call_id.to_string(), user_id.to_string(), reason));
         if fresh {
             crate::probe!(
