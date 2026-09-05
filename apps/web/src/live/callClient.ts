@@ -65,6 +65,9 @@ export interface CallClientEvents {
    *  the host attaches video tracks to <video> elements and audio tracks to
    *  autoplaying <audio>; no JS ever touches pixels. */
   onTrack?: (identity: string, kind: 'video' | 'audio', track?: RemoteTrack) => void;
+  /** LiveKit's audio-level active-speaker set changed (the REAL "speaking",
+   *  from audio energy — never the token rail). Empty when the room is quiet. */
+  onActiveSpeakers?: (identities: ReadonlySet<string>) => void;
   /** Mirrors transcriptions onto the SAME StreamDelta shape the typing rail
    *  uses, so the existing caption/speaking plumbing needs zero new paths. */
   onDelta?: (delta: StreamDelta) => void;
@@ -169,6 +172,13 @@ export class CallClient {
   private async connectLiveKit(url: string, token: string): Promise<void> {
     try {
       const room = new Room();
+      // ACTIVE SPEAKERS — the audio-level signal LiveKit computes from real audio
+      // tracks (what legacy's AudioStreamClient used). The token rail's `speaking`
+      // flag lights a tile while a persona GENERATES TEXT, so every tile glowed at
+      // once and nobody was audible (Joel, 2026-09-05). Tiles light on this only.
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        this.events.onActiveSpeakers?.(new Set(speakers.map((p) => p.identity)));
+      });
       room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
         const kind = track.kind === Track.Kind.Video ? 'video' : 'audio';
         this.events.onTrack?.(participant.identity, kind, track);
