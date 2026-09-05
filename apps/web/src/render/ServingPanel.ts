@@ -293,23 +293,7 @@ handleGlassboxDigest(event) {
     this.requestUpdate();
   }
 
-// Handle serving.glassbox event
-connectedCallback() {
-  super.connectedCallback();
-  this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
-}
 
-disconnectedCallback() {
-  super.disconnectedCallback();
-  this.removeEventListener('serving.glassbox', this.handleGlassboxDigest);
-}
-
-handleGlassboxDigest(event) {
-  if (event.type === 'serving.glassbox') {
-    this.body = event.payload;
-    this.requestUpdate();
-  }
-}
 
 // Handle serving.glassbox event
 connectedCallback() {
