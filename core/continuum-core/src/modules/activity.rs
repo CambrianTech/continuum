@@ -552,6 +552,10 @@ pub async fn spawn_activity_room(
         let room = airc.join(name).await.map_err(|source| {
             CommandError::Invalid(format!("could not create room {name:?}: {source}"))
         })?;
+        // Every spawned room enters the node's adoption set the moment it exists, so
+        // the presence emitter bridges its transcript (chat store + rail) on the next
+        // refresh — the same minute, like a bench run room, not never (card 3d4b3d9c).
+        crate::experience::spawned_rooms::record(room.channel.as_uuid(), name);
 
         // Bind the room to its recipe ON THE WALL, where every participant sees the
         // same answer to "what is this room". Without this the room forgets which

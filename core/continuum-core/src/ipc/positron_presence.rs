@@ -715,6 +715,19 @@ pub fn spawn_node_presence_emitter(
             ticker.tick().await;
             let mut fresh: Vec<(Uuid, String)> =
                 crate::cognition::bench_round::activity_rooms();
+            // Rooms minted by `activity/spawn` since boot (any recipe — a project, a
+            // call, a chat), and every room this emitter's own scope is subscribed to
+            // (the durable half: survives a reboot). Before this the set was the
+            // BENCH tracker's rooms + the daemon's, so a spawned project room was
+            // never bridged: subscribed, joined, streamed, and still 0 rows of
+            // history and no rail entry (card 3d4b3d9c, 2026-09-05).
+            fresh.extend(crate::experience::spawned_rooms::spawned_rooms());
+            if let Ok(set) = airc.subscription_set().await {
+                for sub in set.all() {
+                    let room = sub.as_room();
+                    fresh.push((room.channel.as_uuid(), room.name));
+                }
+            }
             if let Ok(response) =
                 airc_ipc::DaemonClient::new(registry_socket.clone()).list_rooms().await
             {
