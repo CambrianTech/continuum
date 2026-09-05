@@ -26,6 +26,26 @@ use crate::runtime::message_bus::MessageBus;
 /// on screen as text.
 pub(crate) const MAX_SPOKEN_CHARS: usize = 600;
 
+/// A line older than this at SPEAK time is dropped, not spoken. Speech is
+/// serialized (one synthesis at a time), so twelve citizens answering one
+/// question queue up; a fluent answer minutes late is worse than silence
+/// because the human cannot tell it is stale (BigMama's review of #3754).
+/// Dropped for a STATED reason (`live.tts.stale_dropped`), never because a
+/// buffer happened to fill.
+pub(crate) const MAX_LINE_AGE_MS: u64 = 20_000;
+
+/// Is a line posted at `posted_ms` still worth saying at `now_ms`?
+pub(crate) fn fresh_enough(posted_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(posted_ms) <= MAX_LINE_AGE_MS
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0) // unwrap_or: a clock before 1970 is not a case this guard needs to reason about
+}
+
 pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
     let mut rx = bus.receiver();
     tokio::spawn(async move {
@@ -61,6 +81,19 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
             let Some((text, truncated)) = speakable_text(&posted.content) else {
                 continue;
             };
+            // Checked at SPEAK time, after the queue ahead of it drained.
+            let age_ms = now_ms().saturating_sub(posted.timestamp);
+            if !fresh_enough(posted.timestamp, now_ms()) {
+                crate::probe!(
+                    class = "live.tts.stale_dropped",
+                    module = "live",
+                    room = room.as_str(),
+                    persona = name.as_str(),
+                    age_ms = age_ms,
+                    "a reply older than MAX_LINE_AGE_MS reached the speaker — stays text-only (backlog, not silence)"
+                );
+                continue;
+            }
             let persona = posted.sender_id.to_string();
             let started = std::time::Instant::now();
             match state
@@ -137,6 +170,16 @@ mod tests {
     // receipt is never spoken, code fences are dropped while the prose around
     // them survives, and a long reply is cut on a sentence boundary under the
     // cap with `truncated = true`.
+    // what this catches: the staleness floor — a line 20 s old speaks, a line
+    // 20.001 s old does not, and a clock that reads earlier than the post
+    // (skew) never underflows into "infinitely fresh".
+    #[test]
+    fn a_stale_line_is_dropped_at_speak_time_and_skew_never_underflows() {
+        assert!(fresh_enough(1_000, 1_000 + MAX_LINE_AGE_MS));
+        assert!(!fresh_enough(1_000, 1_000 + MAX_LINE_AGE_MS + 1));
+        assert!(fresh_enough(5_000, 4_000), "posted 'after' now (skew) is fresh, not underflowed");
+    }
+
     #[test]
     fn receipts_are_silent_fences_drop_and_long_replies_cut_on_a_sentence() {
         assert_eq!(speakable_text("💭 Let me look at the repo"), None);
