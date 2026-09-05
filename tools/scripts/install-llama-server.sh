@@ -74,6 +74,26 @@ declare -a BACKEND_DEFS=()
 if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
   BACKEND="metal"
   BACKEND_DEFS=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON)
+elif [ "$OS" = "Darwin" ]; then
+  # INTEL MAC: Metal must be turned OFF **explicitly**. Not setting it is not the same
+  # as setting it off — llama.cpp's ggml/CMakeLists.txt does
+  #     if (APPLE) set(GGML_METAL_DEFAULT ON)
+  # and APPLE is true for every macOS, Intel included. So the arm64 branch above reads
+  # as "Metal only on Apple Silicon" while an Intel Mac silently inherited a METAL BUILD
+  # from upstream's default.
+  #
+  # Measured 2026-09-05 (card cd8f0bc7): on this dual-GPU Intel Mac — UHD 630 + Radeon
+  # Pro 560X — that binary HANGS inside Metal init and never returns. `--version` prints
+  # nothing, the process sits in uninterruptible wait, and SIGKILL does not reap it.
+  # DYLD_PRINT_LIBRARIES showed every llama dylib loading fine and then stopping dead on
+  # libggml-metal → AppleIntelKBLGraphicsMTLDriver → AMDMTLBronzeDriver. It cost this
+  # node fifty minutes of downtime, an entire evening of zero hosted citizens, and five
+  # falsified hypotheses before anyone looked at what the process actually LOADS.
+  #
+  # The Rust side already knew: this tier builds with `--features llama/mac-cpu-only`.
+  # Only the llama install was guessing, and it guessed by omission.
+  BACKEND="cpu"
+  BACKEND_DEFS=(-DGGML_METAL=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple)
 elif [ "$OS" = "Linux" ] && command -v nvcc >/dev/null 2>&1; then
   BACKEND="cuda"
   BACKEND_DEFS=(-DGGML_CUDA=ON)
