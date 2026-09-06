@@ -1162,3 +1162,6 @@ To install on Windows using the uu.cmd shim, follow these steps:
 3. Open Command Prompt (cmd) as Administrator and navigate to the extracted folder.
 4. Run `uu.cmd` to start the installation process.
 5. Follow the on-screen instructions to complete the installation.
+## Getting Started
+
+This section will guide you through setting up and running your project locally.
