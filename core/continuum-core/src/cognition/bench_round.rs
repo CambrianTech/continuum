@@ -1266,6 +1266,12 @@ pub struct RoundCardSnapshot {
 /// projection of `commands::benchmark::BenchRunCard`, defined HERE so the
 /// dependency points commands→cognition like everything else.
 pub struct CardRunFacts {
+    /// The card this run was fired for, when the run id carries it (`claim-<card>-…`).
+    /// A run that names a card enriches ONLY that card; the instance+time match below is
+    /// the fallback for legacy runs with no card id (card 8a0ee845, 2026-09-06: a fresh
+    /// team-round card read "resolved" from the paused control round's run on the same
+    /// instance, seconds after dispatch).
+    pub card_id: Option<String>,
     pub instance: String,
     pub solver: Option<String>,
     pub phase: String,
@@ -1306,8 +1312,16 @@ pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms
             // instance must not lend a fresh card its verdict.
             let run = runs
                 .iter()
-                .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
-                .filter(|r| r.last_activity_ms >= round.opened_at_ms)
+                .filter(|r| match r.card_id.as_deref() {
+                    // A run that names its card belongs to that card and no other.
+                    Some(id) => id == card.card_id,
+                    // Legacy run with no card id: instance + not older than the round.
+                    None => {
+                        !card.instance.is_empty()
+                            && r.instance == card.instance
+                            && r.last_activity_ms >= round.opened_at_ms
+                    }
+                })
                 .max_by_key(|r| r.last_activity_ms);
             let Some(run) = run else {
                 // No detached-solve ledger entry — but a CITIZEN-driven card
@@ -1506,6 +1520,63 @@ mod tests {
     // a recent act on an unsettled card → `grinding`; artifacts gone silent
     // past the stall window → `stalled`; and an unstarted card must RENDER
     // (state "unstarted"), never vanish for lack of a run ledger.
+    // what this catches (card 8a0ee845): a fresh card inheriting an OLDER round's verdict on
+    // the same instance. The run names its card; a run for card A never enriches card B,
+    // even when B's round opened after A's run was last active.
+    #[test]
+    fn a_run_enriches_only_the_card_it_belongs_to() {
+        use super::{enrich_rounds, CardRunFacts, RoundCardSnapshot, RoundSnapshot};
+        let now_ms = 10_000_000u64;
+        let card_a = Uuid::new_v4().to_string();
+        let card_b = Uuid::new_v4().to_string();
+        let card = |id: &str| RoundCardSnapshot {
+            card_id: id.to_string(),
+            instance: "matplotlib__matplotlib-22719".to_string(),
+            assignee: String::new(),
+            solve_room_name: String::new(),
+            state: String::new(),
+            acts: None,
+            patch_bytes: None,
+            last_act_secs: None,
+            resolved: None,
+            board_state: String::new(),
+            owner: String::new(),
+            created_at_ms: None,
+            updated_at_ms: None,
+            graded_at_ms: None,
+        };
+        let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
+            opened_at_ms: now_ms - 60_000,
+            round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
+            benchmark: "swe-bench-verified".into(),
+            stage: "working".into(),
+            dispatched: cards.len(),
+            settled: 0,
+            remaining: cards.len(),
+            driver: "citizen".into(),
+            cards,
+            verdict: String::new(),
+            idle_secs: None,
+        };
+        let run_for = |id: &str| CardRunFacts {
+            card_id: Some(id.to_string()),
+            instance: "matplotlib__matplotlib-22719".into(),
+            solver: Some("Atlas".into()),
+            phase: "resolved".into(),
+            acts: Some(9),
+            patch_bytes: Some(120),
+            last_activity_ms: now_ms - 10_000,
+            resolved: Some(true),
+        };
+        let mut rounds = vec![round(vec![card(&card_b)])];
+        enrich_rounds(&mut rounds, &[run_for(&card_a)], now_ms);
+        assert_ne!(rounds[0].cards[0].state, "resolved", "card B never inherits card A's run");
+        let mut rounds2 = vec![round(vec![card(&card_b)])];
+        enrich_rounds(&mut rounds2, &[run_for(&card_b)], now_ms);
+        assert_eq!(rounds2[0].cards[0].state, "resolved", "the run that names card B enriches it");
+    }
+
     #[test]
     fn round_verdict_separates_thrash_from_grind() {
         use super::{enrich_rounds, CardRunFacts, RoundCardSnapshot, RoundSnapshot};
@@ -1548,6 +1619,7 @@ mod tests {
         let facts = vec![
             // Fresh act 60s ago → its round grinds.
             CardRunFacts {
+                card_id: None,
                 instance: "astropy__astropy-12907".into(),
                 solver: Some("Kira".into()),
                 phase: "active".into(),
@@ -1558,6 +1630,7 @@ mod tests {
             },
             // Artifact exists but silent 2h → its round stalled.
             CardRunFacts {
+                card_id: None,
                 instance: "scikit__scikit-1".into(),
                 solver: None,
                 phase: "quiet".into(),

@@ -86,6 +86,7 @@ pub mod runtime_control;
 pub mod sentinel;
 pub mod serving_consumer;
 pub mod serving_daemon;
+pub mod serving_pin_store;
 pub mod serving_footprints;
 pub mod serving_tier_down;
 pub mod system_resources;

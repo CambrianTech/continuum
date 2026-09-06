@@ -5374,6 +5374,12 @@ const ROUNDS_ENRICH_SCAN_LIMIT: usize = 200;
 /// two hand-rolled copies would drift ([[the-same-bug-at-two-sites-is-a-missing-constraint]]).
 pub(crate) fn card_run_facts(card: &BenchRunCard) -> crate::cognition::bench_round::CardRunFacts {
     crate::cognition::bench_round::CardRunFacts {
+        card_id: card
+            .run_id
+            .strip_prefix("claim-")
+            .and_then(|rest| rest.get(..36))
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+            .map(str::to_string),
         instance: card.instance.clone().unwrap_or_default(),
         solver: card.solver.clone(),
         phase: card.phase.clone(),

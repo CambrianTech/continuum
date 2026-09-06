@@ -1624,6 +1624,17 @@ pub trait LlamaServerControl: Send + Sync {
     /// launcher never re-resolves or re-clamps anything.
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError>;
 
+    /// Take the lane DOWN: the plan has no servable model (an unload suppressed the
+    /// last candidate, or nothing on disk can speak). Kills the child we own and
+    /// reclaims the canonical port from an adopted holder, so "node is idle" means
+    /// the VRAM is actually free — measured 2026-09-06 on the 5090 (BigMama):
+    /// `serving/unload` answered "freed model from VRAM; node is idle" while the
+    /// llama-server stayed alive, and the next pin spawned a SECOND server beside
+    /// it. Default is a no-op so test fakes that never model a process still compile.
+    async fn idle(&self) -> Result<(), LlamaServerError> {
+        Ok(())
+    }
+
     /// The REAL per-slot context window the running server serves, read from
     /// `/props` (`default_generation_settings.n_ctx`). This is the AUTHORITATIVE
     /// model metadata: llama.cpp pads the launch per-slot window (`-c / --parallel`)
@@ -2732,6 +2743,25 @@ impl LlamaServerControl for LlamaServerProcess {
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
         self.wedge.clone()
+    }
+
+    async fn idle(&self) -> Result<(), LlamaServerError> {
+        let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
+        self.kill_child();
+        let (_host, port) = split_host_port(&self.root);
+        let reclaimed = if self.is_live_lane {
+            Some(format!("{:?}", crate::inference::lane_pidfile::reclaim(port).await))
+        } else {
+            None
+        };
+        crate::probe!(
+            class = "serving.lane.idled",
+            port,
+            killed_own_child = had_own_child,
+            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"), // unwrap_or: None = this handle is not the live lane, so no port to reclaim — a label, not a quantity
+            "lane taken down on an empty plan — VRAM is free, the port is ours again"
+        );
+        Ok(())
     }
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {

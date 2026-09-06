@@ -1271,15 +1271,38 @@ impl PersonaWorkspaceRegistry {
         model: Option<String>,
         context_window: u32,
     ) -> usize {
+        // A citizen whose brain is assigned OFF-BOX keeps her remote binding: the
+        // local lane coming up is not her model changing (card 1d2f65e7 slice 2).
+        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let remote: std::collections::HashSet<Uuid> = {
+            let templates = self.templates.lock();
+            templates
+                .iter()
+                .filter(|(_, cfg)| {
+                    crate::persona::remote_lane_factory::is_remote_bound(&root, &cfg.persona_name)
+                })
+                .map(|(id, _)| *id)
+                .collect()
+        };
         let cycles = self.cycles.lock();
-        for cycle in cycles.values() {
+        let mut rehomed = 0usize;
+        for (id, cycle) in cycles.iter() {
+            if remote.contains(id) {
+                crate::probe!(
+                    class = "persona.rehome.kept_remote",
+                    persona_id = %id,
+                    "re-home skipped: her brain runs on a remote lane, the local model is not hers"
+                );
+                continue;
+            }
             cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
                 adapter: Arc::clone(&adapter),
                 model: model.clone(),
                 context_window,
             });
+            rehomed += 1;
         }
-        cycles.len()
+        rehomed
     }
 
     /// How many persona minds are resident.

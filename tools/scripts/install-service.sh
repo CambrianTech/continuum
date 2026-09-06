@@ -192,10 +192,140 @@ linux_uninstall() {
 
 linux_status() { systemctl --user status continuum-core.service --no-pager 2>&1 | head -4; systemctl status continuum-core.service --no-pager 2>&1 | head -4; }
 
+# ════════════════════════ Windows ════════════════════════
+# Task Scheduler is Windows' launchd/systemd. It is REQUIRED here, not a
+# convenience: on Windows every process an interactive/agent session spawns
+# inherits that session's JOB OBJECT and is killed when the session ends — so a
+# core started from a shell dies with the shell, and `Start-Process` / WMI do not
+# escape it either. A registered task runs in its OWN job, which is the only
+# durable answer. (Measured 2026-09-06 on BIGMAMA: a node that looked "up" was
+# repeatedly executed by job-object teardown; the visible symptom was multi-hour
+# holes with zero probe rows of any class.)
+#
+# Restart policy MATCHES the macOS `KeepAlive.Crashed` / systemd `Restart=on-failure`
+# stance: Task Scheduler restarts a task only when it FAILS, so a crash relaunches
+# but a clean `continuum stop` (exit 0) stays down ([[take-the-core-down-freely]]).
+# A ping-and-restart supervisor loop would NOT satisfy this — it fights a deliberate
+# take-down — which is why the core binary runs in the FOREGROUND under the task
+# rather than being launched by a watcher.
+WIN_TASK="ContinuumCore"
+
+# `schtasks /tn ...` under MSYS/Git-Bash gets its `/tn` rewritten into a path
+# (`C:/Program Files/Git/tn`) and fails with "Invalid argument/option". Disabling
+# MSYS arg conversion for these calls is mandatory, not stylistic.
+schtasks_raw() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks "$@"; }
+
+win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
+
+win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
+  local bin="$1" bash_exe who trigger principal
+  # `<UserId>` is REQUIRED: Register-ScheduledTask -Xml with an InteractiveToken
+  # principal and no UserId does not register, and reports nothing useful — the
+  # only symptom is the very next Start-ScheduledTask saying the task does not
+  # exist (HRESULT 0x80070002). Derived from the environment, never hardcoded.
+  who="${USERDOMAIN:+$USERDOMAIN\\}${USERNAME:-$SVC_USER}"
+  bash_exe="$(win_path "$(command -v bash)")"
+  if [ "$SCOPE" = "system" ]; then
+    # Boot trigger + highest privileges: survives LOGOUT and boot-without-login,
+    # the same reason --system exists on the other two platforms.
+    trigger="<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+    principal="<RunLevel>HighestAvailable</RunLevel>"
+  else
+    trigger="<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"
+    principal="<RunLevel>LeastPrivilege</RunLevel>"
+  fi
+  # `core_wrapper` is shared with macOS/Linux and is already written with
+  # if/then/fi instead of `&&` so it is valid XML unescaped — the same property
+  # the plist relies on. One wrapper definition, three platforms.
+  cat <<XML
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Continuum headless core (reboot-surviving)</Description></RegistrationInfo>
+  <Triggers>$trigger</Triggers>
+  <Principals><Principal id="Author"><UserId>$who</UserId><LogonType>InteractiveToken</LogonType>$principal</Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- A grid node on a laptop must still come up. The Windows DEFAULTS for both
+         of these are the opposite, and they fail silently: the task simply never
+         starts and Task Scheduler reports no error anywhere the operator looks. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <!-- PT0S = no execution time limit. The default is 72h, after which Windows
+         KILLS a healthy long-running core. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <!-- Crash-only relaunch, mirroring KeepAlive.Crashed / Restart=on-failure. -->
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>$bash_exe</Command>
+      <Arguments>-lc "$(core_wrapper "$bin")"</Arguments>
+      <WorkingDirectory>$(win_path "$DATA")</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+XML
+}
+
+win_install() {
+  local bin; bin="$(resolve_core_bin)" || { echo "✗ no continuum-core-server binary — build it (continuum reboot) or set CONTINUUM_CORE_BIN." >&2; exit 1; }
+  mkdir -p "$LOG_DIR"
+  local xml u16; xml="$(mktemp)"; u16="$(mktemp)"
+  win_write_task_xml "$bin" > "$xml"
+  # Task Scheduler's /xml demands UTF-16 WITH A BOM, and reports any encoding
+  # mismatch as "task XML is malformed ... one root element" at (1,2) — an
+  # encoding complaint wearing a syntax error's clothes. `iconv -t UTF-16` is not
+  # dependable about which variant/BOM it emits across platforms, so write the
+  # little-endian BOM explicitly and convert to UTF-16LE. (Verified 2026-09-06:
+  # with the explicit BOM the document parses; without it, it never does.)
+  { printf 'ÿþ'; iconv -f UTF-8 -t UTF-16LE < "$xml"; } > "$u16"
+  if ! schtasks_raw /create /tn "$WIN_TASK" /xml "$(win_path "$u16")" /f >/dev/null 2>&1; then
+    # Creating a scheduled task needs an ELEVATED shell on most Windows hosts.
+    # Modifying or deleting an existing task does not, which is a trap: tooling
+    # can happily tear the supervisor down and then be unable to put it back.
+    # Fail loud with the exact command instead of leaving the node unsupervised.
+    echo "✗ could not register Scheduled Task '$WIN_TASK': Access is denied." >&2
+    echo "  Creating a task requires an ELEVATED shell. Run this once, in an" >&2
+    echo "  Administrator terminal, from this checkout:" >&2
+    echo "" >&2
+    echo "    bash tools/scripts/install-service.sh install$([ "$SCOPE" = system ] && echo ' --system')" >&2
+    echo "" >&2
+    echo "  Until then the core has NO supervisor: it will die with whatever shell" >&2
+    echo "  started it (Windows job-object teardown) and will not return after a" >&2
+    echo "  reboot." >&2
+    rm -f "$xml" "$u16"; return 1
+  fi
+  rm -f "$xml" "$u16"
+  schtasks_raw /run /tn "$WIN_TASK" >/dev/null 2>&1 || true
+  if [ "$SCOPE" = "system" ]; then
+    echo "✓ installed Scheduled Task '$WIN_TASK' (boot trigger — survives logout) → $bin $SOCKET"
+  else
+    echo "✓ installed Scheduled Task '$WIN_TASK' (logon trigger — crash + reboot-login) → $bin $SOCKET"
+  fi
+  echo "  logs: $LOG_DIR/service.{out,err}.log"
+  echo "  NOTE: this task is what keeps the core alive after your shell exits."
+}
+
+win_uninstall() {
+  schtasks_raw /end /tn "$WIN_TASK" >/dev/null 2>&1 || true
+  schtasks_raw /delete /tn "$WIN_TASK" /f >/dev/null 2>&1 || true
+  echo "✓ removed Scheduled Task '$WIN_TASK'"
+}
+
+win_status() {
+  schtasks_raw /query /tn "$WIN_TASK" /fo list 2>/dev/null | grep -Ei "TaskName|Status|Last Result" \
+    || echo "✗ '$WIN_TASK' not registered"
+}
+
 # ── Dispatch ──
 [ "$ACTION" = "install" ] && require_airc
 case "$(uname -s)" in
   Darwin) case "$ACTION" in install) mac_install;; uninstall) mac_uninstall;; status) mac_status;; esac ;;
   Linux)  case "$ACTION" in install) linux_install;; uninstall) linux_uninstall;; status) linux_status;; esac ;;
-  *) echo "✗ No supervised-service path for $(uname -s) yet. Add a Windows Service: sc.exe create ContinuumCore binPath= \"…continuum-core-server $SOCKET\" start= auto" >&2; exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+          case "$ACTION" in install) win_install;; uninstall) win_uninstall;; status) win_status;; esac ;;
+  *) echo "✗ No supervised-service path for $(uname -s) yet." >&2; exit 1 ;;
 esac

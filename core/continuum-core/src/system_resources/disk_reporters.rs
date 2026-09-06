@@ -186,6 +186,13 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
 
     let mut dirs = vec![
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
+        // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
+        // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
+        // 91, Qwen3.8-27B 20, Ornith 20) and invisible to both halves of the governed-disk
+        // contract while the disk went from 46 GB free to ZERO under a test build. 186 GB of
+        // it was weights on NO serving path (two concluded experiments), which is exactly the
+        // sub-class an owner evicts: not in the catalog, not the active or pinned model.
+        TrackedDir::new("models", home.join(".continuum/models")),
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
