@@ -646,7 +646,20 @@ impl ServingDaemonModule {
         let (plan_tx, _rx) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
         let (suppressed, _urx) = watch::channel(Arc::new(HashSet::new()));
-        let (pinned, _prx) = watch::channel(None);
+        // The operator's pin is durable intent: seed the channel from the store so the
+        // FIRST plan is computed under it (cards 3160b3d0 / 9552a01e — every reboot
+        // used to lose the pin and the boot planner served whatever fit).
+        let stored_pin = crate::modules::serving_pin_store::load();
+        match &stored_pin {
+            Some(pin) => crate::probe!(
+                class = "serving.pin.restored",
+                model_id = %pin.model_id,
+                set_at_ms = pin.set_at_ms,
+                "serving pin restored from the state dir before the first plan"
+            ),
+            None => crate::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses"),
+        }
+        let (pinned, _prx) = watch::channel(stored_pin.map(|p| p.model_id));
         Self {
             gpu,
             system,
@@ -3802,11 +3815,34 @@ fn servable_candidates(
         .collect()
 }
 
+/// Only a model that can SPEAK is a base-model candidate. An embedding or reranking
+/// model is a real, Ready row in the catalog with a real GGUF, and the planner picked
+/// one as the base on the 5090 after a reboot (BigMama, 2026-09-06 — card af635057):
+/// nothing served, ping read ready-less, and no line said why. Pinning bypasses
+/// eligibility (operator consent) but never this: a mind cannot run on a model with
+/// no text generation.
+pub fn can_serve_minds(model: &Model) -> bool {
+    use crate::model_registry::types::Capability;
+    model.capabilities.contains(&Capability::TextGeneration)
+        || model.capabilities.contains(&Capability::Chat)
+}
+
 pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprint> {
     snapshot
         .models
         .values()
         .filter(|live| live.status.availability == Availability::Ready)
+        .filter(|live| {
+            let ok = can_serve_minds(&live.model);
+            if !ok {
+                crate::probe!(
+                    class = "serving.plan.candidate_cannot_speak",
+                    model_id = %live.model.id,
+                    "a Ready model with no text generation is not a base-model candidate"
+                );
+            }
+            ok
+        })
         .filter_map(|live| footprint_for(&live.model))
         .collect()
 }
@@ -4831,6 +4867,23 @@ mod tests {
     /// A minimal [`Model`] for reconcile-wiring tests — only `id` is load-bearing
     /// (the FakeServer ignores the rest); the planned served window rides on the
     /// `ServingTarget`, not here.
+    // what this catches (card af635057, the 5090 after a reboot): an embedding or
+    // reranking row — Ready, with a real GGUF — chosen as the base model. A mind needs
+    // text generation; a row without it is never a candidate, pinned or not.
+    #[test]
+    fn a_model_that_cannot_speak_is_never_a_base_candidate() {
+        use crate::model_registry::types::Capability;
+        let mut speaks = fake_model("chat/model");
+        speaks.capabilities = [Capability::Chat, Capability::TextGeneration].into_iter().collect();
+        assert!(can_serve_minds(&speaks));
+        let mut embeds = fake_model("embed/model");
+        embeds.capabilities = [Capability::Embedding].into_iter().collect();
+        assert!(!can_serve_minds(&embeds), "an embedding-only row cannot host a mind");
+        let mut mute = fake_model("mute/model");
+        mute.capabilities.clear();
+        assert!(!can_serve_minds(&mute), "no capabilities = no candidate, never a guess");
+    }
+
     fn fake_model(id: &str) -> Model {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         Model {
@@ -4843,7 +4896,15 @@ mod tests {
             context_window: 262_144,
             max_output_tokens: 4096,
             tokens_per_second: 0.0,
-            capabilities: std::collections::BTreeSet::new(),
+            // A fixture row that can SPEAK: the base-model candidate set now requires
+            // TextGeneration or Chat (can_serve_minds, card af635057), and every real
+            // catalog row carries them; an empty set here would model an embedding row.
+            capabilities: [
+                crate::model_registry::types::Capability::Chat,
+                crate::model_registry::types::Capability::TextGeneration,
+            ]
+            .into_iter()
+            .collect(),
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,

@@ -152,6 +152,7 @@ crate::action_command! {
         //    daemon's next tick reconciles the live server to it (sub-second to a
         //    few seconds; observe readiness via serving/status).
         this.pin.send_replace(Some(p.model_id.clone()));
+        crate::modules::serving_pin_store::save(&p.model_id);
 
         let detail = match &previous_model {
             Some(prev) if prev == &p.model_id => format!(
