@@ -127,6 +127,7 @@ fn ensure_citizen_layer_from_base(
 ) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
+        share_layer_objects_with_base(&layer, base);
         // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
         // clones]]): the layer was a ONE-TIME CoW snapshot that never refreshed, so
         // personas drifted stale (one froze before the workers/→core/ restructure).
@@ -160,46 +161,144 @@ fn ensure_citizen_layer_from_base(
     std::fs::create_dir_all(parent)
         .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
     let started = std::time::Instant::now();
-    // Copy-on-write clone of the shared base → the peer's layer via the platform's
-    // reflink-capable `cp`. macOS APFS uses `-c` (clonefile); GNU coreutils uses
-    // `--reflink=auto` — reflink where the filesystem supports it (btrfs/XFS), a plain
-    // recursive copy otherwise, never failing for lack of CoW. `-cR` is macOS-ONLY (GNU
-    // cp rejects `-c`), which silently broke citizen provisioning on every Linux deploy
-    // until #191 surfaced it. `cfg!` (not `#[cfg]`) so BOTH branches compile and
-    // type-check on every platform — a Linux-only arm must never escape a macOS build.
-    let mut clone = std::process::Command::new("cp");
-    if cfg!(target_os = "macos") {
-        clone.arg("-cR");
-    } else {
-        clone.args(["--reflink=auto", "-R"]);
-    }
-    let out =
-        clone.arg(base).arg(&layer).output().map_err(|e| {
-            CommandError::Internal(format!("citizen layer clone spawn failed: {e}"))
-        })?;
+    // A SHARED CLONE, never a copy (2026-09-06, the day the M5 hit zero free). The
+    // previous shape — `cp -cR` of the whole checkout — was copy-on-write for a day and
+    // 7–20 GB per citizen a week later: every clone carried the canonical repo's full
+    // history, its stale worktree metadata (5 × 462 MB of vendored packs), 4.5 GB of
+    // gitignored model caches and node_modules, and as the base moved on, every block
+    // materialized. `git clone --shared` writes ONLY the tracked tree; objects come from
+    // the base through `.git/objects/info/alternates`, so the layer's marginal disk is
+    // her working tree plus her own commits. `git_sync_from_shared` (fetch + merge) is
+    // unchanged — it never depended on the copy.
+    let out = std::process::Command::new("git")
+        .args(["clone", "--shared", "--quiet"])
+        .arg(base)
+        .arg(&layer)
+        .output()
+        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
     if !out.status.success() {
         // Never leave a half-materialized layer for the next call to mistake
         // for a real one.
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
-            "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
-             Copy-on-write is the intent (APFS clonefile on macOS, reflink on Linux \
-             btrfs/XFS); cp falls back to a full recursive copy on a non-CoW filesystem \
-             rather than failing, so a hard error here means the base is missing or \
-             unreadable, not a missing reflink.",
+            "citizen layer shared clone failed for peer {peer} (base {}): {}",
             base.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
+    // The vendored inference engine rides along as a submodule; reference the base's
+    // copy so its objects are shared too. Bounded and named: a layer without the vendor
+    // tree still gives her hands (the core serves inference, not her checkout).
+    let vendor = init_vendor_submodule(&layer, base);
     crate::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
         base = %base.display(),
         layer = %layer.display(),
+        vendor = %vendor,
         elapsed_ms = started.elapsed().as_millis() as u64,
-        "citizen layer provisioned — CoW clone of shared base (stores only the diff)"
+        "citizen layer provisioned — shared clone of the base (objects via alternates, tracked tree only)"
     );
     Ok(layer)
+}
+
+/// `git submodule update --init --reference <base>/<path>` for the vendored engine,
+/// bounded to ten minutes. Returns the named outcome for the probe: `shared`,
+/// `absent` (the base has no vendor tree — a test base), `failed: <why>`.
+fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> String {
+    const VENDOR: &str = "core/vendor/llama.cpp";
+    let reference = base.join(VENDOR);
+    if !reference.join(".git").exists() && !reference.join("HEAD").exists() {
+        return "absent".to_string();
+    }
+    let mut child = match std::process::Command::new("git")
+        .current_dir(layer)
+        .args(["submodule", "update", "--init", "--quiet", "--reference"])
+        .arg(&reference)
+        .arg(VENDOR)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return format!("failed: spawn {e}"),
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return "shared".to_string(),
+            Ok(Some(status)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    use std::io::Read as _;
+                    let _ = e.read_to_string(&mut err);
+                }
+                return format!("failed: {status} {}", err.trim());
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                return "failed: timed out after 600 s".to_string();
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(e) => return format!("failed: wait {e}"),
+        }
+    }
+}
+
+/// Migrate a layer provisioned by the old `cp -cR` shape to share its objects with
+/// the base: write `alternates`, repack keeping only objects the base lacks, and drop
+/// the worktree metadata the copy inherited from the base. Idempotent (a layer that
+/// already names the base's objects is left alone); every outcome named in a probe.
+fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path) {
+    let objects = layer.join(".git").join("objects");
+    let alternates = objects.join("info").join("alternates");
+    let base_objects = base.join(".git").join("objects");
+    if !objects.is_dir() || !base_objects.is_dir() {
+        return;
+    }
+    let want = format!("{}\n", base_objects.display());
+    if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let outcome = (|| -> Result<String, String> {
+        std::fs::create_dir_all(objects.join("info")).map_err(|e| e.to_string())?;
+        std::fs::write(&alternates, &want).map_err(|e| e.to_string())?;
+        let out = std::process::Command::new("git")
+            .current_dir(layer)
+            .args(["repack", "-a", "-d", "-l", "-q"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        // Worktree entries the copy inherited point at the BASE's trees, never hers.
+        let mut dropped = 0usize;
+        if let Ok(entries) = std::fs::read_dir(layer.join(".git").join("worktrees")) {
+            for entry in entries.flatten() {
+                let gitdir = std::fs::read_to_string(entry.path().join("gitdir")).unwrap_or_default();
+                if !gitdir.trim().starts_with(&layer.display().to_string()) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                    dropped += 1;
+                }
+            }
+        }
+        Ok(format!("shared; foreign worktree entries dropped: {dropped}"))
+    })();
+    match outcome {
+        Ok(summary) => crate::probe!(
+            class = "workspace.layer.objects_shared",
+            layer = %layer.display(),
+            summary = %summary,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "citizen layer now shares its objects with the base"
+        ),
+        Err(why) => tracing::warn!(
+            layer = %layer.display(),
+            why = %why,
+            "citizen layer object sharing failed — layer keeps its own objects"
+        ),
+    }
 }
 
 /// Drop a short teaching note at the workspace root after a shared sync — the
@@ -2151,6 +2250,25 @@ mod tests {
         // clone exercised end-to-end with zero global-cwd mutation. #191.
         let base = tempfile::tempdir().expect("base");
         std::fs::write(base.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        // The base is a git repo with one commit and one IGNORED cache dir — the
+        // shape the shared clone must NOT carry (2026-09-06: 4.5 GB of ignored model
+        // caches rode into every citizen copy).
+        std::fs::write(base.path().join(".gitignore"), "tools/models/\n").unwrap();
+        std::fs::create_dir_all(base.path().join("tools/models")).unwrap();
+        std::fs::write(base.path().join("tools/models/weights.bin"), "big").unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["add", "-A"],
+            vec!["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .current_dir(base.path())
+                .args(args)
+                .status()
+                .expect("git")
+                .success();
+            assert!(ok);
+        }
         let home = tempfile::tempdir().expect("home");
         std::env::set_var("CONTINUUM_HOME", home.path());
 
@@ -2167,7 +2285,17 @@ mod tests {
         );
         assert!(
             layer.join("Cargo.toml").is_file(),
-            "layer is seeded from the base (CoW clone)"
+            "layer is seeded from the base (shared clone)"
+        );
+        let alternates = std::fs::read_to_string(layer.join(".git/objects/info/alternates"))
+            .expect("a shared clone names the base's objects");
+        assert!(
+            alternates.trim().ends_with(".git/objects"),
+            "objects come from the base, never copied: {alternates}"
+        );
+        assert!(
+            !layer.join("tools/models").exists(),
+            "an ignored cache in the base never rides into the layer"
         );
         // A peer WRITE lands in the layer, never the base.
         std::fs::write(layer.join("Cargo.toml"), "[dependencies]\n").unwrap();
