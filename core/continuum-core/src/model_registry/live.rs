@@ -237,7 +237,36 @@ impl ModelCatalog {
         if present {
             self.mutate(|snap| {
                 if let Some(live) = snap.models.get_mut(id) {
-                    live.model.gguf_local_path = Some(gguf_path);
+                    // ONLY a MAIN-model GGUF may become `gguf_local_path`. A pull can
+                    // legitimately fetch a SIDECAR into the same repo — the multimodal
+                    // projector (`mmproj-*.gguf`) or the multi-token-prediction draft
+                    // head (`mtp-*.gguf`) — and those are not the model.
+                    //
+                    // This matters because `resolve_gguf` honours an EXPLICIT path
+                    // FIRST, before the `is_main_model_gguf` filter that the hint and
+                    // model-id paths go through. So attaching a sidecar path here made
+                    // `hydrate_artifact_sizes` stamp the SIDECAR's size as the model's
+                    // `weights_bytes` — and that field is cached on the row by design
+                    // (to keep `stat` off the governor's accounting tick), so the wrong
+                    // number then survived every later plan until a process restart.
+                    //
+                    // MEASURED 2026-09-06 on BigMama: pulling the Qwen3.8-27B MTP draft
+                    // (`--quant Q4_0`) after the main weights left the planner reading
+                    // 1,680,271,648 bytes (the 1.68 GB draft) for a 18,973,870,432-byte
+                    // (18.97 GB) model — an 11x under-count. The planner believed it had
+                    // ~17 GB more headroom than it did, granted a WIDER context window
+                    // on that basis, and the card sat at 32,086/32,607 MiB = 98.4%. A
+                    // fresh core reported 18.97 GB from the same files, which is what
+                    // identified the row cache as the carrier.
+                    //
+                    // Sidecars need no path attached: the projector has its own field,
+                    // and the draft head is found by `find_mtp_draft_beside` scanning
+                    // the snapshot dir. So the correct action is to leave the main path
+                    // alone and still re-hydrate — the hydration below resolves the real
+                    // main artifact and stamps the right size.
+                    if crate::model_registry::artifacts::is_main_model_gguf(&gguf_path) {
+                        live.model.gguf_local_path = Some(gguf_path);
+                    }
                     if mmproj_path.is_some() {
                         live.model.mmproj_local_path = mmproj_path;
                     }
@@ -418,6 +447,64 @@ mod tests {
     // generation bump, so serving reads the path off the snapshot instead of
     // re-scanning disk. An unknown id reports false (no silent success).
     #[test]
+    // what this catches: a SIDECAR pull clobbering the model's main-weights path,
+    // and with it the cached `weights_bytes` every capacity estimate reads.
+    // Regression for the 2026-09-06 BigMama measurement — pulling the Qwen3.8-27B
+    // MTP draft (`models/pull --quant Q4_0`) after the main weights made the planner
+    // read 1,680,271,648 bytes (the 1.68 GB draft) for an 18,973,870,432-byte model.
+    // `resolve_gguf` honours an EXPLICIT path FIRST, before the `is_main_model_gguf`
+    // filter the hint path goes through, so the sidecar's size was stamped onto the
+    // row — and `weights_bytes` is cached there by design, so it survived every plan
+    // until a process restart. Consequence was not cosmetic: an 11x under-count
+    // granted a wider context window and left the card at 98.4% VRAM.
+    #[test]
+    fn a_sidecar_pull_never_becomes_the_models_main_weights_path() {
+        use std::path::PathBuf;
+        let reg = catalog::registry().expect("Rust catalog must validate");
+        let catalog = ModelCatalog::from_registry(&reg);
+        let id = catalog
+            .snapshot()
+            .models
+            .values()
+            .find(|m| m.status.availability == Availability::NotDownloaded)
+            .map(|m| m.model.id.clone())
+            .expect("seeded universe has a not-downloaded local model");
+
+        // The main artifact lands first, as a real pull does.
+        let main = PathBuf::from("/tmp/Qwen3.8-27B-Q4_K_M.gguf");
+        assert!(catalog.attach_local_artifact(&id, main.clone(), None));
+        assert_eq!(
+            catalog.snapshot().get(&id).unwrap().model.gguf_local_path,
+            Some(main.clone()),
+            "the main artifact IS the model's weights path"
+        );
+
+        // Then the MTP draft head — a sidecar in the SAME repo, which is exactly how
+        // ggml-org ships Qwen3.8 and exactly what `--quant Q4_0` fetches.
+        assert!(catalog.attach_local_artifact(
+            &id,
+            PathBuf::from("/tmp/mtp-Qwen3.8-27B-Q4_0.gguf"),
+            None
+        ));
+        assert_eq!(
+            catalog.snapshot().get(&id).unwrap().model.gguf_local_path,
+            Some(main.clone()),
+            "an mtp- draft head must NOT replace the main weights path"
+        );
+
+        // And the multimodal projector, the other sidecar in that repo.
+        assert!(catalog.attach_local_artifact(
+            &id,
+            PathBuf::from("/tmp/mmproj-Qwen3.8-27B-BF16.gguf"),
+            None
+        ));
+        assert_eq!(
+            catalog.snapshot().get(&id).unwrap().model.gguf_local_path,
+            Some(main),
+            "an mmproj projector must NOT replace the main weights path"
+        );
+    }
+
     fn attach_local_artifact_records_paths_and_flips_ready() {
         use std::path::PathBuf;
         let reg = catalog::registry().expect("Rust catalog must validate");
