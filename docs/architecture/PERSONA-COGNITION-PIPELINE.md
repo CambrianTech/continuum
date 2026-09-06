@@ -77,22 +77,53 @@ path — reuse it when the capability returns, do not write a parallel one.
 
 ---
 
-## 4. The Bypass That Exists Right Now
+## 4. The Bypass — REMOVED (was live 2026-06-03, gone by 2026-09-06)
 
-`service_loop.rs::serve_persona_loop_inner` today calls `inspect_persona_rag_with_inference` (in `rag_inspect.rs`). That function:
+**Status corrected 2026-09-06.** This section used to be titled "The Bypass That
+Exists Right Now" and described `service_loop.rs` calling
+`inspect_persona_rag_with_inference`. **That is no longer true and reading it as
+current will send you the wrong way** — it did exactly that to a session on
+2026-09-06, which measured the one-source shape, believed production still looked
+like this, and published a causal chain it then had to retract.
 
-- Ad-hoc constructs ONE source (`AircRagSource` only — no engram, no identity card, no future sources).
-- Ad-hoc constructs `FlexboxRagBudgetAdapter::new()` inline.
-- Calls `adapter.generate_text` with a `will_respond + response` JSON contract.
-- Skips: `full_evaluate`, `analyze`, `score_persona`, `genome.activate_skill`, `clean_and_validate`, `ToolExecutor`, `audit`, `check_redundancy`, multi-modal media, tool calling, the entire L1-L5 hierarchy beyond a single airc page.
+What is true now:
 
-**That is the bypass. Task #153 is its removal. Task #160 is the rewire to the verbs in section 2.**
+- `service_loop` runs the **WorkspaceCycle**. Grep it: the only mention of
+  `inspect_persona_rag_with_inference` in `service_loop.rs` is a doc comment; no
+  production path calls it.
+- **The `respond()` fallback is DELETED, deliberately.** `service_loop.rs` fails
+  loud when no WorkspaceCycle is registered — "no WorkspaceCycle registered; spawn
+  wiring bug; dropping turn (no respond() fallback)" — on the reasoning that a
+  fallback fires 100% on the failure it hides, and here it would mask a dead brain
+  by routing cognition down a parallel path. That reasoning is right; keep it.
+- `inspect_persona_rag_with_inference` survives ONLY as introspection (the §4
+  carve-out below still stands). It builds its own single `AircRagSource` and its
+  own inline budgeter, so **it is not a view of a citizen's real context** and must
+  never be quoted as evidence about production. Two different personas return
+  byte-identical numbers from it, which is the tell.
 
-`rag_inspect.rs::inspect_persona_rag` (without `_with_inference`) stays — that's the introspection / mechanic's-view function it was named for. It's how AIs answer "what would my RAG look like right now?" Not the production hot path.
+### The cost that came with the removal, and is still open
 
-**Explicit carve-out for `inspect_persona_rag_with_inference`:** the `_with_inference` variant ships a `{will_respond, response}` JSON contract because it answers a different question — "would the persona respond to this RAG snapshot?" — for introspection probes + adversarial debugging. **This contract is forbidden from being called from `service_loop` or any production cognition path.** The only legitimate callers are the rag-inspect ServiceModule (`modules/persona_rag_inspect.rs`) + tests. The forbidden-moves list in §5 still applies to the production path; this carve-out names the one introspection function allowed to use the shape, so future readers don't have to triangulate it from the import graph. A grep-test or `#[deny]` lint that fires if `service_loop.rs` ever imports `inspect_persona_rag_with_inference` would make the forbid structural.
+`persona::recorder::record_turn` was called from `persona/response.rs` — i.e. from
+inside `respond()`. **When `respond()` stopped being the citizens' path, the turn
+recorder silently went with it.** Nothing re-attached it to the WorkspaceCycle.
 
----
+Measured on BigMama 2026-09-06: `~/.continuum/fixtures/persona-respond/` holds 12
+records (Alpha, Beta, Helper — paths that still go through `respond()`), and ZERO
+for the live citizens, who have produced hundreds of turns. `persona-turn-frame/`
+holds 4, all synthetic smoke turns with an empty system prompt.
+
+So **no live citizen turn has ever been captured on this box**, which is why
+questions like "why does this persona re-open the same turn?" cannot currently be
+answered from evidence — there is no artifact of what she actually received. That
+is card 99801322. The fix is to record from the WorkspaceCycle path; it is NOT to
+re-add a `respond()` call, which would resurrect the deleted fallback this section
+just told you to keep deleted.
+
+**The general lesson, since this doc exists to break exactly this loop:** a
+capability attached to a code path dies when that path is removed, and stays green
+because its tests and its demo callers still use the old path. Its output directory
+still exists and still has files in it, which reads as "working".
 
 ## 5. Forbidden Moves (anti-patterns I keep reflex-coding under amnesia)
 
