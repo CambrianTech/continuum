@@ -98,7 +98,11 @@ pub struct CommandExecutor {
     registry: Arc<ModuleRegistry>,
     /// Interceptor chain. Tried in insertion order BEFORE local
     /// dispatch. First interceptor to return Handled wins.
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
+    ///
+    /// SHARED with the runtime's socket route (`Runtime::interceptor_chain`) so a
+    /// registered interceptor applies on every route into the node, not only
+    /// in-process calls (card 506a388c).
+    interceptors: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
     /// Optional message bus. When wired, every `execute()` emits a
     /// `command:completed` event after the dispatch settles
     /// (success or error). `None` in test fixtures + back-compat
@@ -134,7 +138,7 @@ impl CommandExecutor {
     pub fn new(registry: Arc<ModuleRegistry>) -> Self {
         Self {
             registry,
-            interceptors: Vec::new(),
+            interceptors: Arc::new(std::sync::RwLock::new(Vec::new())),
             bus: None,
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
@@ -168,8 +172,22 @@ impl CommandExecutor {
     ///
     /// Default global wire order (in `init_executor`): `[airc, grid]`.
     /// Tests and one-off bin tools can build their own chain.
-    pub fn with_interceptor(mut self, interceptor: Arc<dyn CommandInterceptor>) -> Self {
-        self.interceptors.push(interceptor);
+    pub fn with_interceptor(self, interceptor: Arc<dyn CommandInterceptor>) -> Self {
+        self.interceptors
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; keep appending
+            .push(interceptor);
+        self
+    }
+
+    /// Share ONE interceptor chain with the runtime's socket route
+    /// ([`super::Runtime::interceptor_chain`]) — the compression that ends the
+    /// "half the contract on each dispatcher" split (card 506a388c).
+    pub fn with_interceptor_chain(
+        mut self,
+        chain: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
+    ) -> Self {
+        self.interceptors = chain;
         self
     }
 
@@ -190,7 +208,10 @@ impl CommandExecutor {
     /// path. Useful for asserting the wire order in tests and for the
     /// `kernel/health` command to surface the chain depth.
     pub fn interceptor_count(&self) -> usize {
-        self.interceptors.len()
+        self.interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; count it
+            .len()
     }
 
     /// Whether the executor has a message bus wired (and will emit
@@ -400,7 +421,12 @@ impl CommandExecutor {
         // 1. Walk the interceptor chain. First Handle wins. Decline
         //    moves on. Err propagates immediately — no silent
         //    fallthrough, per the trait contract.
-        for interceptor in &self.interceptors {
+        let chain: Vec<Arc<dyn CommandInterceptor>> = self
+            .interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; read it
+            .clone();
+        for interceptor in &chain {
             match interceptor.try_route(command, &params, caller).await {
                 Ok(InterceptorOutcome::Handled(result)) => {
                     log.debug(&format!(
