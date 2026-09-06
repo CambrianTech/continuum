@@ -144,7 +144,7 @@ impl WallProjection {
     /// must not fabricate an empty board ([[fallbacks-are-illegal-fail-loud]]:
     /// resilience, never a fabricated substitute).
     async fn reload(&mut self) {
-        match self.reader.wall_posts().await {
+        match self.reader.wall_posts(Some(self.room_id)).await {
             Ok(posts) => {
                 self.posts = posts;
                 self.store();
@@ -409,7 +409,10 @@ mod tests {
 
     #[async_trait]
     impl WallReader for StubReader {
-        async fn wall_posts(&self) -> Result<Vec<WallPostPublished>, airc_lib::AircError> {
+        async fn wall_posts(
+            &self,
+            _room: Option<uuid::Uuid>,
+        ) -> Result<Vec<WallPostPublished>, airc_lib::AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(airc_lib::AircError::UnknownPeer(PeerId::new()));
             }

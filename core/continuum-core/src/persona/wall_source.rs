@@ -78,15 +78,82 @@ pub trait WallReader: Send + Sync {
     /// published-time order (empty if the room has no wall). Slice 1
     /// surfaces ALL categories; a category-filtered variant can come later
     /// without changing this seam.
-    async fn wall_posts(&self) -> Result<Vec<WallPostPublished>, AircError>;
+    ///
+    /// `room` is the id this source is BOUND to (`for_room`) — the same value
+    /// [`crate::persona::rag_budget::room_scope_allows`] gates on, exactly as
+    /// [`crate::persona::room_board_source::RoomBoardReader::work_board`]
+    /// takes it. Passing it makes gate and read ONE decision instead of two
+    /// that merely tend to agree. `None` = unscoped legacy construction.
+    async fn wall_posts(&self, room: Option<uuid::Uuid>)
+        -> Result<Vec<WallPostPublished>, AircError>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule OK
 /// — the trait is ours. `None` category filter = the whole board.
 #[async_trait]
 impl WallReader for airc_lib::Airc {
-    async fn wall_posts(&self) -> Result<Vec<WallPostPublished>, AircError> {
-        airc_lib::Airc::wall_posts(self, None).await
+    async fn wall_posts(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Vec<WallPostPublished>, AircError> {
+        match room {
+            // BOUND: read exactly the room the gate approved, via the same
+            // room_by_channel -> *_in pair the work board uses. This deliberately
+            // does NOT go through `Airc::wall_posts`, whose first act is
+            // `current_room().await` — resolving "whatever room I happen to point
+            // at" when the caller already KNOWS the room, and returning a plausible
+            // wall for the wrong one when they differ ([[fail-loud-never-swallow]]).
+            //
+            // Measured 2026-09-06 (canary 45a852a9b) and the reason this is not
+            // merely tidier: the wall read took 143,128ms and 147,971ms, or never
+            // returned (wall.read.phase enter=4 exit=2), CONSTANT across a
+            // 3,985-event room and a room with ZERO events — so it was never a
+            // volume problem. The work board, through the SAME daemon in the SAME
+            // process, returned in ~0ms 127 times out of 127. The phase marks below
+            // are what will say whether the remaining stall is room resolution or
+            // the projection itself; the board's identical marks already exonerate
+            // its half.
+            Some(id) => {
+                let channel = airc_core::RoomId::from_uuid(id);
+                crate::probe!(
+                    class = "wall.read.phase",
+                    room = %id,
+                    phase = "resolve_room",
+                    "entering room_by_channel — no `project_wall` mark for this room means \
+                     room resolution is where the wall read hung"
+                );
+                let resolve_started = std::time::Instant::now();
+                let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
+                    return Err(AircError::NotSubscribed(format!(
+                        "wall requested for room {id}, which this scope is not subscribed \
+                         to — refusing to substitute the default room's wall"
+                    )));
+                };
+                let resolve_ms = resolve_started.elapsed().as_millis() as u64;
+                crate::probe!(
+                    class = "wall.read.phase",
+                    room = %id,
+                    phase = "project_wall",
+                    resolve_ms,
+                    "room resolved; entering wall_posts_in — a missing `complete` mark for \
+                     this room means the projection hung"
+                );
+                let project_started = std::time::Instant::now();
+                let posts = airc_lib::Airc::wall_posts_in(self, &resolved, None).await?;
+                crate::probe!(
+                    class = "wall.read.phase",
+                    room = %id,
+                    phase = "complete",
+                    resolve_ms,
+                    project_ms = project_started.elapsed().as_millis() as u64,
+                    "both halves finished — the pair of durations is the distribution a \
+                     stalled wall read is measured against"
+                );
+                Ok(posts)
+            }
+            // Unscoped legacy/test construction: pre-binding behaviour.
+            None => airc_lib::Airc::wall_posts(self, None).await,
+        }
     }
 }
 
@@ -299,12 +366,23 @@ impl RagSource for WallSource {
         // runs under workspace.rs's 30s PERCEPTION_DEADLINE, and the ticks worth
         // diagnosing are the CANCELLED ones, which never reach a probe placed after
         // the await. Measured 2026-09-05: `room-board` (this source's SOURCE_ID) is
-        // the slowest faculty on ~27% of ticks, pinned at 30.00s. `wall_posts` reads
-        // via `wall_posts_in`, which calls `room_transcripts_since` from a ZERO
-        // cursor with no cursor cache — and that helper PAGES UNTIL EXHAUSTED, so on
-        // the store path it replays the room's whole transcript on every tick, for
-        // every citizen. Its sibling projection (the work board) resumes from a
-        // persisted snapshot and completes in 1.4-9.9s; this one has no such cache.
+        // the slowest faculty, pinned at 30.00s — on 45a852a9b, 8 of 8 ticks.
+        //
+        // CORRECTED 2026-09-06, because the first explanation here was wrong and the
+        // way it was wrong is the useful part. This comment used to say the cost was
+        // `room_transcripts_since` paging the whole transcript from a zero cursor with
+        // no cache. That is TRUE of the code and NOT the cause: the stall is CONSTANT
+        // at ~30s across a 3,985-event room AND a room with ZERO events, and no
+        // quantity explains a constant. The real magnitude was hidden by this very
+        // deadline — the two reads that completed took 143,128ms and 147,971ms, so
+        // every 30s figure ever quoted for this faculty is floor(true_cost, 30s).
+        //
+        // The control that localises it: the work board rides the SAME daemon in the
+        // SAME process and returns in ~0ms, 127 times out of 127. So it is not the
+        // daemon, not the IPC, not SQLite (the (room_id, lamport, event_id) index
+        // exists and EXPLAIN shows SEARCH, not SCAN). It is a hang in the wall path
+        // specifically, which is why this source now takes the bound-room branch
+        // above rather than `Airc::wall_posts` and its `current_room()` resolution.
         crate::probe!(
             class = "wall.read.phase",
             persona = %self.persona_id,
@@ -312,7 +390,7 @@ impl RagSource for WallSource {
             "entering wall_posts — no `exit` mark for this persona means the wall read              is where the tick was cancelled"
         );
         let wall_started = std::time::Instant::now();
-        let posts = match self.reader.wall_posts().await {
+        let posts = match self.reader.wall_posts(self.room_id).await {
             Ok(posts) => posts,
             Err(err) => {
                 tracing::warn!(
@@ -373,7 +451,7 @@ impl RagSource for WallSource {
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = self.reader.wall_posts().await.ok()?;
+        let posts = self.reader.wall_posts(self.room_id).await.ok()?;
         if start >= posts.len() {
             return None;
         }
@@ -416,6 +494,10 @@ mod tests {
     struct StubReader {
         posts: Vec<WallPostPublished>,
         fail: Mutex<bool>,
+        /// The room argument of the LAST read, so a test can assert which room
+        /// the source actually asked for — the whole point of the bound-room
+        /// seam is unobservable from the returned posts alone.
+        asked_for: Mutex<Option<Option<uuid::Uuid>>>,
     }
 
     impl StubReader {
@@ -423,6 +505,7 @@ mod tests {
             Self {
                 posts,
                 fail: Mutex::new(false),
+                asked_for: Mutex::new(None),
             }
         }
         fn set_fail(&self, fail: bool) {
@@ -432,7 +515,12 @@ mod tests {
 
     #[async_trait]
     impl WallReader for StubReader {
-        async fn wall_posts(&self) -> Result<Vec<WallPostPublished>, AircError> {
+        async fn wall_posts(
+            &self,
+            room: Option<uuid::Uuid>,
+        ) -> Result<Vec<WallPostPublished>, AircError> {
+            // safe: test-local Mutex, no panic while held, so it cannot be poisoned.
+            *self.asked_for.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
@@ -491,6 +579,35 @@ mod tests {
     }
 
     // what this catches: cross-persona ctx gets nothing (defense in depth).
+    #[tokio::test]
+    async fn a_bound_source_reads_the_room_it_was_bound_to_never_the_default() {
+        // what this catches: the wall read silently falling back to "whatever room
+        // this handle currently points at". Before 2026-09-06 this source called
+        // `Airc::wall_posts`, whose first act is `current_room().await` — so a
+        // citizen acting in room X was grounded on the wall of her DEFAULT room, and
+        // nothing in the returned posts says which room they came from. airc's own
+        // doc (airc.rs:1285-1297) says continuum needs the `_in` variant for exactly
+        // this reason. The room argument is the only observable proof, which is why
+        // StubReader records it.
+        let reader = Arc::new(StubReader::new(vec![post("plan", "body")]));
+        // safe: a literal, valid UUID — a parse failure here is a typo in this test.
+        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
+        let source = WallSource::new(persona(), reader.clone()).for_room(bound);
+        let _ = source
+            .deliver(
+                &RagContext::for_persona(persona(), 1_000_000),
+                1_000,
+                ResolutionPreference::Raw,
+            )
+            .await;
+        assert_eq!(
+            // safe: test-local Mutex; the only writer is the stub above, single-threaded here.
+            *reader.asked_for.lock().unwrap(),
+            Some(Some(bound)),
+            "a bound WallSource must ask for ITS room; None here means the read fell              through to the handle's current_room and grounded the wrong wall"
+        );
+    }
+
     #[tokio::test]
     async fn cross_persona_ctx_returns_empty() {
         let reader = Arc::new(StubReader::new(vec![post("plan", "body")]));

@@ -478,7 +478,10 @@ impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for StubAircCitizen {
-    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(
+        &self,
+        _room: Option<uuid::Uuid>,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // No daemon in tests → no pinned wall posts. Cognition runs through
         // cleanly with no [room-board] grounding block.
         Ok(vec![])
