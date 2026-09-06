@@ -113,9 +113,20 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdap
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for AircHandleAdapter {
-    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
-        self.inner.wall_posts(None).await
+        // UFCS: route through the TRAIT impl so a bound room takes the
+        // room_by_channel -> wall_posts_in path. `self.inner.wall_posts(..)`
+        // would bind to Airc's INHERENT method, whose argument is a category
+        // filter, silently discarding the room.
+        <airc_lib::Airc as crate::persona::wall_source::WallReader>::wall_posts(
+            self.inner.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
