@@ -1969,9 +1969,42 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         // not need detachment on Windows: a child is not killed when its parent exits, and
         // CREATE_NEW_PROCESS_GROUP already keeps our Ctrl+C from reaching it.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        // THE CORE IS NEVER A CHILD OF ITS LAUNCHER'S JOB (card 82af11f5). A core started
+        // from an agent session on Windows died within ~45 s all evening on the 5090:
+        // the session's job object closes (KILL_ON_JOB_CLOSE) and every child dies with
+        // it. CREATE_BREAKAWAY_FROM_JOB lifts the core out of that job when the job
+        // permits breakaway; when it does not, CreateProcess fails with access denied and
+        // the spawn below retries WITHOUT the flag, naming the outcome in the start
+        // receipt — the operator then launches through a Scheduled Task (schtasks), which
+        // runs outside any job, until the supervisor slice lands.
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
     }
-    let mut child = cmd.spawn().map_err(|e| match &server_bin {
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        match cmd.spawn() {
+            Ok(child) => {
+                eprintln!("▶ supervisor=breakaway: the core left this session's job object (survives the session)");
+                Ok(child)
+            }
+            Err(e) if e.raw_os_error() == Some(5) => {
+                eprintln!(
+                    "▶ supervisor=child (WARNING): this session's job object forbids breakaway \
+                     (access denied); the core will DIE when this session's job closes. Launch it \
+                     through a Scheduled Task instead: schtasks /create /tn continuum-core \
+                     /tr \"<the same start command>\" /sc once /st 00:00 /ru <user> /rl highest /f \
+                     && schtasks /run /tn continuum-core"
+                );
+                cmd.creation_flags(0x0000_0200 | 0x0800_0000);
+                cmd.spawn()
+            }
+            Err(e) => Err(e),
+        }
+    };
+    #[cfg(not(windows))]
+    let spawned = cmd.spawn();
+    let mut child = spawned.map_err(|e| match &server_bin {
         Some(bin) => format!("failed to spawn the core server {}: {e}", bin.display()),
         None => format!(
             "failed to spawn the source-build start script via bash: {e}. The start script \

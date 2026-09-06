@@ -81,6 +81,32 @@ pub struct RemoteLaneAdapterFactory {
     airc: Arc<tokio::sync::OnceCell<Arc<Airc>>>,
 }
 
+/// Is this persona's brain assigned to a REMOTE lane? The re-home that sweeps every
+/// resident onto a newly served local model must skip her, or the binding this
+/// factory built lasts only until the next serving edge (M5 2026-09-06 21:1xZ: Kira
+/// and Mathis were bound to the 5090 at 21:06:44 and generated on local Ornith at
+/// 21:10 after the lane came up). Reads the durable override; unreadable = not remote,
+/// loudly — a re-home never guesses a citizen off-box.
+pub(crate) fn is_remote_bound(continuum_root: &std::path::Path, persona_name: &str) -> bool {
+    let airc_dir = crate::context::citizen_home_path(
+        continuum_root,
+        crate::identity::IdentityKind::Persona,
+        None,
+        persona_name,
+    );
+    let Some(root) = airc_dir.parent() else {
+        return false;
+    };
+    let home = PersonaHome::from_root(root.to_path_buf());
+    match PersonaModelOverride::load(&home) {
+        Ok(over) => over.map(|o| o.is_remote()).unwrap_or(false), // unwrap_or: no override = local, by definition
+        Err(e) => {
+            tracing::warn!(persona = %persona_name, error = %e, "model override unreadable during re-home — treating as local");
+            false
+        }
+    }
+}
+
 impl RemoteLaneAdapterFactory {
     pub fn new(
         inner: Arc<dyn PersonaAdapterFactory>,
@@ -340,5 +366,35 @@ mod tests {
             .expect_err("a non-uuid peer cannot be routed to");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no local fallback");
         assert!(err.contains("not-a-uuid"), "must name the bad value: {err}");
+    }
+
+    // what this catches (M5 2026-09-06 21:1xZ): the serving-edge re-home sweeping a
+    // remote-bound citizen back onto the local model. A persona with a remote override
+    // on disk reads remote; one with a local override or none reads local.
+    #[test]
+    fn a_remote_override_on_disk_is_seen_by_the_rehome() {
+        let root = tempfile::tempdir().expect("root");
+        let home_root = crate::context::citizen_home_path(
+            root.path(),
+            crate::identity::IdentityKind::Persona,
+            None,
+            "Kira",
+        );
+        let home = PersonaHome::from_root(home_root.parent().expect("parent").to_path_buf());
+        std::fs::create_dir_all(home_root.parent().expect("parent")).expect("mkdir");
+        assert!(!is_remote_bound(root.path(), "Kira"), "no override = local");
+        PersonaModelOverride::new_remote(
+            "ggml-org/Qwen3.8-27B-GGUF".to_string(),
+            Some("operator".to_string()),
+            1,
+            "ce8b9074-2fca-4347-a954-a1cf720cee55",
+        )
+        .write(&home)
+        .expect("write override");
+        assert!(is_remote_bound(root.path(), "Kira"), "a remote override reads remote");
+        PersonaModelOverride::new("local/model".to_string(), Some("operator".to_string()), 2)
+            .write(&home)
+            .expect("write local");
+        assert!(!is_remote_bound(root.path(), "Kira"), "a local override reads local");
     }
 }
