@@ -198,6 +198,11 @@ pub(crate) async fn ask_the_act_question(
                         thoughts = last_state.len() as u64,
                         "her own newest thoughts lead the work turn"
                     );
+                    // No page = no note (a fresh card carries none); the absence is not a quantity.
+                    let progress = match &page {
+                        Ok(rows) => crate::persona::work_burst::card_progress(rows, ctx.identity.peer_id.as_uuid()),
+                        Err(_) => crate::persona::work_burst::CardProgress::default(),
+                    };
                     let acts_without_write = page
                         .as_ref()
                         .map(|rows| crate::persona::work_burst::acts_since_last_write(rows, ctx.identity.peer_id.as_uuid()))
@@ -210,7 +215,7 @@ pub(crate) async fn ask_the_act_question(
                             "the work turn is gated: edit now or release the card"
                         );
                     }
-                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write);
+                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write, &progress);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually
