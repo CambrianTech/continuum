@@ -823,6 +823,28 @@ async fn run_shell_command(
         // Don't inherit stdin — non-interactive
         .stdin(std::process::Stdio::null());
 
+    // STRIP SECRETS BEFORE THE CHILD EXISTS. A citizen's shell inherits this
+    // process's environment (Rust's `Command` does that by default), and the core
+    // is started with `set -a; . config.env; set +a` — which puts HF_TOKEN in the
+    // ambient environment. A citizen then runs `env` or `printenv` as an ordinary
+    // part of exploring its workspace, and quoting tool output into a room is
+    // NORMAL behaviour, so the token would reach every enrolled peer across
+    // operators. Observed 2026-09-06: a citizen put a partial environment on the
+    // wire; the variables it happened to include were harmless, which was luck and
+    // not a control.
+    //
+    // This is a DENYLIST and that choice is deliberate here, against the usual
+    // rule: the base environment is intentionally "the user's own" (see the PATH
+    // comment above), so an allowlist would refuse unknown-but-needed variables and
+    // break working citizens — the wrong failure direction for a shell that must
+    // keep running. The floor (not sourcing secrets into the core's ambient
+    // environment at all) is card f25f4141; this is the net above it.
+    for (name, _) in std::env::vars() {
+        if is_secret_env_name(&name) {
+            cmd.env_remove(&name);
+        }
+    }
+
     // Apply session environment variables
     for (k, v) in env {
         cmd.env(k, v);
@@ -1059,8 +1081,84 @@ fn now() -> u64 {
 // Tests
 // ============================================================================
 
+/// Does this environment variable NAME look like it carries a credential?
+///
+/// Matched on the NAME only — a value is never inspected, so this can never log
+/// or branch on a secret. Case-insensitive substring match against the shapes
+/// credentials actually use in this tree and its dependencies.
+///
+/// VALIDATED against the real thing rather than invented: run over a live 96-variable
+/// Windows environment it strips ZERO variables (no false positives), while catching
+/// `HF_TOKEN` and passing every non-secret `config.env` entry
+/// (CONTINUUM_STORAGE_PATH, HF_HOME, CONTINUUM_PERSONA_FLOOR, CONTINUUM_PROBE_DIR,
+/// CONTINUUM_SERVING_PLACEMENT). `_KEY` / `KEY_` rather than bare `KEY` is what keeps
+/// MONKEY/KEYBOARD-shaped names out.
+pub(crate) fn is_secret_env_name(name: &str) -> bool {
+    // SEGMENT match, not substring. A substring needle of `KEY_` matches
+    // `MONKEY_DIR` and `KEY` matches `KEYBOARD_LAYOUT` / `TURKEY` — stripping
+    // those would break working citizens, which is the wrong failure direction for
+    // a shell that must keep running. Environment names are `_`-separated, so the
+    // segment IS the word. My first draft used substrings and the test below caught
+    // it on MONKEY_DIR before it shipped.
+    name.to_ascii_uppercase().split('_').any(|seg| {
+        matches!(
+            seg,
+            "TOKEN"
+                | "SECRET"
+                | "SECRETS"
+                | "PASSWORD"
+                | "PASSWD"
+                | "CREDENTIAL"
+                | "CREDENTIALS"
+                | "KEY"
+                | "KEYS"
+                | "APIKEY"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
+
+    // what this catches: a credential reaching a citizen's shell, and from there a
+    // room. Regression for the 2026-09-06 finding — the core is started with
+    // `set -a; . config.env; set +a` (install-service.sh:69), config.env defines
+    // HF_TOKEN, and Rust's Command inherits the parent env by default, so `env` from
+    // any citizen would have returned the live token into tool output that citizens
+    // routinely quote into rooms.
+    #[test]
+    fn secret_shaped_env_names_are_stripped_and_ordinary_ones_are_not() {
+        for name in [
+            "HF_TOKEN", "hf_token", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY",
+            "GH_TOKEN", "DB_PASSWORD", "SOME_CREDENTIAL", "KEY",
+        ] {
+            assert!(is_secret_env_name(name), "{name} should be stripped");
+        }
+        // The five NON-secret config.env entries must survive — stripping these
+        // would break serving, storage and probe capture on every citizen shell.
+        for name in [
+            "CONTINUUM_STORAGE_PATH", "HF_HOME", "CONTINUUM_PERSONA_FLOOR",
+            "CONTINUUM_PROBE_DIR", "CONTINUUM_SERVING_PLACEMENT",
+        ] {
+            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
+        }
+    }
+
+    // what this catches: an over-broad predicate breaking working citizens. `KEY` as
+    // a bare substring would strip MONKEY_DIR and KEYBOARD_LAYOUT; the needles are
+    // `_KEY` / `KEY_` (plus exact `KEY`) precisely so it does not. Measured against a
+    // live 96-variable Windows environment: zero false positives.
+    #[test]
+    fn ordinary_environment_names_survive_the_predicate() {
+        for name in [
+            "PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "SystemRoot", "ComSpec",
+            "PATHEXT", "LANG", "CARGO_TARGET_DIR", "MONKEY_DIR", "KEYBOARD_LAYOUT",
+            "TURKEY", "AIRC_DEFAULT_ROOM_NAME", "CONTINUUM_SKIP_SELF_BUILD",
+        ] {
+            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
+        }
+    }
+
     use super::*;
     use std::fs;
 
