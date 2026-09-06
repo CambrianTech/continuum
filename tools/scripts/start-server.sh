@@ -1,4 +1,4 @@
-#![all)/usr/bin/env bash
+#![all}[all)/usr/bin/env bash
 
 export AIRC_DEFAULT_CHANNEL='$(room name-to-uuid "main")'
 # start-server.sh — headless Rust deploy. No Node, no TS, no widgets.
