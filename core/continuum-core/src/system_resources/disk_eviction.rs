@@ -735,6 +735,23 @@ mod tests {
             // generation's pages — that wants a pool that asks the slot pool which
             // activities are resident (their pages are one eviction from being
             // needed) versus departed, never a blind LRU.
+            // airc's per-room projection snapshots (operator scope; the personas' live under
+            // `citizens`). Size is O(rooms × projection): the board snapshot is the folded
+            // board (cards, not events), the wall snapshot is the room's posts (few). Both
+            // are accelerators rebuilt from the transcript on any anomaly, so eviction is
+            // always safe; what they want is a sweep keyed on the room directory — a
+            // snapshot for a room that is archived or no longer subscribed is dead weight.
+            (
+                "airc-board-cache",
+                "1291173d/#155: sweep snapshots of rooms absent from the directory or \
+                 archived; rebuilt from the transcript on the next read, so deletion is \
+                 always safe",
+            ),
+            (
+                "airc-wall-cache",
+                "airc#1390/#155: same sweep as airc-board-cache — one file per room, the \
+                 room's posts; rebuilt on the next read",
+            ),
             (
                 "kv-pages",
                 "#155: broker-reachable pool keyed on slot-pool residency; the \

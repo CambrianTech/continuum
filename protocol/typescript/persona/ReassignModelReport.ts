@@ -24,6 +24,13 @@ previous_model: string | null,
  */
 override_persisted: boolean, 
 /**
+ * The peer serving her model when the assignment is OFF-BOX; `None` for a
+ * local assignment. Present so a caller can tell the two apart without
+ * re-reading the override — a remote assignment did NOT fit-gate this host and
+ * did NOT pin anything here, so `previous_model` is meaninglessly `None` for it.
+ */
+remote_peer?: string, 
+/**
  * Human-readable summary.
  */
 detail: string, };

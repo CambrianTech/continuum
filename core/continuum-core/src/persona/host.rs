@@ -249,6 +249,13 @@ impl PersonaSpawnSupervisor {
         self.spawner.set_population(population);
     }
 
+    /// Follow the LIVE serving plan (called on every reconciler pass): the roster
+    /// seats at most the served lane count, so a swap to a bigger model with fewer
+    /// lanes shrinks the roster instead of starving it.
+    pub fn refresh_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+        self.spawner.set_serving(plan);
+    }
+
     /// Run the full boot pipeline:
     ///
     /// 1. `bootstrap_planned`: provider intents → airc-bootstrapped

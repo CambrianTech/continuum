@@ -55,6 +55,24 @@ pub struct PersonaModelOverride {
     /// Who made the assignment: an operator user-id, or the persona's own id when
     /// she reassigned herself as a tool. `None` when the origin is unknown.
     pub set_by: Option<String>,
+    /// The airc peer whose lane serves `model_id`, when her brain runs OFF-BOX.
+    ///
+    /// `None` — the default and the whole prior behaviour — means this host serves
+    /// her model locally, and the assignment is fit-gated by `serving/pin` before
+    /// anything is persisted.
+    ///
+    /// `Some(peer)` means the model is **not** expected to be servable here: her
+    /// inference crosses the grid to that peer. This is the durable half of "a
+    /// citizen's brain routes to a remote lane" (card `1d2f65e7`, lifting the one
+    /// idea out of the 449-commits-behind #2250 rather than rebasing it).
+    ///
+    /// Measured 2026-09-06 on IntelMac, which is why this field exists: a node whose
+    /// only local model is below the cognition floor cannot host a useful citizen,
+    /// and the cross-grid hop it would need was demonstrated the same night —
+    /// `ai/generate` addressed to a citizen on another node returned that node's
+    /// adapter in 409 ms, with the reply naming the REMOTE host's served models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_peer: Option<String>,
 }
 
 /// Failure modes of reading / writing a persona's model override. Every variant
@@ -87,7 +105,33 @@ impl PersonaModelOverride {
             model_id: model_id.into(),
             set_at_ms: now_ms,
             set_by,
+            remote_peer: None,
         }
+    }
+
+    /// The same assignment, but served by `peer` over airc instead of by this host.
+    ///
+    /// Separate from [`Self::new`] rather than a fourth argument: a local assignment
+    /// and a remote one are fit-gated differently (local composes `serving/pin`,
+    /// remote deliberately does not), so the two cases should not be reachable by
+    /// passing `None` to one constructor.
+    pub fn new_remote(
+        model_id: impl Into<String>,
+        set_by: Option<String>,
+        now_ms: u64,
+        peer: impl Into<String>,
+    ) -> Self {
+        Self {
+            model_id: model_id.into(),
+            set_at_ms: now_ms,
+            set_by,
+            remote_peer: Some(peer.into()),
+        }
+    }
+
+    /// Does this assignment run off-box? `true` when a peer serves her model.
+    pub fn is_remote(&self) -> bool {
+        self.remote_peer.is_some()
     }
 
     /// Read the override for a persona home. `Ok(None)` if no override file exists
