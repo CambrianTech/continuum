@@ -4896,7 +4896,15 @@ mod tests {
             context_window: 262_144,
             max_output_tokens: 4096,
             tokens_per_second: 0.0,
-            capabilities: std::collections::BTreeSet::new(),
+            // A fixture row that can SPEAK: the base-model candidate set now requires
+            // TextGeneration or Chat (can_serve_minds, card af635057), and every real
+            // catalog row carries them; an empty set here would model an embedding row.
+            capabilities: [
+                crate::model_registry::types::Capability::Chat,
+                crate::model_registry::types::Capability::TextGeneration,
+            ]
+            .into_iter()
+            .collect(),
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
