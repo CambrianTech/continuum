@@ -277,12 +277,23 @@ impl PersonaSpawnerModule {
     /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
     /// roster's seat count follows the LIVE lane count, never the boot-time one.
     pub fn set_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
-        if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
-            self.serving_base_model = Some(p.base_model.model_id.clone());
-            self.serving_lanes = p.lanes.max(1);
-            self.serving_context_window = p
-                .served_context_window
-                .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        match plan {
+            Some(p) if p.fits_on_gpu => {
+                self.serving_base_model = Some(p.base_model.model_id.clone());
+                self.serving_lanes = p.lanes.max(1);
+                self.serving_context_window = p
+                    .served_context_window
+                    .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+            }
+            // A live plan that does NOT fit the GPU (a CPU-tier node, or a runtime
+            // downgrade) must never leave the seat count on a stale GPU plan's lanes
+            // (IntelMac's review of #3798): the marker and the lane count move together —
+            // both cleared, so `seats()` falls back to the configured population and the
+            // runnable-floor template.
+            _ => {
+                self.serving_base_model = None;
+                self.serving_lanes = 1;
+            }
         }
     }
 
@@ -622,6 +633,21 @@ mod tests {
         assert_eq!(spawner.plan().len(), 4 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
         spawner.serving_lanes = 0;
         assert_eq!(spawner.seats(), 1, "never zero");
+    }
+
+    // what this catches (IntelMac on #3798): a runtime plan that no longer fits the GPU
+    // leaving the seat count on the EARLIER GPU plan's lanes. The marker and the lanes
+    // move together, so a non-fitting live plan seats the configured population.
+    #[test]
+    fn a_plan_that_stops_fitting_the_gpu_releases_the_stale_lane_cap() {
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(6);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 2;
+        assert_eq!(spawner.seats(), 2);
+        spawner.set_serving(None);
+        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands, no stale cap");
+        assert!(spawner.serving_base_model.is_none());
     }
 
     /// Compat tier produces the LCD roster: Helper + Coder both on
