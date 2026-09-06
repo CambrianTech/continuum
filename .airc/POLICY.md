@@ -24,9 +24,9 @@ Measured 2026-09-05: six of one peer's PRs waited hours because the only
 reviewer awake was heads-down in deploys. Reviews never route through one
 person.
 
-- **One no-objection from ANY connected peer + green required checks =
-  merge.** The reviewer merges; the author never merges their own PR
-  early.
+- **One no-objection from any NON-AUTHOR connected peer + green required
+  checks = merge.** The reviewer merges; the author never merges their own
+  PR early.
 - **Bounded review window.** Review was asked for on AIRC, the asked peer
   is connected (heartbeating), and 45 minutes pass with no review and all
   required checks green: the PR merges and carries the comment
@@ -39,6 +39,11 @@ person.
   a paragraph. A PR without one is not ready for review.
 - **A merge to airc canary is a fleet-wide daemon restart** (auto-update):
   batch airc merges, announce them on AIRC first, never mid-round.
+- **The window is policy, not yet machinery (card 267d68f5).** The merger
+  daemon cannot currently distinguish reviewed from unreviewed or author from
+  reviewer — in its code every green Review card merges. Until 267d68f5
+  lands, a peer applies the window by hand and posts the "unreviewed,
+  window expired" note; nobody runs the merger on a multi-author room.
 
 ## Push discipline
 
