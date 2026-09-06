@@ -170,9 +170,28 @@ fn ensure_citizen_layer_from_base(
     // the base through `.git/objects/info/alternates`, so the layer's marginal disk is
     // her working tree plus her own commits. `git_sync_from_shared` (fetch + merge) is
     // unchanged — it never depended on the copy.
+    // The clone source is the base's repository ROOT: production hands the core's cwd
+    // (the checkout root), but a caller standing inside the tree (a test in
+    // core/continuum-core) means the same repository, and `git clone` wants the root.
+    // A base outside any repository is a loud error — a citizen layer without a
+    // repository is not a workspace.
+    let toplevel = std::process::Command::new("git")
+        .current_dir(base)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| CommandError::Internal(format!("citizen layer: git rev-parse spawn failed: {e}")))?;
+    if !toplevel.status.success() {
+        return Err(CommandError::Internal(format!(
+            "citizen layer: base {} is not inside a git repository ({}) — a layer is a shared \
+             clone of the checkout and cannot be provisioned from a bare directory",
+            base.display(),
+            String::from_utf8_lossy(&toplevel.stderr).trim()
+        )));
+    }
+    let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
     let out = std::process::Command::new("git")
         .args(["clone", "--shared", "--quiet"])
-        .arg(base)
+        .arg(&repo_root)
         .arg(&layer)
         .output()
         .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
@@ -189,7 +208,7 @@ fn ensure_citizen_layer_from_base(
     // The vendored inference engine rides along as a submodule; reference the base's
     // copy so its objects are shared too. Bounded and named: a layer without the vendor
     // tree still gives her hands (the core serves inference, not her checkout).
-    let vendor = init_vendor_submodule(&layer, base);
+    let vendor = init_vendor_submodule(&layer, &repo_root);
     crate::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
@@ -257,7 +276,7 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
         return;
     }
     let want = format!("{}\n", base_objects.display());
-    if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) {
+    if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) { // unwrap_or: no/unreadable alternates = not yet shared; the migration below writes it
         return;
     }
     let started = std::time::Instant::now();
@@ -276,7 +295,7 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
         let mut dropped = 0usize;
         if let Ok(entries) = std::fs::read_dir(layer.join(".git").join("worktrees")) {
             for entry in entries.flatten() {
-                let gitdir = std::fs::read_to_string(entry.path().join("gitdir")).unwrap_or_default();
+                let gitdir = std::fs::read_to_string(entry.path().join("gitdir")).unwrap_or_default(); // unwrap_or_default: an unreadable gitdir marker is a broken entry the copy inherited — empty never names this layer, so it is dropped with the foreign ones
                 if !gitdir.trim().starts_with(&layer.display().to_string()) {
                     let _ = std::fs::remove_dir_all(entry.path());
                     dropped += 1;
