@@ -715,10 +715,12 @@ async fn reboot(force: bool) -> Result<(), String> {
     let benches = continuum_core::cognition::swe_bench::in_flight_solve_runs();
     if !benches.is_empty() && !force {
         return Err(format!(
-            "benchmark run(s) in flight ({}) — a reboot kills them mid-drive; the round \
-             survives and the boot resume re-fires each killed solve (rejoining its room \
-             and workspace) once serving + citizens are back. Wait for them to finish, or \
-             rerun with `continuum reboot --force` to take the restart-and-resume path.",
+            "benchmark run(s) in flight ({}) — a reboot kills them mid-drive. Stop them \
+             cleanly first: `continuum benchmark/round-stop --run_id <id>` cancels at the \
+             next task boundary and keeps every streamed grade (benchmark/pause is a HOLD \
+             and leaves them running). Or wait for them, or rerun with `continuum reboot \
+             --force` to take the restart-and-resume path (the boot resume re-fires each \
+             killed solve once serving + citizens are back).",
             benches
                 .iter()
                 .map(|(run, inst)| format!("{run} on {inst}"))
