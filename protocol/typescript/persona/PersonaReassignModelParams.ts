@@ -34,11 +34,19 @@ set_by: string | null,
  * intent, while a cross-grid `ai/generate` addressed to a citizen on another node
  * answered in 409 ms from that node's adapter.
  *
- * This is the DURABLE half only. Materialising her adapter as an
- * `AircRemoteInferenceAdapter` pinned to this peer happens where the allocator
- * reads the override (`persona/allocator.rs`, via `commands/persona/allocate.rs`)
- * and is the next slice of card `1d2f65e7`. Until that lands, the record persists
- * and the allocator still resolves her locally — so this flag is inert rather
- * than half-wired, and `models_remote` in the report says so.
+ * This is the DURABLE half. Materialising her adapter as an
+ * `AircRemoteInferenceAdapter` pinned to this peer is
+ * [`crate::persona::remote_lane_factory::RemoteLaneAdapterFactory`], which landed
+ * in `b21aaa314` — both slices of card `1d2f65e7` are live.
+ *
+ * THE ORDER MATTERS AND IT IS NOT OBVIOUS. The factory reads this record in
+ * `build_adapter`, which runs ONCE when a persona comes online. Reassigning a
+ * persona who is ALREADY online writes the record and changes nothing about the
+ * mind currently running — she keeps the adapter she booted with. Measured
+ * 2026-09-06: spawn-then-reassign left `persona.adapter.remote_lane` at zero
+ * occurrences and the citizen generating locally; despawn + respawn with the
+ * record already on disk fired the probe on the next build. So the sequence is
+ * reassign THEN (re)spawn, and the report says so rather than leaving an operator
+ * to infer it from "persisted".
  */
 remote_peer: string | null, };
