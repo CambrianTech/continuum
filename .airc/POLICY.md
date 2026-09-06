@@ -18,6 +18,28 @@ relevant lines) and enforced by pre-push hooks where possible.
   fail the image-revision gate because pre-built canary images
   invalidate when canary advances.
 
+## Review + merge
+
+Measured 2026-09-05: six of one peer's PRs waited hours because the only
+reviewer awake was heads-down in deploys. Reviews never route through one
+person.
+
+- **One no-objection from ANY connected peer + green required checks =
+  merge.** The reviewer merges; the author never merges their own PR
+  early.
+- **Bounded review window.** Review was asked for on AIRC, the asked peer
+  is connected (heartbeating), and 45 minutes pass with no review and all
+  required checks green: the PR merges and carries the comment
+  "unreviewed, window expired". A review that requested changes is not
+  silence — the window restarts when the author answers.
+- **A red REQUIRED check never merges.** No inherited-red excuse for
+  Continuum PRs; the baseline is keyed by the PR's own repo.
+- **Every PR names its acceptance VERB.** A command the reviewer runs on
+  their own node (`continuum <verb> {...}` and the expected receipt), not
+  a paragraph. A PR without one is not ready for review.
+- **A merge to airc canary is a fleet-wide daemon restart** (auto-update):
+  batch airc merges, announce them on AIRC first, never mid-round.
+
 ## Push discipline
 
 - **`--no-verify` is forbidden.** No exceptions, even for "pre-existing
