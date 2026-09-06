@@ -24,7 +24,16 @@ pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::Roo
     for r in mine {
         for act in r.text.split(crate::persona::presence_glyph::ACT).skip(1) {
             let verb = act.split_whitespace().next().unwrap_or(""); // unwrap_or: a bare glyph names no verb
-            if verb.starts_with("code/edit") || verb.starts_with("git_apply") || verb.starts_with("edit_file") || verb.starts_with("code/git/apply") {
+                        // Every write-capable hand resets the count (review on #3790: `code/write`
+            // is what the one card completion tonight used — a gate that reads a
+            // write as an act misfires on the behaviour it exists to reward).
+            // COUPLING: this parses the rendered ⚙ receipt (`presence_glyph::act_line`);
+            // the acceptance verb reads `persona.act.observed wrote=true`. If the
+            // receipt shape moves, this counter reads zero and the gate silently
+            // stops — read the act probe stream here when it is queryable per card.
+            if verb.starts_with("code/edit") || verb.starts_with("code/write")
+               || verb.starts_with("code/create-workspace") || verb.starts_with("git_apply")
+               || verb.starts_with("edit_file") || verb.starts_with("code/git/apply") {
                 n = 0;
             } else {
                 n += 1;

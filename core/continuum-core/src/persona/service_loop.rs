@@ -2999,7 +2999,7 @@ mod tests {
         assert!(text.contains("PASS: blocked"), "{text}");
 
         let mut edited = looping.clone();
-        edited.push(row(4, "💭 fixing ⚙ code/edit checks.py ✓ ⚙ code/run pytest ✓"));
+        edited.push(row(4, "💭 fixing ⚙ code/write witness_report.txt ✓ ⚙ code/run pytest ✓"));
         assert_eq!(acts_since_last_write(&edited, me), 1, "an edit resets the count");
         let text = held_work_burst_gated(&[], &[], acts_since_last_write(&edited, me));
         assert!(!text.contains("[write or release]"), "no gate after an edit: {text}");
