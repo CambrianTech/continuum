@@ -38,6 +38,33 @@ pub(crate) enum PullOutcome {
     Nothing,
 }
 
+/// The deck entries a HOLDER may still take: review cards only, never for a parent
+/// she holds herself. Pure, so the ordering rule is testable without a board.
+pub(crate) fn review_candidates<C: HasCard>(
+    candidates: Vec<C>,
+    held: &[Uuid],
+    review_parent: impl Fn(Uuid) -> Option<Uuid>,
+) -> Vec<C> {
+    candidates
+        .into_iter()
+        .filter(|c| match review_parent(c.card()) {
+            Some(parent) => !held.contains(&parent),
+            None => false,
+        })
+        .collect()
+}
+
+/// The one field the review filter needs off a deck entry.
+pub(crate) trait HasCard {
+    fn card(&self) -> Uuid;
+}
+
+impl HasCard for crate::cognition::bench_round::NextCard {
+    fn card(&self) -> Uuid {
+        self.card
+    }
+}
+
 pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> PullOutcome {
     let Some(citizen) = conversation.stream_citizen() else {
         return PullOutcome::Nothing;
@@ -45,9 +72,13 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
     // WIP = 1, enforced HERE and not by call order: a citizen who already holds a
     // card never pulls a second, even on a tick where the held-work gate deferred
     // (lane busy, env building). Also what keeps the board reads below to the idle.
-    match citizen.active_claims().await {
-        Ok(held) if held.is_empty() => {}
-        Ok(_) => return PullOutcome::Nothing,
+    // …except a REVIEW card. The gate makes an owner's `done` a review card a
+    // NON-owner must take, and with WIP = lanes every resident already holds a card,
+    // so nobody was ever idle to take one: measured 2026-09-06 20:03Z, two owners done
+    // for 40 minutes and zero reviewer pulls. A holder may take one review beside her
+    // own card (review cards never count against the lane cap); never her own card's.
+    let held: Vec<Uuid> = match citizen.active_claims().await {
+        Ok(held) => held.iter().map(|c| c.card_id.as_uuid()).collect(),
         Err(e) => {
             crate::probe!(
                 class = "bench.round.pull_failed",
@@ -58,7 +89,8 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             );
             return PullOutcome::Nothing;
         }
-    }
+    };
+    let reviews_only = !held.is_empty();
     {
         let me = ctx.identity.peer_id.as_uuid();
         let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
@@ -89,7 +121,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
     // citizen round (the tracker's own owner column lags the board and read zero,
     // so the first cut of this cap never held). Organic: nobody is told what to
     // do — the world simply has no free slot.
-    {
+    if !reviews_only {
         let lanes = crate::cognition::resource_admission::served_lane_count();
         let now = crate::modules::chat::now_ms();
         let mut in_flight = 0usize;
@@ -122,6 +154,11 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
     }
     let candidates =
         crate::cognition::bench_round::pullable_cards(ctx.identity.peer_id.as_uuid(), &resident);
+    let candidates: Vec<_> = if reviews_only {
+        review_candidates(candidates, &held, crate::cognition::bench_round::review_parent)
+    } else {
+        candidates
+    };
     if candidates.is_empty() {
         return PullOutcome::Nothing;
     }
@@ -186,5 +223,35 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             );
             PullOutcome::Nothing
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Entry(Uuid);
+    impl HasCard for Entry {
+        fn card(&self) -> Uuid {
+            self.0
+        }
+    }
+
+    // what this catches (2026-09-06 20:03Z): two owners done, zero reviewer pulls —
+    // holders never reached the deck. A holder takes review cards whose parent is not
+    // hers; never a round card, never her own card's review.
+    #[test]
+    fn a_holder_takes_only_reviews_of_cards_she_does_not_hold() {
+        let mine = Uuid::new_v4();
+        let theirs = Uuid::new_v4();
+        let review_of_mine = Uuid::new_v4();
+        let review_of_theirs = Uuid::new_v4();
+        let round_card = Uuid::new_v4();
+        let parent = move |c: Uuid| {
+            if c == review_of_mine { Some(mine) } else if c == review_of_theirs { Some(theirs) } else { None }
+        };
+        let deck = vec![Entry(round_card), Entry(review_of_mine), Entry(review_of_theirs)];
+        let takeable: Vec<Uuid> = review_candidates(deck, &[mine], parent).into_iter().map(|e| e.0).collect();
+        assert_eq!(takeable, vec![review_of_theirs]);
     }
 }
