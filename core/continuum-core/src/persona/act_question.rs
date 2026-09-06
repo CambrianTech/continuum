@@ -166,7 +166,8 @@ pub(crate) async fn ask_the_act_question(
                     // `held_work_burst`); paged from the durable store, the
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
-                    let last_state = match crate::persona::durable_history::room_rows(turn_room, 80).await {
+                    let page = crate::persona::durable_history::room_rows(turn_room, 80).await;
+                    let last_state = match &page {
                         Ok(rows) => {
                             let about: Vec<String> = held
                                 .iter()
@@ -197,7 +198,19 @@ pub(crate) async fn ask_the_act_question(
                         thoughts = last_state.len() as u64,
                         "her own newest thoughts lead the work turn"
                     );
-                    let burst_text = held_work_burst(&held, &last_state);
+                    let acts_without_write = page
+                        .as_ref()
+                        .map(|rows| crate::persona::work_burst::acts_since_last_write(rows, ctx.identity.peer_id.as_uuid()))
+                        .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence
+                    if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS {
+                        crate::probe!(
+                            class = "persona.work.write_or_release_gate",
+                            persona = %ctx.identity.agent_name,
+                            acts_without_write,
+                            "the work turn is gated: edit now or release the card"
+                        );
+                    }
+                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually

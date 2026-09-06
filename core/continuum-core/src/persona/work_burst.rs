@@ -5,7 +5,56 @@
 
 use uuid::Uuid;
 
+/// Acts on a held card without a file change before the work turn stops narrating
+/// and GATES: edit now, or release with a reason. Six is two turns of "let me read
+/// one more thing" — the shape every glass box found tonight (Atlas: 850+ acts, no
+/// deliverable; the substrate said "no act of mine has changed a file" and nothing
+/// followed from it).
+// context-budget-exempt: an act count, not a window or token budget
+pub(crate) const WRITE_OR_RELEASE_AFTER_ACTS: usize = 6;
+
+/// Her acts since her last file change, counted from her own ⚙ receipts in the
+/// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
+/// the count; a card with no edit ever counts every act. Pure.
+pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> usize {
+    let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
+        rows.iter().filter(|r| r.sender == me).collect();
+    mine.sort_by_key(|r| r.occurred_at_ms);
+    let mut n = 0usize;
+    for r in mine {
+        for act in r.text.split(crate::persona::presence_glyph::ACT).skip(1) {
+            let verb = act.split_whitespace().next().unwrap_or(""); // unwrap_or: a bare glyph names no verb
+                        // Every write-capable hand resets the count (review on #3790: `code/write`
+            // is what the one card completion tonight used — a gate that reads a
+            // write as an act misfires on the behaviour it exists to reward).
+            // COUPLING: this parses the rendered ⚙ receipt (`presence_glyph::act_line`);
+            // the acceptance verb reads `persona.act.observed wrote=true`. If the
+            // receipt shape moves, this counter reads zero and the gate silently
+            // stops — read the act probe stream here when it is queryable per card.
+            if verb.starts_with("code/edit") || verb.starts_with("code/write")
+               || verb.starts_with("code/create-workspace") || verb.starts_with("git_apply")
+               || verb.starts_with("edit_file") || verb.starts_with("code/git/apply") {
+                n = 0;
+            } else {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String]) -> String {
+    held_work_burst_gated(held, last_state, 0)
+}
+
+/// [`held_work_burst`] with the write-or-release gate: past
+/// [`WRITE_OR_RELEASE_AFTER_ACTS`] acts without a file change, the turn is told the
+/// investigation is finished and given exactly two ways out.
+pub(crate) fn held_work_burst_gated(
+    held: &[&airc_lib::WorkCard],
+    last_state: &[String],
+    acts_without_write: usize,
+) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
         "[work turn] The room is quiet and your speak-turn is settled. This \
@@ -40,6 +89,17 @@ pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String
          card, so use it only when the deliverable is really written. Speak only \
          to report a result or blocker to the room.",
     );
+    if acts_without_write >= WRITE_OR_RELEASE_AFTER_ACTS {
+        let _ = write!(
+            s,
+            "\n[write or release] You have made {acts_without_write} acts on this card \
+             without changing a file. The investigation is finished. This turn does ONE \
+             of two things: make the edit now (code/edit or git_apply — the fix you have \
+             already named in your last thoughts), or conclude 'PASS: blocked — <one \
+             line why>' and release the card so a peer can take it. No more reading, \
+             running, or status checks before one of those."
+        );
+    }
     s
 }
 
