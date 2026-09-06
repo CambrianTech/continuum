@@ -118,35 +118,28 @@ elif [ -x "$ESLINT_RATCHET" ]; then
     fi
 else
     BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
-    # Card aad30dee: COUNT the errors, but only after establishing that eslint
-    # actually RAN. The previous form piped eslint's merged stdout+stderr into
-    # `grep -cE "error\s+" || true` and used the count directly — so a linter
-    # that CRASHED (missing module, bad config, wrong cwd) emitted diagnostics
-    # the regex does not match ("Error: Cannot find module" has a capital E and
-    # no trailing whitespace class), yielding 0. Zero is `-le` any baseline, so
-    # a linter that never ran printed a green checkmark and let the push
-    # through. `|| true` guaranteed the pipeline could not fail on its own, and
-    # `set -e` cannot see through a pipe — the script LOOKED defended.
+    # THIS BRANCH IS UNREACHABLE, and saying so is the point of this comment.
     #
-    # eslint's exit codes: 0 = clean, 1 = lint errors found, 2 = eslint itself
-    # failed. Only 0 and 1 mean "the linter ran and has an opinion"; anything
-    # else is a broken checker and must be loud, never a silent zero.
-    # `|| LINT_RC=$?` is load-bearing, not defensive noise: `set -e` (line 5)
-    # aborts on a failing command substitution, and eslint exits 1 for the
-    # ORDINARY case of "found lint errors". Without this the script would die
-    # on the exact path it exists to report. The old `|| true` was doing this
-    # job too — it just discarded the code we now need.
-    LINT_RC=0
-    LINT_RAW=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1) || LINT_RC=$?
-    if [ "$LINT_RC" -gt 1 ]; then
-        echo "❌ ESLint FAILED TO RUN (exit $LINT_RC) — this is a broken checker, not a clean tree."
-        echo "   Refusing to report a lint result. Its output:"
-        echo "$LINT_RAW" | tail -20 | sed 's/^/      /'
-        FAILED=1
-        CURRENT=""
-    else
-        CURRENT=$(printf '%s\n' "$LINT_RAW" | grep -cE "error\s+" || true)
-    fi
+    # It runs only when scripts/ratchets/check-eslint-baseline.sh is NOT
+    # executable, and that file is committed executable (-rwxr-xr-x), so the
+    # `elif` above always wins. The whole Node phase is unreachable a second
+    # time over: `require_node_deps` (line 75) gates on `$SRC_DIR/node_modules`
+    # where SRC_DIR is `$REPO_ROOT/src`, a directory deleted in July by
+    # e46d968c5 when the Node shell moved to legacy/src.
+    #
+    # Card aad30dee briefly replaced the counting here with an exit-status check
+    # (eslint 0 = clean, 1 = found errors, >=2 = the linter itself failed), on
+    # the theory that a CRASHED linter yielded 0 and printed a green checkmark.
+    # The reasoning was right and the placement was wrong three ways: the branch
+    # cannot run, fixing SRC_DIR would not make it run, and the path that DOES
+    # run — check-eslint-baseline.sh:124 — already defends the case:
+    #
+    #     if [[ "$ESLINT_STATUS" -ne 0 && "$CURRENT" -eq 0 ]]; then … exit 2
+    #
+    # That change is reverted rather than left in place, because inert code that
+    # LOOKS like a defence is worse than no code: the next reader assumes the
+    # case is handled here and stops looking for where it actually is.
+    CURRENT=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
 fi
 if [ -n "${CURRENT:-}" ]; then
     LINT_DUR=$(( $(date +%s) - LINT_START ))

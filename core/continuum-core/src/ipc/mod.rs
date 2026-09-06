@@ -3375,6 +3375,7 @@ pub fn start_server(
     let provider_registry = runtime.provider_registry();
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
+            .with_interceptor_chain(runtime.interceptor_chain())
             // Share the ONE runtime bus (the same Arc every ModuleContext
             // gets — `chat:posted` from the airc daemon-attach projector
             // and `presence:updated` from the node presence emitter both

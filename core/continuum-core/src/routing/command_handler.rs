@@ -468,6 +468,13 @@ impl CommandRequestHandler {
     }
 }
 
+/// A command request is answered by exactly the peer it names. `All` and `Room`
+/// targets are not peer RPCs (the only dispatch kind wired today), so they are
+/// nobody's to answer either.
+pub(crate) fn addressed_to(target: &airc_core::MentionTarget, me: PeerId) -> bool {
+    matches!(target, airc_core::MentionTarget::Peer(p) if *p == me)
+}
+
 #[async_trait]
 impl ConsumerAdapter for CommandRequestHandler {
     fn name(&self) -> &'static str {
@@ -479,6 +486,23 @@ impl ConsumerAdapter for CommandRequestHandler {
     }
 
     async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
+        // ONLY THE ADDRESSED PEER ANSWERS. Every node in the room hears every
+        // command request; this handler answered all of them — so a peer-addressed
+        // `ai/generate` was answered by whoever heard it first, the SENDER included
+        // (measured 2026-09-06 03:30Z on the M5: a request to an unknown peer came
+        // back with this node's own serving state as "the remote peer's adapter").
+        // A request for another peer is not ours to answer; a request for nobody in
+        // particular is not a peer RPC (only kind=peer is wired) — both are ignored
+        // by name, never answered.
+        if !addressed_to(&envelope.target, self.airc.peer_id()) {
+            crate::probe!(
+                class = "airc.command.request_not_for_me",
+                target = ?envelope.target,
+                me = %self.airc.peer_id().0,
+                "command request addressed to another peer (or to nobody) — not answering"
+            );
+            return Ok(());
+        }
         let parsed = Self::parse_envelope(&envelope)?;
         let response = self.process_request(&parsed).await;
         self.send_reply(&parsed, &response).await?;
@@ -532,6 +556,22 @@ mod tests {
             env: None,
             params: serde_json::json!({"path": "foo.rs"}),
         }
+    }
+
+    // what this catches: the loopback — a peer-addressed request answered by whoever
+    // hears it (the sender included). Only the named peer answers; a broadcast target
+    // is nobody's to answer.
+    #[test]
+    fn only_the_addressed_peer_answers_a_command_request() {
+        let me = PeerId::new();
+        let other = PeerId::new();
+        assert!(addressed_to(&MentionTarget::Peer(me), me));
+        assert!(!addressed_to(&MentionTarget::Peer(other), me), "another peer's request is not ours");
+        assert!(!addressed_to(&MentionTarget::All, me), "a broadcast is not a peer RPC");
+        assert!(
+            !addressed_to(&MentionTarget::Room(airc_core::RoomId::from_uuid(Uuid::new_v4())), me),
+            "a room target is not a peer RPC"
+        );
     }
 
     #[test]

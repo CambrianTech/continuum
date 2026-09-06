@@ -161,7 +161,15 @@ impl CommandInterceptor for AircInterceptor {
                 // which carries the WHOLE PROMPT. `params` is already `&Value`, so
                 // borrow-decode it; `from_value(params.clone())` deep-copied the
                 // largest payload in the system on every single generation.
-                let text_request: TextGenerationRequest = serde::Deserialize::deserialize(params)
+                // The TYPED envelope: `CommandRequest<P>` consumes its own base fields
+                // (handle / sessionId / userId / contextId / requestId) and hands back the
+                // command's params as `P`. Deserializing `P` straight from the flat wire
+                // object let the envelope's integer `requestId` land in the request's own
+                // `requestId: String` (measured 2026-09-06, IntelMac's cross-node probe).
+                let text_request: TextGenerationRequest = <crate::runtime::command_envelope::CommandRequest<
+                    TextGenerationRequest,
+                > as serde::Deserialize>::deserialize(params)
+                .map(|envelope| envelope.params)
                     .map_err(|e| {
                         format!(
                             "aircPeer '{AIRC_ROUTED_GENERATE}' params aren't a \
@@ -190,6 +198,31 @@ impl CommandInterceptor for AircInterceptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (IntelMac, cross-node acceptance of #3779): the envelope's
+    // integer `requestId` deserialized as the request's own `requestId: String` —
+    // every well-formed peer-addressed generate refused with "invalid type: integer
+    // `1`, expected a string". The hop must read the COMMAND's params, not the envelope.
+    #[tokio::test]
+    async fn the_hop_deserializes_the_command_not_the_envelope() {
+        let interceptor = AircInterceptor::new();
+        let params = serde_json::json!({
+            "aircPeer": "11111111-2222-4333-8444-555555555555",
+            "requestId": 1,
+            "sessionId": "22222222-2222-4222-8222-222222222222",
+            "messages": [{"role": "user", "content": "hi"}],
+            "maxTokens": 5
+        });
+        let err = interceptor
+            .try_route("ai/generate", &params, None)
+            .await
+            .expect_err("no airc handle is attached in this test — the hop must refuse loudly");
+        assert!(
+            !err.contains("TextGenerationRequest"),
+            "the envelope's requestId must not be read as the request's: {err}"
+        );
+        assert!(err.contains("attached"), "the refusal names the real gap: {err}");
+    }
 
     #[tokio::test]
     async fn declines_when_no_airc_target() {

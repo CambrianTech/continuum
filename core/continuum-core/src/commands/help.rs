@@ -81,8 +81,42 @@ pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a s
             Some((score, *name))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    // Rank: score, then DEPTH, then name.
+    //
+    // Alphabetical alone was the tie-break when #3769 landed, and on the very failure
+    // that motivated it the right answers lost the race. Measured live 2026-09-05:
+    //
+    //   list_cards -> agent/list, ai/lora/list, ai/models/list, ai/providers/list,
+    //                 benchmark/list, code/list
+    //
+    // Eight commands share the word `list`, all tie at score 0, and `take(6)` cut at
+    // `code/` — dropping exactly `commands/list` and `work/list`, the two the citizen
+    // wanted. Suggestions appeared where there had been silence, which was the fix,
+    // and none of them was the route, which was the claim.
+    //
+    // Depth is the discriminator the data actually carries: a two-segment command is
+    // a top-level verb, a three-segment one is a specialisation inside a family. When
+    // nothing else separates candidates, the shallower command is the likelier answer
+    // — `work/list` over `ai/providers/list`. It is only a tie-break, so the score
+    // tiers above are untouched.
+    //
+    // Edit distance was the first thing I tried and it does not work here: every
+    // candidate ENDS in `list`, so last-segment distance ties them all, and the
+    // query's own last token is `cards`, which is near none of them. A discriminator
+    // has to discriminate on the case that motivated it.
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(depth(a.1).cmp(&depth(b.1)))
+            .then(a.1.cmp(b.1))
+    });
     scored.into_iter().take(6).map(|(_, n)| n).collect()
+}
+
+/// Path segments in a command name — `work/list` is 2, `ai/providers/list` is 3.
+/// Shallower is more central, and that is the only structural signal left once two
+/// candidates share a word and nothing else.
+fn depth(name: &str) -> usize {
+    name.split('/').filter(|s| !s.is_empty()).count()
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -126,7 +160,27 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
             // `EditMode` enum) collapsed to a useless `"any"`, so a model literally
             // could not tell what to pass — the invisible-contract bug.
             let (ty, placeholder) = param_shape(spec, schema);
-            example.insert(key.clone(), placeholder);
+            // The example is the MINIMAL VALID CALL — required arguments only. Every
+            // optional one stays in the argument list below, documented, and out of the
+            // envelope a caller is told to copy.
+            //
+            // Because a caller copies the example. Measured 2026-09-05, a citizen
+            // emitted `code/edit`'s ENTIRE manual back as a tool call:
+            //
+            //   [code/edit(all=<any>, content=<any>, description=<any>, edit_mode=<any>,
+            //    end_line=<any>, file_path=<string>, line=<any>, new_content=<any>,
+            //    replace=<any>, search=<any>)]
+            //
+            // Ten arguments, nine of them optional, every one a placeholder. She was not
+            // guessing — she pasted exactly what she was shown. An example that carries
+            // every optional argument teaches the caller to send every optional argument,
+            // and for a union-typed param the placeholder cannot even deserialize.
+            //
+            // Required-only cuts that call to `{"file_path": "<string>"}`, which is the
+            // shape the manual is trying to teach in the first place.
+            if req {
+                example.insert(key.clone(), placeholder);
+            }
             arg_lines.push(format!(
                 "- {key} ({ty}, {}){}",
                 if req { "required" } else { "optional" },
@@ -197,7 +251,24 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                 );
             }
         }
-        return (ty.to_string(), json!(format!("<{ty}>")));
+        // A placeholder must be VALID FOR ITS OWN TYPE. `<boolean>` is a string, so a
+        // caller that copies the example verbatim — which is exactly what the manual
+        // says to do, and exactly what a small model does — gets
+        // `invalid type: string "<boolean>", expected a boolean` and cannot recover by
+        // trying harder: the example it was handed is unsatisfiable. Observed three
+        // times on 2026-09-05 (`code/edit <string>`, `code/edit … "<any>" expected a
+        // boolean`). A typed placeholder still reads as fill-me-in, and a literal copy
+        // now fails on MEANING (wrong path, missing field) instead of on SHAPE — an
+        // error the caller can act on.
+        let placeholder = match ty {
+            "boolean" => json!(true),
+            "integer" | "number" => json!(0),
+            "array" => json!([]),
+            "object" => json!({}),
+            // A string placeholder IS a valid string: it parses, then fails on content.
+            _ => json!(format!("<{ty}>")),
+        };
+        return (ty.to_string(), placeholder);
     }
     for tag in ["oneOf", "anyOf"] {
         if let Some(variants) = spec.get(tag).and_then(Value::as_array) {
@@ -345,6 +416,77 @@ mod param_shape_tests {
         let out = render_ai_help("x", "y", &schema);
         assert!(out.contains("p (string, required)"), "{out}");
     }
+
+    // what this catches: a placeholder that is invalid for its OWN type, so a caller
+    // copying the example verbatim — which the manual instructs — cannot possibly
+    // succeed. Observed 2026-09-05: `code/edit` refused with
+    // `invalid type: string "<any>", expected a boolean`, the citizen having pasted the
+    // placeholder it was shown. The example must at least DESERIALIZE; being wrong
+    // about the value is recoverable, being wrong about the shape is not.
+    #[test]
+    fn every_placeholder_deserializes_as_its_own_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "flag":  {"type": "boolean"},
+                "count": {"type": "integer"},
+                "items": {"type": "array"},
+                "opts":  {"type": "object"},
+                "name":  {"type": "string"},
+            }
+        });
+        for (field, ty) in [
+            ("flag", "boolean"),
+            ("count", "integer"),
+            ("items", "array"),
+            ("opts", "object"),
+            ("name", "string"),
+        ] {
+            let spec = &schema["properties"][field];
+            let (_, placeholder) = param_shape(spec, &schema);
+            let ok = match ty {
+                "boolean" => placeholder.is_boolean(),
+                "integer" => placeholder.is_number(),
+                "array" => placeholder.is_array(),
+                "object" => placeholder.is_object(),
+                _ => placeholder.is_string(),
+            };
+            assert!(ok, "{field} ({ty}) placeholder is not a {ty}: {placeholder}");
+        }
+    }
+
+    // what this catches: the example envelope carrying OPTIONAL arguments, which a
+    // caller then copies wholesale. Measured 2026-09-05: a citizen emitted all ten of
+    // `code/edit`'s arguments back as a tool call — nine optional, every one a
+    // placeholder — because that is what the manual showed her. The example must be
+    // the minimal valid call; the optional arguments stay documented in the list.
+    #[test]
+    fn the_example_carries_required_arguments_only() {
+        let schema = json!({
+            "type": "object",
+            "required": ["file_path"],
+            "properties": {
+                "file_path": {"type": "string"},
+                "replace":   {"type": "boolean"},
+                "line":      {"type": "integer"},
+            }
+        });
+        let out = render_ai_help("code/edit", "edit a file", &schema);
+        let envelope: Value = {
+            let start = out.find('{').expect("an envelope is rendered");
+            let end = out.rfind('}').expect("an envelope is rendered");
+            serde_json::from_str(&out[start..=end]).expect("the rendered envelope is valid JSON")
+        };
+        let args = &envelope["tool_call"]["arguments"];
+        assert!(args.get("file_path").is_some(), "the required arg is in the example: {args}");
+        assert!(
+            args.get("replace").is_none() && args.get("line").is_none(),
+            "optional args must NOT be in the copyable example: {args}"
+        );
+        // …but they are still DOCUMENTED, or the caller cannot discover them.
+        assert!(out.contains("replace (boolean, optional)"), "{out}");
+        assert!(out.contains("line (integer, optional)"), "{out}");
+    }
 }
 
 /// A persona's "how do I call this?" — returns the exact tool-call format for a
@@ -447,6 +589,32 @@ mod tests {
         assert!(
             !hits.contains(&"code/read"),
             "a candidate sharing no word must not be suggested; got {hits:?}"
+        );
+    }
+
+    // what this catches: the RIGHT command losing the alphabetical coin-flip. #3769
+    // added the token tier so an invented verb gets suggestions instead of silence,
+    // and then — measured live on the box that produced the original 31-call loop —
+    // `list_cards` returned agent/list, ai/lora/list, ai/models/list,
+    // ai/providers/list, benchmark/list, code/list: six names, none of them the two
+    // she needed, because twenty commands tie at score 0 and take(6) cuts at `code/`.
+    // Suggestions are not a route unless the route survives the window.
+    #[test]
+    fn the_closest_command_survives_the_window_when_many_share_a_word() {
+        let names = [
+            "agent/list",
+            "ai/lora/list",
+            "ai/models/list",
+            "ai/providers/list",
+            "benchmark/list",
+            "code/list",
+            "commands/list",
+            "work/list",
+        ];
+        let hits = did_you_mean("list_cards", &names);
+        assert!(
+            hits.contains(&"commands/list") && hits.contains(&"work/list"),
+            "the commands whose own last word IS `list` must not be sorted out of the window; got {hits:?}"
         );
     }
 

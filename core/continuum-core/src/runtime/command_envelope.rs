@@ -187,6 +187,13 @@ pub struct CommandRequest<P> {
     #[ts(optional)]
     #[ts(optional, type = "string")]
     pub context_id: Option<Uuid>,
+    /// The wire's request counter (the IPC framing's `requestId`, an integer). Typed
+    /// here so the ENVELOPE consumes it and a command's own `requestId: String` never
+    /// sees an integer (measured 2026-09-06: the airc hop refused every well-formed
+    /// peer-addressed generate with "invalid type: integer `1`, expected a string").
+    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "number")]
+    pub request_id: Option<u64>,
 }
 
 /// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
@@ -224,12 +231,7 @@ fn param_mismatch_message(serde_error: &str, sent: &[String]) -> String {
         // it is the single likeliest mis-name (`command` for `cmd`), and suppressing it would
         // break the exact case this function exists for. A little CLI noise beats losing the
         // real diagnosis — caught by this function's own test.
-        .filter(|k| {
-            !matches!(
-                k.as_str(),
-                "handle" | "sessionId" | "userId" | "contextId" | "requestId"
-            )
-        })
+        .filter(|k| !is_envelope_field(k.as_str()))
         .collect();
     if candidates.is_empty() {
         return format!(
@@ -282,6 +284,11 @@ fn is_subsequence(short: &str, long: &str) -> bool {
     short.chars().all(|c| chars.any(|l| l == c))
 }
 
+/// The base fields every wire request may carry beside its command params.
+pub fn is_envelope_field(key: &str) -> bool {
+    matches!(key, "handle" | "sessionId" | "userId" | "contextId" | "requestId")
+}
+
 impl<P> CommandRequest<P>
 where
     P: serde::de::DeserializeOwned,
@@ -316,6 +323,7 @@ impl<P> CommandRequest<P> {
             session_id: None,
             user_id: None,
             context_id: None,
+            request_id: None,
             actor_kind: None,
         }
     }

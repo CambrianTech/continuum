@@ -81,4 +81,11 @@ userId?: string,
  * shit you did to me"), never an authentication: authenticated identity
  * stays `ctx.caller` (the airc gate).
  */
-actorKind?: string, contextId?: string, } & P;
+actorKind?: string, contextId?: string, 
+/**
+ * The wire's request counter (the IPC framing's `requestId`, an integer). Typed
+ * here so the ENVELOPE consumes it and a command's own `requestId: String` never
+ * sees an integer (measured 2026-09-06: the airc hop refused every well-formed
+ * peer-addressed generate with "invalid type: integer `1`, expected a string").
+ */
+requestId?: number, } & P;

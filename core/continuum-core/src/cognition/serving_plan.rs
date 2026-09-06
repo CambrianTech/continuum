@@ -845,9 +845,25 @@ pub fn plan_serving_stable(
     // `candidates.iter().find(|c| c.model_id == f.base_model_id)` — a name lookup that
     // returned None whenever the planned name wasn't in the candidate list, silently
     // making `is_some_and` false and suppressing a legitimate switch-up.
-    let upgrade_worth_it = fresh.as_ref().map(|f| &f.base_model).is_some_and(|f| {
+    // A SWITCH-UP NEVER MAKES MORE MINDS COLD. Measured 2026-09-06 01:0xZ on the M5:
+    // the planner switched the base from a 5-lane MoE to a 3-lane dense model on
+    // measured capability alone, with 12 minds resident — every HUD read ACT 0 /
+    // QUE 12, one act in 30 minutes, and Joel called it what it was: a major
+    // regression. Capability is the rank; warm slots are the roster's oxygen. A
+    // candidate that would serve FEWER lanes than the incumbent while still fewer
+    // than the roster needs leaves minds cold that were warm — not an upgrade,
+    // whatever it scores. (BigMama, card a374c014: this compares FOOTPRINTS, so a
+    // stale weights_bytes on a long-running core lies to it — fix the input there.)
+    let inc_lanes = plan_serving(at_rest, std::slice::from_ref(inc), demand)
+        .map(|p| p.lanes as u32)
+        .unwrap_or(0); // unwrap_or: an incumbent that cannot plan at all has no lanes to protect
+    let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
+        let f = &fresh_plan.base_model;
+        let fresh_lanes = fresh_plan.lanes as u32;
+        let starves_the_roster = fresh_lanes < inc_lanes && fresh_lanes < demand.lanes;
         f.capability_rank > inc.capability_rank
             && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
+            && !starves_the_roster
     });
     if upgrade_worth_it {
         return fresh;
@@ -1898,13 +1914,11 @@ mod tests {
             usable_bytes: 20 * GB,
             perf_cores: 6,
         }; // big 9.7 << 0.9*20=18
-        let stable = plan_serving_stable(
-            host,
-            &pair(),
-            Some("small"),
-            ServingDemand::new(MAX_LANES, None),
-        )
-        .unwrap();
+        // Demand 1: the roster fits either model, so this test isolates the HEADROOM
+        // rule. (With MAX_LANES the bigger model would leave minds cold that were warm
+        // on the small one, and the switch-up guard refuses — its own test below.)
+        let stable = plan_serving_stable(host, &pair(), Some("small"), ServingDemand::new(1, None))
+            .unwrap();
         assert_eq!(
             stable.base_model.model_id, "big",
             "more capable + ample headroom → upgrade"
@@ -1918,6 +1932,53 @@ mod tests {
     // (memory-pressure eviction of a resident model for a smaller one is provably
     // unreachable: room for the smaller model's full weights implies room for the
     // incumbent's tiny KV floor).
+    // what this catches: a switch-up that makes more minds cold. Measured 2026-09-06
+    // on the M5: a 5-lane MoE incumbent was replaced by a 3-lane dense model on
+    // measured capability alone with 12 minds resident (ACT 0 / QUE 12, one act in
+    // 30 min). While the roster is oversubscribed at the incumbent, a candidate that
+    // serves FEWER lanes is not an upgrade; once the roster fits, capability decides.
+    #[test]
+    fn a_switch_up_never_makes_more_minds_cold() {
+        // 64 GB usable: the MoE (22 GB, tiny KV) hosts the whole roster, the dense model
+        // (19 GB, KV ten times larger) hosts part of it. Ratios, not exact counts, carry
+        // the test.
+        let host = HostBudget {
+            usable_bytes: 64 * GB,
+            perf_cores: 8,
+        };
+        let moe = fp("moe", 22, 40_000, 131_072, 23);
+        let dense = fp("dense", 19, 400_000, 131_072, 42);
+        let both = vec![moe.clone(), dense.clone()];
+
+        let inc_only = plan_serving(host, std::slice::from_ref(&moe), ServingDemand::new(12, None))
+            .expect("the incumbent plans");
+        let dense_only =
+            plan_serving(host, std::slice::from_ref(&dense), ServingDemand::new(12, None))
+                .expect("the candidate plans");
+        assert!(
+            dense_only.lanes < inc_only.lanes && (dense_only.lanes as u32) < 12,
+            "fixture: dense {} < moe {} and dense < roster 12",
+            dense_only.lanes,
+            inc_only.lanes
+        );
+
+        let oversubscribed =
+            plan_serving_stable(host, &both, Some("moe"), ServingDemand::new(12, None))
+                .expect("a plan");
+        assert_eq!(
+            oversubscribed.base_model.model_id, "moe",
+            "12 minds warm on the MoE: the higher-ranked dense model would leave some cold \
+             — not an upgrade"
+        );
+
+        let roster_fits = plan_serving_stable(host, &both, Some("moe"), ServingDemand::new(1, None))
+            .expect("a plan");
+        assert_eq!(
+            roster_fits.base_model.model_id, "dense",
+            "one mind: nobody goes cold, so the measured capability decides"
+        );
+    }
+
     #[test]
     fn stable_forced_down_when_incumbent_gone_from_disk() {
         let host = HostBudget {

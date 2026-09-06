@@ -83,15 +83,30 @@ pub(crate) fn own_recent_thoughts_about(
     }
     mine.sort_by_key(|r| r.occurred_at_ms);
     let start = mine.len().saturating_sub(keep);
-    mine[start..]
-        .iter()
-        .map(|r| {
+    let kept = &mine[start..];
+    let newest = kept.len().saturating_sub(1);
+    kept.iter()
+        .enumerate()
+        .map(|(i, r)| {
             let one_line = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
-            if one_line.chars().count() > max_chars {
+            let n = one_line.chars().count();
+            if n <= max_chars {
+                return one_line;
+            }
+            // THE NEWEST THOUGHT KEEPS ITS CONCLUSION. A stock-take thought opens
+            // with orientation ("Let me carefully parse where I actually am…") and
+            // ends with what she worked out ("so the fix is: include the index in the
+            // label at checks.py:…"). Head-clipping the newest one fed her back her own
+            // re-orientation and dropped the conclusion — glass-boxed 2026-09-06 03:49Z:
+            // Atlas held the fix in his reasoning and re-ran git status every turn.
+            // Older thoughts keep their head (what they were about); the newest keeps
+            // its tail (where it got to).
+            if i == newest {
+                let tail: String = one_line.chars().skip(n - max_chars).collect();
+                format!("…{tail}")
+            } else {
                 let cut: String = one_line.chars().take(max_chars).collect();
                 format!("{cut}…")
-            } else {
-                one_line
             }
         })
         .collect()
