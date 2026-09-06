@@ -503,6 +503,17 @@ impl ConsumerAdapter for CommandRequestHandler {
             );
             return Ok(());
         }
+        // THE ACCEPT PATH NAMES ITSELF (BigMama, 2026-09-06 22:0xZ): the only probe on
+        // inbound peer commands was the refusal, so a request that was ACCEPTED left no
+        // row and silence read as ambiguous. Now every accepted request says who was
+        // asked, by whom, and what — the receipt the grid's first hop was missing.
+        crate::probe!(
+            class = "airc.command.request_accepted",
+            target = ?envelope.target,
+            me = %self.airc.peer_id().0,
+            from = %envelope.peer_id.0,
+            "command request addressed to this citizen — executing"
+        );
         let parsed = Self::parse_envelope(&envelope)?;
         let response = self.process_request(&parsed).await;
         self.send_reply(&parsed, &response).await?;
