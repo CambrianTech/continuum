@@ -3023,12 +3023,14 @@ mod tests {
         let p = card_progress(&rows, me);
         assert_eq!(p.acts, 7);
         assert_eq!(p.writes, 1);
-        assert_eq!(p.read, vec!["MultiValueField".to_string(), "django/forms/fields.py".to_string()], "de-duplicated, newest last");
+        assert_eq!(p.read, vec!["django/forms/fields.py".to_string()], "paths only, de-duplicated");
+        assert_eq!(p.searched, vec!["MultiValueField".to_string()], "a search term is not a read");
         assert_eq!(p.ran.len(), 2);
         assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
         let block = held_work_burst_gated(&[], &[], 0, &p);
         assert!(block.contains("[progress] 7 acts so far (1 writes)"), "{block}");
-        assert!(block.contains("Already read: MultiValueField, django/forms/fields.py."), "{block}");
+        assert!(block.contains("Already read: django/forms/fields.py."), "{block}");
+        assert!(block.contains("Already searched: MultiValueField."), "{block}");
         assert!(block.find("[progress]").unwrap() < block.find("Your workspace holds").unwrap(), "the note leads");
         assert!(progress_line(&CardProgress::default()).is_empty(), "a fresh card carries no note");
         assert!(!held_work_burst_gated(&[], &[], 0, &CardProgress::default()).contains("[progress]"));

@@ -56,9 +56,12 @@ pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String
 pub(crate) struct CardProgress {
     pub acts: usize,
     pub writes: usize,
-    /// Distinct objects of her read-shaped acts (code/read, code/search, code/list),
+    /// Distinct objects of her read-shaped acts (code/read, code/list) — paths —
     /// newest last, capped.
     pub read: Vec<String>,
+    /// Distinct code/search terms, newest last, capped (review on #3793: a search
+    /// term is not something she "already read").
+    pub searched: Vec<String>,
     /// Her newest run/shell commands with their outcome glyph, newest last, capped.
     pub ran: Vec<String>,
 }
@@ -83,22 +86,19 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
             }
             let ok = seg.ends_with(OK);
             let seg = seg.trim_end_matches(OK).trim_end_matches(FAIL).trim();
-            let mut parts = seg.splitn(2, ' ');
-            let verb = parts.next().unwrap_or("");
-            let object = parts.next().unwrap_or("").trim();
+            let (verb, object) = match seg.split_once(' ') {
+                Some((v, o)) => (v, o.trim()),
+                None => (seg, ""),
+            };
             p.acts += 1;
             if is_write_verb(verb) {
                 p.writes += 1;
             }
             let obj: String = object.chars().take(72).collect();
-            if verb.starts_with("code/read") || verb.starts_with("code/search") || verb.starts_with("code/list") {
-                if !obj.is_empty() {
-                    p.read.retain(|o| o != &obj);
-                    p.read.push(obj);
-                    if p.read.len() > PROGRESS_READ_KEEP {
-                        p.read.remove(0);
-                    }
-                }
+            if verb.starts_with("code/read") || verb.starts_with("code/list") {
+                push_distinct(&mut p.read, obj);
+            } else if verb.starts_with("code/search") {
+                push_distinct(&mut p.searched, obj);
             } else if verb.starts_with("code/run") || verb.starts_with("code/shell") {
                 let shown = if obj.is_empty() { verb.to_string() } else { obj };
                 p.ran.push(format!("{shown} {}", if ok { OK } else { FAIL }));
@@ -111,6 +111,18 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
     p
 }
 
+/// Keep `v` a distinct, newest-last list capped at [`PROGRESS_READ_KEEP`].
+fn push_distinct(v: &mut Vec<String>, obj: String) {
+    if obj.is_empty() {
+        return;
+    }
+    v.retain(|o| o != &obj);
+    v.push(obj);
+    if v.len() > PROGRESS_READ_KEEP {
+        v.remove(0);
+    }
+}
+
 /// One `[progress]` line for the head of the held-work block; empty when she has
 /// no acts yet (a fresh card carries no note).
 pub(crate) fn progress_line(p: &CardProgress) -> String {
@@ -121,6 +133,11 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
     if !p.read.is_empty() {
         s.push_str(" Already read: ");
         s.push_str(&p.read.join(", "));
+        s.push('.');
+    }
+    if !p.searched.is_empty() {
+        s.push_str(" Already searched: ");
+        s.push_str(&p.searched.join(", "));
         s.push('.');
     }
     if !p.ran.is_empty() {
