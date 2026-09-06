@@ -68,6 +68,7 @@ pub mod media_policy;
 pub mod message_cache;
 pub mod mission_source;
 pub mod model_override;
+pub mod remote_lane_factory;
 pub mod model_selection;
 pub mod name_generator;
 pub mod persona_identity;
