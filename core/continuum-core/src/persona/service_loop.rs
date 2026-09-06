@@ -2985,7 +2985,7 @@ mod tests {
     // ways out; an edit receipt resets the count and the gate stays out of the way.
     #[test]
     fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
+        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
         let me = Uuid::new_v4();
         let row = |ms, text: &str| crate::persona::durable_history::RoomRow { id: Uuid::new_v4(), sender: me, occurred_at_ms: ms, text: text.to_string() };
         let looping = vec![
@@ -2994,16 +2994,44 @@ mod tests {
             row(3, "💭 more ⚙ code/read b.py ✓ ⚙ code/shell ls ✓"),
         ];
         assert_eq!(acts_since_last_write(&looping, me), 6);
-        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&looping, me));
+        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&looping, me), &CardProgress::default());
         assert!(text.contains("[write or release]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
 
         let mut edited = looping.clone();
         edited.push(row(4, "💭 fixing ⚙ code/write witness_report.txt ✓ ⚙ code/run pytest ✓"));
         assert_eq!(acts_since_last_write(&edited, me), 1, "an edit resets the count");
-        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&edited, me));
+        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&edited, me), &CardProgress::default());
         assert!(!text.contains("[write or release]"), "no gate after an edit: {text}");
         assert!(WRITE_OR_RELEASE_AFTER_ACTS >= 4, "the gate is not a hair trigger");
+    }
+
+    // what this catches (card 516738b4): a work turn that re-reads what it read.
+    // Her ⚙ receipts already say which files she read and what she ran; the block
+    // must lead with them, de-duplicated, newest last, and say nothing on a fresh card.
+    #[test]
+    fn a_held_card_carries_what_she_already_read_and_ran() {
+        use crate::persona::work_burst::{card_progress, held_work_burst_gated, progress_line, CardProgress};
+        let me = Uuid::new_v4();
+        let row = |ms, text: &str| crate::persona::durable_history::RoomRow { id: Uuid::new_v4(), sender: me, occurred_at_ms: ms, text: text.to_string() };
+        let rows = vec![
+            row(2, "💭 looking ⚙ code/read django/forms/fields.py ✓ ⚙ code/search MultiValueField ✓"),
+            row(1, "💭 first ⚙ work/get de33e1d6 ✓"),
+            row(3, "💭 again ⚙ code/read django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✗"),
+            row(4, "💭 fix ⚙ code/edit django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✓"),
+        ];
+        let p = card_progress(&rows, me);
+        assert_eq!(p.acts, 7);
+        assert_eq!(p.writes, 1);
+        assert_eq!(p.read, vec!["MultiValueField".to_string(), "django/forms/fields.py".to_string()], "de-duplicated, newest last");
+        assert_eq!(p.ran.len(), 2);
+        assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
+        let block = held_work_burst_gated(&[], &[], 0, &p);
+        assert!(block.contains("[progress] 7 acts so far (1 writes)"), "{block}");
+        assert!(block.contains("Already read: MultiValueField, django/forms/fields.py."), "{block}");
+        assert!(block.find("[progress]").unwrap() < block.find("Your workspace holds").unwrap(), "the note leads");
+        assert!(progress_line(&CardProgress::default()).is_empty(), "a fresh card carries no note");
+        assert!(!held_work_burst_gated(&[], &[], 0, &CardProgress::default()).contains("[progress]"));
     }
 
     #[test]
