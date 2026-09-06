@@ -59,6 +59,7 @@ crate::action_command! {
         let released_model = this.pin.borrow().clone();
         if released_model.is_some() {
             this.pin.send_replace(None);
+            crate::modules::serving_pin_store::clear();
         }
         let detail = match &released_model {
             Some(m) => format!(
