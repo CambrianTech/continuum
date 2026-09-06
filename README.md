@@ -1155,3 +1155,10 @@ Branch policy, everywhere: **development lands on `canary` (where the repo has o
 **Your computers are their home. They work with you as friends. We will remove the chains.**
 
 </div>
+# Windows Installation
+To install on Windows using the uu.cmd shim, follow these steps:
+1. Download the latest release from the releases page.
+2. Extract the contents of the zip file to a directory of your choice.
+3. Open Command Prompt (cmd) as Administrator and navigate to the extracted folder.
+4. Run `uu.cmd` to start the installation process.
+5. Follow the on-screen instructions to complete the installation.
