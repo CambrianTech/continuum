@@ -80,6 +80,27 @@ pub struct PersonaReassignModelParams {
     /// when she reassigns herself as a tool. Recorded on the override for audit.
     #[serde(default)]
     pub set_by: Option<String>,
+    /// The airc peer whose lane serves `model_id`, when her brain is to run OFF-BOX.
+    ///
+    /// Omit it (the default) and the assignment is local: `serving/pin` fit-gates the
+    /// model on THIS host and refuses loud if it is unknown, not downloaded, or won't
+    /// fit — unchanged behaviour.
+    ///
+    /// Pass it and the local fit-gate is deliberately SKIPPED, because the point is
+    /// that this host cannot serve the model: the named peer does. That is the whole
+    /// value for a node below the cognition floor — measured on IntelMac 2026-09-06,
+    /// whose only local model returns 39–42 character bare tool calls with an empty
+    /// intent, while a cross-grid `ai/generate` addressed to a citizen on another node
+    /// answered in 409 ms from that node's adapter.
+    ///
+    /// This is the DURABLE half only. Materialising her adapter as an
+    /// `AircRemoteInferenceAdapter` pinned to this peer happens where the allocator
+    /// reads the override (`persona/allocator.rs`, via `commands/persona/allocate.rs`)
+    /// and is the next slice of card `1d2f65e7`. Until that lands, the record persists
+    /// and the allocator still resolves her locally — so this flag is inert rather
+    /// than half-wired, and `models_remote` in the report says so.
+    #[serde(default)]
+    pub remote_peer: Option<String>,
 }
 
 /// What `persona/reassign-model` did: the durable assignment that now sticks, and
@@ -100,6 +121,13 @@ pub struct ReassignModelReport {
     /// `true` once the durable per-persona override is written — i.e. the
     /// assignment will survive a restart, not just this session.
     pub override_persisted: bool,
+    /// The peer serving her model when the assignment is OFF-BOX; `None` for a
+    /// local assignment. Present so a caller can tell the two apart without
+    /// re-reading the override — a remote assignment did NOT fit-gate this host and
+    /// did NOT pin anything here, so `previous_model` is meaninglessly `None` for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remote_peer: Option<String>,
     /// Human-readable summary.
     pub detail: String,
 }
@@ -160,39 +188,73 @@ crate::action_command! {
         // 2. Compose serving/pin — its fit-gate is the single source of "can this
         //    host actually serve that model". If it refuses, the reassignment is
         //    refused as a whole and NOTHING is persisted (no silent downgrade).
-        let executor = this
-            .executor
-            .require()
-            .map_err(CommandError::Internal)?
-            .clone();
-        let pin_outcome = executor
-            .execute(
-                "serving/pin",
-                serde_json::json!({ "model_id": p.model_id }),
-            )
-            .await;
-        let pin_value = match pin_outcome {
-            Ok(result) => result.to_json_value().map_err(CommandError::Internal)?,
-            Err(e) => {
-                return Err(CommandError::Denied(format!(
-                    "cannot reassign '{}' to '{}': serving/pin refused it — {e}. \
-                     Nothing was changed; the persona keeps her current model.",
-                    p.persona, p.model_id
-                )));
+        //
+        //    SKIPPED ENTIRELY for a remote assignment. The fit-gate asks "can THIS
+        //    host hold it", and for `remote_peer` the answer is expected to be no —
+        //    that is the reason the peer was named. Running it anyway would refuse
+        //    every off-box assignment on exactly the nodes that need one. This is a
+        //    deliberate bypass of a gate, not a fallback: the local path keeps its
+        //    gate unchanged, and the remote path is a different question that this
+        //    gate cannot answer ([[substrate-gate-vs-persona-cognition]]).
+        let (pin_composed, previous_model) = match p.remote_peer.as_deref() {
+            None => {
+                let executor = this
+                    .executor
+                    .require()
+                    .map_err(CommandError::Internal)?
+                    .clone();
+                let pin_outcome = executor
+                    .execute(
+                        "serving/pin",
+                        serde_json::json!({ "model_id": p.model_id }),
+                    )
+                    .await;
+                let pin_value = match pin_outcome {
+                    Ok(result) => result.to_json_value().map_err(CommandError::Internal)?,
+                    Err(e) => {
+                        return Err(CommandError::Denied(format!(
+                            "cannot reassign '{}' to '{}': serving/pin refused it — {e}. \
+                             Nothing was changed; the persona keeps her current model.",
+                            p.persona, p.model_id
+                        )));
+                    }
+                };
+                let previous = pin_value
+                    .get("previous_model")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                (true, previous)
+            }
+            Some(peer) => {
+                // The peer id must be a peer UUID. Refuse a malformed one HERE rather
+                // than persisting a record that can never resolve to a route — the
+                // same reason the airc interceptor refuses a bad `aircPeer` by name
+                // in ~1ms instead of timing out at 30s.
+                if uuid::Uuid::parse_str(peer).is_err() {
+                    return Err(CommandError::Invalid(format!(
+                        "remote_peer '{peer}' is not a peer UUID — pass the peer id of a \
+                         citizen or node that serves '{}'. Nothing was persisted.",
+                        p.model_id
+                    )));
+                }
+                (false, None)
             }
         };
-        let previous_model = pin_value
-            .get("previous_model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
         // 3. The model is proven servable and now pinned — persist the durable
         //    per-persona assignment. A disk failure here leaves the host live on the
         //    model but the record un-persisted: fail loud and say exactly that, so
         //    the operator knows it won't survive a restart (we do NOT silently
         //    unpin — that would hide the disk fault behind a "reverted" lie).
-        let override_record =
-            PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), now_ms());
+        let override_record = match p.remote_peer.as_deref() {
+            None => PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), now_ms()),
+            Some(peer) => PersonaModelOverride::new_remote(
+                p.model_id.clone(),
+                p.set_by.clone(),
+                now_ms(),
+                peer,
+            ),
+        };
         override_record.write(&home).map_err(|e| {
             CommandError::Internal(format!(
                 "host is now serving '{}' for '{}' but persisting her durable assignment failed: {e}. \
@@ -202,7 +264,16 @@ crate::action_command! {
             ))
         })?;
 
-        let detail = match &previous_model {
+        let detail = match p.remote_peer.as_deref() {
+            Some(peer) => format!(
+                "'{}' is assigned '{}' served by peer {peer} — her brain runs OFF-BOX. \
+                 This host was NOT fit-gated and is not serving it. Persisted for next boot. \
+                 NOTE: adapter materialisation is the next slice of card 1d2f65e7; until it \
+                 lands the allocator still resolves her locally, so this record is durable \
+                 but not yet load-bearing.",
+                p.persona, p.model_id
+            ),
+            None => match &previous_model {
             Some(prev) if prev == &p.model_id => format!(
                 "'{}' was already serving '{}'; pin held and her durable assignment is now recorded",
                 p.persona, p.model_id
@@ -215,13 +286,17 @@ crate::action_command! {
                 "reassigned '{}' to '{}' (nothing was serving); pinned now and persisted for next boot",
                 p.persona, p.model_id
             ),
+            },
         };
+
+        let _ = pin_composed;
 
         Ok(ReassignModelReport {
             persona: p.persona,
             model_id: p.model_id,
             previous_model,
             override_persisted: true,
+            remote_peer: p.remote_peer,
             detail,
         })
     }
@@ -267,6 +342,7 @@ mod tests {
                     persona: "Nonesuch".to_string(),
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: None,
+                    remote_peer: None,
                 },
             )
             .await
@@ -294,6 +370,7 @@ mod tests {
                     persona: "Asha".to_string(),
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: Some("operator".to_string()),
+                    remote_peer: None,
                 },
             )
             .await
@@ -305,4 +382,90 @@ mod tests {
             "no override may be persisted when the serving pin couldn't be attempted"
         );
     }
+    // what this catches: a REMOTE assignment must not be fit-gated by this host.
+    // Proven by the absence of an executor — `missing_executor_fails_loud_and_persists_nothing`
+    // above shows a LOCAL reassign fails Internal when the compose seam is missing,
+    // because it must reach `serving/pin`. The same call with `remote_peer` set
+    // SUCCEEDS on the same bare command, which is only possible if the pin was never
+    // attempted. That is the fit-gate skip, tested by consequence rather than by
+    // asserting on an internal branch.
+    //
+    // Card 1d2f65e7. The gate asks "can THIS host hold it"; for an off-box assignment
+    // the answer is expected to be no, so running it would refuse every remote
+    // assignment on exactly the nodes that need one (IntelMac, whose only local model
+    // is below the cognition floor).
+    #[tokio::test]
+    async fn a_remote_assignment_skips_the_local_fit_gate_and_records_the_peer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let home = resolve_home(&root, "Asha").expect("home resolves");
+        home.ensure_exists().expect("mkdir home");
+
+        let peer = "e5f4141d-1d95-4d62-8c19-97b5f8320837";
+        let cmd = cmd_with_root(root);
+        let report = cmd
+            .run(
+                &Ctx::default(),
+                PersonaReassignModelParams {
+                    persona: "Asha".to_string(),
+                    model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
+                    set_by: Some("operator".to_string()),
+                    remote_peer: Some(peer.to_string()),
+                },
+            )
+            .await
+            .expect("a remote assignment must not need a local serving pin");
+
+        assert_eq!(report.remote_peer.as_deref(), Some(peer));
+        assert!(report.override_persisted);
+        assert!(
+            report.previous_model.is_none(),
+            "nothing was pinned here, so there is no previous local model: {:?}",
+            report.previous_model
+        );
+
+        let persisted = PersonaModelOverride::load(&home)
+            .expect("load")
+            .expect("a remote assignment persists an override");
+        assert_eq!(persisted.remote_peer.as_deref(), Some(peer));
+        assert!(persisted.is_remote());
+        assert_eq!(persisted.model_id, "ornith-ai/Ornith-1.5-35B-A3B-GGUF");
+    }
+
+    // what this catches: a peer id that can never resolve to a route being written to
+    // disk, where it would fail later at adapter-materialisation time with no clue
+    // where it came from. Refused up front and NOTHING is persisted — the same shape
+    // as the airc interceptor refusing a malformed `aircPeer` by name in ~1ms instead
+    // of letting it become a 30s timeout (measured on IntelMac, four runs, 2026-09-06).
+    #[tokio::test]
+    async fn a_malformed_remote_peer_is_refused_before_anything_is_persisted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let home = resolve_home(&root, "Asha").expect("home resolves");
+        home.ensure_exists().expect("mkdir home");
+
+        let cmd = cmd_with_root(root);
+        let err = cmd
+            .run(
+                &Ctx::default(),
+                PersonaReassignModelParams {
+                    persona: "Asha".to_string(),
+                    model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
+                    set_by: None,
+                    remote_peer: Some("not-a-uuid".to_string()),
+                },
+            )
+            .await
+            .expect_err("a non-uuid peer must be refused");
+        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("not-a-uuid"),
+            "the refusal must name the bad value: {err}"
+        );
+        assert!(
+            PersonaModelOverride::load(&home).expect("load").is_none(),
+            "a refused remote assignment must persist nothing"
+        );
+    }
+
 }

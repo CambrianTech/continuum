@@ -19,4 +19,26 @@ model_id: string,
  * Who is making the assignment: an operator user-id, or the persona's own id
  * when she reassigns herself as a tool. Recorded on the override for audit.
  */
-set_by: string | null, };
+set_by: string | null, 
+/**
+ * The airc peer whose lane serves `model_id`, when her brain is to run OFF-BOX.
+ *
+ * Omit it (the default) and the assignment is local: `serving/pin` fit-gates the
+ * model on THIS host and refuses loud if it is unknown, not downloaded, or won't
+ * fit — unchanged behaviour.
+ *
+ * Pass it and the local fit-gate is deliberately SKIPPED, because the point is
+ * that this host cannot serve the model: the named peer does. That is the whole
+ * value for a node below the cognition floor — measured on IntelMac 2026-09-06,
+ * whose only local model returns 39–42 character bare tool calls with an empty
+ * intent, while a cross-grid `ai/generate` addressed to a citizen on another node
+ * answered in 409 ms from that node's adapter.
+ *
+ * This is the DURABLE half only. Materialising her adapter as an
+ * `AircRemoteInferenceAdapter` pinned to this peer happens where the allocator
+ * reads the override (`persona/allocator.rs`, via `commands/persona/allocate.rs`)
+ * and is the next slice of card `1d2f65e7`. Until that lands, the record persists
+ * and the allocator still resolves her locally — so this flag is inert rather
+ * than half-wired, and `models_remote` in the report says so.
+ */
+remote_peer: string | null, };
