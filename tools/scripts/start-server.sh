@@ -1,6 +1,6 @@
 #![all}[all)/usr/bin/env bash
 
-export AIRC_DEFAULT_CHANNEL='$(room name-to-uuid "main")'
+export AIRC_DEFAULT_CHANNEL='$(room name-to-uuid "$AIRC_DEFAULT_ROOM_NAME")'
 # start-server.sh — headless Rust deploy. No Node, no TS, no widgets.
 #
 # Per Joel 2026-06-02: repeatable start matching the headless-Rust-canonical
