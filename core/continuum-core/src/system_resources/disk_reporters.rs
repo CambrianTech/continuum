@@ -213,6 +213,15 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // `tracing_init` was exactly that until today) accumulates
         // invisibly. Owner: `RotationLogPool` — see
         // `super::rotation_log_pool`.
+        // airc's transcript-projection snapshots for the OPERATOR scope (each persona's ride
+        // inside her airc home under `citizens`): the work board's (shipped untracked, card
+        // 1291173d) and the wall's (airc#1390, 2026-09-06). One JSON per room; the wall one
+        // holds every post on the room, the board one the folded projection. Registered on
+        // the pin bump that adopted the wall cache, on the reviewer's point that a cache
+        // growing with room depth on 200k–470k-event rooms is exactly the class the
+        // 2026-07-13 rule exists to catch before it is the incident.
+        TrackedDir::new("airc-board-cache", home.join(".airc/work-board-cache")),
+        TrackedDir::new("airc-wall-cache", home.join(".airc/wall-cache")),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
