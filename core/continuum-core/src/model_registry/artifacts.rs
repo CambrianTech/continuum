@@ -636,7 +636,7 @@ fn is_gguf(path: &Path) -> bool {
 /// via `--spec-draft-model`, never `-m`.
 /// ONE predicate for every main-model collector; [`find_mmproj_beside`] and
 /// [`find_mtp_draft_beside`] remain the sidecar-POSITIVE scans.
-fn is_main_model_gguf(path: &Path) -> bool {
+pub(crate) fn is_main_model_gguf(path: &Path) -> bool {
     if !is_gguf(path) {
         return false;
     }
