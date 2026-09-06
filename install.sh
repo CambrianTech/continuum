@@ -1188,3 +1188,9 @@ if [ -n "$TS_HOSTNAME" ]; then
   echo "  Mesh:    https://$TS_HOSTNAME:9003"
 fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Windows installation script
+if [ "$OSTYPE" == "cygwin" ] || [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "win32" ]; then
+  echo "Detected Windows environment. Running Windows-specific setup..."
+  # Add Windows-specific installation steps here
+fi
