@@ -2961,6 +2961,25 @@ mod tests {
 
     // what this catches: the resume block carries HER newest thoughts only, oldest
     // first, clipped — never another citizen's line, never a receipt.
+    // what this catches (glass-boxed 2026-09-06, Atlas on django-16899): the newest
+    // thought head-clipped to its orientation — "Let me carefully parse where I am…" —
+    // so every turn re-ran git status and the conclusion she had reached never
+    // reached her next turn. The newest thought's TAIL is the resume point.
+    #[test]
+    fn the_newest_thought_resumes_from_its_conclusion_not_its_orientation() {
+        let me = Uuid::new_v4();
+        let row = |ms, text: &str| crate::persona::durable_history::RoomRow { id: Uuid::new_v4(), sender: me, occurred_at_ms: ms, text: text.to_string() };
+        let long = format!(
+            "💭 Let me carefully parse where I actually am right now. {} So the fix is: include the index in the label at checks.py:1040.",
+            "First, the ground truth from my own board and workspace. ".repeat(6)
+        );
+        let rows = vec![row(1, "💭 earlier orientation"), row(2, &long)];
+        let state = own_recent_thoughts(&rows, me, 2, 80);
+        assert_eq!(state.len(), 2);
+        assert!(state[1].ends_with("include the index in the label at checks.py:1040."), "{state:?}");
+        assert!(!state[1].contains("carefully parse"), "the orientation is what got dropped: {state:?}");
+    }
+
     #[test]
     fn her_last_thoughts_lead_the_work_turn_oldest_first() {
         use crate::persona::durable_history::RoomRow;
@@ -2977,7 +2996,8 @@ mod tests {
         let state = own_recent_thoughts(&rows, me, 2, 40);
         assert_eq!(state.len(), 2);
         assert!(state[0].starts_with("💭 lines 107-152"), "{state:?}");
-        assert!(state[1].ends_with('…'), "clipped: {state:?}");
+        // The newest thought keeps its TAIL — the conclusion — not its opening.
+        assert!(state[1].starts_with('…') && state[1].ends_with("on this card now, really"), "newest keeps its conclusion: {state:?}");
         let text = held_work_burst(&[], &state);
         assert!(text.contains("resume from them"));
         assert!(text.contains("lines 107-152"));
