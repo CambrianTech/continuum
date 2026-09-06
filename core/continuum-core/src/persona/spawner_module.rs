@@ -273,6 +273,19 @@ impl PersonaSpawnerModule {
         self
     }
 
+    /// Mutating twin of [`Self::with_serving`] for the resident reconciler: the
+    /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
+    /// roster's seat count follows the LIVE lane count, never the boot-time one.
+    pub fn set_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+        if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
+            self.serving_base_model = Some(p.base_model.model_id.clone());
+            self.serving_lanes = p.lanes.max(1);
+            self.serving_context_window = p
+                .served_context_window
+                .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        }
+    }
+
     /// Currently-planned desired roster. Pure over the module's configured
     /// tier + the serving overrides; no async, no lock — safe anywhere.
     pub fn plan(&self) -> Vec<DesiredRole> {
@@ -291,11 +304,28 @@ impl PersonaSpawnerModule {
         // second DIFFERENT role — so the boot-2 position-pairing hazard (which
         // only bites heterogeneous rosters, #133 slice 14) stays sidestepped.
         // population==1 returns the template unchanged (the prior behavior).
-        let mut roster = Vec::with_capacity(template.len() * self.population);
-        for _ in 0..self.population {
+        // THE ROSTER NEVER EXCEEDS THE WARM LANES (Joel 2026-09-06: "your machine should
+        // be serving the qwen3.8 for these coder personas"; measured the night before:
+        // a switch to the 27B left 12 minds on 3 lanes at ACT 0 / QUE 12, one act per
+        // 30 min). A mind without a lane is a cold restore every turn, not a citizen.
+        // When the daemon has published a real plan, the population is capped at its
+        // lane count; the runnable-floor template (no plan yet) keeps the configured
+        // population so boot never under-hosts on a stale guess.
+        let seats = self.seats();
+        let mut roster = Vec::with_capacity(template.len() * seats);
+        for _ in 0..seats {
             roster.extend(template.iter().cloned());
         }
         roster
+    }
+
+    /// How many citizens this node seats: the configured population, capped at the
+    /// served lane count once a real serving plan is known. ≥1.
+    pub fn seats(&self) -> usize {
+        match self.serving_base_model {
+            Some(_) => self.population.min(self.serving_lanes as usize).max(1),
+            None => self.population.max(1),
+        }
     }
 }
 
@@ -576,6 +606,22 @@ mod tests {
         assert_eq!(spawner.plan().len(), 3);
         spawner.set_population(0);
         assert_eq!(spawner.plan().len(), 1, "clamped to >=1, same as the builder");
+    }
+
+    // what this catches (2026-09-06): a roster larger than the warm lanes. With a real
+    // plan of 4 lanes the population of 12 seats 4; with no plan yet the configured
+    // population stands; a plan can never seat zero.
+    #[test]
+    fn the_roster_never_exceeds_the_warm_lanes() {
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        assert_eq!(spawner.seats(), 12, "no plan yet: the configured population stands");
+        spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
+        spawner.serving_lanes = 4;
+        assert_eq!(spawner.seats(), 4, "a real plan caps the roster at its lanes");
+        assert_eq!(spawner.plan().len(), 4 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
+        spawner.serving_lanes = 0;
+        assert_eq!(spawner.seats(), 1, "never zero");
     }
 
     /// Compat tier produces the LCD roster: Helper + Coder both on
