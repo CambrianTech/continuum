@@ -189,6 +189,7 @@ fn ensure_citizen_layer_from_base(
         )));
     }
     let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
+    protect_shared_objects(&repo_root);
     let out = std::process::Command::new("git")
         .args(["clone", "--shared", "--quiet"])
         .arg(&repo_root)
@@ -264,6 +265,43 @@ fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> Str
     }
 }
 
+/// The moment a layer starts borrowing the base's objects, the base stops being
+/// safe to gc: `git-clone(1)` on `--shared` — "if you delete branches in the source
+/// repository, some objects may become dangling" — and a routine auto-gc in the base
+/// would then corrupt EVERY resident citizen's workspace at once (review on #3795).
+/// `extensions.preciousObjects = true` makes gc/prune in the base refuse to drop
+/// objects. Idempotent; a failure to set it is loud and the provisioning stops,
+/// because a layer over an unprotected base is a repo-corruption timer, not a workspace.
+fn protect_shared_objects(base: &std::path::Path) {
+    let already = std::process::Command::new("git")
+        .current_dir(base)
+        .args(["config", "--get", "extensions.preciousObjects"])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false); // unwrap_or: a failed read means "not known to be set" — we set it below and check that
+    if already {
+        return;
+    }
+    let set = std::process::Command::new("git")
+        .current_dir(base)
+        .args(["config", "extensions.preciousObjects", "true"])
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false); // unwrap_or: a spawn failure is a failure to set; named below
+    crate::probe!(
+        class = "workspace.layer.base_protected",
+        base = %base.display(),
+        set,
+        "extensions.preciousObjects on the base repository — the citizens' shared objects survive its gc"
+    );
+    if !set {
+        tracing::error!(
+            base = %base.display(),
+            "could not set extensions.preciousObjects on the base — every shared citizen layer is one base gc away from corruption"
+        );
+    }
+}
+
 /// Migrate a layer provisioned by the old `cp -cR` shape to share its objects with
 /// the base: write `alternates`, repack keeping only objects the base lacks, and drop
 /// the worktree metadata the copy inherited from the base. Idempotent (a layer that
@@ -276,6 +314,7 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
         return;
     }
     let want = format!("{}\n", base_objects.display());
+    protect_shared_objects(base);
     if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) { // unwrap_or: no/unreadable alternates = not yet shared; the migration below writes it
         return;
     }
@@ -2315,6 +2354,16 @@ mod tests {
         assert!(
             !layer.join("tools/models").exists(),
             "an ignored cache in the base never rides into the layer"
+        );
+        let precious = std::process::Command::new("git")
+            .current_dir(base.path())
+            .args(["config", "--get", "extensions.preciousObjects"])
+            .output()
+            .expect("git config");
+        assert_eq!(
+            String::from_utf8_lossy(&precious.stdout).trim(),
+            "true",
+            "the base is protected from gc the moment a layer borrows its objects (review on #3795)"
         );
         // A peer WRITE lands in the layer, never the base.
         std::fs::write(layer.join("Cargo.toml"), "[dependencies]\n").unwrap();
