@@ -2704,7 +2704,26 @@ pub fn start_server(
             // The OpenAI-compatible `/v1` transport gives native function-calling
             // (the persona's HANDS actually fire) for free, vs the in-process
             // llama.cpp adapter which silently dropped tools. Joel 2026-06-21.
-            std::sync::Arc::new(crate::persona::supervisor::ServedModelPersonaAdapterFactory),
+            // Wrapped so a persona whose durable override names a `remote_peer` gets
+            // an `AircRemoteInferenceAdapter` over the grid instead of a local lane
+            // (card 1d2f65e7, slice 2 — slice 1 #3799 made the override durable but
+            // inert). A persona with no override, or a LOCAL one, is delegated
+            // straight through to the factory below, unchanged.
+            //
+            // The SAME cell the AircInterceptor gets: it is filled asynchronously by
+            // the attach task spawned above, typically well after this line runs. The
+            // factory reads it at build_adapter time, never captures it here — an
+            // `Option` snapshotted at construction would record "airc absent" forever
+            // and refuse every remote persona for the process lifetime.
+            std::sync::Arc::new(
+                crate::persona::remote_lane_factory::RemoteLaneAdapterFactory::new(
+                    std::sync::Arc::new(
+                        crate::persona::supervisor::ServedModelPersonaAdapterFactory,
+                    ),
+                    crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    airc_interceptor_cell.clone(),
+                ),
+            ),
             tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),
