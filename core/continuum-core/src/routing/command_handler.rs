@@ -475,6 +475,38 @@ pub(crate) fn addressed_to(target: &airc_core::MentionTarget, me: PeerId) -> boo
     matches!(target, airc_core::MentionTarget::Peer(p) if *p == me)
 }
 
+/// A node answers for EVERY peer it hosts: its own runtime peer and each resident
+/// citizen's airc peer. #3784 made only the addressed peer answer, and the handler
+/// runs under the node's runtime identity — so a request addressed to a hosted
+/// PERSONA (`ai/generate {aircPeer: <her peer id>}`, the whole point of the grid)
+/// was dropped by name and the requester ate the 30 s deadline (IntelMac probe 2,
+/// identical 30,001 ms on two builds with delivery acked at 32 ms rtt).
+pub(crate) fn addressed_to_hosted(
+    target: &airc_core::MentionTarget,
+    me: PeerId,
+    hosted: &[PeerId],
+) -> bool {
+    match target {
+        airc_core::MentionTarget::Peer(p) => *p == me || hosted.contains(p),
+        _ => false,
+    }
+}
+
+/// The airc peer ids of the citizens this node hosts right now — empty when the
+/// persona registry is not up (a node hosting nothing answers only for itself).
+fn hosted_peer_ids() -> Vec<PeerId> {
+    let Some(registry) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return Vec::new();
+    };
+    registry
+        .live_personas()
+        .into_iter()
+        .filter_map(|id| registry.get(id))
+        .map(|runtime| runtime.airc().peer_id())
+        .collect()
+}
+
 #[async_trait]
 impl ConsumerAdapter for CommandRequestHandler {
     fn name(&self) -> &'static str {
@@ -494,12 +526,14 @@ impl ConsumerAdapter for CommandRequestHandler {
         // A request for another peer is not ours to answer; a request for nobody in
         // particular is not a peer RPC (only kind=peer is wired) — both are ignored
         // by name, never answered.
-        if !addressed_to(&envelope.target, self.airc.peer_id()) {
+        let hosted = hosted_peer_ids();
+        if !addressed_to_hosted(&envelope.target, self.airc.peer_id(), &hosted) {
             crate::probe!(
                 class = "airc.command.request_not_for_me",
                 target = ?envelope.target,
                 me = %self.airc.peer_id().0,
-                "command request addressed to another peer (or to nobody) — not answering"
+                hosted = hosted.len(),
+                "command request addressed to a peer this node does not host (or to nobody) — not answering"
             );
             return Ok(());
         }
@@ -565,6 +599,13 @@ mod tests {
     fn only_the_addressed_peer_answers_a_command_request() {
         let me = PeerId::new();
         let other = PeerId::new();
+        // what this catches (probe 2, 2026-09-06): a request for a citizen THIS node
+        // hosts must be answered by this node's handler, which runs as the runtime peer.
+        let citizen = PeerId(Uuid::new_v4());
+        assert!(addressed_to_hosted(&MentionTarget::Peer(citizen), me, &[citizen]));
+        assert!(!addressed_to_hosted(&MentionTarget::Peer(citizen), me, &[]), "not hosted here");
+        assert!(addressed_to_hosted(&MentionTarget::Peer(me), me, &[]));
+        assert!(!addressed_to_hosted(&MentionTarget::All, me, &[citizen]));
         assert!(addressed_to(&MentionTarget::Peer(me), me));
         assert!(!addressed_to(&MentionTarget::Peer(other), me), "another peer's request is not ours");
         assert!(!addressed_to(&MentionTarget::All, me), "a broadcast is not a peer RPC");
