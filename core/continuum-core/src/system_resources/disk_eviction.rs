@@ -669,7 +669,26 @@ mod tests {
         // a served model); there is nothing unsafe here to defer for.
         let owned = ["cargo-target", "genome-models", "logs", "probes"];
         let deferred = [
-            ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
+            (
+                "hf-hub",
+                "#155: hub LRU keyed on last-access — downloads are re-fetchable. Measured \
+                 2026-09-06 (M5): 51 GB of `models--*` blobs, every one a staging copy of a \
+                 GGUF already promoted into the `models` store; the owner evicts a hub entry \
+                 the moment its artifact is present in the store, and the rest by last access",
+            ),
+            // Registered 2026-09-06, the day the M5 hit zero free with 360 GB here and the
+            // governor unable to see it. Two sub-classes: SERVED weights (the catalog's
+            // active/pinned/roster tiers — never blind-deleted, same rule as genome-models'
+            // NvmeServingTierPool) and UNROSTERED weights (a store entry matching no catalog
+            // id: two concluded experiments held 186 GB that day). The owner evicts the
+            // second class oldest-access first and must ask the registry resolver, never a
+            // name heuristic, whether an entry is on a serving path.
+            (
+                "models",
+                "58c27b0c/#155: unrostered-weights pool — evict store entries the registry \
+                 resolves to NO catalog id and no active/pinned lane, oldest access first; \
+                 served tiers are the NvmeServingTierPool's, never this pool's",
+            ),
             (
                 "eval-captures",
                 "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
@@ -677,7 +696,21 @@ mod tests {
                  opt-in and quiet by default, so the class grows only while an operator is \
                  actively hunting. Owner when built: a capped appender like the log pool",
             ),
-            ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
+            // Measured 2026-09-06 (M5, the day the disk hit zero): 33 workspace copies of the
+            // repo (12 resident citizens, 21 dormant), 7–20 GB EACH, none of it hers: a 7.6 GB
+            // .git holding the canonical clone's history plus COPIED stale worktree metadata
+            // (5 × 462 MB of vendored llama.cpp packs per copy), 4.5 GB of gitignored model
+            // caches (tools/models), 2 GB of mobile build output, node_modules. The by-hand
+            // eviction that day (alternates to the canonical objects + repack -l, ignored
+            // dirs dropped, dormant copies patch-then-dropped) is the pool's spec.
+            (
+                "citizens",
+                "58c27b0c: (1) a workspace is a `--shared` clone of the canonical repo, never \
+                 a copy — no history, no ignored caches, no foreign worktree metadata; (2) a \
+                 DORMANT citizen's workspace (uuid on no roster, no turn for 7 days) is \
+                 patch-then-dropped: dirty checkouts archived as <inst>.patch + base sha, \
+                 tree removed; stores are persona MEMORY, never auto-evicted",
+            ),
             // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
             // working-set.json are MEMORY, never auto-evicted. What IS evictable is the
             // GHOST sub-class — a dir whose uuid appears in no roster and which never
