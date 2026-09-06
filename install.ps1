@@ -57,14 +57,13 @@ $serviceExists = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($serviceExists) {
     Write-Output "Service already installed."
 } else {
-    # Install the service
-    Write-Output "Installing service..."
-    New-Service -Name $serviceName -BinaryPathName "C:\Path\To\Your\Executable.exe" -StartType Automatic
+# Install the service using the supervised path
+    Ensure-ServiceSupervision -serviceName $serviceName -executablePath "C:\Path\To\Your\Executable.exe"
 
     if ($?) {
-        Write-Output "Service installed successfully."
+        Write-Output "Supervised service installed successfully."
     } else {
-        Write-Error "Failed to install service."
+        Write-Error "Failed to install supervised service."
     }
 
     # Start the service if it was just installed
