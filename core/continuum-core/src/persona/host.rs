@@ -279,12 +279,17 @@ impl PersonaSpawnSupervisor {
         // what they may do. `None` → personas spawn speak-only (no hands).
         tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
     ) -> BootSummary {
+        // Draw only the seats not yet filled: at boot that is every seat; on a later
+        // serving edge it is the seats a bigger plan just opened. Live identities are
+        // never re-bootstrapped — the provider's cursor has moved past them.
+        let already_hosted = self.registry.ids().len();
         let plans = match bootstrap_planned(
             &self.spawner,
             &self.instance_manager,
             provider,
             &self.tier_id,
             self.model_registry,
+            already_hosted,
         )
         .await
         {

@@ -2978,11 +2978,27 @@ pub fn start_server(
                             );
                         }
                     } else {
+                        // THE ROSTER FOLLOWS THE LANES UP (2026-09-06): the boot plan is
+                        // often the small under-memory one, so the first composition
+                        // seats one or two; when the pin's plan opens more lanes, draw
+                        // the missing seats from the provider on this edge. `spawn_all`
+                        // draws only `seats - hosted` identities, so live citizens are
+                        // never re-bootstrapped and a full roster is a no-op.
+                        let grown = supervisor
+                            .spawn_all(&mut provider, Some(tool_executor.clone()))
+                            .await;
+                        if grown.hosted > 0 {
+                            tracing::info!(
+                                hosted = grown.hosted,
+                                failed = grown.failed(),
+                                "🌐 hosting reconciler: the plan opened more seats — {} more citizen(s) hosted",
+                                grown.hosted
+                            );
+                        }
                         // Post-boot reconcile (#429): a `persona/spawn` birth ends at
                         // `registry.register`; the hosting half (adapter + cognition
                         // loop) is ours. Each serving-plan edge, host any registered
-                        // citizen with no attached service loop — never re-running
-                        // `spawn_all` (which would re-bootstrap live airc identities).
+                        // citizen with no attached service loop.
                         let summary = supervisor
                             .host_unattended(Some(tool_executor.clone()))
                             .await;

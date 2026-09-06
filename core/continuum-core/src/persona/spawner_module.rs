@@ -482,14 +482,95 @@ pub struct MaterializedPersonaPlan {
 /// fatal — those affect every later slot, so the function early-
 /// returns. Per-row profile errors stay per-row so the supervisor
 /// keeps its policy choice.
+/// PHASE 1 of [`bootstrap_planned`]: draw one identity per planned slot from the
+/// provider, in its yield order — SKIPPING identities a standing roster hold does
+/// not allow. The hold says WHO may be hosted; the plan says HOW MANY seats there
+/// are; the seats go to the first `required` ALLOWED identities. Measured
+/// 2026-09-06 17:3xZ: with a 5-lane plan (#3798) and a hold naming five coders,
+/// the old draw took the first five identities alphabetically, the hold then
+/// dropped three of them, and the three named coders further down the yield were
+/// never reached — two hosted, three seats empty, the round dead. Under a hold,
+/// provider exhaustion fills fewer seats loudly (a probe per held-out identity)
+/// instead of failing the boot: the operator asked for those names, and only those.
+async fn draw_intents(
+    provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
+    plan: &[DesiredRole],
+    hold: Option<crate::persona::roster_hold::RosterHold>,
+) -> Result<Vec<PersonaIdentityIntent>, BootstrapPlannedError> {
+    let required = plan.len();
+    let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
+    let mut drawn = 0usize;
+    while intents.len() < required {
+        let slot_index = intents.len();
+        let desired = &plan[slot_index];
+        let next = provider
+            .next_persona()
+            .await
+            .map_err(|source| BootstrapPlannedError::IdentityProvider {
+                slot_index,
+                role: desired.role,
+                source,
+            })?;
+        let Some(intent) = next else {
+            if hold.is_some() && !intents.is_empty() {
+                crate::probe!(
+                    class = "persona.host.hold_filled_fewer_seats",
+                    seats = required,
+                    filled = intents.len(),
+                    drawn,
+                    "the provider ran out of identities the hold allows — seating fewer, not failing"
+                );
+                break;
+            }
+            return Err(BootstrapPlannedError::IdentityProviderExhausted {
+                slot_index,
+                role: desired.role,
+                provided: slot_index,
+                required,
+            });
+        };
+        drawn += 1;
+        if let Some(h) = hold.as_ref() {
+            if !h.allows(&intent.agent_name) {
+                crate::probe!(
+                    class = "persona.host.held_out",
+                    agent = %intent.agent_name,
+                    reason = %h.reason,
+                    "roster hold: identity drawn at boot is not on the allow-list — seat goes to the next allowed one"
+                );
+                continue;
+            }
+        }
+        intents.push(intent);
+    }
+    Ok(intents)
+}
+
+/// The slots still to fill: the module's plan cut to `seats - already_hosted`. The
+/// roster follows the LIVE lane count in both directions — at boot the first fitting
+/// plan is often the small under-memory one (one or two lanes, card 40f53419), so a
+/// cap computed there seats one citizen; when the pin brings five lanes the
+/// reconciler must draw the four missing seats on that edge, never wait for a
+/// reboot (M5 2026-09-06 18:0xZ: one citizen on a five-lane node).
+pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
+    let mut plan = module.plan();
+    let missing = plan.len().saturating_sub(already_hosted);
+    plan.truncate(missing);
+    plan
+}
+
 pub async fn bootstrap_planned(
     module: &PersonaSpawnerModule,
     instance_manager: &PersonaInstanceManagerModule,
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     tier_id: &str,
     registry: &crate::model_registry::Registry,
+    already_hosted: usize,
 ) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
-    let plan = module.plan();
+    let plan = missing_plan(module, already_hosted);
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
     let required = plan.len();
     let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, ServingParams)> =
         Vec::with_capacity(required);
@@ -497,24 +578,7 @@ pub async fn bootstrap_planned(
     // PHASE 1 — draw every identity from the provider. Sequential because the
     // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
     // cost is `bootstrap_one` below, not `next_persona`.
-    let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
-    for (slot_index, desired) in plan.iter().enumerate() {
-        let intent: PersonaIdentityIntent = provider
-            .next_persona()
-            .await
-            .map_err(|source| BootstrapPlannedError::IdentityProvider {
-                slot_index,
-                role: desired.role,
-                source,
-            })?
-            .ok_or(BootstrapPlannedError::IdentityProviderExhausted {
-                slot_index,
-                role: desired.role,
-                provided: slot_index,
-                required,
-            })?;
-        intents.push(intent);
-    }
+    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active()).await?;
 
     // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
     // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop
@@ -622,6 +686,58 @@ mod tests {
     // what this catches (2026-09-06): a roster larger than the warm lanes. With a real
     // plan of 4 lanes the population of 12 seats 4; with no plan yet the configured
     // population stands; a plan can never seat zero.
+    // what this catches (2026-09-06): the hold applied AFTER the seat cut. Six on
+    // disk, three seats, a hold naming Delta/Foxtrot/Alpha → the seats go to Alpha,
+    // Delta, Foxtrot (yield order), never to Bravo/Charlie.
+    #[tokio::test]
+    async fn a_hold_picks_who_before_the_seats_count_how_many() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        let mut provider = Yield(["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"].into_iter().collect());
+        let plan = vec![
+            plan_for_roles(&[RoleId::Helper], HwCapabilityTier::CpuOnly, HwTierCategory::Compat)[0].clone();
+            3
+        ];
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: ["Delta", "Foxtrot", "Alpha"].iter().map(|s| s.to_string()).collect(),
+            until_ms: u64::MAX,
+            reason: "test".to_string(),
+        };
+        let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
+        let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
+    }
+
+    // what this catches (2026-09-06 18:0xZ): a roster that never grows past the boot
+    // plan's lanes. Five seats with three already hosted draws two; a full roster draws
+    // none; more hosted than seats draws none (the shrink is the reconciler's, not a draw).
+    #[test]
+    fn the_missing_plan_is_the_seats_not_yet_filled() {
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 5;
+        let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
+        assert_eq!(missing_plan(&spawner, 3).len(), 2 * per_seat);
+        assert_eq!(missing_plan(&spawner, 5).len(), 0);
+        assert_eq!(missing_plan(&spawner, 7).len(), 0);
+        assert_eq!(missing_plan(&spawner, 0).len(), 5 * per_seat);
+    }
+
     #[test]
     fn the_roster_never_exceeds_the_warm_lanes() {
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
@@ -788,6 +904,7 @@ mod tests {
             &mut provider,
             "mac_intel_metal_discrete",
             &registry,
+            0,
         )
         .await
         .expect_err("must error when provider exhausts");
