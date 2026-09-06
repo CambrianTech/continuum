@@ -1294,9 +1294,19 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRun
 
 #[async_trait::async_trait]
 impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
-    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
-        self.airc.wall_posts(None).await
+        // UFCS for the same reason as AircHandleAdapter: the inherent
+        // `Airc::wall_posts` takes a CATEGORY filter, so a plain call would
+        // compile and quietly drop the bound room.
+        <airc_lib::Airc as crate::persona::wall_source::WallReader>::wall_posts(
+            self.airc.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
