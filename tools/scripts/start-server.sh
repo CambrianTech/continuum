@@ -17,17 +17,9 @@
 #                           /tmp/continuum-core.sock. Removed if stale.
 #   CONTINUUM_DEBUG         Set non-empty for a debug build (release is the default).
 #   AIRC_DAEMON_SOCKET      Explicit airc daemon socket. Otherwise the
-#                           substrate auto-discovers via `airc ipc-endpoint`.
-#   AIRC_DEFAULT_CHANNEL    Override default room. Otherwise derived from
-#                           `airc room` output.
-#   AIRC_DEFAULT_ROOM_NAME  Override default room name. Otherwise from
-#                           `airc room`.
+#!/bin/bash
 
-set -e
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Repo root is two up from tools/scripts/. (Was `dirname SCRIPT_DIR`, which
-# resolved to tools/ — stale since this script moved under tools/scripts/.)
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+echo "Starting server..."
 # continuum-core crate manifest. Restructured workers/continuum-core →
 # core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
 # headless start works from any directory.
