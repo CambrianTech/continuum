@@ -2980,6 +2980,32 @@ mod tests {
         assert!(!state[1].contains("carefully parse"), "the orientation is what got dropped: {state:?}");
     }
 
+    // what this catches (card 7e3e8070): the no-deliverable notice narrating instead of
+    // gating. Six acts on a held card with no file change → the work turn names the two
+    // ways out; an edit receipt resets the count and the gate stays out of the way.
+    #[test]
+    fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
+        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
+        let me = Uuid::new_v4();
+        let row = |ms, text: &str| crate::persona::durable_history::RoomRow { id: Uuid::new_v4(), sender: me, occurred_at_ms: ms, text: text.to_string() };
+        let looping = vec![
+            row(1, "💭 reading ⚙ code/read a.py ✓ ⚙ code/search x ✓"),
+            row(2, "💭 checking ⚙ code/run pytest ✓ ⚙ code/git/status ✓"),
+            row(3, "💭 more ⚙ code/read b.py ✓ ⚙ code/shell ls ✓"),
+        ];
+        assert_eq!(acts_since_last_write(&looping, me), 6);
+        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&looping, me));
+        assert!(text.contains("[write or release]"), "{text}");
+        assert!(text.contains("PASS: blocked"), "{text}");
+
+        let mut edited = looping.clone();
+        edited.push(row(4, "💭 fixing ⚙ code/edit checks.py ✓ ⚙ code/run pytest ✓"));
+        assert_eq!(acts_since_last_write(&edited, me), 1, "an edit resets the count");
+        let text = held_work_burst_gated(&[], &[], acts_since_last_write(&edited, me));
+        assert!(!text.contains("[write or release]"), "no gate after an edit: {text}");
+        assert!(WRITE_OR_RELEASE_AFTER_ACTS >= 4, "the gate is not a hair trigger");
+    }
+
     #[test]
     fn her_last_thoughts_lead_the_work_turn_oldest_first() {
         use crate::persona::durable_history::RoomRow;
