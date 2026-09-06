@@ -2888,6 +2888,10 @@ pub fn start_server(
                 // direct decode-probe of the pinned endpoint (K3, a grid peer).
                 let external_lane =
                     crate::inference::llama_server::external_serving_pin().is_some();
+                // The roster follows the LIVE plan's lane count (a pin or tier swap
+                // must never leave more minds than warm lanes — 2026-09-06).
+                let live_plan = serving_plan_rx.borrow().clone();
+                supervisor.refresh_serving(live_plan.as_ref());
                 crate::probe!(
                     class = "persona.host.reconciler_pass",
                     pass = pass,
