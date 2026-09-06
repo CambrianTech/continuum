@@ -13,7 +13,7 @@
 //!
 //! This test closes that gap. peer_a here is the persona side; the
 //! ONLY production-shape API the test touches is
-//! `PersonaCommandInboundPump::spawn(persona_id, airc, executor)`.
+//! `PersonaCommandInboundPump::spawn(persona_id, airc, executor, grant_authorizer, membership)`.
 //! No `CommandRequestHandler::new`, no manual subscribe loop, no
 //! manual `on_envelope` call. If the pump's install path is wrong,
 //! the test fails. If the pump silently drops command envelopes
@@ -151,11 +151,15 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     )
     .await
     .expect("build grant authorizer for the loopback fixture");
+    // The runtime's membership epoch: the pump re-opens its stream when it
+    // moves and exits only when the sender is DROPPED, so the test holds it.
+    let (_membership_tx, membership_rx) = tokio::sync::watch::channel(0u64);
     let pump = PersonaCommandInboundPump::spawn(
         persona_id,
         Arc::clone(loop_back.peer_a()),
         executor,
         grant_authorizer,
+        membership_rx,
     )
     .await
     .expect(

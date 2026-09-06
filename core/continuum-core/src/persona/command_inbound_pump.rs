@@ -186,7 +186,15 @@ impl PersonaCommandInboundPump {
             executor,
             grant_authorizer,
         );
-        let handle = tokio::spawn(run(persona_id, airc, handler, stream, membership));
+        // The pump is SUPERVISED on the persona: `run` re-opens its own stream
+        // and only returns when the runtime drops its epoch sender, so the one
+        // exit it cannot cover is a panic inside the task. The supervisor task
+        // is what `is_alive()` reads; it respawns `run` after a panic with a
+        // fresh stream and says so. Nothing outside the persona has to notice
+        // (the runtime is shared as `Arc<PersonaAircRuntime>`, so no reconciler
+        // could re-install it from outside without interior mutability —
+        // BigMama's review of #3814).
+        let handle = tokio::spawn(supervise(persona_id, airc, handler, stream, membership));
         Ok(Self { persona_id, handle })
     }
 
@@ -241,6 +249,59 @@ fn reopen_delay(attempt: u32) -> Duration {
 enum Reopen {
     StreamEnded,
     MembershipChanged,
+}
+
+async fn supervise(
+    persona_id: Uuid,
+    airc: Arc<Airc>,
+    handler: Arc<CommandRequestHandler>,
+    first_stream: FilteredEventStream,
+    membership: watch::Receiver<u64>,
+) {
+    let mut stream = Some(first_stream);
+    let mut respawns: u32 = 0;
+    loop {
+        let this_stream = match stream.take() {
+            Some(s) => s,
+            None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::probe!(
+                        class = "persona.command_pump.reopen_failed",
+                        persona_id = %persona_id,
+                        attempt = respawns,
+                        error = %e,
+                        "command pump could not re-subscribe after a panic; retrying"
+                    );
+                    tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                    continue;
+                }
+            },
+        };
+        let task = tokio::spawn(run(
+            persona_id,
+            Arc::clone(&airc),
+            Arc::clone(&handler),
+            this_stream,
+            membership.clone(),
+        ));
+        match task.await {
+            // `run` returns only when the runtime dropped its epoch sender.
+            Ok(()) => return,
+            Err(e) if e.is_panic() => {
+                respawns = respawns.saturating_add(1);
+                crate::probe!(
+                    class = "persona.command_pump.respawned_after_panic",
+                    persona_id = %persona_id,
+                    respawns = respawns,
+                    "command pump task panicked; respawning with a fresh stream"
+                );
+                tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+            }
+            // Cancelled: the supervisor itself was aborted (shutdown).
+            Err(_) => return,
+        }
+    }
 }
 
 async fn run(

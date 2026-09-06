@@ -81,7 +81,7 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)  // unwrap_or: a clock before 1970 reads as "warm", never a panic on the inference path
+        .unwrap_or(u64::MAX)  // unwrap_or: a broken clock FAILS OPEN — `now < until` is false at MAX, so the lane reads warm and requests still go out; 0 would read every tripped lane cold forever (BigMama's review of #3814)
 }
 
 impl AircRemoteInferenceAdapter {
@@ -110,12 +110,12 @@ impl AircRemoteInferenceAdapter {
             Err(RemoteInferenceError::Timeout { .. }) => {
                 let n = self.consecutive_deadlines.fetch_add(1, Ordering::Relaxed) + 1;
                 if n >= COLD_AFTER_DEADLINES {
-                    let until = now_ms() + COLD_WINDOW.as_millis() as u64;
+                    let until = now_ms().saturating_add(COLD_WINDOW.as_millis() as u64);
                     self.cold_until_ms.store(until, Ordering::Relaxed);
                     self.consecutive_deadlines.store(0, Ordering::Relaxed);
                     crate::probe!(
                         class = "remote_lane.cold",
-                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),
+                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
                         deadlines = n,
                         cold_for_s = COLD_WINDOW.as_secs(),
                         "the remote peer let requests die at the deadline in a row; \
@@ -182,7 +182,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     fn default_model(&self) -> &str {
         self.default_model
             .as_deref()
-            .unwrap_or(AIRC_REMOTE_DEFAULT_MODEL)
+            .unwrap_or(AIRC_REMOTE_DEFAULT_MODEL)  // unwrap_or: the trait wants a name; the wire request itself is stamped only when with_model was set, never this placeholder
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
@@ -206,12 +206,12 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         if self.is_cold() {
             crate::probe!(
                 class = "remote_lane.refused_cold",
-                peer = %self.default_target_peer.as_deref().unwrap_or("-"),
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
                 "remote lane is cold; request refused without a round trip"
             );
             return Err(format!(
                 "remote lane to {} is cold: {} deadline misses in a row; retry after the {} s window",
-                self.default_target_peer.as_deref().unwrap_or("the default peer"),
+                self.default_target_peer.as_deref().unwrap_or("the default peer"),  // unwrap_or: error text only — names the transport default when no peer is pinned
                 COLD_AFTER_DEADLINES,
                 COLD_WINDOW.as_secs()
             ));
