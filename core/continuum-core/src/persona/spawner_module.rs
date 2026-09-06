@@ -535,14 +535,31 @@ async fn draw_intents(
     Ok(intents)
 }
 
+/// The slots still to fill: the module's plan cut to `seats - already_hosted`. The
+/// roster follows the LIVE lane count in both directions — at boot the first fitting
+/// plan is often the small under-memory one (one or two lanes, card 40f53419), so a
+/// cap computed there seats one citizen; when the pin brings five lanes the
+/// reconciler must draw the four missing seats on that edge, never wait for a
+/// reboot (M5 2026-09-06 18:0xZ: one citizen on a five-lane node).
+pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
+    let mut plan = module.plan();
+    let missing = plan.len().saturating_sub(already_hosted);
+    plan.truncate(missing);
+    plan
+}
+
 pub async fn bootstrap_planned(
     module: &PersonaSpawnerModule,
     instance_manager: &PersonaInstanceManagerModule,
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     tier_id: &str,
     registry: &crate::model_registry::Registry,
+    already_hosted: usize,
 ) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
-    let plan = module.plan();
+    let plan = missing_plan(module, already_hosted);
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
     let required = plan.len();
     let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, ServingParams)> =
         Vec::with_capacity(required);
@@ -692,6 +709,22 @@ mod tests {
         let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
+    }
+
+    // what this catches (2026-09-06 18:0xZ): a roster that never grows past the boot
+    // plan's lanes. Five seats with three already hosted draws two; a full roster draws
+    // none; more hosted than seats draws none (the shrink is the reconciler's, not a draw).
+    #[test]
+    fn the_missing_plan_is_the_seats_not_yet_filled() {
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 5;
+        let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
+        assert_eq!(missing_plan(&spawner, 3).len(), 2 * per_seat);
+        assert_eq!(missing_plan(&spawner, 5).len(), 0);
+        assert_eq!(missing_plan(&spawner, 7).len(), 0);
+        assert_eq!(missing_plan(&spawner, 0).len(), 5 * per_seat);
     }
 
     #[test]
@@ -845,6 +878,7 @@ mod tests {
             &mut provider,
             "mac_intel_metal_discrete",
             &registry,
+            0,
         )
         .await
         .expect_err("must error when provider exhausts");
