@@ -318,6 +318,36 @@ adopt_or_reap_llama_lanes
 #     A core with no transport is not a running system, and reporting success for
 #     one is the class of lie this whole card exists to end.
 ensure_airc_daemon() {
+  # LOOK BEFORE DECLARING ABSENCE (2026-09-06). `command -v` only sees THIS
+  # shell's PATH, and boot does not necessarily inherit the operator's. On a box
+  # where airc IS installed but `~/.local/bin` is absent from the boot shell's
+  # PATH, the branch below fired on EVERY start and re-ran install.sh — which
+  # pins its own revision, so an already-installed NEWER airc got rolled
+  # BACKWARDS. Measured on BigMama: a current airc went 156 commits behind
+  # mid-session, and the first symptom was unrelated-looking — `airc msg
+  # --stdin` and `airc inbox --room` began failing on "unexpected argument",
+  # because the flags had not shipped yet in the pinned revision.
+  #
+  # The conventional-location probe already existed twenty lines down, as the
+  # POST-install fallback, with a comment saying exactly this. It just ran after
+  # the reinstall instead of before it. Same check, moved to where it prevents
+  # the damage instead of describing it. An auto-install that never asks what is
+  # already there is a downgrade, not an install ([[silently-unwired-capability]]).
+  #
+  # `.exe` is listed explicitly: MSYS resolves a bare `airc` for `command -v`,
+  # but a bare `[ -x ]` path test is not guaranteed to append the extension, and
+  # on this platform the file on disk IS `airc.exe`
+  # ([[dir-opened-as-file-windows-only]]).
+  if ! command -v airc >/dev/null 2>&1; then
+    for _airc_cand in "${HOME}/.local/bin/airc" "${HOME}/.local/bin/airc.exe"; do
+      if [ -x "$_airc_cand" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+        echo "✓ airc already installed ($_airc_cand) — adding its dir to PATH for this boot, NOT reinstalling" >&2
+        break
+      fi
+    done
+  fi
+
   if ! command -v airc >/dev/null 2>&1; then
     # BOOT ACQUIRES ITS OWN TRANSPORT (2026-08-24, Joel: "this repo isn't for
     # ME — a new repo user without an agent"). A warn-and-carry-on here left a
