@@ -2746,7 +2746,7 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn idle(&self) -> Result<(), LlamaServerError> {
-        let had_own_child = self.child.lock().unwrap().is_some();
+        let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
         let reclaimed = if self.is_live_lane {
@@ -2758,7 +2758,7 @@ impl LlamaServerControl for LlamaServerProcess {
             class = "serving.lane.idled",
             port,
             killed_own_child = had_own_child,
-            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"),
+            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"), // unwrap_or: None = this handle is not the live lane, so no port to reclaim — a label, not a quantity
             "lane taken down on an empty plan — VRAM is free, the port is ours again"
         );
         Ok(())
