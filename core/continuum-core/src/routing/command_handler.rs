@@ -504,7 +504,48 @@ impl ConsumerAdapter for CommandRequestHandler {
             return Ok(());
         }
         let parsed = Self::parse_envelope(&envelope)?;
+        // THE ACCEPT PATH HAD NO PROBE. Only the refusal above emitted one, so a
+        // request that ARRIVED AND RAN was indistinguishable from one that was never
+        // sent — and on a node whose citizens generate continuously, a downstream
+        // inference row cannot be attributed to a peer without a join key. Measured
+        // 2026-09-06 22:04:21Z: a real cross-grid `ai/generate` reached this node
+        // addressed to a seat no citizen owned, bounced off the refusal probe, and
+        // the question "did anything ever land?" stayed unanswerable for a day
+        // because landing is silent. `correlation` is the join key: it is the same
+        // uuid the CALLER awaits on, so both sides of a grid turn can be matched.
+        crate::probe!(
+            class = "airc.command.accepted",
+            path = %parsed.request.path,
+            kind = %parsed.request.kind,
+            caller = %parsed.caller_peer_id.0,
+            me = %self.airc.peer_id().0,
+            correlation = %parsed.correlation_id,
+            "peer command request ACCEPTED — this node answers it"
+        );
+        let started = std::time::Instant::now();
         let response = self.process_request(&parsed).await;
+        // Carry the refusal TEXT, not just the fact of refusal. `outcome=error`
+        // with elapsed_ms=0 says a gate declined before any work happened but not
+        // WHICH gate — and the message is the whole diagnosis (kind/env refusal vs
+        // the AuthPolicy verdict vs an unknown path). Truncated: a gate string is
+        // a sentence, and an unbounded field in a hot probe is a log-flood risk.
+        let (outcome, detail) = match &response {
+            AircCommandResponse::Error { message } => {
+                ("error", message.chars().take(400).collect::<String>())
+            }
+            _ => ("ok", String::new()),
+        };
+        crate::probe!(
+            class = "airc.command.completed",
+            path = %parsed.request.path,
+            caller = %parsed.caller_peer_id.0,
+            me = %self.airc.peer_id().0,
+            correlation = %parsed.correlation_id,
+            outcome = %outcome,
+            detail = %detail,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "peer command request answered"
+        );
         self.send_reply(&parsed, &response).await?;
         Ok(())
     }
