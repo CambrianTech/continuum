@@ -405,7 +405,7 @@ if [ -z "$AIRC_DEFAULT_CHANNEL" ] || [ -z "$AIRC_DEFAULT_ROOM_NAME" ]; then
     if [ -z "$AIRC_DEFAULT_CHANNEL" ]; then
       DERIVED_CHANNEL="$(awk '/^channel:/{print $2}' <<<"$ROOM_OUT")"
       if [ -n "$DERIVED_CHANNEL" ]; then
-        AIRC_DEFAULT_CHANNEL="$DERIVED_CHANNEL"
+        AIRC_DEFAULT_CHANNEL=${CONTINUUM_DEFAULT_ROOM_NAME}"$DERIVED_CHANNEL"
         export AIRC_DEFAULT_CHANNEL="$DERIVED_CHANNEL"
       else
         echo "⚠  could not derive channel from 'airc room' output; leaving AIRC_DEFAULT_CHANNEL unset" >&2
