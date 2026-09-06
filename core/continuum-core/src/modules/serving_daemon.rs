@@ -557,6 +557,9 @@ pub struct ServingDaemonModule {
     /// that fit at pin time; budget can still shift under it, and then the plan
     /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
     pinned: watch::Sender<Option<String>>,
+    /// Set by the sync reconcile at the live → empty transition; `tick()` awaits
+    /// the lane teardown (`LlamaServerControl::idle`) and clears it.
+    idle_pending: AtomicBool,
     /// The long-lived vision SIDECAR lane (#106, `inference::vision_sidecar`):
     /// a small VL model serving beside a text-only mind so every persona has
     /// eyes. Owned here so it lives across reconciles and its child dies with
@@ -661,6 +664,7 @@ impl ServingDaemonModule {
         }
         let (pinned, _prx) = watch::channel(stored_pin.map(|p| p.model_id));
         Self {
+            idle_pending: AtomicBool::new(false),
             gpu,
             system,
             resource_daemon,
@@ -1783,7 +1787,16 @@ impl ServingDaemonModule {
                 // the surface to distinguish "no model on this box yet" from "the
                 // serving daemon is broken". `empty()` rendered both identically.
                 self.set_active_artifact(None);
-                if self.serving_tx.borrow().active_model.is_some() {
+                let was_live = self.serving_tx.borrow().active_model.is_some();
+                if was_live {
+                    // An empty plan takes the lane DOWN, not just off the books: the
+                    // server that was serving the now-unservable model must die, or
+                    // "idle" is a lie the VRAM contradicts and the next pin double-spawns
+                    // (5090, 2026-09-06 — BigMama: serving/unload said "freed model from
+                    // VRAM; node is idle" while llama-server stayed alive). Once, at the
+                    // live → empty transition; the guard above is not held across the await.
+                    // This arm is sync (reconcile_to_plan); the teardown awaits in tick().
+                    self.idle_pending.store(true, Ordering::SeqCst);
                     let flipped = ServingSnapshot::degraded(
                         "no servable model on disk — the planner found no local weights \
                          to bring up (pull one with `continuum models/pull`)"
@@ -4122,6 +4135,14 @@ impl ServiceModule for ServingDaemonModule {
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
         let _ = self.reconcile_to_plan();
+        // An empty plan takes the lane DOWN, not just off the books (5090, 2026-09-06:
+        // serving/unload said "freed model from VRAM; node is idle" while llama-server
+        // stayed alive and the next pin double-spawned). Once per live → empty edge.
+        if self.idle_pending.swap(false, Ordering::SeqCst) {
+            if let Err(e) = self.server.idle().await {
+                tracing::warn!(error = %e, "lane teardown on an empty plan failed — the server may still hold VRAM");
+            }
+        }
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
         // `ready` forever and would never notice an OOM-poisoned backend otherwise. Off the
@@ -4791,6 +4812,7 @@ mod tests {
     /// `inference::llama_server` against its own fake.
     struct FakeServer {
         serves: Arc<AtomicUsize>,
+        idles: Arc<AtomicUsize>,
         ok: bool,
         /// Drives [`LlamaServerControl::decode_smoke_ok`] so a test can wedge the lane's
         /// COMPUTE path (probe → false) independently of its control plane. Defaults true
@@ -4811,6 +4833,7 @@ mod tests {
             Self {
                 serves,
                 ok,
+                idles: Arc::new(AtomicUsize::new(0)),
                 smoke_ok: Arc::new(AtomicBool::new(true)),
                 wedge: Default::default(),
                 slots_fp: Default::default(),
@@ -4829,6 +4852,10 @@ mod tests {
         }
         async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
             Ok(Vec::new())
+        }
+        async fn idle(&self) -> Result<(), LlamaServerError> {
+            self.idles.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
@@ -4945,6 +4972,40 @@ mod tests {
             vec![],
             DaemonConfig::default(),
         )
+    }
+
+    // what this catches (5090, 2026-09-06 — BigMama's third bug): an empty plan
+    // publishing "idle" while the llama-server stays alive. At the live → empty
+    // transition the daemon takes the lane down exactly once; a second tick with
+    // the plan still empty does not idle again.
+    #[tokio::test]
+    async fn an_empty_plan_takes_the_live_lane_down_once() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let server = Arc::new(FakeServer::healthy(serves, true));
+        let idles = server.idles.clone();
+        // An EMPTY catalog, so the plan is None on every host — the real catalog would
+        // find this Mac's own GGUFs and plan a model, which is not this test's question.
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let empty = crate::model_registry::Registry::from_catalog(vec![], vec![]).expect("empty registry");
+        let daemon = ServingDaemonModule::with_control(
+            gpu,
+            system,
+            test_resource_daemon(),
+            server,
+            Arc::new(ModelCatalog::from_registry(&empty)),
+        );
+        let mut live = ServingSnapshot::empty();
+        live.active_model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
+        live.ready = true;
+        let _ = daemon.serving_tx.send_replace(live);
+        // Nothing on disk is servable in a test → the reconcile's empty arm.
+        daemon.recompute();
+        daemon.tick().await.expect("tick");
+        assert_eq!(idles.load(Ordering::SeqCst), 1, "the lane is taken down at live → empty");
+        daemon.recompute();
+        daemon.tick().await.expect("tick");
+        assert_eq!(idles.load(Ordering::SeqCst), 1, "still empty: no second teardown");
     }
 
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
@@ -5767,6 +5828,7 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false)); // wedged compute path
         let daemon = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
@@ -5808,6 +5870,7 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
@@ -5851,6 +5914,7 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
@@ -5895,6 +5959,7 @@ mod tests {
 
         // Fresh decode INSIDE the window → trusted, no probe.
         let mut busy = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves: serves.clone(),
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(false)),
@@ -5913,6 +5978,7 @@ mod tests {
 
         // Stale decode OUTSIDE the window → no live evidence, probe as usual.
         let mut quiet = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(true)),
@@ -5943,6 +6009,7 @@ mod tests {
     async fn sustained_real_turn_failures_outrank_a_passing_probe() {
         let serves = Arc::new(AtomicUsize::new(0));
         let mut d = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             // The smoke probe WOULD pass — that is the point: it must not get the
@@ -5985,6 +6052,7 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let slots_fp = Arc::new(AtomicU64::new(1));
         let mut d = daemon_with(Arc::new(FakeServer {
+            idles: Arc::new(AtomicUsize::new(0)),
             serves,
             ok: true,
             // Every smoke probe MISSES — the ghost work holds the slots.
