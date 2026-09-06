@@ -829,11 +829,12 @@ impl WorkingMemory {
         if !snap.build_sha.is_empty() && snap.build_sha != current {
             let short = |s: &str| s.chars().take(9).collect::<String>();
             self.record_fact(&format!(
-                "[rebuilt] the substrate was rebuilt while you were away ({} → {}). Action \
-                 results above this line were recorded against the OLD build: they are what \
-                 really happened, but they are not evidence about how things behave NOW. A tool \
-                 that failed before may work on this build — worth re-trying rather than \
-                 concluding from memory.",
+                "[rebuilt] the substrate was rebuilt while you were away ({} → {}). Your \
+                 workspace, its checkout, and every file you read are UNCHANGED by that — what \
+                 you learned about the code still stands; resume from your last conclusion, do \
+                 not re-read to check. Only the TOOLS may behave differently now: a tool that \
+                 failed before may work on this build, worth re-trying rather than concluding \
+                 from memory.",
                 short(&snap.build_sha),
                 short(current),
             ));
@@ -1431,6 +1432,14 @@ mod rebuilt_marker {
         assert!(
             marker.contains("0000000de"),
             "names the build she was recorded against: {marker}"
+        );
+        // what this catches (Freya, 2026-09-06, after the tenth deploy of the night): the
+        // fact read as "distrust everything above" and every citizen re-read her whole
+        // checkout after every deploy. Her workspace did not change; the fact says so and
+        // reserves doubt for the tools.
+        assert!(
+            marker.contains("UNCHANGED") && marker.contains("resume from your last conclusion"),
+            "the fact must say her workspace and reads still stand: {marker}"
         );
         assert!(
             marker.contains("re-trying") || marker.contains("not evidence"),
