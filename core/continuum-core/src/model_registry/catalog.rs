@@ -443,6 +443,10 @@ pub fn models() -> Vec<Model> {
         // Tekken (starting with the single-party collapse the coders use); stop uses Mistral's `</s>`.
         model(ModelSpec {
             id: "unsloth/Devstral-Small-2507-GGUF",
+            // Joel 2026-09-06: NOT a base model for us — old, text-only. It served the M5 for
+            // 35 minutes that day only because the boot plan picked the smallest fit from the
+            // store (card 40f53419). Benchmark opponent at most; never the citizens' model.
+            persona_serving_eligible: false,
             name: "Devstral-Small-2507 (agentic coder)",
             provider: "llama-server",
             arch: Arch::Mistral,
