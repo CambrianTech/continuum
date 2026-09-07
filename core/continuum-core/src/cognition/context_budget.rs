@@ -245,6 +245,60 @@ const RECALL_DENOM: usize = 10;
         }
     }
 
+    /// Share of the window the TOOL MENU may occupy. See [`Self::tool_surface_tokens`].
+    const TOOL_SURFACE_DENOM: usize = 4;
+
+    /// The most the offered tool schemas may cost before the surface must narrow to her
+    /// hands. A menu, not a meal: `1/TOOL_SURFACE_DENOM` of the served window.
+    ///
+    /// ## Why a bound existed nowhere, and what it cost
+    ///
+    /// `native_tool_specs` is DERIVED — every command marked `NATIVE = true` is offered
+    /// automatically. That is the right architecture, and it means the surface grows as an
+    /// unbounded side effect of a flag set in another file (+52 % in two weeks, #460). The
+    /// per-turn COST was already memoized (`describe_tool_tokens`) and compared against
+    /// nothing.
+    ///
+    /// Measured 2026-09-07 04:1xZ on IntelMac (card e20e064f): a 0.5B citizen on a 32,768
+    /// window took 37 schemas ≈ 8,735 tokens — larger than her framing (3,189) and her
+    /// entire conversation (3,551) combined — for `demand_tokens` 31,895 against 32,768,
+    /// i.e. 97.3 % of the window consumed before she wrote a token. She published her
+    /// prompt preamble to the room instead of answering.
+    ///
+    /// ## Why `1/4`, calibrated rather than invented
+    ///
+    /// Chosen so the lanes where the full surface DEMONSTRABLY works keep it, and only the
+    /// ones where it crowds out the conversation narrow. Against the same 8,735-token
+    /// surface:
+    ///
+    /// | served window | 1/4 allowance | full surface |
+    /// |---------------|---------------|--------------|
+    /// | 50,944 (M5 Ornith lane)   | 12,736 | fits — unchanged |
+    /// | 32,768 (IntelMac 0.5B)    |  8,192 | narrows — the measured failure |
+    /// | 24,832 (5090 per-slot)    |  6,208 | narrows |
+    ///
+    /// `4` is also the denominator this module already uses for the two other "one big
+    /// thing may take a quarter" bounds (latest action, rendered tool slice), so the menu
+    /// is held to the same share as the single largest piece of content beside it.
+    ///
+    /// ## What narrowing must NOT mean
+    ///
+    /// Not amputation. Trimming the set outright is the #206 cliff — measured 14/14 SWE
+    /// acts spent on `commands/help` with 0 edits, because a citizen who cannot see a verb
+    /// and cannot look one up has only the asking-tool left. The narrowed surface is her
+    /// HANDS, which by construction retain the `commands/` discovery pair, so anything
+    /// withheld is still exactly one `commands/list` away. Bound the menu; never remove the
+    /// index.
+    ///
+    /// Unknown window folds nothing, per the module's unknown-window contract — an unknown
+    /// window must never become an invented one.
+    pub fn tool_surface_tokens(&self) -> usize {
+        match self.total_chars {
+            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / Self::TOOL_SURFACE_DENOM,
+            None => usize::MAX,
+        }
+    }
+
     /// Echo of ONE argument value back into the recency channel. The tightest bound, and
     /// deliberately so: she WROTE these one generation ago, so echoing a whole file's
     /// `content` back at her buys nothing and costs the window.
@@ -329,6 +383,45 @@ mod tests {
                                              // Echoed args share the trail-head fraction (see the module doc's † note — the old
                                              // 600 was invented, not tuned, so it is not a calibration target).
         assert_eq!(b.echoed_arg_chars(), b.trail_head_chars());
+    }
+
+    /// what this catches: the tool-menu bound drifting off the lanes it was calibrated
+    /// against, in EITHER direction. `TOOL_SURFACE_DENOM` was chosen so the lanes where the
+    /// full 37-schema surface demonstrably works keep it, and only the ones where it crowds
+    /// out the conversation narrow — so both halves are asserted. Raising the denominator
+    /// silently amputates a working lane; lowering it re-admits the failure below.
+    ///
+    /// The 8,735 figure is measured, not assumed: IntelMac 2026-09-07, `tools_n=37`, and
+    /// `llm_deliberation_faculty`'s own comment independently puts 37 schemas at ~8.5k.
+    /// On that day a 0.5B on a 32,768 window spent it and reached `over_window` 0.973,
+    /// then published its prompt preamble to the room instead of answering (card e20e064f).
+    #[test]
+    fn the_tool_menu_bound_admits_the_lanes_it_was_calibrated_to_admit() {
+        const MEASURED_37_SCHEMA_SURFACE: usize = 8_735;
+
+        // The M5's Ornith lane carries the full surface today and must keep carrying it —
+        // this fix must not narrow a lane that was never the problem.
+        assert!(
+            ContextBudget::from_window(50_944).tool_surface_tokens() >= MEASURED_37_SCHEMA_SURFACE,
+            "a 50,944-token lane must still be offered the whole surface"
+        );
+        // The measured failure, and the 5090's per-slot window beside it.
+        for window in [32_768u32, 24_832] {
+            assert!(
+                ContextBudget::from_window(window).tool_surface_tokens()
+                    < MEASURED_37_SCHEMA_SURFACE,
+                "a {window}-token window cannot afford 37 schemas and must narrow to hands"
+            );
+        }
+    }
+
+    /// what this catches: an unknown window inventing a tool-menu bound. Same contract as
+    /// every other bound here — unknown folds NOTHING, because an unknown window that
+    /// becomes a number is the exact bug this module exists to kill. A narrowing driven by
+    /// a guessed window would hide verbs from a citizen for no measured reason.
+    #[test]
+    fn an_unknown_window_never_narrows_the_tool_menu() {
+        assert_eq!(ContextBudget::unknown().tool_surface_tokens(), usize::MAX);
     }
 
     /// what this catches: the whole point of the module — a big window must actually GET a

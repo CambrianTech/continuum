@@ -2371,9 +2371,49 @@ impl Faculty for LlmDeliberationFaculty {
         // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
         let is_work_turn = ws.workspace_deliverable && !self.hands_specs.is_empty();
+        // WHICH surface she is offered is a question about her WINDOW, not about the
+        // kind of turn she is taking. It used to be the latter: a work turn got her
+        // hands, and every MESSAGE turn got the whole registry — so the tier least able
+        // to afford 37 schemas received them, on the commonest turn type. Measured
+        // 2026-09-07 on IntelMac (card e20e064f): a 0.5B on a 32,768 window took 8,735
+        // tokens of schemas — more than her framing and her whole conversation combined
+        // — reached 97.3 % window demand before writing a token, and published her
+        // prompt preamble to the room instead of answering.
+        //
+        // So: offer the full surface while it fits inside its share of the served
+        // window ([`ContextBudget::tool_surface_tokens`]), and fall back to her HANDS
+        // when it does not. A work turn still takes hands regardless — that choice is
+        // about focus, not size, and predates this.
+        //
+        // The fallback is hands, never nothing: `hands_surface` keeps the `commands/`
+        // discovery pair, so a withheld verb stays one `commands/list` away. Amputating
+        // the surface is the #206 cliff (14/14 SWE acts spent on `commands/help`, 0
+        // edits) and this must never become that.
+        let tool_budget = super::context_budget::ContextBudget::from_window(
+            binding.context_window,
+        )
+        .tool_surface_tokens();
+        let surface_fits = self.describe_tool_tokens() <= tool_budget;
         let tools = if self.native_specs.is_empty() {
             None
-        } else if is_work_turn {
+        } else if is_work_turn || !surface_fits {
+            if !is_work_turn {
+                // Only the BUDGET path is a row: a work turn narrowing is routine and
+                // already understood, but a message turn narrowing means she cannot see
+                // verbs she would otherwise have been offered. Whoever later asks "why
+                // did she never call X" needs this line to exist.
+                crate::probe!(
+                    class = "delib.tool_surface.withheld",
+                    persona = %self.persona_name,
+                    offered = self.hands_specs.len() as u64,
+                    full = self.native_specs.len() as u64,
+                    surface_tokens = self.describe_tool_tokens() as u64,
+                    budget_tokens = tool_budget as u64,
+                    context_window = binding.context_window,
+                    "the full tool surface exceeds its share of the served window — \
+                     offering her hands; the discovery pair still reaches the rest"
+                );
+            }
             // A WORK turn offers her HANDS, not the whole registry: 37 schemas were
             // 8.5k of a ~22k-token prefill per act (2026-09-05, KV reuse 0.0). The
             // discovery pair stays so anything else remains one call away. Chosen on
