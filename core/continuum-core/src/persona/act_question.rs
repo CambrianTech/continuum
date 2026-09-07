@@ -224,6 +224,48 @@ pub(crate) async fn ask_the_act_question(
                             "the work turn is gated: edit now or release the card"
                         );
                     }
+                    // THE GOVERNOR. At twice the gate the substrate takes the second exit
+                    // for her: the card goes back on the deck with a receipt, a peer (or
+                    // she, with a plan) can take it, and her lane stops paying for
+                    // orientation. Review cards are not released (they carry no write).
+                    if crate::persona::work_burst::governor_releases(acts_without_write) {
+                        for c in &held {
+                            if crate::commands::benchmark::parse_review_title(&c.title).is_some() {
+                                continue;
+                            }
+                            let Some(claim_id) = c.claim_id.clone() else { continue };
+                            let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                            let reason = format!(
+                                "released by the substrate: {acts_without_write} acts without a write"
+                            );
+                            match citizen.release_card(c.card_id, claim_id, &reason).await {
+                                Ok(()) => {
+                                    crate::probe!(
+                                        class = "persona.work.released_by_governor",
+                                        persona = %ctx.identity.agent_name,
+                                        card = %id8,
+                                        acts_without_write,
+                                        "write-or-release at twice the gate: the substrate released the card"
+                                    );
+                                    if let Some(body) = cycle.acting() {
+                                        body.working_memory.record_fact(&format!(
+                                            "[released] The substrate released card {id8} after \
+                                             {acts_without_write} acts of mine without a change to a \
+                                             file — the investigation was long enough. A peer may take \
+                                             it. Pull it again only with a file:line edit in hand."
+                                        ));
+                                    }
+                                }
+                                Err(e) => crate::probe!(
+                                    class = "persona.work.governor_release_failed",
+                                    persona = %ctx.identity.agent_name,
+                                    card = %id8,
+                                    error = %e,
+                                    "the governor could not release the card — she keeps it this turn"
+                                ),
+                            }
+                        }
+                    }
                     let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write, &progress);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the

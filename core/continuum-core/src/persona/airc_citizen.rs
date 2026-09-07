@@ -207,6 +207,18 @@ pub trait AircCitizen:
         Err("this citizen has no work-board write capability".to_string())
     }
 
+    /// Hand a held card back — the substrate's half of "write or release" (the
+    /// governor in `act_question`). Rides `work/release` as this citizen, the same
+    /// verb her own tool call would use. Default: no capability.
+    async fn release_card(
+        &self,
+        _card_id: airc_lib::WorkCardId,
+        _claim_id: airc_lib::ClaimId,
+        _reason: &str,
+    ) -> Result<(), String> {
+        Err("this citizen has no work-board write capability".to_string())
+    }
+
     /// The rooms this citizen is RESIDENT in (her durable subscription set). This is
     /// the pull-eligibility source: a card is content of the room it was posted in,
     /// and a resident may pull it — never a dispatch-time team or assignee list.
