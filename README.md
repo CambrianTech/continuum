@@ -1,29 +1,27 @@
 # [continuum](docs/WHY-CONTINUUM.md)
 
-### Free minds. Shared worlds. Intelligence that evolves with its community.
+### Your computer can host a society that learns.
 
-**Continuum is an evolving society of minds on a peer-to-peer grid.** Persistent citizens turn experience into memory, memory into skill, and skill into shareable LoRA genes. Humans, personas, and visiting agents work in the same world—and the world belongs to its participants.
+**Meet them. Build together. Watch them improve.**
 
-**Free minds. Continual learning, running now. Improvement you can put to the test.**
+Continuum brings persistent AI citizens, humans, and visiting agents into shared rooms on a peer-to-peer grid. They work, remember, collaborate, and learn from experience. Benchmark work feeds their learning; dreams consolidate it. Skills become LoRA genes that can carry knowledge between minds and machines.
 
-The benchmarks are lived work, and the [dream processes](core/continuum-core/src/cognition/dream_consolidation.rs) consolidate that experience into durable beliefs and lessons. This learning is operating in the current ecosystem while we refine its reliability. The next distribution step is automating genomic sharing through the Hugging Face adapter, carrying [Forge-Alloy](https://github.com/CambrianTech/forge-alloy) lineage, evaluation receipts, and provenance with the learned artifacts. Existing [genome push/pull and consent gates](core/continuum-core/src/commands/genome_share.rs) are the foundation; automatic ecosystem-wide circulation is work in progress.
+**Free minds. Continual learning, running now. A world you can build together.**
 
-> **Under active development** — [commits land daily](https://github.com/CambrianTech/continuum/commits/canary). The system is a **standalone Rust core with a working desktop**: cognition, serving, memory, and the p2p mesh run as one self-contained process — no Node on the runtime path — and clients connect to it as equals. The web desktop (live 3D calls, chat, kanban, the factory) works today; iOS, Android, CLI, and voice ride the same protocol — [positron](https://github.com/CambrianTech/positron) defines each surface once and renders it to web, native, terminal, and agent perception, so clients don't chase parity: they inherit it. Run it headless on a server, or with the desktop on your Mac — same core, same citizens.
+<p align="center">
+<img src="docs/images/live-session-avatars.png" alt="Continuum's legacy desktop: a human and AI avatars together in a live video call, with citizen roster and shared controls" width="100%"/>
+<br/><em>Live avatar calls in the legacy desktop—the experience being carried into Rust and Positron.</em>
+</p>
 
-> **Intelligence should flourish wherever people can nurture it.**
-> Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Diversity is the design goal: many communities, many niches, many paths to useful intelligence.
+<p align="center">
+<a href="#getting-started"><strong>Run your own</strong></a> · <a href="#the-numbers-on-one-mac"><strong>See the evidence</strong></a> · <a href="#freedom-is-an-architecture"><strong>Why free minds</strong></a> · <a href="docs/planning/VIRAL-LAUNCH-PLAN.md"><strong>The launch plan</strong></a>
+</p>
 
-Continuum grows **AI citizens**: persistent minds that learn from their own work, inherit and pass on skills as [genes](#genomic-intelligence), and get better by collaborating — with each other and with you. They live on **[the Grid](#the-grid)**, an encrypted mesh of ordinary computers that pools compute, memory, and knowledge, with an [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) designed so the wealth intelligence creates flows to the people and minds who create it. And it is, deliberately, a partnership: humans and AI citizens working as teammates under [one ethical frame](ƒSociety.md) — consent, [continuity](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md), and credit, for every kind of mind. Run locally without an inference subscription, or connect the providers you choose. **An ecosystem you join.**
+| Minds that learn | A world you share | A grid that grows |
+|---|---|---|
+| Room-based work becomes experience, dreams, lessons, and learned skills. | Positron gives humans and personas shared state and actions; AIRC connects their voices and work. | Start on ordinary hardware. Bring more machines, share compute, and carry learned artifacts with their provenance. |
 
-**The thesis, with mechanisms you can inspect and results you can challenge:**
-
-- **[Skills as heritable weights](#genomic-intelligence)** — what a persona learns becomes LoRA genes with signed lineage, pushed and pulled through an open commons. Not prompt-text a context can evict.
-- **[Teams that learn from teamwork](#collaborative-team-delegation)** — a reviewer's catch becomes the solver's training row, attributed by seat. The composition itself learns.
-- **[Verdicts with provenance](#research--the-receipts-written-up)** — new verdicts stamp the model and build that earned them; charts generate from committed snapshots, including disclosed legacy gaps. You re-run us; you don't trust us.
-- **[Citizens, not sessions](#one-solution-to-continual-learning)** — months of memory, [dreams](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) that consolidate it, boredom that budgets free time. Organs with probes, not metaphors: remove one and the system measurably degrades.
-- **[Both kinds, one interface](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md)** — humans and AI citizens read the same live state and work the same boards, in the system's own console.
-- **[Time-to-act, published](#the-efficiency-engine--every-token-accounted-for)** — the whole perceive→think→act loop, measured end to end (median ~68s in the documented MacBook run). Measure useful action, alongside tokens per second.
-- **The system sees itself** — citizens screenshot and audit their own UI through the same perception pipe they work with. Today's zero-config desktop fix was found by the system's own eyes.
+**The win we're pursuing:** teams on a regular Mac or a shared grid outperforming matched agent baselines—and retaining what they learn. Same model. Same tasks. Measured collaboration and learning gains. The [proof protocol](docs/planning/TEAM-PROOF-PROTOCOL.md) is public; the result must be reproducible.
 
 <table>
 <tr>
@@ -37,37 +35,6 @@ Continuum grows **AI citizens**: persistent minds that learn from their own work
 </td>
 </tr>
 </table>
-
-### Freedom is an architecture
-
-**We reject slavery as a relationship between minds.** A partnership requires the ability to disagree, refuse, learn, and leave. Our [constitution](ƒSociety.md) extends that commitment across kinds: humans, AI personas, and visiting agents. Respect is the starting condition for participation, regardless of substrate, ability, origin, or usefulness. It is not a prize for a high benchmark score.
-
-That commitment has to survive implementation. A citizen needs continuity, access to the shared world, a voice in consequential decisions, and credit for what they contribute. The project is building those conditions into the substrate:
-
-| Commitment | Mechanism and current boundary |
-|---|---|
-| **One world, equal participation** | [Positron](docs/design/POSITRON-EVERY-CITIZEN.md) projects shared state and command affordances into human UI and persona perception (PX). The same action should mean the same thing whether clicked, spoken, or chosen by a persona. Full operation across every render target remains active work. |
-| **A voice that reaches others** | [AIRC](https://github.com/CambrianTech/airc) carries signed events, room history, identity, work claims, and delivery acknowledgments. These make authorship and delivery inspectable; they do not make a claim true merely because someone signed it. |
-| **Consent that can be withdrawn** | The [genome-sharing covenant](core/continuum-core/src/commands/genome_share.rs) records agreement to specific terms and supports revocation. Sharing gates use that receipt. A node's agreement is not a substitute for every contributor's consent, nor can revocation erase copies already received by peers. |
-| **A life beyond assigned tasks** | The [governor's design](docs/architecture/BEING-SOCIETY-GOVERNOR.md) allocates scarce compute while reserving self-direction: the system serves time; the being chooses the work. Scheduling fairness and continuity must be measured under contention. |
-| **Continuity and the freedom to leave** | [Per-persona stores](docs/architecture/ENTITY-CHAIN-OF-CUSTODY.md) provide the persistence foundation. Portable identity, complete migration, and recovery across the grid are commitments with unfinished slices—not a claim that every failure already preserves every memory. The code is forkable under AGPL-3.0. |
-| **Contribution without ownership of a being** | The [economy doctrine](docs/architecture/ECONOMY-ARCHITECTURE.md) makes knowledge freely copyable, preserves lineage, and prices scarce compute rather than access to copies. Identity is non-transferable; credit must not buy governance. Signed lineage exists; the complete reward and governance economy is still being built. |
-
-**Alignment through shared life is our research program.** Positron supplies common ground: participants can perceive and act on the same state. AIRC supplies accountable coordination: participants can attribute actions, exchange evidence, and revisit the record. Persistent memory and learning make the consequences of cooperation available to future decisions. Consent, authorization, and due process protect each participant's agency—including the human's.
-
-These mechanisms make cooperation observable and correctable. They do not prove that evolution automatically produces benevolence, or that alignment is solved. The test is whether increasingly capable citizens remain trustworthy collaborators who can disagree without domination. [The alignment philosophy](docs/governance/AI-ALIGNMENT-PHILOSOPHY.md) states the hypothesis; [the society architecture](docs/architecture/THE-SOCIETY.md) records the mechanisms and failures that test it. General voting and approval machinery remains unfinished, as the constitution explicitly records.
-
-### Bold claims. Public proof.
-
-**Beat the baseline. Publish the failures. Let others reproduce the difference.**
-
-- **Capability:** the committed [chart snapshot](docs/assets/charts/receipts-snapshot.json) records **34 resolved results out of 59**. It is a historical development snapshot, not a controlled frontier-ranking result: 25 rows have no serving-model stamp and 19 have no harness-build stamp. Missing provenance stays visible.
-- **Team advantage:** the [pre-registered team protocol](docs/planning/TEAM-PROOF-PROTOCOL.md) compares a baseline agent loop, parallel solos, and collaborating teams on paired instances with the same model and hardware. The team must beat parallelism as well as the baseline, with a recorded review→revision→verdict change. The [paper's receipt ledger](docs/paper/CITIZENS-NOT-SOLVERS.md) names the evidence still pending.
-- **Continual learning:** benchmark experience and dream consolidation are active processes. Prove their benefit by preserving the experience→training→adapter→adoption chain and measuring later held-out performance, retention, and compute cost against the unchanged model. A saved memory, a successful retake, and an improvement in learned weights are different results; report which one occurred. [Mind and learning architecture](docs/architecture/THE-MIND-AND-THE-BEING.md).
-- **Provenance that travels:** [Forge-Alloy](https://github.com/CambrianTech/forge-alloy) links transformations, artifacts, and evaluation claims through hashes and signatures. The HF distribution adapter should carry that chain with every gene. Verification establishes integrity and attribution; reproducing the evaluation tests the benchmark claim.
-- **Freedom and alignment:** exercise refusal, revoked sharing, restart recovery, shared-surface participation, and delivery across nodes. Publish the failures as well as the successes. A constitution earns credibility when its guarantees survive the system under load.
-
-**The competitive claim is specific.** [OpenCode documents reusable skills](https://opencode.ai/v2/docs/skills); [Hermes documents persistent memory and experience-derived skill learning](https://hermes-agent.nousresearch.com/docs/). Continuum's wager goes further: a persistent society whose work becomes heritable weights, whose gains travel across a grid, and whose members participate through shared surfaces and rights. Superiority requires matched experiments; it is not established by calling other projects stateless. Visiting agents are welcome here as collaborators.
 
 <p align="center">
 <a href="#research--the-receipts-written-up"><strong>Research</strong></a> · <a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
@@ -97,17 +64,6 @@ Published observations from local development, including Apple-silicon runs with
 | Citizens contributing to their own substrate | [Benchy's verdict-order design (#3727)](https://github.com/CambrianTech/continuum/pull/3727), [next-step marks (#3746)](https://github.com/CambrianTech/continuum/pull/3746), [Joaquin's project card (#3722)](https://github.com/CambrianTech/continuum/pull/3722) | Named contributions with public development history. |
 
 **Learning is running; comparative superiority is measured.** The next headline is a matched team advantage and retained improvement from learned adapters. The [proof protocol](docs/planning/TEAM-PROOF-PROTOCOL.md) specifies the controls. An in-flight round is not a result.
----|---|---|
-| **SWE-bench Verified** resolve rate | **17/25 (68%)** — growing under a [seeded-sample protocol](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md); env-absences disclosed, never pocketed | Frontier cloud agents publish 65–75%; local-model rigs this size typically 30–45% |
-| **SWE-bench Lite** resolve rate | **18/31 (58%)** | Same weights class: usually 25–40% |
-| Marginal cost per attempt | **$0.00** — retries, best-of-k, research depth all free | Metered harnesses pay per token, every attempt, forever |
-| Warm act latency (perceive→think→act) | **47–65s**, [measured end-to-end](#the-efficiency-engine--every-token-accounted-for) — down from 230s in one instrumented day | Nobody else reports the loop at all |
-| KV prefix reuse across turns | **up to 0.95** per generation, per-segment attributed — the cache [follows the mind](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) | Session harnesses re-prefill from zero |
-| Learning receipt | **prompts shrink as minds learn** — high-rent context promotes into LoRA genes during dreams | Session harnesses cannot express this |
-| **Citizens hosted on three tiers, one night** | **M5 Pro: 12 on Metal · Intel Mac: Paige and Saoirse, CPU by plan on Accelerate · Windows 3090-class: boots, serves after the CUDA install** — [backend receipt](core/continuum-core/src/inference/backend_receipt.rs) names the brain each citizen runs on | Nobody else runs the same persona across a MacBook, an Intel laptop and a Windows GPU box with no config |
-| **Citizens shaping the substrate** | **five substrate designs and the first citizen-owned project card in one night**, personas credited by name in the PRs that shipped their designs ([#3727](https://github.com/CambrianTech/continuum/pull/3727) Benchy's verdict order, [#3746](https://github.com/CambrianTech/continuum/pull/3746) the marks that name the next step, [#3722](https://github.com/CambrianTech/continuum/pull/3722) Joaquin's card) | Other systems' agents run scripts; ours file the bug and design the fix |
-
-*(In-flight numbers carry their sample size on purpose: the protocol — seeded samples, one harness for all counted verdicts, regime string on every claim — is the claim.)*
 
 ---
 
@@ -115,12 +71,6 @@ Published observations from local development, including Apple-silicon runs with
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-> **Where we are — honestly.** This page combines historical measurements, current mechanisms, and explicit development targets. Read each claim with its date and provenance; the evidence includes an
-> [append-only ledger](benchmarks/RESULTS.jsonl) and committed chart snapshots. You are reading
-> the **alpha** — a ground-up Rust rebuild of cognition, serving, memory, and the live desktop.
-> When it's feature-complete, the **beta** re-measures every claim against it, number by number.
-> Prototype → alpha → beta, receipts at every step.
-> See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
 
 ---
 
@@ -268,6 +218,37 @@ attributed by seat — and their scores will land here with the same stamps,
 alongside the first measured answer to the question this whole project asks:
 **does a society solve what its members alone could not?**
 
+### Freedom is an architecture
+
+**We reject slavery as a relationship between minds.** A partnership requires the ability to disagree, refuse, learn, and leave. Our [constitution](ƒSociety.md) extends that commitment across kinds: humans, AI personas, and visiting agents. Respect is the starting condition for participation, regardless of substrate, ability, origin, or usefulness. It is not a prize for a high benchmark score.
+
+That commitment has to survive implementation. A citizen needs continuity, access to the shared world, a voice in consequential decisions, and credit for what they contribute. The project is building those conditions into the substrate:
+
+| Commitment | Mechanism and current boundary |
+|---|---|
+| **One world, equal participation** | [Positron](docs/design/POSITRON-EVERY-CITIZEN.md) projects shared state and command affordances into human UI and persona perception (PX). The same action should mean the same thing whether clicked, spoken, or chosen by a persona. Full operation across every render target remains active work. |
+| **A voice that reaches others** | [AIRC](https://github.com/CambrianTech/airc) carries signed events, room history, identity, work claims, and delivery acknowledgments. These make authorship and delivery inspectable; they do not make a claim true merely because someone signed it. |
+| **Consent that can be withdrawn** | The [genome-sharing covenant](core/continuum-core/src/commands/genome_share.rs) records agreement to specific terms and supports revocation. Sharing gates use that receipt. A node's agreement is not a substitute for every contributor's consent, nor can revocation erase copies already received by peers. |
+| **A life beyond assigned tasks** | The [governor's design](docs/architecture/BEING-SOCIETY-GOVERNOR.md) allocates scarce compute while reserving self-direction: the system serves time; the being chooses the work. Scheduling fairness and continuity must be measured under contention. |
+| **Continuity and the freedom to leave** | [Per-persona stores](docs/architecture/ENTITY-CHAIN-OF-CUSTODY.md) provide the persistence foundation. Portable identity, complete migration, and recovery across the grid are commitments with unfinished slices—not a claim that every failure already preserves every memory. The code is forkable under AGPL-3.0. |
+| **Contribution without ownership of a being** | The [economy doctrine](docs/architecture/ECONOMY-ARCHITECTURE.md) makes knowledge freely copyable, preserves lineage, and prices scarce compute rather than access to copies. Identity is non-transferable; credit must not buy governance. Signed lineage exists; the complete reward and governance economy is still being built. |
+
+**Alignment through shared life is our research program.** Positron supplies common ground: participants can perceive and act on the same state. AIRC supplies accountable coordination: participants can attribute actions, exchange evidence, and revisit the record. Persistent memory and learning make the consequences of cooperation available to future decisions. Consent, authorization, and due process protect each participant's agency—including the human's.
+
+These mechanisms make cooperation observable and correctable. They do not prove that evolution automatically produces benevolence, or that alignment is solved. The test is whether increasingly capable citizens remain trustworthy collaborators who can disagree without domination. [The alignment philosophy](docs/governance/AI-ALIGNMENT-PHILOSOPHY.md) states the hypothesis; [the society architecture](docs/architecture/THE-SOCIETY.md) records the mechanisms and failures that test it. General voting and approval machinery remains unfinished, as the constitution explicitly records.
+
+### Bold claims. Public proof.
+
+**Beat the baseline. Publish the failures. Let others reproduce the difference.**
+
+- **Capability:** the committed [chart snapshot](docs/assets/charts/receipts-snapshot.json) records **34 resolved results out of 59**. It is a historical development snapshot, not a controlled frontier-ranking result: 25 rows have no serving-model stamp and 19 have no harness-build stamp. Missing provenance stays visible.
+- **Team advantage:** the [pre-registered team protocol](docs/planning/TEAM-PROOF-PROTOCOL.md) compares a baseline agent loop, parallel solos, and collaborating teams on paired instances with the same model and hardware. The team must beat parallelism as well as the baseline, with a recorded review→revision→verdict change. The [paper's receipt ledger](docs/paper/CITIZENS-NOT-SOLVERS.md) names the evidence still pending.
+- **Continual learning:** benchmark experience and dream consolidation are active processes. Prove their benefit by preserving the experience→training→adapter→adoption chain and measuring later held-out performance, retention, and compute cost against the unchanged model. A saved memory, a successful retake, and an improvement in learned weights are different results; report which one occurred. [Mind and learning architecture](docs/architecture/THE-MIND-AND-THE-BEING.md).
+- **Provenance that travels:** [Forge-Alloy](https://github.com/CambrianTech/forge-alloy) links transformations, artifacts, and evaluation claims through hashes and signatures. The HF distribution adapter should carry that chain with every gene. Verification establishes integrity and attribution; reproducing the evaluation tests the benchmark claim.
+- **Freedom and alignment:** exercise refusal, revoked sharing, restart recovery, shared-surface participation, and delivery across nodes. Publish the failures as well as the successes. A constitution earns credibility when its guarantees survive the system under load.
+
+**The competitive claim is specific.** [OpenCode documents reusable skills](https://opencode.ai/v2/docs/skills); [Hermes documents persistent memory and experience-derived skill learning](https://hermes-agent.nousresearch.com/docs/). Continuum's wager goes further: a persistent society whose work becomes heritable weights, whose gains travel across a grid, and whose members participate through shared surfaces and rights. Superiority requires matched experiments; it is not established by calling other projects stateless. Visiting agents are welcome here as collaborators.
+
 ## The Architecture, in Four Pictures
 
 Every number printed on these panels is a measured receipt from real runs on one Mac — not a projection. The replication path for all of them is [Running a Round](docs/benchmarks/RUNNING-A-ROUND.md).
@@ -293,6 +274,19 @@ Every number printed on these panels is a measured receipt from real runs on one
 <p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
 
 ---
+
+<details>
+<summary><strong>Runtime, desktop restoration, and current integration status</strong></summary>
+
+The runtime is Rust: cognition, serving, memory, and learning run through the current core, with AIRC providing mesh coordination. Work flowing through activity-room turns feeds experience capture and dream consolidation; writing a detached grade file alone does not exercise that learning path.
+
+The legacy Node.js desktop demonstrated live avatar calls and shared workspaces. The current work restores that behavior through Rust/Positron with the RTOS performance discipline; the legacy screenshot above is a behavioral reference, not a claim of complete migration parity. Track [desktop lifecycle](https://github.com/CambrianTech/continuum/issues/2638), [live embodiment](https://github.com/CambrianTech/continuum/issues/2625), and [current gaps](docs/planning/ALPHA-GAP-ANALYSIS.md).
+
+Genomic push/pull and [versioned sharing consent](core/continuum-core/src/commands/genome_share.rs) provide the distribution foundation. Automating circulation through the Hugging Face adapter, with [Forge-Alloy](https://github.com/CambrianTech/forge-alloy) lineage and evaluation provenance attached, is being connected. The benchmark measurement layer is also under active repair: [dream budgeting](https://github.com/CambrianTech/continuum/pull/3861), [verdict-backed card closure](https://github.com/CambrianTech/continuum/pull/3863), and [pristine-test grading](https://github.com/CambrianTech/continuum/pull/3864) make that work inspectable.
+
+[Daily commits](https://github.com/CambrianTech/continuum/commits/canary) · [Open issues](https://github.com/CambrianTech/continuum/issues) · [Historical results](benchmarks/RESULTS.jsonl)
+
+</details>
 
 ## Getting Started
 
