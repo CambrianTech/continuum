@@ -3536,6 +3536,52 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
             "VERDICT NOT PERSISTED — this grade is real but the system will forget it"
         ),
     }
+    // THE BOARD FOLLOWS THE VERDICT. Before this only the tracker settled: the
+    // board card of a resolved instance stayed open/claimed and was re-claimed
+    // (sympy-22456, 2026-09-07). Idempotent: an already-closed card is a no-op.
+    if !p.gold.unwrap_or(false) {
+        let cards = crate::cognition::bench_round::cards_for_instance(&verdict.instance_id);
+        if !cards.is_empty() {
+            match crate::persona::operator_peer::operator_airc() {
+                Some(airc) => {
+                    for card in cards {
+                        let card_id = airc_lib::WorkCardId::from_uuid(card);
+                        match crate::modules::work::advance_card_state(
+                            &airc,
+                            card_id,
+                            airc_lib::CardState::Closed,
+                            crate::modules::work::VIA_VERDICT,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(()) => crate::probe!(
+                                class = "benchmark.verdict.board_closed",
+                                instance = verdict.instance_id.as_str(),
+                                card = %card.to_string().chars().take(8).collect::<String>(),
+                                resolved = verdict.resolved,
+                                "the board card follows the verdict — closed"
+                            ),
+                            Err(e) => crate::probe!(
+                                class = "benchmark.verdict.board_close_failed",
+                                instance = verdict.instance_id.as_str(),
+                                card = %card.to_string().chars().take(8).collect::<String>(),
+                                error = %e,
+                                "the verdict is recorded but the board card could not be closed — it will read open until the next pass"
+                            ),
+                        }
+                    }
+                }
+                None => crate::probe!(
+                    class = "benchmark.verdict.board_close_failed",
+                    instance = verdict.instance_id.as_str(),
+                    card = "-",
+                    error = "operator self-peer not online",
+                    "no airc handle to close the board card with"
+                ),
+            }
+        }
+    }
 
     // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
     // append it to her experience stream. Only her: the gold/raw-patch arms are

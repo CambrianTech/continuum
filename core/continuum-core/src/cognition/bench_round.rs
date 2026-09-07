@@ -698,6 +698,25 @@ pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
 /// so a re-say can name the instance the way the 2026-09-02 hand-written
 /// operator note did (the note broke a wedged round; the substrate's own
 /// kickoff must carry the same information or the hand stays in the loop).
+/// Every card, across live rounds, that carries `instance` — the set a verdict
+/// must close on the BOARD. A verdict settled the tracker but never the board
+/// card, so a resolved instance read `open` and was re-claimed (sympy-22456,
+/// 2026-09-07: resolved 14:13Z, re-claimed and re-worked by another citizen an
+/// hour later).
+pub fn cards_for_instance(instance: &str) -> Vec<Uuid> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: poisoned lock = read the last state, same as every reader here
+    rounds
+        .values()
+        .flat_map(|r| {
+            r.card_instances
+                .iter()
+                .filter(|(_, i)| i.as_str() == instance)
+                .map(|(c, _)| *c)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 pub fn instance_for_card(card_id: Uuid) -> Option<String> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner()); // safe: poisoned lock = read the last state, same policy as every ROUNDS lock here
     rounds.values().find_map(|r| {
