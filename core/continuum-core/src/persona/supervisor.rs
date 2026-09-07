@@ -487,6 +487,11 @@ pub enum SupervisorError {
 /// on an 8 GiB Intel Mac. Slice 10+ can introduce parallel + capped
 /// materialization once #122 (shared base) makes the per-persona
 /// cost much smaller.
+/// The window an off-box brain gets when nobody recorded her responder's slot:
+/// small enough to be safe on any lane we have served (the 5090's 27B slots
+/// were 24,832; the Intel Mac's CPU lane smaller), never the local lane's size.
+pub const REMOTE_WINDOW_FLOOR: u32 = 16_384;
+
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
@@ -591,15 +596,23 @@ pub async fn materialize_adapters(
                     );
                     profile.context_length = window;
                 }
-                None => crate::probe!(
-                    class = "persona.upstart.window",
-                    persona = %profile.persona_name,
-                    persona_id = %profile.persona_id,
-                    planned = profile.context_length,
-                    source = "remote_unknown",
-                    "off-box brain with no recorded responder window — keeping the planned value; \
-                     pass --context_window to persona/reassign-model",
-                ),
+                None => {
+                    // The planned value IS the outage (it is the local lane's size).
+                    // Unknown responder → the conservative floor: briefly under-
+                    // budgeted costs context; over-budgeted costs every answer.
+                    let floor = REMOTE_WINDOW_FLOOR.min(profile.context_length);
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = floor,
+                        source = "remote_floor",
+                        "off-box brain with no recorded responder window — sized to the floor; \
+                         pass --context_window to persona/reassign-model for her real slot",
+                    );
+                    profile.context_length = floor;
+                }
             }
         } else if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud {
             let snap = crate::inference::llama_server::current_serving();
@@ -1266,6 +1279,45 @@ mod tests {
     /// A row that arrives with `Err(profile)` from slice 8 passes
     /// through as `SupervisorError::Profile` — the factory is NOT
     /// called for it (sibling rows still materialize normally).
+    // what this catches: the DECISION, not the serialization. A remote-bound
+    // persona's window comes from her recorded responder slot (or the floor when
+    // none is recorded) and never from the local serving snapshot — reordering
+    // the remote branch against the local-slot clamp would size every off-box
+    // brain to a lane it never runs in (35–43k prompts at a 24,832 slot, 2026-09-07).
+    #[tokio::test]
+    async fn a_remote_override_wins_over_the_local_slot_at_spawn() {
+        init_test_registry();
+        let homes = tempfile::tempdir().expect("tempdir");
+        let mut with_window = fake_instance("Rin");
+        with_window.home = homes.path().join("rin");
+        std::fs::create_dir_all(&with_window.home).expect("home dir");
+        crate::persona::model_override::PersonaModelOverride::new_remote("model-a", None, 1, "peer")
+            .with_context_window(24_832)
+            .write(&crate::persona::home::PersonaHome::from_root(with_window.home.clone()))
+            .expect("write override");
+        let mut without_window = fake_instance("Sol");
+        without_window.home = homes.path().join("sol");
+        std::fs::create_dir_all(&without_window.home).expect("home dir");
+        crate::persona::model_override::PersonaModelOverride::new_remote("model-b", None, 1, "peer")
+            .write(&crate::persona::home::PersonaHome::from_root(without_window.home.clone()))
+            .expect("write override");
+        let mut rin = fake_profile("Rin", "model-a");
+        rin.context_length = 50_944;
+        let mut sol = fake_profile("Sol", "model-b");
+        sol.context_length = 50_944;
+        let plans = vec![
+            MaterializedPersonaPlan { role: RoleId::Helper, instance: with_window, profile: Ok(rin) },
+            MaterializedPersonaPlan { role: RoleId::Coder, instance: without_window, profile: Ok(sol) },
+        ];
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+        let rin = hosted[0].as_ref().expect("Rin hosted");
+        assert_eq!(rin.profile.context_length, 24_832, "the recorded responder window wins");
+        let sol = hosted[1].as_ref().expect("Sol hosted");
+        assert_eq!(sol.profile.context_length, REMOTE_WINDOW_FLOOR, "unknown responder → the floor, never the local lane");
+    }
+
     #[tokio::test]
     async fn forwards_profile_errors_without_calling_factory() {
         init_test_registry();
