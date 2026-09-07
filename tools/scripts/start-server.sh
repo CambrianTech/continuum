@@ -455,7 +455,7 @@ ensure_airc_daemon() {
     local status_rc=0
     status_out="$(machine_airc_capture 5 status 2>/dev/null)" || status_rc=$?
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
-    bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{for(i=2;i<=NF;i++) if ($i ~ /^[0-9a-f]{12,}$/) {print $i; exit}}' | head -1)"
     if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
       # One more sample before concluding anything: a busy account registry is
       # transient by definition, and the whole verdict must not hinge on one miss.
@@ -463,7 +463,7 @@ ensure_airc_daemon() {
       status_rc=0
       status_out="$(machine_airc_capture 8 status 2>/dev/null)" || status_rc=$?
       daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
-      bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+      bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{for(i=2;i<=NF;i++) if ($i ~ /^[0-9a-f]{12,}$/) {print $i; exit}}' | head -1)"
     fi
     if [ -n "$daemon_build" ] && [ -n "$bin_build" ] && [ "$daemon_build" = "$bin_build" ]; then
       echo "✓ airc daemon: adopted (already answering, build $daemon_build == installed)" >&2
@@ -478,8 +478,16 @@ ensure_airc_daemon() {
       echo "⚠  airc daemon answers ping but \`status\` did not answer within the bound (rc=$status_rc) — adopting the LIVE daemon; a status timeout is not evidence of staleness" >&2
       return 0
     fi
-    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
-      echo "⚠  airc daemon answered \`status\` without a readable build (daemon=${daemon_build:-?} cli=${bin_build:-?}) — a daemon too old for today's status shape; restarting it" >&2
+    # SPLIT THE EMPTIES (IntelMac, 11:59Z 2026-09-07 — the first boot on #3841 restarted a
+    # healthy daemon over `cli=?`). `cli_version:` is printed by the CLI ITSELF, after the
+    # daemon-sourced lines; a missing one says nothing about the daemon — it says OUR read
+    # was cut short (a status that terminated mid-output reads as rc=0 with stderr dropped).
+    if [ -z "$bin_build" ]; then
+      echo "⚠  could not read OUR OWN cli_version from \`airc status\` (daemon=${daemon_build:-?}) — not a daemon fault; adopting the LIVE daemon" >&2
+      return 0
+    fi
+    if [ -z "$daemon_build" ]; then
+      echo "⚠  airc daemon answered \`status\` without a \`build:\` line (cli=$bin_build) — a daemon too old for today's status shape; restarting it" >&2
     fi
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
     machine_airc 5 stop || true
