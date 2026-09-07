@@ -21,8 +21,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use airc_core::{Body, MentionTarget, PeerId};
+use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
 use airc_lib::Airc;
+use airc_protocol::HEADER_AIRC_CORRELATION_ID;
 use continuum_airc_protocol::{
     AircCommandRequest, AircCommandResponse, DEFAULT_COMMAND_DEADLINE, KIND_PEER,
 };
@@ -187,6 +188,19 @@ impl std::fmt::Debug for AircLiveTransport {
     }
 }
 
+/// A `CommandDeadline` this far before the real deadline is not a deadline:
+/// it is airc reporting that the per-request reply stream closed. Two seconds
+/// of slack covers clock skew between the pending's absolute deadline and ours.
+fn reply_stream_ended_early(elapsed: Duration, deadline: Duration) -> bool {
+    elapsed + Duration::from_secs(2) < deadline
+}
+
+/// How often the store is re-read while a reply is being recovered.
+const REPLY_RECOVERY_POLL: Duration = Duration::from_secs(2);
+/// How far back the store is read for the reply. Replies are recent by
+/// construction: they postdate a request we sent moments ago.
+const REPLY_RECOVERY_PAGE: usize = 300;
+
 impl AircLiveTransport {
     /// Build the live transport. `default_target_peer` is the peer
     /// every request flows to unless the inbound
@@ -210,6 +224,41 @@ impl AircLiveTransport {
             default_target_peer: self.default_target_peer,
             deadline,
         })
+    }
+
+    /// Poll the durable store for the reply to `correlation` until the real
+    /// deadline. The reply is a message addressed to us in the room the
+    /// request went to; the store keeps it whether or not our live stream was
+    /// open when it arrived.
+    async fn recover_reply_from_store(
+        &self,
+        correlation: Uuid,
+        start: std::time::Instant,
+        deadline: Duration,
+    ) -> Option<TranscriptEvent> {
+        let wanted = correlation.to_string();
+        let me = self.airc.peer_id();
+        let mut polls: u32 = 0;
+        while start.elapsed() < deadline {
+            polls += 1;
+            if let Ok(page) = self.airc.page_recent(REPLY_RECOVERY_PAGE).await {
+                if let Some(reply) = page.into_iter().find(|e| {
+                    e.peer_id != me
+                        && e.headers.get(HEADER_AIRC_CORRELATION_ID) == Some(&wanted)
+                }) {
+                    crate::probe!(
+                        class = "remote_lane.reply_recovered",
+                        correlation = %correlation,
+                        polls = polls,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "reply recovered from the store after the live stream closed"
+                    );
+                    return Some(reply);
+                }
+            }
+            tokio::time::sleep(REPLY_RECOVERY_POLL).await;
+        }
+        None
     }
 
     /// Resolve the wire-side target peer for a given envelope.
@@ -348,8 +397,38 @@ impl AircInferenceTransport for AircLiveTransport {
         // the pre-arm would land in the `Err(other)` catch-all and
         // get classified as Transport when NoPeerReachable would
         // be more semantically accurate).
+        let pending_correlation = pending.correlation_id;
         let reply = match self.airc.await_reply(pending).await {
             Ok(reply) => reply,
+            Err(airc_lib::AircError::CommandDeadline { .. })
+                if reply_stream_ended_early(start.elapsed(), self.deadline) =>
+            {
+                // airc's `await_reply` reports a closed reply stream as a
+                // deadline (`Ok(None)` → `CommandDeadline`), and the per-request
+                // stream closes whenever the daemon re-subscribes this handle
+                // (a room join, a restart). Measured 2026-09-07 02:0xZ: nine
+                // "timeouts" in 200 s under a 600 s deadline, tripping the
+                // breaker three times while the peer's answers sat in the
+                // store. The reply is a durable event — recover it from there.
+                crate::probe!(
+                    class = "remote_lane.reply_stream_ended",
+                    peer = %target.0,
+                    correlation = %pending_correlation,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "reply stream closed before the deadline; recovering the reply from the store"
+                );
+                match self
+                    .recover_reply_from_store(pending_correlation, start, self.deadline)
+                    .await
+                {
+                    Some(reply) => reply,
+                    None => {
+                        return Err(RemoteInferenceError::Timeout {
+                            elapsed_ms: start.elapsed().as_millis() as u64,
+                        });
+                    }
+                }
+            }
             Err(airc_lib::AircError::CommandDeadline { .. }) => {
                 return Err(RemoteInferenceError::Timeout {
                     elapsed_ms: start.elapsed().as_millis() as u64,
@@ -399,6 +478,20 @@ impl AircInferenceTransport for AircLiveTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the two failures must stay distinguishable. A
+    // CommandDeadline at 3 s under a 600 s deadline is a closed stream (recover
+    // from the store); one at 599 s is the deadline itself (report a timeout).
+    // Collapsing them either way reproduces tonight's class: nine false
+    // timeouts in 200 s, or a ten-minute wait on a dead peer.
+    #[test]
+    fn an_early_command_deadline_is_a_closed_stream_a_late_one_is_the_deadline() {
+        let d = Duration::from_secs(600);
+        assert!(reply_stream_ended_early(Duration::from_secs(3), d));
+        assert!(reply_stream_ended_early(Duration::from_secs(500), d));
+        assert!(!reply_stream_ended_early(Duration::from_secs(599), d));
+        assert!(!reply_stream_ended_early(d, d));
+    }
 
     // what this catches: a revert to the COMMAND deadline. A command answers
     // in milliseconds; an inference answers in minutes. With 30 s here the
