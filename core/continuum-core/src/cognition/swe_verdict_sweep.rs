@@ -124,8 +124,31 @@ pub fn pending() -> Vec<PendingGrade> {
         if has_verdict {
             continue;
         }
-        match decide(false, grade_target(&owners_of(&instance))) {
-            SweepDecision::Grade(workspace) => out.push(PendingGrade { instance, workspace }),
+        let copies = owners_of(&instance);
+        let worked = copies.iter().filter(|c| c.has_work).count();
+        match decide(false, grade_target(&copies)) {
+            SweepDecision::Grade(workspace) => {
+                if worked > 1 {
+                    // The newest of several worked copies was chosen (a card that
+                    // changed hands). The OTHERS are named too: their work is not
+                    // graded, and whoever asks later what happened to it must find
+                    // a row, not archaeology (IntelMac, #3852).
+                    let not_graded: Vec<String> = copies
+                        .iter()
+                        .filter(|c| c.has_work && c.path != workspace)
+                        .map(|c| c.path.display().to_string())
+                        .collect();
+                    crate::probe!(
+                        class = "benchmark.verdict.multiple_worked_copies",
+                        instance = instance.as_str(),
+                        graded = %workspace.display(),
+                        not_graded = %not_graded.join(","),
+                        worked_copies = worked as u64,
+                        "several citizens worked this instance — grading the newest; the others are NOT graded"
+                    );
+                }
+                out.push(PendingGrade { instance, workspace })
+            }
             SweepDecision::Ambiguous(paths) => crate::probe!(
                 class = "benchmark.verdict.sweep_ambiguous",
                 instance = instance.as_str(),
@@ -154,6 +177,36 @@ pub struct SweepReport {
 /// suite; N of those in parallel would compete with the citizens' own serving lane for the
 /// machine the round is being measured on ([[measured-work-gets-an-exclusive-warm-slot]]).
 /// The sweep is background work that must never become the reason a turn is slow.
+/// Whether a tick starts a sweep: something is pending and no sweep is already
+/// running. Pure — the tick's only decision. Before this the sweep ran ONCE, at
+/// module initialize, so a citizen's finished card waited for the next reboot
+/// to be graded (2026-09-07: sympy-22456 was graded by the 14:13Z boot's sweep,
+/// hours after the work).
+pub fn should_start_sweep(pending: usize, in_flight: bool) -> bool {
+    pending > 0 && !in_flight
+}
+
+/// One sweep at a time across ticks and boots.
+pub static SWEEP_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The tick's entry: start a sweep in its own task when one is due. Returns
+/// whether one was started.
+pub fn sweep_if_due() -> bool {
+    use std::sync::atomic::Ordering;
+    let due = should_start_sweep(pending().len(), SWEEP_IN_FLIGHT.load(Ordering::Relaxed));
+    if !due {
+        return false;
+    }
+    if SWEEP_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    tokio::spawn(async {
+        let _report = sweep().await;
+        SWEEP_IN_FLIGHT.store(false, Ordering::Release);
+    });
+    true
+}
+
 pub async fn sweep() -> SweepReport {
     let mut report = SweepReport::default();
     let work = pending();
@@ -179,9 +232,22 @@ pub async fn sweep() -> SweepReport {
         match crate::commands::benchmark::grade_swe(params).await {
             Ok(result) if result.error.is_some() => {
                 report.ungradeable += 1;
+                // The REASON rides the row. 2026-09-07: 58 of these in six hours said
+                // "environment fault" and nothing else — 13346 (f2p passes on the
+                // pristine tree) and 14983 (the era env cannot build) were only told
+                // apart by hand grades. A reason a reader can histogram is the
+                // difference between one env fix and twenty-five mysteries.
+                let reason: String = result
+                    .error
+                    .as_deref()
+                    .unwrap_or("")  // unwrap_or: guarded by the arm — error is Some here
+                    .chars()
+                    .take(160)
+                    .collect();
                 crate::probe!(
                     class = "benchmark.verdict.sweep_ungradeable",
                     instance = item.instance.as_str(),
+                    reason = %reason,
                     "environment fault, NOT a capability zero — nothing recorded",
                 );
             }
@@ -261,5 +327,15 @@ mod tests {
                  idempotence must not depend on the workspace still being dirty"
             );
         }
+    }
+
+    // what this catches: a sweep that never runs between boots, or two sweeps
+    // grading the same instance at once. The tick starts one only when work is
+    // pending and none is in flight.
+    #[test]
+    fn a_tick_starts_a_sweep_only_when_pending_and_idle() {
+        assert!(!should_start_sweep(0, false));
+        assert!(!should_start_sweep(3, true));
+        assert!(should_start_sweep(1, false));
     }
 }
