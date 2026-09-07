@@ -339,10 +339,15 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         vec![]
     }
 
-    fn supports_model(&self, _model: &str) -> bool {
-        // The remote adapter accepts any model name — the peer
-        // decides whether to serve it.
-        true
+    fn supports_model(&self, model: &str) -> bool {
+        // A lane pinned to a model serves ONLY that model — the peer refuses
+        // any other after the full wait (#3822 measured it: +186 s). The
+        // selector must filter here rather than route on a claim the adapter
+        // no longer honours (card 0b55ea79). An unpinned adapter still
+        // accepts any name: the peer's own catalog decides.
+        self.default_model
+            .as_deref()
+            .map_or(true, |lane| lane == model)
     }
 }
 
@@ -417,6 +422,23 @@ mod tests {
         assert!(caps.has(crate::model_registry::Capability::TextGeneration));
         assert!(caps.has(crate::model_registry::Capability::Chat));
         assert!(!caps.is_local);
+    }
+
+    // what this catches: two sites disagreeing about who owns the model
+    // decision. with_model makes the lane's model authoritative on every
+    // request (#3822); supports_model must say the same thing to the
+    // selector, or a router trusts "I support X", routes here, and X is
+    // rewritten in flight. Unpinned stays open (the peer's catalog decides).
+    #[tokio::test]
+    async fn a_pinned_lane_advertises_only_its_model() {
+        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
+            elapsed_ms: 1,
+        });
+        let pinned = AircRemoteInferenceAdapter::new(transport.clone()).with_model("qwen3.8-27b");
+        assert!(pinned.supports_model("qwen3.8-27b"));
+        assert!(!pinned.supports_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF"));
+        let open = AircRemoteInferenceAdapter::new(transport);
+        assert!(open.supports_model("anything-at-all"));
     }
 
     #[tokio::test]
