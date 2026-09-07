@@ -630,6 +630,17 @@ pub fn seal_round(round_id: Uuid) {
 /// to the room of her freshest live claim, so she stops alternating rooms —
 /// measured 2026-08-22: two live claims in two rooms swapped her pinned slot's
 /// room-scoped context every tick, `cached: 0` by her own hand.
+/// The dispatch-time assignee of `card_id`, if the round recorded one. The LIVE holder is
+/// the board's business (`verdict_board::holder_of`); this is the fallback when no board
+/// read is possible.
+pub fn card_assignee(card_id: Uuid) -> Option<Uuid> {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
+        .values()
+        .find_map(|r| r.card_assignees.get(&card_id).copied())
+}
+
 pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
     ROUNDS
         .lock()
