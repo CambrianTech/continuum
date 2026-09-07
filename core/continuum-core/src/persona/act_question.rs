@@ -252,12 +252,12 @@ pub(crate) async fn ask_the_act_question(
                                         // gone by her third act; this one must reach her NEXT work
                                         // turn, where the pull decision is made. Unpinned at that
                                         // turn's restore (IntelMac's review of #3846).
-                                        body.working_memory.pin_fact("released", &format!(
+                                        body.working_memory.pin_fact_for_turns("released", &format!(
                                             "[released] The substrate released card {id8} after \
                                              {acts_without_write} acts of mine without a change to a \
                                              file — the investigation was long enough. A peer may take \
                                              it. Pull it again only with a file:line edit in hand."
-                                        ));
+                                        ), 2);
                                     }
                                 }
                                 Err(e) => crate::probe!(
@@ -436,12 +436,10 @@ pub(crate) async fn ask_the_act_question(
                         // Her hands are home again: the rooting facts no longer hold.
                         // The next work turn re-pins them at its own root.
                         if let Some(body) = cycle.acting() {
-                            body.working_memory.unpin_fact("hands");
-                            body.working_memory.unpin_fact("env");
-                            // A [released] notice lives for exactly one work turn after the
-                            // release: pinned during turn N, rendered at the start of turn N+1
-                            // (the next pull decision), dropped here at N+1's end.
-                            body.working_memory.unpin_fact("released");
+                            // One turn ended: 1-turn pins ([hands], [env]) leave now; the
+                            // governor's 2-turn [released] notice survives to the next work
+                            // turn's start — the pull decision — and leaves at its end.
+                            body.working_memory.end_of_work_turn();
                         }
                     }
                     let (work_step, _) =
