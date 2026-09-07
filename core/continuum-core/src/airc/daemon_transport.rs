@@ -54,25 +54,74 @@ use crate::airc::realtime_wire::{
     body_for_envelope, envelope_from_event, frame_kind_for_delivery, headers_for_envelope,
 };
 
+/// Why a daemon RPC failed, in the ONE distinction callers act on:
+/// could we reach the daemon at all?
+///
+/// This exists because the answer must survive our boundary as a TYPE.
+/// `airc_ipc::ClientError` already says it precisely (`NotConnected`),
+/// and we used to discard that by stringifying at the trait edge — which
+/// left the recovery path in `ReresolvingDaemonClient` matching a
+/// SUBSTRING of a message produced by a separately versioned binary.
+/// airc ships on its own cadence; a reword there would silently disable
+/// the re-resolve and re-open #3849 with every test in both repos still
+/// green ([[strong-typing-across-boundaries]]: match the variant, never
+/// substring a stringified enum). Classification now happens here, where
+/// the typed error still exists.
+#[derive(Debug)]
+pub enum DaemonCallError {
+    /// The daemon could not be reached at the socket path we hold —
+    /// it is not running, or it moved. The one condition that justifies
+    /// re-resolving the socket.
+    Unreachable(String),
+    /// Any other failure. The daemon IS answering, so re-resolving would
+    /// only hide a real fault.
+    Other(String),
+}
+
+impl std::fmt::Display for DaemonCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable(message) | Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<airc_ipc::ClientError> for DaemonCallError {
+    fn from(error: airc_ipc::ClientError) -> Self {
+        let message = error.to_string();
+        match error {
+            // "Couldn't connect to the socket — daemon not running."
+            airc_ipc::ClientError::NotConnected(_) => Self::Unreachable(message),
+            _ => Self::Other(message),
+        }
+    }
+}
+
 #[async_trait]
 pub trait AircDaemonClient: Send + Sync {
-    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String>;
+    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, DaemonCallError>;
 
-    async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String>;
+    async fn inbox(
+        &self,
+        request: InboxRequest,
+    ) -> Result<airc_ipc::InboxResponse, DaemonCallError>;
 }
 
 #[async_trait]
 impl AircDaemonClient for DaemonClient {
-    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String> {
+    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, DaemonCallError> {
         DaemonClient::publish(self, request)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(DaemonCallError::from)
     }
 
-    async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String> {
+    async fn inbox(
+        &self,
+        request: InboxRequest,
+    ) -> Result<airc_ipc::InboxResponse, DaemonCallError> {
         DaemonClient::inbox(self, request)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(DaemonCallError::from)
     }
 }
 
@@ -146,7 +195,8 @@ impl AircEventTransport for DaemonAircEventTransport {
                 payload,
                 headers: headers_for_envelope(&envelope),
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(AircRealtimePublishResult {
             ok: true,
@@ -190,7 +240,8 @@ impl AircEventTransport for DaemonAircEventTransport {
                 // persona/airc_source.rs (#297).
                 kinds: None,
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         // IpcCursor → TranscriptCursor via the airc#1096 From impl.
         let newest = response.newest.map(|cursor| {
@@ -274,7 +325,10 @@ mod tests {
 
     #[async_trait]
     impl AircDaemonClient for FakeDaemonClient {
-        async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String> {
+        async fn publish(
+            &self,
+            request: PublishRequest,
+        ) -> Result<PublishResponse, DaemonCallError> {
             self.publishes.lock().push(request);
             Ok(PublishResponse {
                 event_id: EventId::from_u128(0xfeed),
@@ -285,7 +339,10 @@ mod tests {
             })
         }
 
-        async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String> {
+        async fn inbox(
+            &self,
+            request: InboxRequest,
+        ) -> Result<airc_ipc::InboxResponse, DaemonCallError> {
             self.inbox_requests.lock().push(request);
             Ok(airc_ipc::InboxResponse {
                 envelopes: Vec::new(), // empty: we test cursor/request shape, not decode

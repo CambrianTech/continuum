@@ -91,8 +91,15 @@ impl AircModule {
                 let from_client = uuid::Uuid::new_v4();
                 Self {
                     queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+                    // #3849: the socket is re-resolved when the daemon
+                    // moves. Boot-once resolution meant a daemon restart
+                    // left this path dead for the whole process lifetime
+                    // — the node kept running while silently advertising
+                    // nothing to the grid.
                     event_transport: Arc::new(DaemonAircEventTransport::with_identity(
-                        Arc::new(airc_ipc::DaemonClient::new(socket.clone())),
+                        Arc::new(crate::airc::ReresolvingDaemonClient::against_live_daemon(
+                            socket.clone(),
+                        )),
                         *peer_id,
                         from_client,
                     )),
