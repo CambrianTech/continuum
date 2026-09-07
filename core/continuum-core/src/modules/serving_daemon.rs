@@ -3840,6 +3840,15 @@ pub fn can_serve_minds(model: &Model) -> bool {
         || model.capabilities.contains(&Capability::Chat)
 }
 
+/// True the first time a mute catalog row is seen by this process.
+fn first_time_named_mute(model_id: &str) -> bool {
+    static NAMED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let set = NAMED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());  // unwrap_or: a poisoned name set still answers; the set is bookkeeping, never truth
+    guard.insert(model_id.to_string())
+}
+
 pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprint> {
     snapshot
         .models
@@ -3847,11 +3856,14 @@ pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprin
         .filter(|live| live.status.availability == Availability::Ready)
         .filter(|live| {
             let ok = can_serve_minds(&live.model);
-            if !ok {
+            if !ok && first_time_named_mute(&live.model.id) {
+                // Once per model per process: the plan recomputes every few seconds
+                // and this fired per pass per mute row (228 rows / 12 min on the M5,
+                // 2026-09-07) — a fact about a catalog row, not about the pass.
                 crate::probe!(
                     class = "serving.plan.candidate_cannot_speak",
                     model_id = %live.model.id,
-                    "a Ready model with no text generation is not a base-model candidate"
+                    "a Ready model with no text generation is not a base-model candidate (named once)"
                 );
             }
             ok
