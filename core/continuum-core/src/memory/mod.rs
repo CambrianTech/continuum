@@ -76,6 +76,25 @@ const MAX_EVENTS_PER_CORPUS: usize = 2000;
 /// Stale corpus TTL — evict if not accessed in 30 minutes.
 const CORPUS_STALE_TTL: Duration = Duration::from_secs(30 * 60);
 
+/// What the consciousness cache is keyed BY: a persona and a room, as two fields.
+///
+/// This was `format!("{persona}:{room}")`, and the packing hid a live defect for as
+/// long as it shipped. Every invalidation site called
+/// `invalidate(persona_id.as_str())` — half a key — so the exact-match `remove`
+/// never hit `"<persona>:<room>"` and the cache was never invalidated at all, only
+/// TTL-expired. A persona could store a memory and keep reading a consciousness
+/// context that omitted it for the rest of the 30 s window, three times over
+/// (corpus load, memory store, timeline store), with nothing failing anywhere.
+///
+/// As a struct that call site cannot be written: invalidating one persona's rooms
+/// has to say so via [`MemoryCache::invalidate_where`], and a lookup has to supply
+/// both halves. Never pack two things into a string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ConsciousnessKey {
+    persona: crate::identity::PersonaRef,
+    room: String,
+}
+
 /// Top-level manager for all persona memory operations.
 ///
 /// - Holds per-persona MemoryCorpus in a DashMap (zero cross-persona contention)
@@ -91,7 +110,7 @@ pub struct PersonaMemoryManager {
     corpus_access_times: DashMap<String, Instant>,
     embedding: Arc<dyn EmbeddingProvider>,
     recall_engine: MultiLayerRecall,
-    consciousness_cache: MemoryCache<ConsciousnessContextResponse>,
+    consciousness_cache: MemoryCache<ConsciousnessKey, ConsciousnessContextResponse>,
 }
 
 impl PersonaMemoryManager {
@@ -135,7 +154,8 @@ impl PersonaMemoryManager {
             .insert(persona_id.to_string(), Instant::now());
 
         // Invalidate consciousness cache (new data affects context)
-        self.consciousness_cache.invalidate(persona_id.as_str());
+        self.consciousness_cache
+            .invalidate_where(|k| &k.persona == persona_id);
 
         let load_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -363,7 +383,10 @@ impl PersonaMemoryManager {
         req: &ConsciousnessContextRequest,
     ) -> Result<ConsciousnessContextResponse, MemoryError> {
         // Check cache
-        let cache_key = format!("{}:{}", persona_id, req.room_id);
+        let cache_key = ConsciousnessKey {
+            persona: persona_id.clone(),
+            room: req.room_id.clone(),
+        };
         if let Some(cached) = self.consciousness_cache.get(&cache_key) {
             return Ok(cached);
         }
@@ -406,7 +429,8 @@ impl PersonaMemoryManager {
             }
         }
         drop(corpus); // Release write lock before invalidating cache
-        self.consciousness_cache.invalidate(persona_id.as_str());
+        self.consciousness_cache
+            .invalidate_where(|k| &k.persona == persona_id);
         Ok(())
     }
 
@@ -434,7 +458,8 @@ impl PersonaMemoryManager {
             }
         }
         drop(corpus); // Release write lock before invalidating cache
-        self.consciousness_cache.invalidate(persona_id.as_str());
+        self.consciousness_cache
+            .invalidate_where(|k| &k.persona == persona_id);
         Ok(())
     }
 
