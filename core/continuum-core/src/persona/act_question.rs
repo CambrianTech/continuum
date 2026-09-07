@@ -304,20 +304,29 @@ pub(crate) async fn ask_the_act_question(
                                     // that repo — every citizen burned acts on `ls swe/`
                                     // → "No such file" and reported the checkout missing.
                                     if let Some(body) = cycle.acting() {
-                                        body.working_memory.record_fact(&format!(
-                                            "[hands] For this turn my files and shell are \
-                                             rooted AT the repo root `{}` — paths are \
-                                             repo-relative; `ls` lists the repo itself \
-                                             (there is no `swe/` directory from here).",
-                                            ws.display()
-                                        ));
+                                        // PINNED (not recorded): the FIFO window is three
+                                        // deep and by her third act this fact was gone —
+                                        // four consecutive work turns without [hands]/[env]
+                                        // on 2026-09-07. Replaced by key on every re-root,
+                                        // dropped when her hands are restored below.
+                                        body.working_memory.pin_fact(
+                                            "hands",
+                                            &format!(
+                                                "[hands] For this turn my files and shell are \
+                                                 rooted AT the repo root `{}` — paths are \
+                                                 repo-relative; `ls` lists the repo itself \
+                                                 (there is no `swe/` directory from here).",
+                                                ws.display()
+                                            ),
+                                        );
                                         // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
                                         // holder ran `pip install --no-build-isolation -e .`
                                         // twelve times in one checkout (21 acts, 0 edits) —
                                         // the grader's prepared env for her instance sat
                                         // beside it, unnamed. Absence is named too, so
                                         // she never guesses an interpreter.
-                                        body.working_memory.record_fact(
+                                        body.working_memory.pin_fact(
+                                            "env",
                                             &crate::persona::instance_env_fact::instance_env_fact(&ws),
                                         );
                                     }
@@ -377,6 +386,12 @@ pub(crate) async fn ask_the_act_question(
                                  own workspace — she is still rooted at the \
                                  card's repo and her live turns will act there"
                             );
+                        }
+                        // Her hands are home again: the rooting facts no longer hold.
+                        // The next work turn re-pins them at its own root.
+                        if let Some(body) = cycle.acting() {
+                            body.working_memory.unpin_fact("hands");
+                            body.working_memory.unpin_fact("env");
                         }
                     }
                     let (work_step, _) =

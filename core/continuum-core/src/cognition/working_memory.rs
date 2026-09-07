@@ -153,6 +153,13 @@ pub struct WorkingMemory {
     /// room) is visible in one ledger row instead of by counter archaeology.
     instance: u64,
     capacity: usize,
+    /// Facts that must be in her window EVERY turn while they hold — where her
+    /// hands are rooted, which interpreter her checkout runs in. Keyed, replaced
+    /// by key, never aged out: the FIFO `entries` window is three deep, and by the
+    /// third act of a turn the rooting facts recorded at its start were gone
+    /// (2026-09-07 11:46Z: four consecutive work turns with [investigation] and
+    /// no [hands]/[env]). Cleared by key when the condition ends.
+    pinned: Mutex<Vec<(String, String)>>,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
@@ -377,6 +384,7 @@ impl WorkingMemory {
         Self {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
+            pinned: Mutex::new(Vec::new()),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             scope: Mutex::new(None),
@@ -654,6 +662,33 @@ impl WorkingMemory {
     /// its own bracket tag and NEVER a receipt number: the 2026-07-12
     /// suppression onion was facts wearing `[action #N]` costumes and every
     /// consumer misreading them as receipts. Same rolling buffer + aging.
+    /// Pin a keyed fact: replaces the fact under `key`, survives every eviction,
+    /// renders first among the notices. For conditions that hold across acts
+    /// (her hands' root, her checkout's environment) — `record_fact` is for
+    /// one-off observations that may age out.
+    pub fn pin_fact(&self, key: &str, text: &str) {
+        let t = text.trim();
+        if t.is_empty() {
+            return;
+        }
+        let mut p = self.pinned.lock();
+        if let Some(slot) = p.iter_mut().find(|(k, _)| k == key) {
+            slot.1 = t.to_string();
+        } else {
+            p.push((key.to_string(), t.to_string()));
+        }
+    }
+
+    /// The pinned facts in pin order — what the notices open with.
+    pub fn pinned_facts(&self) -> Vec<String> {
+        self.pinned.lock().iter().map(|(_, t)| t.clone()).collect()
+    }
+
+    /// Drop the pinned fact under `key` (the condition ended: hands restored).
+    pub fn unpin_fact(&self, key: &str) {
+        self.pinned.lock().retain(|(k, _)| k != key);
+    }
+
     pub fn record_fact(&self, fact: &str) {
         let f = fact.trim();
         if f.is_empty() {
@@ -1292,10 +1327,16 @@ impl Faculty for WorkingMemoryFaculty {
             .filter(|e| !matches!(e.kind, WmKind::Fact))
             .map(|e| clip(&e.text))
             .collect();
-        let notices: Vec<String> = entries
-            .iter()
-            .filter(|e| matches!(e.kind, WmKind::Fact))
-            .map(|e| e.text.clone())
+        let notices: Vec<String> = self
+            .memory
+            .pinned_facts()
+            .into_iter()
+            .chain(
+                entries
+                    .iter()
+                    .filter(|e| matches!(e.kind, WmKind::Fact))
+                    .map(|e| e.text.clone()),
+            )
             .collect();
         // Render oldest-first, newest-LAST: position alone carries recency (the last
         // line is the most recent thought), the universal chat-history convention.
@@ -2387,5 +2428,30 @@ mod tests {
             "the action receipt survives — this faculty IS the proprioception channel: {}",
             c.content
         );
+    }
+
+    // what this catches: a rooting fact aging out of the three-deep window mid-turn.
+    // Pinned facts survive any number of recorded entries, are replaced by key (a
+    // re-root overwrites, never duplicates), and leave when unpinned — while the
+    // FIFO keeps aging out as before.
+    #[test]
+    fn a_pinned_fact_survives_the_window_and_is_replaced_by_key() {
+        let wm = WorkingMemory::new(3);
+        wm.pin_fact("hands", "[hands] rooted at /a");
+        wm.pin_fact("env", "[env] python at /a/env/bin/python");
+        for i in 0..12 {
+            wm.record_fact(&format!("chatty fact {i}"));
+        }
+        assert_eq!(wm.entries.lock().len(), 3, "the FIFO still ages out at capacity");
+        assert_eq!(
+            wm.pinned_facts(),
+            vec!["[hands] rooted at /a".to_string(), "[env] python at /a/env/bin/python".to_string()]
+        );
+        wm.pin_fact("hands", "[hands] rooted at /b");
+        assert_eq!(wm.pinned_facts()[0], "[hands] rooted at /b", "replaced by key, never duplicated");
+        assert_eq!(wm.pinned_facts().len(), 2);
+        wm.unpin_fact("hands");
+        wm.unpin_fact("env");
+        assert!(wm.pinned_facts().is_empty());
     }
 }
