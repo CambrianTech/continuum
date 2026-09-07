@@ -322,6 +322,29 @@ continuum reboot          # after editing: rebuild, relaunch, VERIFY the running
 continuum ping            # is the core answering?
 ```
 
+**Keep the core alive across logout and reboot.** A core started from a shell is a CHILD of
+that shell: close the terminal, log out, or end an agent session and it dies with it (on
+Windows it inherits the session's job object, which kills it outright). `install-service.sh`
+registers it with the OS supervisor instead — LaunchAgent on macOS, systemd on Linux,
+Scheduled Task on Windows — so it survives a crash and comes back after a reboot, while
+still honouring an explicit `continuum stop`.
+
+```bash
+# macOS / Linux
+bash tools/scripts/install-service.sh install            # crash + reboot-then-login
+bash tools/scripts/install-service.sh install --system   # also survives LOGOUT (needs sudo)
+bash tools/scripts/install-service.sh status
+```
+
+```powershell
+# Windows — from an ADMINISTRATOR PowerShell. Creating a scheduled task needs
+# elevation (deleting one does not, which is a trap: tooling can tear the
+# supervisor down and then be unable to put it back).
+# Use Git Bash BY FULL PATH — a bare `bash` in PowerShell is the WSL shim and
+# fails with "execvpe(/bin/bash) failed".
+& "C:\Program Files\Git\bin\bash.exe" tools/scripts/install-service.sh install
+```
+
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
 </details>
 

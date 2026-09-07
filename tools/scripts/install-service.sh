@@ -291,7 +291,19 @@ win_install() {
     echo "  Creating a task requires an ELEVATED shell. Run this once, in an" >&2
     echo "  Administrator terminal, from this checkout:" >&2
     echo "" >&2
-    echo "    bash tools/scripts/install-service.sh install$([ "$SCOPE" = system ] && echo ' --system')" >&2
+    # Name GIT BASH BY FULL PATH, and give the PowerShell form. A bare `bash` in
+    # PowerShell resolves to C:\Windows\System32ash.exe — the WSL shim — which
+    # fails with "WSL ... execvpe(/bin/bash) failed: No such file or directory" and
+    # reads like the SCRIPT is broken. The operator this message exists for is, by
+    # definition, in an elevated PowerShell, which is exactly where the bare word is
+    # wrong. (Measured 2026-09-06: this hint sent Joel straight into that error.)
+    local _gb="$(win_path "$(command -v bash)")"
+    local _args="tools/scripts/install-service.sh install$([ "$SCOPE" = system ] && echo ' --system')"
+    echo "    & \"$_gb\" $_args" >&2
+    echo "" >&2
+    echo "  (from THIS directory. A bare \`bash\` in PowerShell is WSL, not Git Bash," >&2
+    echo "   and fails with 'execvpe(/bin/bash) failed' — use the full path above.)" >&2
+    echo "  Canonical instructions: README.md § Getting Started -> Development." >&2
     echo "" >&2
     echo "  Until then the core has NO supervisor: it will die with whatever shell" >&2
     echo "  started it (Windows job-object teardown) and will not return after a" >&2
