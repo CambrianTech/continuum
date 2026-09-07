@@ -35,6 +35,15 @@ use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 use crate::persona::supervisor::HostedPersona;
 
+/// How many run-room rows the write-or-release gate reads to count a holder's
+/// acts since her last write. 80 rows was ~15 minutes of a five-coder room
+/// (⚙ receipts + 💭 thoughts interleaved), so a holder's six write-less acts
+/// scrolled off the page before the gate could see them: measured 2026-09-07
+/// 07:40–08:40Z, 51 acts / 4 writes across five holders and the gate fired
+/// twice, both for the one holder whose acts happened to cluster. The wall is
+/// a cached projection (airc#1389/#1390), so a deeper page costs nothing.
+const WORK_GATE_PAGE_ROWS: usize = 400;
+
 /// Ask the act-question for a citizen who may be holding work.
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
@@ -166,7 +175,7 @@ pub(crate) async fn ask_the_act_question(
                     // `held_work_burst`); paged from the durable store, the
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
-                    let page = crate::persona::durable_history::room_rows(turn_room, 80).await;
+                    let page = crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS).await;
                     let last_state = match &page {
                         Ok(rows) => {
                             let about: Vec<String> = held
