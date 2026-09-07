@@ -2136,13 +2136,13 @@ pub fn start_server(
     // 5s peer_id status, 120s auto-install) but the OUTER call has
     // no overall budget without this wrapper — a wedged daemon
     // could theoretically chain stalls beyond what individual
-    // deadlines catch. 180s covers worst-case auto-install + a few
-    // discovery rounds. Reviewer-defect-driven (continuum #1507
+    // deadlines catch. 180s covers worst-case auto-install + the 45 s
+    // patience for a restarting daemon (discover_with_patience). Reviewer-defect-driven (continuum #1507
     // finding 6); substrate-is-a-good-citizen "predictable startup"
     // non-negotiable.
     const AIRC_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
     let discovery = rt_handle.block_on(async {
-        match tokio::time::timeout(AIRC_DISCOVERY_TIMEOUT, crate::airc::discover()).await {
+        match tokio::time::timeout(AIRC_DISCOVERY_TIMEOUT, crate::airc::discover_with_patience()).await {
             Ok(d) => d,
             Err(_) => {
                 tracing::error!(
