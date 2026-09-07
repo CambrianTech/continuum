@@ -2893,6 +2893,14 @@ pub fn start_server(
                 "hosting reconciler task alive — entering the plan-edge loop"
             );
             let mut pass = 0u32;
+            // Card 08ef6101: the reconciler runs at ~1 Hz and both of its rows said
+            // the same thing every second (2 × 3,600 rows/hour on a healthy node,
+            // the ledger's largest class). A row now means a CHANGE — or one
+            // heartbeat per RECONCILER_HEARTBEAT_PASSES so "still running, still
+            // the same" is never silent.
+            const RECONCILER_HEARTBEAT_PASSES: u32 = 60;
+            let mut last_pass_row: Option<(bool, bool, bool, bool, u32)> = None;
+            let mut last_ready_row: Option<(bool, bool, u32)> = None;
             loop {
                 pass += 1;
                 let plan_ready = serving_plan_rx
@@ -2911,15 +2919,27 @@ pub fn start_server(
                 // must never leave more minds than warm lanes — 2026-09-06).
                 let live_plan = serving_plan_rx.borrow().clone();
                 supervisor.refresh_serving(live_plan.as_ref());
-                crate::probe!(
-                    class = "persona.host.reconciler_pass",
-                    pass = pass,
-                    plan_ready = plan_ready,
-                    external_lane = external_lane,
-                    booted = booted,
-                    snapshot_live = crate::inference::llama_server::current_serving().is_live(),
-                    "hosting reconciler pass — will enter host body iff (plan_ready || external_lane)"
-                );
+                let snapshot_live = crate::inference::llama_server::current_serving().is_live();
+                let pass_state = (plan_ready, external_lane, booted, snapshot_live);
+                let pass_row_due = match last_pass_row {
+                    Some((a, b, c, d, at)) => {
+                        (a, b, c, d) != pass_state || pass.wrapping_sub(at) >= RECONCILER_HEARTBEAT_PASSES
+                    }
+                    None => true,
+                };
+                if pass_row_due {
+                    crate::probe!(
+                        class = "persona.host.reconciler_pass",
+                        pass = pass,
+                        plan_ready = plan_ready,
+                        external_lane = external_lane,
+                        booted = booted,
+                        snapshot_live = snapshot_live,
+                        changed = last_pass_row.map(|(a, b, c, d, _)| (a, b, c, d) != pass_state).unwrap_or(true),  // unwrap_or: first row of the boot = a change by definition
+                        "hosting reconciler pass — will enter host body iff (plan_ready || external_lane); a row = a change or one heartbeat per 60 passes"
+                    );
+                    last_pass_row = Some((plan_ready, external_lane, booted, snapshot_live, pass));
+                }
                 if plan_ready || external_lane {
                     // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
                     // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
@@ -2939,13 +2959,24 @@ pub fn start_server(
                     )
                     .await
                     .is_some();
-                    crate::probe!(
-                        class = "persona.host.await_ready",
-                        pass = pass,
-                        decode_ready = decode_ready,
-                        booted = booted,
-                        "await_ready_serving returned — decode_ready gates hosting"
-                    );
+                    let ready_state = (decode_ready, booted);
+                    let ready_row_due = match last_ready_row {
+                        Some((a, b, at)) => {
+                            (a, b) != ready_state || pass.wrapping_sub(at) >= RECONCILER_HEARTBEAT_PASSES
+                        }
+                        None => true,
+                    };
+                    if ready_row_due {
+                        crate::probe!(
+                            class = "persona.host.await_ready",
+                            pass = pass,
+                            decode_ready = decode_ready,
+                            booted = booted,
+                            changed = last_ready_row.map(|(a, b, _)| (a, b) != ready_state).unwrap_or(true),  // unwrap_or: first row of the boot = a change by definition
+                            "await_ready_serving returned — decode_ready gates hosting; a row = a change or one heartbeat per 60 passes"
+                        );
+                        last_ready_row = Some((decode_ready, booted, pass));
+                    }
                     if !decode_ready {
                         tracing::warn!(
                             "serving plan fits on GPU but the lane is NOT decode-ready \
