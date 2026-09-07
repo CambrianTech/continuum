@@ -285,8 +285,22 @@ fn is_subsequence(short: &str, long: &str) -> bool {
 }
 
 /// The base fields every wire request may carry beside its command params.
+///
+/// `actorKind` belongs here for the same reason as the rest, and its absence cost two
+/// citizens a retry loop on 2026-09-05: they sent NO parameters, so `candidates` in
+/// `param_mismatch_message` should have been empty and the dedicated "you sent no
+/// parameters at all" branch should have fired. Instead actorKind made it non-empty and
+/// they were told to fix a field the KERNEL had added for them — unremovable, so the
+/// identical call was resent and the identical message came back. Observed six-plus times
+/// in minutes, including a repeat the substrate had to collapse as near-identical.
+///
+/// The list is load-bearing beyond that message: anything naming a kernel field back to a
+/// caller as something she "sent" points her at something she never typed. One place.
 pub fn is_envelope_field(key: &str) -> bool {
-    matches!(key, "handle" | "sessionId" | "userId" | "contextId" | "requestId")
+    matches!(
+        key,
+        "handle" | "sessionId" | "userId" | "actorKind" | "contextId" | "requestId"
+    )
 }
 
 impl<P> CommandRequest<P>
@@ -656,6 +670,63 @@ mod tests {
         assert!(
             !msg.contains("sessionId"),
             "envelope fields are not param candidates: {msg}"
+        );
+    }
+
+    // what this catches: a NEW envelope field being added to `CommandRequest` without being
+    // added to the filter — the exact way `actorKind` got missed. The sibling assertion above
+    // spot-checks two fields; this one pins the WHOLE set, so the next field someone adds has
+    // to be considered here or this fails.
+    //
+    // The cost when it was missed, measured 2026-09-05: both IntelMac personas sent NO
+    // parameters. With actorKind filtered, `candidates` is empty and the dedicated
+    // "you sent no parameters at all" branch fires — true and actionable. Instead actorKind
+    // made it non-empty, that branch was skipped, and they were told to fix a field the
+    // KERNEL had added. Unremovable, so they resent the identical call and got the identical
+    // message. Six-plus times across two citizens in minutes.
+    #[test]
+    fn every_envelope_field_is_filtered_from_the_you_sent_list() {
+        // Every wire name on `CommandRequest` that is NOT the caller's params.
+        const ENVELOPE_FIELDS: &[&str] = &[
+            "handle",
+            "sessionId",
+            "userId",
+            "actorKind",
+            "contextId",
+            "requestId",
+        ];
+        let sent: Vec<String> = ENVELOPE_FIELDS.iter().map(|f| f.to_string()).collect();
+        let msg = param_mismatch_message("missing field `cmd`", &sent);
+        assert!(
+            msg.contains("no parameters at all"),
+            "a call carrying ONLY envelope fields sent no parameters — it must say so, not \
+             name a field the kernel added: {msg}"
+        );
+        for field in ENVELOPE_FIELDS {
+            assert!(
+                !msg.contains(field),
+                "`{field}` is an envelope field and must never appear in the you-sent list: {msg}"
+            );
+        }
+    }
+
+    // what this catches: over-filtering. `command` is DELIBERATELY not filtered even though
+    // the CLI adds it — for `code/shell` it is the single likeliest mis-name for `cmd`, and
+    // suppressing it would break the case this function exists for. Pinned so a future tidy-up
+    // of the filter list cannot quietly take it.
+    #[test]
+    fn command_stays_a_candidate_because_it_is_the_likeliest_misname() {
+        let msg = param_mismatch_message(
+            "missing field `cmd`",
+            &["command".to_string(), "actorKind".to_string()],
+        );
+        assert!(
+            msg.contains("`cmd`") && msg.contains("`command`"),
+            "the real mis-name must still be named on both sides: {msg}"
+        );
+        assert!(
+            !msg.contains("actorKind"),
+            "...while the envelope field alongside it stays filtered: {msg}"
         );
     }
 
