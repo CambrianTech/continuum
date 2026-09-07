@@ -220,8 +220,31 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         if let Some(peer) = &self.default_target_peer {
             envelope = envelope.with_target_peer(peer.clone());
         }
+        let started = std::time::Instant::now();
         let sent = self.transport.send_request(envelope).await;
         self.observe(&sent.as_ref().map(|_| ()));
+        // Every request ends in exactly one row. Before this the only remote
+        // rows were the breaker's — a turn that timed out, errored, or answered
+        // was invisible here, and 9 misses in 200 s could not be told from 3
+        // ten-minute waits (2026-09-07 01:59Z, the first read after #3818).
+        match &sent {
+            Ok(r) => crate::probe!(
+                class = "remote_lane.answered",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                served_by = %r.served_by,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                out_tokens = r.text_response.usage.output_tokens,
+                finish = ?r.text_response.finish_reason,
+                "remote inference answered"
+            ),
+            Err(e) => crate::probe!(
+                class = "remote_lane.failed",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                error = %e,
+                "remote inference failed"
+            ),
+        }
         let response = sent.map_err(|e| e.to_string())?;
         // First successful round-trip flips the health observation
         // bit so subsequent health_check calls can report Healthy.
