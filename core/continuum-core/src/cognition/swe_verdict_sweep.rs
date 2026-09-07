@@ -104,14 +104,32 @@ pub fn clear_refusal(instance: &str) {
     let _ = std::fs::remove_file(refusal_path(instance));
 }
 
-/// Does a remembered refusal still apply? Only while no NEWER work exists than
-/// the work it refused: the same tree is not re-graded; a new edit is. Pure.
-pub fn refusal_stands_at(refused_work_mtime_ms: Option<u64>, newest_work_mtime_ms: Option<u64>) -> bool {
+/// How long a refusal stands when the work's mtime is unknowable on either side
+/// (a deletions-only patch has no file to stat). Bounded by time, never eternal:
+/// an hour suppresses the seven-minute storm 8:1 and guarantees nothing is
+/// excluded forever on a signal that cannot be read (IntelMac's review of #3857).
+pub const REFUSAL_TTL_MS: u64 = 60 * 60 * 1000;
+
+/// Does a remembered refusal still apply? With both mtimes known: only while no
+/// NEWER work exists than the work it refused. With either unknown: only while
+/// the refusal is younger than [`REFUSAL_TTL_MS`]. Pure.
+pub fn refusal_stands_at(
+    refused_work_mtime_ms: Option<u64>,
+    newest_work_mtime_ms: Option<u64>,
+    refused_at_ms: u64,
+    now_ms: u64,
+) -> bool {
     match (refused_work_mtime_ms, newest_work_mtime_ms) {
         (Some(refused), Some(newest)) => newest <= refused,
-        (None, None) => true,
-        _ => false,
+        _ => now_ms.saturating_sub(refused_at_ms) < REFUSAL_TTL_MS,
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(u64::MAX)  // unwrap_or: pre-epoch clock — now reads as far future, every refusal reads EXPIRED, which errs toward grading (0 would make every refusal stand forever)
 }
 
 /// What the sweep decided for one instance — every non-grade outcome is NAMED, because
@@ -172,7 +190,14 @@ pub fn all_staged_instances() -> Vec<String> {
 
 /// Every artifact that holds work and has no verdict, in a stable order.
 pub fn pending() -> Vec<PendingGrade> {
+    pending_with_skipped().0
+}
+
+/// `pending()` plus how many instances a standing refusal kept out — so a quiet
+/// sweep_start reads "nothing to do" apart from "fifteen refusals stand".
+pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     let mut out = Vec::new();
+    let mut skipped_refused = 0usize;
     for instance in all_staged_instances() {
         let has_verdict = crate::cognition::swe_bench::read_verdict(&instance).is_some();
         // Skip the `git status` fan-out entirely when a verdict already exists — `owners_of`
@@ -190,9 +215,10 @@ pub fn pending() -> Vec<PendingGrade> {
                     .find(|c| c.path == workspace)
                     .and_then(|c| c.work_mtime_ms);
                 if let Some(r) = read_refusal(&instance) {
-                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms) {
+                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms, r.at_ms, now_ms()) {
                         // Refused before, nothing changed since: not pending. The
-                        // marker file is the record; no row per tick.
+                        // marker file is the record; the count rides sweep_start.
+                        skipped_refused += 1;
                         continue;
                     }
                 }
@@ -226,7 +252,7 @@ pub fn pending() -> Vec<PendingGrade> {
             SweepDecision::NoWork | SweepDecision::AlreadyGraded => {}
         }
     }
-    out
+    (out, skipped_refused)
 }
 
 /// What one sweep did — reported as a probe so the run is legible from the state pipe
@@ -277,12 +303,21 @@ pub fn sweep_if_due() -> bool {
 
 pub async fn sweep() -> SweepReport {
     let mut report = SweepReport::default();
-    let work = pending();
+    let (work, skipped_refused) = pending_with_skipped();
     if work.is_empty() {
+        // Nothing to grade — said with the count that explains it, so "idle because
+        // fifteen refusals stand" never reads as "idle because there is no work"
+        // (Astra's review of #3859: the early return hid the new count).
+        crate::probe!(
+            class = "benchmark.verdict.sweep_idle",
+            skipped_refused = skipped_refused as u64,
+            "no pending citizen work to grade — the count says whether refusals are standing"
+        );
         return report;
     }
     crate::probe!(
         class = "benchmark.verdict.sweep_start",
+        skipped_refused = skipped_refused as u64,
         pending = work.len(),
         "boot artifact sweep — artifacts holding work with no verdict on file",
     );
@@ -417,12 +452,15 @@ mod tests {
     // graded) or one that never holds (the same tree re-graded every tick). It
     // stands while no newer work exists; a newer edit lifts it.
     #[test]
-    fn a_refusal_stands_until_newer_work_appears() {
-        assert!(refusal_stands_at(Some(1_000), Some(1_000)));
-        assert!(refusal_stands_at(Some(1_000), Some(900)));
-        assert!(!refusal_stands_at(Some(1_000), Some(1_001)));
-        assert!(refusal_stands_at(None, None));
-        assert!(!refusal_stands_at(None, Some(5)));
-        assert!(!refusal_stands_at(Some(5), None));
+    fn a_refusal_stands_until_newer_work_appears_and_never_forever_on_an_unknown_mtime() {
+        let t = 1_000_000u64;
+        assert!(refusal_stands_at(Some(1_000), Some(1_000), t, t));
+        assert!(refusal_stands_at(Some(1_000), Some(900), t, t));
+        assert!(!refusal_stands_at(Some(1_000), Some(1_001), t, t));
+        // Unknown on either side: stands only while younger than the TTL.
+        assert!(refusal_stands_at(None, None, t, t + 1));
+        assert!(!refusal_stands_at(None, None, t, t + REFUSAL_TTL_MS));
+        assert!(refusal_stands_at(None, Some(5), t, t + 1));
+        assert!(!refusal_stands_at(Some(5), None, t, t + REFUSAL_TTL_MS + 1));
     }
 }
