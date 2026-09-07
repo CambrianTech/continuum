@@ -200,8 +200,24 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         &self,
         mut request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        if request.model.is_none() {
-            request.model = self.default_model.clone();
+        // The lane serves ONE model and the peer refuses any other: a request
+        // that names the caller's local model is refused there after the full
+        // wait (2026-09-07 02:01Z, +186 s: "model 'Ornith…' is not the active
+        // served model (serving: Qwen3.8-27B)"). The lane's model is the
+        // truth for every request on it; a caller's different name is noted.
+        if let Some(lane_model) = &self.default_model {
+            if let Some(requested) = &request.model {
+                if requested != lane_model {
+                    crate::probe!(
+                        class = "remote_lane.model_overridden",
+                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                        requested = %requested,
+                        served = %lane_model,
+                        "the caller named a model the remote lane does not serve; the lane's model rides the wire"
+                    );
+                }
+            }
+            request.model = Some(lane_model.clone());
         }
         if self.is_cold() {
             crate::probe!(
@@ -529,7 +545,7 @@ mod tests {
     // that peer to run nothing in particular: `model: None` is serialized as
     // an ABSENT field and the receiver refuses ("No provider or model
     // specified" — 2026-09-06, every accepted ai/generate from the M5). A
-    // caller that names a model keeps it.
+    // caller naming another model gets the lane's model too (the peer refuses others).
     #[tokio::test]
     async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
         let transport = StubInferenceTransport::new(|req: &RemoteInferenceRequest| {
@@ -556,10 +572,13 @@ mod tests {
         let adapter = AircRemoteInferenceAdapter::new(transport).with_model("qwen3.8-27b");
         let out = adapter.generate_text(req("hi")).await.unwrap();
         assert_eq!(out.model, "qwen3.8-27b", "the override's model must ride the wire");
+        // A caller naming its LOCAL model (the persona's node serves Ornith,
+        // her lane serves the 27B) is refused by the peer after the whole
+        // wait; the lane's model wins and the difference is a probe row.
         let mut named = req("hi");
-        named.model = Some("caller-named".to_string());
+        named.model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
         let out = adapter.generate_text(named).await.unwrap();
-        assert_eq!(out.model, "caller-named", "a caller's own model is never overridden");
+        assert_eq!(out.model, "qwen3.8-27b", "the lane's model is the truth for every request on it");
     }
 
     #[tokio::test]
