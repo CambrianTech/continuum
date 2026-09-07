@@ -303,6 +303,7 @@ win_install() {
     echo "" >&2
     echo "  (from THIS directory. A bare \`bash\` in PowerShell is WSL, not Git Bash," >&2
     echo "   and fails with 'execvpe(/bin/bash) failed' — use the full path above.)" >&2
+    echo "  Canonical instructions: README.md § Getting Started -> Development." >&2
     echo "" >&2
     echo "  Until then the core has NO supervisor: it will die with whatever shell" >&2
     echo "  started it (Windows job-object teardown) and will not return after a" >&2
