@@ -311,6 +311,15 @@ pub(crate) async fn ask_the_act_question(
                                              (there is no `swe/` directory from here).",
                                             ws.display()
                                         ));
+                                        // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
+                                        // holder ran `pip install --no-build-isolation -e .`
+                                        // twelve times in one checkout (21 acts, 0 edits) —
+                                        // the grader's prepared env for her instance sat
+                                        // beside it, unnamed. Absence is named too, so
+                                        // she never guesses an interpreter.
+                                        body.working_memory.record_fact(
+                                            &crate::persona::instance_env_fact::instance_env_fact(&ws),
+                                        );
                                     }
                                     crate::probe!(
                                         class = "persona.work.hands_rooted",
