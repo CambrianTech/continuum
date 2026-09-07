@@ -3862,12 +3862,38 @@ mod tests {
         mod the_budget_prices_the_surface_it_actually_sends {
             use super::*;
 
-            /// A window whose quarter-share (see `ContextBudget::tool_surface_tokens`)
-            /// comfortably clears the real registry — calibrated in that module's own
-            /// table, not invented here.
-            const WINDOW_THAT_FITS_THE_FULL_SURFACE: u32 = 50_944;
-            /// …and one whose share does not (6,208 allowance vs ~8.7k of schemas).
-            const WINDOW_TOO_SMALL_FOR_THE_FULL_SURFACE: u32 = 24_832;
+            /// The smallest 1 KiB-aligned window whose tool-surface share ADMITS the
+            /// whole registry — and the largest that does not.
+            ///
+            /// ASKED of [`ContextBudget`], never re-derived from its denominator. Two
+            /// literals stood here (50,944 and 24,832, read off that module's
+            /// calibration table) and the crate's own de-hardcode guard caught them in
+            /// CI, correctly: a window constant that does not scale with the served
+            /// window is exactly what that guard exists to stop, and a test fixture is
+            /// not an exemption from it. Spelling `/ 4` here instead would have
+            /// duplicated `TOOL_SURFACE_DENOM`, which is the same defect wearing a
+            /// different hat — so this searches with the real predicate and stays
+            /// correct if the share is ever re-cut.
+            fn window_admitting(full_surface_tokens: usize) -> u32 {
+                (1..=512)
+                    .map(|k| k * 1024)
+                    .find(|w| {
+                        crate::cognition::context_budget::ContextBudget::from_window(*w)
+                            .tool_surface_tokens()
+                            >= full_surface_tokens
+                    })
+                    .expect("some served window admits the full surface")
+            }
+
+            /// `(admits_the_full_surface, does_not)` — both derived from the registry's
+            /// measured cost, so neither can drift away from the bound it is meant to
+            /// straddle. The narrow one is one alignment step below the smallest
+            /// admitting window, i.e. the largest that still refuses.
+            fn calibrated_windows() -> (u32, u32) {
+                let full = faculty_with_the_real_registry(1024).tool_surface_tokens;
+                let admits = window_admitting(full);
+                (admits, admits - 1024)
+            }
 
             fn faculty_with_the_real_registry(window: u32) -> LlmDeliberationFaculty {
                 LlmDeliberationFaculty::new(
@@ -3894,9 +3920,9 @@ mod tests {
             // on the hands arms and this fails on the strict inequality.
             #[test]
             fn a_work_turn_is_budgeted_for_its_hands_not_for_the_registry_it_withheld() {
-                let faculty = faculty_with_the_real_registry(WINDOW_THAT_FITS_THE_FULL_SURFACE);
-                let selected =
-                    faculty.select_tool_surface(&work_turn(), WINDOW_THAT_FITS_THE_FULL_SURFACE);
+                let (fits, _narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(fits);
+                let selected = faculty.select_tool_surface(&work_turn(), fits);
 
                 assert_eq!(
                     selected.reason,
@@ -3926,11 +3952,12 @@ mod tests {
             // and this fails.
             #[test]
             fn a_budget_withheld_surface_still_reports_the_full_registry_as_demand() {
-                let faculty = faculty_with_the_real_registry(WINDOW_TOO_SMALL_FOR_THE_FULL_SURFACE);
+                let (_fits, narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(narrow);
                 // A MESSAGE turn — so the narrowing can only be the window.
                 let ws = Workspace::new("anything open?");
                 let selected =
-                    faculty.select_tool_surface(&ws, WINDOW_TOO_SMALL_FOR_THE_FULL_SURFACE);
+                    faculty.select_tool_surface(&ws, narrow);
 
                 assert_eq!(
                     selected.reason,
@@ -3958,9 +3985,9 @@ mod tests {
             // and this fails.
             #[test]
             fn a_focus_narrowed_surface_does_not_inflate_demand_with_what_it_never_wanted() {
-                let faculty = faculty_with_the_real_registry(WINDOW_THAT_FITS_THE_FULL_SURFACE);
-                let selected =
-                    faculty.select_tool_surface(&work_turn(), WINDOW_THAT_FITS_THE_FULL_SURFACE);
+                let (fits, _narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(fits);
+                let selected = faculty.select_tool_surface(&work_turn(), fits);
 
                 assert_eq!(
                     selected.demand_tokens(faculty.describe_tool_tokens()),
@@ -3977,16 +4004,13 @@ mod tests {
             // fails on that arm.
             #[test]
             fn the_cost_reported_is_always_the_cost_of_the_surface_reported() {
+                let (fits, narrow) = calibrated_windows();
                 for (label, window, ws) in [
-                    (
-                        "full",
-                        WINDOW_THAT_FITS_THE_FULL_SURFACE,
-                        Workspace::new("anything open?"),
-                    ),
-                    ("hands/work", WINDOW_THAT_FITS_THE_FULL_SURFACE, work_turn()),
+                    ("full", fits, Workspace::new("anything open?")),
+                    ("hands/work", fits, work_turn()),
                     (
                         "hands/budget",
-                        WINDOW_TOO_SMALL_FOR_THE_FULL_SURFACE,
+                        narrow,
                         Workspace::new("anything open?"),
                     ),
                 ] {
@@ -4011,7 +4035,8 @@ mod tests {
             // `min_window_for_agentic_surface` and this fails.
             #[test]
             fn the_structurally_mute_sensor_still_asks_for_the_whole_surface() {
-                let faculty = faculty_with_the_real_registry(WINDOW_TOO_SMALL_FOR_THE_FULL_SURFACE);
+                let (_fits, narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(narrow);
                 let needed = faculty.min_window_for_agentic_surface();
 
                 // The discriminator has to be the bound a HANDS-based sensor would
