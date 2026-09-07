@@ -48,6 +48,7 @@ import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProje
 import { benchContentBody } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 import { canvasContentBody, type CanvasViewState } from './canvasProjections';
+import { PROJECT_PURPOSE, projectContentBody, type ProjectContentBody } from './projectProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
  *  display token the Listing carries (targets draw it, they don't re-derive it). */
@@ -652,6 +653,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<BenchContentBody>
     | ContentView<AcademyContentBody>
     | ContentView<CanvasContentBody>
+    | ContentView<ProjectContentBody>
     | ContentView<SettingsContentBody> = settingsBody
     ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
     : personaBody
@@ -670,6 +672,8 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
                 ? { purpose: CANVAS_PURPOSE, body: canvasBody }
                 : academyBody
                   ? { purpose: ACADEMY_PURPOSE, body: academyBody }
+                  : vm.purpose === PROJECT_PURPOSE
+                    ? { purpose: PROJECT_PURPOSE, body: projectContentBody(vm, live?.board) }
                   : {
                       purpose: vm.purpose,
                       body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },

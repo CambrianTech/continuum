@@ -30,6 +30,7 @@ import {
   type SettingsContentBody,
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
+import { PROJECT_PURPOSE, type ProjectContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
 import { actGroupRow, listingCell, messageRow } from '../render/parts';
 import { ACADEMY_PURPOSE, type AcademyContentBody } from '@continuum/chat-view';
@@ -102,6 +103,23 @@ export const webContentRegistry: ContentRegistry<TemplateResult> =
   createContentRegistry<TemplateResult>();
 
 webContentRegistry.register<ChatContentBody>('chat', (body) => chatContent(body));
+webContentRegistry.register<ProjectContentBody>(PROJECT_PURPOSE, (body) => html`
+  <section class="project-workspace" aria-label="Project workspace">
+    <header class="project-heading"><h2>${body.title}</h2><span>Work board</span></header>
+    ${body.board === undefined
+      ? html`<p role="status">Waiting for this room's work board…</p>`
+      : body.board.cards.length === 0
+        ? html`<p>No work cards in this room yet.</p>`
+        : html`<ul class="project-cards">${body.board.cards.map((card) => html`
+          <li class="project-card">
+            <div class="project-card-meta"><span>${card.priority}</span><span>${card.state.replaceAll('_', ' ')}</span></div>
+            <h3>${card.title}</h3>
+            <p>${card.hold === 'lapsed' ? `Available · previous holder ${card.assignee_name ?? card.assignee_id}` : card.assignee_name ?? 'Unclaimed'}</p>
+            ${card.body ? html`<details><summary>Description</summary><p class="project-description">${card.body}</p></details>` : ''}
+            ${card.pull_request ? html`<p>${card.pull_request.repo} #${card.pull_request.number}</p>` : ''}
+          </li>` )}</ul>`}
+    <details aria-label="Room conversation"><summary>Conversation</summary>${chatContent(body.chat)}</details>
+  </section>`);
 webContentRegistry.register<ForgeContentBody>('foundry', (body) => foundryContent(body));
 // The persona HOME — the profile + brain HUD center, dispatched when the
 // focused tab is persona-kind (the projection publishes purpose "persona").

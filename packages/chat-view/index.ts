@@ -20,6 +20,8 @@ export { SERVING_KIND, servingFromEnvelope } from './ServingState';
 export { BENCH_KIND, benchFromEnvelope } from './BenchState';
 export { benchContentBody, benchWidget } from './benchProjections';
 export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
+export { PROJECT_PURPOSE, projectContentBody } from './projectProjections';
+export type { ProjectContentBody } from './projectProjections';
 export type { ChatState } from './ChatState';
 
 export { chatViewModel, formatTimeOfDay } from './chatViewModel';
