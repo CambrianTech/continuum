@@ -130,14 +130,21 @@ pub fn pending() -> Vec<PendingGrade> {
             SweepDecision::Grade(workspace) => {
                 if worked > 1 {
                     // The newest of several worked copies was chosen (a card that
-                    // changed hands). Named, so a wrong pick is visible in the
-                    // ledger beside the verdict it produced (IntelMac, #3852).
+                    // changed hands). The OTHERS are named too: their work is not
+                    // graded, and whoever asks later what happened to it must find
+                    // a row, not archaeology (IntelMac, #3852).
+                    let not_graded: Vec<String> = copies
+                        .iter()
+                        .filter(|c| c.has_work && c.path != workspace)
+                        .map(|c| c.path.display().to_string())
+                        .collect();
                     crate::probe!(
-                        class = "benchmark.verdict.sweep_chose_newest",
+                        class = "benchmark.verdict.multiple_worked_copies",
                         instance = instance.as_str(),
-                        chosen = %workspace.display(),
+                        graded = %workspace.display(),
+                        not_graded = %not_graded.join(","),
                         worked_copies = worked as u64,
-                        "several citizens worked this instance — grading the newest work"
+                        "several citizens worked this instance — grading the newest; the others are NOT graded"
                     );
                 }
                 out.push(PendingGrade { instance, workspace })

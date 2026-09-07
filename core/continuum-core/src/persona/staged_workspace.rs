@@ -231,6 +231,8 @@ fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> 
     porcelain
         .lines()
         .filter_map(|l| l.get(3..))
+        // A rename line reads `R  old -> new`; the file that exists is `new`.
+        .map(|rel| rel.rsplit(" -> ").next().unwrap_or(rel))  // unwrap_or: rsplit always yields at least the whole string
         .map(|rel| rel.trim().trim_end_matches('/'))
         .filter_map(|rel| std::fs::metadata(root.join(rel)).ok())
         .filter_map(|m| m.modified().ok())
