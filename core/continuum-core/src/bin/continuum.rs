@@ -1392,8 +1392,15 @@ fn build_group_cpu_secs(_pgid: u32) -> Option<u64> {
 ///
 /// ANY MOVEMENT is progress; direction never carried information. A genuinely stuck build holds
 /// the sum CONSTANT — a hung exec burns nothing and spawns nothing — so `!=` still catches every
-/// stall the `>` version caught, including a spinning hang (which climbs). It only stops
-/// mis-reading normal crate-boundary churn as death.
+/// stall the `>` version caught. It only stops mis-reading normal crate-boundary churn as death.
+///
+/// WHAT NEITHER COMPARISON CATCHES, and an earlier draft of this comment claimed the opposite
+/// (Astra caught it on review): a SPINNING hang. The log arm and the CPU arm reset the SAME
+/// `last_progress_at`, so a spin that keeps burning CPU keeps resetting that one clock and the
+/// stall check can never fire, no matter how silent the log goes. Log silence is not an
+/// independent signal here. The only thing bounding a spin is the outer `MAX_WAIT_SECS` ceiling.
+/// That was equally true of `>` — this change neither introduces nor fixes it — but the comment
+/// must not claim a guarantee the code does not make, or the next reader will build on it.
 ///
 /// This bites the LOW END HARDEST, which is the opposite of the intent: the high-water mark is
 /// set by the longest-running single rustc, so a slow machine compiling one crate for 43 minutes
@@ -2690,8 +2697,12 @@ mod tests {
                 "an unchanged group total is the signature of a hung exec: it burns no CPU and \
                  spawns no children, and it is the only thing this watchdog exists to catch"
             );
-            // A spinning hang climbs, so it still reads as progress here and is caught by the
-            // log-silence arm instead — noted so nobody 'fixes' this into an equality check.
+            // A climbing total reads as progress, which is what keeps an ordinary build alive.
+            // It also means a SPINNING hang is not caught by this watchdog at all: the CPU arm
+            // and the log arm reset the same clock, so a spin resets it forever and only
+            // MAX_WAIT_SECS bounds it. True of `>` as well — not a regression, just not a
+            // guarantee. Asserted so nobody 'fixes' this into an equality check believing the
+            // log arm would still cover the spin; it would not.
             assert!(cpu_reading_shows_progress(2590, 2589));
         }
 
