@@ -37,6 +37,51 @@
 
 use continuum_core::ai::types::{MessageContent, TextGenerationRequest};
 
+// what this catches: cf63a02e — an ordinary CLI request during a deploy used to
+// launch a second (possibly stale) core. Exercise the executable, not a policy
+// predicate. The child has an isolated home/endpoint and a harmless start script,
+// so restoring autostart fails this test without launching a real server.
+#[test]
+fn ordinary_commands_never_start_a_core() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("absent.sock");
+    let script = root.path().join("must-not-start.sh");
+    std::fs::write(&script, "#!/bin/sh\nexit 97\n").unwrap();
+    for args in [
+        vec!["ping"],
+        vec!["serving/status"],
+        vec!["commands/list"],
+        vec!["ai/future-operation"],
+        vec!["serving/status", "--help"],
+        vec!["deploy-verify"],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_continuum"))
+            .args(&args)
+            .current_dir(root.path())
+            .env("HOME", root.path())
+            .env("USERPROFILE", root.path())
+            .env("CONTINUUM_HOME", root.path())
+            .env("CONTINUUM_CORE_SOCKET", &socket)
+            .env("CONTINUUM_CORE_TCP", "0")
+            .env("CONTINUUM_START_SCRIPT", &script)
+            .env("CONTINUUM_FROM_SOURCE", "1")
+            .env_remove("CONTINUUM_NO_AUTOSTART")
+            .output()
+            .expect("run the CLI under test");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("no core answering"), "{args:?}: {stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "refusal must not pollute JSON stdout"
+        );
+        assert!(
+            !root.path().join("absent.sock.pid").exists(),
+            "{args:?} launched a child"
+        );
+    }
+}
+
 /// The EXACT JSON shape `ctm generate --prompt "hello"` builds.
 /// Hand-mirror what `apps/cli/src/main.rs::run_generate` constructs.
 /// Do NOT consolidate this with the CLI source — the whole point is
