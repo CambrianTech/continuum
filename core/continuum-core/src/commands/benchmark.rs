@@ -3519,7 +3519,17 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // stated from anything the system held. A measurement the system cannot remember is not a
     // measurement. `record_verdict` itself refuses gold and errored verdicts, so the board can
     // never be laundered by a positive control or an env fault (see its doc).
-    match swe_bench::record_verdict(&verdict, p.gold.unwrap_or(false)) {
+    let recorded = swe_bench::record_verdict(&verdict, p.gold.unwrap_or(false));
+    let verdict_written = matches!(recorded, Ok(Some(_)));
+    // A close that does NOT happen must be a row, never an absence (IntelMac,
+    // batch8 read): a fix that makes the system say less ships the probe for its
+    // new quiet state, or the next reader mistakes "skipped" for "nothing to do".
+    let board_close_skipped: Option<&str> = match &recorded {
+        Ok(Some(_)) => None,
+        Ok(None) => Some("no_verdict_written"),
+        Err(_) => Some("verdict_not_persisted"),
+    };
+    match recorded {
         Ok(Some(path)) => crate::probe!(
             class = "benchmark.verdict.recorded",
             instance = %verdict.instance_id,
@@ -3539,7 +3549,11 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // THE BOARD FOLLOWS THE VERDICT. Before this only the tracker settled: the
     // board card of a resolved instance stayed open/claimed and was re-claimed
     // (sympy-22456, 2026-09-07). Idempotent: an already-closed card is a no-op.
-    if !p.gold.unwrap_or(false) {
+    // Only a RECORDED verdict closes the board. An ungradeable result writes no
+    // verdict (record_verdict → Ok(None)) and must leave the card where it was:
+    // on 7d22a26e6 the first sweep closed 13346/26323/14983's cards on refusals
+    // — a citizen's real patch vanished from the deck without a grade.
+    if verdict_written && !p.gold.unwrap_or(false) {
         let cards = crate::cognition::bench_round::cards_for_instance(&verdict.instance_id);
         if !cards.is_empty() {
             match crate::persona::operator_peer::operator_airc() {
@@ -3580,6 +3594,16 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
                     "no airc handle to close the board card with"
                 ),
             }
+        }
+    }
+    if let Some(reason) = board_close_skipped {
+        if !p.gold.unwrap_or(false) {
+            crate::probe!(
+                class = "benchmark.verdict.board_close_skipped",
+                instance = verdict.instance_id.as_str(),
+                reason,
+                "no verdict was written, so the board card stays where it was — the instance is not settled"
+            );
         }
     }
 
