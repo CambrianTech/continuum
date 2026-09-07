@@ -238,6 +238,35 @@ bounded_run() {
   wait "$pid"
 }
 
+# `bounded_run`'s sibling for a verb whose OUTPUT is the point: stdout captured (via a
+# temp file, so the bound still holds), stderr dropped, exit status preserved, 124 on
+# the bound. `bounded_run` sends stdout to /dev/null by design — and the daemon build
+# check read its `status` through it, so both build strings were EMPTY on every deploy
+# since #3832 and the "stale daemon" restart was unconditional (IntelMac, measured
+# 10:43Z 2026-09-07: `out="$(bounded_run 5 echo HELLO)"` captures nothing).
+bounded_capture() {
+  local budget="$1"; shift
+  local tmp
+  tmp="$(mktemp)"
+  "$@" >"$tmp" 2>/dev/null &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$((budget * 10))" ]; then
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$tmp"
+      return 124
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+  local rc=$?
+  cat "$tmp"
+  rm -f "$tmp"
+  return "$rc"
+}
+
 # ── ROW: foreign inference servers ───────────────────────────────────
 # Unsloth Studio is the EXCISED gateway — there is no healthy state for it to be
 # adopted into, so it is reaped unconditionally. It is stopped before its backend
@@ -329,6 +358,12 @@ machine_airc() {
   (cd "$HOME" && bounded_run "$bound" "$(command -v airc)" "$@")
 }
 
+# Same daemon, output captured — for `status`, whose TEXT is the verdict.
+machine_airc_capture() {
+  local bound="$1"; shift
+  (cd "$HOME" && bounded_capture "$bound" "$(command -v airc)" "$@")
+}
+
 # The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
 # `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
 # sites, one with -9): a deploy in one checkout killed every scope's daemon on the
@@ -418,7 +453,7 @@ ensure_airc_daemon() {
     # restart) are two situations, and emptiness alone carried both (IntelMac, #3841
     # review — one value must not carry two meanings, the same shape as the bug).
     local status_rc=0
-    status_out="$(machine_airc 5 status 2>/dev/null)" || status_rc=$?
+    status_out="$(machine_airc_capture 5 status 2>/dev/null)" || status_rc=$?
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
     bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
@@ -426,7 +461,7 @@ ensure_airc_daemon() {
       # transient by definition, and the whole verdict must not hinge on one miss.
       sleep 2
       status_rc=0
-      status_out="$(machine_airc 8 status 2>/dev/null)" || status_rc=$?
+      status_out="$(machine_airc_capture 8 status 2>/dev/null)" || status_rc=$?
       daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
       bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     fi
