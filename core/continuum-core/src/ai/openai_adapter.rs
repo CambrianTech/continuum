@@ -1639,12 +1639,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                         let role = m
                                             .get("role")
                                             .and_then(|r| r.as_str())
-                                            .unwrap_or("?");
+                                            .unwrap_or("?");  // unwrap_or: a message without a role string is still worth sizing; "?" names it rather than dropping it
                                         let len = m
                                             .get("content")
                                             .and_then(|c| c.as_str())
                                             .map(|c| c.len() / 4)
-                                            .unwrap_or(0);
+                                            .unwrap_or(0);  // unwrap_or: a message with no string content contributes 0 tokens to a total we are only explaining
                                         (role, len)
                                     })
                                     .collect();
@@ -1657,7 +1657,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                     .join(" ");
                                 (msgs.len(), rendered)
                             })
-                            .unwrap_or((0, String::new()));
+                            .unwrap_or((0, String::new()));  // unwrap_or: no messages array means nothing to attribute; the probe still reports the total
                         tracing::warn!(
                             probe_class = "serving.ctx_overshoot",
                             approx_tokens,
