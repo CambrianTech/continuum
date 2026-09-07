@@ -226,6 +226,20 @@ pub fn grade_target(copies: &[StagedCopy]) -> GradeTarget {
     }
 }
 
+/// The newest work mtime (ms) of a checkout on disk, or None when it is clean or
+/// unreadable. The porcelain read plus [`newest_work_mtime_ms`], for callers that
+/// hold a path rather than a `StagedCopy` (claim-time staging).
+pub(crate) fn work_mtime_of(root: &std::path::Path) -> Option<u64> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    let porcelain = String::from_utf8_lossy(&out.stdout);
+    newest_work_mtime_ms(root, &porcelain)
+}
+
 /// The newest mtime (ms) among the paths `git status --porcelain` lists.
 fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> {
     porcelain
