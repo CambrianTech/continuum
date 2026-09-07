@@ -379,29 +379,6 @@ async fn grade_card(
     .await
     .map_err(|e| format!("grade_swe: {e:?}"))?;
 
-    let msg = if let Some(err) = &verdict.error {
-        // An errored verdict is an ABSENCE, not a zero — say so, never a fake fail.
-        format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}")
-    } else if verdict.resolved {
-        format!(
-            "✅ [bench {bench}] {instance} RESOLVED — {}/{} FAIL_TO_PASS + {}/{} PASS_TO_PASS passed. Nice work.",
-            verdict.fail_to_pass_passed,
-            verdict.fail_to_pass_total,
-            verdict.pass_to_pass_passed,
-            verdict.pass_to_pass_total,
-        )
-    } else {
-        let failing = if verdict.failed_tests.is_empty() {
-            String::new()
-        } else {
-            format!(" — still failing: {}", verdict.failed_tests.join(", "))
-        };
-        format!(
-            "❌ [bench {bench}] {instance} not resolved — {}/{} FAIL_TO_PASS passed{}",
-            verdict.fail_to_pass_passed, verdict.fail_to_pass_total, failing
-        )
-    };
-
     // Post the verdict into the CARD'S room as a participant — the run room the
     // citizens are standing in, not the grading citizen's current room.
     crate::probe!(
@@ -411,9 +388,15 @@ async fn grade_card(
         resolved = verdict.resolved,
         "SWE grade complete — posting verdict into the card's room"
     );
-    crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg)
-        .await
-        .map_err(|e| format!("post verdict: {e}"))?;
+    // The room line and the card move live beside `record_verdict` now
+    // (`modules::verdict_board::follow`) so the sweep and the operator paths say the same
+    // thing this path did; an errored verdict is an ABSENCE and posts nothing.
+    if let Some(err) = &verdict.error {
+        let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
+        crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg)
+            .await
+            .map_err(|e| format!("post verdict: {e}"))?;
+    }
     Ok(())
 }
 
