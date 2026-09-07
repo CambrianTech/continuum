@@ -188,6 +188,12 @@ pub struct SweVerdict {
     /// False when FAIL_TO_PASS already passed on the pristine tree — the task carries no bug
     /// here, so no score from it distinguishes a fix from a no-op.
     pub gate_ok: bool,
+    /// FAIL_TO_PASS tests that were ALREADY green on the pristine tree while others still
+    /// failed. The gate holds (there is a bug left to fix) but the receipt must name them:
+    /// a citizen cannot earn credit for those, and an env whose backend makes one of them
+    /// pass (django-13346's `test_key_iregex` on this box) is a parity note, not a void.
+    #[serde(default)]
+    pub pristine_green: Vec<String>,
     /// Set when the run could not produce a verdict at all (clone, patch, or env failure).
     /// A verdict with `error` set is NOT a zero — it is an absence, and must never be
     /// tallied as a failed attempt.
@@ -3316,6 +3322,36 @@ pub async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, St
     Ok(dir)
 }
 
+/// The gate's decision, as a pure function of the pristine FAIL_TO_PASS run.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PristineGate {
+    /// Every FAIL_TO_PASS test already passes: nothing is left to fix, no score from this
+    /// tree can distinguish a fix from a no-op.
+    Void { already: Vec<String> },
+    /// At least one FAIL_TO_PASS test still fails: the bug is here and the grade stands on
+    /// it. `pristine_green` names the ones that were green before any patch.
+    Holds { pristine_green: Vec<String> },
+}
+
+/// THE GATE, decided. Voids only when NOTHING is left to fix.
+///
+/// Before 2026-09-07 one pristine-green FAIL_TO_PASS test voided the whole instance: ten of
+/// the fifteen refusals on the M5 that day were this shape (django-13346: `test_key_iregex`
+/// green on this box's sqlite while `test_key_in` — the actual bug — still failed), and the
+/// gold gate refused its own gold patch on them. The official harness runs no pristine
+/// check at all; ours exists to stop a no-op from scoring, and a tree with a still-failing
+/// FAIL_TO_PASS test cannot score a no-op — the grade below still demands EVERY f2p test
+/// pass after the patch. So the void is reserved for the case it was written for.
+pub fn pristine_gate(pre: &[(String, bool)]) -> PristineGate {
+    let green: Vec<String> = pre.iter().filter(|(_, ok)| *ok).map(|(id, _)| id.clone()).collect();
+    let any_red = pre.iter().any(|(_, ok)| !*ok);
+    if !pre.is_empty() && !any_red {
+        PristineGate::Void { already: green }
+    } else {
+        PristineGate::Holds { pristine_green: green }
+    }
+}
+
 pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerdict {
     let mut verdict = SweVerdict {
         instance_id: instance.instance_id.clone(),
@@ -3353,18 +3389,36 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         return verdict;
     }
     let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
-    let already: Vec<&String> = pre
-        .iter()
-        .filter(|(_, ok)| **ok)
-        .map(|(id, _)| id)
-        .collect();
-    verdict.gate_ok = already.is_empty();
-    if !verdict.gate_ok {
-        verdict.error = Some(format!(
-            "UNGRADEABLE — FAIL_TO_PASS already passes on the pristine tree ({already:?}). The \
-             bug is not in this checkout; every score from this tree is void."
-        ));
-        return verdict;
+    // Sorted so the receipt names tests in one order run after run.
+    let pre_sorted: Vec<(String, bool)> = {
+        let mut v: Vec<(String, bool)> = pre.iter().map(|(id, ok)| (id.clone(), *ok)).collect();
+        v.sort();
+        v
+    };
+    match pristine_gate(&pre_sorted) {
+        PristineGate::Void { already } => {
+            verdict.gate_ok = false;
+            verdict.error = Some(format!(
+                "UNGRADEABLE — every FAIL_TO_PASS test already passes on the pristine tree \
+                 ({already:?}). The bug is not in this checkout; every score from this tree \
+                 is void."
+            ));
+            return verdict;
+        }
+        PristineGate::Holds { pristine_green } => {
+            verdict.gate_ok = true;
+            if !pristine_green.is_empty() {
+                crate::probe!(
+                    class = "benchmark.grade.pristine_green",
+                    instance = instance.instance_id.as_str(),
+                    already = %format!("{pristine_green:?}"),
+                    f2p_total = f2p.len(),
+                    "some FAIL_TO_PASS tests are already green on the pristine tree — the gate \
+                     holds on the rest; a backend/env parity note, not a void"
+                );
+            }
+            verdict.pristine_green = pristine_green;
+        }
     }
 
     // Reset, then run the real protocol: model patch first, tests second.
@@ -4722,4 +4776,27 @@ FAIL: test_broken (expressions.tests.CombinedExprTests)";
             reset_worktree(&work).await;
         }
     }
+
+    // what this catches: the pristine gate voiding an instance that still has a failing
+    // FAIL_TO_PASS test (django-13346 on 2026-09-07: one f2p green on this backend, the real
+    // bug's test red → ten instances refused, gold patch included).
+    #[test]
+    fn the_pristine_gate_voids_only_when_every_f2p_test_is_already_green() {
+        let t = |id: &str, ok: bool| (id.to_string(), ok);
+        assert_eq!(
+            pristine_gate(&[t("test_key_iregex", true), t("test_key_in", false)]),
+            PristineGate::Holds { pristine_green: vec!["test_key_iregex".to_string()] }
+        );
+        assert_eq!(
+            pristine_gate(&[t("a", true), t("b", true)]),
+            PristineGate::Void { already: vec!["a".to_string(), "b".to_string()] }
+        );
+        assert_eq!(
+            pristine_gate(&[t("a", false)]),
+            PristineGate::Holds { pristine_green: vec![] }
+        );
+        // No f2p tests at all is not "everything already passes": nothing to void on.
+        assert_eq!(pristine_gate(&[]), PristineGate::Holds { pristine_green: vec![] });
+    }
+
 }
