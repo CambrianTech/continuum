@@ -3,4 +3,12 @@
 /**
  * Routing observability info
  */
-export type RoutingInfo = { provider: string, isLocal: boolean, routingReason: string, adaptersApplied: Array<string>, modelMapped?: string, modelRequested?: string, };
+export type RoutingInfo = { provider: string, isLocal: boolean, routingReason: string, adaptersApplied: Array<string>, modelMapped?: string, modelRequested?: string, 
+/**
+ * The context window the SERVING node's lane was serving when it answered,
+ * in tokens. Stamped by the responder so a requester on another node learns
+ * the window it is really budgeting against (card 1ab60567: the 5090 moved
+ * from 24,832 to 26,112 under two off-box citizens and nothing said so).
+ * Absent when the answer did not come from a local served lane.
+ */
+servedContextWindow?: number, };

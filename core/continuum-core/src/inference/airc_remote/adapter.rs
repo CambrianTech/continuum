@@ -53,6 +53,10 @@ pub struct AircRemoteInferenceAdapter {
     /// wire without one is refused there (measured 2026-09-06, BigMama's
     /// `detail` field: "No provider or model specified").
     default_model: Option<String>,
+    /// Told the served window every time the peer stamps one on an answer.
+    /// The persona's lane factory hangs her override's writer here so the
+    /// window she budgets against follows the responder's (card 1ab60567).
+    window_sink: Option<Arc<dyn Fn(u32) + Send + Sync>>,
     /// Flipped to true the first time a `generate_text` round-trip
     /// succeeds. `health_check` returns `Unknown` while this is
     /// false (no observation yet) and `Healthy` once it's true.
@@ -90,6 +94,7 @@ impl AircRemoteInferenceAdapter {
             transport,
             default_target_peer: None,
             default_model: None,
+            window_sink: None,
             has_observed_success: AtomicBool::new(false),
             consecutive_deadlines: AtomicU32::new(0),
             cold_until_ms: AtomicU64::new(0),
@@ -140,6 +145,12 @@ impl AircRemoteInferenceAdapter {
     /// unset. The peer refuses a request that names none.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = Some(model.into());
+        self
+    }
+
+    /// Learn the responder's served window from every answer (see `window_sink`).
+    pub fn with_window_sink(mut self, sink: Arc<dyn Fn(u32) + Send + Sync>) -> Self {
+        self.window_sink = Some(sink);
         self
     }
 }
@@ -251,6 +262,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 out_tokens = r.text_response.usage.output_tokens,
                 finish = ?r.text_response.finish_reason,
+                served_window = ?r.text_response.routing.as_ref().and_then(|x| x.served_context_window),
                 "remote inference answered"
             ),
             Err(e) => crate::probe!(
@@ -262,6 +274,16 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             ),
         }
         let response = sent.map_err(|e| e.to_string())?;
+        if let (Some(sink), Some(window)) = (
+            self.window_sink.as_ref(),
+            response
+                .text_response
+                .routing
+                .as_ref()
+                .and_then(|x| x.served_context_window),
+        ) {
+            sink(window);
+        }
         // First successful round-trip flips the health observation
         // bit so subsequent health_check calls can report Healthy.
         // Relaxed is fine: a stale Unknown -> Healthy transition is
@@ -721,5 +743,50 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("successful round-trip"),);
+    }
+
+    // what this catches: the responder's served window dying at the requester.
+    // The peer stamps routing.served_context_window on its answer; the sink the
+    // lane factory installs must see exactly that number (card 1ab60567).
+    #[tokio::test]
+    async fn the_served_window_on_an_answer_reaches_the_sink() {
+        let transport = StubInferenceTransport::new(|req: &RemoteInferenceRequest| {
+            Ok(RemoteInferenceResponse {
+                correlation_id: req.correlation_id,
+                served_by: "peer".to_string(),
+                text_response: crate::ai::types::TextGenerationResponse {
+                    text: "ok".to_string(),
+                    finish_reason: FinishReason::Stop,
+                    model: "qwen3.8-27b".to_string(),
+                    provider: HEURISTIC_PROVIDER_ID.to_string(),
+                    usage: Default::default(),
+                    response_time_ms: 0,
+                    request_id: "stub".to_string(),
+                    content: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    routing: Some(crate::ai::types::RoutingInfo {
+                        provider: "llama".to_string(),
+                        is_local: true,
+                        routing_reason: "adapter_selected".to_string(),
+                        adapters_applied: vec![],
+                        model_mapped: None,
+                        model_requested: None,
+                        served_context_window: Some(26_112),
+                    }),
+                    error: None,
+                    timing: None,
+                },
+            })
+        });
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink_seen = Arc::clone(&seen);
+        let adapter = AircRemoteInferenceAdapter::new(transport)
+            .with_model("qwen3.8-27b")
+            .with_window_sink(Arc::new(move |w| {
+                *sink_seen.lock().unwrap() = Some(w);  // unwrap_or: test mutex — a poisoned lock is a failed test
+            }));
+        adapter.generate_text(req("hi")).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(26_112));
     }
 }
