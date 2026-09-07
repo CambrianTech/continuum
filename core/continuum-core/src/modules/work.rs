@@ -1633,7 +1633,8 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
-        let landed = advance_card_state_effective(&airc, card_id, state, "work-state-verb")
+        let actor = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
+        let landed = advance_card_state_effective(&airc, card_id, state, "work-state-verb", actor)
             .await
             .map_err(CommandError::Internal)?;
         Ok(WorkStateResult {
@@ -1661,8 +1662,61 @@ pub(crate) async fn advance_card_state(
     card_id: WorkCardId,
     state: CardState,
     via: &'static str,
+    actor: Option<Uuid>,
 ) -> Result<(), String> {
-    advance_card_state_effective(airc, card_id, state, via).await.map(|_| ())
+    advance_card_state_effective(airc, card_id, state, via, actor)
+        .await
+        .map(|_| ())
+}
+
+/// What a holder's checkout says about her work: something to review, nothing,
+/// or a checkout that could not be read (never silently either of the others).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChangeVerdict {
+    Changed,
+    NoChange,
+    CouldNotLook(String),
+}
+
+/// Bound on each git read under the review gate. A checkout on a cold disk answers
+/// in well under this; a hang is reported as CouldNotLook, never waited out.
+const CHECKOUT_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Pure half of the write check: dirty tree, or a commit made after the checkout
+/// was staged (HEAD's committer time vs the `.git` entry's mtime — base-free, so it
+/// holds for a clone and for a worktree alike).
+pub(crate) fn change_verdict(
+    porcelain: &str,
+    head_commit_ts: Option<u64>,
+    staged_at_ts: Option<u64>,
+) -> ChangeVerdict {
+    if !porcelain.trim().is_empty() {
+        return ChangeVerdict::Changed;
+    }
+    match (head_commit_ts, staged_at_ts) {
+        (Some(head), Some(staged)) if head > staged => ChangeVerdict::Changed,
+        (Some(_), Some(_)) => ChangeVerdict::NoChange,
+        (None, _) => ChangeVerdict::CouldNotLook("HEAD commit time unreadable".into()),
+        (_, None) => ChangeVerdict::CouldNotLook("staging time unreadable".into()),
+    }
+}
+
+/// The plumbing half: two bounded git reads plus one stat, folded by [`change_verdict`].
+pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
+    use crate::system_resources::bounded_command::probe;
+    let root_s = root.to_string_lossy().to_string();
+    let status = probe("git", &["-C", &root_s, "status", "--porcelain"], CHECKOUT_READ_BOUND);
+    let Some(porcelain) = status.stdout_if_ok() else {
+        return ChangeVerdict::CouldNotLook(format!("git status: {}", status.outcome()));
+    };
+    let head = probe("git", &["-C", &root_s, "log", "-1", "--format=%ct"], CHECKOUT_READ_BOUND);
+    let head_ts = head.stdout_if_ok().and_then(|t| t.trim().parse::<u64>().ok());
+    let staged_ts = std::fs::metadata(root.join(".git"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    change_verdict(porcelain, head_ts, staged_ts)
 }
 
 /// The state-advance seam WITH the review gate (team-recipe Arm 2, 2026-09-03).
@@ -1680,9 +1734,51 @@ pub(crate) async fn advance_card_state_effective(
     card_id: WorkCardId,
     state: CardState,
     via: &'static str,
+    // The persona making the transition, when one is (the verb's caller, the
+    // held-work settle's owner). The operator passes None and is never gated.
+    actor: Option<Uuid>,
 ) -> Result<CardState, String> {
     use crate::cognition::bench_round as round;
     let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    // Card 381ccf3a: a citizen's `done` (or `review`) on a GATED card must carry a
+    // write. Measured 2026-09-06/07: cards moved to REVIEW with zero edits as a
+    // release valve — the reviewer then reviewed nothing and the grade ran on the
+    // base commit. Her acting root is the checkout the card staged for her; no
+    // change there since staging = nothing to review.
+    if (finishing || state == CardState::Review)
+        && round::review_required(card_id.as_uuid())
+        && round::review_parent(card_id.as_uuid()).is_none()
+    {
+        if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
+            match checkout_change(&root) {
+                ChangeVerdict::NoChange => {
+                    crate::probe!(
+                        class = "work.review.refused_no_write",
+                        card = %short8(card_id.as_uuid()),
+                        persona = %actor.map(|a| a.to_string()).unwrap_or_default(),  // unwrap_or: probe label; actor is Some on this branch
+                        root = %root.display(),
+                        "a done on a gated card with no change in her checkout — refused; \
+                         write the fix or release the card"
+                    );
+                    return Err(format!(
+                        "done refused: {} has no change since it was staged (clean tree, no new \
+                         commit) — there is nothing for a reviewer to review. Write the fix \
+                         (code/edit) and mark done again, or release the card (work/release) \
+                         so another holder can take it.",
+                        root.display()
+                    ));
+                }
+                ChangeVerdict::Changed => {}
+                ChangeVerdict::CouldNotLook(reason) => crate::probe!(
+                    class = "work.review.write_check_unknown",
+                    card = %short8(card_id.as_uuid()),
+                    root = %root.display(),
+                    reason = %reason,
+                    "could not read her checkout — the transition proceeds; the reviewer decides"
+                ),
+            }
+        }
+    }
     if let Some(parent) = round::review_parent(card_id.as_uuid()) {
         if finishing || state == CardState::Blocked {
             let passed = finishing;
@@ -2888,5 +2984,18 @@ mod tests {
             card_in_subscribed_rooms(&airc, card).await.is_some(),
             "the same fold answers which room holds the card"
         );
+    }
+
+    // what this catches: a done that carries nothing (clean tree, HEAD at the
+    // staged commit) reading as reviewable — the review-as-release-valve seen on
+    // 2026-09-06/07. A dirty tree or a commit newer than staging is work; an
+    // unreadable checkout is named, never assumed either way.
+    #[test]
+    fn a_done_without_a_write_is_no_change_and_an_unreadable_checkout_is_named() {
+        assert_eq!(change_verdict("", Some(100), Some(200)), ChangeVerdict::NoChange);
+        assert_eq!(change_verdict(" M a.py\n", Some(100), Some(200)), ChangeVerdict::Changed);
+        assert_eq!(change_verdict("", Some(300), Some(200)), ChangeVerdict::Changed);
+        assert!(matches!(change_verdict("", None, Some(200)), ChangeVerdict::CouldNotLook(_)));
+        assert!(matches!(change_verdict("", Some(1), None), ChangeVerdict::CouldNotLook(_)));
     }
 }
