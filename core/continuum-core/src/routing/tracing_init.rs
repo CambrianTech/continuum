@@ -77,6 +77,9 @@ use super::uri_layer::UriCaptureLayer;
 /// mutable state, racy under `cargo test`, slated for `unsafe`
 /// marking in Rust 2024). The substrate-purist shape keeps env
 /// coupling at exactly one seam.
+/// The core's own log file; the rotation pool that governs its generations names it too.
+pub const CORE_LOG_FILE: &str = "continuum-core-server.log";
+
 #[derive(Debug, Clone, Default)]
 pub struct ProbeTracingConfig {
     /// DIRECTORY the rotating JSONL probe capture writes into.
@@ -313,7 +316,7 @@ pub fn install_probe_tracing(
             })?;
             let file_appender = crate::routing::capped_appender::CappedAppender::new(
                 dir,
-                "continuum-core-server.log",
+                CORE_LOG_FILE,
             )
             .map_err(|source| ProbeFileSinkError::OpenFailed {
                 path: dir.clone(),

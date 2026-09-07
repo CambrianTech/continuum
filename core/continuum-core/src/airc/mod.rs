@@ -23,7 +23,7 @@ pub use bridge_protocol::{
     format_airc_bridge_chat_text, parse_airc_bridge_message, room_from_airc_channel,
     summarize_bridge_response, BridgeAction, ParseOptions, ParsedBridgeMessage,
 };
-pub use discovery_aggregate::discover;
+pub use discovery_aggregate::{discover, discover_with_patience};
 pub use discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 
 pub use client::{AircQueueClient, CliAircQueueClient};

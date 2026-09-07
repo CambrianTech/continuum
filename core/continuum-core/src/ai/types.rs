@@ -509,6 +509,13 @@ pub struct RoutingInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model_requested: Option<String>,
+    /// The context window the SERVING node's lane was serving when it answered,
+    /// in tokens. Stamped by the responder so a requester on another node learns
+    /// the window it is really budgeting against (card 1ab60567: the 5090 moved
+    /// from 24,832 to 26,112 under two off-box citizens and nothing said so).
+    /// Absent when the answer did not come from a local served lane.
+    #[ts(optional)]
+    pub served_context_window: Option<u32>,
 }
 
 /// Provider health status

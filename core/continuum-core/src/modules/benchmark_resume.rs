@@ -392,6 +392,7 @@ async fn board_state_of(
 /// re-enters later resumes unread-first like any other; leaving loses nothing.
 async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
+    let (mut rounds_considered, mut pass_left, mut pass_failed, mut pass_unknown) = (0u64, 0u64, 0u64, 0u64);
     for round in crate::cognition::bench_round::live_rounds() {
         let working = round.stage.eq_ignore_ascii_case("working");
         if working || round.run_room_name.is_empty() {
@@ -427,19 +428,38 @@ async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeReg
                 Err(_) => failed += 1,
             }
         }
-        // Fires for EVERY round considered, so "ran, left 0, 12 unreadable" is
-        // distinguishable from "ran, nothing to do" (IntelMac's review of #3711).
-        crate::probe!(
-            class = "bench.round.unseated",
-            round = %round.round_id.chars().take(8).collect::<String>(),
-            room = %round.run_room_name,
-            stage = %round.stage,
-            left,
-            failed,
-            unknown,
-            "a paused/done round's run room, considered for unseating"
-        );
+        rounds_considered += 1;
+        pass_left += left;
+        pass_failed += failed;
+        pass_unknown += unknown;
+        // A per-round row only when the pass DID something for it. The pass row
+        // below carries the "considered N, nothing to do" fact once — before this,
+        // every paused round fired its own row every pass (~330/hour on a node with
+        // 30 paused rounds), drowning the ledger the reads depend on.
+        if left + failed + unknown > 0 {
+            crate::probe!(
+                class = "bench.round.unseated",
+                round = %round.round_id.chars().take(8).collect::<String>(),
+                room = %round.run_room_name,
+                stage = %round.stage,
+                left,
+                failed,
+                unknown,
+                "a paused/done round's run room, unseated this pass"
+            );
+        }
     }
+    // One row per pass, always: "ran, considered N, left 0, unknown 0" is
+    // distinguishable from "never ran" (IntelMac's review of #3711), at one row
+    // instead of N.
+    crate::probe!(
+        class = "bench.round.unseat_pass",
+        rounds_considered,
+        left = pass_left,
+        failed = pass_failed,
+        unknown = pass_unknown,
+        "paused/done rounds considered for unseating this pass"
+    );
 }
 
 /// Seat every live citizen into each working citizen-driven round's run room.

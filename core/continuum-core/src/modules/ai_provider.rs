@@ -1259,6 +1259,7 @@ pub async fn generate_text(
             .routing
             .as_ref()
             .and_then(|r| r.model_requested.clone()),
+        served_context_window: None,
     });
 
     Ok(response)

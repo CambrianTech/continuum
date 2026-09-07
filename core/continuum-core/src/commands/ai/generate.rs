@@ -194,8 +194,17 @@ crate::action_command! {
                 .unwrap_or_default(),
             model_mapped: None,
             model_requested: prior_routing.and_then(|r| r.model_requested),
+            served_context_window: if is_local { served_window_now() } else { None },
         });
 
         Ok(AiGenerateResult::from(response))
     }
+}
+
+
+/// The window the local lane serves right now, or None when no lane is ready —
+/// never a stand-in number (a requester would budget against it).
+fn served_window_now() -> Option<u32> {
+    let s = crate::inference::llama_server::current_serving();
+    (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
 }

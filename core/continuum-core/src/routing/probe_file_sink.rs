@@ -107,6 +107,9 @@ pub const ENV_PROBE_CLASSES: &str = "CONTINUUM_PROBE_CLASSES";
 /// the fmt-layer rolling retention so operators learn one number.
 pub const DEFAULT_MAX_LOG_FILES: usize = 7;
 
+/// The live probe ledger; the rotation pool that governs its generations names it too.
+pub const PROBE_LEDGER_FILE: &str = "continuum-probes.jsonl";
+
 /// JSONL-on-disk consumer for `probe!` events.
 ///
 /// Composes with [`ProbeRouterLayer`](super::probe_router::ProbeRouterLayer)
@@ -241,7 +244,7 @@ impl JsonlProbeFileSink {
         // generations survive. What changes is that a generation now has a size.
         let appender = crate::routing::capped_appender::CappedAppender::with_limits(
             &dir,
-            "continuum-probes.jsonl",
+            PROBE_LEDGER_FILE,
             crate::routing::capped_appender::MAX_LOG_BYTES,
             max_log_files,
         )

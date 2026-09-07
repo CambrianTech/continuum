@@ -30,6 +30,34 @@ pub(crate) fn apply_enable_thinking_false(body: &mut Value) {
 
 /// Finish `body` for the wire: thinking suppression, `response_format`, native tools +
 /// `tool_choice` (NativeFunctionCalling gateways only), then the tool-surface probe.
+/// The purpose a work (ACT) turn announces on its request; the faculty sets it
+/// when the hands surface is offered.
+pub(crate) const ACT_PURPOSE: &str = "cognition/act";
+
+// context-budget-exempt: a budget for the model's REASONING channel on an act turn, not a window bound
+/// How much a reasoning model may think before its tool call on an ACT turn.
+/// Measured 2026-09-07 (Qwen3.8-27B off-box): committed acts ran 4,188–9,818
+/// output tokens, nearly all of it thinking, 150–260 s per act on a shared lane
+/// (card 12ef9c10). A tool call plus its sentence needs a few hundred tokens of
+/// thought, not thousands. llama-server reads `reasoning_budget_tokens` and
+/// closes the thinking block at the budget; other gateways ignore the field.
+pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
+
+/// Bound the reasoning channel on an ACT request. Returns whether it applied.
+pub(crate) fn apply_act_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> bool {
+    if purpose != Some(ACT_PURPOSE) {
+        return false;
+    }
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "reasoning_budget_tokens".to_string(),
+            json!(ACT_REASONING_BUDGET),
+        );
+        return true;
+    }
+    false
+}
+
 pub(crate) fn finish_body(
     cfg: &OpenAICompatibleConfig,
     request: &TextGenerationRequest,
@@ -55,6 +83,16 @@ pub(crate) fn finish_body(
     // for any template that DOES honor the soft token.
     if cfg.thinking == ThinkingMode::Suppress {
         apply_enable_thinking_false(body);
+    }
+    // An ACT turn thinks a bounded amount before its call, whichever gateway
+    // serves it — the remote path builds this same body on the responder.
+    if apply_act_reasoning_budget(request.purpose.as_deref(), body) {
+        crate::probe!(
+            class = "delib.act.reasoning_budgeted",
+            model = %model,
+            budget = ACT_REASONING_BUDGET,
+            "act turn: reasoning channel bounded before the tool call"
+        );
     }
 
     // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
@@ -450,4 +488,26 @@ pub(crate) fn build_base_body(
     // forged 4B loops its `<think>` block to the token budget without it.
     //
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: an ACT request carries the reasoning budget the
+    // responder's llama-server reads (`reasoning_budget_tokens`), and a
+    // deliberation request does not — losing the field reproduces 4k–10k-token
+    // acts (150–260 s each); applying it to message turns would truncate the
+    // thinking that answers deserve.
+    #[test]
+    fn only_an_act_request_carries_the_reasoning_budget() {
+        let mut act = json!({ "model": "m" });
+        assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
+        assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
+        let mut delib = json!({ "model": "m" });
+        assert!(!apply_act_reasoning_budget(Some("cognition/deliberation"), &mut delib));
+        assert!(delib.get("reasoning_budget_tokens").is_none());
+        let mut none = json!({ "model": "m" });
+        assert!(!apply_act_reasoning_budget(None, &mut none));
+    }
 }

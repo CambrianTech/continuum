@@ -1394,8 +1394,39 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         card_id: airc_lib::WorkCardId,
         state: airc_lib::CardState,
     ) -> Result<(), String> {
-        crate::modules::work::advance_card_state(&self.airc, card_id, state, "held-work-settle")
+        crate::modules::work::advance_card_state(
+            &self.airc,
+            card_id,
+            state,
+            "held-work-settle",
+            Some(self.persona_id),
+        )
+        .await
+    }
+
+    async fn release_card(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        claim_id: airc_lib::ClaimId,
+        reason: &str,
+    ) -> Result<(), String> {
+        // ONE release path, same as the claim: `work/release` as this citizen.
+        let Some(executor) = self.executor.as_ref() else {
+            return Err("no command executor installed on this runtime yet".to_string());
+        };
+        let caller = crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+            self.persona_id,
+        ));
+        let params = serde_json::json!({
+            "card_id": card_id.as_uuid().to_string(),
+            "claim_id": claim_id.to_string(),
+            "reason": reason,
+        });
+        executor
+            .execute_with_caller("work/release", params, Some(caller))
             .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {

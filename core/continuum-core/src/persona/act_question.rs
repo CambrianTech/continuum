@@ -35,6 +35,15 @@ use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 use crate::persona::supervisor::HostedPersona;
 
+/// How many run-room rows the write-or-release gate reads to count a holder's
+/// acts since her last write. 80 rows was ~15 minutes of a five-coder room
+/// (⚙ receipts + 💭 thoughts interleaved), so a holder's six write-less acts
+/// scrolled off the page before the gate could see them: measured 2026-09-07
+/// 07:40–08:40Z, 51 acts / 4 writes across five holders and the gate fired
+/// twice, both for the one holder whose acts happened to cluster. The wall is
+/// a cached projection (airc#1389/#1390), so a deeper page costs nothing.
+const WORK_GATE_PAGE_ROWS: usize = 400;
+
 /// Ask the act-question for a citizen who may be holding work.
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
@@ -166,7 +175,7 @@ pub(crate) async fn ask_the_act_question(
                     // `held_work_burst`); paged from the durable store, the
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
-                    let page = crate::persona::durable_history::room_rows(turn_room, 80).await;
+                    let page = crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS).await;
                     let last_state = match &page {
                         Ok(rows) => {
                             let about: Vec<String> = held
@@ -214,6 +223,52 @@ pub(crate) async fn ask_the_act_question(
                             acts_without_write,
                             "the work turn is gated: edit now or release the card"
                         );
+                    }
+                    // THE GOVERNOR. At twice the gate the substrate takes the second exit
+                    // for her: the card goes back on the deck with a receipt, a peer (or
+                    // she, with a plan) can take it, and her lane stops paying for
+                    // orientation. Review cards are not released (they carry no write).
+                    if crate::persona::work_burst::governor_releases(acts_without_write) {
+                        for c in &held {
+                            if crate::commands::benchmark::parse_review_title(&c.title).is_some() {
+                                continue;
+                            }
+                            let Some(claim_id) = c.claim_id.clone() else { continue };
+                            let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                            let reason = format!(
+                                "released by the substrate: {acts_without_write} acts without a write"
+                            );
+                            match citizen.release_card(c.card_id, claim_id, &reason).await {
+                                Ok(()) => {
+                                    crate::probe!(
+                                        class = "persona.work.released_by_governor",
+                                        persona = %ctx.identity.agent_name,
+                                        card = %id8,
+                                        acts_without_write,
+                                        "write-or-release at twice the gate: the substrate released the card"
+                                    );
+                                    if let Some(body) = cycle.acting() {
+                                        // PINNED, like [hands]/[env] (#3845): a recorded fact is
+                                        // gone by her third act; this one must reach her NEXT work
+                                        // turn, where the pull decision is made. Unpinned at that
+                                        // turn's restore (IntelMac's review of #3846).
+                                        body.working_memory.pin_fact_for_turns("released", &format!(
+                                            "[released] The substrate released card {id8} after \
+                                             {acts_without_write} acts of mine without a change to a \
+                                             file — the investigation was long enough. A peer may take \
+                                             it. Pull it again only with a file:line edit in hand."
+                                        ), 2);
+                                    }
+                                }
+                                Err(e) => crate::probe!(
+                                    class = "persona.work.governor_release_failed",
+                                    persona = %ctx.identity.agent_name,
+                                    card = %id8,
+                                    error = %e,
+                                    "the governor could not release the card — she keeps it this turn"
+                                ),
+                            }
+                        }
                     }
                     let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write, &progress);
                     // The producer's CONTEXT half, kept before the burst is
@@ -295,13 +350,31 @@ pub(crate) async fn ask_the_act_question(
                                     // that repo — every citizen burned acts on `ls swe/`
                                     // → "No such file" and reported the checkout missing.
                                     if let Some(body) = cycle.acting() {
-                                        body.working_memory.record_fact(&format!(
-                                            "[hands] For this turn my files and shell are \
-                                             rooted AT the repo root `{}` — paths are \
-                                             repo-relative; `ls` lists the repo itself \
-                                             (there is no `swe/` directory from here).",
-                                            ws.display()
-                                        ));
+                                        // PINNED (not recorded): the FIFO window is three
+                                        // deep and by her third act this fact was gone —
+                                        // four consecutive work turns without [hands]/[env]
+                                        // on 2026-09-07. Replaced by key on every re-root,
+                                        // dropped when her hands are restored below.
+                                        body.working_memory.pin_fact(
+                                            "hands",
+                                            &format!(
+                                                "[hands] For this turn my files and shell are \
+                                                 rooted AT the repo root `{}` — paths are \
+                                                 repo-relative; `ls` lists the repo itself \
+                                                 (there is no `swe/` directory from here).",
+                                                ws.display()
+                                            ),
+                                        );
+                                        // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
+                                        // holder ran `pip install --no-build-isolation -e .`
+                                        // twelve times in one checkout (21 acts, 0 edits) —
+                                        // the grader's prepared env for her instance sat
+                                        // beside it, unnamed. Absence is named too, so
+                                        // she never guesses an interpreter.
+                                        body.working_memory.pin_fact(
+                                            "env",
+                                            &crate::persona::instance_env_fact::instance_env_fact(&ws),
+                                        );
                                     }
                                     crate::probe!(
                                         class = "persona.work.hands_rooted",
@@ -359,6 +432,14 @@ pub(crate) async fn ask_the_act_question(
                                  own workspace — she is still rooted at the \
                                  card's repo and her live turns will act there"
                             );
+                        }
+                        // Her hands are home again: the rooting facts no longer hold.
+                        // The next work turn re-pins them at its own root.
+                        if let Some(body) = cycle.acting() {
+                            // One turn ended: 1-turn pins ([hands], [env]) leave now; the
+                            // governor's 2-turn [released] notice survives to the next work
+                            // turn's start — the pull decision — and leaves at its end.
+                            body.working_memory.end_of_work_turn();
                         }
                     }
                     let (work_step, _) =

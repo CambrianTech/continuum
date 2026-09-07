@@ -53,7 +53,17 @@ pub struct RotationLogPool {
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
     tier: String,
+    /// The writer's live file name; the ledger this pool governs is that file
+    /// plus its `.N` generations, and nothing else in the directory.
+    live_file: String,
+    /// Last time an eviction that could free nothing was named (ms since epoch);
+    /// rate-limits the probe while the broker re-fires every tick.
+    last_blocked_ms: std::sync::atomic::AtomicU64,
 }
+
+/// How often "asked to evict, nothing of mine to evict" is named while the
+/// condition persists. The broker ticks every 5 s; once a minute is loud enough.
+const BLOCKED_PROBE_INTERVAL_MS: u64 = 60_000;
 
 impl RotationLogPool {
     /// `budget_bytes` is the GOVERNED ceiling, which is a different
@@ -63,13 +73,63 @@ impl RotationLogPool {
     /// governor may set it below the rotation ceiling, and then the
     /// broker will actually claw generations back — the capability
     /// that did not exist while the writer bounded itself.
-    pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64) -> Self {
+    pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64, live_file: impl Into<String>) -> Self {
         let tier = format!("disk-{}", tracked.name());
         Self {
             tracked,
             budget_bytes: budget_bytes.max(1),
             tier,
+            live_file: live_file.into(),
+            last_blocked_ms: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Bytes of the ledger this pool governs: the live file plus its generations.
+    /// A directory scan on every call — the dir holds a handful of files and the
+    /// broker asks from its own task every 5 s, never from a hot path.
+    fn ledger_bytes(&self) -> u64 {
+        let root = self.tracked.path();
+        let live = std::fs::metadata(root.join(&self.live_file))
+            .map(|m| m.len())
+            .unwrap_or(0);  // unwrap_or: a live file that is not there yet weighs nothing — nothing to govern, not an error
+        live + Self::generations_of(root, &self.live_file)
+            .iter()
+            .map(|(_, _, size)| *size)
+            .sum::<u64>()
+    }
+
+    /// Files in the directory that are NOT this ledger: (total bytes, largest name).
+    fn strangers(&self) -> (u64, Option<String>) {
+        let root = self.tracked.path();
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return (0, None);
+        };
+        let mut total = 0u64;
+        let mut largest: Option<(u64, String)> = None;
+        for e in entries.flatten() {
+            let Ok(meta) = e.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if Self::is_ledger_name(&name, &self.live_file) {
+                continue;
+            }
+            total += meta.len();
+            if largest.as_ref().is_none_or(|(b, _)| meta.len() > *b) {
+                largest = Some((meta.len(), name));
+            }
+        }
+        (total, largest.map(|(_, n)| n))
+    }
+
+    /// `<live>` or `<live>.N` — the writer's own files.
+    fn is_ledger_name(name: &str, live_file: &str) -> bool {
+        name == live_file
+            || name
+                .strip_prefix(live_file)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// Rotated generations under `root`, oldest first.
@@ -79,7 +139,7 @@ impl RotationLogPool {
     /// appends. Higher N = older. The live (unsuffixed) file never
     /// parses, so it can never enter this list; that is the safety
     /// property, enforced by the parse rather than by a name match.
-    fn generations(root: &Path) -> Vec<(usize, PathBuf, u64)> {
+    fn generations_of(root: &Path, live_file: &str) -> Vec<(usize, PathBuf, u64)> {
         let Ok(entries) = std::fs::read_dir(root) else {
             return Vec::new();
         };
@@ -91,7 +151,9 @@ impl RotationLogPool {
                 if !meta.is_file() {
                     return None;
                 }
-                let generation: usize = path.extension()?.to_str()?.parse().ok()?;
+                let name = e.file_name();
+                let name = name.to_str()?;
+                let generation: usize = name.strip_prefix(live_file)?.strip_prefix('.')?.parse().ok()?;
                 Some((generation, path, meta.len()))
             })
             .collect();
@@ -111,7 +173,9 @@ impl ResourcePool for RotationLogPool {
     }
 
     fn usage_bytes(&self) -> u64 {
-        self.tracked.bytes()
+        // The ledger, not the directory: a stranger file is not this pool's to spend
+        // and must not make it read over budget (card 4b496146).
+        self.ledger_bytes()
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -120,7 +184,7 @@ impl ResourcePool for RotationLogPool {
             return 0;
         }
         let mut freed = 0u64;
-        for (_generation, path, size) in Self::generations(&root) {
+        for (_generation, path, size) in Self::generations_of(&root, &self.live_file) {
             if freed >= want_bytes.max(1) {
                 break;
             }
@@ -137,12 +201,36 @@ impl ResourcePool for RotationLogPool {
         // `TrackedDir::record_freed` exists.
         if freed > 0 {
             self.tracked.record_freed(freed);
+        } else if want_bytes > 0 {
+            // Asked to free, nothing of mine to free: say so, and name what IS in the
+            // directory — an owner that cannot own is the 2026-07-13 class one layer
+            // down, and on 2026-09-07 it silently ate the probe ledger's history.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);  // unwrap_or: pre-epoch clock — rate limit degrades to "every call", never a panic
+            let last = self.last_blocked_ms.load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last) >= BLOCKED_PROBE_INTERVAL_MS {
+                self.last_blocked_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                let (stranger_bytes, largest) = self.strangers();
+                crate::probe!(
+                    class = "disk.pool.evict_blocked",
+                    tier = %self.tier,
+                    want_bytes,
+                    ledger_bytes = self.ledger_bytes(),
+                    budget_bytes = self.budget_bytes,
+                    stranger_bytes,
+                    largest_stranger = %largest.unwrap_or_default(),  // unwrap_or: probe label; "" = no stranger present
+                    "a rotation pool was asked to evict and had no generation to give — \
+                     only the live file remains; strangers in the dir are not its to spend"
+                );
+            }
         }
         freed
     }
 
     fn snapshot(&self) -> Vec<ResourcePoolEntry> {
-        Self::generations(self.tracked.path())
+        Self::generations_of(self.tracked.path(), &self.live_file)
             .into_iter()
             .map(|(generation, path, size)| ResourcePoolEntry {
                 key: path
@@ -196,7 +284,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("probes");
         let tracked = seeded(&root, 500, &[(1, 100), (2, 100), (3, 100)]);
-        let pool = RotationLogPool::new(tracked, 200);
+        let pool = RotationLogPool::new(tracked, 200, "continuum-probes.jsonl");
 
         let freed = pool.evict_at_least(u64::MAX);
 
@@ -217,7 +305,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("probes");
         let tracked = seeded(&root, 10, &[(1, 100), (2, 100), (3, 100)]);
-        let pool = RotationLogPool::new(tracked, 50);
+        let pool = RotationLogPool::new(tracked, 50, "continuum-probes.jsonl");
 
         // Ask for less than one generation — exactly one must go, and
         // it must be the oldest (.3).
@@ -247,7 +335,7 @@ mod tests {
         let root = tmp.path().join("probes");
         let tracked = seeded(&root, 100, &[(1, 100), (2, 100)]);
         let before = tracked.bytes();
-        let pool = RotationLogPool::new(tracked.clone(), 50);
+        let pool = RotationLogPool::new(tracked.clone(), 50, "continuum-probes.jsonl");
 
         let freed = pool.evict_at_least(100);
 
@@ -268,7 +356,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("probes");
         let tracked = seeded(&root, 400, &[(1, 400)]);
-        let pool = RotationLogPool::new(tracked, 100);
+        let pool = RotationLogPool::new(tracked, 100, "continuum-probes.jsonl");
 
         assert!(
             pool.pressure() > 1.0,
@@ -284,8 +372,30 @@ mod tests {
     fn absent_directory_frees_nothing_without_panicking() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = TrackedDir::new("probes", tmp.path().join("never-created"));
-        let pool = RotationLogPool::new(tracked, 1024);
+        let pool = RotationLogPool::new(tracked, 1024, "continuum-probes.jsonl");
         assert_eq!(pool.evict_at_least(4096), 0);
         assert!(pool.snapshot().is_empty());
+    }
+
+    /// what this catches: a file that is not the writer's making the pool read
+    /// over budget and evicting the writer's history to pay for it (2026-09-07:
+    /// a 134 MB legacy capture beside the live ledger; every new generation was
+    /// evicted at once and every hour read went blind). A stranger is neither
+    /// counted nor touched; usage is the ledger alone.
+    #[test]
+    fn a_stranger_file_is_neither_counted_nor_evicted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("probes");
+        let tracked = seeded(&root, 100, &[(1, 100)]);
+        std::fs::write(root.join("probes.jsonl"), vec![b'S'; 10_000]).expect("stranger");
+        tracked.set_bytes(10_200);
+        let pool = RotationLogPool::new(tracked, 500, "continuum-probes.jsonl");
+        assert_eq!(pool.usage_bytes(), 200, "usage is the ledger, not the directory");
+        assert!(pool.pressure() < 1.0, "a stranger must not put the pool over budget");
+        let freed = pool.evict_at_least(5_000);
+        assert_eq!(freed, 100, "only the ledger's own generation is reclaimable");
+        assert!(root.join("probes.jsonl").exists(), "the stranger is not the pool's to delete");
+        assert!(root.join("continuum-probes.jsonl").exists());
+        assert_eq!(pool.evict_at_least(5_000), 0, "nothing left of mine — freed 0, named in a probe");
     }
 }

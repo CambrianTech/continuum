@@ -91,6 +91,82 @@ pub async fn discover() -> AircDiscovery {
     }
 }
 
+/// How long a boot waits for the daemon to come back before it accepts a
+/// degraded verdict. An `airc update` (or the launcher's own re-ensure)
+/// takes the daemon down for a few seconds; on 2026-09-07 07:0xZ one landed
+/// between `ensure_airc_daemon` and this probe, the core booted degraded
+/// (no persona hosting) on a socket that was live again ten seconds later,
+/// and the deploy reported an empty verify. Sized to the slow case of a
+/// daemon restart, not to a missing install — an absent binary is refused
+/// on the first probe (see `is_transient`).
+pub const DISCOVERY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(45);
+/// Cadence between probes while the daemon is coming back.
+pub const DISCOVERY_RETRY_CADENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A failure that a daemon restart explains — worth another probe. Install
+/// and configuration failures are not: waiting cannot change them.
+pub fn is_transient(d: &AircDiscovery) -> bool {
+    match d {
+        AircDiscovery::Healthy { .. } => false,
+        AircDiscovery::Unreachable { reason } | AircDiscovery::Degraded { reason, .. } => {
+            matches!(
+                reason,
+                DiscoveryFailure::StaleSocket(..)
+                    | DiscoveryFailure::PeerStatusFailed(_)
+                    | DiscoveryFailure::RoomCommandFailed(_)
+                    | DiscoveryFailure::EndpointCommandFailed(_)
+                    | DiscoveryFailure::EmptyPath
+                    | DiscoveryFailure::AutoInstallInProgress
+            )
+        }
+    }
+}
+
+/// Whether to probe again: the verdict is transient and the budget is not
+/// spent. Pure so the policy is testable without a daemon.
+pub fn should_retry(
+    d: &AircDiscovery,
+    elapsed: std::time::Duration,
+    patience: std::time::Duration,
+) -> bool {
+    is_transient(d) && elapsed < patience
+}
+
+/// `discover()` with patience for a daemon that is restarting: probes at
+/// `DISCOVERY_RETRY_CADENCE` until the verdict is `Healthy`, the failure is
+/// one waiting cannot fix, or `DISCOVERY_PATIENCE` is spent. Every retry is
+/// a probe row (`airc.discovery.retry`) so a slow boot names what it waited
+/// for; the final verdict rides the caller's boot.status row as before.
+pub async fn discover_with_patience() -> AircDiscovery {
+    let started = std::time::Instant::now();
+    let mut attempt: u32 = 0;
+    loop {
+        let d = discover().await;
+        attempt += 1;
+        if !should_retry(&d, started.elapsed(), DISCOVERY_PATIENCE) {
+            if attempt > 1 {
+                crate::probe!(
+                    class = "airc.discovery.settled",
+                    attempts = attempt,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    kind = d.kind(),
+                    "airc discovery settled after waiting for the daemon"
+                );
+            }
+            return d;
+        }
+        crate::probe!(
+            class = "airc.discovery.retry",
+            attempt = attempt,
+            waited_ms = started.elapsed().as_millis() as u64,
+            kind = d.kind(),
+            reason = ?d.reason(),
+            "airc daemon not answering yet — probing again (a restart in progress, not a missing install)"
+        );
+        tokio::time::sleep(DISCOVERY_RETRY_CADENCE).await;
+    }
+}
+
 impl From<DiscoveryError> for DiscoveryFailure {
     fn from(e: DiscoveryError) -> Self {
         match e {
@@ -254,4 +330,22 @@ mod discovery_failure_mapping_tests {
         let f = stale_socket_from_status_err(&socket, DiscoveryError::EmptyPath);
         assert!(matches!(f, DiscoveryFailure::StaleSocket(p, _) if p == socket));
     }
+
+    /// what this catches: a daemon restart (stale socket) is waited out inside the
+    /// budget, while a missing/disabled install is refused on the first probe.
+    #[test]
+    fn a_daemon_restart_is_waited_out_but_a_missing_install_is_not() {
+        use std::time::Duration;
+        let restarting = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::StaleSocket(PathBuf::from("/tmp/x.sock"), "gone".into()),
+            partial: PartialDiscovery::default(),
+        };
+        assert!(should_retry(&restarting, Duration::from_secs(1), DISCOVERY_PATIENCE));
+        assert!(!should_retry(&restarting, DISCOVERY_PATIENCE, DISCOVERY_PATIENCE));
+        let disabled = AircDiscovery::Unreachable { reason: DiscoveryFailure::AutoInstallDisabled };
+        assert!(!should_retry(&disabled, Duration::from_secs(1), DISCOVERY_PATIENCE));
+        let broken = AircDiscovery::Unreachable { reason: DiscoveryFailure::InstallFailed("x".into()) };
+        assert!(!is_transient(&broken));
+    }
+
 }

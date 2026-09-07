@@ -85,9 +85,10 @@ impl SlotClass {
 /// omission; promoting it to `Turn` is an explicit edit here.
 pub fn class_for(purpose: Option<&str>) -> SlotClass {
     match purpose {
-        Some("cognition/deliberation") | Some("persona-respond") | Some("persona_decide_and_respond") => {
-            SlotClass::Turn
-        }
+        Some("cognition/deliberation")
+        | Some("cognition/act")
+        | Some("persona-respond")
+        | Some("persona_decide_and_respond") => SlotClass::Turn,
         Some("cognition/should-respond")
         | Some("cognition/check-redundancy")
         | Some("cognition/generate-response")
