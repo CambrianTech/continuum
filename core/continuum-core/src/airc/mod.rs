@@ -9,6 +9,7 @@ pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_transport;
 pub mod discovery;
+pub mod reresolving_client;
 pub mod discovery_aggregate;
 pub mod discovery_state;
 pub mod event_transport;
@@ -30,6 +31,7 @@ pub use client::{AircQueueClient, CliAircQueueClient};
 #[allow(deprecated)]
 pub use daemon_endpoint::default_socket_path_in;
 pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
+pub use reresolving_client::{DaemonSocketResolver, ReresolvingDaemonClient};
 pub use discovery::{
     discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
     DiscoveryError,
