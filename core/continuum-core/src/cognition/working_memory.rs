@@ -147,7 +147,7 @@ pub(crate) const WM_FACULTY_ID: &str = "working-memory";
 #[derive(Debug)]
 /// A keyed working-memory fact with a lifetime in work turns.
 #[derive(Debug, Clone)]
-struct PinnedFact {
+struct TurnPinnedFact {
     key: String,
     text: String,
     turns_left: u8,
@@ -167,7 +167,7 @@ pub struct WorkingMemory {
     /// third act of a turn the rooting facts recorded at its start were gone
     /// (2026-09-07 11:46Z: four consecutive work turns with [investigation] and
     /// no [hands]/[env]). Cleared by key when the condition ends.
-    pinned: Mutex<Vec<PinnedFact>>,
+    pinned: Mutex<Vec<TurnPinnedFact>>,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
@@ -695,7 +695,7 @@ impl WorkingMemory {
             slot.text = t.to_string();
             slot.turns_left = turns;
         } else {
-            p.push(PinnedFact { key: key.to_string(), text: t.to_string(), turns_left: turns });
+            p.push(TurnPinnedFact { key: key.to_string(), text: t.to_string(), turns_left: turns });
         }
     }
 
