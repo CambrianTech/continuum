@@ -109,6 +109,10 @@ pub struct PersonaReassignModelParams {
     /// to infer it from "persisted".
     #[serde(default)]
     pub remote_peer: Option<String>,
+    /// The RESPONDER's served per-slot context window, when `remote_peer` is
+    /// set. Her prompt is budgeted against it instead of the local lane.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// What `persona/reassign-model` did: the durable assignment that now sticks, and
@@ -136,6 +140,9 @@ pub struct ReassignModelReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub remote_peer: Option<String>,
+    /// The responder's window recorded with a remote assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     /// Human-readable summary.
     pub detail: String,
 }
@@ -263,6 +270,10 @@ crate::action_command! {
                 peer,
             ),
         };
+        let override_record = match p.context_window {
+            Some(window) if override_record.is_remote() => override_record.with_context_window(window),
+            _ => override_record,
+        };
         override_record.write(&home).map_err(|e| {
             CommandError::Internal(format!(
                 "host is now serving '{}' for '{}' but persisting her durable assignment failed: {e}. \
@@ -306,6 +317,7 @@ crate::action_command! {
             previous_model,
             override_persisted: true,
             remote_peer: p.remote_peer,
+            context_window: p.context_window,
             detail,
         })
     }
@@ -352,6 +364,7 @@ mod tests {
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: None,
                     remote_peer: None,
+                    context_window: None,
                 },
             )
             .await
@@ -380,6 +393,7 @@ mod tests {
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: Some("operator".to_string()),
                     remote_peer: None,
+                    context_window: None,
                 },
             )
             .await
@@ -420,6 +434,7 @@ mod tests {
                     model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
                     set_by: Some("operator".to_string()),
                     remote_peer: Some(peer.to_string()),
+                    context_window: None,
                 },
             )
             .await
@@ -462,6 +477,7 @@ mod tests {
                     model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
                     set_by: None,
                     remote_peer: Some("not-a-uuid".to_string()),
+                    context_window: None,
                 },
             )
             .await
