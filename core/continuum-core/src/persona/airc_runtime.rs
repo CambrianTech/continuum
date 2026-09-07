@@ -1394,8 +1394,14 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         card_id: airc_lib::WorkCardId,
         state: airc_lib::CardState,
     ) -> Result<(), String> {
-        crate::modules::work::advance_card_state(&self.airc, card_id, state, "held-work-settle")
-            .await
+        crate::modules::work::advance_card_state(
+            &self.airc,
+            card_id,
+            state,
+            "held-work-settle",
+            Some(self.persona_id),
+        )
+        .await
     }
 
     async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
