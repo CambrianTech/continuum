@@ -28,6 +28,16 @@ use continuum_airc_protocol::{
 };
 use uuid::Uuid;
 
+/// How long a remote INFERENCE request may take, end to end. This is a
+/// turn, not a command: a citizen's prompt is 15k–25k tokens of prefill plus
+/// a decode of up to ~3k tokens on a lane she shares with the peer's own
+/// citizens — minutes, not seconds. Measured 2026-09-07 01:2xZ: every reply
+/// from the 5090 arrived 35 s or more after the request, past the 30 s
+/// `DEFAULT_COMMAND_DEADLINE` this transport used to inherit, so the peer did
+/// the work and the requester dropped the answer, 21 times in an hour, then
+/// read the peer as cold. Sized like the local generation ceiling.
+pub const REMOTE_INFERENCE_DEADLINE: Duration = Duration::from_secs(600);
+
 use crate::ai::adapter::AIProviderAdapter;
 use crate::routing::airc_transport::AircTransport;
 
@@ -188,7 +198,7 @@ impl AircLiveTransport {
         Arc::new(Self {
             airc,
             default_target_peer: PeerId(default_target_peer),
-            deadline: DEFAULT_COMMAND_DEADLINE,
+            deadline: REMOTE_INFERENCE_DEADLINE,
         })
     }
 
@@ -389,6 +399,16 @@ impl AircInferenceTransport for AircLiveTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a revert to the COMMAND deadline. A command answers
+    // in milliseconds; an inference answers in minutes. With 30 s here the
+    // peer completes every turn and the requester drops every answer, which
+    // reads exactly like a dead peer (2026-09-07: 21 wasted completions).
+    #[test]
+    fn the_inference_deadline_is_sized_for_a_turn_not_a_command() {
+        assert!(REMOTE_INFERENCE_DEADLINE >= Duration::from_secs(300));
+        assert!(REMOTE_INFERENCE_DEADLINE > DEFAULT_COMMAND_DEADLINE * 5);
+    }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{
         ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
