@@ -49,4 +49,9 @@ set_by: string | null,
  * reassign THEN (re)spawn, and the report says so rather than leaving an operator
  * to infer it from "persisted".
  */
-remote_peer: string | null, };
+remote_peer: string | null, 
+/**
+ * The RESPONDER's served per-slot context window, when `remote_peer` is
+ * set. Her prompt is budgeted against it instead of the local lane.
+ */
+context_window: number | null, };

@@ -31,6 +31,10 @@ override_persisted: boolean,
  */
 remote_peer?: string, 
 /**
+ * The responder's window recorded with a remote assignment.
+ */
+context_window?: number | null, 
+/**
  * Human-readable summary.
  */
 detail: string, };
