@@ -190,9 +190,39 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         })?;
 
         let transport = AircLiveTransport::new(Arc::clone(airc), peer);
+        // The responder stamps the window its lane serves on every answer; when it
+        // differs from what her override recorded, the record follows the wire so
+        // her next re-host budgets against the real window (card 1ab60567). The
+        // running adapter is not resized mid-flight — the spawn pin owns that.
+        let learned_home = home.clone();
+        let learned_over = over.clone();
+        let learned_name = profile.persona_name.clone();
+        let window_sink: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |window: u32| {
+            if learned_over.remote_context_window == Some(window) {
+                return;
+            }
+            let updated = learned_over.clone().with_context_window(window);
+            match updated.write(&learned_home) {
+                Ok(()) => crate::probe!(
+                    class = "remote_lane.window_learned",
+                    persona = %learned_name,
+                    window = window,
+                    was = ?learned_over.remote_context_window,
+                    "the responder serves a different window than her override recorded — record updated; takes effect at her next re-host"
+                ),
+                Err(e) => crate::probe!(
+                    class = "remote_lane.window_learn_failed",
+                    persona = %learned_name,
+                    window = window,
+                    error = %e,
+                    "could not record the responder's served window"
+                ),
+            }
+        });
         let adapter = AircRemoteInferenceAdapter::new(transport)
             .with_target_peer(peer.to_string())
-            .with_model(over.model_id.clone());
+            .with_model(over.model_id.clone())
+            .with_window_sink(window_sink);
 
         crate::probe!(
             class = "persona.adapter.remote_lane",
