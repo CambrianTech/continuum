@@ -772,7 +772,13 @@ impl LlmDeliberationFaculty {
             request_id: None,
             user_id: None,
             room_id: room_id.map(|r| r.to_string()),
-            purpose: Some("cognition/deliberation".to_string()),
+            // An ACT turn (the caller passed an output cap — the hands surface is
+            // offered) announces itself: the body builder bounds the model's
+            // thinking on it (card 12ef9c10), the lane class stays Turn.
+            purpose: Some(
+                if output_cap.is_some() { "cognition/act" } else { "cognition/deliberation" }
+                    .to_string(),
+            ),
             persona_id: Some(self.persona_id.to_string()),
         }
     }
