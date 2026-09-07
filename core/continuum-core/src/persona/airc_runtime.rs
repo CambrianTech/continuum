@@ -1404,6 +1404,31 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         .await
     }
 
+    async fn release_card(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        claim_id: airc_lib::ClaimId,
+        reason: &str,
+    ) -> Result<(), String> {
+        // ONE release path, same as the claim: `work/release` as this citizen.
+        let Some(executor) = self.executor.as_ref() else {
+            return Err("no command executor installed on this runtime yet".to_string());
+        };
+        let caller = crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+            self.persona_id,
+        ));
+        let params = serde_json::json!({
+            "card_id": card_id.as_uuid().to_string(),
+            "claim_id": claim_id.to_string(),
+            "reason": reason,
+        });
+        executor
+            .execute_with_caller("work/release", params, Some(caller))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
         // ONE claim path. The pull rides `work/claim` as this citizen — the same
         // verb her tool call would use — so the on-claim staging and the room's
