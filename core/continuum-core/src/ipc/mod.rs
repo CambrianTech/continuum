@@ -1475,10 +1475,20 @@ pub fn start_server(
         // construction here (rotated `.N` generations only, never the
         // live file), so this class is OWNED rather than deferred.
         for class in ["logs", "probes"] {
+            // The pool governs ONE writer's ledger (live file + its `.N` generations)
+            // and nothing else in the directory — a stranger file must never make it
+            // read over budget (card 4b496146: a 134 MB legacy capture did, and the
+            // broker evicted every probe generation the moment rotation made it).
+            let live_file = if class == "logs" {
+                crate::routing::tracing_init::CORE_LOG_FILE
+            } else {
+                crate::routing::probe_file_sink::PROBE_LEDGER_FILE
+            };
             if let Some(dir) = crate::system_resources::tracked_dir(class) {
                 broker.register(Arc::new(crate::system_resources::RotationLogPool::new(
                     dir,
                     crate::routing::capped_appender::rotation_budget_bytes(),
+                    live_file,
                 ))
                     as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
