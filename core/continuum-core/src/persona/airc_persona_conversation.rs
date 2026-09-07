@@ -473,8 +473,14 @@ impl AircPersonaConversation {
                                 "the daemon stream ended under the pump — re-opening it"
                             );
                             match reopen_live_stream(&*runtime, persona, "ended", &mut reopen_attempt).await {
-                                Some(next) => stream = next,
-                                None => return, // the citizen is gone (subscribe refused for good)
+                                Some(next) => {
+                                    stream = next;
+                                    // The next tick admits the backlog the citizen missed
+                                    // while the stream was down — that is not a dead stream.
+                                    first_tick = true;
+                                    live_since_tick = 0;
+                                }
+                                None => return, // the pump gave up (probe pump_gave_up said so)
                             }
                         }
                     },
@@ -498,10 +504,17 @@ impl AircPersonaConversation {
                                 admitted = admitted as u64,
                                 "the store admitted events the live stream never delivered — re-opening it"
                             );
-                            if let Some(next) =
-                                reopen_live_stream(&*runtime, persona, "missed_events", &mut reopen_attempt).await
-                            {
-                                stream = next;
+                            // No gap replay here, unlike the membership-change path: the
+                            // catch-up tick plus `seen` dedup already delivered the dead
+                            // window — a replay would double-deliver.
+                            match reopen_live_stream(&*runtime, persona, "missed_events", &mut reopen_attempt).await {
+                                Some(next) => {
+                                    stream = next;
+                                    first_tick = true;
+                                    live_since_tick = 0;
+                                    continue;
+                                }
+                                None => return,
                             }
                         }
                         first_tick = false;
@@ -534,8 +547,13 @@ async fn reopen_live_stream(
     attempt: &mut u32,
 ) -> Option<FilteredEventStream> {
     loop {
-        let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5)).min(std::time::Duration::from_secs(30));
-        tokio::time::sleep(delay).await;
+        // Back off BETWEEN retries, never before the first attempt: a stream that
+        // ended on a room join or a daemon restart is back in one hop.
+        if *attempt > 0 {
+            let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5))
+                .min(std::time::Duration::from_secs(30));
+            tokio::time::sleep(delay).await;
+        }
         match runtime.subscribe_all_rooms().await {
             Ok(next) => {
                 crate::probe!(
@@ -558,6 +576,15 @@ async fn reopen_live_stream(
                     "live stream re-open failed; retrying"
                 );
                 if *attempt >= 8 {
+                    // The one branch that leaves a citizen without a live path for
+                    // good — the condition card e592b633 was filed about. Say it
+                    // in its own class, not buried in the retry rows.
+                    crate::probe!(
+                        class = "persona.inbound.pump_gave_up",
+                        persona = %persona,
+                        attempts = *attempt,
+                        "live stream could not be re-opened after repeated refusals; the store catch-up is her only path now"
+                    );
                     return None;
                 }
             }
