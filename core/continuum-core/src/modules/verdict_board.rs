@@ -33,7 +33,7 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>) -> String {
             verdict.p2p_total
         );
     }
-    let at = holder_name.map(|n| format!("@{n} ")).unwrap_or_default();
+    let at = holder_name.map(|n| format!("@{n} ")).unwrap_or_default(); // unwrap_or: no live holder → an undirected room line, never a bare "@"
     let failing = if verdict.failed_tests.is_empty() {
         String::new()
     } else {
@@ -145,7 +145,7 @@ async fn say_in_card_room(verdict: &SweVerdict, card: Uuid, operator: &Arc<airc_
             instance = verdict.instance_id.as_str(),
             card = %short,
             room = %room.to_string().chars().take(8).collect::<String>(),
-            holder = %holder_name.unwrap_or_else(|| "-".into()),
+            holder = %holder_name.unwrap_or_else(|| "-".into()), // unwrap_or: "-" = no live holder, a legible absence in the probe
             resolved = verdict.resolved,
             "the room heard the verdict"
         ),
