@@ -487,11 +487,6 @@ pub enum SupervisorError {
 /// on an 8 GiB Intel Mac. Slice 10+ can introduce parallel + capped
 /// materialization once #122 (shared base) makes the per-persona
 /// cost much smaller.
-/// The window an off-box brain gets when nobody recorded her responder's slot:
-/// small enough to be safe on any lane we have served (the 5090's 27B slots
-/// were 24,832; the Intel Mac's CPU lane smaller), never the local lane's size.
-pub const REMOTE_WINDOW_FLOOR: u32 = 16_384;
-
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
@@ -600,7 +595,10 @@ pub async fn materialize_adapters(
                     // The planned value IS the outage (it is the local lane's size).
                     // Unknown responder → the conservative floor: briefly under-
                     // budgeted costs context; over-budgeted costs every answer.
-                    let floor = REMOTE_WINDOW_FLOOR.min(profile.context_length);
+                    // The planner's own full-turn window floor — the one substrate-owned
+                    // minimum every other bound derives from; never a number of our own.
+                    let floor = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET
+                        .min(profile.context_length);
                     crate::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
@@ -1315,7 +1313,11 @@ mod tests {
         let rin = hosted[0].as_ref().expect("Rin hosted");
         assert_eq!(rin.profile.context_length, 24_832, "the recorded responder window wins");
         let sol = hosted[1].as_ref().expect("Sol hosted");
-        assert_eq!(sol.profile.context_length, REMOTE_WINDOW_FLOOR, "unknown responder → the floor, never the local lane");
+        assert_eq!(
+            sol.profile.context_length,
+            crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+            "unknown responder → the planner's floor, never the local lane"
+        );
     }
 
     #[tokio::test]
