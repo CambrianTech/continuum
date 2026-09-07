@@ -3521,6 +3521,14 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // never be laundered by a positive control or an env fault (see its doc).
     let recorded = swe_bench::record_verdict(&verdict, p.gold.unwrap_or(false));
     let verdict_written = matches!(recorded, Ok(Some(_)));
+    // A close that does NOT happen must be a row, never an absence (IntelMac,
+    // batch8 read): a fix that makes the system say less ships the probe for its
+    // new quiet state, or the next reader mistakes "skipped" for "nothing to do".
+    let board_close_skipped: Option<&str> = match &recorded {
+        Ok(Some(_)) => None,
+        Ok(None) => Some("no_verdict_written"),
+        Err(_) => Some("verdict_not_persisted"),
+    };
     match recorded {
         Ok(Some(path)) => crate::probe!(
             class = "benchmark.verdict.recorded",
@@ -3586,6 +3594,16 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
                     "no airc handle to close the board card with"
                 ),
             }
+        }
+    }
+    if let Some(reason) = board_close_skipped {
+        if !p.gold.unwrap_or(false) {
+            crate::probe!(
+                class = "benchmark.verdict.board_close_skipped",
+                instance = verdict.instance_id.as_str(),
+                reason,
+                "no verdict was written, so the board card stays where it was — the instance is not settled"
+            );
         }
     }
 
