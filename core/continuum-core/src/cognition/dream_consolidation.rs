@@ -282,7 +282,37 @@ impl SemanticDistiller {
         // fed the distillation; provenance (source_ids/tags) must reflect ONLY those,
         // so the dropped engrams stay unconsolidated and get another pass in a smaller
         // future cluster ([[budget-at-assembly-never-clamp-the-prompt]]).
-        let (mut block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
+        // #3847: PRIOR BELIEFS SHARE THE OBSERVATION BUDGET.
+        //
+        // The observations block has always been budgeted (whole engrams, tail
+        // dropped, never truncated). The prior-beliefs list appended below was
+        // bounded only by COUNT (SUPERSESSION_REVIEW_LIMIT +
+        // ROTATING_REVIEW_PER_PASS) - and a belief is distilled prose of any
+        // length, so N bounded beliefs times unbounded text is an unbounded
+        // block. Both halves land in ONE user message, so the careful
+        // observation budget bought nothing.
+        //
+        // Measured on BigMama: one user message of 141,984 approx tokens against
+        // a 25,344-token served slot - 5.6x over, and every overshoot was
+        // timestamp-identical to a dream.cluster.budgeted row. The slot rejects
+        // it, so the pass yields nothing and the engrams stay unconsolidated.
+        //
+        // A floor is reserved for beliefs so supersession cannot be starved to
+        // silence by a large cluster: with none, observations filling the budget
+        // would leave zero beliefs, and 'superseded nothing' would be
+        // indistinguishable from 'was shown no belief'.
+        // Charged ONLY when beliefs will actually be written. Unconditional, it
+        // capped observations at 75% on every pass with no prior beliefs — a new
+        // persona, a fresh domain, any cluster whose topic has no history —
+        // reserving a quarter of the budget for a list that never gets appended,
+        // on exactly the passes carrying the most new material (IntelMac, #3861).
+        let belief_floor = if prior_beliefs.is_empty() {
+            0
+        } else {
+            self.max_observation_chars / 4
+        };
+        let observation_budget = self.max_observation_chars.saturating_sub(belief_floor);
+        let (mut block, kept_n) = Self::observations_block(sources, observation_budget);
         let kept = &sources[..kept_n];
         if !prior_beliefs.is_empty() {
             // Numbered list FIRST, then an UNCONDITIONAL format slot at the very
@@ -293,8 +323,41 @@ impl SemanticDistiller {
             // verdict lines, with the old conditional instruction placed BEFORE
             // the list.
             block.push_str("\n\nPRIOR BELIEFS (numbered):\n");
+            // Whole beliefs up to the remaining budget, dropping the tail - the
+            // SAME rule the observations block follows, because a half-belief is a
+            // malformed premise, not a smaller one
+            // ([[budget-at-assembly-never-clamp-the-prompt]]).
+            let mut beliefs_kept = 0usize;
             for (i, b) in prior_beliefs.iter().enumerate() {
-                block.push_str(&format!("{}. {}\n", i + 1, b.content.trim()));
+                let line = format!("{}. {}\n", i + 1, b.content.trim());
+                if block.len() + line.len() > self.max_observation_chars {
+                    break;
+                }
+                block.push_str(&line);
+                beliefs_kept += 1;
+            }
+            if beliefs_kept < prior_beliefs.len() {
+                // The size of the belief that did NOT fit, so `kept = 0` is a
+                // READABLE state rather than a mystery: with none shown,
+                // "superseded nothing" and "was shown no belief" are otherwise
+                // indistinguishable, which is the ambiguity the reserved floor
+                // was reaching for. A named row achieves it without the
+                // unconditional-first-belief case that can blow the slot
+                // (IntelMac, #3861).
+                let dropped_first_chars = prior_beliefs
+                    .get(beliefs_kept)
+                    .map(|b| b.content.trim().len())
+                    .unwrap_or(0);  // unwrap_or: kept == len means nothing was dropped, so there is no first-dropped belief to size
+                tracing::info!(
+                    probe_class = "dream.beliefs.budgeted",
+                    beliefs = prior_beliefs.len(),
+                    kept = beliefs_kept,
+                    dropped_first_chars,
+                    budget_chars = self.max_observation_chars,
+                    block_chars = block.len(),
+                    "prior-belief list exceeded the served slot budget - reviewing the \
+                     first {beliefs_kept}, deferring the rest to a later pass (#3847)"
+                );
             }
             block.push_str(
                 "\nAfter your reply, on its own final line, list which numbered prior \

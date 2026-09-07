@@ -1620,10 +1620,50 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         })
                         .unwrap_or(0);
                     if approx_tokens > *served as usize {
+                        // #3847: the total was measured but never ATTRIBUTED, so
+                        // "the prompt is 6x the window" could not be turned into
+                        // "which message is it". Every component is individually
+                        // bounded (fractions of the served window in
+                        // `ContextBudget`), so an overshoot this large is many
+                        // bounded parts summing with no total cap — and which
+                        // parts is the whole question. Roles + the largest few,
+                        // in approx tokens, cost nothing on the non-overshoot
+                        // path because this block only runs when already over.
+                        let (message_count, largest_messages) = body
+                            .get("messages")
+                            .and_then(|m| m.as_array())
+                            .map(|msgs| {
+                                let mut rows: Vec<(&str, usize)> = msgs
+                                    .iter()
+                                    .map(|m| {
+                                        let role = m
+                                            .get("role")
+                                            .and_then(|r| r.as_str())
+                                            .unwrap_or("?");  // unwrap_or: a message without a role string is still worth sizing; "?" names it rather than dropping it
+                                        let len = m
+                                            .get("content")
+                                            .and_then(|c| c.as_str())
+                                            .map(|c| c.len() / 4)
+                                            .unwrap_or(0);  // unwrap_or: a message with no string content contributes 0 tokens to a total we are only explaining
+                                        (role, len)
+                                    })
+                                    .collect();
+                                rows.sort_by(|a, b| b.1.cmp(&a.1));
+                                let rendered = rows
+                                    .iter()
+                                    .take(6)
+                                    .map(|(role, tokens)| format!("{role}={tokens}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                (msgs.len(), rendered)
+                            })
+                            .unwrap_or((0, String::new()));  // unwrap_or: no messages array means nothing to attribute; the probe still reports the total
                         tracing::warn!(
                             probe_class = "serving.ctx_overshoot",
                             approx_tokens,
                             served_per_slot_ctx = *served,
+                            message_count,
+                            largest_messages = %largest_messages,
                             persona,
                             "prompt likely exceeds the served per-slot window — the RAG \
                              budget overshot what llama-server actually serves (#139); \
