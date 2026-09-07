@@ -124,8 +124,31 @@ pub fn pending() -> Vec<PendingGrade> {
         if has_verdict {
             continue;
         }
-        match decide(false, grade_target(&owners_of(&instance))) {
-            SweepDecision::Grade(workspace) => out.push(PendingGrade { instance, workspace }),
+        let copies = owners_of(&instance);
+        let worked = copies.iter().filter(|c| c.has_work).count();
+        match decide(false, grade_target(&copies)) {
+            SweepDecision::Grade(workspace) => {
+                if worked > 1 {
+                    // The newest of several worked copies was chosen (a card that
+                    // changed hands). The OTHERS are named too: their work is not
+                    // graded, and whoever asks later what happened to it must find
+                    // a row, not archaeology (IntelMac, #3852).
+                    let not_graded: Vec<String> = copies
+                        .iter()
+                        .filter(|c| c.has_work && c.path != workspace)
+                        .map(|c| c.path.display().to_string())
+                        .collect();
+                    crate::probe!(
+                        class = "benchmark.verdict.multiple_worked_copies",
+                        instance = instance.as_str(),
+                        graded = %workspace.display(),
+                        not_graded = %not_graded.join(","),
+                        worked_copies = worked as u64,
+                        "several citizens worked this instance — grading the newest; the others are NOT graded"
+                    );
+                }
+                out.push(PendingGrade { instance, workspace })
+            }
             SweepDecision::Ambiguous(paths) => crate::probe!(
                 class = "benchmark.verdict.sweep_ambiguous",
                 instance = instance.as_str(),
