@@ -373,9 +373,31 @@ ensure_airc_daemon() {
     fi
   fi
 
-  if bounded_run 5 airc ping; then
-    echo "✓ airc daemon: adopted (already answering)" >&2
-    return 0
+  # ONE binary for launch, ping and adoption — the one `command -v` resolves.
+  # 2026-09-07 07:01Z (IntelMac): the launch below reached a June `airc` under
+  # ~/.cargo/bin while the installed binary was the current one, and the stale
+  # daemon was then ADOPTED because it answered ping; `airc doctor` lost its
+  # daemon-build row (the daemon was too old to answer the query) and read as
+  # fine. Adoption now requires the daemon's build to match the binary's.
+  local airc_bin
+  airc_bin="$(command -v airc)"
+  if bounded_run 5 "$airc_bin" ping; then
+    # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
+    local status_out daemon_build bin_build
+    status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null || true)"
+    daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
+    bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    if [ -n "$daemon_build" ] && [ -n "$bin_build" ] && [ "$daemon_build" = "$bin_build" ]; then
+      echo "✓ airc daemon: adopted (already answering, build $daemon_build == installed)" >&2
+      return 0
+    fi
+    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
+    bounded_run 5 "$airc_bin" stop || true
+    sleep 1
+    if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
+      pkill -f 'airc.*daemon' 2>/dev/null || true
+      sleep 1
+    fi
   fi
 
   # Not answering. If a daemon process exists it is WEDGED, and a wedged holder is
@@ -395,12 +417,12 @@ ensure_airc_daemon() {
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
   echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  nohup airc daemon >>"$airc_log" 2>&1 &
+  nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &
   disown 2>/dev/null || true
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
-    if bounded_run 5 airc ping; then
+    if bounded_run 5 "$airc_bin" ping; then
       echo "✓ airc daemon: started and answering (${waited}s)" >&2
       return 0
     fi
