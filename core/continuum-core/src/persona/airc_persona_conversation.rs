@@ -431,10 +431,22 @@ impl AircPersonaConversation {
             // minutes across twelve citizens.
             let seen = std::sync::Arc::clone(&seen_shared);
             let mut next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
+            // Live frames delivered since the last catch-up tick. A tick that admits
+            // events from the store while this is still zero means the live stream
+            // is silently dead: the daemon dropped the subscription (a restart)
+            // and airc-lib reconnected the socket to nothing. Measured 2026-09-07
+            // 03:11–03:17Z on the M5: after `airc update` restarted the daemon,
+            // raw_event went to zero for 4 of 5 citizens with no stream end, no
+            // resubscribe, and only the 60 s store path delivering (card e592b633).
+            let mut live_since_tick: u64 = 0;
+            let mut first_tick = true;
+            let mut reopen_attempt: u32 = 0;
             loop {
                 tokio::select! {
                     item = stream.next() => match item {
                         Some(item) => {
+                            live_since_tick = live_since_tick.saturating_add(1);
+                            reopen_attempt = 0;
                             if let Ok(ev) = &item {
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
@@ -458,9 +470,12 @@ impl AircPersonaConversation {
                             crate::probe!(
                                 class = "persona.inbound.pump_ended",
                                 persona = %persona,
-                                "the daemon stream ended under the pump — the next quiet window re-opens it"
+                                "the daemon stream ended under the pump — re-opening it"
                             );
-                            return;
+                            match reopen_live_stream(&*runtime, persona, "ended", &mut reopen_attempt).await {
+                                Some(next) => stream = next,
+                                None => return, // the citizen is gone (subscribe refused for good)
+                            }
                         }
                     },
                     _ = tokio::time::sleep_until(next_catch_up) => {
@@ -476,6 +491,21 @@ impl AircPersonaConversation {
                         if admitted == usize::MAX {
                             return; // inbox gone
                         }
+                        if live_stream_missed(live_since_tick, admitted, first_tick) {
+                            crate::probe!(
+                                class = "persona.inbound.stream_dead",
+                                persona = %persona,
+                                admitted = admitted as u64,
+                                "the store admitted events the live stream never delivered — re-opening it"
+                            );
+                            if let Some(next) =
+                                reopen_live_stream(&*runtime, persona, "missed_events", &mut reopen_attempt).await
+                            {
+                                stream = next;
+                            }
+                        }
+                        first_tick = false;
+                        live_since_tick = 0;
                     }
                 }
             }
@@ -487,6 +517,53 @@ impl AircPersonaConversation {
 /// In-process inbox depth between the pump and the loop. A turn in progress
 /// can leave the loop away for minutes; 8k events is hours of a busy room.
 const INBOX_CAPACITY: usize = 8_192;
+
+/// The live stream is dead when a catch-up tick admits events from the store
+/// while no live frame arrived since the previous tick. The first tick after
+/// (re)open is exempt: it legitimately admits the backlog.
+fn live_stream_missed(live_since_tick: u64, admitted: usize, first_tick: bool) -> bool {
+    !first_tick && live_since_tick == 0 && admitted > 0 && admitted != usize::MAX
+}
+
+/// Re-subscribe with a bounded backoff (1 s doubling to 30 s). `None` only
+/// when the citizen's subscribe is refused for good.
+async fn reopen_live_stream(
+    runtime: &dyn AircCitizen,
+    persona: uuid::Uuid,
+    reason: &'static str,
+    attempt: &mut u32,
+) -> Option<FilteredEventStream> {
+    loop {
+        let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5)).min(std::time::Duration::from_secs(30));
+        tokio::time::sleep(delay).await;
+        match runtime.subscribe_all_rooms().await {
+            Ok(next) => {
+                crate::probe!(
+                    class = "persona.inbound.stream_reopened",
+                    persona = %persona,
+                    reason = reason,
+                    attempt = *attempt,
+                    "live stream re-opened by the pump"
+                );
+                *attempt = 0;
+                return Some(next);
+            }
+            Err(e) => {
+                *attempt = attempt.saturating_add(1);
+                crate::probe!(
+                    class = "persona.inbound.stream_reopen_failed",
+                    persona = %persona,
+                    attempt = *attempt,
+                    error = %e,
+                    "live stream re-open failed; retrying"
+                );
+                if *attempt >= 8 {
+                    return None;
+                }
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
@@ -778,6 +855,20 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the dead-live-stream detector. The first tick after an
+    // open admits the backlog and must not re-open; a later tick that admits
+    // store events while zero live frames arrived is the dead stream (the 03:11Z
+    // daemon restart); a tick that admits nothing, or one where live frames flowed,
+    // is healthy. usize::MAX is the inbox-gone sentinel, never a count.
+    #[test]
+    fn the_live_stream_is_dead_only_when_the_store_delivers_and_the_stream_did_not() {
+        assert!(!live_stream_missed(0, 5, true), "first tick admits the backlog");
+        assert!(live_stream_missed(0, 5, false), "store delivered, stream silent");
+        assert!(!live_stream_missed(3, 5, false), "live frames flowed");
+        assert!(!live_stream_missed(0, 0, false), "nothing to deliver");
+        assert!(!live_stream_missed(0, usize::MAX, false), "inbox gone is not a count");
+    }
     use crate::persona::airc_citizen::StubAircCitizen;
 
     // what this catches: the store-backed catch-up's synthesized event must
