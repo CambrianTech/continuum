@@ -487,6 +487,32 @@ pub enum SupervisorError {
 /// on an 8 GiB Intel Mac. Slice 10+ can introduce parallel + capped
 /// materialization once #122 (shared base) makes the per-persona
 /// cost much smaller.
+/// The persona's model override, read from the home the factory reads it from
+/// (`citizens/personas/<Name>` under the continuum root), falling back to the
+/// identity's own home root. `None` when neither holds a readable record.
+fn remote_override_for(
+    persona_name: &str,
+    identity_home: &std::path::Path,
+) -> Option<crate::persona::model_override::PersonaModelOverride> {
+    let by_name = crate::context::citizen_home_path(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        crate::identity::IdentityKind::Persona,
+        None,
+        persona_name,
+    )
+    .parent()
+    .map(|root| crate::persona::home::PersonaHome::from_root(root.to_path_buf()));
+    let by_identity = crate::persona::home::PersonaHome::from_root(identity_home.to_path_buf());
+    by_name
+        .into_iter()
+        .chain(std::iter::once(by_identity))
+        .find_map(|home| {
+            crate::persona::model_override::PersonaModelOverride::load(&home)
+                .ok()
+                .flatten()
+        })
+}
+
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
@@ -570,13 +596,14 @@ pub async fn materialize_adapters(
         // local gateway's: measured 2026-09-07 03:1xZ, two citizens bound to a
         // 5090 slot were pinned to the M5's 50,944-token lane below, sent
         // 35–43k-token prompts, and every answer died at `Length`.
-        let remote_window = crate::persona::model_override::PersonaModelOverride::load(
-            &crate::persona::home::PersonaHome::from_root(identity.home.clone()),
-        )
-        .ok()
-        .flatten()
-        .filter(|o| o.is_remote())
-        .map(|o| o.remote_context_window);
+        // Her override lives in her PERSONA home (`citizens/personas/<Name>`), the
+        // home the factory reads it from — `identity.home` can be a different root
+        // (measured 2026-09-07 04:48Z: both remote-bound citizens took the local
+        // pin because this read looked in the wrong home). Try the name-resolved
+        // home first, then the identity's.
+        let remote_window = remote_override_for(&profile.persona_name, &identity.home)
+            .filter(|o| o.is_remote())
+            .map(|o| o.remote_context_window);
         if let Some(remote) = remote_window {
             match remote {
                 Some(window) => {
