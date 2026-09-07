@@ -115,8 +115,19 @@ if [ "$DOCKER_MEM_GB" -gt 0 ] && [ "$DOCKER_MEM_GB" -lt "$((TARGET_MEM - 2))" ];
     echo "   Your system has ${SYS_MEM_GB}GB RAM / ${SYS_CPUS} CPUs."
     echo "   Recommended: ${TARGET_MEM}GB RAM / ${TARGET_CPUS} CPUs for Docker VM."
     echo ""
-    read -p "   Update Rancher Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
-    echo ""
+    # NON-INTERACTIVE = NO HUMAN, and a prompt with nobody to answer it does not
+    # "default" — it HANGS, forever, silently, in the canonical setup path. A node
+    # is often unattended by design; CI and containers always are. `[ -t 0 ]` asks
+    # whether anyone is actually there, and when nobody is we take the recommended
+    # action (the same one the prompt defaults to) and SAY we did, so the log shows
+    # a decision rather than a gap. Set CONTINUUM_ASSUME_YES=1 to force it.
+    if [ -t 0 ] && [ -z "${CONTINUUM_ASSUME_YES:-}" ]; then
+      read -p "   Update Rancher Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
+      echo ""
+    else
+      REPLY=""
+      echo "   non-interactive — applying the recommended VM sizing without asking."
+    fi
     if [[ $REPLY =~ ^[Nn]$ ]]; then
       echo "   Skipped. You can change this manually in Rancher Desktop → Preferences → Virtual Machine."
     else
@@ -156,8 +167,15 @@ print('   Updated: memoryInGB=${TARGET_MEM}, numberCPUs=${TARGET_CPUS}')
       echo "   Your system has ${SYS_MEM_GB}GB RAM / ${SYS_CPUS} CPUs."
       echo "   Recommended: ${TARGET_MEM}GB RAM / ${TARGET_CPUS} CPUs for Docker VM."
       echo ""
-      read -p "   Update Docker Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
-      echo ""
+      # See the Rancher branch above: a prompt with nobody to answer it HANGS,
+      # it does not default. Unattended nodes and CI take the recommended action.
+      if [ -t 0 ] && [ -z "${CONTINUUM_ASSUME_YES:-}" ]; then
+        read -p "   Update Docker Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
+        echo ""
+      else
+        REPLY=""
+        echo "   non-interactive — applying the recommended VM sizing without asking."
+      fi
       if [[ $REPLY =~ ^[Nn]$ ]]; then
         echo "   Skipped. Change manually: Docker Desktop → Settings → Resources → Memory"
       else

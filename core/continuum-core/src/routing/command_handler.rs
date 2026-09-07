@@ -534,17 +534,57 @@ impl ConsumerAdapter for CommandRequestHandler {
             "peer command request ACCEPTED — this node answers it"
         );
         let started = std::time::Instant::now();
+        // WORK SIZE, or elapsed_ms is uninterpretable. Measured 2026-09-06: nine
+        // successful cross-grid generations split cleanly bimodal — two at ~32s, six
+        // at 135-292s, nothing between — and the probe could not say whether the slow
+        // mode did MORE WORK or was merely slower, because it recorded duration and
+        // not size. I checked contention (concurrent local inferences per run) and it
+        // was REFUTED: the two fastest runs carried the HIGHEST concurrent load. With
+        // no size field there was no next hypothesis to test. A stopwatch with no
+        // odometer measures something, but it cannot explain anything.
+        //
+        // Serialized byte counts rather than tokens on purpose: this handler is
+        // path-agnostic (it dispatches ANY command), so it must not special-case
+        // `ai/generate`'s payload shape to reach a `usage` field. Bytes are a coarse
+        // proxy that stays correct for every path, including ones not written yet.
+        //
+        // COST GATE. The probe system's contract is a Noop default at ZERO hot-path
+        // cost, and this handler is the front door for EVERY cross-grid command, not
+        // just generations. Measuring by re-serializing is not free — the params are
+        // the largest thing in the request (a 10k-token prompt gets re-encoded purely
+        // to be measured, then dropped). `tracing::enabled!` is the same question the
+        // probe itself asks, so with no sink listening this costs a level check and
+        // nothing else. Raised in review of #3816 by the IntelMac: "we added a probe
+        // and the accept path got slower" is a bad way to learn this.
+        let measure = tracing::enabled!(tracing::Level::INFO);
+        let params_bytes = if measure {
+            serde_json::to_vec(&parsed.request.params)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0) // unwrap_or: the params ALREADY deserialized to get here, so re-serialization failing is not a real branch; 0 reads as "unmeasured", never as "empty request"
+        } else {
+            0
+        };
         let response = self.process_request(&parsed).await;
         // Carry the refusal TEXT, not just the fact of refusal. `outcome=error`
         // with elapsed_ms=0 says a gate declined before any work happened but not
         // WHICH gate — and the message is the whole diagnosis (kind/env refusal vs
         // the AuthPolicy verdict vs an unknown path). Truncated: a gate string is
         // a sentence, and an unbounded field in a hot probe is a log-flood risk.
-        let (outcome, detail) = match &response {
-            AircCommandResponse::Error { message } => {
-                ("error", message.chars().take(400).collect::<String>())
-            }
-            _ => ("ok", String::new()),
+        let (outcome, detail, result_bytes) = match &response {
+            AircCommandResponse::Error { message } => (
+                "error",
+                message.chars().take(400).collect::<String>(),
+                0u64,
+            ),
+            AircCommandResponse::Ok { result } => (
+                "ok",
+                String::new(),
+                if measure {
+                    serde_json::to_vec(result).map(|v| v.len() as u64).unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
+                } else {
+                    0
+                },
+            ),
         };
         crate::probe!(
             class = "airc.command.completed",
@@ -554,6 +594,8 @@ impl ConsumerAdapter for CommandRequestHandler {
             correlation = %parsed.correlation_id,
             outcome = %outcome,
             detail = %detail,
+            params_bytes = params_bytes,
+            result_bytes = result_bytes,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "peer command request answered"
         );

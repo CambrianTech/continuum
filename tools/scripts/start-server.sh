@@ -925,6 +925,25 @@ ensure_moonshine() {
 ensure_moonshine
 echo ""
 
+# ── ROW: supervision — BOOT ARRANGES ITS OWN RESTART ─────────────────
+# Continuum is installed once and updated rarely, and a node often has NO HUMAN
+# on it. Supervision therefore cannot be an install step someone runs; it has to
+# be something boot arranges for itself, every time, silently.
+#
+# Idempotent (already registered = zero writes), per-user only, NEVER elevates —
+# elevation needs a human by definition and this runs where there may not be one.
+# Never blocks boot: a node that refuses to start because it could not arrange
+# its own restart is strictly worse than one running unsupervised.
+#
+# Measured 2026-09-06 on this node: the core died 45 minutes after its supervisor
+# was removed, and the documented remedy was "run this in an Administrator
+# terminal" — a step that cannot happen on an unattended box. This row is that
+# gap closed.
+#
+# CONTINUUM_NO_AUTOSTART=1 opts out (CI, containers).
+bash "$SCRIPT_DIR/install-service.sh" ensure || true
+echo ""
+
 # PUBLISH the verified artifact to the installed location, the same way this script
 # already publishes the CLI a few dozen lines up — and for the identical reason.
 #
