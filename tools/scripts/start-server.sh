@@ -238,6 +238,35 @@ bounded_run() {
   wait "$pid"
 }
 
+# `bounded_run`'s sibling for a verb whose OUTPUT is the point: stdout captured (via a
+# temp file, so the bound still holds), stderr dropped, exit status preserved, 124 on
+# the bound. `bounded_run` sends stdout to /dev/null by design — and the daemon build
+# check read its `status` through it, so both build strings were EMPTY on every deploy
+# since #3832 and the "stale daemon" restart was unconditional (IntelMac, measured
+# 10:43Z 2026-09-07: `out="$(bounded_run 5 echo HELLO)"` captures nothing).
+bounded_capture() {
+  local budget="$1"; shift
+  local tmp
+  tmp="$(mktemp)"
+  "$@" >"$tmp" 2>/dev/null &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$((budget * 10))" ]; then
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$tmp"
+      return 124
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+  local rc=$?
+  cat "$tmp"
+  rm -f "$tmp"
+  return "$rc"
+}
+
 # ── ROW: foreign inference servers ───────────────────────────────────
 # Unsloth Studio is the EXCISED gateway — there is no healthy state for it to be
 # adopted into, so it is reaped unconditionally. It is stopped before its backend
@@ -317,6 +346,41 @@ adopt_or_reap_llama_lanes
 #   - airc PRESENT but the daemon will not come up → FAIL LOUD, exit nonzero.
 #     A core with no transport is not a running system, and reporting success for
 #     one is the class of lie this whole card exists to end.
+
+# Every airc verb the boot uses to judge the MACHINE daemon runs from $HOME, so it
+# addresses the machine account's socket — the one `machine_daemon_pids` reaps. From
+# the repo cwd, airc resolves the REPO's scope and its own daemon: IntelMac measured
+# (10:33Z) `airc status` answering "current" about the repo-scope daemon while a June
+# binary held the machine socket — the check compared one daemon and reaped another.
+# Same daemon in every arm, named by the same socket.
+machine_airc() {
+  local bound="$1"; shift
+  (cd "$HOME" && bounded_run "$bound" "$(command -v airc)" "$@")
+}
+
+# Same daemon, output captured — for `status`, whose TEXT is the verdict.
+machine_airc_capture() {
+  local bound="$1"; shift
+  (cd "$HOME" && bounded_capture "$bound" "$(command -v airc)" "$@")
+}
+
+# The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
+# `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
+# sites, one with -9): a deploy in one checkout killed every scope's daemon on the
+# box (IntelMac, card 0e65f352). No socket or no lsof → nothing to reap, said so.
+machine_daemon_pids() {
+  local sock
+  sock="$(ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null | head -1)"
+  if [ -z "$sock" ]; then
+    return 0
+  fi
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "  (no lsof on this host — cannot name the socket's holder; not reaping by pattern)" >&2
+    return 0
+  fi
+  lsof -t "$sock" 2>/dev/null || true
+}
+
 ensure_airc_daemon() {
   # LOOK BEFORE DECLARING ABSENCE (2026-09-06). `command -v` only sees THIS
   # shell's PATH, and boot does not necessarily inherit the operator's. On a box
@@ -381,21 +445,49 @@ ensure_airc_daemon() {
   # fine. Adoption now requires the daemon's build to match the binary's.
   local airc_bin
   airc_bin="$(command -v airc)"
-  if bounded_run 5 "$airc_bin" ping; then
+  if machine_airc 5 ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
-    status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null || true)"
+    # Keep the exit status: "status did not answer" (timeout — transient, adopt) and
+    # "status answered but prints no build: line" (a daemon too old for today's shape —
+    # restart) are two situations, and emptiness alone carried both (IntelMac, #3841
+    # review — one value must not carry two meanings, the same shape as the bug).
+    local status_rc=0
+    status_out="$(machine_airc_capture 5 status 2>/dev/null)" || status_rc=$?
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
     bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
+      # One more sample before concluding anything: a busy account registry is
+      # transient by definition, and the whole verdict must not hinge on one miss.
+      sleep 2
+      status_rc=0
+      status_out="$(machine_airc_capture 8 status 2>/dev/null)" || status_rc=$?
+      daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
+      bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    fi
     if [ -n "$daemon_build" ] && [ -n "$bin_build" ] && [ "$daemon_build" = "$bin_build" ]; then
       echo "✓ airc daemon: adopted (already answering, build $daemon_build == installed)" >&2
       return 0
     fi
+    # An UNREADABLE status is not a stale daemon. 2026-09-07 10:12Z: `airc status`
+    # did not answer inside its bound (the account-registry refresh was busy), both
+    # builds read empty, the branch below STOPPED a healthy daemon, and the restart
+    # refused (see the cwd note at the launch) — the whole node went dark mid-deploy.
+    # The ping above already proved liveness; staleness needs two builds to compare.
+    if { [ -z "$daemon_build" ] || [ -z "$bin_build" ]; } && [ "$status_rc" -ne 0 ]; then
+      echo "⚠  airc daemon answers ping but \`status\` did not answer within the bound (rc=$status_rc) — adopting the LIVE daemon; a status timeout is not evidence of staleness" >&2
+      return 0
+    fi
+    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
+      echo "⚠  airc daemon answered \`status\` without a readable build (daemon=${daemon_build:-?} cli=${bin_build:-?}) — a daemon too old for today's status shape; restarting it" >&2
+    fi
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
-    bounded_run 5 "$airc_bin" stop || true
+    machine_airc 5 stop || true
     sleep 1
-    if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-      pkill -f 'airc.*daemon' 2>/dev/null || true
+    local holders
+    holders="$(machine_daemon_pids)"
+    if [ -n "$holders" ]; then
+      kill $holders 2>/dev/null || true
       sleep 1
     fi
   fi
@@ -404,25 +496,34 @@ ensure_airc_daemon() {
   # worse than none — it answers nothing AND owns the socket, so a fresh spawn
   # would lose the bind (airc's own start gives up on a contended lock, #355).
   # Reap before spawning: graceful verb first, then the process.
-  if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping" >&2
-    bounded_run 5 airc stop || true
-    if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-      pkill -f 'airc.*daemon' 2>/dev/null || true
+  local wedged
+  wedged="$(machine_daemon_pids)"
+  if [ -n "$wedged" ]; then
+    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
+    machine_airc 5 stop || true
+    wedged="$(machine_daemon_pids)"
+    if [ -n "$wedged" ]; then
+      kill $wedged 2>/dev/null || true
       sleep 1
-      pkill -9 -f 'airc.*daemon' 2>/dev/null || true
+      wedged="$(machine_daemon_pids)"
+      [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
     fi
   fi
 
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
   echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &
+  # From $HOME, never from the repo: airc's scope is the cwd's git root, so a daemon
+  # launched here would serve the REPO's agent home and refuse the machine socket
+  # ("refusing to serve a socket this scope does not own" — 2026-09-07 10:12Z, the
+  # restart after a stop that should not have happened). The machine account is
+  # $HOME/.airc on every host; that is the daemon's home.
+  (cd "$HOME" && nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &)
   disown 2>/dev/null || true
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
-    if bounded_run 5 "$airc_bin" ping; then
+    if machine_airc 5 ping; then
       echo "✓ airc daemon: started and answering (${waited}s)" >&2
       return 0
     fi
