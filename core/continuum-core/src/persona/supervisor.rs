@@ -566,7 +566,42 @@ pub async fn materialize_adapters(
         // probe) to the served truth so every budget is correct by construction.
         // Cloud-routed personas (tier `Cloud`) keep their model's full window —
         // their adapter owns its own context and there is no local slot to fit.
-        if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud {
+        // An OFF-BOX brain is budgeted against the RESPONDER's slot, never the
+        // local gateway's: measured 2026-09-07 03:1xZ, two citizens bound to a
+        // 5090 slot were pinned to the M5's 50,944-token lane below, sent
+        // 35–43k-token prompts, and every answer died at `Length`.
+        let remote_window = crate::persona::model_override::PersonaModelOverride::load(
+            &crate::persona::home::PersonaHome::from_root(identity.home.clone()),
+        )
+        .ok()
+        .flatten()
+        .filter(|o| o.is_remote())
+        .map(|o| o.remote_context_window);
+        if let Some(remote) = remote_window {
+            match remote {
+                Some(window) => {
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = window,
+                        source = "remote_override",
+                        "pinning persona context window to the RESPONDER's slot (her brain runs off-box)",
+                    );
+                    profile.context_length = window;
+                }
+                None => crate::probe!(
+                    class = "persona.upstart.window",
+                    persona = %profile.persona_name,
+                    persona_id = %profile.persona_id,
+                    planned = profile.context_length,
+                    source = "remote_unknown",
+                    "off-box brain with no recorded responder window — keeping the planned value; \
+                     pass --context_window to persona/reassign-model",
+                ),
+            }
+        } else if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud {
             let snap = crate::inference::llama_server::current_serving();
             // A ready snapshot always carries a real window (the daemon refuses to
             // publish ready with 0). Guard on both so a not-yet-ready/empty

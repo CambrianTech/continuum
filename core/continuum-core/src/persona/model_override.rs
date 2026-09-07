@@ -73,6 +73,13 @@ pub struct PersonaModelOverride {
     /// adapter in 409 ms, with the reply naming the REMOTE host's served models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_peer: Option<String>,
+    /// The RESPONDER's served per-slot context window, when her brain runs
+    /// off-box. Her prompt is budgeted against this, never against the local
+    /// lane: measured 2026-09-07 03:1xZ, two citizens bound to a 5090 slot
+    /// budgeted against the M5's 50,944-token lane, sent 35–43k-token prompts,
+    /// and every answer died at `Length` with an empty completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_context_window: Option<u32>,
 }
 
 /// Failure modes of reading / writing a persona's model override. Every variant
@@ -106,6 +113,7 @@ impl PersonaModelOverride {
             set_at_ms: now_ms,
             set_by,
             remote_peer: None,
+            remote_context_window: None,
         }
     }
 
@@ -126,7 +134,14 @@ impl PersonaModelOverride {
             set_at_ms: now_ms,
             set_by,
             remote_peer: Some(peer.into()),
+            remote_context_window: None,
         }
+    }
+
+    /// Record the responder's served per-slot window for an off-box brain.
+    pub fn with_context_window(mut self, window: u32) -> Self {
+        self.remote_context_window = Some(window);
+        self
     }
 
     /// Does this assignment run off-box? `true` when a peer serves her model.
@@ -214,6 +229,21 @@ impl PersonaModelOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the responder's window must survive the write/load
+    // round trip and be absent (None) for a local assignment — a remote brain
+    // budgeted against the local lane sends prompts the peer cannot hold.
+    #[test]
+    fn a_remote_assignment_keeps_the_responders_window_across_the_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = PersonaHome::from_root(dir.path().to_path_buf());
+        let over = PersonaModelOverride::new_remote("m", None, 1, "peer").with_context_window(24_832);
+        over.write(&home).expect("write");
+        let back = PersonaModelOverride::load(&home).expect("load").expect("present");
+        assert_eq!(back.remote_context_window, Some(24_832));
+        let local = PersonaModelOverride::new("m", None, 1);
+        assert_eq!(local.remote_context_window, None);
+    }
 
     fn home() -> (tempfile::TempDir, PersonaHome) {
         let tmp = tempfile::tempdir().expect("tempdir");
