@@ -402,15 +402,20 @@ ensure_airc_daemon() {
   if bounded_run 5 "$airc_bin" ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
-    status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null || true)"
+    # Keep the exit status: "status did not answer" (timeout — transient, adopt) and
+    # "status answered but prints no build: line" (a daemon too old for today's shape —
+    # restart) are two situations, and emptiness alone carried both (IntelMac, #3841
+    # review — one value must not carry two meanings, the same shape as the bug).
+    local status_rc=0
+    status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null)" || status_rc=$?
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
     bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
       # One more sample before concluding anything: a busy account registry is
-      # transient by definition, and the whole verdict must not hinge on one miss
-      # (IntelMac, #3841 review).
+      # transient by definition, and the whole verdict must not hinge on one miss.
       sleep 2
-      status_out="$(bounded_run 8 "$airc_bin" status 2>/dev/null || true)"
+      status_rc=0
+      status_out="$(bounded_run 8 "$airc_bin" status 2>/dev/null)" || status_rc=$?
       daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
       bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     fi
@@ -423,9 +428,12 @@ ensure_airc_daemon() {
     # builds read empty, the branch below STOPPED a healthy daemon, and the restart
     # refused (see the cwd note at the launch) — the whole node went dark mid-deploy.
     # The ping above already proved liveness; staleness needs two builds to compare.
-    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
-      echo "⚠  airc daemon answers but its build could not be read within the bound (daemon=${daemon_build:-?} cli=${bin_build:-?}) — adopting the LIVE daemon; a stale build is caught on the next boot that can read it" >&2
+    if { [ -z "$daemon_build" ] || [ -z "$bin_build" ]; } && [ "$status_rc" -ne 0 ]; then
+      echo "⚠  airc daemon answers ping but \`status\` did not answer within the bound (rc=$status_rc) — adopting the LIVE daemon; a status timeout is not evidence of staleness" >&2
       return 0
+    fi
+    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
+      echo "⚠  airc daemon answered \`status\` without a readable build (daemon=${daemon_build:-?} cli=${bin_build:-?}) — a daemon too old for today's status shape; restarting it" >&2
     fi
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
     bounded_run 5 "$airc_bin" stop || true
