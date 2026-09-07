@@ -144,7 +144,6 @@ struct DispatchedAction {
 /// capture tooling) matches on.
 pub(crate) const WM_FACULTY_ID: &str = "working-memory";
 
-#[derive(Debug)]
 /// A keyed working-memory fact with a lifetime in work turns.
 #[derive(Debug, Clone)]
 struct TurnPinnedFact {
@@ -153,6 +152,7 @@ struct TurnPinnedFact {
     turns_left: u8,
 }
 
+#[derive(Debug)]
 pub struct WorkingMemory {
     /// Process-unique construction ordinal. Purely diagnostic: lets any probe
     /// that renders from this instance say WHICH instance it is, so a duplicate
