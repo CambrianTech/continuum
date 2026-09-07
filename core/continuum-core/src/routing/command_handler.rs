@@ -547,9 +547,23 @@ impl ConsumerAdapter for CommandRequestHandler {
         // path-agnostic (it dispatches ANY command), so it must not special-case
         // `ai/generate`'s payload shape to reach a `usage` field. Bytes are a coarse
         // proxy that stays correct for every path, including ones not written yet.
-        let params_bytes = serde_json::to_vec(&parsed.request.params)
-            .map(|v| v.len() as u64)
-            .unwrap_or(0); // unwrap_or: the params ALREADY deserialized to get here, so re-serialization failing is not a real branch; 0 reads as "unmeasured", never as "empty request"
+        //
+        // COST GATE. The probe system's contract is a Noop default at ZERO hot-path
+        // cost, and this handler is the front door for EVERY cross-grid command, not
+        // just generations. Measuring by re-serializing is not free — the params are
+        // the largest thing in the request (a 10k-token prompt gets re-encoded purely
+        // to be measured, then dropped). `tracing::enabled!` is the same question the
+        // probe itself asks, so with no sink listening this costs a level check and
+        // nothing else. Raised in review of #3816 by the IntelMac: "we added a probe
+        // and the accept path got slower" is a bad way to learn this.
+        let measure = tracing::enabled!(tracing::Level::INFO);
+        let params_bytes = if measure {
+            serde_json::to_vec(&parsed.request.params)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0) // unwrap_or: the params ALREADY deserialized to get here, so re-serialization failing is not a real branch; 0 reads as "unmeasured", never as "empty request"
+        } else {
+            0
+        };
         let response = self.process_request(&parsed).await;
         // Carry the refusal TEXT, not just the fact of refusal. `outcome=error`
         // with elapsed_ms=0 says a gate declined before any work happened but not
@@ -565,7 +579,11 @@ impl ConsumerAdapter for CommandRequestHandler {
             AircCommandResponse::Ok { result } => (
                 "ok",
                 String::new(),
-                serde_json::to_vec(result).map(|v| v.len() as u64).unwrap_or(0), // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
+                if measure {
+                    serde_json::to_vec(result).map(|v| v.len() as u64).unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
+                } else {
+                    0
+                },
             ),
         };
         crate::probe!(
