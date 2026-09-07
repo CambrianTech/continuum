@@ -655,11 +655,14 @@ impl LlmDeliberationFaculty {
     /// live served one.
     const COMPLETION_SHARE_DENOM: u32 = 2;
 
-    /// The most an ACT turn may generate. A tool call and the sentence around
-    /// it fit in a few hundred tokens; the 27B was writing 4k–8k per act
-    /// (BigMama's n=48: median 121 s, max 292 s per turn on the 5090; the M5's
-    /// first instrumented act 5,316 tokens / 157 s). Card 61b6e54d.
-    pub const ACT_OUTPUT_CAP: u32 = 2048;
+    /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
+    /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the
+    /// 27B (the model thinks before it calls; 2026-09-07 acceptance rows), so
+    /// any cap below that faults the act and re-samples it — more decode for
+    /// zero committed work (IntelMac's review of #3824). This binds only past
+    /// the largest committed act we have seen; the real lever is bounding the
+    /// THINKING on act turns, which is card 61b6e54d's next slice.
+    pub const ACT_OUTPUT_CAP: u32 = 12_288;
 
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
     /// floor uses for a minimum burst.
