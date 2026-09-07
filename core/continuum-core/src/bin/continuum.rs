@@ -18,7 +18,8 @@
 //! uses (CLI/persona/web/mobile) over the core IPC socket via [`CoreIpcTransport`].
 //! No tsx, no bundle, no Node anywhere.
 //! Ordinary commands, command help, and deploy verification never start a core.
-//! If the core is unavailable they exit 2; start it explicitly with `continuum start`.
+//! Ordinary dispatch/help exit 2 when unavailable; start explicitly with `continuum start`.
+//! Deploy verification retains its detailed diagnostic and exit 1 on failure.
 //!
 //! Env: `CONTINUUM_CORE_SOCKET` (default `/tmp/continuum-core.sock`),
 //! `CONTINUUM_START_SCRIPT` (override the start script path).
@@ -195,10 +196,7 @@ async fn run() -> Result<(), CliError> {
         }
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
-        "deploy-verify" | "verify" => {
-            ensure_core_running(&first).await?;
-            verify_deployed_build(false).await
-        }
+        "deploy-verify" | "verify" => verify_deployed_build(false).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.

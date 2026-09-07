@@ -47,13 +47,16 @@ fn ordinary_commands_never_start_a_core() {
     let socket = root.path().join("absent.sock");
     let script = root.path().join("must-not-start.sh");
     std::fs::write(&script, "#!/bin/sh\nexit 97\n").unwrap();
-    for args in [
-        vec!["ping"],
-        vec!["serving/status"],
-        vec!["commands/list"],
-        vec!["ai/future-operation"],
-        vec!["serving/status", "--help"],
-        vec!["deploy-verify"],
+    for (args, expected_exit) in [
+        (vec!["ping"], 2),
+        (vec!["serving/status"], 2),
+        (vec!["commands/list"], 2),
+        (vec!["ai/future-operation"], 2),
+        (vec!["serving/status", "--help"], 2),
+        // Verification never started a core: retain its transport diagnostic,
+        // rather than replacing it with dispatch's generic no-core refusal.
+        (vec!["deploy-verify"], 1),
+        (vec!["verify"], 1),
     ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_continuum"))
             .args(&args)
@@ -69,8 +72,16 @@ fn ordinary_commands_never_start_a_core() {
             .output()
             .expect("run the CLI under test");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert_eq!(
+            output.status.code(),
+            Some(expected_exit),
+            "{args:?}: {stderr}"
+        );
         assert!(stderr.contains("no core answering"), "{args:?}: {stderr}");
+        if expected_exit == 1 {
+            assert!(stderr.contains("deploy-verify:"), "{args:?}: {stderr}");
+            assert!(stderr.contains("connect"), "{args:?}: {stderr}");
+        }
         assert!(
             output.stdout.is_empty(),
             "refusal must not pollute JSON stdout"
