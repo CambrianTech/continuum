@@ -90,8 +90,16 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
     let grant_authorizer = build_grant_authorizer(owner, owner_home.path())
         .await
         .expect("owner builds its grant authorizer");
+    // The pump watches the runtime's membership epoch and exits only when the sender drops; hold it.
+    let (_membership_tx, membership_rx) = tokio::sync::watch::channel(0u64);
     let pump =
-        PersonaCommandInboundPump::spawn(owner_id, Arc::clone(owner), executor, grant_authorizer)
+        PersonaCommandInboundPump::spawn(
+            owner_id,
+            Arc::clone(owner),
+            executor,
+            grant_authorizer,
+            membership_rx,
+        )
             .await
             .expect("install owner command pump");
 

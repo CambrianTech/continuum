@@ -514,11 +514,15 @@ impl PersonaAircRuntime {
                     source,
                 })?;
         let executor_for_acts = Arc::clone(&executor);
+        // Built before the pump so the pump can watch it: a later join_room
+        // bumps the epoch and the pump re-opens its stream.
+        let membership_epoch = tokio::sync::watch::channel(0u64).0;
         let command_pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
             persona_id,
             Arc::clone(&airc_arc),
             executor,
             grant_authorizer,
+            membership_epoch.subscribe(),
         )
         .await
         .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
@@ -1034,7 +1038,7 @@ impl PersonaAircRuntime {
             // state above) — before #298 this stored the passed-in operator
             // room, which could even diverge from the joined channel.
             default_room: RoomId::from_uuid(room.channel.as_uuid()),
-            membership_epoch: tokio::sync::watch::channel(0u64).0,
+            membership_epoch,
             inbound_handle: None,
             command_pump: Some(command_pump),
             executor: Some(executor_for_acts),
@@ -1168,6 +1172,7 @@ impl PersonaAircRuntime {
             Arc::clone(&self.airc),
             executor,
             grant_authorizer,
+            self.membership_epoch.subscribe(),
         )
         .await
         .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
@@ -1182,8 +1187,10 @@ impl PersonaAircRuntime {
     /// installed. `true` after `bootstrap` (always) or after a
     /// successful `install_command_pump` call. Useful for tests +
     /// telemetry to confirm the persona is addressable.
+    /// Whether the citizen is addressable for cross-grid commands RIGHT NOW:
+    /// a pump whose task is still running, not merely a handle.
     pub fn has_command_pump(&self) -> bool {
-        self.command_pump.is_some()
+        self.command_pump.as_ref().is_some_and(|p| p.is_alive())
     }
 
     /// The persona's stable continuum identifier.

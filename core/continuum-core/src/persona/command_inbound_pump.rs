@@ -67,11 +67,13 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use airc_lib::adapter::ConsumerAdapter;
 use airc_lib::{Airc, AircError, FilteredEventStream};
 use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
 use futures::stream::StreamExt;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -163,6 +165,7 @@ impl PersonaCommandInboundPump {
         airc: Arc<Airc>,
         executor: Arc<CommandExecutor>,
         grant_authorizer: Arc<GrantAuthorizer>,
+        membership: watch::Receiver<u64>,
     ) -> Result<Self, AircError> {
         // Subscribe BEFORE spawning so failure surfaces at the call
         // site. The stream moves into the spawned task; subsequent
@@ -183,7 +186,15 @@ impl PersonaCommandInboundPump {
             executor,
             grant_authorizer,
         );
-        let handle = tokio::spawn(run(persona_id, airc, handler, stream));
+        // The pump is SUPERVISED on the persona: `run` re-opens its own stream
+        // and only returns when the runtime drops its epoch sender, so the one
+        // exit it cannot cover is a panic inside the task. The supervisor task
+        // is what `is_alive()` reads; it respawns `run` after a panic with a
+        // fresh stream and says so. Nothing outside the persona has to notice
+        // (the runtime is shared as `Arc<PersonaAircRuntime>`, so no reconciler
+        // could re-install it from outside without interior mutability —
+        // BigMama's review of #3814).
+        let handle = tokio::spawn(supervise(persona_id, airc, handler, stream, membership));
         Ok(Self { persona_id, handle })
     }
 
@@ -191,6 +202,14 @@ impl PersonaCommandInboundPump {
     /// debug-logging in the owning runtime.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
+    }
+
+    /// Whether the pump TASK is still running. `Some(pump)` on the runtime
+    /// used to mean "addressable"; measured 2026-09-06 on the M5 and the
+    /// 5090: four of five resident citizens held a `Some` whose task had
+    /// exited hours earlier. Liveness is the task, not the handle.
+    pub fn is_alive(&self) -> bool {
+        !self.handle.is_finished()
     }
 
     /// Abort the pump task and await its exit. Drop alone would
@@ -217,69 +236,209 @@ impl PersonaCommandInboundPump {
     }
 }
 
-/// The subscribe loop. Extracted for readability; spawned as a
-/// tokio task by `spawn()`. The stream is opened by the caller
-/// BEFORE spawning so subscribe failure surfaces at the call site
-/// (see the doc on `spawn` for rationale).
+/// Delay before the n-th consecutive re-open attempt: 1 s doubling to a
+/// 30 s cap. A daemon that is down stays down for a while; a stream that
+/// ended on a membership change is back in one hop.
+fn reopen_delay(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << attempt.min(5)).min(Duration::from_secs(30))
+}
+
+/// Why the pump is (re)opening its stream. Carried on the probe so a read
+/// can tell a daemon disconnect from a room join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    StreamEnded,
+    MembershipChanged,
+}
+
+async fn supervise(
+    persona_id: Uuid,
+    airc: Arc<Airc>,
+    handler: Arc<CommandRequestHandler>,
+    first_stream: FilteredEventStream,
+    membership: watch::Receiver<u64>,
+) {
+    let mut stream = Some(first_stream);
+    let mut respawns: u32 = 0;
+    loop {
+        let this_stream = match stream.take() {
+            Some(s) => s,
+            None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::probe!(
+                        class = "persona.command_pump.reopen_failed",
+                        persona_id = %persona_id,
+                        attempt = respawns,
+                        error = %e,
+                        "command pump could not re-subscribe after a panic; retrying"
+                    );
+                    tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                    continue;
+                }
+            },
+        };
+        let task = tokio::spawn(run(
+            persona_id,
+            Arc::clone(&airc),
+            Arc::clone(&handler),
+            this_stream,
+            membership.clone(),
+        ));
+        match task.await {
+            // `run` returns only when the runtime dropped its epoch sender.
+            Ok(()) => return,
+            Err(e) if e.is_panic() => {
+                respawns = respawns.saturating_add(1);
+                crate::probe!(
+                    class = "persona.command_pump.respawned_after_panic",
+                    persona_id = %persona_id,
+                    respawns = respawns,
+                    "command pump task panicked; respawning with a fresh stream"
+                );
+                tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+            }
+            // Cancelled: the supervisor itself was aborted (shutdown).
+            Err(_) => return,
+        }
+    }
+}
+
 async fn run(
     persona_id: Uuid,
     airc: Arc<Airc>,
     handler: Arc<CommandRequestHandler>,
     mut stream: FilteredEventStream,
+    mut membership: watch::Receiver<u64>,
 ) {
     let self_id = airc.peer_id();
-    debug!(
+    crate::probe!(
+        class = "persona.command_pump.installed",
         persona_id = %persona_id,
-        self_peer_id = %self_id.0,
-        "PersonaCommandInboundPump: subscribed; awaiting command envelopes"
+        peer_id = %self_id.0,
+        "command inbound pump subscribed; the citizen is addressable"
     );
-
-    while let Some(event) = stream.next().await {
-        let event = match event {
-            Ok(e) => e,
-            Err(lag) => {
-                // Lag is a broadcast-channel artifact — we missed
-                // some events but the stream is still alive. Log
-                // + continue per the existing chat pump's pattern
-                // (airc_persona_conversation.rs).
-                warn!(
-                    persona_id = %persona_id,
-                    "PersonaCommandInboundPump: subscribe lag: {lag}"
-                );
-                continue;
+    // The stream ends whenever the daemon closes the subscription — a daemon
+    // restart, an update, or the citizen joining a room after she was seated.
+    // Before 2026-09-06 the loop simply returned here at `debug!` level: the
+    // citizen stayed resident, chatted and worked, and every request addressed
+    // to her was heard only by the operator seat and refused as not-his. Sahar
+    // on the 5090 and four of five citizens on the M5 were unaddressable for
+    // hours with nothing on any probe. The pump now re-opens on end AND on a
+    // membership move, with a bounded backoff, and says so each time.
+    let mut attempt: u32 = 0;
+    loop {
+        let reason = loop {
+            tokio::select! {
+                next = stream.next() => match next {
+                    Some(Ok(event)) => {
+                        attempt = 0;
+                        if event.peer_id == self_id {
+                            continue;
+                        }
+                        let hint = event
+                            .headers
+                            .get(HEADER_CONTINUUM_BODY_HINT)
+                            .map(|s| s.as_str());
+                        if hint != Some(COMMAND_REQUEST_BODY_HINT) {
+                            continue;
+                        }
+                        if let Err(e) = handler.on_envelope((*event).clone()).await {
+                            warn!(
+                                persona_id = %persona_id,
+                                error = %e,
+                                "PersonaCommandInboundPump: handler.on_envelope rejected an envelope"
+                            );
+                        }
+                    }
+                    Some(Err(lag)) => {
+                        crate::probe!(
+                            class = "persona.command_pump.lag",
+                            persona_id = %persona_id,
+                            lag = %lag,
+                            "subscribe lag on the command pump — requests inside the gap are lost"
+                        );
+                        continue;
+                    }
+                    None => break Reopen::StreamEnded,
+                },
+                changed = membership.changed() => match changed {
+                    Ok(()) => break Reopen::MembershipChanged,
+                    Err(_) => {
+                        // The runtime dropped its epoch sender: the citizen is
+                        // being torn down. Exit for real, and say so.
+                        crate::probe!(
+                            class = "persona.command_pump.ended",
+                            persona_id = %persona_id,
+                            reason = "runtime_dropped",
+                            "command pump exiting with its runtime"
+                        );
+                        return;
+                    }
+                },
             }
         };
-
-        // Self-events come from our own publishes. Skip.
-        if event.peer_id == self_id {
-            continue;
-        }
-
-        // Only command-request envelopes go through the handler.
-        // Any other body_hint (chat, event-subscribe, future
-        // shapes) is for some other consumer to handle.
-        let hint = event
-            .headers
-            .get(HEADER_CONTINUUM_BODY_HINT)
-            .map(|s| s.as_str());
-        if hint != Some(COMMAND_REQUEST_BODY_HINT) {
-            continue;
-        }
-
-        // Deref-clone the broadcast Arc — `ConsumerAdapter::on_envelope`
-        // takes the owned TranscriptEvent. Same pattern as the e2e
-        // integration test in PR #1563.
-        if let Err(e) = handler.on_envelope((*event).clone()).await {
-            warn!(
-                persona_id = %persona_id,
-                error = %e,
-                "PersonaCommandInboundPump: handler.on_envelope rejected an envelope"
-            );
+        crate::probe!(
+            class = "persona.command_pump.ended",
+            persona_id = %persona_id,
+            reason = ?reason,
+            "command pump stream ended; re-opening"
+        );
+        loop {
+            let delay = reopen_delay(attempt);
+            tokio::time::sleep(delay).await;
+            // Joins arrive in bursts at boot (one per room). Every bump that
+            // landed during the sleep is folded into this one re-open.
+            let _ = membership.borrow_and_update();
+            match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+                Ok(next) => {
+                    stream = next;
+                    crate::probe!(
+                        class = "persona.command_pump.reopened",
+                        persona_id = %persona_id,
+                        reason = ?reason,
+                        attempt = attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        "command pump re-subscribed; the citizen is addressable again"
+                    );
+                    attempt = 0;
+                    break;
+                }
+                Err(e) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::probe!(
+                        class = "persona.command_pump.reopen_failed",
+                        persona_id = %persona_id,
+                        attempt = attempt,
+                        error = %e,
+                        "command pump could not re-subscribe; retrying"
+                    );
+                    debug!(
+                        persona_id = %persona_id,
+                        attempt,
+                        "PersonaCommandInboundPump: re-subscribe failed: {e}"
+                    );
+                }
+            }
         }
     }
+}
 
-    debug!(
-        persona_id = %persona_id,
-        "PersonaCommandInboundPump: subscribe stream ended (daemon disconnect); pump exiting"
-    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the re-open schedule must be bounded on BOTH ends —
+    // a zero first delay would busy-loop against a daemon that is down (the
+    // exact shape the message pump's membership contract test pins), and an
+    // unbounded doubling would leave a citizen unaddressable for minutes after
+    // one transient failure. 1 s doubling, capped at 30 s.
+    #[test]
+    fn the_reopen_schedule_is_bounded_on_both_ends() {
+        assert_eq!(reopen_delay(0), Duration::from_secs(1));
+        assert_eq!(reopen_delay(1), Duration::from_secs(2));
+        assert_eq!(reopen_delay(4), Duration::from_secs(16));
+        assert_eq!(reopen_delay(5), Duration::from_secs(30));
+        assert_eq!(reopen_delay(40), Duration::from_secs(30));
+    }
 }

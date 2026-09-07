@@ -11,8 +11,9 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
@@ -21,7 +22,7 @@ use crate::ai::types::{
     HealthState, HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
 };
 
-use super::protocol::RemoteInferenceRequest;
+use super::protocol::{RemoteInferenceError, RemoteInferenceRequest};
 use super::transport::AircInferenceTransport;
 
 /// Provider ID used to register + select this adapter from the
@@ -46,6 +47,12 @@ pub struct AircRemoteInferenceAdapter {
     /// Useful when a caller explicitly wants this adapter routing
     /// to one specific peer; None = let the transport decide.
     default_target_peer: Option<String>,
+    /// The model every request names when the caller names none. The
+    /// persona's durable override carries it (it chose the PEER by it), and
+    /// the receiver never picks a model for you — a request that crosses the
+    /// wire without one is refused there (measured 2026-09-06, BigMama's
+    /// `detail` field: "No provider or model specified").
+    default_model: Option<String>,
     /// Flipped to true the first time a `generate_text` round-trip
     /// succeeds. `health_check` returns `Unknown` while this is
     /// false (no observation yet) and `Healthy` once it's true.
@@ -55,6 +62,26 @@ pub struct AircRemoteInferenceAdapter {
     /// fix is no fallback to a false-positive default — admit
     /// "no signal" until traffic proves the peer is reachable.
     has_observed_success: AtomicBool,
+    /// Deadline misses in a row. Reset by any answer from the peer.
+    consecutive_deadlines: AtomicU32,
+    /// While `now < cold_until_ms` the lane is COLD: requests are refused
+    /// here, without a wire round trip. 0 = warm.
+    cold_until_ms: AtomicU64,
+}
+
+/// Deadline misses in a row before the lane reads cold. Measured 2026-09-06:
+/// two citizens bound to a peer whose command pump had died sent six requests
+/// in 100 s, each waiting the full 30 s deadline, each burning a turn.
+pub const COLD_AFTER_DEADLINES: u32 = 3;
+/// How long a cold lane stays cold before one request is let through to
+/// re-measure it.
+pub const COLD_WINDOW: Duration = Duration::from_secs(300);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(u64::MAX)  // unwrap_or: a broken clock FAILS OPEN — `now < until` is false at MAX, so the lane reads warm and requests still go out; 0 would read every tripped lane cold forever (BigMama's review of #3814)
 }
 
 impl AircRemoteInferenceAdapter {
@@ -62,7 +89,41 @@ impl AircRemoteInferenceAdapter {
         Self {
             transport,
             default_target_peer: None,
+            default_model: None,
             has_observed_success: AtomicBool::new(false),
+            consecutive_deadlines: AtomicU32::new(0),
+            cold_until_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Whether the lane currently refuses requests without a round trip.
+    pub fn is_cold(&self) -> bool {
+        let until = self.cold_until_ms.load(Ordering::Relaxed);
+        until != 0 && now_ms() < until
+    }
+
+    /// Fold one transport outcome into the breaker. A deadline miss counts;
+    /// any answer (even a refusal) proves the peer evaluates our mail and
+    /// resets the count.
+    fn observe(&self, outcome: &Result<(), &RemoteInferenceError>) {
+        match outcome {
+            Err(RemoteInferenceError::Timeout { .. }) => {
+                let n = self.consecutive_deadlines.fetch_add(1, Ordering::Relaxed) + 1;
+                if n >= COLD_AFTER_DEADLINES {
+                    let until = now_ms().saturating_add(COLD_WINDOW.as_millis() as u64);
+                    self.cold_until_ms.store(until, Ordering::Relaxed);
+                    self.consecutive_deadlines.store(0, Ordering::Relaxed);
+                    crate::probe!(
+                        class = "remote_lane.cold",
+                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                        deadlines = n,
+                        cold_for_s = COLD_WINDOW.as_secs(),
+                        "the remote peer let requests die at the deadline in a row; \
+                         refusing here for the window instead of burning turns"
+                    );
+                }
+            }
+            _ => self.consecutive_deadlines.store(0, Ordering::Relaxed),
         }
     }
 
@@ -72,6 +133,13 @@ impl AircRemoteInferenceAdapter {
     /// (e.g. the operator's GPU-rich grid host).
     pub fn with_target_peer(mut self, peer: impl Into<String>) -> Self {
         self.default_target_peer = Some(peer.into());
+        self
+    }
+
+    /// Name the model every request runs when the caller leaves `model`
+    /// unset. The peer refuses a request that names none.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.default_model = Some(model.into());
         self
     }
 }
@@ -112,7 +180,9 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     }
 
     fn default_model(&self) -> &str {
-        AIRC_REMOTE_DEFAULT_MODEL
+        self.default_model
+            .as_deref()
+            .unwrap_or(AIRC_REMOTE_DEFAULT_MODEL)  // unwrap_or: the trait wants a name; the wire request itself is stamped only when with_model was set, never this placeholder
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
@@ -128,17 +198,31 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
 
     async fn generate_text(
         &self,
-        request: TextGenerationRequest,
+        mut request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        if request.model.is_none() {
+            request.model = self.default_model.clone();
+        }
+        if self.is_cold() {
+            crate::probe!(
+                class = "remote_lane.refused_cold",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                "remote lane is cold; request refused without a round trip"
+            );
+            return Err(format!(
+                "remote lane to {} is cold: {} deadline misses in a row; retry after the {} s window",
+                self.default_target_peer.as_deref().unwrap_or("the default peer"),  // unwrap_or: error text only — names the transport default when no peer is pinned
+                COLD_AFTER_DEADLINES,
+                COLD_WINDOW.as_secs()
+            ));
+        }
         let mut envelope = RemoteInferenceRequest::new(request);
         if let Some(peer) = &self.default_target_peer {
             envelope = envelope.with_target_peer(peer.clone());
         }
-        let response = self
-            .transport
-            .send_request(envelope)
-            .await
-            .map_err(|e| e.to_string())?;
+        let sent = self.transport.send_request(envelope).await;
+        self.observe(&sent.as_ref().map(|_| ()));
+        let response = sent.map_err(|e| e.to_string())?;
         // First successful round-trip flips the health observation
         // bit so subsequent health_check calls can report Healthy.
         // Relaxed is fine: a stale Unknown -> Healthy transition is
@@ -370,6 +454,28 @@ mod tests {
         assert!(err.contains("all peers down"));
     }
 
+    // what this catches: the breaker. Three deadline misses in a row must
+    // make the FOURTH request fail here, at once, naming the cold window —
+    // not wait another 30 s on the wire. Without it two citizens bound to a
+    // dead peer burned every turn against the deadline (2026-09-06, Kira +
+    // Mathis → Sahar).
+    #[tokio::test]
+    async fn three_deadline_misses_make_the_lane_cold_and_the_next_request_fails_fast() {
+        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
+            elapsed_ms: 30_000,
+        });
+        let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("df72dbf2");
+        for _ in 0..COLD_AFTER_DEADLINES {
+            assert!(!adapter.is_cold(), "warm until the third miss");
+            let err = adapter.generate_text(req("hi")).await.unwrap_err();
+            assert!(err.contains("timed out"), "a real round trip: {err}");
+        }
+        assert!(adapter.is_cold());
+        let err = adapter.generate_text(req("hi")).await.unwrap_err();
+        assert!(err.contains("cold"), "refused here, not on the wire: {err}");
+        assert!(err.contains("df72dbf2"));
+    }
+
     #[tokio::test]
     async fn timeout_error_surfaces_with_elapsed_ms() {
         let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
@@ -394,6 +500,44 @@ mod tests {
     }
 
     // ── target_peer plumbing ──────────────────────────────────
+
+    // what this catches: the request must NAME ITS MODEL on the wire. The
+    // persona's override picks the peer by model and then, before this, asked
+    // that peer to run nothing in particular: `model: None` is serialized as
+    // an ABSENT field and the receiver refuses ("No provider or model
+    // specified" — 2026-09-06, every accepted ai/generate from the M5). A
+    // caller that names a model keeps it.
+    #[tokio::test]
+    async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
+        let transport = StubInferenceTransport::new(|req: &RemoteInferenceRequest| {
+            Ok(RemoteInferenceResponse {
+                correlation_id: req.correlation_id,
+                served_by: "peer".to_string(),
+                text_response: crate::ai::types::TextGenerationResponse {
+                    text: "ok".to_string(),
+                    finish_reason: FinishReason::Stop,
+                    model: req.text_request.model.clone().unwrap_or_else(|| "ABSENT".to_string()),
+                    provider: HEURISTIC_PROVIDER_ID.to_string(),
+                    usage: Default::default(),
+                    response_time_ms: 0,
+                    request_id: "stub".to_string(),
+                    content: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    routing: None,
+                    error: None,
+                    timing: None,
+                },
+            })
+        });
+        let adapter = AircRemoteInferenceAdapter::new(transport).with_model("qwen3.8-27b");
+        let out = adapter.generate_text(req("hi")).await.unwrap();
+        assert_eq!(out.model, "qwen3.8-27b", "the override's model must ride the wire");
+        let mut named = req("hi");
+        named.model = Some("caller-named".to_string());
+        let out = adapter.generate_text(named).await.unwrap();
+        assert_eq!(out.model, "caller-named", "a caller's own model is never overridden");
+    }
 
     #[tokio::test]
     async fn with_target_peer_threads_through_to_transport_envelope() {

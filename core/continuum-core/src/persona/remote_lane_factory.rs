@@ -190,7 +190,9 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         })?;
 
         let transport = AircLiveTransport::new(Arc::clone(airc), peer);
-        let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(peer.to_string());
+        let adapter = AircRemoteInferenceAdapter::new(transport)
+            .with_target_peer(peer.to_string())
+            .with_model(over.model_id.clone());
 
         crate::probe!(
             class = "persona.adapter.remote_lane",
