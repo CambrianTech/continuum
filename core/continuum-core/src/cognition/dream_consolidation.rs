@@ -347,7 +347,7 @@ impl SemanticDistiller {
                 let dropped_first_chars = prior_beliefs
                     .get(beliefs_kept)
                     .map(|b| b.content.trim().len())
-                    .unwrap_or(0);
+                    .unwrap_or(0);  // unwrap_or: kept == len means nothing was dropped, so there is no first-dropped belief to size
                 tracing::info!(
                     probe_class = "dream.beliefs.budgeted",
                     beliefs = prior_beliefs.len(),

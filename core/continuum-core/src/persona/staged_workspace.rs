@@ -234,7 +234,15 @@ fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> 
         // A rename line reads `R  old -> new`; the file that exists is `new`.
         .map(|rel| rel.rsplit(" -> ").next().unwrap_or(rel))  // unwrap_or: rsplit always yields at least the whole string
         .map(|rel| rel.trim().trim_end_matches('/'))
-        .filter_map(|rel| std::fs::metadata(root.join(rel)).ok())
+        // A deleted path has no file to stat; its parent directory's mtime moved
+        // when it went (a deletions-only patch must still have a known mtime —
+        // IntelMac's review of #3857).
+        .filter_map(|rel| {
+            let path = root.join(rel);
+            std::fs::metadata(&path)
+                .ok()
+                .or_else(|| path.parent().and_then(|p| std::fs::metadata(p).ok()))
+        })
         .filter_map(|m| m.modified().ok())
         .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)

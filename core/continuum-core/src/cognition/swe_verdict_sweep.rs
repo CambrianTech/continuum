@@ -55,6 +55,81 @@ use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
 pub struct PendingGrade {
     pub instance: String,
     pub workspace: PathBuf,
+    /// The newest modification in the chosen copy (ms) — what a refusal is
+    /// remembered against, so the same tree is not re-graded every tick.
+    pub work_mtime_ms: Option<u64>,
+}
+
+/// A refusal ("ungradeable") remembered beside the verdicts, keyed by instance.
+/// Measured 2026-09-07 16:42–16:56Z on 9808f085d: with the tick sweep live and no
+/// memory of a refusal, the same fifteen instances were re-graded every seven
+/// minutes, forever (`pending()` = "worked and no verdict").
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Refusal {
+    pub instance: String,
+    pub reason: String,
+    pub at_ms: u64,
+    pub work_mtime_ms: Option<u64>,
+}
+
+fn refusal_path(instance: &str) -> PathBuf {
+    crate::cognition::swe_bench::verdict_dir().join(format!("{instance}.ungradeable.json"))
+}
+
+pub fn read_refusal(instance: &str) -> Option<Refusal> {
+    let text = std::fs::read_to_string(refusal_path(instance)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn record_refusal(instance: &str, reason: &str, work_mtime_ms: Option<u64>) {
+    let r = Refusal {
+        instance: instance.to_string(),
+        reason: reason.chars().take(400).collect(),
+        at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),  // unwrap_or: pre-epoch clock — the marker still records the reason and the work mtime
+        work_mtime_ms,
+    };
+    let path = refusal_path(instance);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&r) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+pub fn clear_refusal(instance: &str) {
+    let _ = std::fs::remove_file(refusal_path(instance));
+}
+
+/// How long a refusal stands when the work's mtime is unknowable on either side
+/// (a deletions-only patch has no file to stat). Bounded by time, never eternal:
+/// an hour suppresses the seven-minute storm 8:1 and guarantees nothing is
+/// excluded forever on a signal that cannot be read (IntelMac's review of #3857).
+pub const REFUSAL_TTL_MS: u64 = 60 * 60 * 1000;
+
+/// Does a remembered refusal still apply? With both mtimes known: only while no
+/// NEWER work exists than the work it refused. With either unknown: only while
+/// the refusal is younger than [`REFUSAL_TTL_MS`]. Pure.
+pub fn refusal_stands_at(
+    refused_work_mtime_ms: Option<u64>,
+    newest_work_mtime_ms: Option<u64>,
+    refused_at_ms: u64,
+    now_ms: u64,
+) -> bool {
+    match (refused_work_mtime_ms, newest_work_mtime_ms) {
+        (Some(refused), Some(newest)) => newest <= refused,
+        _ => now_ms.saturating_sub(refused_at_ms) < REFUSAL_TTL_MS,
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(u64::MAX)  // unwrap_or: pre-epoch clock — now reads as far future, every refusal reads EXPIRED, which errs toward grading (0 would make every refusal stand forever)
 }
 
 /// What the sweep decided for one instance — every non-grade outcome is NAMED, because
@@ -115,7 +190,14 @@ pub fn all_staged_instances() -> Vec<String> {
 
 /// Every artifact that holds work and has no verdict, in a stable order.
 pub fn pending() -> Vec<PendingGrade> {
+    pending_with_skipped().0
+}
+
+/// `pending()` plus how many instances a standing refusal kept out — so a quiet
+/// sweep_start reads "nothing to do" apart from "fifteen refusals stand".
+pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     let mut out = Vec::new();
+    let mut skipped_refused = 0usize;
     for instance in all_staged_instances() {
         let has_verdict = crate::cognition::swe_bench::read_verdict(&instance).is_some();
         // Skip the `git status` fan-out entirely when a verdict already exists — `owners_of`
@@ -128,6 +210,18 @@ pub fn pending() -> Vec<PendingGrade> {
         let worked = copies.iter().filter(|c| c.has_work).count();
         match decide(false, grade_target(&copies)) {
             SweepDecision::Grade(workspace) => {
+                let work_mtime_ms = copies
+                    .iter()
+                    .find(|c| c.path == workspace)
+                    .and_then(|c| c.work_mtime_ms);
+                if let Some(r) = read_refusal(&instance) {
+                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms, r.at_ms, now_ms()) {
+                        // Refused before, nothing changed since: not pending. The
+                        // marker file is the record; the count rides sweep_start.
+                        skipped_refused += 1;
+                        continue;
+                    }
+                }
                 if worked > 1 {
                     // The newest of several worked copies was chosen (a card that
                     // changed hands). The OTHERS are named too: their work is not
@@ -147,7 +241,7 @@ pub fn pending() -> Vec<PendingGrade> {
                         "several citizens worked this instance — grading the newest; the others are NOT graded"
                     );
                 }
-                out.push(PendingGrade { instance, workspace })
+                out.push(PendingGrade { instance, workspace, work_mtime_ms })
             }
             SweepDecision::Ambiguous(paths) => crate::probe!(
                 class = "benchmark.verdict.sweep_ambiguous",
@@ -158,7 +252,7 @@ pub fn pending() -> Vec<PendingGrade> {
             SweepDecision::NoWork | SweepDecision::AlreadyGraded => {}
         }
     }
-    out
+    (out, skipped_refused)
 }
 
 /// What one sweep did — reported as a probe so the run is legible from the state pipe
@@ -209,12 +303,21 @@ pub fn sweep_if_due() -> bool {
 
 pub async fn sweep() -> SweepReport {
     let mut report = SweepReport::default();
-    let work = pending();
+    let (work, skipped_refused) = pending_with_skipped();
     if work.is_empty() {
+        // Nothing to grade — said with the count that explains it, so "idle because
+        // fifteen refusals stand" never reads as "idle because there is no work"
+        // (Astra's review of #3859: the early return hid the new count).
+        crate::probe!(
+            class = "benchmark.verdict.sweep_idle",
+            skipped_refused = skipped_refused as u64,
+            "no pending citizen work to grade — the count says whether refusals are standing"
+        );
         return report;
     }
     crate::probe!(
         class = "benchmark.verdict.sweep_start",
+        skipped_refused = skipped_refused as u64,
         pending = work.len(),
         "boot artifact sweep — artifacts holding work with no verdict on file",
     );
@@ -232,6 +335,11 @@ pub async fn sweep() -> SweepReport {
         match crate::commands::benchmark::grade_swe(params).await {
             Ok(result) if result.error.is_some() => {
                 report.ungradeable += 1;
+                record_refusal(
+                    &item.instance,
+                    result.error.as_deref().unwrap_or(""),  // unwrap_or: guarded by the arm — error is Some here
+                    item.work_mtime_ms,
+                );
                 // The REASON rides the row. 2026-09-07: 58 of these in six hours said
                 // "environment fault" and nothing else — 13346 (f2p passes on the
                 // pristine tree) and 14983 (the era env cannot build) were only told
@@ -253,6 +361,7 @@ pub async fn sweep() -> SweepReport {
             }
             Ok(result) => {
                 report.graded += 1;
+                clear_refusal(&item.instance);
                 if result.resolved {
                     report.resolved += 1;
                 }
@@ -337,5 +446,21 @@ mod tests {
         assert!(!should_start_sweep(0, false));
         assert!(!should_start_sweep(3, true));
         assert!(should_start_sweep(1, false));
+    }
+
+    // what this catches: a refusal that never expires (a new edit would never be
+    // graded) or one that never holds (the same tree re-graded every tick). It
+    // stands while no newer work exists; a newer edit lifts it.
+    #[test]
+    fn a_refusal_stands_until_newer_work_appears_and_never_forever_on_an_unknown_mtime() {
+        let t = 1_000_000u64;
+        assert!(refusal_stands_at(Some(1_000), Some(1_000), t, t));
+        assert!(refusal_stands_at(Some(1_000), Some(900), t, t));
+        assert!(!refusal_stands_at(Some(1_000), Some(1_001), t, t));
+        // Unknown on either side: stands only while younger than the TTL.
+        assert!(refusal_stands_at(None, None, t, t + 1));
+        assert!(!refusal_stands_at(None, None, t, t + REFUSAL_TTL_MS));
+        assert!(refusal_stands_at(None, Some(5), t, t + 1));
+        assert!(!refusal_stands_at(Some(5), None, t, t + REFUSAL_TTL_MS + 1));
     }
 }

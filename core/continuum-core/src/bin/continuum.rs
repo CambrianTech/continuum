@@ -17,6 +17,9 @@
 //! no Node). Commands dispatch through the SAME uniform [`Connection`] every client
 //! uses (CLI/persona/web/mobile) over the core IPC socket via [`CoreIpcTransport`].
 //! No tsx, no bundle, no Node anywhere.
+//! Ordinary commands, command help, and deploy verification never start a core.
+//! Ordinary dispatch/help exit 2 when unavailable; start explicitly with `continuum start`.
+//! Deploy verification retains its detailed diagnostic and exit 1 on failure.
 //!
 //! Env: `CONTINUUM_CORE_SOCKET` (default `/tmp/continuum-core.sock`),
 //! `CONTINUUM_START_SCRIPT` (override the start script path).
@@ -33,6 +36,29 @@ use continuum_core::runtime::deploy_provenance::{
 };
 use serde_json::Value;
 
+#[derive(Debug, thiserror::Error)]
+enum CliError {
+    #[error("no core answering on {socket}; `{command}` requires a running core. Use `continuum start` explicitly, or wait for the current deploy to finish.")]
+    NoCore { socket: String, command: String },
+    #[error("{0}")]
+    Command(String),
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        Self::Command(message)
+    }
+}
+
+impl CliError {
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::NoCore { .. } => 2,
+            Self::Command(_) => 1,
+        }
+    }
+}
+
 /// Where `continuum start` records the detached core's PID so `continuum stop` can find it.
 fn pidfile_for(socket: &str) -> String {
     format!("{socket}.pid")
@@ -45,18 +71,18 @@ fn start_logfile() -> String {
 async fn main() {
     if let Err(e) = run().await {
         eprintln!("continuum: {e}");
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 
-async fn run() -> Result<(), String> {
+async fn run() -> Result<(), CliError> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(usage)?;
     // Every CLI run from inside a repo records that checkout for the core
     // (repo-card staging reads it); the first deploy after #3706 would otherwise
     // start with an empty registry until the next `start`/`reboot`.
     record_repo_checkout();
-    match first.as_str() {
+    let result = match first.as_str() {
         "-h" | "--help" | "help" => {
             eprintln!("{}", usage());
             Ok(())
@@ -87,7 +113,9 @@ async fn run() -> Result<(), String> {
             use continuum_core::boot_plan::Outcome;
             let mut receipt = continuum_core::boot_plan::run_before_phase();
             if !receipt.ok {
-                return Err("boot plan: a REQUIRED step failed (see rows above)".into());
+                return Err(CliError::Command(
+                    "boot plan: a REQUIRED step failed (see rows above)".into(),
+                ));
             }
             let t = std::time::Instant::now();
             let out = match launch_core(&[], LaunchSource::Installed).await {
@@ -100,7 +128,9 @@ async fn run() -> Result<(), String> {
             let failed = matches!(out, Outcome::Failed(_));
             receipt.push("core-launch-verify", t, out);
             if failed {
-                return Err("boot plan: core launch/verify failed".into());
+                return Err(CliError::Command(
+                    "boot plan: core launch/verify failed".into(),
+                ));
             }
             // Repo root (dev tree) = two up from the start script; installed
             // users have no script and the Beside rails skip with a reason.
@@ -179,19 +209,20 @@ async fn run() -> Result<(), String> {
             let command = continuum_core::cognition::tool_dialect::resolve_wire_name(command);
             let rest: Vec<String> = args.collect();
             if rest.iter().any(|a| a == "--help" || a == "-h") {
-                help_for(&command).await
+                return help_for(&command).await;
             } else {
-                dispatch(&command, rest).await
+                return dispatch(&command, rest).await;
             }
         }
-    }
+    };
+    result.map_err(CliError::from)
 }
 
 /// `continuum <command> --help` — the CLI adapter for the command's manual: query the
 /// live registry (`commands/list`) for the command's description + params schema,
 /// then render it as bash usage. Same single source the AI tool adapter reads;
 /// only the rendering differs by paradigm ("the manual matches the paradigm").
-async fn help_for(command: &str) -> Result<(), String> {
+async fn help_for(command: &str) -> Result<(), CliError> {
     ensure_core_running(command).await?; // the manual comes from the live registry
     let list = connection()
         .commands()
@@ -301,22 +332,11 @@ fn socket_path() -> String {
     continuum_core::ipc::endpoint_paths::core_socket_path()
 }
 
-/// Dispatch a single command to the core through the uniform Connection, STARTING the
-/// core first if nothing is answering.
-///
-/// Why auto-start is infrastructure and not convenience: every governed long-running
-/// operation lives behind a command (`models/pull` resumes, is content-addressed,
-/// journals to `~/.continuum/progress/`, emits progress on the bus). None of that is
-/// reachable when the core is down, so "the core isn't running" turns into a bare
-/// `nohup <downloader> &` — which has no ledger, no resume, no progress, and dies
-/// silently leaving an empty directory. That has now happened to two separate
-/// multi-hour model pulls (K3, then V4-Flash IQ1_S) and cost days.
-///
-/// The governed path must be the path of LEAST resistance or it does not get used.
-/// One ping decides; `continuum start` is already idempotent and waits for ready.
-/// Set `CONTINUUM_NO_AUTOSTART=1` where spawning a core is not acceptable (CI, probes)
-/// — it then fails with the reason rather than silently doing nothing.
-async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
+/// Dispatch through the uniform Connection to an already-running core. Lifecycle is
+/// explicit: probing a node during a deploy must never launch its pre-swap image.
+/// This applies to every command, including dynamically registered ML commands;
+/// there is no read-verb allowlist that can drift from the registry.
+async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
     ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
     let params = params_from_args(&args, &canonical)?;
@@ -542,65 +562,25 @@ async fn core_is_up() -> bool {
     matches!(tokio::time::timeout(PING_BUDGET, ping).await, Ok(Ok(_)))
 }
 
-/// Make sure a core is answering before dispatching, launching one if not. See the
-/// `dispatch` doc for why this is load-bearing rather than a nicety.
-///
-/// Announces on stderr (never stdout — stdout is the command's JSON result and stays
-/// machine-parseable) so an operator who typed one command and got a 60s pause knows
-/// exactly what is happening instead of assuming it hung.
-async fn ensure_core_running(command: &str) -> Result<(), String> {
-    // Same reclaim-or-refuse guard `start` uses, minus the reclaim: an implicit
-    // autostart exists to get the caller a live core, and killing someone else's
-    // core is never part of that errand. Occupied therefore always refuses here.
-    match bind_decision().await {
-        BindDecision::AlreadyServing { .. } => return Ok(()),
-        BindDecision::Occupied { pids } => {
-            let socket = socket_path();
-            return Err(format!(
-                "`{command}` needs a running core, and {} core process(es) are running \
-                 (pid(s) {}) but NONE is answering on {}. Starting another would bind a \
-                 second core on the same socket — whichever one the kernel hands a \
-                 connection to would answer, so results would be non-deterministic. \
-                 Either wait (a core that is still booting answers shortly), or clear it \
-                 with `continuum stop`.{}",
-                pids.len(),
-                pids.iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                socket,
-                bound_elsewhere_hint(&running_core_sockets_for(&pids), &socket).unwrap_or_default()
-            ));
-        }
-        BindDecision::Free => {}
+/// Check the existing core without invoking any lifecycle path. Even a Free socket
+/// can belong to a deploy whose compiler has not launched its server yet (cf63a02e).
+async fn ensure_core_running(command: &str) -> Result<(), CliError> {
+    if core_is_up().await {
+        Ok(())
+    } else {
+        Err(CliError::NoCore {
+            socket: socket_path(),
+            command: command.to_owned(),
+        })
     }
-    // A deploy in flight is the one state the bind guard above cannot see: mid-build no
-    // core answers and no core pid exists, which reads as "safe to start" and is exactly
-    // when starting is wrong.
-    deploy_gate(command)?;
-    if std::env::var("CONTINUUM_NO_AUTOSTART").is_ok_and(|v| v != "0") {
-        return Err(format!(
-            "no core is answering on {} and CONTINUUM_NO_AUTOSTART is set, so `{command}` \
-             cannot be dispatched. Start one with `continuum start`.",
-            socket_path()
-        ));
-    }
-    eprintln!("▶ no core running — starting one for `{command}` (continuum start)");
-    let secs = launch_core(&[], LaunchSource::Installed)
-        .await
-        .map_err(|e| {
-            format!("`{command}` needs a running core and one could not be started: {e}")
-        })?;
-    eprintln!("✅ core ready after ~{secs}s — dispatching `{command}`");
-    Ok(())
 }
 
 /// Gather the two observations [`BindDecision`] is a function of — a real `ping`
 /// round-trip and the core process table — and hand them to the shared truth table.
 ///
 /// The observation half lives here because it is platform- and transport-shaped; the
-/// DECISION half lives in the lib so it is unit-tested by the `--lib` CI gate. Both
-/// `start` and `ensure_core_running` go through this one seam, which is the point:
+/// DECISION half lives in the lib so it is unit-tested by the `--lib` CI gate.
+/// Explicit starts go through this seam; ordinary dispatch only checks reachability:
 /// the split brain existed because each launch path had its own ad-hoc guard.
 async fn bind_decision() -> BindDecision {
     let ping_ok = core_is_up().await;
@@ -1228,7 +1208,8 @@ fn record_repo_checkout() {
     ) else {
         return;
     };
-    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common) else {
+    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common)
+    else {
         return;
     };
     if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
@@ -2557,7 +2538,10 @@ mod tests {
         #[test]
         fn no_hint_when_the_running_core_is_bound_to_the_socket_we_asked_for() {
             let bound = vec![(1, "/tmp/continuum-core.sock".to_string())];
-            assert_eq!(bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock"), None);
+            assert_eq!(
+                bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock"),
+                None
+            );
             assert_eq!(bound_elsewhere_hint(&[], "/tmp/continuum-core.sock"), None);
         }
 
@@ -2597,7 +2581,10 @@ mod tests {
                 (9, "/home/agent/.continuum/node-core.sock".to_string()),
             ];
             let hint = bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock").expect("hint");
-            assert!(hint.contains("pid 9"), "the unreachable core must appear: {hint}");
+            assert!(
+                hint.contains("pid 9"),
+                "the unreachable core must appear: {hint}"
+            );
             assert!(
                 !hint.contains("pid 7"),
                 "a core on the asked-for socket is not 'elsewhere': {hint}"
@@ -2656,7 +2643,11 @@ mod tests {
                 2 * 86_400 + 3 * 3600 + 4 * 60 + 5,
                 "dd-hh:mm:ss — the day field arrives glued to the hour"
             );
-            assert_eq!(cputime_to_secs("   7:08  "), 7 * 60 + 8, "ps pads its column");
+            assert_eq!(
+                cputime_to_secs("   7:08  "),
+                7 * 60 + 8,
+                "ps pads its column"
+            );
         }
 
         /// what this catches: a garbage field silently reading as a huge or negative number and

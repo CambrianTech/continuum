@@ -1729,6 +1729,10 @@ pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
 /// - everything else advances as asked.
 /// One seam for the `work/state` verb and the deterministic held-work settle, so
 /// the gate cannot be bypassed by either.
+/// The feeder label a recorded verdict uses — the one finisher that skips the
+/// review gate, because the grade IS the review.
+pub(crate) const VIA_VERDICT: &'static str = "verdict";
+
 pub(crate) async fn advance_card_state_effective(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
@@ -1798,7 +1802,9 @@ pub(crate) async fn advance_card_state_effective(
             return Ok(next);
         }
     }
-    if finishing && round::review_required(card_id.as_uuid()) {
+    // A VERDICT is the review's outcome: it closes the parent outright. Every
+    // other finisher on a gated card goes to review first.
+    if finishing && via != VIA_VERDICT && round::review_required(card_id.as_uuid()) {
         raw_advance(airc, card_id, CardState::Review, via).await?;
         match open_review_card(airc, card_id).await {
             Ok(review) => crate::probe!(
