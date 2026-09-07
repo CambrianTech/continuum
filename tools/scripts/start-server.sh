@@ -317,6 +317,24 @@ adopt_or_reap_llama_lanes
 #   - airc PRESENT but the daemon will not come up → FAIL LOUD, exit nonzero.
 #     A core with no transport is not a running system, and reporting success for
 #     one is the class of lie this whole card exists to end.
+
+# The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
+# `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
+# sites, one with -9): a deploy in one checkout killed every scope's daemon on the
+# box (IntelMac, card 0e65f352). No socket or no lsof → nothing to reap, said so.
+machine_daemon_pids() {
+  local sock
+  sock="$(ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null | head -1)"
+  if [ -z "$sock" ]; then
+    return 0
+  fi
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "  (no lsof on this host — cannot name the socket's holder; not reaping by pattern)" >&2
+    return 0
+  fi
+  lsof -t "$sock" 2>/dev/null || true
+}
+
 ensure_airc_daemon() {
   # LOOK BEFORE DECLARING ABSENCE (2026-09-06). `command -v` only sees THIS
   # shell's PATH, and boot does not necessarily inherit the operator's. On a box
@@ -387,6 +405,15 @@ ensure_airc_daemon() {
     status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null || true)"
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
     bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
+      # One more sample before concluding anything: a busy account registry is
+      # transient by definition, and the whole verdict must not hinge on one miss
+      # (IntelMac, #3841 review).
+      sleep 2
+      status_out="$(bounded_run 8 "$airc_bin" status 2>/dev/null || true)"
+      daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
+      bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
+    fi
     if [ -n "$daemon_build" ] && [ -n "$bin_build" ] && [ "$daemon_build" = "$bin_build" ]; then
       echo "✓ airc daemon: adopted (already answering, build $daemon_build == installed)" >&2
       return 0
@@ -403,8 +430,10 @@ ensure_airc_daemon() {
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
     bounded_run 5 "$airc_bin" stop || true
     sleep 1
-    if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-      pkill -f 'airc.*daemon' 2>/dev/null || true
+    local holders
+    holders="$(machine_daemon_pids)"
+    if [ -n "$holders" ]; then
+      kill $holders 2>/dev/null || true
       sleep 1
     fi
   fi
@@ -413,13 +442,17 @@ ensure_airc_daemon() {
   # worse than none — it answers nothing AND owns the socket, so a fresh spawn
   # would lose the bind (airc's own start gives up on a contended lock, #355).
   # Reap before spawning: graceful verb first, then the process.
-  if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping" >&2
-    bounded_run 5 airc stop || true
-    if pgrep -f 'airc.*daemon' >/dev/null 2>&1; then
-      pkill -f 'airc.*daemon' 2>/dev/null || true
+  local wedged
+  wedged="$(machine_daemon_pids)"
+  if [ -n "$wedged" ]; then
+    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
+    bounded_run 5 "$airc_bin" stop || true
+    wedged="$(machine_daemon_pids)"
+    if [ -n "$wedged" ]; then
+      kill $wedged 2>/dev/null || true
       sleep 1
-      pkill -9 -f 'airc.*daemon' 2>/dev/null || true
+      wedged="$(machine_daemon_pids)"
+      [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
     fi
   fi
 
