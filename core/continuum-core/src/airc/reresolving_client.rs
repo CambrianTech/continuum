@@ -30,6 +30,14 @@
 //! returned with the re-resolution failure appended — loud, not masked.
 //! Errors that are not reachability failures are returned untouched and
 //! never trigger a re-resolve.
+//!
+//! Reachability is decided by MATCHING [`DaemonCallError::Unreachable`],
+//! a variant classified where `airc_ipc::ClientError` is still typed —
+//! never by substring-matching a message. airc ships on its own cadence,
+//! so a reworded string would otherwise silently disable this recovery
+//! and re-open #3849 with every test in both repos still green
+//! ([[strong-typing-across-boundaries]]). Reviewed by IntelMac on #3850,
+//! who caught exactly that door being left open.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,7 +46,7 @@ use airc_ipc::{DaemonClient, InboxRequest, InboxResponse, PublishRequest, Publis
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::airc::daemon_transport::AircDaemonClient;
+use crate::airc::daemon_transport::{AircDaemonClient, DaemonCallError};
 
 /// Resolves the airc daemon's current socket path.
 ///
@@ -97,25 +105,19 @@ impl ReresolvingDaemonClient {
         Self::new(socket, Arc::new(DiscoverySocketResolver), live_daemon_client)
     }
 
-    /// A reachability failure is the ONE condition that justifies
-    /// re-resolving: the daemon we were told about is not answering at
-    /// that path. Every other error (a rejected publish, a protocol
-    /// error) means the daemon IS there and re-resolving would only
-    /// hide a real fault.
-    fn is_unreachable(error: &str) -> bool {
-        error.contains("not reachable")
-    }
-
     async fn snapshot(&self) -> Arc<dyn AircDaemonClient> {
         self.current.read().await.clone()
     }
 
-    async fn reresolve(&self, original: &str) -> Result<Arc<dyn AircDaemonClient>, String> {
-        let socket = self
-            .resolver
-            .resolve()
-            .await
-            .map_err(|error| format!("{original}; re-resolving the daemon socket failed: {error}"))?;
+    async fn reresolve(
+        &self,
+        original: &str,
+    ) -> Result<Arc<dyn AircDaemonClient>, DaemonCallError> {
+        let socket = self.resolver.resolve().await.map_err(|error| {
+            DaemonCallError::Other(format!(
+                "{original}; re-resolving the daemon socket failed: {error}"
+            ))
+        })?;
         let fresh = (self.factory)(socket);
         *self.current.write().await = fresh.clone();
         Ok(fresh)
@@ -124,19 +126,22 @@ impl ReresolvingDaemonClient {
 
 #[async_trait]
 impl AircDaemonClient for ReresolvingDaemonClient {
-    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String> {
+    async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, DaemonCallError> {
         match self.snapshot().await.publish(request.clone()).await {
-            Err(error) if Self::is_unreachable(&error) => {
-                self.reresolve(&error).await?.publish(request).await
+            Err(DaemonCallError::Unreachable(cause)) => {
+                self.reresolve(&cause).await?.publish(request).await
             }
             outcome => outcome,
         }
     }
 
-    async fn inbox(&self, request: InboxRequest) -> Result<InboxResponse, String> {
+    async fn inbox(
+        &self,
+        request: InboxRequest,
+    ) -> Result<InboxResponse, DaemonCallError> {
         match self.snapshot().await.inbox(request.clone()).await {
-            Err(error) if Self::is_unreachable(&error) => {
-                self.reresolve(&error).await?.inbox(request).await
+            Err(DaemonCallError::Unreachable(cause)) => {
+                self.reresolve(&cause).await?.inbox(request).await
             }
             outcome => outcome,
         }
@@ -156,15 +161,28 @@ mod tests {
     /// response whose shape is airc's to define, not ours.
     const SECOND_CLIENT: &str = "reached the re-resolved client";
 
-    struct Canned(&'static str);
+    struct Canned {
+        unreachable: bool,
+        message: &'static str,
+    }
+
+    impl Canned {
+        fn error(&self) -> DaemonCallError {
+            if self.unreachable {
+                DaemonCallError::Unreachable(self.message.to_string())
+            } else {
+                DaemonCallError::Other(self.message.to_string())
+            }
+        }
+    }
 
     #[async_trait]
     impl AircDaemonClient for Canned {
-        async fn publish(&self, _: PublishRequest) -> Result<PublishResponse, String> {
-            Err(self.0.to_string())
+        async fn publish(&self, _: PublishRequest) -> Result<PublishResponse, DaemonCallError> {
+            Err(self.error())
         }
-        async fn inbox(&self, _: InboxRequest) -> Result<InboxResponse, String> {
-            Err(self.0.to_string())
+        async fn inbox(&self, _: InboxRequest) -> Result<InboxResponse, DaemonCallError> {
+            Err(self.error())
         }
     }
 
@@ -173,11 +191,20 @@ mod tests {
     /// stateful factory (the factory is a plain `fn`).
     fn factory(path: PathBuf) -> Arc<dyn AircDaemonClient> {
         if path.ends_with("moved.sock") {
-            Arc::new(Canned(SECOND_CLIENT))
+            Arc::new(Canned {
+                unreachable: false,
+                message: SECOND_CLIENT,
+            })
         } else if path.ends_with("rejects.sock") {
-            Arc::new(Canned("publish rejected: not a member of that channel"))
+            Arc::new(Canned {
+                unreachable: false,
+                message: "publish rejected: not a member of that channel",
+            })
         } else {
-            Arc::new(Canned(UNREACHABLE))
+            Arc::new(Canned {
+                unreachable: true,
+                message: UNREACHABLE,
+            })
         }
     }
 
@@ -233,7 +260,11 @@ mod tests {
 
         let outcome = client.inbox(request()).await;
 
-        assert_eq!(outcome.unwrap_err(), SECOND_CLIENT, "retry must use the re-resolved client");
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            SECOND_CLIENT,
+            "retry must use the re-resolved client"
+        );
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "exactly one re-resolve");
     }
 
@@ -248,7 +279,10 @@ mod tests {
 
         let outcome = client.inbox(request()).await;
 
-        assert!(outcome.unwrap_err().contains("not a member"), "original error surfaces");
+        assert!(
+            outcome.unwrap_err().to_string().contains("not a member"),
+            "original error surfaces"
+        );
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 0, "no re-resolve attempted");
     }
 
@@ -262,10 +296,33 @@ mod tests {
         let client =
             ReresolvingDaemonClient::new("dead.sock".into(), resolver.clone(), factory);
 
-        let error = client.inbox(request()).await.unwrap_err();
+        let error = client.inbox(request()).await.unwrap_err().to_string();
 
         assert!(error.contains("not reachable"), "original cause kept: {error}");
         assert!(error.contains("ipc-endpoint"), "re-resolution cause kept: {error}");
+    }
+
+    // what this catches: IntelMac's #3850 review — the recovery must be
+    // keyed to what the REAL client produces, not to this crate's copy of
+    // a message. It exercises `airc_ipc::DaemonClient` against a socket
+    // that does not exist and asserts the error classifies as
+    // `Unreachable`. If airc ever changes how an absent daemon surfaces
+    // (a new ClientError variant, a different io error path), this goes
+    // red HERE instead of silently disabling the re-resolve in production
+    // and re-opening #3849 with every other test still green.
+    #[tokio::test]
+    async fn the_real_clients_absent_daemon_error_classifies_as_unreachable() {
+        let absent = std::env::temp_dir().join("continuum-3849-no-such-airc-socket.sock");
+        let real = DaemonClient::new(absent);
+
+        let error = AircDaemonClient::inbox(&real, request())
+            .await
+            .expect_err("dialing an absent daemon must fail");
+
+        assert!(
+            matches!(error, DaemonCallError::Unreachable(_)),
+            "airc's absent-daemon error must classify as Unreachable, got: {error}"
+        );
     }
 
     // what this catches: the second call must use the client cached by
@@ -280,7 +337,7 @@ mod tests {
         let _ = client.inbox(request()).await;
         let second = client.inbox(request()).await;
 
-        assert_eq!(second.unwrap_err(), SECOND_CLIENT);
+        assert_eq!(second.unwrap_err().to_string(), SECOND_CLIENT);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "no second re-resolve");
     }
 }
