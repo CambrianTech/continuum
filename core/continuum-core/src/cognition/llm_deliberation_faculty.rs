@@ -655,6 +655,12 @@ impl LlmDeliberationFaculty {
     /// live served one.
     const COMPLETION_SHARE_DENOM: u32 = 2;
 
+    /// The most an ACT turn may generate. A tool call and the sentence around
+    /// it fit in a few hundred tokens; the 27B was writing 4k–8k per act
+    /// (BigMama's n=48: median 121 s, max 292 s per turn on the 5090; the M5's
+    /// first instrumented act 5,316 tokens / 157 s). Card 61b6e54d.
+    pub const ACT_OUTPUT_CAP: u32 = 2048;
+
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
     /// floor uses for a minimum burst.
     ///
@@ -687,7 +693,27 @@ impl LlmDeliberationFaculty {
         // slot instead of all N collapsing onto one and thrashing (the 2026-08-26
         // KV-reuse-0% bug). None only for the roomless test rig.
         room_id: Option<uuid::Uuid>,
+        // A ceiling on the completion for THIS turn kind, applied under the
+        // reserved room. An ACT turn is a tool call plus a short plan; the
+        // reserve (half the window, or twice her measured peak) let the 27B write
+        // 5,316 tokens per act — 157 s on the lane (2026-09-07 02:47Z, card
+        // 61b6e54d). None = the reserve alone (message turns, tests).
+        output_cap: Option<u32>,
     ) -> TextGenerationRequest {
+        let reserve = self.completion_reserve_within(binding.context_window);
+        let max_tokens = match output_cap {
+            Some(cap) if cap < reserve => {
+                crate::probe!(
+                    class = "delib.act.output_capped",
+                    persona = %self.persona_name,
+                    cap = cap,
+                    reserve = reserve,
+                    "act turn completion capped under the reserved room"
+                );
+                cap
+            }
+            _ => reserve,
+        };
         TextGenerationRequest {
             messages,
             system_prompt: Some(system_prompt),
@@ -708,7 +734,7 @@ impl LlmDeliberationFaculty {
             // truncated qwen3.5 mid-`<think>`: the budget scales with the real served
             // window (up to a quarter of it), so the reply gets every token set aside
             // for it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
-            max_tokens: Some(self.completion_reserve_within(binding.context_window)),
+            max_tokens: Some(max_tokens),
             top_p: None,
             top_k: None,
             // `None` here does NOT mean "no repetition penalty" — it defers to the
@@ -2341,9 +2367,10 @@ impl Faculty for LlmDeliberationFaculty {
         // models emit those calls as JSON-in-prose, which the parse path below
         // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
+        let is_work_turn = ws.workspace_deliverable && !self.hands_specs.is_empty();
         let tools = if self.native_specs.is_empty() {
             None
-        } else if ws.workspace_deliverable && !self.hands_specs.is_empty() {
+        } else if is_work_turn {
             // A WORK turn offers her HANDS, not the whole registry: 37 schemas were
             // 8.5k of a ~22k-token prefill per act (2026-09-05, KV reuse 0.0). The
             // discovery pair stays so anything else remains one call away. Chosen on
@@ -2362,7 +2389,7 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            }, Some(ws.room_id));
+            }, Some(ws.room_id), is_work_turn.then_some(Self::ACT_OUTPUT_CAP));
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -3291,7 +3318,53 @@ mod tests {
         // This asserts the closed invariant: worst-case prompt (at its budget ceiling)
         // PLUS the generation cap never exceeds the served window. Regression for the
         // abstain-every-tick reliability bug.
-        #[test]
+        // what this catches: an ACT turn's completion is bounded by ACT_OUTPUT_CAP
+    // under the reserve, and a message turn (no cap) still gets the whole
+    // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
+    // the lane); capping message turns would truncate answers.
+    #[tokio::test]
+    async fn an_act_turn_is_capped_under_the_reserved_room() {
+        let window = 32_768u32;
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let faculty = LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            "You are Ivar, a thoughtful engineer on the grid.",
+            adapter,
+        )
+        .with_context_window(window);
+        let ws = Workspace::new("act on the card");
+        let view = faculty.prompt_view(&ws);
+        let binding = faculty.binding.load_full();
+        let reserve = faculty.completion_reserve_within(window);
+        let act = faculty.build_request_within(
+            &binding,
+            view.messages.clone(),
+            None,
+            view.system.clone(),
+            None,
+            Some(ws.room_id),
+            Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+        );
+        assert_eq!(
+            act.max_tokens,
+            Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
+            "an act turn is capped under the reserve"
+        );
+        let msg = faculty.build_request_within(
+            &binding,
+            view.messages.clone(),
+            None,
+            view.system.clone(),
+            None,
+            Some(ws.room_id),
+            None,
+        );
+        assert_eq!(msg.max_tokens, Some(reserve), "a message turn keeps the reserved room");
+    }
+
+    #[test]
         fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -3326,6 +3399,7 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
+                None,
             );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
