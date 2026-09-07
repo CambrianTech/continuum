@@ -120,6 +120,12 @@ pub struct StagedCopy {
     pub path: PathBuf,
     /// The checkout carries uncommitted changes — a real candidate patch lives here.
     pub has_work: bool,
+    /// The newest modification among the files `git status` lists, ms since
+    /// the epoch — when two citizens both worked one instance (a card that
+    /// changed hands), the sweep grades the copy with the latest work instead
+    /// of refusing both (2026-09-07: astropy-13236 held Atlas's fix beside
+    /// Joaquin's earlier attempt). None when no work or unreadable.
+    pub work_mtime_ms: Option<u64>,
 }
 
 /// Which citizen's copy of `instance` should be GRADED — the inverse of the per-peer
@@ -159,17 +165,22 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
         if !path.join(".git").exists() {
             continue;
         }
-        let has_work = std::process::Command::new("git")
+        let porcelain = std::process::Command::new("git")
             .arg("-C")
             .arg(&path)
             .args(["status", "--porcelain"])
             .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false);
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();  // unwrap_or: an unreadable status reads as "no work" — the same as before, never a guessed diff
+        let has_work = !porcelain.is_empty();
+        let work_mtime_ms = newest_work_mtime_ms(&path, &porcelain);
         out.push(StagedCopy {
             peer,
             path,
             has_work,
+            work_mtime_ms,
         });
     }
     out.sort_by(|a, b| a.peer.cmp(&b.peer));
@@ -196,8 +207,36 @@ pub fn grade_target(copies: &[StagedCopy]) -> GradeTarget {
     match worked.as_slice() {
         [one] => GradeTarget::One(one.path.clone()),
         [] => GradeTarget::NoWork,
-        many => GradeTarget::Ambiguous(many.iter().map(|c| c.path.clone()).collect()),
+        many => {
+            // Several citizens worked this instance. The newest work is the
+            // candidate — strictly newest and known; a tie or an unreadable
+            // mtime stays Ambiguous (never a guess between two real patches).
+            let mut known: Vec<&&StagedCopy> =
+                many.iter().filter(|c| c.work_mtime_ms.is_some()).collect();
+            known.sort_by_key(|c| std::cmp::Reverse(c.work_mtime_ms));
+            match known.as_slice() {
+                [newest, second, ..]
+                    if known.len() == many.len() && newest.work_mtime_ms > second.work_mtime_ms =>
+                {
+                    GradeTarget::One(newest.path.clone())
+                }
+                _ => GradeTarget::Ambiguous(many.iter().map(|c| c.path.clone()).collect()),
+            }
+        }
     }
+}
+
+/// The newest mtime (ms) among the paths `git status --porcelain` lists.
+fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> {
+    porcelain
+        .lines()
+        .filter_map(|l| l.get(3..))
+        .map(|rel| rel.trim().trim_end_matches('/'))
+        .filter_map(|rel| std::fs::metadata(root.join(rel)).ok())
+        .filter_map(|m| m.modified().ok())
+        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .max()
 }
 
 /// The matching rule alone, with the filesystem taken out of it.
@@ -318,7 +357,23 @@ mod tests {
             peer: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()),
             path: PathBuf::from(format!("/peers/{name}/workspace/swe/astropy__astropy-14995")),
             has_work,
+            work_mtime_ms: None,
         }
+    }
+
+    fn copy_at(name: &str, mtime_ms: u64) -> StagedCopy {
+        StagedCopy { work_mtime_ms: Some(mtime_ms), ..copy(name, true) }
+    }
+
+    // what this catches: two real patches on one instance (a card that changed
+    // hands) read as Ambiguous forever, so neither is ever graded. The newest
+    // known work is the candidate; a tie or an unknown mtime stays Ambiguous.
+    #[test]
+    fn two_worked_copies_grade_the_newest_and_a_tie_stays_ambiguous() {
+        let newest = grade_target(&[copy_at("kira", 1_000), copy_at("atlas", 2_000)]);
+        assert_eq!(newest, GradeTarget::One(PathBuf::from("/peers/atlas/workspace/swe/astropy__astropy-14995")));
+        assert!(matches!(grade_target(&[copy_at("kira", 2_000), copy_at("atlas", 2_000)]), GradeTarget::Ambiguous(_)));
+        assert!(matches!(grade_target(&[copy("kira", true), copy_at("atlas", 2_000)]), GradeTarget::Ambiguous(_)));
     }
 
     // what this catches: the false-zero generator. The SAME instance is legitimately staged
