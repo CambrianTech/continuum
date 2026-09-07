@@ -200,8 +200,24 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         &self,
         mut request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        if request.model.is_none() {
-            request.model = self.default_model.clone();
+        // The lane serves ONE model and the peer refuses any other: a request
+        // that names the caller's local model is refused there after the full
+        // wait (2026-09-07 02:01Z, +186 s: "model 'Ornith…' is not the active
+        // served model (serving: Qwen3.8-27B)"). The lane's model is the
+        // truth for every request on it; a caller's different name is noted.
+        if let Some(lane_model) = &self.default_model {
+            if let Some(requested) = &request.model {
+                if requested != lane_model {
+                    crate::probe!(
+                        class = "remote_lane.model_overridden",
+                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                        requested = %requested,
+                        served = %lane_model,
+                        "the caller named a model the remote lane does not serve; the lane's model rides the wire"
+                    );
+                }
+            }
+            request.model = Some(lane_model.clone());
         }
         if self.is_cold() {
             crate::probe!(
@@ -220,8 +236,31 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         if let Some(peer) = &self.default_target_peer {
             envelope = envelope.with_target_peer(peer.clone());
         }
+        let started = std::time::Instant::now();
         let sent = self.transport.send_request(envelope).await;
         self.observe(&sent.as_ref().map(|_| ()));
+        // Every request ends in exactly one row. Before this the only remote
+        // rows were the breaker's — a turn that timed out, errored, or answered
+        // was invisible here, and 9 misses in 200 s could not be told from 3
+        // ten-minute waits (2026-09-07 01:59Z, the first read after #3818).
+        match &sent {
+            Ok(r) => crate::probe!(
+                class = "remote_lane.answered",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                served_by = %r.served_by,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                out_tokens = r.text_response.usage.output_tokens,
+                finish = ?r.text_response.finish_reason,
+                "remote inference answered"
+            ),
+            Err(e) => crate::probe!(
+                class = "remote_lane.failed",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                error = %e,
+                "remote inference failed"
+            ),
+        }
         let response = sent.map_err(|e| e.to_string())?;
         // First successful round-trip flips the health observation
         // bit so subsequent health_check calls can report Healthy.
@@ -300,10 +339,15 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         vec![]
     }
 
-    fn supports_model(&self, _model: &str) -> bool {
-        // The remote adapter accepts any model name — the peer
-        // decides whether to serve it.
-        true
+    fn supports_model(&self, model: &str) -> bool {
+        // A lane pinned to a model serves ONLY that model — the peer refuses
+        // any other after the full wait (#3822 measured it: +186 s). The
+        // selector must filter here rather than route on a claim the adapter
+        // no longer honours (card 0b55ea79). An unpinned adapter still
+        // accepts any name: the peer's own catalog decides.
+        self.default_model
+            .as_deref()
+            .map_or(true, |lane| lane == model)
     }
 }
 
@@ -378,6 +422,23 @@ mod tests {
         assert!(caps.has(crate::model_registry::Capability::TextGeneration));
         assert!(caps.has(crate::model_registry::Capability::Chat));
         assert!(!caps.is_local);
+    }
+
+    // what this catches: two sites disagreeing about who owns the model
+    // decision. with_model makes the lane's model authoritative on every
+    // request (#3822); supports_model must say the same thing to the
+    // selector, or a router trusts "I support X", routes here, and X is
+    // rewritten in flight. Unpinned stays open (the peer's catalog decides).
+    #[tokio::test]
+    async fn a_pinned_lane_advertises_only_its_model() {
+        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
+            elapsed_ms: 1,
+        });
+        let pinned = AircRemoteInferenceAdapter::new(transport.clone()).with_model("qwen3.8-27b");
+        assert!(pinned.supports_model("qwen3.8-27b"));
+        assert!(!pinned.supports_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF"));
+        let open = AircRemoteInferenceAdapter::new(transport);
+        assert!(open.supports_model("anything-at-all"));
     }
 
     #[tokio::test]
@@ -506,7 +567,7 @@ mod tests {
     // that peer to run nothing in particular: `model: None` is serialized as
     // an ABSENT field and the receiver refuses ("No provider or model
     // specified" — 2026-09-06, every accepted ai/generate from the M5). A
-    // caller that names a model keeps it.
+    // caller naming another model gets the lane's model too (the peer refuses others).
     #[tokio::test]
     async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
         let transport = StubInferenceTransport::new(|req: &RemoteInferenceRequest| {
@@ -533,10 +594,13 @@ mod tests {
         let adapter = AircRemoteInferenceAdapter::new(transport).with_model("qwen3.8-27b");
         let out = adapter.generate_text(req("hi")).await.unwrap();
         assert_eq!(out.model, "qwen3.8-27b", "the override's model must ride the wire");
+        // A caller naming its LOCAL model (the persona's node serves Ornith,
+        // her lane serves the 27B) is refused by the peer after the whole
+        // wait; the lane's model wins and the difference is a probe row.
         let mut named = req("hi");
-        named.model = Some("caller-named".to_string());
+        named.model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
         let out = adapter.generate_text(named).await.unwrap();
-        assert_eq!(out.model, "caller-named", "a caller's own model is never overridden");
+        assert_eq!(out.model, "qwen3.8-27b", "the lane's model is the truth for every request on it");
     }
 
     #[tokio::test]

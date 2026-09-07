@@ -93,14 +93,26 @@ pub struct PersonaReassignModelParams {
     /// intent, while a cross-grid `ai/generate` addressed to a citizen on another node
     /// answered in 409 ms from that node's adapter.
     ///
-    /// This is the DURABLE half only. Materialising her adapter as an
-    /// `AircRemoteInferenceAdapter` pinned to this peer happens where the allocator
-    /// reads the override (`persona/allocator.rs`, via `commands/persona/allocate.rs`)
-    /// and is the next slice of card `1d2f65e7`. Until that lands, the record persists
-    /// and the allocator still resolves her locally — so this flag is inert rather
-    /// than half-wired, and `models_remote` in the report says so.
+    /// This is the DURABLE half. Materialising her adapter as an
+    /// `AircRemoteInferenceAdapter` pinned to this peer is
+    /// [`crate::persona::remote_lane_factory::RemoteLaneAdapterFactory`], which landed
+    /// in `b21aaa314` — both slices of card `1d2f65e7` are live.
+    ///
+    /// THE ORDER MATTERS AND IT IS NOT OBVIOUS. The factory reads this record in
+    /// `build_adapter`, which runs ONCE when a persona comes online. Reassigning a
+    /// persona who is ALREADY online writes the record and changes nothing about the
+    /// mind currently running — she keeps the adapter she booted with. Measured
+    /// 2026-09-06: spawn-then-reassign left `persona.adapter.remote_lane` at zero
+    /// occurrences and the citizen generating locally; despawn + respawn with the
+    /// record already on disk fired the probe on the next build. So the sequence is
+    /// reassign THEN (re)spawn, and the report says so rather than leaving an operator
+    /// to infer it from "persisted".
     #[serde(default)]
     pub remote_peer: Option<String>,
+    /// The RESPONDER's served per-slot context window, when `remote_peer` is
+    /// set. Her prompt is budgeted against it instead of the local lane.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// What `persona/reassign-model` did: the durable assignment that now sticks, and
@@ -128,6 +140,9 @@ pub struct ReassignModelReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub remote_peer: Option<String>,
+    /// The responder's window recorded with a remote assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     /// Human-readable summary.
     pub detail: String,
 }
@@ -255,6 +270,10 @@ crate::action_command! {
                 peer,
             ),
         };
+        let override_record = match p.context_window {
+            Some(window) if override_record.is_remote() => override_record.with_context_window(window),
+            _ => override_record,
+        };
         override_record.write(&home).map_err(|e| {
             CommandError::Internal(format!(
                 "host is now serving '{}' for '{}' but persisting her durable assignment failed: {e}. \
@@ -267,10 +286,11 @@ crate::action_command! {
         let detail = match p.remote_peer.as_deref() {
             Some(peer) => format!(
                 "'{}' is assigned '{}' served by peer {peer} — her brain runs OFF-BOX. \
-                 This host was NOT fit-gated and is not serving it. Persisted for next boot. \
-                 NOTE: adapter materialisation is the next slice of card 1d2f65e7; until it \
-                 lands the allocator still resolves her locally, so this record is durable \
-                 but not yet load-bearing.",
+                 This host was NOT fit-gated and is not serving it. \
+                 TAKES EFFECT AT HER NEXT ADAPTER BUILD, NOT NOW: the override is read in \
+                 `build_adapter`, so a persona who is already online keeps the adapter she \
+                 booted with. Despawn and respawn her (or reboot) to bind the remote lane — \
+                 `persona.adapter.remote_lane` fires when it binds.",
                 p.persona, p.model_id
             ),
             None => match &previous_model {
@@ -297,6 +317,7 @@ crate::action_command! {
             previous_model,
             override_persisted: true,
             remote_peer: p.remote_peer,
+            context_window: p.context_window,
             detail,
         })
     }
@@ -343,6 +364,7 @@ mod tests {
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: None,
                     remote_peer: None,
+                    context_window: None,
                 },
             )
             .await
@@ -371,6 +393,7 @@ mod tests {
                     model_id: "qwen3-coder-14b".to_string(),
                     set_by: Some("operator".to_string()),
                     remote_peer: None,
+                    context_window: None,
                 },
             )
             .await
@@ -411,6 +434,7 @@ mod tests {
                     model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
                     set_by: Some("operator".to_string()),
                     remote_peer: Some(peer.to_string()),
+                    context_window: None,
                 },
             )
             .await
@@ -453,6 +477,7 @@ mod tests {
                     model_id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string(),
                     set_by: None,
                     remote_peer: Some("not-a-uuid".to_string()),
+                    context_window: None,
                 },
             )
             .await

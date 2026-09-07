@@ -348,9 +348,18 @@ impl AircRagSource {
             } else {
                 let head = head_to_tokens(text, cap);
                 let head_cost = estimate_tokens(&head).saturating_add(2); // marker
+                // The marker SPELLING is shared with the tail-trim site so the two
+                // cannot drift apart again (card 3833b472). The +2 reserve above is
+                // left as it was on purpose: `trim_marker_tokens()` measures the real
+                // cost at 8, so this site under-reserves, but raising it changes how
+                // many turns fit in every prompt — a packing change that belongs in
+                // its own card with its own before/after, not smuggled into a
+                // disclosure fix.
                 (
                     head_cost,
-                    Some(format!("{head} (…{full}-token message trimmed)")),
+                    Some(crate::cognition::token_budget::mark_head_kept(
+                        &head, full,
+                    )),
                 )
             };
             if tokens_used.saturating_add(cost) > budget {

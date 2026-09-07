@@ -122,7 +122,19 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     /// An empty vec is the honest "nothing to say" and renders NO block — never a
     /// header with nothing under it ([[fallbacks-are-illegal-fail-loud]]: an empty
     /// roster must read as empty, not as a fabricated presence).
-    fn units(&self) -> Vec<String>;
+    ///
+    /// `viewer` is the persona this render is FOR (`RagContext::persona_id`). A view
+    /// that lists people needs it to say which one is the reader; kinds that describe
+    /// the node ignore it.
+    ///
+    /// It is an ARGUMENT rather than something the renderable holds because one
+    /// `ViewStateRagSource<V>` serves every persona subscribed to that kind — the
+    /// view is shared, the reader is not. Shipped first as `units(&self)`, which made
+    /// the self-marker below impossible to write: the renderable had no "me" to
+    /// compare a slot against, and the adapter (which DID hold `persona_id`, for the
+    /// continuation cursor) was one frame too far out to fix it without
+    /// post-processing another module's line format.
+    fn units(&self, viewer: uuid::Uuid) -> Vec<String>;
 
     /// Which room this view describes, when it describes one.
     ///
@@ -228,7 +240,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         // view describes a DIFFERENT room than this turn abstains, with the same
         // probe every other room-scoped source emits.
         let units = match view {
-            Some(v) if room_scope_allows(v.room(), _ctx, V::KIND) => v.units(),
+            Some(v) if room_scope_allows(v.room(), _ctx, V::KIND) => v.units(_ctx.persona_id),
             _ => Vec::new(),
         };
         let total = units.len();
@@ -273,7 +285,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         if !room_scope_allows(view.room(), _ctx, V::KIND) {
             return None;
         }
-        let units = view.units();
+        let units = view.units(_ctx.persona_id);
         let total = units.len();
         if from >= total {
             return None;
@@ -320,7 +332,7 @@ impl RagRenderable for continuum_positron::RosterViewState {
         10
     }
 
-    fn units(&self) -> Vec<String> {
+    fn units(&self, viewer: uuid::Uuid) -> Vec<String> {
         // STABLE ORDER for the mind (2026-09-01, Benchy hit_rate=0.0): this
         // block renders at ~0.4% prompt depth, and "presence order" rotates
         // as heartbeats land — his consecutive prompts diverged at char ~226
@@ -341,7 +353,22 @@ impl RagRenderable for continuum_positron::RosterViewState {
                 // Kind and role are what make a name actionable ("who can I ask?"),
                 // so they ride the SAME unit as the name rather than a second block
                 // a tight budget would sever from it.
-                let mut line = format!("{} ({:?})", slot.display_name, slot.kind);
+                // WHICH ONE IS HER (2026-09-06, card bb387821): a citizen appeared in
+                // her own roster formatted identically to her peers, with no marker.
+                // Measured on IntelMac, BOTH directions, both with correct prompts —
+                // Paige's prompt said "You are Paige" five times plus an explicit
+                // NOT-list and she answered "I am Saoirse"; Saoirse's said "You are
+                // Saoirse" and she answered "My name is Paige". The prose asserted an
+                // identity five times while the STRUCTURED list beside it presented two
+                // interchangeable agents, and the structure won. Marking the reader
+                // costs four characters and removes the ambiguity the prose was losing
+                // to. She stays IN the list — a citizen is present in her own room, and
+                // deleting her row would make "who is here" undercount the room.
+                let mut line = if slot.member_id == viewer {
+                    format!("{} ({:?}, YOU)", slot.display_name, slot.kind)
+                } else {
+                    format!("{} ({:?})", slot.display_name, slot.kind)
+                };
                 if let Some(role) = slot.role_label.as_deref().filter(|r| !r.is_empty()) {
                     line.push_str(&format!(" — {role}"));
                 }
@@ -387,7 +414,9 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
         18
     }
 
-    fn units(&self) -> Vec<String> {
+    /// Node-scoped: the bench board describes THIS NODE, not the people in a room,
+    /// so every reader sees the identical text and `_viewer` is deliberately unused.
+    fn units(&self, _viewer: uuid::Uuid) -> Vec<String> {
         // Rounds first: the lifecycle truth a citizen orients on before the
         // per-run rows (#371) — the SAME scoreboard the human's screen renders,
         // which is the positronic-parity acceptance test.
@@ -480,10 +509,67 @@ mod tests {
         );
         slot.availability = Some("busy".to_string());
         let view = RosterViewState { room_id: Uuid::from_u128(0xaa), roster: vec![slot] };
-        let units = RagRenderable::units(&view);
+        let units = RagRenderable::units(&view, Uuid::from_u128(7));
         assert_eq!(units.len(), 1);
         assert!(units[0].starts_with("Anwen"), "{units:?}");
         assert!(!units[0].contains("[busy]") && !units[0].contains('['), "{units:?}");
+    }
+
+    /// what this catches (card bb387821): the citizen's OWN row rendering
+    /// indistinguishably from her peers'. Measured on IntelMac in BOTH directions with
+    /// correct prompts — Paige, told "You are Paige" five times plus an explicit
+    /// NOT-list, answered "I am Saoirse"; Saoirse answered "My name is Paige". The
+    /// structured list beat the prose. Asserts the marker lands on exactly the reader's
+    /// row and on no other, and that she is still LISTED (removing her would undercount
+    /// who is in the room).
+    #[test]
+    fn a_citizens_own_row_is_marked_and_only_hers() {
+        let me = Uuid::from_u128(2);
+        let view = RosterViewState {
+            room_id: Uuid::from_u128(0xaa),
+            roster: vec![
+                crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(1),
+                    "Paige",
+                    SenderKind::Agent,
+                ),
+                crate::ipc::positron_source::test_roster_slot(me, "Saoirse", SenderKind::Agent),
+            ],
+        };
+        let units = RagRenderable::units(&view, me);
+        assert_eq!(units.len(), 2, "she stays listed: {units:?}");
+        let mine: Vec<&String> = units.iter().filter(|u| u.contains("YOU")).collect();
+        assert_eq!(mine.len(), 1, "exactly one row marked: {units:?}");
+        assert!(mine[0].starts_with("Saoirse"), "the READER's row: {units:?}");
+        assert!(
+            units.iter().any(|u| u.starts_with("Paige") && !u.contains("YOU")),
+            "the peer stays unmarked: {units:?}"
+        );
+    }
+
+    /// what this catches: marking by position or by accident rather than by identity.
+    /// A viewer who is not in this roster at all — a human reading a room she has not
+    /// joined, or a stale persona_id — must see NO marker, not the first row marked.
+    #[test]
+    fn a_viewer_absent_from_the_roster_marks_nobody() {
+        let view = RosterViewState {
+            room_id: Uuid::from_u128(0xaa),
+            roster: vec![
+                crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(1),
+                    "Paige",
+                    SenderKind::Agent,
+                ),
+                crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(2),
+                    "Saoirse",
+                    SenderKind::Agent,
+                ),
+            ],
+        };
+        let units = RagRenderable::units(&view, Uuid::from_u128(0xdead));
+        assert_eq!(units.len(), 2);
+        assert!(!units.iter().any(|u| u.contains("YOU")), "{units:?}");
     }
 
     /// what this catches: THE defect. A peer present in the room must reach the

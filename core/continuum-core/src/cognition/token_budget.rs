@@ -59,9 +59,86 @@ pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
     }
 }
 
+/// The ONE vocabulary for telling a mind her copy of a message was shortened.
+///
+/// Two sites shorten a message on the way into a mind, and they used to disagree about
+/// whether to say so: the per-turn head trim (`persona::airc_source`) appended
+/// `(…N-token message trimmed)`, while the newest-message tail trim
+/// (`cognition::llm_deliberation_faculty`) returned the body BARE. An unmarked fragment
+/// does not read as a fragment — it reads as a whole message that begins mid-sentence,
+/// so the rational thing for a citizen to do is try to reconstruct an intent that was
+/// never delivered. Measured 2026-09-06 (card 3833b472): citizens on two nodes did
+/// exactly that, one of them for five consecutive turns, against text like ", so it is …".
+///
+/// Keeping both spellings here means the next site that shortens something inherits the
+/// disclosure instead of re-deciding it ([[logic-deepest-level-thin-on-the-way-out]]).
+///
+/// Which end carries the marker follows what is MISSING: a head-keep lost its tail, so
+/// the marker trails; a tail-keep lost its opening, so the marker leads — the citizen
+/// meets the notice before the text it qualifies.
+pub fn mark_head_kept(head: &str, full_tokens: u32) -> String {
+    format!("{head} (…{full_tokens}-token message trimmed)")
+}
+
+/// Sibling of [`mark_head_kept`] for a tail-keep: the marker LEADS, because the opening
+/// is what went missing and a citizen reading left-to-right must learn that first.
+pub fn mark_tail_kept(tail: &str, full_tokens: u32) -> String {
+    format!("(…{full_tokens}-token opening trimmed) {tail}")
+}
+
+/// Tokens to reserve for a trim marker BEFORE trimming, so the disclosure cannot itself
+/// push the message back over the budget that forced the trim.
+///
+/// A FUNCTION, not a `const`, for the same reason [`super::viewstate_rag`]'s floor is:
+/// `context_budget`'s de-hardcode guard scans `const`s whose name contains TOKEN for bare
+/// literals, and it is right to — a bare literal here is a prompt-size constant wearing a
+/// different hat.
+///
+/// DERIVED from the markers themselves at their widest (`u32::MAX`, ten digits) rather
+/// than from a measured sample, so editing either spelling cannot silently outgrow the
+/// reserve. Shipped first as a hand-measured `(…99999-token opening trimmed)` — five
+/// digits — and the accompanying test immediately caught it: a marker is only a
+/// guarantee if it fits for EVERY token count, not for the ones I happened to imagine.
+/// A too-small reserve puts the disclosure back over the budget that forced the trim,
+/// which is the bug this reserve exists to prevent.
+pub fn trim_marker_tokens() -> u32 {
+    estimate_prompt_tokens(mark_head_kept("", u32::MAX).trim())
+        .max(estimate_prompt_tokens(mark_tail_kept("", u32::MAX).trim()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 3833b472): the two trim sites drifting apart again, and a
+    // marker that is not paid for. The head marker must TRAIL its text and the tail
+    // marker must LEAD it — a citizen reading a tail-keep has to meet the notice before
+    // the mid-sentence text, or it reads as a whole message that starts oddly. The
+    // reserve must also cover the widest marker either spelling can produce.
+    #[test]
+    fn both_trim_spellings_disclose_and_the_reserve_covers_them() {
+        let head = mark_head_kept("the opening survives", 4321);
+        assert!(head.starts_with("the opening survives"), "{head}");
+        assert!(head.ends_with("(…4321-token message trimmed)"), "{head}");
+
+        let tail = mark_tail_kept("the ending survives", 4321);
+        assert!(tail.starts_with("(…4321-token opening trimmed)"), "{tail}");
+        assert!(tail.ends_with("the ending survives"), "{tail}");
+
+        // Neither spelling may cost more than the reserve set aside for it, at the
+        // widest token count a real message could carry.
+        let reserve = trim_marker_tokens();
+        for marker in [
+            mark_head_kept("", u32::MAX).trim().to_string(),
+            mark_tail_kept("", u32::MAX).trim().to_string(),
+        ] {
+            assert!(
+                estimate_prompt_tokens(&marker) <= reserve,
+                "marker {marker:?} costs {} > reserve {reserve}",
+                estimate_prompt_tokens(&marker)
+            );
+        }
+    }
 
     // what this catches: the estimator drifting from the chars/4+1 unit the RAG
     // sources budget against (which would make the replay ledger's numbers lie),
