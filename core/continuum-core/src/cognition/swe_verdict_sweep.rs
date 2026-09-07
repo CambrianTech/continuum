@@ -129,7 +129,7 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)  // unwrap_or: pre-epoch clock — every refusal then reads expired, which errs toward grading
+        .unwrap_or(u64::MAX)  // unwrap_or: pre-epoch clock — now reads as far future, every refusal reads EXPIRED, which errs toward grading (0 would make every refusal stand forever)
 }
 
 /// What the sweep decided for one instance — every non-grade outcome is NAMED, because
@@ -305,6 +305,14 @@ pub async fn sweep() -> SweepReport {
     let mut report = SweepReport::default();
     let (work, skipped_refused) = pending_with_skipped();
     if work.is_empty() {
+        // Nothing to grade — said with the count that explains it, so "idle because
+        // fifteen refusals stand" never reads as "idle because there is no work"
+        // (Astra's review of #3859: the early return hid the new count).
+        crate::probe!(
+            class = "benchmark.verdict.sweep_idle",
+            skipped_refused = skipped_refused as u64,
+            "no pending citizen work to grade — the count says whether refusals are standing"
+        );
         return report;
     }
     crate::probe!(
