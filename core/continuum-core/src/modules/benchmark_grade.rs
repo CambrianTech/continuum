@@ -112,7 +112,15 @@ impl ServiceModule for BenchmarkGradeModule {
         // Module init must not block on it, and the citizens' first turn must not queue behind
         // it.
         tokio::spawn(async {
+            // The boot sweep holds the same in-flight guard the tick honours:
+            // on 0babe4c78 the 180 s tick started a SECOND sweep at 15:33Z while
+            // the boot's was still grading (the guard only knew about ticks).
+            use std::sync::atomic::Ordering;
+            if crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+                return;
+            }
             let report = crate::cognition::swe_verdict_sweep::sweep().await;
+            crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.store(false, Ordering::Release);
             if report.graded > 0 {
                 tracing::info!(
                     graded = report.graded,
