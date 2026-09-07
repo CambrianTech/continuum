@@ -391,6 +391,15 @@ ensure_airc_daemon() {
       echo "✓ airc daemon: adopted (already answering, build $daemon_build == installed)" >&2
       return 0
     fi
+    # An UNREADABLE status is not a stale daemon. 2026-09-07 10:12Z: `airc status`
+    # did not answer inside its bound (the account-registry refresh was busy), both
+    # builds read empty, the branch below STOPPED a healthy daemon, and the restart
+    # refused (see the cwd note at the launch) — the whole node went dark mid-deploy.
+    # The ping above already proved liveness; staleness needs two builds to compare.
+    if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
+      echo "⚠  airc daemon answers but its build could not be read within the bound (daemon=${daemon_build:-?} cli=${bin_build:-?}) — adopting the LIVE daemon; a stale build is caught on the next boot that can read it" >&2
+      return 0
+    fi
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
     bounded_run 5 "$airc_bin" stop || true
     sleep 1
@@ -417,7 +426,12 @@ ensure_airc_daemon() {
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
   echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &
+  # From $HOME, never from the repo: airc's scope is the cwd's git root, so a daemon
+  # launched here would serve the REPO's agent home and refuse the machine socket
+  # ("refusing to serve a socket this scope does not own" — 2026-09-07 10:12Z, the
+  # restart after a stop that should not have happened). The machine account is
+  # $HOME/.airc on every host; that is the daemon's home.
+  (cd "$HOME" && nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &)
   disown 2>/dev/null || true
 
   local waited=0
