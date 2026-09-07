@@ -318,6 +318,17 @@ adopt_or_reap_llama_lanes
 #     A core with no transport is not a running system, and reporting success for
 #     one is the class of lie this whole card exists to end.
 
+# Every airc verb the boot uses to judge the MACHINE daemon runs from $HOME, so it
+# addresses the machine account's socket — the one `machine_daemon_pids` reaps. From
+# the repo cwd, airc resolves the REPO's scope and its own daemon: IntelMac measured
+# (10:33Z) `airc status` answering "current" about the repo-scope daemon while a June
+# binary held the machine socket — the check compared one daemon and reaped another.
+# Same daemon in every arm, named by the same socket.
+machine_airc() {
+  local bound="$1"; shift
+  (cd "$HOME" && bounded_run "$bound" "$(command -v airc)" "$@")
+}
+
 # The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
 # `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
 # sites, one with -9): a deploy in one checkout killed every scope's daemon on the
@@ -399,7 +410,7 @@ ensure_airc_daemon() {
   # fine. Adoption now requires the daemon's build to match the binary's.
   local airc_bin
   airc_bin="$(command -v airc)"
-  if bounded_run 5 "$airc_bin" ping; then
+  if machine_airc 5 ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
     # Keep the exit status: "status did not answer" (timeout — transient, adopt) and
@@ -407,7 +418,7 @@ ensure_airc_daemon() {
     # restart) are two situations, and emptiness alone carried both (IntelMac, #3841
     # review — one value must not carry two meanings, the same shape as the bug).
     local status_rc=0
-    status_out="$(bounded_run 5 "$airc_bin" status 2>/dev/null)" || status_rc=$?
+    status_out="$(machine_airc 5 status 2>/dev/null)" || status_rc=$?
     daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
     bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     if [ -z "$daemon_build" ] || [ -z "$bin_build" ]; then
@@ -415,7 +426,7 @@ ensure_airc_daemon() {
       # transient by definition, and the whole verdict must not hinge on one miss.
       sleep 2
       status_rc=0
-      status_out="$(bounded_run 8 "$airc_bin" status 2>/dev/null)" || status_rc=$?
+      status_out="$(machine_airc 8 status 2>/dev/null)" || status_rc=$?
       daemon_build="$(printf '%s\n' "$status_out" | awk '/^build:/{print $2}' | head -1)"
       bin_build="$(printf '%s\n' "$status_out" | awk '/^cli_version:/{print $3}' | head -1)"
     fi
@@ -436,7 +447,7 @@ ensure_airc_daemon() {
       echo "⚠  airc daemon answered \`status\` without a readable build (daemon=${daemon_build:-?} cli=${bin_build:-?}) — a daemon too old for today's status shape; restarting it" >&2
     fi
     echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
-    bounded_run 5 "$airc_bin" stop || true
+    machine_airc 5 stop || true
     sleep 1
     local holders
     holders="$(machine_daemon_pids)"
@@ -454,7 +465,7 @@ ensure_airc_daemon() {
   wedged="$(machine_daemon_pids)"
   if [ -n "$wedged" ]; then
     echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
-    bounded_run 5 "$airc_bin" stop || true
+    machine_airc 5 stop || true
     wedged="$(machine_daemon_pids)"
     if [ -n "$wedged" ]; then
       kill $wedged 2>/dev/null || true
@@ -477,7 +488,7 @@ ensure_airc_daemon() {
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
-    if bounded_run 5 "$airc_bin" ping; then
+    if machine_airc 5 ping; then
       echo "✓ airc daemon: started and answering (${waited}s)" >&2
       return 0
     fi
