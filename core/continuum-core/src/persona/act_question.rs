@@ -248,7 +248,11 @@ pub(crate) async fn ask_the_act_question(
                                         "write-or-release at twice the gate: the substrate released the card"
                                     );
                                     if let Some(body) = cycle.acting() {
-                                        body.working_memory.record_fact(&format!(
+                                        // PINNED, like [hands]/[env] (#3845): a recorded fact is
+                                        // gone by her third act; this one must reach her NEXT work
+                                        // turn, where the pull decision is made. Unpinned at that
+                                        // turn's restore (IntelMac's review of #3846).
+                                        body.working_memory.pin_fact("released", &format!(
                                             "[released] The substrate released card {id8} after \
                                              {acts_without_write} acts of mine without a change to a \
                                              file — the investigation was long enough. A peer may take \
@@ -434,6 +438,10 @@ pub(crate) async fn ask_the_act_question(
                         if let Some(body) = cycle.acting() {
                             body.working_memory.unpin_fact("hands");
                             body.working_memory.unpin_fact("env");
+                            // A [released] notice lives for exactly one work turn after the
+                            // release: pinned during turn N, rendered at the start of turn N+1
+                            // (the next pull decision), dropped here at N+1's end.
+                            body.working_memory.unpin_fact("released");
                         }
                     }
                     let (work_step, _) =
