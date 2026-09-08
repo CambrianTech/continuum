@@ -912,21 +912,32 @@ impl MemoryPressureMonitor {
                     // at 26.6 GB reported 0 on 2026-09-08) — `ps` can. Bounded to 2 s.
                     if named == 0 {
                         let self_pid = st.pid.map(|p| p.as_u32());
-                        for p in crate::system_resources::process_anomaly::residents_above(
+                        match crate::system_resources::process_anomaly::residents_above(
                             floor,
                             std::time::Duration::from_secs(2),
                         ) {
-                            if Some(p.pid) == self_pid || p.name.contains("llama-server") {
-                                continue;
+                            Ok(rows) => {
+                                for p in rows {
+                                    if Some(p.pid) == self_pid || p.name.contains("llama-server") {
+                                        continue;
+                                    }
+                                    crate::probe!(
+                                        class = "memory.pressure.anomaly",
+                                        process = %p.name,
+                                        pid = p.pid,
+                                        rss_gb = p.rss_bytes / (1024 * 1024 * 1024),
+                                        source = "ps",
+                                        "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
+                                    );
+                                }
                             }
-                            crate::probe!(
-                                class = "memory.pressure.anomaly",
-                                process = %p.name,
-                                pid = p.pid,
-                                rss_gb = p.rss_bytes / (1024 * 1024 * 1024),
-                                source = "ps",
-                                "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
-                            );
+                            // A read that could not complete is said, never an empty list
+                            // (card c7ae34b2) — the anomaly is UNKNOWN this window, not absent.
+                            Err(why) => crate::probe!(
+                                class = "memory.pressure.anomaly_unreadable",
+                                why = %why,
+                                "the process table could not be read this window — no anomaly claim either way"
+                            ),
                         }
                     }
                 }
