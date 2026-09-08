@@ -1315,6 +1315,49 @@ impl StorageAdapter for PostgresAdapter {
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
+        // ── Schema readiness happens BEFORE the transaction opens ──────────
+        //
+        // Both remaining review findings come from DDL running INSIDE the batch:
+        // postgres aborts a transaction on the first error and rejects every
+        // later statement, so update's missing-column ALTER retry could never
+        // succeed in there; and the column caches are published when DDL RUNS,
+        // so a rolled-back batch left them asserting columns the database no
+        // longer had. Ensuring here — on the pooled client, in autocommit, before
+        // any transaction exists — removes both: nothing inside the transaction
+        // issues DDL, so nothing inside it can abort on DDL or be rolled back
+        // underneath a cache that already published. Astra's steer, and it beats
+        // per-op savepoints because it deletes the failure rather than recovering
+        // from it.
+        for op in &operations {
+            let Some(data) = op.data.as_ref() else { continue };
+            if !matches!(
+                op.operation_type,
+                BatchOperationType::Create | BatchOperationType::Update
+            ) {
+                continue;
+            }
+            let bare_table = naming::to_table_name(&op.collection);
+            let qualified_table = self.table_ref(&op.collection);
+            match self
+                .ensure_table_exists_cached(&client, &qualified_table, &bare_table, data)
+                .await
+            {
+                Ok(changed) => {
+                    if changed {
+                        self.invalidate_column_cache(&bare_table).await;
+                    }
+                }
+                // Fail BEFORE opening the transaction: a batch that cannot have
+                // its schema is not a batch that should half-open one.
+                Err(e) => {
+                    return StorageResult::err(format!(
+                        "Batch schema readiness failed for '{}': {}",
+                        op.collection, e
+                    ))
+                }
+            }
+        }
+
         // A REAL `tokio_postgres::Transaction`, not a raw BEGIN. Its `Drop` impl
         // issues the rollback, which is the whole point: an error path I write can
         // only cover the failures I anticipated, but a CANCELLED future never
