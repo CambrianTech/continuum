@@ -50,8 +50,8 @@
 //! salience-free, no new coupling. In the converged end-state this policy is just
 //! what each native faculty's `contribute()` returns.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -168,9 +168,18 @@ pub struct RagSourceFaculty {
     ///
     /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
     cold_start_critical: bool,
-    /// Consecutive ticks this source has delivered NOTHING. See
+    /// Consecutive ticks this source has delivered NOTHING, PER ROOM. See
     /// [`Self::note_absence`] for why a counter exists at all.
-    empty_streak: AtomicU32,
+    ///
+    /// KEYED BY ROOM, because a grounding source answers for whatever room the
+    /// turn is in (`Workspace::room_id`). A single counter was the first version
+    /// and @Astra caught it on review of #3903: content in room B would have
+    /// closed — and reported the length of — room A's absence, and a citizen
+    /// alternating between a room that grounds and one that does not would have
+    /// produced a meaningless streak mixing both.
+    ///
+    /// Bounded by the rooms this persona actually takes turns in.
+    empty_streak: Mutex<HashMap<Uuid, u32>>,
 }
 
 impl RagSourceFaculty {
@@ -202,7 +211,7 @@ impl RagSourceFaculty {
             // source's ordinary silence in the ledger, which is how a real signal
             // gets buried ([[bounded-window-eviction-bug-class]]).
             cold_start_critical: false,
-            empty_streak: AtomicU32::new(0),
+            empty_streak: Mutex::new(HashMap::new()),
         }
     }
 
@@ -279,7 +288,14 @@ impl RagSourceFaculty {
         if !self.cold_start_critical {
             return None;
         }
-        let streak = self.empty_streak.fetch_add(1, Ordering::Relaxed) + 1;
+        let streak = {
+            // diagnostics-only bookkeeping; a poisoned lock must not take
+            // cognition down to protect a counter. No await is held here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            let c = g.entry(room).or_insert(0);
+            *c += 1;
+            *c
+        };
         if streak.is_power_of_two() {
             crate::probe!(
                 class = "rag.coldstart.absent",
@@ -294,6 +310,18 @@ impl RagSourceFaculty {
         None
     }
 
+    /// How long THIS room's current absence streak is. Test-visible so the live
+    /// `contribute` path can be asserted without reaching into the map.
+    #[cfg(test)]
+    fn streak_in(&self, room: Uuid) -> u32 {
+        self.empty_streak
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only, same as note_absence
+            .get(&room)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Record that this source delivered content, closing any absence streak.
     ///
     /// The restore row is not decoration: an absence with no end in the ledger is
@@ -306,7 +334,11 @@ impl RagSourceFaculty {
         if !self.cold_start_critical {
             return None;
         }
-        let streak = self.empty_streak.swap(0, Ordering::Relaxed);
+        let streak = {
+            // same contract as note_absence: recover the guard, never panic here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            g.remove(&room).unwrap_or(0)
+        };
         if streak > 0 {
             crate::probe!(
                 class = "rag.coldstart.restored",
@@ -540,6 +572,51 @@ mod tests {
             );
         }
 
+        // what this catches: regression for @Astra's #3903 review finding 2 — one
+        // counter for a source that answers for whatever room the turn is in
+        // meant CONTENT IN ROOM B CLOSED AND REPORTED ROOM A'S ABSENCE, and a
+        // citizen alternating between a grounding room and a bare one produced a
+        // streak that mixed both and meant nothing.
+        //
+        // NON-DEGENERACY: two different rooms, driven to different streak
+        // lengths, asserted different — with one counter this cannot hold.
+        #[tokio::test]
+        async fn one_room_s_absence_streak_never_answers_for_another() {
+            let a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
+            let b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
+            assert_ne!(a, b, "non-degeneracy: two DIFFERENT rooms");
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+
+            for _ in 0..3 {
+                faculty.note_absence(a);
+            }
+            faculty.note_absence(b);
+            assert_eq!(faculty.streak_in(a), 3);
+            assert_eq!(faculty.streak_in(b), 1);
+            assert_ne!(
+                faculty.streak_in(a),
+                faculty.streak_in(b),
+                "non-degeneracy: with a single counter these would be equal and                  the test could not fail"
+            );
+
+            // Content in B closes B's streak and says B's length — never A's.
+            assert_eq!(
+                faculty.note_presence(b),
+                Some(1),
+                "the recovery row must carry the length of THIS room's absence"
+            );
+            assert_eq!(
+                faculty.streak_in(a),
+                3,
+                "and room A's absence must still be running, untouched"
+            );
+            assert_eq!(
+                faculty.note_presence(a),
+                Some(3),
+                "A's own recovery still reports A's own length"
+            );
+        }
+
         // what this catches: an absence with no END in the ledger is
         // indistinguishable from one still running when the census was taken —
         // which is precisely the reading that made #3873 look like a permanent
@@ -580,7 +657,7 @@ mod tests {
                 "an empty delivery must not become an empty bid"
             );
             assert_eq!(
-                silent.empty_streak.load(Ordering::Relaxed),
+                silent.streak_in(Workspace::new("anything").room_id),
                 1,
                 "and the abstain must have been counted on the live path"
             );
@@ -597,7 +674,7 @@ mod tests {
                 "a source with content still bids"
             );
             assert_eq!(
-                speaking.empty_streak.load(Ordering::Relaxed),
+                speaking.streak_in(Workspace::new("anything").room_id),
                 0,
                 "and a bidding source carries no absence"
             );
