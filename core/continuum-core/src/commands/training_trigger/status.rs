@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::training_trigger::TrainingTriggerState;
+use crate::modules::training_trigger::{DispatchPhase, TrainingTriggerState};
 
 /// `genome/training-trigger/status` input — none; returns all pending buckets.
 #[derive(Debug, Deserialize, TS, JsonSchema)]
@@ -44,6 +44,12 @@ pub struct PendingBucketView {
     pub base_model: String,
     pub examples_pending: u32,
     pub min_examples: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub dispatch_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dispatch: Option<DispatchPhase>,
 }
 
 /// `genome/training-trigger/status` output — all pending buckets, sorted by
@@ -56,6 +62,11 @@ pub struct PendingBucketView {
 )]
 pub struct StatusReport {
     pub success: bool,
+    /// Both indexed metadata scans have completed at least one pass since boot.
+    /// Until then, buckets is a recovered snapshot, not a complete backlog count.
+    pub initial_scan_complete: bool,
+    /// Known buckets whose retained payload recovery still has pages to read.
+    pub recovering_buckets: usize,
     pub buckets: Vec<PendingBucketView>,
 }
 
@@ -73,25 +84,17 @@ crate::action_command! {
     output: StatusReport,
     run(this, _ctx, _p) => {
         let state = &this.state;
-        let mut buckets: Vec<PendingBucketView> = Vec::with_capacity(state.buckets.len());
-        for entry in state.buckets.iter() {
-            buckets.push(PendingBucketView {
-                persona_id: entry.key().persona_id,
-                persona_name: entry.value().persona_name.clone(),
-                trait_kind: entry.key().trait_kind.clone(),
-                base_model: entry.key().base_model.clone(),
-                examples_pending: entry.value().examples.len() as u32,
-                min_examples: entry.value().min_examples,
-            });
-        }
+        state.require_ready().map_err(crate::sdk_codegen::CommandError::Invalid)?;
+        let mut buckets = state.pending_views();
         // Deterministic order — sort by (persona_id, trait_kind, base_model) so
         // operator-tooling tests don't flake on DashMap iteration order.
         buckets.sort_by(|a, b| {
-            (a.persona_id, &a.trait_kind, &a.base_model)
-                .cmp(&(b.persona_id, &b.trait_kind, &b.base_model))
+            (a.persona_id, &a.trait_kind, &a.base_model, a.dispatch_id)
+                .cmp(&(b.persona_id, &b.trait_kind, &b.base_model, b.dispatch_id))
         });
 
-        Ok(StatusReport { success: true, buckets })
+        let (initial_scan_complete, recovering_buckets) = state.recovery_progress();
+        Ok(StatusReport { success: true, initial_scan_complete, recovering_buckets, buckets })
     }
 }
 
@@ -120,7 +123,7 @@ mod tests {
     // would make every snapshot look "different" even when state is identical.
     #[tokio::test]
     async fn status_returns_deterministic_bucket_list() {
-        let (_trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (_trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let a = Uuid::nil(); // stable for ordering
         let b = Uuid::from_u128(1);
 

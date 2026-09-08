@@ -24,10 +24,10 @@ selectedProvider?: string,
  */
 jobHandle?: JobHandle, 
 /**
- * DispatchFailed: the diagnostic message.
+ * Dispatch/persistence refusal or unresolved provider outcome.
  */
 error?: string, 
 /**
- * DispatchFailed discriminator.
+ * DispatchFailed, PersistenceFailed, or RecoveryRequired discriminator.
  */
 errorKind?: string, };

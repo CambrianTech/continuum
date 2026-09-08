@@ -10,7 +10,12 @@ import type { TrainingSource } from "../genome/fine_tuning/TrainingSource";
  * provider preference). All `Option` fields default; first-arrival pins the bucket's
  * policy and later submits to the same bucket must agree (else `InconsistentBucket`).
  */
-export type SubmitParams = { personaId: string, personaName: string, baseModel: string, traitKind: string, examples: Array<TrainingExample>, source: TrainingSource, 
+export type SubmitParams = { 
+/**
+ * Stable immutable batch identity, reused on retries at this destination.
+ * Omitted: every invocation gets a fresh ID; blind retries are new batches.
+ */
+submissionId?: string, personaId: string, personaName: string, baseModel: string, traitKind: string, examples: Array<TrainingExample>, source: TrainingSource, 
 /**
  * The gym that MEASURES this trait — the `cognition/eval` `eval_set` JSONL path.
  * First-arrival pins it for the bucket; a later submit with a divergent gym is

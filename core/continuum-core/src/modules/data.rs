@@ -343,7 +343,10 @@ impl DataState {
     ///   2. Route connection string to concrete adapter (Postgres / SQLite /
     ///      future). Adapters are cached keyed by connection string so two
     ///      handles resolving to the same backend share one pool.
-    async fn get_adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
+    pub(crate) async fn get_adapter(
+        &self,
+        handle: &str,
+    ) -> Result<Arc<dyn StorageAdapter>, String> {
         let connection_string = self.resolve_handle(handle)?;
 
         // Check cache (keyed by resolved connection string, not by handle —

@@ -20,7 +20,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::genome::fine_tuning::types::JobHandle;
-use crate::modules::training_trigger::{BucketKey, TrainingTriggerState};
+use crate::modules::training_trigger::{BucketKey, DispatchResult, TrainingTriggerState};
+use crate::sdk_codegen::CommandError;
 
 /// `genome/training-trigger/flush` input. `base_model` is required so the flush
 /// targets exactly one bucket — a persona may have multiple `(trait_kind,
@@ -66,11 +67,11 @@ pub struct FlushOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub job_handle: Option<JobHandle>,
-    /// DispatchFailed: the diagnostic message.
+    /// Dispatch/persistence refusal or unresolved provider outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
-    /// DispatchFailed discriminator.
+    /// DispatchFailed, PersistenceFailed, or RecoveryRequired discriminator.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error_kind: Option<String>,
@@ -124,9 +125,9 @@ crate::action_command! {
     /// baseModel)` regardless of how many examples it holds — drains it into a
     /// `genome/job-create` immediately. Returns `JobDispatched` with the handle +
     /// selected provider, or `NothingToFlush` if the bucket is empty/absent (flush is
-    /// idempotent — safe to retry without checking state first). A dispatch fault
-    /// returns `DispatchFailed` with the bucket restored intact so no curated examples
-    /// are lost.
+    /// idempotent). Explicit provider refusals remain retryable; uncertain results
+    /// return `RecoveryRequired` and only inspect correlated JobBoard evidence.
+    /// Accepted examples remain persisted in either case.
     pub struct TrainingTriggerFlush {
         state: Arc<TrainingTriggerState>,
     }
@@ -142,35 +143,18 @@ crate::action_command! {
             base_model: p.base_model.clone(),
         };
 
-        // Same per-key gate as submit. Flush and submit BOTH mutate the bucket —
-        // without serialization a flush could race a submit's drain or restore. RAII
-        // lease: on Drop at scope end the lock releases AND structural eviction runs.
-        let _flush_lease = state.submit_gates.acquire(&key).await;
-
-        // Take the bucket out atomically. Empty/absent → clean "nothing to flush".
-        let snapshot = match state.buckets.remove(&key) {
-            Some((_, batch)) if !batch.examples.is_empty() => batch,
-            Some((_, _)) | None => return Ok(FlushOutcome::nothing_to_flush()),
-        };
-
-        match state
-            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot)
-            .await
-        {
-            Ok((job_handle, selected_provider)) => Ok(FlushOutcome::job_dispatched(
-                snapshot.examples.len() as u32,
-                selected_provider,
-                job_handle,
-            )),
-            Err(err) => {
-                // Restore on failure — flush must not lose data. Under the gate, no
-                // concurrent submit/flush can have populated the key between our
-                // remove() and this insert(), so the reinsert is safe and the snapshot
-                // is the complete state.
-                state.buckets.insert(key, snapshot);
-                Ok(FlushOutcome::dispatch_failed(err))
+        state.run_owned(key, |state, key| async move {
+            match state.dispatch_pending(&key).await {
+                DispatchResult::Empty => FlushOutcome::nothing_to_flush(),
+                DispatchResult::Dispatched { examples, handle, provider } =>
+                    FlushOutcome::job_dispatched(examples as u32, provider, handle),
+                DispatchResult::Failed { kind, error } => {
+                    let mut outcome = FlushOutcome::dispatch_failed(error);
+                    outcome.error_kind = Some(kind.into());
+                    outcome
+                }
             }
-        }
+        }).await.map_err(CommandError::Internal)
     }
 }
 
@@ -200,7 +184,7 @@ mod tests {
     // and exercises flush's dispatch-on-partial-bucket contract.
     #[tokio::test]
     async fn flush_dispatches_partial_bucket() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let examples = (0..5)
@@ -256,7 +240,7 @@ mod tests {
     // error. Idempotent flush lets callers retry safely without checking state first.
     #[tokio::test]
     async fn flush_empty_bucket_is_noop() {
-        let (_trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (_trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let json = executor

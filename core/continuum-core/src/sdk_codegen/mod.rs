@@ -656,7 +656,7 @@ macro_rules! action_command {
     //    module's `commands()` (deps need construction, so no Default). ──
     (
         $(#[doc = $doc:literal])*
-        $vis:vis struct $cmd:ident { $($field:ident : $fty:ty),+ $(,)? }
+        $vis:vis struct $cmd:ident { $($(#[$field_meta:meta])* $field:ident : $fty:ty),+ $(,)? }
         name: $name:expr,
         access: $access:ident,
         $(native: $native:expr,)?
@@ -666,7 +666,7 @@ macro_rules! action_command {
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
-        $vis struct $cmd { $(pub $field: $fty),+ }
+        $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
         $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
