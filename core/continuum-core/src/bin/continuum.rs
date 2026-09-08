@@ -1631,9 +1631,113 @@ fn kill_pid_tree(pid: i32) {
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output();
+        let _ = WindowsKill::Tree(pid).command().output();
+    }
+}
+
+/// The distinction matters before the OS sees a kill: `/T` on a core also
+/// terminates its warm gateway, even if a later orphan sweep excludes that lane.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsKill {
+    Process(i32),
+    Tree(i32),
+}
+
+#[cfg(any(windows, test))]
+impl WindowsKill {
+    fn command(self) -> std::process::Command {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.arg("/F");
+        let pid = match self {
+            Self::Process(pid) => pid,
+            Self::Tree(pid) => {
+                cmd.arg("/T");
+                pid
+            }
+        };
+        cmd.args(["/PID", &pid.to_string()]);
+        cmd
+    }
+}
+
+/// Split only the branches containing a verified live lane. All other branches
+/// remain tree kills, so new eye/browser children are still owned by the reap.
+#[cfg(any(windows, test))]
+fn windows_kill_plan(
+    roots: &[i32],
+    parents: &std::collections::HashMap<i32, i32>,
+    keep: &[i32],
+) -> Vec<WindowsKill> {
+    let mut plan = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = Vec::new();
+    for &root in roots {
+        // An ancestor root already owns this subtree. Break a malformed cycle
+        // by choosing its lowest PID; `seen` also bounds the child traversal.
+        if roots.iter().any(|&other| {
+            other != root
+                && descends_from(parents, root, &[other])
+                && (!descends_from(parents, other, &[root]) || other < root)
+        }) {
+            continue;
+        }
+        pending.push(root);
+        while let Some(pid) = pending.pop() {
+            if !seen.insert(pid) || descends_from(parents, pid, keep) {
+                continue;
+            }
+            if !keep
+                .iter()
+                .any(|lane| descends_from(parents, *lane, &[pid]))
+            {
+                plan.push(WindowsKill::Tree(pid));
+                continue;
+            }
+            // Stop the ancestor spawning more workers, then reap its unprotected
+            // children. Killing its whole tree would cross the keep set.
+            plan.push(WindowsKill::Process(pid));
+            pending.extend(
+                parents
+                    .iter()
+                    .filter_map(|(&child, &parent)| (parent == pid).then_some(child)),
+            );
+        }
+    }
+    plan
+}
+
+fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32> {
+    sys.processes()
+        .values()
+        .filter_map(|p| {
+            p.parent()
+                .map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32))
+        })
+        .collect()
+}
+
+fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
+    #[cfg(windows)]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let parents = process_parents(&sys);
+        for kill in windows_kill_plan(roots, &parents, keep) {
+            let _ = kill.command().output();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = keep;
+        for &pid in roots {
+            kill_pid_tree(pid);
+        }
     }
 }
 
@@ -1660,16 +1764,17 @@ fn kill_pid_tree(pid: i32) {
 /// Does `pid`'s ancestor chain reach any pid in `keep`?
 ///
 /// Pure over a child→parent snapshot so the traversal — including its
-/// termination — is testable without live processes. The hop bound is the
+/// termination — is testable without live processes. The snapshot size is the
 /// load-bearing part: a pid table can present a CYCLE (pid reuse during a
 /// racing scan, or a reparent to a descendant), and an unbounded walk would
 /// hang `reboot` forever. Bounded, an unresolvable chain answers "not
 /// descended", which is the safe direction only because the caller pairs it
 /// with an ownership test — we never kill something we do not own.
 fn descends_from(parents: &std::collections::HashMap<i32, i32>, pid: i32, keep: &[i32]) -> bool {
-    const MAX_HOPS: usize = 64;
     let mut current = pid;
-    for _ in 0..MAX_HOPS {
+    // No acyclic chain can contain more parent edges than the snapshot. Unlike
+    // a fixed hop limit, this never mistakes a deep protected lane for absence.
+    for _ in 0..=parents.len() {
         if keep.contains(&current) {
             return true;
         }
@@ -1698,14 +1803,7 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     // Snapshot child -> parent once, then decide with pure logic. Reading the
     // live table inside the walk would let a process exiting mid-scan change
     // the answer halfway through.
-    let parents: std::collections::HashMap<i32, i32> = sys
-        .processes()
-        .values()
-        .filter_map(|p| {
-            p.parent()
-                .map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32))
-        })
-        .collect();
+    let parents = process_parents(&sys);
 
     sys.processes()
         .values()
@@ -2212,11 +2310,22 @@ async fn stop() -> Result<(), String> {
 async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
+    // Resolve identity BEFORE any tree is killed. live_lane requires a matching
+    // Live registry record and a currently observable llama-server image;
+    // unreadable or mismatched records are not exclusions.
+    let keep: Vec<i32> = if keep_lanes {
+        continuum_core::inference::lane_registry::live_lane()
+            .map(|r| r.pid as i32)
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {
-            kill_pid_tree(pid);
+            kill_pid_trees_preserving(&[pid], &keep);
             pidfile_core = Some(pid);
             println!("stopping core (pid {pid})");
         }
@@ -2274,9 +2383,7 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
                     .join(",")
             );
         }
-        for pid in &survivors {
-            kill_pid_tree(*pid);
-        }
+        kill_pid_trees_preserving(&survivors, &keep);
         if !stopped {
             println!(
                 "stopped continuum-core-server (pid(s) {})",
@@ -2302,19 +2409,11 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     // identity-verified live lane (pidfile + is_llama_server, never a reused
     // pid) is SPARED when keep_lanes; the start rail's adopt_or_reap then
     // health-checks and adopts the warm weights.
-    let keep: Vec<i32> = if keep_lanes {
-        continuum_core::inference::lane_registry::live_lane()
-            .map(|r| r.pid as i32)
-            .into_iter()
-            .collect()
-    } else {
-        Vec::new()
-    };
     reap_owned_orphans(&keep);
 
-    // Serving lanes are NOT descended from any core we just reaped (the daemon
-    // spawns them detached) and are NOT under `~/.continuum/bin`, so neither the
-    // tree kill nor the ownership sweep above can see them. Until this call
+    // The live serving lane may be a core child on Windows or already orphaned,
+    // and its executable may live under `~/.continuum/bin`. Both the core-tree
+    // reap and ownership sweep above must honor the same exclusion. Until this call
     // existed, `stop` left every `llama-server` running and the registry was
     // swept only on the NEXT boot — measured 2026-08-17 on the M5 as two lanes
     // resident at once (a 19 GB ephemeral 27B beside the live 14B), which
@@ -2363,8 +2462,9 @@ fn reap_owned_orphans(keep: &[i32]) {
     }
     for (pid, what) in &orphans {
         println!("  reaping orphaned {what} (pid {pid}) — owned by this install, parent gone");
-        kill_pid_tree(*pid);
     }
+    let roots: Vec<i32> = orphans.iter().map(|(pid, _)| *pid).collect();
+    kill_pid_trees_preserving(&roots, keep);
 }
 
 /// Find `tools/scripts/start-server.sh`: an explicit `CONTINUUM_START_SCRIPT`
@@ -2942,6 +3042,87 @@ mod tests {
         );
         assert!(descends_from(&parents, 200, &[100]));
         assert!(descends_from(&parents, 100, &[100]), "the core itself");
+    }
+
+    /// what this catches: card d746a1a0 — Windows `/T` on the core killed the
+    /// recorded gateway before reboot's later orphan exclusion could protect it.
+    /// Inspect the commands production executes, including the orphan-sweep pass.
+    #[test]
+    fn windows_teardown_preserves_only_the_verified_lane_subtree() {
+        let parents = ptable(&[
+            (100, 1),     // core
+            (200, 100),   // gateway launcher, itself expendable
+            (8600, 200),  // identity-verified live lane
+            (8610, 8600), // helper owned by that lane
+            (300, 100),   // eye-node
+            (301, 300),   // browser
+            (400, 100),   // other worker
+            (500, 100),   // stale/unrecorded serving process: not protected
+            (501, 500),
+            (900, 1), // unrelated process: never a teardown root
+        ]);
+        let command_args = |plan: Vec<WindowsKill>| {
+            let mut args: Vec<Vec<String>> = plan
+                .into_iter()
+                .map(|kill| {
+                    let cmd = kill.command();
+                    assert_eq!(cmd.get_program(), "taskkill");
+                    cmd.get_args()
+                        .map(|arg| arg.to_str().unwrap().to_owned())
+                        .collect()
+                })
+                .collect();
+            args.sort();
+            args
+        };
+        // Duplicate/descendant roots must not produce overlapping tree kills.
+        let roots = [300, 200, 100, 100, 301, 500];
+        let plan = windows_kill_plan(&roots, &parents, &[8600]);
+        assert_eq!(
+            plan.first(),
+            Some(&WindowsKill::Process(100)),
+            "stop the spawning core first"
+        );
+        assert_eq!(
+            command_args(plan),
+            vec![
+                vec!["/F", "/PID", "100"],
+                vec!["/F", "/PID", "200"],
+                vec!["/F", "/T", "/PID", "300"],
+                vec!["/F", "/T", "/PID", "400"],
+                vec!["/F", "/T", "/PID", "500"],
+            ]
+        );
+        // A surviving launcher ancestor in the owned-orphan pass must ALSO be
+        // killed alone, never with /T across the now-adoptable lane beneath it.
+        assert_eq!(
+            command_args(windows_kill_plan(
+                &[200, 300, 301, 400, 500, 501, 8600, 8610],
+                &parents,
+                &[8600],
+            )),
+            vec![
+                vec!["/F", "/PID", "200"],
+                vec!["/F", "/T", "/PID", "300"],
+                vec!["/F", "/T", "/PID", "400"],
+                vec!["/F", "/T", "/PID", "500"],
+            ]
+        );
+        // Full stop — or no identity-verified lane record — still kills the
+        // entire core tree, including the otherwise-preserved gateway.
+        assert_eq!(
+            command_args(windows_kill_plan(&roots, &parents, &[])),
+            vec![vec!["/F", "/T", "/PID", "100"]]
+        );
+        // An old fixed 64-hop ancestry limit must not turn a deeper protected
+        // branch into an apparently unprotected /T target.
+        let deep: std::collections::HashMap<i32, i32> =
+            (1..=80).map(|pid| (pid, pid - 1)).collect();
+        let plan = windows_kill_plan(&[1], &deep, &[80]);
+        assert_eq!(plan.len(), 79);
+        assert!(plan
+            .iter()
+            .all(|kill| matches!(kill, WindowsKill::Process(_))));
     }
 
     /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran

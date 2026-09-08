@@ -48,7 +48,9 @@ use crate::genome::fine_tuning::types::TrainingExample;
 use crate::persona::domain_classifier::{score_interaction_quality, DomainClassifier};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
-use continuum_client::Connection;
+use continuum_client::{ClientError, Connection, Transport};
+
+use crate::commands::training_trigger::submit::SubmitOutcome;
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -285,14 +287,6 @@ pub fn produce(
             );
             return;
         };
-        crate::probe!(
-            class = "training.example.produced",
-            persona = %persona_name,
-            domain = %plan.trait_kind,
-            quality = plan.quality as f64,
-            "live turn buffered as a training example (L2)"
-        );
-
         // One submit path, N experience sources — the live turn is the "live-turn"
         // provenance into the shared flywheel entry.
         submit_plan(
@@ -455,22 +449,108 @@ async fn submit_plan(
         )),
     ));
     let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
-    if let Err(e) = conn
+    match submit_training(&conn, params).await {
+        Ok(receipt) if receipt.success => {
+            crate::probe!(
+                class = "training.example.produced",
+                persona = %persona_name,
+                domain = %plan.trait_kind,
+                quality = plan.quality as f64,
+                provenance = provenance,
+                outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"),
+                "training trigger accepted the example (L2)"
+            );
+        }
+        Ok(receipt) => {
+            crate::probe!(
+                class = "training.example.rejected",
+                persona = %persona_name,
+                domain = %plan.trait_kind,
+                provenance = provenance,
+                error_kind = %receipt.error_kind.as_deref().unwrap_or("unspecified"), // Missing diagnostic stays explicit after the receipt's success:false refusal.
+                error = %receipt.error.as_deref().unwrap_or("submit returned success:false"), // Display-only absence label; the typed receipt remains unchanged.
+                "training trigger did not report successful submission"
+            );
+            tracing::warn!(
+                persona = %persona_id,
+                error_kind = ?receipt.error_kind,
+                error = ?receipt.error,
+                "training_producer: submit refused (best-effort, turn unaffected)"
+            );
+        }
+        Err(error) => {
+            crate::probe!(
+                class = "training.example.failed",
+                persona = %persona_name,
+                domain = %plan.trait_kind,
+                provenance = provenance,
+                error = %error,
+                "training submission has no valid receipt"
+            );
+            tracing::warn!(
+                persona = %persona_id,
+                error = %error,
+                "training_producer: submit failed (best-effort, turn unaffected)"
+            );
+        }
+    }
+}
+
+/// Decode the command's outcome once at the typed boundary. Transport success is
+/// not acceptance: InconsistentBucket and DispatchFailed deliberately return Ok
+/// with success:false. All producers, including consolidation, inspect this receipt.
+pub(crate) async fn submit_training<T: Transport>(
+    conn: &Connection<T>,
+    params: serde_json::Value,
+) -> Result<SubmitOutcome, ClientError> {
+    let receipt = conn
         .commands()
         .execute_value("genome/training-trigger/submit", params)
-        .await
-    {
-        tracing::warn!(
-            persona = %persona_id,
-            error = %e,
-            "training_producer: submit failed (best-effort, turn unaffected)"
-        );
-    }
+        .await?;
+    Ok(serde_json::from_value(receipt)?) // Decode the Value-native command response once; producers share this typed receipt.
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: card 3eaabbc6 — a successful transport can carry a
+    // refused submit; absent/malformed receipts must never look like acceptance.
+    #[tokio::test]
+    async fn training_submission_preserves_refusal_and_requires_a_receipt() {
+        use continuum_client::mock::MockTransport;
+        let transport = MockTransport::new();
+        for value in [
+            json!({"success": true, "outcome": "BatchAppended", "currentCount": 1, "threshold": 16}),
+            json!({"success": false, "errorKind": "InconsistentBucket", "error": "different policy"}),
+            json!({"success": false, "errorKind": "DispatchFailed", "error": "provider unavailable"}),
+            json!({"outcome": "BatchAppended"}),
+        ] {
+            transport.respond_to("genome/training-trigger/submit", move |_| Ok(value.clone()));
+        }
+        let conn = Connection::new(transport);
+        let accepted = submit_training(&conn, json!({}))
+            .await
+            .expect("accepted receipt");
+        assert!(accepted.success);
+        assert_eq!(accepted.current_count, Some(1));
+        for kind in ["InconsistentBucket", "DispatchFailed"] {
+            let refused = submit_training(&conn, json!({}))
+                .await
+                .expect("refusal is data");
+            assert!(!refused.success);
+            assert_eq!(refused.error_kind.as_deref(), Some(kind));
+            assert!(refused.error.is_some());
+        }
+        assert!(
+            submit_training(&conn, json!({})).await.is_err(),
+            "missing success is malformed"
+        );
+        assert!(
+            submit_training(&conn, json!({})).await.is_err(),
+            "transport failure stays a failure"
+        );
+    }
 
     // what this catches: the quality gate. A substantive turn produces a plan
     // bucketed by its classified domain; a trivial one-liner ("ok") is gated out

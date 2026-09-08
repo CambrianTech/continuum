@@ -495,7 +495,7 @@ impl crate::persona::wall_source::WallReader for StubAircCitizen {
         _room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // No daemon in tests → no pinned wall posts. Cognition runs through
-        // cleanly with no [room-board] grounding block.
+        // cleanly with no [room-wall] grounding block.
         Ok(vec![])
     }
 }

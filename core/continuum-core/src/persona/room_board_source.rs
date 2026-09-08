@@ -65,7 +65,8 @@ use crate::persona::rag_budget::{
 
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
-/// `active-work` (own claims) and `room-board` (the wall).
+/// `active-work` (own claims) and `room-wall` (the wall, renamed from the
+/// misleading `room-board` in #3874).
 const SOURCE_ID: &str = "room-kanban";
 
 /// Most cards this source will render in full, per turn.
@@ -423,7 +424,7 @@ impl RagSource for RoomBoardSource {
                 persona_id = %self.persona_id,
                 bound_room = ?self.room_id,
                 turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
-                "room-board delivered nothing: the READ SUCCEEDED and the board has zero cards"
+                "room-kanban delivered nothing: the READ SUCCEEDED and the board has zero cards"
             );
             return Self::empty();
         }

@@ -22,27 +22,6 @@ pub(super) fn est_tokens(s: &str) -> usize {
     s.len() / GUARD_CHARS_PER_TOKEN
 }
 
-/// Keep the TAIL of `s` that fits `budget_tokens`, cutting at a line boundary so a
-/// trimmed message starts on a clean line (never mid-line). The latest lines — the
-/// turn's most recent activity — always survive; the head is what gets dropped. Used
-/// by `messages_within` to trim the single message that straddles the served-window
-/// budget.
-pub(super) fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
-    let budget_chars = budget_tokens.saturating_mul(GUARD_CHARS_PER_TOKEN);
-    if s.len() <= budget_chars {
-        return s.to_string();
-    }
-    let mut start = s.len().saturating_sub(budget_chars);
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    let slice = &s[start..];
-    match slice.find('\n') {
-        Some(nl) => slice[nl + 1..].to_string(),
-        None => slice.to_string(),
-    }
-}
-
 /// Render ONE burst turn as the body line for its chat message. The persona's own
 /// turns and opaque (authorless) turns render verbatim — her own voice carries no
 /// name prefix (the system prompt forbids self-prefixing), and an opaque burst is
@@ -858,35 +837,6 @@ mod tests {
             expected,
             "persistence must carry the room key, not a flattened ring"
         );
-    }
-
-    // what this catches: the tail-trim must keep the LATEST lines (drop the head),
-    // start on a clean line boundary (never mid-line), and never split a UTF-8 char.
-    // A regression that trimmed the tail instead of the head would drop the turn's
-    // most recent activity — the exact thing the persona must respond to.
-    #[test]
-    fn tail_to_tokens_keeps_latest_lines_on_a_clean_boundary() {
-        // Under budget → returned whole.
-        assert_eq!(tail_to_tokens("short", 100), "short");
-
-        // Over budget → keep the tail, cut at a line boundary. "old line\nnew line"
-        // is 17 chars; a 3-token budget (9 chars) lands the window INSIDE the first
-        // line, so the straddled head ("old line") is dropped and the result resumes
-        // at the clean line boundary — the latest line survives whole.
-        let trimmed = tail_to_tokens("old line\nnew line", 3);
-        assert_eq!(
-            trimmed, "new line",
-            "head dropped, latest line kept clean: {trimmed:?}"
-        );
-        assert!(
-            !trimmed.contains('\n'),
-            "cut on the line boundary: {trimmed:?}"
-        );
-
-        // Multibyte content must never panic on a mid-char cut (window start lands
-        // mid-codepoint and is walked forward to the next char boundary).
-        let multibyte = "αβγδ\nεζηθ\nικλμ";
-        let _ = tail_to_tokens(multibyte, 3); // must not panic
     }
 
     // Specimen personas for tests pinning live incidents. Constants, not

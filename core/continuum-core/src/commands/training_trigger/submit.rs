@@ -79,7 +79,7 @@ pub struct SubmitParams {
 /// inconsistent bucket, or dispatch failed all return `success` + a discriminator,
 /// NOT a transport error. The discriminating fields are populated per-outcome and
 /// omitted otherwise.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

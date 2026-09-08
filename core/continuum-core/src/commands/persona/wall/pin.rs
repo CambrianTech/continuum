@@ -56,7 +56,7 @@ pub struct PersonaWallPinParams {
     /// Consumer-defined category label — common values: `plan`, `rules`,
     /// `agenda`, `principles`, `recipe`, `decision`. The substrate has no
     /// opinion on the string; `WallSource` renders it as the per-post header
-    /// inside the `[room-board]` grounding block.
+    /// inside the `[room-wall]` grounding block.
     pub category: String,
     /// The post body, rendered verbatim (markdown or JSON — never parsed).
     pub body: String,

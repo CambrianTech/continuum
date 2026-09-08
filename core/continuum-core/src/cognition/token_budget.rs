@@ -33,10 +33,9 @@ pub fn estimate_prompt_tokens(content: &str) -> u32 {
 /// Keep the HEAD of `content` up to ~`budget_tokens` (same chars/4 unit as
 /// [`estimate_prompt_tokens`]), cutting on a char boundary and preferring the
 /// last newline inside the kept slice so the cut lands between lines, not
-/// mid-word. Sibling of `deliberation_budget::tail_to_tokens` — head-keep is
-/// the right shape for a chat MESSAGE (the opening carries the point; the
-/// tail is elaboration), where tail-keep is right for a transcript window
-/// (the latest lines carry the present). Used by the breadth-over-depth
+/// mid-word. Used when a RAG source explicitly offers a shortened projection;
+/// deliberation fitting preserves complete current stimulus/action payloads
+/// and evicts whole historical messages. Used by the breadth-over-depth
 /// packer (#128): long turns render as heads with an explicit trim marker so
 /// a small budget holds MANY turns instead of two verbatim essays.
 pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
@@ -61,7 +60,7 @@ pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
 
 /// The ONE vocabulary for telling a mind her copy of a message was shortened.
 ///
-/// Two sites shorten a message on the way into a mind, and they used to disagree about
+/// Two sites originally shortened a message on the way into a mind and disagreed about
 /// whether to say so: the per-turn head trim (`persona::airc_source`) appended
 /// `(…N-token message trimmed)`, while the newest-message tail trim
 /// (`cognition::llm_deliberation_faculty`) returned the body BARE. An unmarked fragment
@@ -69,6 +68,9 @@ pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
 /// so the rational thing for a citizen to do is try to reconstruct an intent that was
 /// never delivered. Measured 2026-09-06 (card 3833b472): citizens on two nodes did
 /// exactly that, one of them for five consecutive turns, against text like ", so it is …".
+/// The deliberation tail cut was removed by f09424d4: current stimulus/action
+/// payloads now remain complete or produce a capacity fault. These markers still
+/// describe explicit shortened projections; a marker alone is not a payload.
 ///
 /// Keeping both spellings here means the next site that shortens something inherits the
 /// disclosure instead of re-deciding it ([[logic-deepest-level-thin-on-the-way-out]]).

@@ -176,7 +176,7 @@ impl RagSourceFaculty {
             salience: policy.salience(),
             // Standing framing is session-stable by default; retrieved grounding
             // is volatile. `with_volatile_content` overrides for framing whose
-            // BYTES mutate per turn (active-work, room-board — convicted by
+            // BYTES mutate per turn (active-work, room-wall — convicted by
             // debug/prompt-reuse 2026-08-22): importance keeps the floor,
             // placement follows content stability.
             stable: matches!(policy, SaliencePolicy::StandingFraming),

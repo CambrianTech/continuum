@@ -3,7 +3,7 @@
 //! `persona/wall/pin` publishes (or supersedes) a `WallPostPublished` through a
 //! live persona's airc citizen. The READ face is
 //! [`WallSource`](crate::persona::wall_source::WallSource), which composes the
-//! same airc rows into the persona's `[room-board]` grounding — one shared
+//! same airc rows into the persona's `[room-wall]` grounding — one shared
 //! layer, no continuum-side copy.
 
 use std::sync::Arc;
