@@ -463,6 +463,18 @@ pub enum SupervisorError {
         #[source]
         source: std::io::Error,
     },
+    /// Persistent admission must be loaded before the resident's recall and
+    /// future admissions can bind to it. A failed load is not an empty store.
+    #[error(
+        "slot {slot_index} (role {role:?}): admission restore for {persona_id} failed: {source}"
+    )]
+    AdmissionRestore {
+        slot_index: usize,
+        role: RoleId,
+        persona_id: uuid::Uuid,
+        #[source]
+        source: crate::orm::OrmStoreError,
+    },
     /// The post-bootstrap registry doesn't have a runtime for this
     /// persona_id. Per [[no-fallbacks-ever]] this is a hard failure —
     /// the supervisor doesn't fabricate or stub a runtime in
@@ -929,10 +941,11 @@ pub async fn materialize_adapters(
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
         // amnesiac across boots. `identity.home` is the resolved
-        // <root>/personas/<name> dir. On disk error we log loud and continue
-        // in-memory — the persona stays alive; persistence is degraded, not fatal
-        // (NOT an inference fallback). MUST run before the WorkspaceCycle is
-        // assembled below, so its RecallFaculty binds the persisted admission.
+        // <root>/personas/<name> dir. A storage or schema failure refuses this
+        // slot before registration: continuing with the fresh NoopSink state
+        // would hide prior engrams and lose future admissions across restart.
+        // A new home succeeds with an empty persistent store. MUST run before
+        // WorkspaceCycle assembly so RecallFaculty binds persisted admission.
         let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
         let recall_meta =
             std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
@@ -944,12 +957,14 @@ pub async fn materialize_adapters(
                     std::sync::Arc::new(persisted),
                 );
             }
-            Err(e) => {
-                tracing::warn!(
-                    persona = %identity.agent_name,
-                    error = %e,
-                    "engram persistence unavailable; running in-memory (memory will NOT survive restart)"
-                );
+            Err(source) => {
+                out.push(Err(SupervisorError::AdmissionRestore {
+                    slot_index,
+                    role: plan.role,
+                    persona_id: identity.peer_id.as_uuid(),
+                    source,
+                }));
+                continue;
             }
         }
 
@@ -1630,6 +1645,114 @@ mod tests {
             2,
             "warmup() must be called once per successfully-materialized adapter"
         );
+    }
+
+    // 6d17695c: a real SQLite initialization failure must not host a blank
+    // admission store or replace an existing resident. Healthy siblings still
+    // materialize through the same factory/runtime/registration boundary.
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_restore_failure_refuses_hosting_and_preserves_existing_residents() {
+        init_test_registry();
+        for already_registered in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            let factory = ScriptedPersonaAdapterFactory::heuristic();
+            let registry = crate::cognition::persona_workspace::global();
+            let mut failed = fake_instance("admission-refused");
+            failed.home = home.path().join("refused-persona");
+            let failed_id = failed.peer_id.as_uuid();
+            let previous = if already_registered {
+                // An already-running life remains valid even if a subsequent
+                // bootstrap points at storage it cannot open. Its own DB is
+                // left untouched; only the candidate home is broken below.
+                let mut previous_identity = failed.clone();
+                previous_identity.home = home.path().join("previous-persona");
+                let previous_plan = MaterializedPersonaPlan {
+                    role: RoleId::Helper,
+                    instance: previous_identity,
+                    profile: Ok(fake_profile("admission-refused", "model-a")),
+                };
+                let hosted = materialize_adapters(
+                    vec![previous_plan],
+                    &factory,
+                    StubAircCitizen::fresh_lookup(),
+                    |_| None,
+                )
+                .await;
+                assert!(
+                    hosted[0].is_ok(),
+                    "test: the original resident must be healthy"
+                );
+                Some(
+                    registry
+                        .get(&failed_id)
+                        .expect("test: original resident registered"),
+                )
+            } else {
+                assert!(registry.get(&failed_id).is_none());
+                None
+            };
+            let failed_home = crate::persona::home::PersonaHome::from_root(failed.home.clone());
+            failed_home.ensure_exists().unwrap();
+            let broken = failed_home.engrams_db();
+            let original = b"existing engram database is not valid SQLite";
+            std::fs::write(&broken, original).unwrap();
+            let mut healthy = fake_instance("admission-healthy");
+            healthy.home = home.path().join("healthy-persona");
+            let healthy_id = healthy.peer_id.as_uuid();
+            let healthy_home = crate::persona::home::PersonaHome::from_root(healthy.home.clone());
+            let plans = vec![
+                MaterializedPersonaPlan {
+                    role: RoleId::Helper,
+                    instance: failed,
+                    profile: Ok(fake_profile("admission-refused", "model-a")),
+                },
+                MaterializedPersonaPlan {
+                    role: RoleId::Coder,
+                    instance: healthy,
+                    profile: Ok(fake_profile("admission-healthy", "model-b")),
+                },
+            ];
+            let hosted =
+                materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None)
+                    .await;
+            assert_eq!(hosted.len(), 2);
+            match &hosted[0] {
+                Err(SupervisorError::AdmissionRestore {
+                    slot_index,
+                    role,
+                    persona_id,
+                    source,
+                }) => {
+                    assert_eq!(
+                        (*slot_index, *role, *persona_id),
+                        (0, RoleId::Helper, failed_id)
+                    );
+                    assert!(
+                        matches!(source, crate::orm::OrmStoreError::AdapterFailed {
+                        operation: "initialize", collection, ..
+                    } if collection == "engrams"),
+                        "test: preserve the actual SQLite initialization error: {source}"
+                    );
+                }
+                Err(other) => panic!("test: expected admission restore failure, got {other:?}"),
+                Ok(_) => {
+                    panic!("test: failed persistent admission must not produce a hosted persona")
+                }
+            }
+            assert!(
+                hosted[1].is_ok(),
+                "a new empty home must still initialize persistent admission"
+            );
+            assert!(registry.get(&healthy_id).is_some());
+            assert!(healthy_home.engrams_db().is_file());
+            if let Some(previous) = previous {
+                assert!(Arc::ptr_eq(&previous, &registry.get(&failed_id).unwrap()));
+            } else {
+                assert!(registry.get(&failed_id).is_none());
+            }
+            assert_eq!(std::fs::read(&broken).unwrap(), original);
+        }
     }
 
     // 9f160b78: actual boot materialization reports a checkpoint failure for

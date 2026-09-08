@@ -713,6 +713,9 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
         | SupervisorError::WorkspaceRegistration {
             slot_index, role, ..
         }
+        | SupervisorError::AdmissionRestore {
+            slot_index, role, ..
+        }
         | SupervisorError::RuntimeMissing {
             slot_index, role, ..
         } => (Some(*slot_index), *role),
