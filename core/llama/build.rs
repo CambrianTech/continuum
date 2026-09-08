@@ -22,13 +22,11 @@ fn main() {
     // each build-script invocation, so env::var tracks whichever checkout is
     // actually building. (env! was a no-op optimization here — the path was
     // only ever used at run time.)
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect(
-        "CARGO_MANIFEST_DIR must be set when cargo runs this build script",
-    ));
-    let submodule = manifest_dir
-        .join("..")
-        .join("vendor")
-        .join("llama.cpp");
+    let manifest_dir = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR must be set when cargo runs this build script"),
+    );
+    let submodule = manifest_dir.join("..").join("vendor").join("llama.cpp");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
 
