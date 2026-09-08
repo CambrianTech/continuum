@@ -28,8 +28,9 @@
 use crate::cognition::parroted_perception;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -139,6 +140,66 @@ pub fn model_binding(
     }))
 }
 
+/// Calibration from one authoritative provider observation. This scales the
+/// CURRENT prompt estimate; a large request's absolute excess is never charged
+/// to every later small request. It remains an estimate, not a tokenizer proof.
+#[derive(Clone, Copy)]
+struct PromptCalibration {
+    estimated: std::num::NonZeroUsize,
+    measured: std::num::NonZeroU32,
+    input_identity: Option<[u8; 32]>,
+}
+
+impl Default for PromptCalibration {
+    fn default() -> Self {
+        Self {
+            estimated: std::num::NonZeroUsize::MIN,
+            measured: std::num::NonZeroU32::MIN,
+            input_identity: None,
+        }
+    }
+}
+
+impl PromptCalibration {
+    fn observed(estimated: usize, measured: u32, input_identity: Option<[u8; 32]>) -> Option<Self> {
+        Some(Self {
+            estimated: std::num::NonZeroUsize::new(estimated)?,
+            measured: std::num::NonZeroU32::new(measured)?,
+            input_identity,
+        })
+    }
+
+    fn charge(self, estimate: usize) -> usize {
+        let tokens =
+            (estimate as u128 * self.measured.get() as u128).div_ceil(self.estimated.get() as u128);
+        // Never underprice the existing estimate. u128 keeps this portable even
+        // for a full usize-sized prompt estimate multiplied by a u32 count.
+        estimate.max(tokens.min(usize::MAX as u128) as usize)
+    }
+
+    fn prompt_budget(self, measured_budget: usize) -> usize {
+        let tokens =
+            measured_budget as u128 * self.estimated.get() as u128 / self.measured.get() as u128;
+        measured_budget.min(tokens.min(usize::MAX as u128) as usize)
+    }
+}
+
+/// One observation in the existing persona-owned faculty. Route/window changes
+/// invalidate it; no global cache, room map, or retained request payload.
+struct PromptFeedback {
+    binding: Arc<ModelBinding>,
+    calibration: PromptCalibration,
+    available: u32,
+}
+
+impl PromptFeedback {
+    fn applies_to(&self, binding: &ModelBinding) -> bool {
+        Arc::ptr_eq(&self.binding.adapter, &binding.adapter)
+            && self.binding.model == binding.model
+            && self.binding.context_window == binding.context_window
+    }
+}
+
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -175,6 +236,7 @@ pub struct LlmDeliberationFaculty {
     /// {adapter, model, window} triple even if a re-home lands mid-turn. See
     /// [`ModelBinding`].
     binding: ModelBindingHandle,
+    prompt_feedback: ArcSwapOption<PromptFeedback>,
     temperature: f32,
     /// The persona's authorized tool set, kept whole. Empty → the persona can only
     /// SPEAK. Non-empty → the persona can ACT. This set is NOT dumped into the
@@ -278,6 +340,7 @@ impl LlmDeliberationFaculty {
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
             binding: model_binding(adapter, None, crate::cognition::serving_plan::MIN_SERVE_CTX),
+            prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             native_specs: Vec::new(),
@@ -388,6 +451,7 @@ impl LlmDeliberationFaculty {
     /// by construction (a spine of headers + a few opened categories), so it needs no
     /// window-budget reflow.
     fn rebuild_tool_surface(&mut self) {
+        self.prompt_feedback.store(None); // New schema bytes invalidate prior prompt observations.
         if self.tools.is_empty() {
             self.native_specs.clear();
             self.hands_specs.clear();
@@ -779,6 +843,190 @@ impl LlmDeliberationFaculty {
     /// so the requested `model` and the `max_tokens` reserve derived from
     /// `context_window` come from the SAME atomic {adapter, model, window} triple —
     /// a re-home landing mid-turn can never tear the model away from its window.
+    /// One adapter attempt through the existing hold, lane, prefill and capture
+    /// boundaries. A capacity refusal returns its typed receipt to the fitter;
+    /// no model output has been accepted or tools executed by a rejected attempt.
+    async fn generate_for_workspace(
+        &self,
+        ws: &Workspace,
+        binding: &ModelBinding,
+        context_window: u32,
+        mut request: TextGenerationRequest,
+    ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
+        // Identity belongs to the submitted adapter request. Provider response IDs
+        // remain separate, and one workspace can issue several calls.
+        let request_id = request
+            .request_id
+            .get_or_insert_with(|| Uuid::new_v4().to_string())
+            .clone();
+        let mut capture = self.prompt_capture.as_ref().map(|sink| {
+            super::prompt_capture::CaptureLease::start(
+                Arc::clone(sink),
+                &super::prompt_capture::PromptCall {
+                    request_id,
+                    persona_id: self.persona_id,
+                    room_id: ws.room_id,
+                    context_window,
+                    cycle_id: (ws.cycle != super::workspace::CycleId::UNSTAMPED)
+                        .then_some(ws.cycle.0),
+                    cause: ws.cause.as_str(),
+                    cause_root: ws.cause.root(),
+                },
+                &request,
+            )
+        });
+        // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
+        // wants progressive), generate through `generate_stream` so each decoded chunk
+        // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
+        // adapter returns the SAME full `TextGenerationResponse` either way
+        // (`generate_text` IS `generate_stream` + accumulate), so everything below —
+        // capture, working-memory, decision parse, act/speak — is byte-identical; only
+        // DELIVERY timing changes. `None` (every non-streaming caller, every test) takes
+        // the unchanged accumulate path. The sink carries BOTH Reasoning and Token
+        // chunks; the consumer forwards only Token to output (think-deep/speak-answer).
+        // #139 latency split: time the generate call (lane-queue + prefill + decode).
+        // Compared against the forwarder's `first_token_ms` (spawn→first token, the
+        // WHOLE turn), this localizes the minutes-to-first-token: if `gen_await_ms`
+        // is large, it's the model/lane (queue+prefill); if small, the time is in
+        // cognition-prep BEFORE generation (recall/embeddings/context assembly).
+        // #139 serving-lane admission, priced by priority. Acquire a decode lane for the
+        // model-call window ONLY (queue+prefill+decode); the RAII permit also carries the
+        // in-flight gauge marker (so the self-tick saturation read stays accurate) and, for
+        // NON-directed calls, a slot in the (MAX_LANES-1) non-directed budget — reserving
+        // at least one lane for a directed (addressed) turn so it never queues behind idle
+        // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
+        // block so every lane releases the instant generation returns — downstream
+        // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
+        // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when
+        // `SERVING_WIRE_CAPTURE_DIR` is configured (config.env — same channel as
+        // SERVING_KV_CACHE_TYPE), append this request's EXACT message list to
+        // `<dir>/<persona>.wire.jsonl` before it ships. Byte-diffing consecutive
+        // rows names the precise prompt position where the KV prefix dies —
+        // today that diagnosis ran on the BID capture, which is not the wire,
+        // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
+        // every capture sink owes the hot path.
+        if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
+            let row = serde_json::json!({
+                "ts_ms": crate::persona::trace::now_ms(),
+                "persona": self.persona_name,
+                "messages": request
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
+                    .collect::<Vec<_>>(),
+            });
+            let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
+            let _ = std::fs::create_dir_all(&dir);
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "{row}");
+            }
+        }
+        // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
+        // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
+        // Background generation (dream-belief-review, glass-boxed live) would take
+        // the lane permits, THEN park on the hold — starving the measured work's
+        // own next generation of the very permits it needs to finish and release
+        // the hold. Priority inversion; the solve's tick 2 waited forever on a
+        // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
+        // seam stays as the backstop for entry paths that skip these gates.
+        crate::probe!(
+            class = "delib.defer.entered",
+            persona = %self.persona_name,
+            directed = ws.directed_at_self(),
+            attention = ?ws.attention,
+            "at the pre-gate hold defer"
+        );
+        {
+            let class = deliberation_slot_class(request.purpose.as_deref(), ws.attention);
+            crate::inference::measured_hold::defer_while_held(
+                class,
+                Some(self.persona_id),
+                request.purpose.as_deref(),
+            )
+            .await;
+        }
+        crate::probe!(
+            class = "delib.defer.passed",
+            persona = %self.persona_name,
+            "past the pre-gate defer — admission gates next"
+        );
+        if ws.attention.requires_priority() {
+            // #2561: foreground engagement marks the organism ACTIVE (with linger).
+            // Human opportunity remains active without asserting a literal address.
+            crate::cognition::activity_gate::note_directed();
+        }
+        let gen_result = {
+            crate::probe!(
+                class = "delib.gate.lane_wait",
+                persona = %self.persona_name,
+                directed = ws.directed_at_self(),
+                attention = ?ws.attention,
+                lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                "at the serving-lane admission gate"
+            );
+            // A NON-directed wait yields to a directed line pending in her inbox:
+            // the park held no lane, so abandoning it costs nothing, and the loop
+            // head drains the line next (`cognition::directed_pending`). A `None`
+            // here is her CHOICE to answer first, named by the probe — not a fault.
+            let _lane = if ws.attention.requires_priority() {
+                crate::cognition::resource_admission::acquire_serving_lane(true).await
+            } else {
+                tokio::select! {
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(false) => lane,
+                    _ = crate::cognition::directed_pending::wait(self.persona_id) => {
+                        crate::probe!(
+                            class = "delib.gate.yielded_to_directed",
+                            persona = %self.persona_name,
+                            "parked self-work lane wait yielded: a directed line is pending"
+                        );
+                        return None;
+                    }
+                }
+            };
+            // HER task-positive system is engaged from here: the per-citizen boredom gate
+            // (dreams) reads this stamp, never a room wake.
+            crate::cognition::activity_gate::persona_engaged(self.persona_id);
+            crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
+            crate::probe!(
+                class = "delib.gate.lane_acquired",
+                persona = %self.persona_name,
+                "lane admission granted — prefill slot next"
+            );
+            // #56 prefill throttle: under live external GPU pressure (a game, the browser)
+            // fewer than the served lane count may PREFILL concurrently — the instant valve
+            // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
+            // no pressure → target == lanes → this never waits. Released with the block.
+            let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
+            crate::probe!(
+                class = "delib.gate.prefill_acquired",
+                persona = %self.persona_name,
+                "prefill slot granted — issuing the model call"
+            );
+            if let Some(sink) = ws.token_sink.as_ref() {
+                binding
+                    .adapter
+                    .generate_stream_checked(request, sink.clone())
+                    .await
+            } else {
+                let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+                drop(receiver); // No observer: do not retain streamed chunks while awaiting the result.
+                binding.adapter.generate_stream_checked(request, sink).await
+            }
+        };
+        if let Some(lease) = &mut capture {
+            match &gen_result {
+                Ok(response) => lease.finish(Some(response), None),
+                Err(error) => lease.finish(None, Some(&error.to_string())),
+            }
+        }
+        Some(gen_result)
+    }
+
     fn build_request_within(
         &self,
         binding: &ModelBinding,
@@ -1060,33 +1308,27 @@ impl LlmDeliberationFaculty {
             .sum()
     }
 
-    /// `composition` is `(context_window, framing, fitted_conversation, ctx_floor)`
-    /// — the terms that PRODUCED `budget_tokens`. Carried purely so this probe and
-    /// `delib.turn.demand` can be reconciled against each other: read separately
-    /// they disagreed (Atlas showed `after_framing 9,243 − conv 4,334` yet rendered
-    /// `budget=287`) and nothing on hand could say which was wrong, because the two
-    /// numbers lived in different probes with no shared term. A seam that can only
-    /// be reasoned about by cross-referencing two records is a seam that gets
-    /// guessed at ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+    /// Inputs measured at the request boundary, including the selected native
+    /// surface, let the render receipt reconcile with the whole-window budget.
     fn render_assembled_context_within(
         &self,
         ws: &Workspace,
         budget_tokens: usize,
-        composition: (u32, usize, usize, usize, usize),
+        plan: &GroundingPlan<'_>,
+        composition: ContextComposition,
     ) -> String {
-        let (context_window, framing_tokens, conversation_tokens, ctx_floor, after_framing) =
-            composition;
-        // How much of `conversation_tokens` is the TRAILING tier (working-memory
-        // ledger, full latest result, perception facts).
-        //
-        // A SUBSET, not a separate term — `messages_unfitted` pushes trailing
-        // contributions into `messages`, so `used_msg_tokens` already counts them.
-        // Named `conv_trailing_share` for exactly that reason: emitted as
-        // `trailing_tokens` it read as a fourth claimant and I subtracted it twice,
-        // inflating an unexplained gap that had not actually changed. A probe field
-        // that invites a double-count is worse than no field
-        // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
-        let conv_trailing_share: usize = ws
+        let ContextComposition {
+            context_window,
+            framing_tokens,
+            conversation_tokens,
+            ctx_floor,
+            after_framing,
+            tool_tokens,
+        } = composition;
+        // Offered trailing content before fitting, not an additional claimant.
+        // Its retained portion is already included in conversation_tokens; list
+        // reduction or history eviction may make the offered amount much larger.
+        let offered_trailing_tokens: usize = ws
             .broadcast
             .iter()
             .filter(|c| c.decision.is_none() && c.trailing)
@@ -1105,9 +1347,11 @@ impl LlmDeliberationFaculty {
                 context_window,
                 framing_tokens,
                 conversation_tokens,
-                conv_trailing_share,
+                offered_trailing_tokens,
                 ctx_floor,
                 after_framing,
+                tool_tokens,
+                registry_tool_tokens = self.describe_tool_tokens(),
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -1132,14 +1376,8 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && !c.trailing)
             .collect();
         ctx.sort_by(|a, b| {
-            // ACTIVE-WORK sorts first, then salience. The ctx_floor reservation above
-            // is sized to her held card's content — but a reservation only holds if
-            // the reserved claimant is also FIRST in line: selection is greedy, so a
-            // higher-salience recall (divisible — it takes a prefix of any budget)
-            // would otherwise spend the reservation before active-work is considered.
-            // At generous budgets everything renders regardless and this only puts
-            // her own thread at the top of the grounding block, which is the wake
-            // briefing's order too (#125 slice 1).
+            // Retain the legacy enrichment ordering. Standing source units have
+            // already been reserved and cannot be spent by this optional walk.
             let a_held = a.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
             let b_held = b.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
             b_held.cmp(&a_held).then(
@@ -1166,7 +1404,16 @@ impl LlmDeliberationFaculty {
         // 495 times, while its `[your work]` / `[available work]` leads are ~200
         // and carry every fact a citizen needs to find work. The citizens were
         // saying "there are no open tasks available" about a 61-card board.
-        let mut selected: Vec<(&Contribution, String)> = Vec::with_capacity(ctx.len());
+        let mut selected: Vec<GroundingPiece<'_>> = plan
+            .pieces
+            .iter()
+            .filter(|piece| !piece.contribution.trailing)
+            .map(|piece| GroundingPiece {
+                contribution: piece.contribution,
+                units: piece.units,
+                tokens: piece.tokens,
+            })
+            .collect();
         let mut dropped: Vec<String> = Vec::new();
         // The SALIENCE of each whole-drop, kept structured beside the formatted
         // string so the inversion check below reads a number instead of parsing one
@@ -1174,68 +1421,35 @@ impl LlmDeliberationFaculty {
         // sensor starts lying the first time the format changes).
         let mut dropped_salience: Vec<(String, f32)> = Vec::new();
         let mut partial: Vec<String> = Vec::new();
-        let mut used = 0usize;
+        let mut used = plan.system_tokens();
         for c in ctx {
-            // Charge the rendered bytes together, rounded UP. Separately flooring
-            // name/body estimates undercounted some byte residues at the window edge.
-            let piece = Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
-            if used + piece <= budget_tokens {
-                used += piece;
-                selected.push((c, c.content.clone()));
-                continue;
+            if c.standing_grounding {
+                continue; // This exact source already owns its selected units above.
             }
-            // Whole won't fit. Divisible? Take the longest leading run of units
-            // that does. `parts` is never empty (every constructor seeds it), so
-            // a single-part contribution simply finds no fitting prefix and falls
-            // through to the drop below — byte-identical to the old behavior.
-            // The source's list notice is part of its payload. Reserve the
-            // widest possible notice before admitting any units, not afterward.
-            let how = match c.expand_command {
-                Some(cmd) => format!(" — run `{cmd}` to see all {}", c.parts.len()),
-                None => String::new(),
-            };
-            let notice_bound = format!("…{} more not shown (context budget){how}", c.parts.len());
-            let mut kept_units: Vec<&str> = Vec::new();
-            let mut unit_bytes = 0usize;
-            for (i, unit) in c.parts.iter().enumerate() {
-                let next_bytes = unit_bytes + unit.len() + usize::from(i > 0);
-                let with_notice = next_bytes + 1 + notice_bound.len();
-                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice)
-                    > budget_tokens
-                {
-                    break;
-                }
-                unit_bytes = next_bytes;
-                kept_units.push(unit.as_str());
-            }
-            if kept_units.is_empty() {
+            if let Some(piece) = GroundingPiece::within(c, budget_tokens.saturating_sub(used)) {
+                used += piece.tokens;
+                selected.push(piece);
+            } else {
+                let tokens = GroundingPiece::whole(c).tokens;
                 dropped.push(format!(
-                    "{}(sal={:.2},tok={})",
+                    "{}(sal={:.2},tok={tokens})",
                     c.faculty.as_str(),
-                    c.salience,
-                    piece
+                    c.salience
                 ));
                 dropped_salience.push((c.faculty.as_str().to_string(), c.salience));
-                continue;
             }
-            // A truncated LIST must SAY it is truncated, or the persona reads a
-            // partial board as the whole board and reports work that isn't there
-            // — a quieter lie than the empty block this replaces.
-            let omitted = c.parts.len() - kept_units.len();
-            let notice = format!("…{omitted} more not shown (context budget){how}");
-            let unit_tokens =
-                Self::context_piece_tokens(c.faculty.as_str(), unit_bytes + 1 + notice.len());
-            used += unit_tokens;
-            let body = format!("{}\n{notice}", kept_units.join("\n"));
-            partial.push(format!(
-                "{}({}/{} units,tok={}→{})",
-                c.faculty.as_str(),
-                kept_units.len(),
-                c.parts.len(),
-                piece,
-                unit_tokens
-            ));
-            selected.push((c, body));
+        }
+        for piece in &selected {
+            if let Some(units) = piece.units {
+                let c = piece.contribution;
+                partial.push(format!(
+                    "{}({units}/{} units,tok={}→{})",
+                    c.faculty.as_str(),
+                    c.parts.len(),
+                    GroundingPiece::whole(c).tokens,
+                    piece.tokens
+                ));
+            }
         }
         // Received-vs-rendered receipt at the ONE seam where a surfaced
         // contribution can silently vanish between attention and the prompt.
@@ -1248,16 +1462,11 @@ impl LlmDeliberationFaculty {
             context_window,
             framing_tokens,
             conversation_tokens,
-            conv_trailing_share,
+            offered_trailing_tokens,
             ctx_floor,
-            // What the NATIVE tool schemas cost. Inferred at ~4,609 from the other
-            // terms before it was measured, which is one inference too many: the
-            // doc on `describe_tool_tokens` still claimed "a few dozen tokens, not
-            // the 4-5k the old full-registry dump cost" — written when the surface
-            // WAS a two-tool discovery pair, and false since #206 deliberately
-            // restored the full ~dozen native tools. Reading that stale sentence is
-            // exactly why the right suspect got dismissed.
-            tool_tokens = self.describe_tool_tokens(),
+            // Actual selected schemas, not the full registry's withheld cost.
+            tool_tokens,
+            registry_tool_tokens = self.describe_tool_tokens(),
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the
@@ -1273,7 +1482,7 @@ impl LlmDeliberationFaculty {
             rendered = selected.len(),
             kept = %selected
                 .iter()
-                .map(|(c, _)| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .map(|piece| { let c = piece.contribution; format!("{}(sal={:.2})", c.faculty.as_str(), c.salience) })
                 .collect::<Vec<_>>()
                 .join(","),
             dropped = %dropped.join(","),
@@ -1342,7 +1551,7 @@ impl LlmDeliberationFaculty {
         if let Some((worst_name, worst_sal)) = worst_dropped {
             let cheapest_kept = selected
                 .iter()
-                .map(|(c, _)| c.salience)
+                .map(|piece| piece.contribution.salience)
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
                                                                                        // `None` = nothing survived at all, which is maximal harm, never "no finding".
             let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
@@ -1354,9 +1563,6 @@ impl LlmDeliberationFaculty {
                     }
                     Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
                 };
-                // Bound as a local: the message interpolates it, and a probe FIELD
-                // assignment is not a binding the format string can see.
-                let tool_tokens = self.describe_tool_tokens();
                 crate::probe!(
                     class = "delib.context.salience_inversion",
                     persona = %self.persona_name,
@@ -1417,7 +1623,8 @@ impl LlmDeliberationFaculty {
         // that #205 put there on purpose.
         //
         // `false` (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by(|(a, _), (b, _)| {
+        selected.sort_by(|a, b| {
+            let (a, b) = (a.contribution, b.contribution);
             u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| {
                 match (a.stable, b.stable) {
                     // Stable tier: canonical, so the cacheable prefix is deterministic.
@@ -1428,11 +1635,12 @@ impl LlmDeliberationFaculty {
             })
         });
         let mut block = String::new();
-        for (c, body) in selected {
+        for piece in selected {
+            let c = piece.contribution;
             block.push_str("\n[");
             block.push_str(c.faculty.as_str());
             block.push_str("]\n");
-            block.push_str(&body);
+            piece.append_body(&mut block);
             block.push('\n');
         }
         block
@@ -1538,26 +1746,44 @@ impl LlmDeliberationFaculty {
     /// introspectable at every turn (tests, replay, operator tooling). The RAG is
     /// the load-bearing input; it must never be opaque.
     ///
-    /// Enforces the served window HERE — the one place the deliberation prompt is
-    /// assembled (task #50). The gateway tokenizes the whole prompt and 500s if it
-    /// reaches `n_ctx`, so `system + user` must fit `context_window` minus a
-    /// completion reserve. Priority of what survives under pressure:
-    ///   1. the framing wrapper (who she is + how to take her turn) — essential,
-    ///      small, always kept;
-    ///   2. the burst (the recent activity she is responding to) — kept, trimmed
-    ///      from the HEAD (oldest first) so the latest messages always survive;
-    ///   3. the assembled context (recall + grounding) — enrichment, gets the
-    ///      remainder, dropped WHOLE in salience order.
+    /// Fits the estimated request to the served window, including selected tool
+    /// schemas and the planned completion reserve. Identity framing, complete
+    /// current inputs/results, and source-declared minimum standing context are
+    /// retained first; insufficient capacity produces an explicit fault. Optional
+    /// history then fits by whole, quantized front eviction. Additional source
+    /// units and recall use the remaining room. Requiredness is independent of
+    /// system/trailing cache placement; this estimate is not a backend token count.
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
         // Introspection / test entry: size against the CURRENT served window. The
         // production path (`contribute`) instead loads the binding ONCE and calls
         // `prompt_view_within` with that window, so prompt sizing and the request's
         // model come from the same atomic snapshot (no torn read across a re-home).
-        self.prompt_view_within(ws, self.binding.load().context_window)
+        let binding = self.binding.load();
+        let (window, calibration) = self.prompt_fit(&binding);
+        self.prompt_view_with_feedback(ws, window, calibration)
     }
 
-    /// [`prompt_view`] against an explicit served window. See that method.
+    fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
+        let feedback = self.prompt_feedback.load();
+        feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
+            (binding.context_window, PromptCalibration::default()),
+            |f| (binding.context_window.min(f.available), f.calibration),
+        )
+    }
+
+    /// Fixture view against an explicit window, without a prior provider observation.
+    #[cfg(test)]
     fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
+        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
+    }
+
+    /// Apply observed token density to the same standing-grounding plan.
+    fn prompt_view_with_feedback(
+        &self,
+        ws: &Workspace,
+        context_window: u32,
+        calibration: PromptCalibration,
+    ) -> DeliberationPromptView {
         // Desired reply room from the existing measured-reserve policy. Below,
         // it yields to the current payload's measured floor; that planned value
         // travels with the view into `build_request_within` as `max_tokens`.
@@ -1587,9 +1813,6 @@ impl LlmDeliberationFaculty {
         // conversation to fit room that was never occupied (card dec1a7ff). One
         // decision, made once, consulted by the budget and by the request alike.
         let selected = self.select_tool_surface(ws, context_window);
-        let budget = (context_window as usize)
-            .saturating_sub(completion_reserve)
-            .saturating_sub(selected.tokens);
 
         // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
         // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
@@ -1618,62 +1841,6 @@ impl LlmDeliberationFaculty {
                 .stable,
         );
 
-        // The conversation — role-attributed turns built from `ws.turns` (own posts
-        // → assistant, peers → user), kept to the most-recent tail when it would
-        // overflow. The OLDEST turns yield first under pressure (the latest activity
-        // is what the turn is about — the same priority the old flat head-trim had,
-        // now at turn granularity).
-        // RESERVE THE GROUNDING FLOOR BEFORE THE CONVERSATION FILLS.
-        //
-        // `messages_within` is greedy: hand it everything after framing and it takes
-        // everything after framing, so grounding gets the remainder — which is zero.
-        // That is not a budget-size problem and growing the window does not fix it:
-        // measured 2026-08-06, the served window rose 16,384 → 24,128 and Anwen,
-        // Asha and Atlas still each rendered `budget=0 kept=[]`, dropping recall,
-        // roster, workspace-map AND the work board on every turn. The conversation
-        // simply absorbed the increase. Supply was never the binding constraint at
-        // this seam; ORDER was.
-        //
-        // The floor is derived, not invented: enough for the SMALLEST contribution
-        // actually offered this turn, so at least one grounding fact always reaches
-        // her. Bounded at half the post-framing pool so the reservation can never
-        // invert the problem and starve the conversation — an even split is a
-        // fairness rule between two claimants, not a tuning constant. Whatever
-        // grounding does not use still flows back: `ctx_budget` below is computed
-        // from what the conversation ACTUALLY consumed, not from this reservation.
-        let after_framing = budget.saturating_sub(framing_tokens);
-        // Which contribution the floor reserves is a PRIORITY ordering, not a size
-        // contest. "Smallest offered" guaranteed *a* fact reached her — but on a
-        // squeezed window the smallest fact is a ~50-token status brick, and what
-        // dropped instead was ACTIVE-WORK: the card content of the claim she is
-        // actually holding. Live specimen 2026-08-07: Benchy held a staged SWE card,
-        // her render dropped recall/roster/active-work/workspace-map/kanban
-        // (ctx_floor=49 kept one perception brick), her whole knowledge of the work
-        // was a bare claim receipt, and she reasonably yielded — 98s of prefill for
-        // 7 tokens of yield_turn, own_repetition firing. A held claim is HER THREAD
-        // (the wake briefing already leads with it — #125 slice 1); the mid-session
-        // floor must agree. So: reserve the active-work contribution when one is
-        // offered this turn, else the smallest, bounded at half the post-framing
-        // pool exactly as before (the fairness cap between grounding and
-        // conversation is unchanged — only which claimant holds the reservation).
-        let contribution_cost =
-            |c: &Contribution| Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
-        let offered = || {
-            ws.broadcast
-                .iter()
-                .filter(|c| c.decision.is_none() && !c.trailing)
-        };
-        let ctx_floor = offered()
-            .find(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
-            .map(&contribution_cost)
-            .or_else(|| offered().map(&contribution_cost).min())
-            // The `ctx_budget` computation below charges the working-context wrapper
-            // header against this reservation before any contribution renders, so a
-            // floor sized to the contribution ALONE under-reserves by exactly the
-            // header and delivers nothing. Reserve the delivered shape: header + item.
-            .map(|cost| cost + Self::working_context_header_cost())
-            .unwrap_or(0)
-            .min(after_framing / 2);
         // The volatile framing (clock + own-time/presence) rides the FACTS phase
         // of the conversation — flicker-class content, before the ask — never the
         // system message it invalidated on every act (see the split note below).
@@ -1683,25 +1850,82 @@ impl LlmDeliberationFaculty {
             ws.directed_at_self(),
             holds_live_work,
         );
-        let all_messages = self.messages_unfitted(
+        let mut all_messages = self.messages_unfitted(
             ws,
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
         );
+
+        // Price the untruncated trailing sources separately: messages_unfitted
+        // leaves them borrowed until the same plan has reserved their exact units.
+        let input_identity = all_messages.input_identity;
+        let calibration = if calibration
+            .input_identity
+            .is_some_and(|key| key != input_identity)
+        {
+            PromptCalibration::default()
+        } else {
+            calibration
+        };
+        let unfitted_message_tokens = all_messages.tokens()
+            + ws.broadcast
+                .iter()
+                .filter(|c| c.decision.is_none() && c.trailing && c.standing_grounding)
+                .map(|c| GroundingPiece::whole(c).tokens)
+                .sum::<usize>();
+        let grounding_budget = calibration
+            .prompt_budget(
+                (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
+            )
+            .saturating_sub(framing_tokens)
+            .saturating_sub(selected.tokens)
+            .saturating_sub(all_messages.required_tokens());
+        let (mut grounding, grounding_error) = match GroundingPlan::minimum(ws, grounding_budget) {
+            Ok(plan) => (plan, None),
+            Err(error) => (GroundingPlan::default(), Some(error)),
+        };
+        all_messages.grounding_tokens = grounding.trailing_tokens();
+        let ctx_floor = if grounding.pieces.is_empty() {
+            // Preserve the existing optional-enrichment allowance when no standing
+            // source bid. This soft floor confers no requiredness on recall or on
+            // cache placement; standing sources above are never capped by a ratio.
+            let offered = || {
+                ws.broadcast
+                    .iter()
+                    .filter(|c| c.decision.is_none() && !c.trailing)
+            };
+            let cost =
+                |c: &Contribution| Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
+            let after_framing = calibration
+                .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
+                .saturating_sub(selected.tokens)
+                .saturating_sub(framing_tokens);
+            offered()
+                .find(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
+                .map(cost)
+                .or_else(|| offered().map(cost).min())
+                .map(|tokens| tokens + Self::working_context_header_cost())
+                .unwrap_or(0) // No optional source bid means no enrichment reservation.
+                .min(after_framing / 2)
+        } else {
+            grounding.system_reserve()
+        };
 
         // The actual stimulus and received action payload are irreducible input,
         // not optional conversation fill. Reuse the existing reserve policy, but
         // let its desired room yield to their measured floor. Keep this exact
         // planned reserve on the view and pass it into the generation request.
         let desired_completion_reserve = completion_reserve;
-        let mandatory_tokens = framing_tokens
-            .saturating_add(selected.tokens)
-            .saturating_add(ctx_floor)
-            .saturating_add(all_messages.required_tokens());
+        let mandatory_tokens = calibration.charge(
+            framing_tokens
+                .saturating_add(selected.tokens)
+                .saturating_add(ctx_floor)
+                .saturating_add(all_messages.required_tokens()),
+        );
         let completion_reserve = desired_completion_reserve
             .min((context_window as usize).saturating_sub(mandatory_tokens))
             .max(Self::COMPLETION_FLOOR_TOKENS as usize);
-        let after_framing = (context_window as usize)
-            .saturating_sub(completion_reserve)
+        let after_framing = calibration
+            .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
             .saturating_sub(selected.tokens)
             .saturating_sub(framing_tokens);
         let msg_budget = after_framing.saturating_sub(ctx_floor);
@@ -1747,15 +1971,17 @@ impl LlmDeliberationFaculty {
         // citizen capped at 8192 fills 8192, so a p95 of what-was-sent re-derives the
         // cap that produced it and freezes it forever. Every term below is therefore
         // the UNTRUNCATED one.
-        let demand_tokens = framing_tokens
-            .saturating_add(all_messages.tokens())
-            .saturating_add(Self::assembled_context_cost(ws))
-            .saturating_add(Self::working_context_header_cost())
-            .saturating_add(desired_completion_reserve)
-            // UNTRUNCATED per this probe's contract — which for the tool surface
-            // means the full registry ONLY when the window is what withheld it.
-            // See `SelectedSurface::demand_tokens`.
-            .saturating_add(selected.demand_tokens(self.describe_tool_tokens()));
+        let demand_tokens = calibration
+            .charge(
+                framing_tokens
+                    .saturating_add(unfitted_message_tokens)
+                    .saturating_add(Self::assembled_context_cost(ws))
+                    .saturating_add(Self::working_context_header_cost())
+                    // Demand includes the full registry only when capacity withheld it.
+                    .saturating_add(selected.demand_tokens(self.describe_tool_tokens())),
+            )
+            // Output is already measured in provider tokens; calibrate only input.
+            .saturating_add(desired_completion_reserve);
         if let Some(reg) = &self.working_set {
             reg.record(
                 self.persona_id,
@@ -1772,7 +1998,7 @@ impl LlmDeliberationFaculty {
             demand_tokens,
             context_window,
             framing_tokens,
-            conversation_tokens = all_messages.tokens(),
+            conversation_tokens = unfitted_message_tokens,
             grounding_tokens = Self::assembled_context_cost(ws),
             completion_reserve,
             // The honest headline: >1.0 means this turn wanted more window than it had,
@@ -1782,10 +2008,22 @@ impl LlmDeliberationFaculty {
             "turn demand vs served window"
         );
 
-        let (messages, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
-            Ok(messages) => (messages, None),
-            Err(error) => (Vec::new(), Some(error)),
+        let (mut fitted, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
+            Ok(fitted) => (fitted, None),
+            Err(error) => (FittedMessages::default(), Some(error)),
         };
+        // Only the source's truthful minimum outranks optional conversation.
+        // Additional declared list units use actual leftover room after fitting;
+        // a large list cannot turn every detail into mandatory input.
+        if capacity_error.is_none() && grounding_error.is_none() {
+            grounding
+                .expand_within(after_framing.saturating_sub(Self::messages_cost(&fitted.messages)));
+        }
+        fitted.messages.splice(
+            fitted.grounding_at..fitted.grounding_at,
+            grounding.trailing_messages(),
+        );
+        let messages = fitted.messages;
 
         // Whatever remains after framing + conversation goes to enrichment
         // context. The framing estimate above was taken with an EMPTY context,
@@ -1805,13 +2043,15 @@ impl LlmDeliberationFaculty {
         let context = self.render_assembled_context_within(
             ws,
             ctx_budget,
-            (
+            &grounding,
+            ContextComposition {
                 context_window,
                 framing_tokens,
-                used_msg_tokens,
+                conversation_tokens: used_msg_tokens,
                 ctx_floor,
                 after_framing,
-            ),
+                tool_tokens: selected.tokens,
+            },
         );
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
@@ -1846,11 +2086,13 @@ impl LlmDeliberationFaculty {
         // This is the native request estimate, not a backend tokenizer count.
         // Adapters may add model-specific framing; live acceptance still checks
         // their captured request/usage rather than assuming this estimate exact.
-        let wire_tokens = Self::framing_cost(&system)
+        let estimated_prompt_tokens = Self::framing_cost(&system)
             .saturating_add(Self::messages_cost(&messages))
-            .saturating_add(selected.tokens)
+            .saturating_add(selected.tokens);
+        let wire_tokens = calibration
+            .charge(estimated_prompt_tokens)
             .saturating_add(completion_reserve);
-        let capacity_error = capacity_error.or_else(|| {
+        let capacity_error = grounding_error.or(capacity_error).or_else(|| {
             (wire_tokens > context_window as usize).then_some(PromptCapacityError {
                 required_tokens: wire_tokens,
                 budget_tokens: context_window as usize,
@@ -1859,6 +2101,8 @@ impl LlmDeliberationFaculty {
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {
             system,
+            input_identity,
+            estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
             capacity_error,
             messages,
@@ -1902,6 +2146,7 @@ impl LlmDeliberationFaculty {
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
             .expect("test workspace must fit its complete current stimulus and action result")
+            .messages
     }
 
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
@@ -1913,6 +2158,44 @@ impl LlmDeliberationFaculty {
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::working_set`] measures this.
     fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
+        // Required-input cache identity, not provider wire provenance. Hash
+        // borrowed payload once, never JSON, optional history, or generated
+        // clock/cycle/diagnostic framing. The existing source-defined minimum
+        // keeps large optional lists out of this path; do not hash content and
+        // its duplicate parts. Model/window and schema rebuilds key the owner.
+        let mut input = Sha256::new();
+        let field = |hash: &mut Sha256, bytes: &[u8]| {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        };
+        field(&mut input, self.system_prompt.as_bytes());
+        field(&mut input, ws.room_id.as_bytes());
+        let standing = || {
+            ws.broadcast
+                .iter()
+                .filter(|c| c.decision.is_none() && c.fault.is_none() && c.standing_grounding)
+        };
+        input.update(b"standing");
+        input.update((standing().count() as u64).to_le_bytes());
+        for c in standing() {
+            field(&mut input, c.faculty.as_str().as_bytes());
+            let piece = GroundingPiece::minimum(c);
+            match piece.units {
+                None => field(&mut input, c.content.as_bytes()),
+                Some(units) => {
+                    for part in c.parts.iter().take(units) {
+                        field(&mut input, part.as_bytes());
+                    }
+                }
+            }
+        }
+        input.update(b"room_updates");
+        input.update((ws.room_updates.len() as u64).to_le_bytes());
+        for update in ws.room_updates.iter() {
+            field(&mut input, update.peer_id.as_bytes());
+            field(&mut input, update.room_id.as_bytes());
+            field(&mut input, update.text.as_bytes());
+        }
         // Collapse consecutive same-role turns into one message each (chronological).
         // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
@@ -1964,7 +2247,13 @@ impl LlmDeliberationFaculty {
         participants.push(self.persona_name.clone());
         participants.sort();
         participants.dedup();
+        input.update(b"stimulus");
+        input.update([stimulus_index.is_some() as u8]);
         for (index, turn) in ws.turns.iter().enumerate() {
+            if Some(index) == stimulus_index {
+                field(&mut input, turn.author.as_bytes());
+                field(&mut input, turn.content.as_bytes());
+            }
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             if Some(index) == stimulus_index {
@@ -2086,11 +2375,12 @@ impl LlmDeliberationFaculty {
         // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
         // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
         // in stability, same law as the system-side phases.
+        let grounding_at = messages.len();
         let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
             for c in ws
                 .broadcast
                 .iter()
-                .filter(|c| c.decision.is_none() && c.trailing)
+                .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
                 .filter(|c| {
                     (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
                         == wm_trail
@@ -2140,8 +2430,10 @@ impl LlmDeliberationFaculty {
         // its head before this fitter clipped its tail: the two cuts could leave
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
+        input.update(b"active_result");
         let latest_result = self.working_memory.as_ref().and_then(|wm| {
             wm.active_action_full().map(|(seq, full)| {
+                field(&mut input, full.as_bytes());
                 ChatMessage::text(
                     "user",
                     format!("Full result of your most recent action (#{seq}):\n{full}"),
@@ -2157,10 +2449,15 @@ impl LlmDeliberationFaculty {
         // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
         // real, valid input, and this is its faithful representation.
         if messages.is_empty() && stimulus.is_none() && latest_result.is_none() {
+            field(&mut input, ws.world_state.as_bytes());
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
+        input.update([latest_result.is_some() as u8]);
         PromptMessages {
+            input_identity: input.finalize().into(),
             history: messages,
+            grounding_tokens: 0,
+            grounding_at,
             stimulus,
             latest_result,
             room_updates: ws
@@ -2249,7 +2546,7 @@ impl LlmDeliberationFaculty {
         &self,
         mut prompt: PromptMessages,
         budget_tokens: usize,
-    ) -> Result<Vec<ChatMessage>, PromptCapacityError> {
+    ) -> Result<FittedMessages, PromptCapacityError> {
         let required_tokens = prompt.required_tokens();
         // A quiet self-tick still needs one complete situation message. It has
         // no external stimulus to protect, but returning zero messages is not a
@@ -2318,10 +2615,14 @@ impl LlmDeliberationFaculty {
         }
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
+        let grounding_at = prompt.grounding_at.saturating_sub(start);
         prompt.history.extend(prompt.stimulus);
         prompt.history.extend(prompt.room_updates);
         prompt.history.extend(prompt.latest_result);
-        Ok(prompt.history)
+        Ok(FittedMessages {
+            messages: prompt.history,
+            grounding_at,
+        })
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
@@ -2427,7 +2728,11 @@ impl SelectedSurface<'_> {
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
 /// until fitting is complete. They confer no authority on a message's author.
 struct PromptMessages {
+    input_identity: [u8; 32],
     history: Vec<ChatMessage>,
+    /// Kept before the append-only result ring even when older history yields.
+    grounding_tokens: usize,
+    grounding_at: usize,
     stimulus: Option<ChatMessage>,
     latest_result: Option<ChatMessage>,
     room_updates: Vec<ChatMessage>,
@@ -2440,7 +2745,8 @@ impl PromptMessages {
             .chain(self.room_updates.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
-            .sum()
+            .sum::<usize>()
+            + self.grounding_tokens
     }
 
     fn tokens(&self) -> usize {
@@ -2448,7 +2754,231 @@ impl PromptMessages {
     }
 }
 
-/// The received stimulus/action payload cannot be represented in this window.
+#[derive(Default)]
+struct FittedMessages {
+    messages: Vec<ChatMessage>,
+    grounding_at: usize,
+}
+
+#[derive(Default)]
+struct ContextComposition {
+    context_window: u32,
+    framing_tokens: usize,
+    conversation_tokens: usize,
+    ctx_floor: usize,
+    after_framing: usize,
+    tool_tokens: usize,
+}
+
+/// A borrowed selection of whole source content or its declared atomic prefix.
+/// Reserving and expanding it never copies the source payload.
+struct GroundingPiece<'a> {
+    contribution: &'a Contribution,
+    /// None keeps the source's original rendering, including its separators.
+    units: Option<usize>,
+    tokens: usize,
+}
+
+impl<'a> GroundingPiece<'a> {
+    fn cost(c: &Contribution, body_bytes: usize) -> usize {
+        if c.trailing {
+            (c.faculty.as_str().len() + body_bytes + "[]\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
+                + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS
+        } else {
+            LlmDeliberationFaculty::context_piece_tokens(c.faculty.as_str(), body_bytes)
+        }
+    }
+
+    fn whole(c: &'a Contribution) -> Self {
+        Self {
+            contribution: c,
+            units: None,
+            tokens: Self::cost(c, c.content.len()),
+        }
+    }
+
+    const NOTICE_SUFFIX: &'static str = " more not shown (context budget)";
+    const EXPAND_PREFIX: &'static str = " — run `";
+    const EXPAND_SUFFIX: &'static str = "` to see all ";
+
+    fn notice_bytes(c: &Contribution, omitted: usize) -> usize {
+        let digits = |n: usize| n.max(1).ilog10() as usize + 1;
+        let expansion = match c.expand_command {
+            Some(cmd) => {
+                Self::EXPAND_PREFIX.len()
+                    + cmd.len()
+                    + Self::EXPAND_SUFFIX.len()
+                    + digits(c.parts.len())
+            }
+            None => 0,
+        };
+        "…".len() + digits(omitted) + Self::NOTICE_SUFFIX.len() + expansion
+    }
+
+    fn append_notice(c: &Contribution, omitted: usize, out: &mut String) {
+        use std::fmt::Write;
+        let _ = write!(out, "…{omitted}{}", Self::NOTICE_SUFFIX);
+        if let Some(cmd) = c.expand_command {
+            let _ = write!(
+                out,
+                "{}{cmd}{}{}",
+                Self::EXPAND_PREFIX,
+                Self::EXPAND_SUFFIX,
+                c.parts.len()
+            );
+        }
+    }
+
+    fn minimum(c: &'a Contribution) -> Self {
+        let whole = Self::whole(c);
+        if c.parts.len() < 2 {
+            return whole;
+        }
+        let tokens = Self::cost(
+            c,
+            c.parts[0].len() + 1 + Self::notice_bytes(c, c.parts.len() - 1),
+        );
+        if tokens >= whole.tokens {
+            return whole;
+        }
+        Self {
+            contribution: c,
+            units: Some(1),
+            tokens,
+        }
+    }
+
+    fn within(c: &'a Contribution, budget: usize) -> Option<Self> {
+        let whole = Self::whole(c);
+        if whole.tokens <= budget {
+            return Some(whole);
+        }
+        // Reserve the actual omission notice before accepting complete units.
+        let mut bytes = 0usize;
+        let mut selected = None;
+        for (index, unit) in c
+            .parts
+            .iter()
+            .take(c.parts.len().saturating_sub(1))
+            .enumerate()
+        {
+            bytes += unit.len() + usize::from(index > 0);
+            let units = index + 1;
+            let tokens = Self::cost(c, bytes + 1 + Self::notice_bytes(c, c.parts.len() - units));
+            if tokens > budget {
+                break;
+            }
+            selected = Some(Self {
+                contribution: c,
+                units: Some(units),
+                tokens,
+            });
+        }
+        selected
+    }
+
+    fn append_body(&self, out: &mut String) {
+        let c = self.contribution;
+        match self.units {
+            None => out.push_str(&c.content),
+            Some(units) => {
+                for (index, unit) in c.parts[..units].iter().enumerate() {
+                    if index > 0 {
+                        out.push('\n');
+                    }
+                    out.push_str(unit);
+                }
+                out.push('\n');
+                Self::append_notice(c, c.parts.len() - units, out);
+            }
+        }
+    }
+}
+
+/// The reservation retains the exact source units rendering will emit. An
+/// equal-salience list cannot spend a peer's reservation; KV placement never
+/// determines whether standing activity context may be evicted.
+#[derive(Default)]
+struct GroundingPlan<'a> {
+    pieces: Vec<GroundingPiece<'a>>,
+}
+
+impl<'a> GroundingPlan<'a> {
+    fn minimum(ws: &'a Workspace, budget: usize) -> Result<Self, PromptCapacityError> {
+        let pieces: Vec<_> = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.standing_grounding)
+            .map(GroundingPiece::minimum)
+            .collect();
+        let plan = Self { pieces };
+        let required_tokens = plan.system_reserve() + plan.trailing_tokens();
+        if required_tokens > budget {
+            return Err(PromptCapacityError {
+                required_tokens,
+                budget_tokens: budget,
+            });
+        }
+        Ok(plan)
+    }
+
+    fn expand_within(&mut self, budget: usize) {
+        let mut used = self.system_reserve() + self.trailing_tokens();
+        // Every minimum remains owned before optional details can spend spare
+        // room. Preserve broadcast order for standing sources' trailing KV tier.
+        for piece in &mut self.pieces {
+            let available = budget.saturating_sub(used) + piece.tokens;
+            if let Some(expanded) = GroundingPiece::within(piece.contribution, available) {
+                used = used - piece.tokens + expanded.tokens;
+                *piece = expanded;
+            }
+        }
+    }
+
+    fn trailing_tokens(&self) -> usize {
+        self.pieces
+            .iter()
+            .filter(|p| p.contribution.trailing)
+            .map(|p| p.tokens)
+            .sum()
+    }
+
+    fn system_tokens(&self) -> usize {
+        self.pieces
+            .iter()
+            .filter(|p| !p.contribution.trailing)
+            .map(|p| p.tokens)
+            .sum()
+    }
+
+    fn system_reserve(&self) -> usize {
+        let tokens = self.system_tokens();
+        tokens
+            + if tokens > 0 {
+                LlmDeliberationFaculty::working_context_header_cost()
+            } else {
+                0
+            }
+    }
+
+    fn trailing_messages(&self) -> Vec<ChatMessage> {
+        self.pieces
+            .iter()
+            .filter(|p| p.contribution.trailing)
+            .map(|piece| {
+                let c = piece.contribution;
+                let mut body = String::with_capacity(piece.tokens * GUARD_CHARS_PER_TOKEN);
+                body.push('[');
+                body.push_str(c.faculty.as_str());
+                body.push_str("]\n");
+                piece.append_body(&mut body);
+                ChatMessage::text("user", body)
+            })
+            .collect()
+    }
+}
+
+/// The required prompt input cannot be represented in this window.
 /// No partial payload is submitted: the existing fault and demand paths expose
 /// the capacity problem without recording it as a citizen's decision to pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2472,6 +3002,9 @@ impl std::fmt::Display for PromptCapacityError {
 #[derive(Debug, Clone)]
 pub struct DeliberationPromptView {
     pub system: String,
+    input_identity: [u8; 32],
+    /// Cached pre-calibration cost, including selected schemas and framing.
+    pub estimated_prompt_tokens: usize,
     /// Exactly the reserve charged by this plan, also used by the wire request.
     pub completion_reserve: u32,
     pub capacity_error: Option<PromptCapacityError>,
@@ -2541,8 +3074,9 @@ impl Faculty for LlmDeliberationFaculty {
         // (glass-boxed 2026-07-19: recall + tools squeezed into 25% of the real window; it was
         // even mis-triggering the tool-surface shrink). Both the prompt budget (`prompt_view`)
         // and the completion reserve (`build_request`) derive from THIS one
-        // `binding.context_window`, so reconciling here keeps them in agreement AND makes
-        // overflow impossible by construction. A 0/not-ready snapshot (mid-relaunch) leaves the
+        // `binding.context_window`, so both estimates respect the observed capacity.
+        // This is not a tokenizer count or a lease against a later lane resize.
+        // A 0/not-ready snapshot (mid-relaunch) leaves the
         // provisioned window; the next ready tick re-reads. Model + adapter stay the same atomic
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         let binding = {
@@ -2560,27 +3094,20 @@ impl Faculty for LlmDeliberationFaculty {
                 .adapter
                 .live_served_window()
                 .unwrap_or(loaded.context_window);
-            // DEADBAND (2026-08-24, KV layer 4 — "it's a control system, also
-            // predictable" / vector-allocator semantics): the live value
-            // FLUTTERS (measured 38,144 ↔ 36,864 act-over-act), and every
-            // window-derived clip budget re-cuts on rebind, mutating the whole
-            // prompt — cached% pinned at the system head. Adopt only a REAL
-            // change (> 1/8 of the current binding — a lane relaunch, a plan
-            // reshape); hold the binding through flutter. The safety envelope
-            // is untouched for OVERFLOW: a served window that SHRANK below the
-            // binding by any amount still adopts DOWN via the same test only
-            // when material — and a sub-deadband shrink is llama's own
-            // 256-granularity padding, which the prompt fitter's completion
-            // reserve already absorbs many times over.
+            // Preserve KV stability through small GROWTH fluctuations. Every
+            // reduction is authoritative immediately: reply reserve is requested
+            // output, not spare capacity that can absorb a smaller served window.
+            // The existing quantized history eviction still controls prefix churn.
             let deadband = loaded.context_window / 8;
-            let material = effective.abs_diff(loaded.context_window) > deadband;
-            if !material {
+            let adopt = effective < loaded.context_window
+                || effective.saturating_sub(loaded.context_window) > deadband;
+            if !adopt {
                 if effective != loaded.context_window {
                     crate::probe!(
                         class = "delib.window.held",
                         binding = loaded.context_window,
                         served = effective,
-                        "live window flutter within deadband — binding HELD so the                          prompt's derived budgets stay byte-stable (KV layer 4)"
+                        "small live capacity growth — retaining the smaller binding for KV stability"
                     );
                 }
                 loaded
@@ -2602,362 +3129,240 @@ impl Faculty for LlmDeliberationFaculty {
                 // re-read loops that shredded her memory were visible in her own
                 // trail ("I've been going in circles").
                 //
-                // Via `rcu` over the CURRENT value, never a store of our snapshot:
-                // a concurrent rebind (model swap, genome page-in — the other two
-                // writers on this handle) between our load and a whole-struct store
-                // would be silently clobbered. Only the window is ours to write;
-                // adapter/model ride whatever is current at commit time. The
-                // deadband above already hysteresis-gates what reaches here.
-                self.binding.rcu(|cur| ModelBinding {
-                    adapter: std::sync::Arc::clone(&cur.adapter),
-                    model: cur.model.clone(),
-                    context_window: effective,
-                });
-                std::sync::Arc::new(ModelBinding {
+                // This observation belongs to the EXACT loaded binding. An RCU
+                // retry against a newer route would attach the old adapter's
+                // capacity to a different model, or replace a newer observation.
+                // Publish once only if that snapshot still owns the handle. A
+                // losing turn keeps its original route locally; the next turn
+                // reads the winning binding and samples that adapter afresh.
+                let reconciled = Arc::new(ModelBinding {
                     adapter: std::sync::Arc::clone(&loaded.adapter),
                     model: loaded.model.clone(),
                     context_window: effective,
-                })
+                });
+                let _ = self
+                    .binding
+                    .compare_and_swap(&loaded, Arc::clone(&reconciled));
+                reconciled
             }
         };
-        let view = self.prompt_view_within(ws, binding.context_window);
-        if let Some(error) = view.capacity_error {
-            crate::probe!(
-                class = "delib.prompt.capacity",
-                persona = %self.persona_name,
-                required_tokens = error.required_tokens,
-                budget_tokens = error.budget_tokens,
-                context_window = binding.context_window,
-                "stimulus and action payload cannot fit; refusing an incomplete prompt"
-            );
-            return Some(Contribution::deliberation_fault(error.to_string()));
-        }
-        // FAIL LOUD, never a blank mind (companion to the `delib.prompt.empty`
-        // probe in the fitter): a view with NO conversation from a room that HAS
-        // turns means the budget arithmetic starved the prompt. Skipping the turn
-        // is safe (the room's messages stay queued; next tick re-perceives) —
-        // deliberating on a blank prompt is not: that is exactly how every persona
-        // greeting-looped for an hour on 2026-07-30 while looking "alive".
-        if view
-            .messages
-            .iter()
-            .all(|m| m.content_text().trim().is_empty())
-            && !ws.turns.is_empty()
-        {
-            tracing::error!(
-                persona = %self.persona_name,
-                window = binding.context_window,
-                room_turns = ws.turns.len(),
-                probe_class = "delib.prompt.starved",
-                "prompt fit produced an EMPTY conversation from a non-empty room — \
-                 skipping this turn rather than deliberating blind"
-            );
-            return None;
-        }
-        // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
-        // is the load-bearing input — never opaque. Enable the `cognition` log
-        // category for the persona to capture this per-turn (the existing
-        // record/replay harness — recorder + RagCaptureSink + vdd::turn_replay —
-        // is the durable path; this debug emit is the live tap).
-        tracing::debug!(
-            target: "cognition::deliberation",
-            persona = %self.persona_name,
-            system_prompt = %view.system,
-            burst = %view.user_text(),
-            "deliberation prompt — what the model sees this turn"
-        );
-        // SINGLE SHOT: one generation → one verdict. This faculty no longer runs
-        // an internal agent loop. If the model chooses to act, that is a
-        // `Decision::Act` verdict; the ORGANISM (the act→observe driver,
-        // `super::act_observe`) executes the calls, admits the result as memory,
-        // and re-perceives at the next tick. "Done" is the workspace SETTLING into
-        // Speak/Pass across ticks — never a counter in here. See
-        // docs/cognition/ACTING-ORGANISM.md §3.3.
-        //
-        // The thread is now ROLE-ATTRIBUTED (own posts → assistant, peers → user)
-        // built from the workspace's structured turns, not one flat `user` blob —
-        // the structured-turns refactor that fixes the echo loop.
-        let messages = view.messages.clone();
-        // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
-        // authorized surface → a small list) + `commands/help` (one named tool's call
-        // format) — when the persona has a tool surface. The rest of the surface is
-        // the compact CATEGORY INDEX inside the system prompt (progressive
-        // disclosure): the persona searches a category with `commands/list`, loads a
-        // tool's schema via `commands/help`, then calls it. A tool not in this native
-        // array still DISPATCHES — `act_observe` resolves any call by name — and small
-        // models emit those calls as JSON-in-prose, which the parse path below
-        // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
-        // the ~150-schema dump that overflowed `n_ctx` and muted her.
-        // WHICH surface she is offered is a question about her WINDOW, not about the
-        // kind of turn she is taking. It used to be the latter: a work turn got her
-        // hands, and every MESSAGE turn got the whole registry — so the tier least able
-        // to afford 37 schemas received them, on the commonest turn type. Measured
-        // 2026-09-07 on IntelMac (card e20e064f): a 0.5B on a 32,768 window took 8,735
-        // tokens of schemas — more than her framing and her whole conversation combined
-        // — reached 97.3 % window demand before writing a token, and published her
-        // prompt preamble to the room instead of answering.
-        //
-        // So: offer the full surface while it fits inside its share of the served
-        // window ([`ContextBudget::tool_surface_tokens`]), and fall back to her HANDS
-        // when it does not. A work turn still takes hands regardless — that choice is
-        // about focus, not size, and predates this.
-        //
-        // The fallback is hands, never nothing: `hands_surface` keeps the `commands/`
-        // discovery pair, so a withheld verb stays one `commands/list` away. Amputating
-        // the surface is the #206 cliff (14/14 SWE acts spent on `commands/help`, 0
-        // edits) and this must never become that.
-        //
-        // The decision itself lives in [`Self::select_tool_surface`] so that the
-        // budget math in `prompt_view_within` reaches the SAME answer — those two
-        // disagreed for the life of #3829, and the budget's copy priced the full
-        // registry on turns that sent hands (card dec1a7ff).
-        let selected = self.select_tool_surface(ws, binding.context_window);
-        if selected.reason == SurfaceReason::HandsForBudget {
-            // Only the BUDGET path is a row: a work turn narrowing is routine and
-            // already understood, but a message turn narrowing means she cannot see
-            // verbs she would otherwise have been offered. Whoever later asks "why
-            // did she never call X" needs this line to exist.
-            //
-            // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
-            // did not get — reported apart because one field used to carry the full
-            // registry's cost beside a count of her hands, and reconciling the two
-            // gave a nonsense tokens-per-tool.
-            crate::probe!(
-                class = "delib.tool_surface.withheld",
-                persona = %self.persona_name,
-                offered = self.hands_specs.len() as u64,
-                full = self.native_specs.len() as u64,
-                surface_tokens = selected.tokens as u64,
-                withheld_tokens = self.describe_tool_tokens() as u64,
-                budget_tokens = super::context_budget::ContextBudget::from_window(
-                    binding.context_window
-                )
-                .tool_surface_tokens() as u64,
-                context_window = binding.context_window,
-                "the full tool surface exceeds its share of the served window — \
-                 offering her hands; the discovery pair still reaches the rest"
-            );
-        }
-        // Selection and budget accounting borrow the cached schemas. Only the
-        // owned inference request needs a copy of the selected surface.
-        let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
-
-        let mut request = self.build_request_within(
-            &binding,
-            view.completion_reserve,
-            messages.clone(),
-            tools,
-            view.system.clone(),
+        let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
+        let mut rejected_prompt_tokens = None;
+        let mut gen_await_ms = 0u64;
+        // One corrective admission replay at most; no accepted cognition is
+        // repeated. Existing queue/header/stream deadlines still apply to each
+        // attempt. The immutable workspace and captured model route stay fixed.
+        let (view, resp) = loop {
+            let view = self.prompt_view_with_feedback(ws, fit_window, calibration);
+            if let Some(error) = view.capacity_error {
+                crate::probe!(
+                    class = "delib.prompt.capacity",
+                    persona = %self.persona_name,
+                    required_tokens = error.required_tokens,
+                    budget_tokens = error.budget_tokens,
+                    context_window = fit_window,
+                    "required prompt input cannot fit; refusing an incomplete prompt"
+                );
+                return Some(Contribution::deliberation_fault(error.to_string()));
+            }
+            // FAIL LOUD, never a blank mind (companion to the `delib.prompt.empty`
+            // probe in the fitter): a view with NO conversation from a room that HAS
+            // turns means the budget arithmetic starved the prompt. Skipping the turn
+            // is safe (the room's messages stay queued; next tick re-perceives) —
+            // deliberating on a blank prompt is not: that is exactly how every persona
+            // greeting-looped for an hour on 2026-07-30 while looking "alive".
+            if view
+                .messages
+                .iter()
+                .all(|m| m.content_text().trim().is_empty())
+                && !ws.turns.is_empty()
             {
-                // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
-                // teammates) + reserved-marker stops (#158, don't fabricate
-                // [action]/[recall] receipts). Combined into one stop list.
-                let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
-                stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
-                (!stops.is_empty()).then_some(stops)
-            },
-            Some(ws.room_id),
-            self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
-        );
-        // Identity belongs to the submitted adapter request. Provider response IDs
-        // remain separate, and one workspace can issue several calls.
-        let request_id = request
-            .request_id
-            .get_or_insert_with(|| Uuid::new_v4().to_string())
-            .clone();
-        let mut capture = self.prompt_capture.as_ref().map(|sink| {
-            super::prompt_capture::CaptureLease::start(
-                Arc::clone(sink),
-                &super::prompt_capture::PromptCall {
-                    request_id,
-                    persona_id: self.persona_id,
-                    room_id: ws.room_id,
-                    context_window: binding.context_window,
-                    cycle_id: (ws.cycle != super::workspace::CycleId::UNSTAMPED)
-                        .then_some(ws.cycle.0),
-                    cause: ws.cause.as_str(),
-                    cause_root: ws.cause.root(),
+                tracing::error!(
+                    persona = %self.persona_name,
+                    window = fit_window,
+                    room_turns = ws.turns.len(),
+                    probe_class = "delib.prompt.starved",
+                    "prompt fit produced an EMPTY conversation from a non-empty room — \
+                     skipping this turn rather than deliberating blind"
+                );
+                return None;
+            }
+            // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
+            // is the load-bearing input — never opaque. Enable the `cognition` log
+            // category for the persona to capture this per-turn (the existing
+            // record/replay harness — recorder + RagCaptureSink + vdd::turn_replay —
+            // is the durable path; this debug emit is the live tap).
+            tracing::debug!(
+                target: "cognition::deliberation",
+                persona = %self.persona_name,
+                system_prompt = %view.system,
+                burst = %view.user_text(),
+                "deliberation prompt — what the model sees this turn"
+            );
+            // SINGLE SHOT: one accepted generation → one verdict. At most one
+            // corrective admission replay follows a typed capacity refusal; no
+            // provider text or tool action has been accepted at that point.
+            // This faculty does not run an internal agent loop. If the model chooses to act, that is a
+            // `Decision::Act` verdict; the ORGANISM (the act→observe driver,
+            // `super::act_observe`) executes the calls, admits the result as memory,
+            // and re-perceives at the next tick. "Done" is the workspace SETTLING into
+            // Speak/Pass across ticks — never a counter in here. See
+            // docs/cognition/ACTING-ORGANISM.md §3.3.
+            //
+            // The thread is now ROLE-ATTRIBUTED (own posts → assistant, peers → user)
+            // built from the workspace's structured turns, not one flat `user` blob —
+            // the structured-turns refactor that fixes the echo loop.
+            // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
+            // authorized surface → a small list) + `commands/help` (one named tool's call
+            // format) — when the persona has a tool surface. The rest of the surface is
+            // the compact CATEGORY INDEX inside the system prompt (progressive
+            // disclosure): the persona searches a category with `commands/list`, loads a
+            // tool's schema via `commands/help`, then calls it. A tool not in this native
+            // array still DISPATCHES — `act_observe` resolves any call by name — and small
+            // models emit those calls as JSON-in-prose, which the parse path below
+            // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
+            // the ~150-schema dump that overflowed `n_ctx` and muted her.
+            // WHICH surface she is offered is a question about her WINDOW, not about the
+            // kind of turn she is taking. It used to be the latter: a work turn got her
+            // hands, and every MESSAGE turn got the whole registry — so the tier least able
+            // to afford 37 schemas received them, on the commonest turn type. Measured
+            // 2026-09-07 on IntelMac (card e20e064f): a 0.5B on a 32,768 window took 8,735
+            // tokens of schemas — more than her framing and her whole conversation combined
+            // — reached 97.3 % window demand before writing a token, and published her
+            // prompt preamble to the room instead of answering.
+            //
+            // So: offer the full surface while it fits inside its share of the served
+            // window ([`ContextBudget::tool_surface_tokens`]), and fall back to her HANDS
+            // when it does not. A work turn still takes hands regardless — that choice is
+            // about focus, not size, and predates this.
+            //
+            // The fallback is hands, never nothing: `hands_surface` keeps the `commands/`
+            // discovery pair, so a withheld verb stays one `commands/list` away. Amputating
+            // the surface is the #206 cliff (14/14 SWE acts spent on `commands/help`, 0
+            // edits) and this must never become that.
+            //
+            // The decision itself lives in [`Self::select_tool_surface`] so that the
+            // budget math in `prompt_view_within` reaches the SAME answer — those two
+            // disagreed for the life of #3829, and the budget's copy priced the full
+            // registry on turns that sent hands (card dec1a7ff).
+            let selected = self.select_tool_surface(ws, fit_window);
+            if selected.reason == SurfaceReason::HandsForBudget {
+                // Only the BUDGET path is a row: a work turn narrowing is routine and
+                // already understood, but a message turn narrowing means she cannot see
+                // verbs she would otherwise have been offered. Whoever later asks "why
+                // did she never call X" needs this line to exist.
+                //
+                // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
+                // did not get — reported apart because one field used to carry the full
+                // registry's cost beside a count of her hands, and reconciling the two
+                // gave a nonsense tokens-per-tool.
+                crate::probe!(
+                    class = "delib.tool_surface.withheld",
+                    persona = %self.persona_name,
+                    offered = self.hands_specs.len() as u64,
+                    full = self.native_specs.len() as u64,
+                    surface_tokens = selected.tokens as u64,
+                    withheld_tokens = self.describe_tool_tokens() as u64,
+                    budget_tokens = super::context_budget::ContextBudget::from_window(
+                        fit_window
+                    )
+                    .tool_surface_tokens() as u64,
+                    context_window = fit_window,
+                    "the full tool surface exceeds its share of the served window — \
+                     offering her hands; the discovery pair still reaches the rest"
+                );
+            }
+            // Selection and budget accounting borrow the cached schemas. Only the
+            // owned inference request needs a copy of the selected surface.
+            let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
+
+            let request = self.build_request_within(
+                &binding,
+                view.completion_reserve,
+                view.messages.clone(),
+                tools,
+                view.system.clone(),
+                {
+                    // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
+                    // teammates) + reserved-marker stops (#158, don't fabricate
+                    // [action]/[recall] receipts). Combined into one stop list.
+                    let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                    stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
+                    (!stops.is_empty()).then_some(stops)
                 },
-                &request,
-            )
-        });
+                Some(ws.room_id),
+                self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
+            );
+
+            let estimated_prompt_tokens = view.estimated_prompt_tokens;
+            if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
+                return Some(Contribution::deliberation_fault(
+                    "provider rejected the prompt; required input cannot be reduced further within this capacity",
+                ));
+            }
+            let started = std::time::Instant::now();
+            let result = self
+                .generate_for_workspace(ws, &binding, fit_window, request)
+                .await?;
+            gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
+            match result {
+                Err(crate::ai::inference_error::InferenceError::ContextExceeded {
+                    requested,
+                    available,
+                }) => {
+                    let Some(observed) = PromptCalibration::observed(
+                        estimated_prompt_tokens,
+                        requested,
+                        Some(view.input_identity),
+                    ) else {
+                        return Some(Contribution::deliberation_fault(
+                            "provider capacity refusal lacked a positive request/token measurement",
+                        ));
+                    };
+                    calibration = observed;
+                    fit_window = fit_window.min(available);
+                    // Retain only measured density, not a fixed token surcharge.
+                    // The next tick prices its own input before submitting. A
+                    // different adapter/model/window cannot inherit this record.
+                    self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
+                        binding: Arc::clone(&binding),
+                        calibration,
+                        available: fit_window,
+                    })));
+                    crate::probe!(
+                        class = "delib.prompt.refit",
+                        persona = %self.persona_name,
+                        requested_tokens = requested,
+                        available_tokens = available,
+                        estimated_prompt_tokens,
+                        completion_reserve = view.completion_reserve,
+                        corrective_replay_used = rejected_prompt_tokens.is_some(),
+                        "provider capacity refusal: retained measured token density for prompt fitting"
+                    );
+                    if rejected_prompt_tokens.is_some() {
+                        return Some(Contribution::deliberation_fault(format!(
+                            "provider rejected the corrective request: {} tokens requested, {} available; capacity feedback retained for the next turn",
+                            requested, available,
+                        )));
+                    }
+                    rejected_prompt_tokens = Some(estimated_prompt_tokens);
+                }
+                Err(error) => {
+                    return Some(Contribution::deliberation_fault(error.to_string()));
+                }
+                Ok(response) => {
+                    if let Some(error) = response.generation_error() {
+                        return Some(Contribution::deliberation_fault(error));
+                    }
+                    break (view, response);
+                }
+            }
+        };
+        let messages = &view.messages;
         let lifecycle_recorded = self
             .prompt_capture
             .as_ref()
             .is_some_and(|sink| sink.lifecycle_enabled());
-        // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
-        // wants progressive), generate through `generate_stream` so each decoded chunk
-        // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
-        // adapter returns the SAME full `TextGenerationResponse` either way
-        // (`generate_text` IS `generate_stream` + accumulate), so everything below —
-        // capture, working-memory, decision parse, act/speak — is byte-identical; only
-        // DELIVERY timing changes. `None` (every non-streaming caller, every test) takes
-        // the unchanged accumulate path. The sink carries BOTH Reasoning and Token
-        // chunks; the consumer forwards only Token to output (think-deep/speak-answer).
-        // #139 latency split: time the generate call (lane-queue + prefill + decode).
-        // Compared against the forwarder's `first_token_ms` (spawn→first token, the
-        // WHOLE turn), this localizes the minutes-to-first-token: if `gen_await_ms`
-        // is large, it's the model/lane (queue+prefill); if small, the time is in
-        // cognition-prep BEFORE generation (recall/embeddings/context assembly).
-        let gen_start = std::time::Instant::now();
-        // #139 serving-lane admission, priced by priority. Acquire a decode lane for the
-        // model-call window ONLY (queue+prefill+decode); the RAII permit also carries the
-        // in-flight gauge marker (so the self-tick saturation read stays accurate) and, for
-        // NON-directed calls, a slot in the (MAX_LANES-1) non-directed budget — reserving
-        // at least one lane for a directed (addressed) turn so it never queues behind idle
-        // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
-        // block so every lane releases the instant generation returns — downstream
-        // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
-        // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when
-        // `SERVING_WIRE_CAPTURE_DIR` is configured (config.env — same channel as
-        // SERVING_KV_CACHE_TYPE), append this request's EXACT message list to
-        // `<dir>/<persona>.wire.jsonl` before it ships. Byte-diffing consecutive
-        // rows names the precise prompt position where the KV prefix dies —
-        // today that diagnosis ran on the BID capture, which is not the wire,
-        // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
-        // every capture sink owes the hot path.
-        if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
-            let row = serde_json::json!({
-                "ts_ms": crate::persona::trace::now_ms(),
-                "persona": self.persona_name,
-                "messages": request
-                    .messages
-                    .iter()
-                    .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-                    .collect::<Vec<_>>(),
-            });
-            let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
-            let _ = std::fs::create_dir_all(&dir);
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "{row}");
-            }
-        }
-        // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
-        // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
-        // Background generation (dream-belief-review, glass-boxed live) would take
-        // the lane permits, THEN park on the hold — starving the measured work's
-        // own next generation of the very permits it needs to finish and release
-        // the hold. Priority inversion; the solve's tick 2 waited forever on a
-        // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
-        // seam stays as the backstop for entry paths that skip these gates.
-        crate::probe!(
-            class = "delib.defer.entered",
-            persona = %self.persona_name,
-            directed = ws.directed_at_self(),
-            attention = ?ws.attention,
-            "at the pre-gate hold defer"
-        );
-        {
-            let class = deliberation_slot_class(request.purpose.as_deref(), ws.attention);
-            crate::inference::measured_hold::defer_while_held(
-                class,
-                Some(self.persona_id),
-                request.purpose.as_deref(),
-            )
-            .await;
-        }
-        crate::probe!(
-            class = "delib.defer.passed",
-            persona = %self.persona_name,
-            "past the pre-gate defer — admission gates next"
-        );
-        if ws.attention.requires_priority() {
-            // #2561: foreground engagement marks the organism ACTIVE (with linger).
-            // Human opportunity remains active without asserting a literal address.
-            crate::cognition::activity_gate::note_directed();
-        }
-        let gen_result = {
-            crate::probe!(
-                class = "delib.gate.lane_wait",
-                persona = %self.persona_name,
-                directed = ws.directed_at_self(),
-                attention = ?ws.attention,
-                lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
-                "at the serving-lane admission gate"
-            );
-            // A NON-directed wait yields to a directed line pending in her inbox:
-            // the park held no lane, so abandoning it costs nothing, and the loop
-            // head drains the line next (`cognition::directed_pending`). A `None`
-            // here is her CHOICE to answer first, named by the probe — not a fault.
-            let _lane = if ws.attention.requires_priority() {
-                crate::cognition::resource_admission::acquire_serving_lane(true).await
-            } else {
-                tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(false) => lane,
-                    _ = crate::cognition::directed_pending::wait(self.persona_id) => {
-                        crate::probe!(
-                            class = "delib.gate.yielded_to_directed",
-                            persona = %self.persona_name,
-                            "parked self-work lane wait yielded: a directed line is pending"
-                        );
-                        return None;
-                    }
-                }
-            };
-            // HER task-positive system is engaged from here: the per-citizen boredom gate
-            // (dreams) reads this stamp, never a room wake.
-            crate::cognition::activity_gate::persona_engaged(self.persona_id);
-            crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
-            crate::probe!(
-                class = "delib.gate.lane_acquired",
-                persona = %self.persona_name,
-                "lane admission granted — prefill slot next"
-            );
-            // #56 prefill throttle: under live external GPU pressure (a game, the browser)
-            // fewer than the served lane count may PREFILL concurrently — the instant valve
-            // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
-            // no pressure → target == lanes → this never waits. Released with the block.
-            let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
-            crate::probe!(
-                class = "delib.gate.prefill_acquired",
-                persona = %self.persona_name,
-                "prefill slot granted — issuing the model call"
-            );
-            if let Some(sink) = ws.token_sink.as_ref() {
-                binding.adapter.generate_stream(request, sink.clone()).await
-            } else {
-                binding.adapter.generate_text(request).await
-            }
-        };
-        if let Some(lease) = &mut capture {
-            match &gen_result {
-                Ok(response) => lease.finish(Some(response), None),
-                Err(error) => lease.finish(None, Some(&error.to_string())),
-            }
-        }
-        let gen_await_ms = gen_start.elapsed().as_millis() as u64;
-        let resp = match gen_result {
-            Ok(r) => r,
-            // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
-            // isn't hosting). A failed model is NOT a chosen silence — returning a
-            // bare `None` here would let the settle step collapse it into a serene
-            // `Pass`, the exact fallback [[fallbacks-are-illegal-fail-loud]] forbids
-            // (the swept-model bug: every failure masqueraded as silence). Emit a
-            // FAULT contribution instead: it rides the broadcast (auditable/replayable
-            // like any finding) and the settle step surfaces it LOUD as
-            // `InferenceFailed`, naming the cause, never a fabricated no-op.
-            Err(e) => {
-                tracing::warn!(
-                    persona = %self.persona_name,
-                    error = %e,
-                    "deliberation inference failed; surfacing fault (not a silent Pass)"
-                );
-                return Some(Contribution::deliberation_fault(e.to_string()));
-            }
-        };
-        if let Some(error) = resp.generation_error() {
-            tracing::warn!(
-                persona = %self.persona_name,
-                error,
-                "provider returned a failed generation; partial output is not a decision"
-            );
-            return Some(Contribution::deliberation_fault(error));
-        }
         // #139 latency split: the model call's wall time. Compare to the forwarder's
         // `persona.turn.first_token` (whole-turn spawn→first token): first_token −
         // gen_await ≈ cognition-prep (recall/embeddings/context assembly BEFORE the
@@ -3026,7 +3431,7 @@ impl Faculty for LlmDeliberationFaculty {
                 ws.cause.as_str(),
                 0,
                 &view.system,
-                &messages,
+                messages,
                 &offered,
                 &resp,
             );
@@ -3534,28 +3939,6 @@ mod tests {
                     BurstTurn::attributed(false, "Peer", stimulus, Some(2)),
                 ],
             ))
-        }
-
-        // what this catches: the ONE-live-source window rule (no clamp). The turn's window is
-        // `adapter.live_served_window().unwrap_or(binding.context_window)` — the lane the
-        // persona is ACTUALLY on, reported by its own adapter. `Some(w)` adopts the live slot
-        // in BOTH directions (a lane that relaunched smaller/larger is tracked, never overflowed
-        // and never left clamped to a stale cold pin); `None` (a dedicated eval lane, cloud, or
-        // a not-ready gateway) leaves the binding window standing — which for the eval fork IS
-        // its own /props window, so it is never clamped to the global gateway slot (the
-        // webdev-rs 0/6 starve, 2026-07-20). The per-adapter `live_served_window` impls are
-        // tested where the lane knowledge lives (openai_adapter); this pins the adoption rule.
-        #[test]
-        fn turn_window_is_the_one_live_source_never_a_clamp() {
-            let adopt = |binding: u32, live: Option<u32>| live.unwrap_or(binding);
-            // Live slot smaller than the binding pin → adopt it (never overflow the real slot).
-            assert_eq!(adopt(53_760, Some(49_664)), 49_664);
-            // Live slot LARGER than a stale cold-boot pin → grow to it (use the real context).
-            assert_eq!(adopt(40_000, Some(49_664)), 49_664);
-            // No live report (dedicated eval lane / cloud / not-ready gateway) → the binding
-            // window stands — for an eval fork that IS its own lane's /props window, so it is
-            // NEVER clamped down to the global gateway's per-slot window.
-            assert_eq!(adopt(32_768, None), 32_768);
         }
 
         // what this catches: a persona's VERBATIM-duplicate turns are DROPPED
@@ -4194,7 +4577,12 @@ mod tests {
             );
 
             // Generous budget so BOTH fit — this isolates ORDER, not truncation.
-            let block = faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                4096,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
             let roster_at = block.find("[room-roster]").expect("roster present");
             let recall_at = block.find("[recall]").expect("recall present");
             assert!(
@@ -4251,7 +4639,12 @@ mod tests {
                     );
                 }
                 // Generous budget so all three fit — this isolates ORDER, never truncation.
-                faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0, 0))
+                faculty.render_assembled_context_within(
+                    &ws,
+                    4096,
+                    &GroundingPlan::default(),
+                    ContextComposition::default(),
+                )
             };
 
             let turn0 = render([0.90, 0.50, 0.30], [0, 1, 2]);
@@ -4308,7 +4701,12 @@ mod tests {
                     sal.1,
                     "felt",
                 ));
-                faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0, 0))
+                faculty.render_assembled_context_within(
+                    &ws,
+                    4096,
+                    &GroundingPlan::default(),
+                    ContextComposition::default(),
+                )
             };
             let recall_leads = volatile((0.9, 0.2));
             let work_leads = volatile((0.2, 0.9));
@@ -4598,7 +4996,12 @@ mod tests {
             let total = board.parts.len();
             ws.broadcast.push(board);
 
-            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                120,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
             assert!(
                 block.contains("run `work/list`"),
                 "the notice must name the verb verbatim, not describe it\n{block}"
@@ -4621,7 +5024,12 @@ mod tests {
             let mut ws = Workspace::new("anything open?");
             ws.broadcast.push(board_like(60)); // expand_command defaults to None
 
-            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                120,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
             assert!(
                 block.contains("more not shown"),
                 "still says it truncated\n{block}"
@@ -4652,7 +5060,12 @@ mod tests {
             // A budget FAR under the whole board — the live shape (55 vs 5,364).
             let budget = 120;
             assert!(whole > budget * 10, "fixture must reproduce the live ratio");
-            let block = faculty.render_assembled_context_within(&ws, budget, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                budget,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
 
             assert!(
                 block.contains("[room-kanban]"),
@@ -4731,7 +5144,12 @@ mod tests {
                 "fixture must reproduce the live ratio (map {} tok vs budget {budget})",
                 est_tokens(&map_body)
             );
-            let block = faculty.render_assembled_context_within(&ws, budget, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                budget,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
 
             assert!(
                 !block.contains("[workspace-map]"),
@@ -4766,7 +5184,12 @@ mod tests {
                 "recalled",
             ));
 
-            let block = faculty.render_assembled_context_within(&ws, 40, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                40,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
             assert!(
                 !block.contains("[recall]"),
                 "an over-budget INDIVISIBLE contribution must be dropped whole, not \
@@ -4790,7 +5213,12 @@ mod tests {
             let mut ws = Workspace::new("anything open?");
             ws.broadcast.push(board_like(60));
 
-            let block = faculty.render_assembled_context_within(&ws, 4, (0, 0, 0, 0, 0));
+            let block = faculty.render_assembled_context_within(
+                &ws,
+                4,
+                &GroundingPlan::default(),
+                ContextComposition::default(),
+            );
             assert!(
                 !block.contains("[room-kanban]"),
                 "no unit fits, so there must be no header — a labelled empty block is a \
@@ -5529,6 +5957,9 @@ mod tests {
                 let fit = faculty
                     .fit_messages(
                         PromptMessages {
+                            input_identity: [0; 32],
+                            grounding_tokens: 0,
+                            grounding_at: 0,
                             history: msgs[..n].to_vec(),
                             stimulus: None,
                             latest_result: None,
@@ -5536,7 +5967,8 @@ mod tests {
                         },
                         budget,
                     )
-                    .expect("whole history suffix fits");
+                    .expect("whole history suffix fits")
+                    .messages;
                 assert!(!fit.is_empty());
                 let first = fit.first().map(|m| m.content_text());
                 if prev_first.is_some() && first != prev_first {
@@ -5575,6 +6007,9 @@ mod tests {
             let fit = faculty
                 .fit_messages(
                     PromptMessages {
+                        input_identity: [0; 32],
+                        grounding_tokens: 0,
+                        grounding_at: 0,
                         history: clustered,
                         stimulus: None,
                         latest_result: None,
@@ -5582,7 +6017,8 @@ mod tests {
                     },
                     budget,
                 )
-                .expect("whole history suffix fits");
+                .expect("whole history suffix fits")
+                .messages;
             assert_eq!(
                 fit.first().unwrap().role,
                 "user",
@@ -5597,6 +6033,9 @@ mod tests {
             // A quantum larger than the optional history must not evict every
             // message on a quiet self-tick with no external stimulus or result.
             let ambient = || PromptMessages {
+                input_identity: [0; 32],
+                grounding_tokens: 0,
+                grounding_at: 0,
                 history: vec![
                     ChatMessage::text("user", "old situation ".repeat(30)),
                     ChatMessage::text("user", "current situation ".repeat(20)),
@@ -5607,7 +6046,10 @@ mod tests {
             };
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
-            let fitted = faculty.fit_messages(ambient(), ambient_cost).unwrap();
+            let fitted = faculty
+                .fit_messages(ambient(), ambient_cost)
+                .unwrap()
+                .messages;
             assert_eq!(fitted.len(), 1);
             assert_eq!(fitted[0].content_text(), "current situation ".repeat(20));
             assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
@@ -5902,13 +6344,21 @@ mod tests {
         struct ScriptedAdapter {
             responses: Mutex<VecDeque<TextGenerationResponse>>,
             seen: Mutex<Vec<TextGenerationRequest>>,
+            rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
+            live_window: Option<u32>,
+            on_window_read: Mutex<Option<WindowReadHook>>,
         }
+
+        type WindowReadHook = Box<dyn FnOnce() + Send>;
 
         impl ScriptedAdapter {
             fn new(responses: Vec<TextGenerationResponse>) -> Self {
                 Self {
                     responses: Mutex::new(responses.into()),
                     seen: Mutex::new(Vec::new()),
+                    rejections: Mutex::new(VecDeque::new()),
+                    live_window: None,
+                    on_window_read: Mutex::new(None),
                 }
             }
             fn call_count(&self) -> usize {
@@ -5927,6 +6377,39 @@ mod tests {
             fn default_model(&self) -> &str {
                 "scripted"
             }
+            fn live_served_window(&self) -> Option<u32> {
+                // Inject the exact load → observation → publication interleaving
+                // without scheduler timing or a second adapter implementation.
+                let hook = self
+                    .on_window_read
+                    .lock()
+                    .expect("fixture hook lock")
+                    .take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+                self.live_window
+            }
+            async fn generate_stream_checked(
+                &self,
+                request: TextGenerationRequest,
+                sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+            ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
+            {
+                let rejection = self
+                    .rejections
+                    .lock()
+                    .expect("fixture rejection queue")
+                    .pop_front();
+                if let Some(error) = rejection {
+                    self.seen.lock().expect("fixture request log").push(request);
+                    return Err(error);
+                }
+                self.generate_stream(request, sink)
+                    .await
+                    .map_err(Into::into)
+            }
+
             async fn generate_text(
                 &self,
                 request: TextGenerationRequest,
@@ -5938,6 +6421,530 @@ mod tests {
                     .pop_front()
                     .ok_or_else(|| "scripted adapter exhausted".to_string())
             }
+        }
+
+        // what this catches: 2e2a92f6 — small reductions were ignored by the live
+        // contribute path, while a local unwrap_or test incorrectly claimed coverage.
+        #[tokio::test]
+        async fn live_window_reductions_bound_actual_requests_and_persist() {
+            use crate::cognition::workspace::Burst;
+
+            for (live, expected) in [
+                (Some(32_767), 32_767), // one-token reduction
+                (Some(29_440), 29_440), // below the old shrink deadband
+                (Some(28_672), 28_672), // exactly the old deadband
+                (Some(16_384), 16_384), // large reduction
+                (Some(36_864), 32_768), // growth at the deadband stays sticky
+                (Some(36_865), 36_865), // material growth is adopted
+                (None, 32_768),         // dedicated/cloud/not-ready: binding owns capacity
+            ] {
+                let mut scripted =
+                    ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]);
+                scripted.live_window = live;
+                let adapter = Arc::new(scripted);
+                let binding = model_binding(adapter.clone(), Some("original-model".into()), 32_768);
+                let faculty = LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Reviewer",
+                    "You are Reviewer.",
+                    adapter.clone(),
+                )
+                .with_model_binding(binding.clone())
+                .with_tools(vec![read_tool()]);
+                let mut turns: Vec<_> = (0..180)
+                    .map(|i| {
+                        BurstTurn::attributed(
+                            i % 2 == 1,
+                            if i % 2 == 1 { "Reviewer" } else { "Peer" },
+                            format!("history_{i} ").repeat(200),
+                            Some(i),
+                        )
+                    })
+                    .collect();
+                turns.push(BurstTurn::attributed(
+                    false,
+                    "Peer",
+                    "Review the current work.",
+                    Some(181),
+                ));
+                let ws = Workspace::new(Burst::from_turns(
+                    crate::identity::ActivityRoom::mint(),
+                    turns,
+                ));
+                assert!(faculty.messages_unfitted(&ws, None).tokens() > 36_865);
+                let expected_view = faculty.prompt_view_within(&ws, expected);
+                assert!(expected_view.capacity_error.is_none());
+                let verdict = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("actual faculty verdict");
+                assert!(verdict.fault.is_none(), "{:?}", verdict.fault);
+                assert_eq!(binding.load().context_window, expected);
+                let seen = adapter.seen.lock().expect("recorded request lock");
+                assert_eq!(seen.len(), 1);
+                let request = &seen[0];
+                let schemas = LlmDeliberationFaculty::tool_surface_tokens_of(
+                    request.tools.as_ref().expect("native tools retained"),
+                );
+                assert_eq!(schemas, faculty.select_tool_surface(&ws, expected).tokens);
+                assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+                let cost = LlmDeliberationFaculty::framing_cost(
+                    request.system_prompt.as_deref().expect("system framing"),
+                ) + LlmDeliberationFaculty::messages_cost(&request.messages)
+                    + schemas
+                    + request.max_tokens.expect("planned reply") as usize;
+                assert!(
+                    cost <= expected as usize,
+                    "request {cost} exceeds {expected}"
+                );
+                assert!(request
+                    .messages
+                    .iter()
+                    .any(|m| m.content_text().contains("Review the current work.")));
+            }
+        }
+
+        // what this catches: 2e2a92f6 — the old adapter's observation must not
+        // overwrite a re-home OR a newer window on the very same adapter/model.
+        #[tokio::test]
+        async fn live_window_observation_cannot_overwrite_a_newer_binding() {
+            for same_route in [false, true] {
+                let mut scripted = ScriptedAdapter::new(vec![
+                    make_response(FinishReason::Stop, "PASS", None),
+                    make_response(FinishReason::Stop, "PASS", None),
+                ]);
+                scripted.live_window = Some(16_384);
+                let old_adapter = Arc::new(scripted);
+                let new_adapter = if same_route {
+                    old_adapter.clone()
+                } else {
+                    Arc::new(ScriptedAdapter::new(vec![make_response(
+                        FinishReason::Stop,
+                        "PASS",
+                        None,
+                    )]))
+                };
+                let binding =
+                    model_binding(old_adapter.clone(), Some("original-model".into()), 32_768);
+                let replacement = Arc::new(ModelBinding {
+                    adapter: new_adapter.clone(),
+                    model: Some(
+                        if same_route {
+                            "original-model"
+                        } else {
+                            "new-model"
+                        }
+                        .into(),
+                    ),
+                    context_window: 24_576,
+                });
+                let weak_binding = Arc::downgrade(&binding);
+                let winning_binding = replacement.clone();
+                *old_adapter
+                    .on_window_read
+                    .lock()
+                    .expect("fixture hook lock") = Some(Box::new(move || {
+                    weak_binding
+                        .upgrade()
+                        .expect("faculty retains binding")
+                        .store(winning_binding);
+                }));
+                let faculty = LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Reviewer",
+                    "You are Reviewer.",
+                    old_adapter.clone(),
+                )
+                .with_model_binding(binding.clone())
+                .with_tools(vec![read_tool()]);
+                let ws = Workspace::new("Review the current work.");
+                let verdict = faculty.contribute(&ws).await.expect("first verdict");
+                assert!(verdict.fault.is_none());
+                assert!(
+                    Arc::ptr_eq(&binding.load_full(), &replacement),
+                    "stale observation replaced the winning binding"
+                );
+                {
+                    let seen = old_adapter.seen.lock().expect("old route requests");
+                    assert_eq!(seen.len(), 1);
+                    assert_eq!(seen[0].model.as_deref(), Some("original-model"));
+                    assert_eq!(
+                        seen[0].max_tokens,
+                        Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
+                    );
+                }
+                let verdict = faculty.contribute(&ws).await.expect("next verdict");
+                assert!(verdict.fault.is_none());
+                let seen = new_adapter.seen.lock().expect("winning route requests");
+                let request = seen.last().expect("next turn uses winning route");
+                assert_eq!(seen.len(), if same_route { 2 } else { 1 });
+                assert_eq!(request.model, replacement.model);
+                let next_window = if same_route { 16_384 } else { 24_576 };
+                assert_eq!(binding.load().context_window, next_window);
+                assert_eq!(
+                    request.max_tokens,
+                    Some(
+                        faculty
+                            .prompt_view_within(&ws, next_window)
+                            .completion_reserve
+                    )
+                );
+            }
+        }
+
+        // what this catches: aa5888a9 — the actual contribution path must
+        // repack an authoritative refusal, preserve required work, and capture
+        // distinct failed/successful requests without accepting partial errors.
+        #[tokio::test]
+        async fn provider_context_feedback_refits_and_captures_each_attempt() {
+            use crate::ai::inference_error::InferenceError;
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            use crate::cognition::workspace::Burst;
+
+            for failed_response in [false, true] {
+                let home = tempfile::tempdir().expect("isolated capture and demand storage");
+                let _native = crate::paths::NativeHomeOverride::install(home.path());
+                let persona = Uuid::new_v4();
+                let window = 29_440;
+                let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                    if failed_response {
+                        FinishReason::Error
+                    } else {
+                        FinishReason::Stop
+                    },
+                    if failed_response {
+                        "partial text must not become a verdict"
+                    } else {
+                        "PASS"
+                    },
+                    None,
+                )]));
+                adapter.rejections.lock().expect("fixture rejection queue").push_back(
+                    InferenceError::from_http(400, r#"{"error":{"type":"exceed_context_size_error","n_prompt_tokens":29722,"n_ctx":29440}}"#),
+                );
+                let registry = crate::cognition::working_set::WorkingSetRegistry::new();
+                for tick in 0..3 {
+                    registry.record_emission_in_memory(persona, 834, false, tick);
+                }
+                let faculty =
+                    LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                        .with_context_window(window)
+                        .with_tools(vec![read_tool()])
+                        .with_working_set(registry)
+                        .with_prompt_capture(Arc::new(
+                            JsonlPromptCaptureSink::open(home.path(), persona)
+                                .expect("capture fixture"),
+                        ));
+                let mut turns: Vec<_> = (0..160)
+                    .map(|i| {
+                        BurstTurn::attributed(
+                            i % 2 == 0,
+                            if i % 2 == 0 { "Ivar" } else { "Peer" },
+                            format!("distinct_history_{i} ").repeat(100),
+                            Some(i),
+                        )
+                    })
+                    .collect();
+                let stimulus = "Review the selected activity's immutable code artifact.";
+                turns.push(BurstTurn::attributed(false, "Peer", stimulus, Some(161)));
+                let mut ws = Workspace::new(Burst::from_turns(
+                    crate::identity::ActivityRoom::mint(),
+                    turns,
+                ));
+                ws.broadcast.push(
+                    Contribution::context(
+                        FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                        "The selected card, owner and teammate review remain required.",
+                        1.0,
+                        "current held activity",
+                    )
+                    .standing_grounding(),
+                );
+                let initial = faculty.prompt_view_within(&ws, window);
+                assert!(initial.capacity_error.is_none());
+                let unfitted = faculty.messages_unfitted(&ws, None);
+                assert_eq!(
+                    unfitted
+                        .history
+                        .iter()
+                        .filter(|m| m.content_text().contains("distinct_history_"))
+                        .count(),
+                    160,
+                    "fixture history must remain distinct"
+                );
+                assert!(unfitted.tokens() > window as usize);
+                let outcome = faculty.contribute(&ws).await.expect("real faculty outcome");
+                assert_eq!(outcome.fault.is_some(), failed_response);
+                {
+                    let seen = adapter.seen.lock().expect("actual requests");
+                    assert_eq!(seen.len(), 2);
+                    let first = &seen[0];
+                    let second = &seen[1];
+                    assert_ne!(first.request_id, second.request_id);
+                    assert!(
+                        LlmDeliberationFaculty::messages_cost(&second.messages)
+                            < LlmDeliberationFaculty::messages_cost(&first.messages)
+                    );
+                    assert!(second
+                        .messages
+                        .iter()
+                        .any(|m| m.content_text().contains(stimulus)));
+                    assert!(second
+                        .system_prompt
+                        .as_deref()
+                        .expect("required system context")
+                        .contains("selected card, owner and teammate review"));
+                    let cost = |r: &TextGenerationRequest| {
+                        LlmDeliberationFaculty::framing_cost(
+                            r.system_prompt.as_deref().expect("system"),
+                        ) + LlmDeliberationFaculty::messages_cost(&r.messages)
+                            + LlmDeliberationFaculty::tool_surface_tokens_of(
+                                r.tools.as_deref().expect("selected tools"),
+                            )
+                    };
+                    let observed = PromptCalibration::observed(cost(first), 29_722, None)
+                        .expect("positive actual request observation");
+                    assert!(
+                        observed.charge(cost(second))
+                            + second.max_tokens.expect("planned reserve") as usize
+                            <= window as usize
+                    );
+                }
+                let page = prompt_capture::page(home.path(), persona, None, false, 10)
+                    .expect("actual capture lifecycle");
+                let terminals: Vec<_> = page
+                    .entries
+                    .iter()
+                    .filter(|entry| !matches!(entry.status, CallStatus::Submitted))
+                    .collect();
+                assert_eq!(terminals.len(), 2);
+                assert!(matches!(terminals[0].status, CallStatus::Failed));
+                assert_eq!(
+                    matches!(terminals[1].status, CallStatus::Failed),
+                    failed_response
+                );
+                assert_eq!(
+                    matches!(terminals[1].status, CallStatus::Completed),
+                    !failed_response
+                );
+                assert_ne!(terminals[0].request_id, terminals[1].request_id);
+            }
+        }
+
+        // what this catches: aa5888a9 — a minimal request that the provider
+        // rejects must fault rather than resend or cut its required stimulus.
+        #[tokio::test]
+        async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
+            let home = tempfile::tempdir().expect("isolated demand storage");
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            let persona = Uuid::new_v4();
+            let registry = crate::cognition::working_set::WorkingSetRegistry::new();
+            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(8));
+            wm.record_receipt("The original immutable artifact is still pending.");
+            let window = 16_384;
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                "PASS",
+                None,
+            )]));
+            adapter
+                .rejections
+                .lock()
+                .expect("fixture rejection queue")
+                .push_back(
+                    crate::ai::inference_error::InferenceError::ContextExceeded {
+                        requested: window * 1_000,
+                        available: window,
+                    },
+                );
+            let faculty =
+                LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                    .with_context_window(window)
+                    .with_working_memory(wm.clone())
+                    .with_working_set(registry.clone());
+            let mut ws = Workspace::new("This complete stimulus is irreducible.");
+            ws.now_ms = Some(1_000);
+            let outcome = faculty.contribute(&ws).await.expect("fault contribution");
+            assert!(outcome.fault.is_some());
+            ws.now_ms = Some(180_000); // Clock and diagnostic churn do not replace the pending work.
+            wm.record_fact(
+                "The provider refused the previous prompt; the artifact remains pending.",
+            );
+            ws.turns.push(BurstTurn::perception(
+                "Provider diagnostic: context capacity exceeded.",
+            ));
+            ws.broadcast.push(Contribution::deliberation_fault(
+                "Provider refused the previous prompt.",
+            ));
+            let next = faculty
+                .contribute(&ws)
+                .await
+                .expect("retained capacity refusal");
+            assert!(next.fault.is_some());
+            assert!(
+                registry
+                    .demand_of(persona)
+                    .expect("measured demand")
+                    .last_tokens
+                    > window,
+                "the governor must see calibrated demand after the provider refusal"
+            );
+            assert_eq!(
+                adapter.call_count(),
+                1,
+                "clock/diagnostic-only retry must preserve refusal"
+            );
+            let small = Workspace::new("What changed?");
+            assert_eq!(
+                small.room_id, ws.room_id,
+                "changed payload must unlock within the same activity"
+            );
+            assert!(faculty.prompt_view(&small).capacity_error.is_none());
+            let recovered = faculty
+                .contribute(&small)
+                .await
+                .expect("changed small input");
+            assert!(recovered.fault.is_none(), "{:?}", recovered.fault);
+            let seen = adapter.seen.lock().expect("actual requests");
+            assert_eq!(
+                seen.len(),
+                2,
+                "only the original rejection and genuinely changed small input reach the adapter"
+            );
+            assert!(seen[0].messages.iter().any(|message| message
+                .content_text()
+                .contains("complete stimulus is irreducible")));
+        }
+
+        // what this catches: repeated rejection is bounded, the next tick uses
+        // observed density, and unrelated small prompts do not pay a fixed excess.
+        #[tokio::test]
+        async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
+            use crate::ai::inference_error::InferenceError;
+            use crate::cognition::working_set::WorkingSetRegistry;
+            use crate::cognition::workspace::Burst;
+
+            let home = tempfile::tempdir().expect("isolated demand storage");
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            let persona = Uuid::new_v4();
+            let window = 29_440;
+            let adapter = Arc::new(ScriptedAdapter::new(vec![
+                make_response(FinishReason::Stop, "PASS", None),
+                make_response(FinishReason::Stop, "PASS", None),
+            ]));
+            adapter
+                .rejections
+                .lock()
+                .expect("fixture rejection queue")
+                .extend([
+                    InferenceError::ContextExceeded {
+                        requested: 29_722,
+                        available: window,
+                    },
+                    InferenceError::ContextExceeded {
+                        requested: 29_722,
+                        available: window,
+                    },
+                ]);
+            let registry = WorkingSetRegistry::new();
+            for tick in 0..3 {
+                registry.record_emission_in_memory(persona, 834, false, tick);
+            }
+            let faculty =
+                LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                    .with_context_window(window)
+                    .with_tools(vec![read_tool()])
+                    .with_working_set(registry);
+            let mut turns: Vec<_> = (0..160)
+                .map(|i| {
+                    BurstTurn::attributed(
+                        i % 2 == 0,
+                        if i % 2 == 0 { "Ivar" } else { "Peer" },
+                        format!("distinct_history_{i} ").repeat(100),
+                        Some(i),
+                    )
+                })
+                .collect();
+            turns.push(BurstTurn::attributed(
+                false,
+                "Peer",
+                "Review the current artifact.",
+                Some(161),
+            ));
+            let ws = Workspace::new(Burst::from_turns(
+                crate::identity::ActivityRoom::mint(),
+                turns,
+            ));
+            assert_eq!(
+                faculty
+                    .messages_unfitted(&ws, None)
+                    .history
+                    .iter()
+                    .filter(|m| m.content_text().contains("distinct_history_"))
+                    .count(),
+                160
+            );
+            let fault = faculty.contribute(&ws).await.expect("bounded refusal");
+            assert!(fault.fault.is_some());
+            assert_eq!(
+                adapter.call_count(),
+                2,
+                "at most one corrective replay per turn"
+            );
+            let next = faculty.contribute(&ws).await.expect("next tick");
+            assert!(next.fault.is_none(), "{:?}", next.fault);
+            {
+                let seen = adapter.seen.lock().expect("actual requests");
+                assert_eq!(seen.len(), 3);
+                assert!(
+                    LlmDeliberationFaculty::messages_cost(&seen[2].messages)
+                        < LlmDeliberationFaculty::messages_cost(&seen[1].messages),
+                    "the previously rejected prompt must not be sent unchanged next tick"
+                );
+            }
+            let small = Workspace::in_room("What changed?", ws.room_id);
+            let (effective, calibration) = faculty.prompt_fit(&faculty.binding.load());
+            let small_view = faculty.prompt_view(&small);
+            assert!(
+                small_view.capacity_error.is_none(),
+                "{:?}",
+                small_view.capacity_error
+            );
+            assert!(
+                calibration.charge(small_view.estimated_prompt_tokens)
+                    + small_view.completion_reserve as usize
+                    <= effective as usize
+            );
+            let outcome = faculty
+                .contribute(&small)
+                .await
+                .expect("small unrelated turn");
+            assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+            assert_eq!(adapter.call_count(), 4);
+
+            // Re-home to a distinct provider, even at the same declared capacity.
+            let replacement = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                "PASS",
+                None,
+            )]));
+            faculty.binding.store(Arc::new(ModelBinding {
+                adapter: replacement.clone(),
+                model: None,
+                context_window: window,
+            }));
+            let pristine = faculty.prompt_view_within(&ws, window);
+            assert_eq!(
+                faculty.prompt_view(&ws).estimated_prompt_tokens,
+                pristine.estimated_prompt_tokens
+            );
+            assert!(faculty
+                .contribute(&ws)
+                .await
+                .expect("new route")
+                .fault
+                .is_none());
+            assert_eq!(replacement.call_count(), 1);
         }
 
         // what this catches: f09424d4, Kimi's actual ask vanished while the
@@ -5999,15 +7006,18 @@ mod tests {
                 ));
                 ws.workspace_deliverable = true;
                 ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
-                ws.broadcast.push(Contribution::context(
-                    FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
-                    format!(
-                        "Held activity context: continue independent source review.{}",
-                        "x".repeat(padding)
-                    ),
-                    0.9,
-                    "held claims",
-                ));
+                ws.broadcast.push(
+                    Contribution::context(
+                        FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                        format!(
+                            "Held activity context: continue independent source review.{}",
+                            "x".repeat(padding)
+                        ),
+                        0.9,
+                        "held claims",
+                    )
+                    .standing_grounding(),
+                );
 
                 let unfitted = faculty.messages_unfitted(&ws, None);
                 assert_eq!(
@@ -6087,7 +7097,255 @@ mod tests {
             }
         }
 
-        // what this catches: an indivisible oversized stimulus, room update or active result
+        // what this catches: b61ef8d2, saturated history bought a roster prefix
+        // using the room wall's reservation and silently dropped that wall. Inspect
+        // actual adapter requests, both KV placements, and source-order ties.
+        #[tokio::test]
+        async fn standing_activity_grounding_survives_history_on_the_wire() {
+            use crate::cognition::working_memory::WorkingMemory;
+            use crate::cognition::working_set::WorkingSetRegistry;
+            use crate::cognition::workspace::Burst;
+
+            let home = tempfile::tempdir().expect("isolated fixture demand and emission storage");
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            for (window, trailing, reverse, unit_size, history_count) in [
+                (29_440, false, false, 500, 200),
+                (29_440, true, true, 500, 200),
+                (58_880, true, false, 500, 0),
+                (29_440, false, true, 6_000, 200),
+                (29_440, true, false, 6_000, 200),
+            ] {
+                let persona = Uuid::new_v4();
+                let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                    FinishReason::Stop,
+                    "PASS",
+                    None,
+                )]));
+                let wm = Arc::new(WorkingMemory::new(8));
+                wm.set_served_window(window);
+                wm.record_receipt("latest complete tool receipt");
+                // Optional history does not outrank the reply reserve. Give this
+                // established citizen measured emissions so the large source
+                // minimum leaves real history room, rather than assuming the
+                // cold half-window prior must yield to optional conversation.
+                let registry = WorkingSetRegistry::new();
+                for now in 1..=3 {
+                    registry.record_emission_in_memory(persona, 1_000, false, now);
+                }
+                let faculty =
+                    LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                        .with_context_window(window)
+                        .with_tools(persona_tools::native_tool_specs())
+                        .with_working_memory(wm)
+                        .with_working_set(registry);
+                let mut turns: Vec<_> = (0..history_count)
+                    .map(|i| {
+                        BurstTurn::attributed(
+                            i % 2 == 1,
+                            if i % 2 == 1 { "Ivar" } else { "Peer" },
+                            format!("distinct_history_{i} ").repeat(100),
+                            Some(i),
+                        )
+                    })
+                    .collect();
+                turns.push(BurstTurn::attributed(
+                    false,
+                    "Peer",
+                    "Review the team's current activity.",
+                    Some(201),
+                ));
+                let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4())
+                    .expect("fixture room is non-nil");
+                let mut ws = Workspace::new(Burst::from_turns(room, turns));
+                ws.workspace_deliverable = true;
+                let parts: Vec<_> = (0..7)
+                    .map(|i| format!("peer_{i} role and activity: {}", "scope_".repeat(unit_size)))
+                    .collect();
+                let roster_text = parts.join("\n");
+                let roster = Contribution::context(
+                    FacultyId::Custom("room-roster".into()),
+                    roster_text.clone(),
+                    0.9,
+                    "colleagues",
+                )
+                .with_parts(parts.clone())
+                .standing_grounding()
+                .session_stable();
+                let wall_text = "Current activity: review the substrate with your colleagues; source evidence is on this wall.";
+                let wall = Contribution::context(
+                    FacultyId::Custom("room-wall".into()),
+                    wall_text,
+                    0.9,
+                    "activity",
+                )
+                .standing_grounding();
+                // The requiredness contract is independent of cache placement.
+                let (roster, wall) = if trailing {
+                    (roster.trailing(), wall.trailing())
+                } else {
+                    (roster, wall.session_stable())
+                };
+                let full_roster_tokens = GroundingPiece::whole(&roster).tokens;
+                let whole_roster_exceeds_window = full_roster_tokens > window as usize;
+                let case = format!(
+                    "window={window}, trailing={trailing}, reverse={reverse}, units={unit_size}, history={history_count}, full_roster_tokens={full_roster_tokens}"
+                );
+                assert_eq!(
+                    whole_roster_exceeds_window,
+                    unit_size == 6_000,
+                    "fixture must distinguish a potentially fitting list from an oversized list: {case}"
+                );
+                ws.broadcast = if reverse {
+                    vec![wall, roster]
+                } else {
+                    vec![roster, wall]
+                };
+                if history_count > 0 {
+                    let framing = faculty.compose_system_split(
+                        "",
+                        &faculty.expanded_categories(&ws),
+                        ws.directed_at_self(),
+                        ws.self_initiated,
+                        ws.now_ms,
+                        LlmDeliberationFaculty::holds_live_work(&ws),
+                    );
+                    let unfitted = faculty.messages_unfitted(&ws, Some(&framing.trailing));
+                    let history: Vec<_> = unfitted
+                        .history
+                        .iter()
+                        .filter(|m| m.content_text().contains("distinct_history_"))
+                        .collect();
+                    assert_eq!(
+                        history.len(),
+                        history_count as usize,
+                        "fixture history must survive near-duplicate filtering and coalescing"
+                    );
+                    let minimum = GroundingPlan::minimum(&ws, window as usize)
+                        .expect("fixture standing minimum fits");
+                    let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
+                        + faculty.select_tool_surface(&ws, window).tokens
+                        + minimum.system_reserve()
+                        + minimum.trailing_tokens()
+                        + unfitted.required_tokens()
+                        + faculty.completion_reserve_within(window) as usize;
+                    let cluster = history
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .map(|m| LlmDeliberationFaculty::message_cost(m))
+                        .sum::<usize>();
+                    assert!(fixed + cluster < window as usize,
+                        "fixture must admit a whole historical pair after its minimum and reply reserve: fixed={fixed}, pair={cluster}, window={window}, units={unit_size}");
+                    assert!(
+                        unfitted.tokens() > window as usize,
+                        "fixture must actually saturate history"
+                    );
+                }
+                let verdict = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("verdict or capacity fault");
+                assert!(verdict.fault.is_none(), "{case}: {:?}", verdict.fault);
+                assert_eq!(adapter.call_count(), 1);
+                let seen = adapter.seen.lock().expect("recording fixture lock");
+                let request = &seen[0];
+                let system = request
+                    .system_prompt
+                    .as_deref()
+                    .expect("assembled system prompt");
+                let contains = |text: &str| {
+                    system.contains(text)
+                        || request
+                            .messages
+                            .iter()
+                            .any(|m| m.content_text().contains(text))
+                };
+                assert!(
+                    contains(wall_text),
+                    "the complete atomic wall must survive its equal-salience roster: {case}"
+                );
+                if history_count == 0 {
+                    assert!(
+                        contains(&roster_text),
+                        "a roomy model keeps all offered units: {case}"
+                    );
+                } else {
+                    assert!(
+                        contains(&parts[0]),
+                        "keep the source's complete first unit: {case}"
+                    );
+                    // History is already bounded by the existing prefill cap.
+                    // A small list may therefore fit whole alongside retained
+                    // history; saturation alone does not require its omission.
+                    if whole_roster_exceeds_window {
+                        assert!(
+                            !contains(&parts[6]),
+                            "a roster larger than the entire window must retain only a prefix: {case}"
+                        );
+                    }
+                    if !contains(&roster_text) {
+                        assert!(
+                            contains("more not shown (context budget)"),
+                            "a partial list must disclose omitted source units: {case}"
+                        );
+                    }
+                    assert!(
+                        request
+                            .messages
+                            .iter()
+                            .any(|m| m.content_text().contains("distinct_history_")),
+                        "optional history retains a share after reserving the minimum: {case}"
+                    );
+                }
+                assert_eq!(system.contains("[room-roster]"), !trailing);
+                if trailing {
+                    let position = request
+                        .messages
+                        .iter()
+                        .position(|m| m.content_text().starts_with("[room-roster]"))
+                        .expect("reserved trailing roster");
+                    assert!(
+                        request.messages[position + 1..]
+                            .iter()
+                            .any(|m| m.content_text().contains("latest complete tool receipt")),
+                        "standing grounding retains its pre-result-ring placement"
+                    );
+                    assert_eq!(
+                        request
+                            .messages
+                            .iter()
+                            .filter(|m| m.content_text().starts_with("[room-roster]"))
+                            .count(),
+                        1
+                    );
+                }
+                assert!(contains("Review the team's current activity."));
+                assert!(request
+                    .messages
+                    .last()
+                    .expect("required result")
+                    .content_text()
+                    .ends_with("latest complete tool receipt"));
+                assert!(
+                    !contains("distinct_history_0 "),
+                    "optional history must yield"
+                );
+                let tools = request.tools.as_ref().expect("actual native surface");
+                let tool_tokens = LlmDeliberationFaculty::tool_surface_tokens_of(tools);
+                assert_eq!(tool_tokens, faculty.select_tool_surface(&ws, window).tokens);
+                let wire = LlmDeliberationFaculty::framing_cost(system)
+                    + LlmDeliberationFaculty::messages_cost(&request.messages)
+                    + tool_tokens
+                    + request.max_tokens.expect("planned completion reserve") as usize;
+                assert!(
+                    wire <= window as usize,
+                    "actual request {wire} exceeds its window: {case}"
+                );
+            }
+        }
+
+        // what this catches: an indivisible oversized stimulus, room update, active result
+        // or standing grounding unit (both KV placements)
         // must fault before inference, including self-ticks with no chat turns.
         // It must still publish demand, so refusal cannot freeze a small window.
         #[tokio::test]
@@ -6096,7 +7354,7 @@ mod tests {
             use crate::cognition::working_set::WorkingSetRegistry;
 
             let window = 8192u32;
-            for oversized_part in 0..3 {
+            for oversized_part in 0..5 {
                 let persona = Uuid::new_v4();
                 let adapter = Arc::new(ScriptedAdapter::new(vec![]));
                 let registry = WorkingSetRegistry::new();
@@ -6112,6 +7370,21 @@ mod tests {
                     let mut ws = Workspace::new("");
                     ws.turns.clear();
                     ws.self_initiated = true;
+                    ws
+                } else if oversized_part >= 3 {
+                    let mut ws = Workspace::new("original task stays required");
+                    let grounding = Contribution::context(
+                        FacultyId::Custom("standing-activity".into()),
+                        oversized,
+                        0.9,
+                        "activity",
+                    )
+                    .standing_grounding();
+                    ws.broadcast.push(if oversized_part == 4 {
+                        grounding.trailing()
+                    } else {
+                        grounding.session_stable()
+                    });
                     ws
                 } else {
                     wm.record_receipt("complete active result");

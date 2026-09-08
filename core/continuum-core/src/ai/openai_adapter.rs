@@ -31,8 +31,8 @@ use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
     ActiveAdapterRequest, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
-    FinishReason, GenerationTiming, HealthState, HealthStatus,
-    ModelInfo, TextGenerationRequest, TextGenerationResponse, ToolCall, UsageMetrics,
+    FinishReason, GenerationTiming, HealthState, HealthStatus, ModelInfo, TextGenerationRequest,
+    TextGenerationResponse, ToolCall, UsageMetrics,
 };
 
 /// Runtime-resolved config carried by each `OpenAICompatibleAdapter`
@@ -192,7 +192,6 @@ pub struct OpenAICompatibleAdapter {
     permit_reconciler_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-
 /// Served PER-SLOT context window by server root, captured from the same
 /// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
 /// llama-server reports the per-slot share there, already divided by
@@ -254,7 +253,6 @@ fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
 }
 
-
 impl OpenAICompatibleAdapter {
     /// Build the reqwest client for a STREAMING inference transport. There is
     /// deliberately NO total-request timeout: generation is a long-running job
@@ -304,7 +302,9 @@ impl OpenAICompatibleAdapter {
         // as in-flight generations finish (forget on acquire), so a smaller
         // relaunch is never over-admitted.
         let slots = if config.single_resident_model {
-            crate::inference::llama_server::current_serving().lanes.max(1) as usize
+            crate::inference::llama_server::current_serving()
+                .lanes
+                .max(1) as usize
         } else {
             64
         };
@@ -321,9 +321,9 @@ impl OpenAICompatibleAdapter {
             lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
             concurrency,
             permit_target: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(slots)),
-            permit_reconciler_started: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            permit_reconciler_started: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
         }
     }
 
@@ -681,8 +681,6 @@ impl OpenAICompatibleAdapter {
         Some(pool)
     }
 }
-
-
 
 impl OpenAICompatibleAdapter {
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -1067,7 +1065,6 @@ pub(crate) fn extract_reasoning(
 
 // `apply_enable_thinking_false` lives in `crate::inference::request_body` (S3b decompose).
 
-
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
 use crate::inference::sse_stream::warn_if_decode_collapsed;
 
@@ -1125,11 +1122,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 return; // every slot pinned — the pin-time path will retry
             };
             if let Some(prev) = pg.save_first {
-                if crate::inference::turn_admission::kv_page_action(&client, &root, pg.slot, &prev, "save").await {
+                if crate::inference::turn_admission::kv_page_action(
+                    &client, &root, pg.slot, &prev, "save",
+                )
+                .await
+                {
                     pool.note_saved(prev);
                 }
             }
-            if pg.restore && !crate::inference::turn_admission::kv_page_action(&client, &root, pg.slot, &key, "restore").await {
+            if pg.restore
+                && !crate::inference::turn_admission::kv_page_action(
+                    &client, &root, pg.slot, &key, "restore",
+                )
+                .await
+            {
                 pool.note_page_lost(&key);
             }
             crate::probe!(
@@ -1356,9 +1362,19 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
+        self.generate_stream_checked(request, sink)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn generate_stream_checked(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
-            return Err(format!("{} not initialized", self.config.name));
+            return Err(format!("{} not initialized", self.config.name).into());
         }
 
         let start = Instant::now();
@@ -1515,7 +1531,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 );
                 return Err(
                     "hold-backoff: measured work owns the core; generation refused so admission                      permits release — retry after the hold (automatic via deliberation retry)"
-                        .to_string(),
+                        .into(),
                 );
             }
             // Estimate this activity's prompt size once — the eviction price basis
@@ -1529,13 +1545,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         .map(|c| c.len() / 4)
                         .sum::<usize>()
                 })
-                .unwrap_or(0) as u64;  // unwrap_or: unknown size = 0 tokens, the price basis floor
-            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
-            // this activity's slot and page its KV onto a now-free slot. The returned
-            // guard holds the permit + slot pin for the WHOLE generation (bound into
-            // `_admission` at function scope above). A Turn that cannot name both
-            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-            // takes the permit only and lands on the scratch slot below.
+                .unwrap_or(0) as u64; // unwrap_or: unknown size = 0 tokens, the price basis floor
+                                      // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+                                      // this activity's slot and page its KV onto a now-free slot. The returned
+                                      // guard holds the permit + slot pin for the WHOLE generation (bound into
+                                      // `_admission` at function scope above). A Turn that cannot name both
+                                      // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
+                                      // takes the permit only and lands on the scratch slot below.
             let turn_key = match class {
                 crate::inference::slots::SlotClass::Turn => request
                     .persona_id
@@ -1636,15 +1652,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 let mut rows: Vec<(&str, usize)> = msgs
                                     .iter()
                                     .map(|m| {
-                                        let role = m
-                                            .get("role")
-                                            .and_then(|r| r.as_str())
-                                            .unwrap_or("?");  // unwrap_or: a message without a role string is still worth sizing; "?" names it rather than dropping it
+                                        let role =
+                                            m.get("role").and_then(|r| r.as_str()).unwrap_or("?"); // unwrap_or: a message without a role string is still worth sizing; "?" names it rather than dropping it
                                         let len = m
                                             .get("content")
                                             .and_then(|c| c.as_str())
                                             .map(|c| c.len() / 4)
-                                            .unwrap_or(0);  // unwrap_or: a message with no string content contributes 0 tokens to a total we are only explaining
+                                            .unwrap_or(0); // unwrap_or: a message with no string content contributes 0 tokens to a total we are only explaining
                                         (role, len)
                                     })
                                     .collect();
@@ -1657,7 +1671,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                     .join(" ");
                                 (msgs.len(), rendered)
                             })
-                            .unwrap_or((0, String::new()));  // unwrap_or: no messages array means nothing to attribute; the probe still reports the total
+                            .unwrap_or((0, String::new())); // unwrap_or: no messages array means nothing to attribute; the probe still reports the total
                         tracing::warn!(
                             probe_class = "serving.ctx_overshoot",
                             approx_tokens,
@@ -1732,7 +1746,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // stall happened (oversized prompt, wrong model, etc.). Kept at
         // info! because this is the one log line every failing-persona
         // investigation needs to see.
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        let body_bytes = serde_json::to_vec(&body).map_err(|error| {
+            crate::ai::inference_error::InferenceError::Protocol(format!(
+                "could not encode generation request: {error}"
+            ))
+        })?;
         clog_info!(
             "POST {} model={} body_bytes={} has_tools={} stream={}",
             url,
@@ -1776,14 +1794,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             self.dedicated_lane,
             model,
             &body,
-            request.persona_id.as_deref().unwrap_or("non-persona"),  // unwrap_or: no persona = a non-persona caller in the refusal text
+            request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
 
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
-        let response =
-            crate::inference::lane_send::send_with_lane_retry(&self.config, request_builder, &body)
-                .await?;
+        let response = crate::inference::lane_send::send_with_lane_retry(
+            &self.config,
+            request_builder,
+            body_bytes,
+        )
+        .await?;
 
         // Consume the SSE stream — `inference::sse_stream` (watchdogs, prefill liveness,
         // token/tool accumulation). The locals below are what the inline loop bound.
@@ -2241,9 +2262,13 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::serving_guard::{settled_on_another_model, snapshot_guarantees, unguaranteed_model_refusal};
-    use crate::inference::request_body::{apply_enable_thinking_false, apply_no_think_switch, close_trailing_assistant};
     use crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS;
+    use crate::inference::request_body::{
+        apply_enable_thinking_false, apply_no_think_switch, close_trailing_assistant,
+    };
+    use crate::inference::serving_guard::{
+        settled_on_another_model, snapshot_guarantees, unguaranteed_model_refusal,
+    };
     use crate::inference::sse_stream::{OpenAIStreamChunk, STREAM_IDLE_TIMEOUT_SECS};
 
     use crate::ai::types::{ChatMessage, ImageInput, MessageContent};
@@ -2485,6 +2510,97 @@ mod tests {
         })
     }
 
+    // what this catches: aa5888a9 — the actual HTTP boundary must preserve
+    // structured counts, and a transport retry must send the same prepared bytes.
+    #[tokio::test]
+    async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
+        use crate::ai::inference_error::InferenceError;
+        use axum::{http::StatusCode, routing::post, Router};
+        use std::sync::{Arc, Mutex};
+
+        let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let log = Arc::clone(&received);
+        let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
+            let log = Arc::clone(&log);
+            async move {
+                let attempt = {
+                    let mut log = log.lock().expect("fixture request log");
+                    log.push(body.to_vec());
+                    log.len()
+                };
+                if attempt == 2 {
+                    (StatusCode::SERVICE_UNAVAILABLE, "loading")
+                } else {
+                    (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("isolated HTTP fixture");
+        let address = listener.local_addr().expect("bound address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut adapter = test_adapter();
+        adapter.config.base_url = format!("http://{address}");
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text(
+                "user",
+                "Inspect the selected artifact — λ",
+            )],
+            ..Default::default()
+        };
+        let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+        drop(receiver);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_stream_checked(request, sink),
+        )
+        .await
+        .expect("bounded fixture request");
+        assert!(matches!(
+            result,
+            Err(InferenceError::ContextExceeded {
+                requested: 29722,
+                available: 29440
+            })
+        ));
+
+        let body =
+            br#"{"messages":[{"role":"user","content":"prepared request"}],"tools":[]}"#.to_vec();
+        adapter.config.single_resident_model = true;
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::inference::lane_send::send_with_lane_retry(
+                &adapter.config,
+                adapter
+                    .client
+                    .post(format!("http://{address}/v1/chat/completions"))
+                    .header("Content-Type", "application/json"),
+                body.clone(),
+            ),
+        )
+        .await
+        .expect("bounded retry fixture");
+        assert!(matches!(
+            retry,
+            Err(InferenceError::ContextExceeded {
+                requested: 29722,
+                available: 29440
+            })
+        ));
+        server.abort();
+        let _ = server.await;
+        let received = received.lock().expect("actual wire requests");
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[1], body);
+        assert_eq!(received[2], body);
+        let first: Value = serde_json::from_slice(&received[0]).expect("actual adapter JSON body");
+        assert_eq!(
+            first["messages"][0]["content"],
+            "Inspect the selected artifact — λ"
+        );
+    }
+
     fn image_message() -> Vec<ChatMessage> {
         vec![ChatMessage {
             role: "user".into(),
@@ -2512,7 +2628,12 @@ mod tests {
     // upstream still reports success.
     #[test]
     fn vision_capable_model_gets_raw_image_content_parts() {
-        let wire = crate::inference::request_body::format_messages(&test_adapter().config, &image_message(), None, true);
+        let wire = crate::inference::request_body::format_messages(
+            &test_adapter().config,
+            &image_message(),
+            None,
+            true,
+        );
         assert_eq!(wire.len(), 1);
         let content = wire[0]["content"].as_array().expect("multimodal array");
         assert_eq!(content.len(), 2, "text part + image part");
@@ -2531,7 +2652,12 @@ mod tests {
     // carry the bridge's description) must survive untouched.
     #[test]
     fn non_vision_model_has_image_parts_dropped_and_keeps_bridge_text() {
-        let wire = crate::inference::request_body::format_messages(&test_adapter().config, &image_message(), None, false);
+        let wire = crate::inference::request_body::format_messages(
+            &test_adapter().config,
+            &image_message(),
+            None,
+            false,
+        );
         assert_eq!(wire.len(), 1);
         let content = wire[0]["content"].as_array().expect("content array");
         assert_eq!(
