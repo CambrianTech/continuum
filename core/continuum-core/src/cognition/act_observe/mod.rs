@@ -1282,43 +1282,44 @@ mod tests {
                 .iter()
                 .any(|edge| edge.target == first_act.id
                     && edge.kind == crate::persona::engram_graph::EdgeKind::CausedBy));
-            let requests = recorded.lock().unwrap();
-            assert_eq!(requests.len(), 3);
-            for (index, request) in requests.iter().enumerate() {
-                assert_eq!(request.room_id.as_deref(), Some(room.to_string().as_str()));
-                let text = request
-                    .messages
-                    .iter()
-                    .map(|m| m.content_text())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(text.contains(task));
-                if framing.self_initiated {
-                    assert!(!text.contains("This message names you"),
-                    "a priority input must not rewrite the original self-turn's addressing fact");
-                }
-                assert_eq!(
-                    text.matches(&later_message.text).count(),
-                    usize::from(index > 1)
-                );
-                for message in &messages {
-                    assert_eq!(text.matches(&message.text).count(), usize::from(index > 0));
+            {
+                let requests = recorded.lock().unwrap();
+                assert_eq!(requests.len(), 3);
+                for (index, request) in requests.iter().enumerate() {
+                    assert_eq!(request.room_id.as_deref(), Some(room.to_string().as_str()));
+                    let text = request
+                        .messages
+                        .iter()
+                        .map(|m| m.content_text())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    assert!(text.contains(task));
+                    if framing.self_initiated {
+                        assert!(!text.contains("This message names you"),
+                        "a priority input must not rewrite the original self-turn's addressing fact");
+                    }
+                    assert_eq!(
+                        text.matches(&later_message.text).count(),
+                        usize::from(index > 1)
+                    );
+                    for message in &messages {
+                        assert_eq!(text.matches(&message.text).count(), usize::from(index > 0));
+                        if index > 0 {
+                            assert!(text.contains(&format!(
+                                "room {}; peer {}; event {}",
+                                message.room_id, colleague, message.event_id
+                            )));
+                        }
+                    }
                     if index > 0 {
-                        assert!(text.contains(&format!(
-                            "room {}; peer {}; event {}",
-                            message.room_id, colleague, message.event_id
-                        )));
+                        assert!(text.contains(if index == 1 {
+                            "FIRST_COMPLETE_TOOL_RESULT"
+                        } else {
+                            "SECOND_COMPLETE_TOOL_RESULT"
+                        }));
                     }
                 }
-                if index > 0 {
-                    assert!(text.contains(if index == 1 {
-                        "FIRST_COMPLETE_TOOL_RESULT"
-                    } else {
-                        "SECOND_COMPLETE_TOOL_RESULT"
-                    }));
-                }
             }
-            drop(requests);
             // Perception did not steal these inputs from later attention in their own
             // rooms. Each retained source is returned once by the ordinary driver.
             assert!(

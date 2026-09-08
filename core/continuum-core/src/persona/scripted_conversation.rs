@@ -59,12 +59,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+/// Shared input queue: the conversation consumes events while its feed appends
+/// messages, stream endings, or explicit failures at controlled action boundaries.
+type ScriptedEventQueue = Arc<Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>>;
+
 /// System-level, configurable `PersonaConversation` impl. Public
 /// because every test in the substrate leases it; not behind
 /// `#[cfg(test)]`.
 pub struct ScriptedConversation {
     high_water: u64,
-    events: Arc<Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>>,
+    events: ScriptedEventQueue,
     perceived_backlog: VecDeque<Arc<IncomingMessage>>,
     /// Every reply the loop posted, WITH the room it was posted into.
     /// The room is recorded because "she answered" and "she answered
@@ -267,7 +271,7 @@ impl PersonaConversation for ScriptedConversation {
 /// The input side of a scripted conversation; the service remains its sole reader.
 #[derive(Clone)]
 #[cfg(any(test, feature = "test-fixtures"))]
-pub struct ScriptedConversationFeed(Arc<Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>>);
+pub struct ScriptedConversationFeed(ScriptedEventQueue);
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl ScriptedConversationFeed {
