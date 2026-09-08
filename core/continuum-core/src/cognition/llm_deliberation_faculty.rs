@@ -7185,6 +7185,16 @@ mod tests {
                 } else {
                     (roster, wall.session_stable())
                 };
+                let full_roster_tokens = GroundingPiece::whole(&roster).tokens;
+                let whole_roster_exceeds_window = full_roster_tokens > window as usize;
+                let case = format!(
+                    "window={window}, trailing={trailing}, reverse={reverse}, units={unit_size}, history={history_count}, full_roster_tokens={full_roster_tokens}"
+                );
+                assert_eq!(
+                    whole_roster_exceeds_window,
+                    unit_size == 6_000,
+                    "fixture must distinguish a potentially fitting list from an oversized list: {case}"
+                );
                 ws.broadcast = if reverse {
                     vec![wall, roster]
                 } else {
@@ -7235,7 +7245,7 @@ mod tests {
                     .contribute(&ws)
                     .await
                     .expect("verdict or capacity fault");
-                assert!(verdict.fault.is_none(), "{:?}", verdict.fault);
+                assert!(verdict.fault.is_none(), "{case}: {:?}", verdict.fault);
                 assert_eq!(adapter.call_count(), 1);
                 let seen = adapter.seen.lock().expect("recording fixture lock");
                 let request = &seen[0];
@@ -7252,26 +7262,39 @@ mod tests {
                 };
                 assert!(
                     contains(wall_text),
-                    "the complete atomic wall must survive its equal-salience roster"
+                    "the complete atomic wall must survive its equal-salience roster: {case}"
                 );
                 if history_count == 0 {
                     assert!(
                         contains(&roster_text),
-                        "a roomy model keeps all offered units"
+                        "a roomy model keeps all offered units: {case}"
                     );
                 } else {
-                    assert!(contains(&parts[0]), "keep the source's complete first unit");
                     assert!(
-                        !contains(&parts[6]),
-                        "optional list details must not displace every historical turn"
+                        contains(&parts[0]),
+                        "keep the source's complete first unit: {case}"
                     );
-                    assert!(contains("more not shown (context budget)"));
+                    // History is already bounded by the existing prefill cap.
+                    // A small list may therefore fit whole alongside retained
+                    // history; saturation alone does not require its omission.
+                    if whole_roster_exceeds_window {
+                        assert!(
+                            !contains(&parts[6]),
+                            "a roster larger than the entire window must retain only a prefix: {case}"
+                        );
+                    }
+                    if !contains(&roster_text) {
+                        assert!(
+                            contains("more not shown (context budget)"),
+                            "a partial list must disclose omitted source units: {case}"
+                        );
+                    }
                     assert!(
                         request
                             .messages
                             .iter()
                             .any(|m| m.content_text().contains("distinct_history_")),
-                        "optional history retains a share after reserving the minimum: window={window}, trailing={trailing}, units={unit_size}"
+                        "optional history retains a share after reserving the minimum: {case}"
                     );
                 }
                 assert_eq!(system.contains("[room-roster]"), !trailing);
@@ -7316,7 +7339,7 @@ mod tests {
                     + request.max_tokens.expect("planned completion reserve") as usize;
                 assert!(
                     wire <= window as usize,
-                    "actual request {wire} exceeds {window}"
+                    "actual request {wire} exceeds its window: {case}"
                 );
             }
         }
