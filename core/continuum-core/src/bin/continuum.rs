@@ -89,7 +89,9 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "orphans"
                 | "deploy-verify"
                 | "verify"
-        ) && args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")))
+        ) && args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-h" | "--help")))
 }
 
 async fn run() -> Result<(), CliError> {
@@ -1060,11 +1062,54 @@ fn apply_runtime_library_path(cmd: &mut std::process::Command) {
     let Ok(root) = continuum_root() else {
         return;
     };
-    let dirs = runtime_library_dirs(&root);
+    apply_runtime_library_env_in(cmd, &root, std::env::consts::OS);
+}
+
+/// Read the child's effective environment, including config.env assignments and
+/// explicit removals. Looking only at our own environment loses launch overrides.
+fn command_env(cmd: &std::process::Command, key: &str) -> Option<std::ffi::OsString> {
+    match cmd.get_envs().find(|(name, _)| {
+        if cfg!(windows) {
+            name.as_encoded_bytes().eq_ignore_ascii_case(key.as_bytes())
+        } else {
+            *name == key
+        }
+    }) {
+        Some((_, value)) => value.map(std::ffi::OsStr::to_os_string),
+        None => std::env::var_os(key),
+    }
+}
+
+/// The installed-library contract also applies to binary-only launches. In
+/// particular, Windows otherwise finds System32's older ONNX Runtime and voice
+/// initialization panics while the rest of the core reports ready (card d2698cdc).
+/// Configure only the child, before spawn; never mutate a running process's env.
+fn apply_runtime_library_env_in(cmd: &mut std::process::Command, root: &Path, os: &str) {
+    if command_env(cmd, "ORT_DYLIB_PATH").is_none_or(|path| path.is_empty()) {
+        let library_name = match os {
+            "windows" => "onnxruntime.dll",
+            "macos" => "libonnxruntime.dylib",
+            _ => "libonnxruntime.so",
+        };
+        let installed = root.join("lib").join(library_name);
+        let homebrew = Path::new("/opt/homebrew/lib/libonnxruntime.dylib");
+        if installed.is_file() {
+            cmd.env("ORT_DYLIB_PATH", installed);
+        } else if os == "macos" && homebrew.is_file() {
+            cmd.env("ORT_DYLIB_PATH", homebrew);
+        } else if os == "windows" {
+            eprintln!(
+                "⚠ ONNX Runtime not provisioned at {}. Voice initialization may fail if Windows loads its system copy; install the onnxruntime module or set ORT_DYLIB_PATH.",
+                installed.display()
+            );
+        }
+    }
+
+    let dirs = runtime_library_dirs(root);
     if dirs.is_empty() {
         return;
     }
-    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let existing = command_env(cmd, "PATH").unwrap_or_default();
     let joined = std::env::join_paths(dirs.into_iter().chain(std::env::split_paths(&existing)));
     match joined {
         Ok(path) => {
@@ -2429,8 +2474,16 @@ mod tests {
     #[test]
     fn lifecycle_help_precedes_actions_and_remote_help_stays_remote() {
         for command in [
-            "start", "reboot", "restart", "boot", "stop", "desktop", "ui", "orphans",
-            "deploy-verify", "verify",
+            "start",
+            "reboot",
+            "restart",
+            "boot",
+            "stop",
+            "desktop",
+            "ui",
+            "orphans",
+            "deploy-verify",
+            "verify",
         ] {
             for flag in ["-h", "--help"] {
                 assert!(super::local_help_requested(
@@ -2488,6 +2541,76 @@ mod tests {
         assert!(
             !dirs.iter().any(|d| d.ends_with("models")),
             "unrelated continuum-root dirs are never runtime library paths: {dirs:?}"
+        );
+    }
+
+    // what this catches: card d2698cdc — ONNX selection must work without any
+    // CUDA/toolchain directory and must select the host platform's installed ABI.
+    #[test]
+    fn native_launch_selects_platform_ort_without_cuda() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir(root.join("lib")).expect("lib dir");
+        for (os, name) in [
+            ("windows", "onnxruntime.dll"),
+            ("linux", "libonnxruntime.so"),
+            ("macos", "libonnxruntime.dylib"),
+        ] {
+            let library = root.join("lib").join(name);
+            std::fs::write(&library, []).expect("installed library fixture");
+            let mut cmd = std::process::Command::new("unused");
+            cmd.env("ORT_DYLIB_PATH", "");
+            cmd.env("PATH", root.join("operator-bin"));
+            super::apply_runtime_library_env_in(&mut cmd, root, os);
+            assert_eq!(
+                super::command_env(&cmd, "ORT_DYLIB_PATH"),
+                Some(library.into_os_string())
+            );
+            assert_eq!(
+                super::command_env(&cmd, "PATH"),
+                Some(root.join("operator-bin").into_os_string()),
+                "ONNX discovery must not require or rewrite a toolchain PATH"
+            );
+        }
+    }
+
+    // what this catches: config.env overrides live on Command, not in the CLI's
+    // environment. Preserve both an explicit ORT selection and configured PATH.
+    #[test]
+    fn native_launch_preserves_runtime_overrides_and_configured_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cuda = root.join("cuda-13.2/Library/bin");
+        std::fs::create_dir_all(&cuda).expect("cuda bin");
+        let explicit_ort = root.join("operator-ort.dll");
+        let explicit_path = root.join("operator-bin");
+        let mut cmd = std::process::Command::new("unused");
+        // Windows preserves spelling but compares environment keys without case.
+        // config.env may legally use either spelling; Unix remains case-sensitive.
+        let ort_key = if cfg!(windows) {
+            "ort_dylib_path"
+        } else {
+            "ORT_DYLIB_PATH"
+        };
+        let path_key = if cfg!(windows) { "Path" } else { "PATH" };
+        cmd.env(ort_key, &explicit_ort);
+        cmd.env(path_key, &explicit_path);
+        super::apply_runtime_library_env_in(&mut cmd, root, "windows");
+        assert_eq!(
+            super::command_env(&cmd, "ORT_DYLIB_PATH"),
+            Some(explicit_ort.into_os_string()),
+            "an explicit override remains authoritative even if the path is absent"
+        );
+        let actual = super::command_env(&cmd, "PATH").expect("child PATH");
+        assert_eq!(
+            std::env::split_paths(&actual).collect::<Vec<_>>(),
+            vec![cuda, explicit_path],
+            "prepend runtime dirs to the configured child PATH, not the parent's PATH"
+        );
+        cmd.env_remove(path_key);
+        assert!(
+            super::command_env(&cmd, "PATH").is_none(),
+            "an explicit removal must not fall through to the parent's environment"
         );
     }
 

@@ -137,7 +137,7 @@ mod tests {
     fn string_composite_id_keys_never_rise() {
         let violations = scan(&[&NoStringCompositeIdKeys]);
         assert!(
-            violations.len() <= BASELINE_STRING_COMPOSITE_KEYS,
+            violations.is_empty(),
             "string-composite id keys rose to {} (baseline {BASELINE_STRING_COMPOSITE_KEYS}).\n\
              Key on a typed struct of UUIDs, never a formatted string.\nOffenders:\n{}",
             violations.len(),

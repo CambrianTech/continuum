@@ -143,7 +143,7 @@ pub fn feasible_divisions(
     let mut out = Vec::new();
     for (i, t) in tiers.iter().enumerate() {
         let budget = hw.expert_cache_bytes(t.resident_bytes);
-        let slots = if shape.expert_bytes > 0 { budget / shape.expert_bytes } else { 0 };
+        let slots = budget.checked_div(shape.expert_bytes).unwrap_or(0);
         if budget == 0 || slots == 0 {
             continue; // this tier leaves no room for a cache — not a useful division
         }

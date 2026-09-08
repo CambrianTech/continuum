@@ -185,7 +185,8 @@ mod tests {
         let e = "test-embedder";
         // A BLENDED task (diagonal X+Y): different genes cover different halves of it,
         // so relevance and distinctness are separable (the realistic case).
-        let task = vec![0.7071, 0.7071, 0.0];
+        let diagonal = std::f32::consts::FRAC_1_SQRT_2;
+        let task = vec![diagonal, diagonal, 0.0];
         let x1 = sig(e, vec![1.0, 0.0, 0.0]); // covers the X half
         let x2 = sig(e, vec![1.0, 0.0, 0.0]); // exact duplicate of x1
         let y = sig(e, vec![0.0, 1.0, 0.0]); // covers the Y half — equally relevant, orthogonal

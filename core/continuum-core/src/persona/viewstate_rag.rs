@@ -215,29 +215,63 @@ enum SubstrateBinding {
     PerRoom(std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>),
 }
 
+/// A kind that describes THE NODE, not a room: the bench board, serving, metrics.
+/// Its [`RagRenderable::room`] answers `None`, and it is the only shape
+/// [`ViewStateRagSource::new`] accepts.
+///
+/// This marker exists because a doc comment was carrying the rule. #3879 claimed
+/// "the two constructors make the wrong binding unstatable"; they did not --
+/// `new` was generic over every `RagRenderable`, so
+/// `ViewStateRagSource::<RosterViewState>::new(substrate)` (which IS the #3862
+/// defect) compiled fine and only this paragraph refused it. A comment asserting
+/// a guarantee the compiler does not enforce is the exact shape that cost 662
+/// abstains, so the guarantee moved into the type system (#3881).
+pub trait NodeScopedView: RagRenderable {}
+
+/// A kind that describes ONE ROOM: the roster, and every per-room view after it.
+/// Its [`RagRenderable::room`] answers `Some`, and it can ONLY be constructed
+/// through [`ViewStateRagSource::per_room`], which takes the registry and
+/// resolves the turn's room per delivery.
+///
+/// The invariant, in @IntelMac's words and credited to them: ANY SOURCE HOLDING A
+/// BOUND `room_id` MUST CONSULT THE TURN'S ROOM BEFORE READING IT. A room-scoped
+/// kind cannot be handed a single `Substrate`, so it cannot hold a bound room at
+/// all -- the invariant holds by construction rather than by review.
+pub trait RoomScopedView: RagRenderable {}
+
+/// THE ACCEPTANCE FOR #3881, as a compile-fail proof rather than a claim.
+///
+/// This is the #3862 defect written out: handing a ROOM-scoped kind a single
+/// `Substrate`, so it reads one room forever while citizens work in others. It
+/// compiled before this change, and the only thing refusing it was a paragraph.
+///
+/// ```compile_fail
+/// use continuum_core::persona::viewstate_rag::ViewStateRagSource;
+/// use continuum_positron::{RosterViewState, Substrate};
+/// // `new` is bound on NodeScopedView; the roster is RoomScopedView.
+/// let _ = ViewStateRagSource::<RosterViewState>::new(Substrate::new());
+/// ```
+///
+/// And the mirror, which MUST still build -- a guard that refuses everything is
+/// not a guard, and this is the half that catches an over-tight bound:
+///
+/// ```
+/// use continuum_core::persona::viewstate_rag::ViewStateRagSource;
+/// use continuum_positron::bench::BenchViewState;
+/// use continuum_positron::Substrate;
+/// let _ = ViewStateRagSource::<BenchViewState>::new(Substrate::new());
+/// ```
+///
+/// A doctest is used deliberately: `trybuild` would be a new dev-dependency for
+/// one assertion, and `compile_fail` is in the toolchain already. The cost is
+/// that it runs only under `cargo test --doc`, and CI ran `--lib` only -- so
+/// this guard would have merged and never executed once. `.github/workflows/
+/// continuum-rust-tests.yml` gained a step that runs it by name and asserts
+/// `2 passed`, because a filter matching NOTHING exits 0 and a renamed struct
+/// would otherwise leave a green step testing nothing.
+pub struct BindingIsUnstatable;
+
 impl<V: RagRenderable> ViewStateRagSource<V> {
-    /// A NODE-scoped source: one substrate, every turn. Use only for a kind whose
-    /// [`RagRenderable::room`] returns `None`.
-    pub fn new(substrate: Substrate) -> Self {
-        Self {
-            binding: SubstrateBinding::Node(substrate),
-            _kind: std::marker::PhantomData,
-        }
-    }
-
-    /// A ROOM-scoped source: reads the store of whatever room the turn is in.
-    ///
-    /// This is the constructor a room-scoped kind must use. It takes the REGISTRY,
-    /// not a room, precisely so no caller can bind a room at construction time.
-    pub fn per_room(
-        rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>,
-    ) -> Self {
-        Self {
-            binding: SubstrateBinding::PerRoom(rooms),
-            _kind: std::marker::PhantomData,
-        }
-    }
-
     /// Read + deserialize the current view, or `None` when the kind has never been
     /// stored (a cold boot before the first projection) or the payload does not
     /// match this build's shape. Both are honest absences: no block is rendered.
@@ -313,6 +347,32 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
             });
         }
         (items, used, next)
+    }
+}
+
+impl<V: RagRenderable + NodeScopedView> ViewStateRagSource<V> {
+    /// A NODE-scoped source: one substrate, every turn. Use only for a kind whose
+    /// [`RagRenderable::room`] returns `None`.
+    pub fn new(substrate: Substrate) -> Self {
+        Self {
+            binding: SubstrateBinding::Node(substrate),
+            _kind: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V: RagRenderable + RoomScopedView> ViewStateRagSource<V> {
+    /// A ROOM-scoped source: reads the store of whatever room the turn is in.
+    ///
+    /// This is the constructor a room-scoped kind must use. It takes the REGISTRY,
+    /// not a room, precisely so no caller can bind a room at construction time.
+    pub fn per_room(
+        rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>,
+    ) -> Self {
+        Self {
+            binding: SubstrateBinding::PerRoom(rooms),
+            _kind: std::marker::PhantomData,
+        }
     }
 }
 
@@ -434,6 +494,10 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
 
 // ─────────────────────── OUTLIER A: the roster (people) ───────────────────────
 
+/// The roster describes ONE room, so it is room-scoped and can only be built
+/// through `per_room`. See [`RoomScopedView`].
+impl RoomScopedView for continuum_positron::RosterViewState {}
+
 /// Who is present, rendered for a mind from the SAME `RosterViewState` the web
 /// roster renders.
 ///
@@ -516,6 +580,10 @@ impl RagRenderable for continuum_positron::RosterViewState {
 }
 
 // ──────────────── OUTLIER B: the benchmark board (numbers, no identity) ────────
+
+/// The bench board is ONE global fold describing the NODE, so it is node-scoped
+/// and keeps the single-substrate constructor. See [`NodeScopedView`].
+impl NodeScopedView for continuum_positron::bench::BenchViewState {}
 
 /// A benchmark run's live rows, rendered for a mind from the SAME `BenchViewState`
 /// the academy rail renders.

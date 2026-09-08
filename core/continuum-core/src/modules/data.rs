@@ -4,8 +4,8 @@
 //! Also handles: vector/* commands (vector similarity search with in-memory caching)
 //! Uses the ORM module's StorageAdapter trait for database-agnostic operations.
 //!
-//! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
-//! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
+//! Callers pass opaque database handles. This module resolves handles against
+//! the host's storage configuration; callers do not construct backend paths.
 
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore};
 
@@ -228,16 +229,41 @@ impl DataState {
     ///
     /// This keeps the abstraction enforced at the caller boundary: SQL,
     /// URLs, and filenames simply do not exist in the caller's language.
+    /// `$HOME` remains the explicit home override; otherwise the native home
+    /// directory is used (including Windows launches without a shell's HOME).
     fn resolve_handle(&self, handle: &str) -> Result<String, String> {
+        Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir)
+    }
+
+    /// Keep environment access at the resolution boundary so all local handle
+    /// families share one home policy, independently of the launching shell.
+    fn resolve_handle_with(
+        handle: &str,
+        env: impl Fn(&str) -> Option<String>,
+        native_home: impl FnOnce() -> Option<PathBuf>,
+    ) -> Result<String, String> {
+        // Lazy: configured backends and legacy paths do not need a home lookup.
+        let resolve_home = || {
+            if let Some(home) = env("HOME") {
+                return Ok(home);
+            }
+            native_home()
+                .ok_or_else(|| format!("resolve_handle('{handle}'): home directory unavailable"))?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| {
+                    format!("resolve_handle('{handle}'): home directory is not valid UTF-8")
+                })
+        };
+
         // Main DB sentinel — honors DATABASE_URL env, falls back to SQLite.
         if handle == "main" {
-            if let Ok(url) = std::env::var("DATABASE_URL") {
+            if let Some(url) = env("DATABASE_URL") {
                 if !url.is_empty() {
                     return Ok(url);
                 }
             }
-            let home = std::env::var("HOME")
-                .map_err(|_| "resolve_handle('main'): HOME env not set".to_string())?;
+            let home = resolve_home()?;
             return Ok(format!("{}/.continuum/database/main.db", home));
         }
 
@@ -264,8 +290,7 @@ impl DataState {
                         "resolve_handle('{sentinel}{slug}'): slug must be a single path segment"
                     ));
                 }
-                let home = std::env::var("HOME")
-                    .map_err(|_| format!("resolve_handle('{sentinel}{slug}'): HOME env not set"))?;
+                let home = resolve_home()?;
                 return Ok(format!(
                     "{home}/.continuum/{bucket}/{slug}/data/longterm.db"
                 ));
@@ -274,16 +299,14 @@ impl DataState {
 
         // Telemetry SQLite sentinel.
         if handle == "@metrics" {
-            let home = std::env::var("HOME")
-                .map_err(|_| "resolve_handle('@metrics'): HOME env not set".to_string())?;
+            let home = resolve_home()?;
             return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
         // Safe to check without crate parsing — the shape is unambiguous.
         if is_uuid_shape(handle) {
-            let home = std::env::var("HOME")
-                .map_err(|_| format!("resolve_handle('{}'): HOME env not set", handle))?;
+            let home = resolve_home()?;
             return Ok(format!(
                 "{}/.continuum/personas/{}/longterm.db",
                 home, handle
@@ -2350,35 +2373,92 @@ mod tests {
         ))
     }
 
-    /// what this catches: first-class citizenship (Joel 2026-07-25) — the
-    /// per-citizen store sentinels resolve to their OWN bucket, so an agent's
-    /// `/continuum:memory` writes land in `agents/<name>/…` (its durable
-    /// amnesia-fixing home), a human's in `humans/<name>/…`, a persona's in
-    /// `personas/<name>/…`. If the bucket mapping drifts, an agent's memory
-    /// collides with a persona of the same name or vanishes into the wrong dir.
+    /// what this catches: card d2698cdc — native Windows launches without HOME
+    /// lost chat and citizen memory. Every local handle must use the same native
+    /// home fallback while preserving explicit overrides and citizen isolation.
     #[test]
-    fn per_citizen_store_sentinels_resolve_to_their_own_bucket() {
-        // Set an isolated HOME so the resolved absolute path is deterministic.
-        let prior = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/tmp/continuum-citizen-test");
-        let state = DataState::new();
-        for (sentinel, bucket) in [
-            ("@persona:Asha", "personas/Asha"),
-            ("@agent:claude-code", "agents/claude-code"),
-            ("@human:operator", "humans/operator"),
+    fn database_handles_preserve_layout_with_native_home_and_overrides() {
+        let handles = [
+            ("main", "database/main.db"),
+            ("@persona:Asha", "personas/Asha/data/longterm.db"),
+            ("@agent:claude-code", "agents/claude-code/data/longterm.db"),
+            ("@human:operator", "humans/operator/data/longterm.db"),
+            ("@metrics", "metrics/metrics.sqlite"),
+            (
+                "e2f0e022-04ac-4f66-a26c-7146551745b4",
+                "personas/e2f0e022-04ac-4f66-a26c-7146551745b4/longterm.db",
+            ),
+        ];
+        for (home_override, native_home, expected_home) in [
+            (
+                Some("/tmp/explicit-home"),
+                "C:/Users/native",
+                "/tmp/explicit-home",
+            ),
+            (None, "C:/Users/native", "C:/Users/native"),
+            (None, "/Users/native", "/Users/native"),
         ] {
-            let resolved = state.resolve_handle(sentinel).expect("resolves");
+            for (handle, suffix) in handles {
+                let resolved = DataState::resolve_handle_with(
+                    handle,
+                    |key| match key {
+                        "HOME" => home_override.map(str::to_owned),
+                        // Empty DATABASE_URL must still select local SQLite.
+                        "DATABASE_URL" => Some(String::new()),
+                        _ => panic!("unexpected environment lookup: {key}"),
+                    },
+                    || {
+                        assert!(home_override.is_none(), "explicit HOME takes precedence");
+                        Some(PathBuf::from(native_home))
+                    },
+                )
+                .expect("local handle resolves");
+                assert_eq!(resolved, format!("{expected_home}/.continuum/{suffix}"));
+            }
+        }
+
+        let url = "postgres://localhost/continuum";
+        assert_eq!(
+            DataState::resolve_handle_with(
+                "main",
+                |key| {
+                    assert_eq!(key, "DATABASE_URL", "configured backend needs no HOME");
+                    Some(url.to_owned())
+                },
+                || panic!("configured backend needs no native home"),
+            )
+            .unwrap(),
+            url,
+        );
+        for (handle, _) in handles {
+            let error = DataState::resolve_handle_with(handle, |_| None, || None).unwrap_err();
             assert_eq!(
-                resolved,
-                format!("/tmp/continuum-citizen-test/.continuum/{bucket}/data/longterm.db"),
-                "sentinel {sentinel} → its own bucket"
+                error,
+                format!("resolve_handle('{handle}'): home directory unavailable")
             );
         }
-        // Path-escape defense holds for the new sentinels too.
-        assert!(state.resolve_handle("@agent:../evil").is_err());
-        match prior {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+
+        // Invalid sentinels fail before resolving a home or touching storage.
+        for prefix in ["@persona:", "@agent:", "@human:"] {
+            for slug in ["", "../evil", "nested/evil", "nested\\evil"] {
+                assert!(DataState::resolve_handle_with(
+                    &format!("{prefix}{slug}"),
+                    |_| panic!("invalid slug needs no environment lookup"),
+                    || panic!("invalid slug needs no native home"),
+                )
+                .is_err());
+            }
+        }
+        for legacy in [url, "postgresql://localhost/continuum", "/tmp/legacy.db"] {
+            assert_eq!(
+                DataState::resolve_handle_with(
+                    legacy,
+                    |_| panic!("legacy connection needs no environment lookup"),
+                    || panic!("legacy connection needs no native home"),
+                )
+                .unwrap(),
+                legacy,
+            );
         }
     }
 

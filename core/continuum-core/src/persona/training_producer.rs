@@ -75,6 +75,54 @@ static CLASSIFIER: OnceLock<DomainClassifier> = OnceLock::new();
 /// `0.45` is the clean separator between "acknowledgement" and "real content."
 const MIN_TRAINING_QUALITY: f32 = 0.45;
 
+/// WHICH HAND a citizen had in the card the turn is credited to (card cc34ac0f).
+///
+/// The three are not interchangeable and must not collapse into one "contributor"
+/// bucket: writing the patch, judging someone else's patch, and naming the defect
+/// in the first place are different skills, and a curriculum that mixes them
+/// teaches none of them. The role is half the bucket key for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreditRole {
+    /// Authored the submission — the submission's `publisher`.
+    Owner,
+    /// Moved the review card: judged another citizen's work.
+    Reviewer,
+    /// Named the defect the card exists for.
+    Finder,
+}
+
+impl CreditRole {
+    /// Stable wire/bucket spelling. Lowercase because it is concatenated into a
+    /// `traitKind` and read back by humans in probe rows.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CreditRole::Owner => "owner",
+            CreditRole::Reviewer => "reviewer",
+            CreditRole::Finder => "finder",
+        }
+    }
+}
+
+/// A VERIFIED outcome attached to a turn: this turn helped produce card X, in role
+/// R, and the card's verdict was `passed`.
+///
+/// The card's own title is the argument for its existence — "a persona's curriculum
+/// carries verified outcomes instead of self-assessed noteworthiness". Without a
+/// stamp, [`score_interaction_quality`] is handed `task_outcome: None` and falls
+/// back to a NEUTRAL 0.5 `task_success`, so a turn that shipped a merged fix and a
+/// turn that produced nothing score identically on the factor that should separate
+/// them most. The stamp is what turns "the citizen wrote something substantive"
+/// into "the citizen wrote something that WORKED".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutcomeStamp {
+    /// The card this turn is credited to.
+    pub card_id: Uuid,
+    /// Which hand the citizen had in it.
+    pub role: CreditRole,
+    /// The card's settled verdict. `true` = the grade passed.
+    pub outcome: bool,
+}
+
 /// A scored, gated, classified training example ready to submit. The pure product
 /// of [`plan`] — it separates the JUDGMENT (is this turn worth training on? which
 /// domain bucket?) from the EFFECT (dispatch to the trigger), so the judgment is
@@ -82,7 +130,10 @@ const MIN_TRAINING_QUALITY: f32 = 0.45;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubmitPlan {
     /// The domain bucket — `DomainClassifier::classify(...).domain`. Becomes the
-    /// `traitKind` of the `(persona_id, trait_kind, base_model)` bucket key.
+    /// `traitKind` of the `(persona_id, trait_kind, base_model)` bucket key when
+    /// UNSTAMPED; a stamped plan keys on `domain × role` (see
+    /// [`SubmitPlan::bucket_key`]). There is no outcome segment — a failed turn
+    /// never reaches a bucket at all.
     pub trait_kind: String,
     /// The stimulus (the triggering message text).
     pub prompt: String,
@@ -91,18 +142,79 @@ pub struct SubmitPlan {
     /// The interaction-quality score that cleared [`MIN_TRAINING_QUALITY`]
     /// (carried into example metadata as training provenance).
     pub quality: f32,
+    /// The verified outcome, when this turn is credited to a settled card.
+    /// `None` for an ordinary live turn — the pre-cc34ac0f behaviour, unchanged.
+    pub stamp: Option<OutcomeStamp>,
+}
+
+impl SubmitPlan {
+    /// The bucket this example trains. UNSTAMPED turns keep the bare domain, so
+    /// every existing bucket keeps its name and its history; a stamped turn gets
+    /// `domain/role`, so a citizen's "code she wrote that passed" is a different
+    /// lesson from "review she did that passed". There is NO outcome segment:
+    /// a failed turn is refused by [`plan`] before it can be filed anywhere.
+    ///
+    /// Deliberately NOT a new field on the params: the bucket key is already
+    /// `traitKind`, and widening the key rather than adding a parallel dimension
+    /// keeps one bucket concept instead of two ([[logic-deepest-level-thin-on-the-way-out]]).
+    pub fn bucket_key(&self) -> String {
+        match self.stamp {
+            None => self.trait_kind.clone(),
+            // No `/passed` | `/failed` segment: a FAILED turn never reaches a
+            // bucket at all (see the evidence floor in [`plan`]), so every plan
+            // that gets this far already carries a passing verdict. Encoding an
+            // outcome that is now constant would advertise a distinction the
+            // data no longer has — and would invite a `/failed` sibling to be
+            // reintroduced as "just another bucket".
+            Some(s) => format!("{}/{}", self.trait_kind, s.role.as_str()),
+        }
+    }
 }
 
 /// Score the turn, gate on quality, classify its domain → `Some(SubmitPlan)`;
 /// `None` if gated out (trivial / low-quality). Pure: no I/O, no executor, no
 /// spawn — this is the testable judgment half of the producer.
 ///
-/// `classifier` is borrowed (the shared [`DomainClassifier`]). Quality uses
-/// `score_interaction_quality` with no feedback/outcome — a live turn carries
-/// neither. Classification runs on the full `(prompt, completion)` pair so both
-/// the ask and the answer inform the bucket.
-pub fn plan(classifier: &DomainClassifier, prompt: &str, completion: &str) -> Option<SubmitPlan> {
-    let quality = score_interaction_quality(prompt, completion, None, None);
+/// `classifier` is borrowed (the shared [`DomainClassifier`]). Classification runs
+/// on the full `(prompt, completion)` pair so both the ask and the answer inform
+/// the bucket.
+///
+/// `stamp` carries a VERIFIED outcome when the turn is credited to a settled card
+/// (cc34ac0f). It feeds `score_interaction_quality`'s `task_outcome` — the argument
+/// that has always existed and was always `None` on this path. A live, uncredited
+/// turn still passes `None` and scores exactly as it did before.
+pub fn plan(
+    classifier: &DomainClassifier,
+    prompt: &str,
+    completion: &str,
+    stamp: Option<OutcomeStamp>,
+) -> Option<SubmitPlan> {
+    // THE EVIDENCE FLOOR. A turn credited to a card that FAILED submits NOTHING.
+    //
+    // This is deliberately not "file it under `/failed` and let training sort it
+    // out", which is what an earlier draft of this change did. The reason is the
+    // shape of the corpus, not squeamishness: `TrainingExample` is
+    // `{prompt, completion}` (genome::fine_tuning::types) and the writers render
+    // exactly those two fields — there is NO `chosen`/`rejected` schema anywhere
+    // in the tree. So every example in every bucket is an SFT TARGET. A "failed"
+    // bucket does not teach "avoid this"; it teaches the failure, under a name
+    // that makes it look handled.
+    //
+    // Until a preference-pair schema exists, the only honest thing a verified
+    // failure can do is keep quiet.
+    //
+    // AND KEEPING QUIET IS ALL IT DOES — a refused turn leaves NO TRACE. There is
+    // no plan, so no metadata, no bucket, and no probe. An earlier version of this
+    // comment claimed the stamp "still rides on the plan's metadata, so a failure
+    // remains ACCOUNTED FOR"; that was false, because there is no plan to carry it.
+    // Whether a refused turn SHOULD leave durable provenance is an open question
+    // and belongs at the caller that supplies the stamp, not in this pure function
+    // (astra-s6-review: a probe here would pollute pure planning, and a probe is
+    // glass-box evidence rather than durable accounting — it can be disabled).
+    if stamp.is_some_and(|s| !s.outcome) {
+        return None;
+    }
+    let quality = score_interaction_quality(prompt, completion, None, stamp.map(|s| s.outcome));
     if quality.score < MIN_TRAINING_QUALITY {
         return None;
     }
@@ -114,6 +226,7 @@ pub fn plan(classifier: &DomainClassifier, prompt: &str, completion: &str) -> Op
         prompt: prompt.to_string(),
         completion: completion.to_string(),
         quality: quality.score,
+        stamp,
     })
 }
 
@@ -152,7 +265,17 @@ pub fn produce(
 
     tokio::spawn(async move {
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-        let Some(plan) = plan(classifier, &prompt, &completion) else {
+        // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
+        // is the pre-cc34ac0f path, byte-identical.
+        //
+        // THIS IS THE ONLY NON-TEST CALL SITE, and it always passes `None`. There is
+        // no `produce_stamped` and nothing carries a settled card's verdict into this
+        // module, so the stamped path — including the evidence floor in [`plan`] — is
+        // UNREACHABLE in production today. An earlier version of this comment named
+        // `produce_stamped` as if it existed; it does not. Card 0d51573a owns minting
+        // the link (which turns produced which card, in which role) that a stamped
+        // caller would need before it could truthfully stamp anything.
+        let Some(plan) = plan(classifier, &prompt, &completion, None) else {
             crate::probe!(
                 class = "training.example.skipped",
                 persona = %persona_name,
@@ -204,6 +327,11 @@ pub fn plan_received(classifier: &DomainClassifier, topic: &str, lesson: &str) -
         prompt: topic.to_string(),
         completion: lesson.to_string(),
         quality: 1.0,
+        // A RECEIVED lesson is somebody else's settled experience arriving as
+        // teaching. It has no card in THIS citizen's history to credit, and
+        // borrowing the teacher's verdict would credit the student for an outcome
+        // she did not produce — the confabulation this card exists to end.
+        stamp: None,
     }
 }
 
@@ -259,23 +387,40 @@ pub fn build_submit_params(
     plan: &SubmitPlan,
     provenance: &str,
 ) -> serde_json::Value {
+    // `domain` stays the BARE domain in metadata even when the bucket key widens:
+    // the domain is what the example is ABOUT, the key is where it is filed. Losing
+    // the bare domain here would make a stamped example unqueryable alongside its
+    // unstamped siblings.
+    let mut metadata = json!({
+        "source": provenance,
+        "quality": plan.quality,
+        "domain": plan.trait_kind,
+    });
+    if let (Some(stamp), serde_json::Value::Object(map)) = (plan.stamp, &mut metadata) {
+        map.insert("cardId".into(), json!(stamp.card_id));
+        map.insert("role".into(), json!(stamp.role.as_str()));
+        map.insert("outcome".into(), json!(stamp.outcome));
+    }
     let example = TrainingExample {
         prompt: plan.prompt.clone(),
         completion: plan.completion.clone(),
-        metadata: Some(json!({
-            "source": provenance,
-            "quality": plan.quality,
-            "domain": plan.trait_kind,
-        })),
+        metadata: Some(metadata),
     };
+    let bucket = plan.bucket_key();
     let mut params = json!({
         "personaId": persona_id,
         "personaName": persona_name,
         "baseModel": base_model,
-        "traitKind": plan.trait_kind,
+        "traitKind": bucket,
         "examples": [example],
         "source": "raw",
     });
+    // Gym lookup keys on the DOMAIN, not the widened bucket: `code/owner` has no
+    // gym of its own, and the trait it measures is still `code`. Passing the bucket
+    // here would silently drop the eval set for every stamped example, which is the
+    // [[no-fallbacks-ever]] shape — a capability quietly lost, not refused. The test
+    // asserts this positively (`gym_for_trait(bucket_key()) == None`) rather than by
+    // comparing two `is_some()`s, which is how it managed to guard nothing for so long.
     if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
         if let serde_json::Value::Object(ref mut map) = params {
             map.insert(
@@ -332,13 +477,192 @@ mod tests {
     // (None) so the training corpus is never polluted with acknowledgements. This
     // is the L2 contract: "N graded turns fill the right bucket; low-quality turn
     // gated out" (DEV-TASK-LOOP-CLOSURE-PLAN.md).
+    // what this catches (card cc34ac0f): a settled card must label the turns that
+    // produced it, and the label must reach BOTH the bucket key and the example
+    // metadata — otherwise the curriculum keeps grading itself on self-assessed
+    // noteworthiness. Also pins the two regressions this change could cause:
+    // an UNSTAMPED turn must key exactly as before, and the gym lookup must keep
+    // using the BARE domain (a widened key has no gym, so keying on it would
+    // silently drop the eval set from every credited example).
+    #[test]
+    fn a_stamped_turn_keys_on_domain_role_a_failed_one_submits_nothing_unstamped_is_unchanged() {
+        let classifier = DomainClassifier::new();
+        let long = "Pool them behind one supervised task and hand out permits; \
+                    a websocket per request will exhaust file descriptors long \
+                    before it exhausts memory, and the reconnect storm is worse \
+                    than the original load. Bound the pool and queue the overflow.";
+
+        let unstamped = plan(&classifier, "How do I pool websockets?", long, None)
+            .expect("test: a substantive turn plans a bucket");
+        assert_eq!(
+            unstamped.bucket_key(),
+            unstamped.trait_kind,
+            "an unstamped live turn must key on the bare domain exactly as before cc34ac0f"
+        );
+
+        let card = Uuid::from_u128(0xcc34ac0f);
+        let stamp = OutcomeStamp {
+            card_id: card,
+            role: CreditRole::Owner,
+            outcome: true,
+        };
+        let stamped = plan(&classifier, "How do I pool websockets?", long, Some(stamp))
+            .expect("test: a stamped turn still clears the quality gate");
+        assert_eq!(
+            stamped.bucket_key(),
+            format!("{}/owner", stamped.trait_kind),
+            "a stamped turn keys on domain x role — there is no outcome segment, \
+             because a failed turn never reaches a bucket at all"
+        );
+
+        // what this catches: the `/failed` bucket coming back. An earlier draft of
+        // cc34ac0f filed a failed outcome under `domain/role/failed`, reasoning that
+        // "learning what did not work is the other half of the curriculum". That is
+        // true of a PREFERENCE corpus and false of this one: `TrainingExample` is
+        // `{prompt, completion}` with no chosen/rejected anywhere in the tree, so
+        // every bucket is an SFT target and a `/failed` bucket TRAINS THE FAILURE.
+        // Until a preference-pair schema exists, a verified failure submits nothing.
+        //
+        // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN, or this test proves
+        // nothing. `score_interaction_quality` weights `task_success` at 0.25 and
+        // scores a failed outcome 0.2, so a failed turn scores `0.20 + 0.3*substance`
+        // — and `long` above (237 chars → substance 0.7) lands at 0.41, BELOW
+        // MIN_TRAINING_QUALITY 0.45. With that fixture the gate refuses the turn and
+        // the evidence floor is never reached: deleting the floor entirely left this
+        // assertion green. Found by mutation, not by reading.
+        //
+        // `substantial` is ≥500 chars → substance 0.9 → 0.47, which CLEARS the gate.
+        // The positive control below proves it: same text, outcome `true`, plans a
+        // bucket. So `None` for the failed case can only come from the floor.
+        let substantial = "Pool them behind one supervised task and hand out permits; a websocket \
+             per request will exhaust file descriptors long before it exhausts memory, and the \
+             reconnect storm is worse than the original load. Bound the pool and queue the \
+             overflow, then shed load at the queue rather than at accept() — a refused connection \
+             the caller can retry is cheaper than a half-open socket nobody owns. Size the permit \
+             count from the descriptor ceiling, not from a guess, and make the queue depth the \
+             knob you actually tune under pressure.";
+        assert!(
+            substantial.len() >= 500,
+            "fixture must clear the substance ladder's 500-char step, or the quality \
+             gate refuses the turn and this test cannot see the floor at all"
+        );
+
+        // POSITIVE CONTROL: the same text with a PASSING verdict must still plan.
+        // Without this, a fixture that happened to be gated out would make the
+        // failed-case assertion vacuous — which is exactly the bug this block had.
+        assert!(
+            plan(
+                &classifier,
+                "How do I pool websockets?",
+                substantial,
+                Some(OutcomeStamp {
+                    outcome: true,
+                    role: CreditRole::Reviewer,
+                    ..stamp
+                }),
+            )
+            .is_some(),
+            "control: this fixture clears the quality gate when the verdict PASSES, \
+             so a None below is the evidence floor and not the gate"
+        );
+
+        assert!(
+            plan(
+                &classifier,
+                "How do I pool websockets?",
+                substantial,
+                Some(OutcomeStamp {
+                    outcome: false,
+                    role: CreditRole::Reviewer,
+                    ..stamp
+                }),
+            )
+            .is_none(),
+            "a turn credited to a FAILED card must produce no training example — \
+             not a differently-named bucket"
+        );
+
+        // The verdict must reach the example itself, not just the key.
+        let params = build_submit_params(Uuid::from_u128(7), "Cass", "qwen", &stamped, "live-turn");
+        let meta = &params["examples"][0]["metadata"];
+        assert_eq!(meta["cardId"], json!(card));
+        assert_eq!(meta["role"], json!("owner"));
+        assert_eq!(meta["outcome"], json!(true));
+        assert_eq!(
+            meta["domain"], json!(stamped.trait_kind),
+            "metadata keeps the BARE domain so a stamped example stays queryable \
+             alongside its unstamped siblings"
+        );
+        assert_eq!(
+            params["traitKind"],
+            json!(stamped.bucket_key()),
+            "the widened bucket is what the example is filed under"
+        );
+        // The regression that would be invisible: the gym lookup keys on the BARE
+        // domain. If it ever reads the widened bucket, every credited example loses
+        // its eval set silently.
+        //
+        // THE OLD VERSION OF THIS CHECK NEVER GUARDED ANYTHING, and it took Astra's
+        // review of 17e8c2f37 plus a precondition assert to prove it. It compared
+        // `gym_for_trait(trait_kind).is_some()` against `params["evalSet"].is_some()`
+        // — but `build_submit_params` inserts `evalSet` IFF that same lookup is Some,
+        // and the fixture above classifies as `conversation`, WHICH HAS NO GYM. Both
+        // sides were `false`, so it passed as `false == false`, identically whether
+        // the production lookup used the bare domain or the widened bucket. The exact
+        // regression it was written for could not have failed it.
+        //
+        // So this is re-anchored on a fixture that MAPS TO A REAL GYM. `code` is the
+        // one trait with a committed eval set, and the path is asserted literally
+        // rather than as `is_some()`: "there is some gym" is the weaker claim that let
+        // the tautology hide.
+        let code_reply = "Here is the fix: the bug is a null deref in the cargo build \
+            script. Add an `if let Some(x) = opt` guard before the `.unwrap()`, return \
+            an `Err` with the missing-field name, and the async function compiles and \
+            the test passes against the typescript interface.";
+        let code_stamped = plan(
+            &classifier,
+            "Why does my Rust function panic?",
+            code_reply,
+            Some(stamp),
+        )
+        .expect("a substantive code reply with a PASSING verdict must plan");
+        assert_eq!(
+            code_stamped.trait_kind, "code",
+            "fixture must classify as `code`, or the eval-path assertions below go \
+             vacuous the way the `conversation` fixture did"
+        );
+        assert_eq!(
+            crate::cognition::gym::gym_for_trait(&code_stamped.trait_kind),
+            Some("docs/genome/coder-eval.jsonl"),
+            "the BARE domain must resolve to the coder gym — the exact path, not merely some path"
+        );
+        // The regression, stated positively: the WIDENED bucket has no gym at all, so
+        // a lookup that keyed on it would drop the eval set. This is the assertion the
+        // old `false == false` comparison was supposed to be making.
+        assert_eq!(
+            crate::cognition::gym::gym_for_trait(&code_stamped.bucket_key()),
+            None,
+            "the widened bucket ({}) must NOT resolve to a gym — which is exactly why \
+             the lookup has to use the bare domain",
+            code_stamped.bucket_key()
+        );
+        let code_params =
+            build_submit_params(Uuid::from_u128(7), "Cass", "qwen", &code_stamped, "live-turn");
+        assert_eq!(
+            code_params["evalSet"],
+            json!("docs/genome/coder-eval.jsonl"),
+            "the dispatched example must carry the BARE domain's eval set, so the L3 \
+             sentinel can A/B the gene it produces"
+        );
+    }
+
     #[test]
     fn substantive_turn_plans_a_bucket_trivial_turn_is_gated() {
         let classifier = DomainClassifier::new();
 
         // A trivial reply: below MIN_TRAINING_QUALITY → no plan.
         assert!(
-            plan(&classifier, "thanks!", "ok").is_none(),
+            plan(&classifier, "thanks!", "ok", None).is_none(),
             "a one-word acknowledgement must be gated out of the training corpus"
         );
 
@@ -348,7 +672,7 @@ mod tests {
             them on release, and health-check idle ones on a timer so a dead socket \
             is replaced before a caller ever sees it. Cap the pool and queue waiters \
             so a burst cannot exhaust file descriptors.";
-        let p = plan(&classifier, "How do I pool websockets?", long)
+        let p = plan(&classifier, "How do I pool websockets?", long, None)
             .expect("a substantive reply must clear the quality gate");
         assert!(!p.trait_kind.is_empty(), "must be bucketed by a domain");
         assert_eq!(p.completion, long, "the reply is the training completion");
@@ -373,7 +697,7 @@ mod tests {
             script. Add an `if let Some(x) = opt` guard before the `.unwrap()`, return \
             an `Err` with the missing-field name, and the async function compiles and \
             the test passes against the typescript interface.";
-        let p = plan(&classifier, "Why does my Rust function panic?", code_reply)
+        let p = plan(&classifier, "Why does my Rust function panic?", code_reply, None)
             .expect("a substantive code reply must clear the quality gate");
         assert_eq!(
             p.trait_kind, "code",
