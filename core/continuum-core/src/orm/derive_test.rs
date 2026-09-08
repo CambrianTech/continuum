@@ -324,7 +324,9 @@ async fn round_trip_through_orm_store() {
         .await
         .expect("store construction with derived schema");
 
-    let widget = fresh_widget("apex");
+    let mut widget = fresh_widget("apex");
+    widget.forced_json_blob =
+        serde_json::json!({"immutableTrainingPayload": "sample ".repeat(16_384)});
     let id = Uuid::parse_str(&widget.base.id).expect("base id is a UUID");
 
     store.save(id, &widget).await.expect("save derived widget");
@@ -357,6 +359,33 @@ async fn round_trip_through_orm_store() {
     let all = store.find_all().await.expect("find_all");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].0, id);
+
+    // What this catches (278afa6c): a typed linkage-only update leaves the
+    // large immutable JSON column intact while updating the actual SQLite row.
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Linkage {
+        owner_id: Uuid,
+        is_active: bool,
+    }
+    let next_owner = Uuid::new_v4();
+    store
+        .update_fields(
+            id,
+            &Linkage {
+                owner_id: next_owner,
+                is_active: false,
+            },
+        )
+        .await
+        .unwrap(); // The fixture's valid linkage-only SQLite update must succeed for its preservation assertions to run.
+    let revised = store.find_by_id(id).await.unwrap().unwrap(); // The fixture inserted this exact row; query failure or disappearance must fail the regression.
+    assert_eq!(revised.owner_id, next_owner);
+    assert!(!revised.is_active);
+    assert_eq!(revised.forced_json_blob, widget.forced_json_blob);
+    assert_eq!(revised.name, widget.name);
+    assert_eq!(revised.base.id, widget.base.id);
+    assert_eq!(revised.base.version, loaded.base.version + 1);
 }
 
 // ── Composite index + foreign-key tests (#167) ────────────────────────

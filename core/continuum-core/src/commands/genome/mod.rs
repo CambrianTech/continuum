@@ -80,9 +80,17 @@ pub(crate) fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
 pub fn command_objects(
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
+    #[cfg(test)] test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    #[cfg(test)] test_artifacts: Arc<tempfile::TempDir>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(job_create::GenomeJobCreate { coordinator }),
+        Arc::new(job_create::GenomeJobCreate {
+            coordinator,
+            #[cfg(test)]
+            test_job_board,
+            #[cfg(test)]
+            test_artifacts,
+        }),
         Arc::new(job_status::GenomeJobStatus {
             registry: registry.clone(),
         }),
@@ -215,7 +223,12 @@ mod tests {
     fn command_objects_assembles_all_three() {
         let registry = Arc::new(FineTuningRegistry::new());
         let coordinator = Arc::new(FineTuningCoordinator::new(registry.clone()));
-        let objs = command_objects(registry, coordinator);
+        let objs = command_objects(
+            registry,
+            coordinator,
+            Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            Arc::new(tempfile::tempdir().unwrap()),
+        );
         assert_eq!(objs.len(), 3);
     }
 }

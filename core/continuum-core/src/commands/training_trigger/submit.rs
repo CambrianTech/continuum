@@ -24,7 +24,8 @@ use crate::genome::fine_tuning::types::{
     JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource,
 };
 use crate::modules::training_trigger::{
-    BucketKey, PendingBatch, TrainingTriggerState, DEFAULT_MIN_EXAMPLES, DEFAULT_VALIDATION_SPLIT,
+    AcceptanceReceipt, BucketKey, DispatchResult, PendingBatch, TrainingTriggerState,
+    DEFAULT_MIN_EXAMPLES, DEFAULT_VALIDATION_SPLIT,
 };
 use crate::sdk_codegen::CommandError;
 
@@ -39,6 +40,11 @@ use crate::sdk_codegen::CommandError;
     export_to = "../../../protocol/typescript/training_trigger/SubmitParams.ts"
 )]
 pub struct SubmitParams {
+    /// Stable immutable batch identity, reused on retries at this destination.
+    /// Omitted: every invocation gets a fresh ID; blind retries are new batches.
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub submission_id: Option<Uuid>,
     #[ts(type = "string")]
     pub persona_id: Uuid,
     pub persona_name: String,
@@ -74,11 +80,9 @@ pub struct SubmitParams {
     pub validation_split: Option<f32>,
 }
 
-/// `genome/training-trigger/submit` typed outcome — mirrors the legacy JSON 1:1
-/// (outcome-as-data per the genome family doctrine): batch appended, job dispatched,
-/// inconsistent bucket, or dispatch failed all return `success` + a discriminator,
-/// NOT a transport error. The discriminating fields are populated per-outcome and
-/// omitted otherwise.
+/// Outcome-as-data extends the legacy envelope with an acceptance receipt.
+/// Receipt presence proves destination ownership independently of dispatch success;
+/// expected domain/storage refusals retain their typed discriminator.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -87,7 +91,12 @@ pub struct SubmitParams {
 )]
 pub struct SubmitOutcome {
     pub success: bool,
-    /// Discriminator: `"BatchAppended"` | `"JobDispatched"` (absent on rejections).
+    /// Durable ownership receipt, independent of later dispatch success. Absent
+    /// on persistence refusal. It attests neither training completion nor cross-node dedupe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub acceptance: Option<AcceptanceReceipt>,
+    /// BatchAppended, JobDispatched, or AlreadyAccepted (absent on rejections).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub outcome: Option<String>,
@@ -115,7 +124,8 @@ pub struct SubmitOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
-    /// Rejections: `"InconsistentBucket"` | `"DispatchFailed"`.
+    /// InconsistentBucket, SubmissionConflict, PersistenceUnavailable,
+    /// PersistenceFailed, DispatchFailed, or RecoveryRequired.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error_kind: Option<String>,
@@ -125,6 +135,7 @@ impl SubmitOutcome {
     fn base(success: bool) -> Self {
         Self {
             success,
+            acceptance: None,
             outcome: None,
             current_count: None,
             threshold: None,
@@ -159,18 +170,10 @@ impl SubmitOutcome {
         }
     }
 
-    fn inconsistent(error: String) -> Self {
+    fn refused(kind: &str, error: String) -> Self {
         Self {
             error: Some(error),
-            error_kind: Some("InconsistentBucket".into()),
-            ..Self::base(false)
-        }
-    }
-
-    fn dispatch_failed(error: String) -> Self {
-        Self {
-            error: Some(error),
-            error_kind: Some("DispatchFailed".into()),
+            error_kind: Some(kind.into()),
             ..Self::base(false)
         }
     }
@@ -184,8 +187,10 @@ crate::action_command! {
     /// `JobDispatched` with the handle + selected provider. A submit whose policy
     /// (source/lora/schedule/validationSplit/artifactDir/provider) disagrees with the
     /// bucket's first-arrival policy is rejected `InconsistentBucket` (never silently
-    /// overridden); a dispatch fault returns `DispatchFailed` with the bucket
-    /// preserved so the next submit can re-trigger.
+    /// overridden). An explicit refusal returns `DispatchFailed` and can retry;
+    /// uncertain dispatch returns `RecoveryRequired` until exact handle evidence
+    /// resolves it. Both preserve accepted ownership. Supply submissionId for retry
+    /// dedupe; an omitted ID deliberately creates a new submission each invocation.
     pub struct TrainingTriggerSubmit {
         state: Arc<TrainingTriggerState>,
     }
@@ -195,6 +200,9 @@ crate::action_command! {
     output: SubmitOutcome,
     run(this, _ctx, p) => {
         let state = &this.state;
+        if let Err(error) = state.require_ready() {
+            return Ok(SubmitOutcome::refused("PersistenceUnavailable", error));
+        }
 
         // Validation that fails synchronously — caller mistake, not worth a typed
         // outcome (these are programmer-facing → transport Err).
@@ -219,139 +227,47 @@ crate::action_command! {
             base_model: p.base_model.clone(),
         };
 
-        // Serialize per-key. Concurrent submits to different keys proceed in
-        // parallel; concurrent submits to the same key queue here. This eliminates
-        // the lost-update + restore-commingle races. Holding the lease across the
-        // .await is intentional — PerKeyGate uses tokio::sync::Mutex internally. The
-        // lease is RAII: on Drop it releases the lock AND attempts structural eviction
-        // of the gate.
-        let _submit_lease = state.submit_gates.acquire(&key).await;
-
-        // Append phase. Hold the entry mutably for the minimum window: append + read
-        // the new len + decide whether to fire. If we fire, take the examples out
-        // (clear the bucket atomically) and drop the entry guard BEFORE awaiting the
-        // dispatch.
-        let snapshot_to_dispatch = {
-            let mut entry = state.buckets.entry(key.clone()).or_insert_with(|| PendingBatch {
-                persona_name: p.persona_name.clone(),
-                source: p.source,
-                examples: Vec::new(),
-                lora: p.lora.clone(),
-                schedule: p.schedule.clone(),
-                local_artifact_dir: p.local_artifact_dir.clone(),
-                preferred_provider: p.preferred_provider.clone(),
-                min_examples,
-                validation_split,
-                eval_set: p.eval_set.clone(),
-            });
-
-            // Coherence checks for hyperparam fields NOT in the BucketKey. `base_model`
-            // is in the key (independent buckets); the remaining policy fields are
-            // first-arrival-wins via or_insert_with, so a divergent later submit must
-            // be rejected rather than silently overriding the bucket's pinned policy.
-            if entry.source != p.source {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has source={:?}; submit gave source={:?}",
-                    entry.source, p.source
-                )));
-            }
-            if entry.lora != p.lora {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has lora={:?}; submit gave lora={:?}",
-                    entry.lora, p.lora
-                )));
-            }
-            if entry.schedule != p.schedule {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has schedule={:?}; submit gave schedule={:?}",
-                    entry.schedule, p.schedule
-                )));
-            }
-            if (entry.validation_split - validation_split).abs() > f32::EPSILON {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has validation_split={}; submit gave validation_split={}",
-                    entry.validation_split, validation_split
-                )));
-            }
-            if entry.local_artifact_dir != p.local_artifact_dir {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has local_artifact_dir={:?}; submit gave local_artifact_dir={:?}",
-                    entry.local_artifact_dir, p.local_artifact_dir
-                )));
-            }
-            if entry.preferred_provider != p.preferred_provider {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has preferred_provider={:?}; submit gave preferred_provider={:?}",
-                    entry.preferred_provider, p.preferred_provider
-                )));
-            }
-            if entry.eval_set != p.eval_set {
-                return Ok(SubmitOutcome::inconsistent(format!(
-                    "bucket has eval_set={:?}; submit gave eval_set={:?}",
-                    entry.eval_set, p.eval_set
-                )));
-            }
-
-            entry.examples.extend(p.examples.into_iter());
-
-            // Allow per-submit threshold downgrade — operator tooling pumping in
-            // known-final batches can force-fire a smaller bucket by passing
-            // min_examples = 1.
-            if min_examples < entry.min_examples {
-                entry.min_examples = min_examples;
-            }
-
-            let current_count = entry.examples.len() as u32;
-            if current_count < entry.min_examples {
-                return Ok(SubmitOutcome::batch_appended(current_count, entry.min_examples));
-            }
-
-            // Threshold reached — drain the bucket into a snapshot we can dispatch
-            // outside the entry guard. Insert remains in the map (empty) until we know
-            // whether dispatch succeeded; on success we remove it.
-            let drained_examples = std::mem::take(&mut entry.examples);
-            PendingBatch {
-                persona_name: entry.persona_name.clone(),
-                source: entry.source,
-                examples: drained_examples,
-                lora: entry.lora.clone(),
-                schedule: entry.schedule.clone(),
-                local_artifact_dir: entry.local_artifact_dir.clone(),
-                preferred_provider: entry.preferred_provider.clone(),
-                min_examples: entry.min_examples,
-                validation_split: entry.validation_split,
-                eval_set: entry.eval_set.clone(),
-            }
+        let batch = PendingBatch {
+            submission_ids: Vec::new(),
+            persona_name: p.persona_name,
+            source: p.source,
+            examples: p.examples,
+            lora: p.lora,
+            schedule: p.schedule,
+            local_artifact_dir: p.local_artifact_dir,
+            preferred_provider: p.preferred_provider,
+            min_examples,
+            validation_split,
+            eval_set: p.eval_set,
         };
-
-        // Dispatch under the per-key gate — no other submit to this key can race the
-        // success-clear or failure-restore paths.
-        let dispatch_result = state
-            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot_to_dispatch)
-            .await;
-
-        match dispatch_result {
-            Ok((job_handle, selected_provider)) => {
-                // Remove the now-empty bucket so status() doesn't report a phantom
-                // zero-count entry.
-                state.buckets.remove(&key);
-                Ok(SubmitOutcome::job_dispatched(
-                    snapshot_to_dispatch.examples.len() as u32,
-                    selected_provider,
-                    job_handle,
-                ))
-            }
-            Err(err) => {
-                // Restore drained examples. Reinsert at the FRONT so submit order is
-                // preserved across retries.
-                if let Some(mut entry) = state.buckets.get_mut(&key) {
-                    let mut restored = snapshot_to_dispatch.examples.clone();
-                    restored.extend(std::mem::take(&mut entry.examples).into_iter());
-                    entry.examples = restored;
+        let submission_id = p.submission_id;
+        state.run_owned(key, move |state, key| async move {
+            let acceptance = match state.accept(&key, submission_id, batch).await {
+                Ok(receipt) => receipt,
+                Err((kind, error)) => return SubmitOutcome::refused(kind, error),
+            };
+            // A replay never appends again. It can still drive an already accepted,
+            // retryable batch forward using the same persisted dispatch intent.
+            let mut outcome = if state.ready_to_dispatch(&key) {
+                match state.dispatch_pending(&key).await {
+                    DispatchResult::Dispatched { examples, handle, provider } =>
+                        SubmitOutcome::job_dispatched(examples as u32, provider, handle),
+                    DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
+                    DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
                 }
-                Ok(SubmitOutcome::dispatch_failed(err))
-            }
-        }
+            } else {
+                let (count, threshold) = state.buckets.get(&key)
+                    .map(|b| (b.examples.len() as u32, b.min_examples))
+                    .unwrap_or((0, min_examples)); // Acceptance holds the bucket gate; an absent bucket is an already-dispatched replay with no pending examples.
+                if acceptance.replayed && count == 0 {
+                    SubmitOutcome { outcome: Some("AlreadyAccepted".into()), ..SubmitOutcome::base(true) }
+                } else {
+                    SubmitOutcome::batch_appended(count, threshold)
+                }
+            };
+            outcome.acceptance = Some(acceptance);
+            outcome
+        }).await.map_err(CommandError::Internal)
     }
 }
 
@@ -364,6 +280,135 @@ mod tests {
     use crate::sdk_codegen::{AccessLevel, ActionCommand};
     use serde_json::Value;
     use uuid::Uuid;
+
+    // What this catches (278afa6c): a BatchAppended receipt must survive a new
+    // owner/connection, preserve metadata/order, and dedupe exact retries only.
+    #[tokio::test]
+    async fn keyed_acceptance_survives_restart_and_refuses_changed_replay() {
+        use crate::commands::training_trigger::test_support::build_runtime;
+        use crate::orm::{adapter::AdapterConfig, SqliteAdapter, StorageAdapter};
+        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
+        let (first, first_exec) = build_runtime(adapter, false).await;
+        let persona = Uuid::new_v4();
+        // Reverse UUID order proves restart uses accepted order, not random IDs.
+        let first_id = Uuid::from_u128(900);
+        let second_id = Uuid::from_u128(100);
+        let mut a = submit_params(persona, "code", vec![ex("earlier", "answer-a")], Some(100));
+        a["submissionId"] = serde_json::json!(first_id);
+        a["examples"][0]["metadata"] = serde_json::json!({"cardId": "card-a", "role": "reviewer"});
+        let mut b = submit_params(persona, "code", vec![ex("later", "answer-b")], Some(100));
+        b["submissionId"] = serde_json::json!(second_id);
+        for request in [&a, &b] {
+            let receipt = first_exec
+                .execute_json("genome/training-trigger/submit", request.clone())
+                .await
+                .unwrap();
+            assert_eq!(receipt["success"], true, "{receipt}");
+            assert_eq!(receipt["acceptance"]["replayed"], false);
+        }
+        drop(first_exec);
+        drop(first);
+        let mut adapter = SqliteAdapter::new();
+        adapter
+            .initialize(AdapterConfig {
+                connection_string: dir
+                    .path()
+                    .join("orm-store-test.sqlite")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let (next, executor) = build_runtime(Arc::new(adapter), false).await;
+        crate::runtime::ServiceModule::tick(next.as_ref())
+            .await
+            .unwrap();
+        let key = BucketKey {
+            persona_id: persona,
+            trait_kind: "code".into(),
+            base_model: "synthetic".into(),
+        };
+        {
+            let batch = next.state.buckets.get(&key).unwrap();
+            assert_eq!(batch.submission_ids, vec![first_id, second_id]);
+            assert_eq!(batch.examples[0].prompt, "earlier");
+            assert_eq!(
+                batch.examples[0].metadata.as_ref().unwrap()["role"],
+                "reviewer"
+            );
+            assert_eq!(batch.examples[1].completion, "answer-b");
+        }
+        let replay = executor
+            .execute_json("genome/training-trigger/submit", a.clone())
+            .await
+            .unwrap();
+        assert_eq!(replay["acceptance"]["submissionId"], first_id.to_string());
+        assert_eq!(replay["acceptance"]["replayed"], true);
+        assert_eq!(
+            next.state
+                .bucket_example_count(persona, "code", "synthetic"),
+            Some(2)
+        );
+        for field in ["completion", "policy"] {
+            let mut changed = a.clone();
+            if field == "completion" {
+                changed["examples"][0]["completion"] = "different".into();
+            } else {
+                changed["minExamples"] = 99.into();
+            }
+            let refused = executor
+                .execute_json("genome/training-trigger/submit", changed)
+                .await
+                .unwrap();
+            assert_eq!(refused["success"], false);
+            assert_eq!(refused["errorKind"], "SubmissionConflict");
+            assert!(refused.get("acceptance").is_none());
+        }
+        // Legacy calls retain explicit at-least-once semantics: no key means a
+        // new durable submission, even if its contents equal an earlier call.
+        a.as_object_mut().unwrap().remove("submissionId");
+        let one = executor
+            .execute_json("genome/training-trigger/submit", a.clone())
+            .await
+            .unwrap();
+        let two = executor
+            .execute_json("genome/training-trigger/submit", a)
+            .await
+            .unwrap();
+        assert_ne!(
+            one["acceptance"]["submissionId"],
+            two["acceptance"]["submissionId"]
+        );
+        assert_eq!(
+            next.state
+                .bucket_example_count(persona, "code", "synthetic"),
+            Some(4)
+        );
+    }
+
+    // What this catches (278afa6c): no storage readiness, no ownership receipt;
+    // a successful in-memory append may never stand in for durable acceptance.
+    #[tokio::test]
+    async fn unavailable_persistence_refuses_without_acceptance() {
+        use crate::modules::training_trigger::TrainingTriggerModule;
+        use crate::runtime::{CommandExecutor, ModuleRegistry};
+        let registry = Arc::new(ModuleRegistry::new());
+        let trigger = Arc::new(TrainingTriggerModule::new());
+        registry.register(trigger.clone());
+        let executor = CommandExecutor::new(registry);
+        let receipt = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(Uuid::new_v4(), "code", vec![ex("p", "c")], Some(100)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt["success"], false);
+        assert_eq!(receipt["errorKind"], "PersistenceUnavailable");
+        assert!(receipt.get("acceptance").is_none());
+        assert_eq!(trigger.state.pending_bucket_count(), 0);
+    }
 
     // what this catches: name/access wiring — submitting a batch can spend training
     // compute (threshold-crossing dispatch), so it lives on the Privileged surface,
@@ -385,7 +430,7 @@ mod tests {
     // submit would surface as JobDispatched on the very first call.
     #[tokio::test]
     async fn submit_below_threshold_appends_and_does_not_fire() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let params = submit_params(persona, "test-trait", vec![ex("a", "b")], Some(5));
@@ -411,7 +456,7 @@ mod tests {
     // never close.
     #[tokio::test]
     async fn submit_at_threshold_dispatches_and_clears() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         // First submit: 4 examples, threshold 5 → BatchAppended.
@@ -477,7 +522,7 @@ mod tests {
     // independently.
     #[tokio::test]
     async fn different_base_models_create_separate_buckets() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         // First submit: base_model = "synthetic".
@@ -529,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn inconsistent_lora_in_same_bucket_is_rejected() {
         use crate::genome::fine_tuning::types::LoRAHyperparams;
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let mut first = submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100));
@@ -580,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn inconsistent_schedule_in_same_bucket_is_rejected() {
         use crate::genome::fine_tuning::types::ScheduleParams;
-        let (_trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (_trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let mut first = submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100));
@@ -625,7 +670,7 @@ mod tests {
     // the alloy provenance contract distinguishes those origins.
     #[tokio::test]
     async fn inconsistent_source_in_same_bucket_is_rejected() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
         let _ = executor
@@ -660,10 +705,10 @@ mod tests {
     // regression in this module would be a failed dispatch silently dropping curated
     // examples. A runtime with NO genome module → genome/job-create unregistered →
     // dispatch fails loud at the executor; the bucket must survive intact so the next
-    // submit (with the dependency wired) can re-trigger.
+    // submit retains ownership; an untyped execution error stays uncertain.
     #[tokio::test]
     async fn dispatch_failure_preserves_bucket_contents() {
-        let (trigger, executor) = build_runtime_trigger_only().await;
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
         let persona = Uuid::new_v4();
 
         let json = executor
@@ -679,7 +724,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(json["success"], false);
-        assert_eq!(json["errorKind"], "DispatchFailed");
+        assert_eq!(json["errorKind"], "RecoveryRequired");
         // The two examples must STILL be in the bucket.
         assert_eq!(
             trigger
@@ -694,7 +739,7 @@ mod tests {
     // training run.
     #[tokio::test]
     async fn different_personas_have_isolated_buckets() {
-        let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
@@ -743,9 +788,8 @@ mod tests {
         use crate::genome::fine_tuning::{
             FineTuningRegistry, RecordingFineTuningAdapter, RECORDING_BASE_PREFIX,
         };
-        use crate::modules::genome::GenomeModule;
         use crate::modules::training_trigger::TrainingTriggerModule;
-        use crate::runtime::{CommandExecutor, ModuleRegistry};
+        use crate::runtime::CommandExecutor;
 
         /// Build a runtime where genome/job-create routes to a
         /// RecordingFineTuningAdapter (the substrate's canonical fixture for capturing
@@ -756,19 +800,19 @@ mod tests {
             Arc<TrainingTriggerModule>,
             Arc<CommandExecutor>,
             Arc<RecordingFineTuningAdapter>,
+            tempfile::TempDir,
         ) {
-            let registry = Arc::new(ModuleRegistry::new());
-            let trigger = Arc::new(TrainingTriggerModule::new());
-            registry.register(trigger.clone());
-
+            let (adapter, dir) = crate::orm::store::fresh_adapter().await;
             let ft_registry = Arc::new(FineTuningRegistry::new());
             let recorder = Arc::new(RecordingFineTuningAdapter::new());
             ft_registry.register(recorder.clone());
-            registry.register(Arc::new(GenomeModule::new(ft_registry)));
-
-            let executor = Arc::new(CommandExecutor::new(registry.clone()));
-            registry.install_executor_on_all(executor.clone());
-            (trigger, executor, recorder)
+            let (trigger, executor) =
+                crate::commands::training_trigger::test_support::build_runtime_with_registry(
+                    adapter,
+                    Some(ft_registry),
+                )
+                .await;
+            (trigger, executor, recorder, dir)
         }
 
         // what this VDD catches: every example submitted across N submits appears
@@ -777,7 +821,7 @@ mod tests {
         // so we compare prompt-by-prompt against what was submitted.
         #[tokio::test]
         async fn submitted_examples_flow_through_dispatch_intact() {
-            let (trigger, executor, recorder) = build_recording_runtime().await;
+            let (trigger, executor, recorder, _dir) = build_recording_runtime().await;
             let persona = Uuid::new_v4();
             let n = 8;
 
@@ -847,7 +891,7 @@ mod tests {
         // example in INSERTION ORDER.
         #[tokio::test]
         async fn multi_submit_accumulation_preserves_order_through_dispatch() {
-            let (_trigger, executor, recorder) = build_recording_runtime().await;
+            let (_trigger, executor, recorder, _dir) = build_recording_runtime().await;
             let persona = Uuid::new_v4();
             let trait_kind = "multi-submit-vdd";
             let base_model = format!("{RECORDING_BASE_PREFIX}-multi");
@@ -864,10 +908,21 @@ mod tests {
                     .as_object_mut()
                     .unwrap()
                     .insert("baseModel".into(), Value::String(base_model.clone()));
-                let _ = executor
+                let outcome = executor
                     .execute_json("genome/training-trigger/submit", params)
                     .await
                     .unwrap();
+                assert_eq!(outcome["success"], true, "batch {batch}: {outcome}");
+                assert!(outcome["acceptance"]["submissionId"].is_string());
+                assert_eq!(
+                    outcome["outcome"],
+                    if batch == 3 {
+                        "JobDispatched"
+                    } else {
+                        "BatchAppended"
+                    },
+                    "only the fourth accepted batch crosses the threshold"
+                );
             }
 
             // Exactly one job dispatched (only the 4th submit crossed threshold).
@@ -905,9 +960,8 @@ mod tests {
             TrainingJobRequest, TrainingStatus,
         };
         use crate::genome::fine_tuning::FineTuningRegistry;
-        use crate::modules::genome::GenomeModule;
         use crate::modules::training_trigger::TrainingTriggerModule;
-        use crate::runtime::{CommandExecutor, ModuleRegistry};
+        use crate::runtime::CommandExecutor;
         use async_trait::async_trait;
         use serde_json::json;
         use std::sync::Mutex as StdMutex;
@@ -982,20 +1036,20 @@ mod tests {
             Arc<TrainingTriggerModule>,
             Arc<CommandExecutor>,
             Arc<StdMutex<Vec<TrainingJobRequest>>>,
+            tempfile::TempDir,
         ) {
-            let registry = Arc::new(ModuleRegistry::new());
-            let trigger = Arc::new(TrainingTriggerModule::new());
-            registry.register(trigger.clone());
-
+            let (adapter, dir) = crate::orm::store::fresh_adapter().await;
             let ft_registry = Arc::new(FineTuningRegistry::new());
             let recorder = Arc::new(YieldingRecordingAdapter::new());
             let captures = recorder.captures();
             ft_registry.register(recorder);
-            registry.register(Arc::new(GenomeModule::new(ft_registry)));
-
-            let executor = Arc::new(CommandExecutor::new(registry.clone()));
-            registry.install_executor_on_all(executor.clone());
-            (trigger, executor, captures)
+            let (trigger, executor) =
+                crate::commands::training_trigger::test_support::build_runtime_with_registry(
+                    adapter,
+                    Some(ft_registry),
+                )
+                .await;
+            (trigger, executor, captures, dir)
         }
 
         fn stress_submit_params(
@@ -1022,7 +1076,7 @@ mod tests {
         // the C1/C2 race window (a Notify-barrier test is the deterministic exercise).
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
         async fn concurrent_submits_to_same_key_serialize_without_loss_stress() {
-            let (trigger, executor, captures) = build_stress_runtime().await;
+            let (trigger, executor, captures, _dir) = build_stress_runtime().await;
             let persona = Uuid::new_v4();
 
             // Mix FIRE-LOAD submits (threshold=5, immediately fires) with ACCUMULATOR
