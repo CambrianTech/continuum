@@ -158,6 +158,8 @@ pub struct RagSourceFaculty {
     /// is "like the system prompt"; it belongs adjacent to it). Volatile retrieved
     /// sources stay `false` and serialize last, nearest the generation point.
     stable: bool,
+    /// Importance survives moving volatile grounding out of the system prefix.
+    standing_grounding: bool,
     budget: u32,
     clock: Clock,
     /// `true` when the assembler registered this grounding as
@@ -199,6 +201,7 @@ impl RagSourceFaculty {
             // debug/prompt-reuse 2026-08-22): importance keeps the floor,
             // placement follows content stability.
             stable: matches!(policy, SaliencePolicy::StandingFraming),
+            standing_grounding: matches!(policy, SaliencePolicy::StandingFraming),
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
             // cfg.context_window))` so the ceiling tracks the LIVE served window.
@@ -419,6 +422,11 @@ impl Faculty for RagSourceFaculty {
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
             .with_parts(units)
             .with_expand_command(self.source.expand_command());
+        let c = if self.standing_grounding {
+            c.standing_grounding()
+        } else {
+            c
+        };
         // Volatile-content grounding rides the TRAILING-turn mechanism (#205),
         // never the system message. The volatile tier of the system context
         // block was a half-measure: demoted out of the cacheable stable head,
@@ -538,8 +546,7 @@ mod tests {
         #[tokio::test]
         async fn a_cold_start_critical_source_reports_its_absence_on_a_log2_schedule() {
             let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
-            let reported: Vec<Option<u32>> =
-                (0..8).map(|_| faculty.note_absence(room())).collect();
+            let reported: Vec<Option<u32>> = (0..8).map(|_| faculty.note_absence(room())).collect();
 
             assert_eq!(
                 reported,
@@ -565,11 +572,13 @@ mod tests {
         // ([[bounded-window-eviction-bug-class]]).
         #[tokio::test]
         async fn a_defer_tolerant_source_stays_silent_when_absent() {
-            let faculty =
-                RagSourceFaculty::new(persona(), Arc::new(StubSource::new("room-wall", &[])), SaliencePolicy::StandingFraming)
-                    .with_clock(Arc::new(|| 1_000));
-            let reported: Vec<Option<u32>> =
-                (0..8).map(|_| faculty.note_absence(room())).collect();
+            let faculty = RagSourceFaculty::new(
+                persona(),
+                Arc::new(StubSource::new("room-wall", &[])),
+                SaliencePolicy::StandingFraming,
+            )
+            .with_clock(Arc::new(|| 1_000));
+            let reported: Vec<Option<u32>> = (0..8).map(|_| faculty.note_absence(room())).collect();
             assert!(
                 reported.iter().all(|r| r.is_none()),
                 "cold_start_critical defaults to false; only the assembler's                  declaration opts a source into the loudness contract"
@@ -679,7 +688,8 @@ mod tests {
             );
             // Non-degeneracy: a room still inside the bound DOES report, so the
             // assertion above cannot be passing because recovery never fires.
-            let live = Uuid::from_u128(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 1);
+            let live =
+                Uuid::from_u128(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 1);
             assert_eq!(
                 faculty.note_presence(live),
                 Some(1),
@@ -719,7 +729,10 @@ mod tests {
         async fn contribute_still_abstains_on_empty_and_bids_on_content() {
             let silent = critical(Arc::new(StubSource::new("room-doctrine", &[])));
             assert!(
-                silent.contribute(&Workspace::new("anything")).await.is_none(),
+                silent
+                    .contribute(&Workspace::new("anything"))
+                    .await
+                    .is_none(),
                 "an empty delivery must not become an empty bid"
             );
             assert_eq!(
@@ -778,6 +791,10 @@ mod tests {
         assert!(c.content.contains("Aria [persona]"));
         assert!(c.content.contains("win-claude [claude] — Busy"));
         assert!(c.salience > 0.0);
+        assert!(
+            c.standing_grounding,
+            "the assembler contract reaches the prompt budget"
+        );
     }
 
     // what this catches: the KV routing contract (2026-08-23). A session-stable
@@ -799,6 +816,7 @@ mod tests {
             .await
             .expect("non-empty source bids");
         assert!(c.stable, "standing framing stays in the cacheable prefix");
+        assert!(c.standing_grounding);
         assert!(!c.trailing, "stable grounding must not double as trailing");
 
         let volatile = RagSourceFaculty::new(
@@ -814,9 +832,26 @@ mod tests {
             .expect("non-empty source bids");
         assert!(!c.stable, "volatile content leaves the stable tier");
         assert!(
+            c.standing_grounding,
+            "moving KV placement must not erase importance"
+        );
+        assert!(
             c.trailing,
             "volatile grounding rides a trailing turn — churn costs its own tokens, \
              never the conversation's"
+        );
+        let retrieved = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("recall", &["a retrieved memory"])),
+            SaliencePolicy::Retrieved,
+        );
+        let c = retrieved
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty retrieved source bids");
+        assert!(
+            !c.standing_grounding,
+            "retrieval remains optional enrichment"
         );
     }
 

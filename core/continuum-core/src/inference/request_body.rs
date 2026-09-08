@@ -114,16 +114,9 @@ pub(crate) fn finish_body(
             // Idempotent if suppression already set it.
             apply_enable_thinking_false(body);
         }
-        // Diagnostic — print the request body exactly as serialized so we
-        // can see which fields actually reach DMR. Helps catch silent
-        // serialization drops (caught one 2026-04-19 — entry chain wasn't
-        // mutating body in place).
-        tracing::info!(
-            target: "openai_adapter",
-            "request body to {}: {}",
-            cfg.name,
-            serde_json::to_string(&body).unwrap_or_default()
-        );
+        // The completed body is encoded once at dispatch. Its size and native
+        // surface are probed there; exact request inspection uses the capture
+        // owner rather than serializing another full body into a log message.
     }
 
     // Add tools via the native OpenAI `tools` param — ONLY for

@@ -274,6 +274,11 @@ pub struct Contribution {
     /// This is a SERIALIZATION-order property, not an attention one — salience still
     /// governs which contributions are included and truncated.
     pub stable: bool,
+    /// Standing activity context, independently of its KV placement. The prompt
+    /// reserves a truthful minimum before optional history: whole atomic content
+    /// or a complete source-declared `parts` prefix with an explicit omission
+    /// notice. Additional list detail competes for spare room after history.
+    pub standing_grounding: bool,
     /// Set ONLY by the deliberation faculty when the model call itself FAILED — a
     /// timeout, a 5xx, or the serving lane refusing a model it isn't hosting. This
     /// is NOT a [`Decision`]: a failed inference is neither a chosen silence nor a
@@ -370,6 +375,7 @@ impl Contribution {
             decision: None,
             metrics: None,
             stable: false,
+            standing_grounding: false,
             fault: None,
             raw_generation: None,
             trailing: false,
@@ -399,6 +405,13 @@ impl Contribution {
         self
     }
 
+    /// Carry the assembler's standing-framing contract through attention to the
+    /// prompt budget. This neither changes salience nor chooses KV placement.
+    pub fn standing_grounding(mut self) -> Self {
+        self.standing_grounding = true;
+        self
+    }
+
     /// The deliberation faculty's verdict contribution.
     pub fn verdict(decision: Decision, salience: f32, reasoning: impl Into<String>) -> Self {
         let content = match &decision {
@@ -421,6 +434,7 @@ impl Contribution {
             metrics: None,
             // A verdict is the volatile output of THIS turn; never standing framing.
             stable: false,
+            standing_grounding: false,
             fault: None,
             raw_generation: None,
             trailing: false,
@@ -449,6 +463,7 @@ impl Contribution {
             decision: None,
             metrics: None,
             stable: false,
+            standing_grounding: false,
             fault: Some(error),
             raw_generation: None,
             trailing: false,
