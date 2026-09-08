@@ -138,6 +138,28 @@ impl PerRoomSubstrates {
             .clone()
     }
 
+    /// The room's substrate IF it exists — **never creates one**.
+    ///
+    /// The read-path sibling of [`Self::for_room`]. A projector that is about to
+    /// WRITE a room's view wants the entry created; a consumer that is merely
+    /// READING must not conjure one, or the map grows a permanently-empty entry
+    /// per distinct key it is asked about and `room_count` starts reporting rooms
+    /// that were never projected.
+    ///
+    /// That distinction became load-bearing when the citizen roster moved from a
+    /// room bound once at construction to a lookup on every delivery (#3862): the
+    /// read path now runs with whatever room the turn is in, so an inserting
+    /// lookup would let a wandering citizen accrete empty substrates nothing ever
+    /// writes. `None` is the honest answer — a room with no projection has no
+    /// view, which reads identically to a room whose kind is absent.
+    pub fn read_room(&self, room: Uuid) -> Option<Substrate> {
+        self.by_room
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&room)
+            .cloned()
+    }
+
     /// How many rooms have a substrate. Ops/telemetry read.
     pub fn room_count(&self) -> usize {
         self.by_room

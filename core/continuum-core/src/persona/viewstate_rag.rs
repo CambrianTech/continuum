@@ -64,8 +64,20 @@
 //! is constructed with [`ViewStateRagSource::per_room`], which takes the REGISTRY
 //! and resolves the turn's room per delivery. A **node-scoped** kind (the bench
 //! board — one global fold, `room() == None`) keeps [`ViewStateRagSource::new`].
-//! The two constructors exist so the wrong binding is unstatable: there is no way
-//! to hand a room-scoped source a single room.
+//! The two constructors exist so the right binding is the obvious one and the
+//! wrong one has to be chosen deliberately: `per_room` takes the registry, so it
+//! CANNOT be handed a single room.
+//!
+//! **They do not make the wrong binding impossible, and this comment used to say
+//! they did.** `new` is public and generic over any `V: RagRenderable`, so
+//! `ViewStateRagSource::<RosterViewState>::new(substrate)` — precisely the #3862
+//! binding — still compiles. Nothing in the type system refuses it; only this
+//! paragraph does, and a comment asserting a guarantee the compiler does not
+//! enforce is the exact shape that cost 662 ticks (caught in review of #3879).
+//! Making it genuinely unstatable means splitting the scope into the type — a
+//! room-scoped and a node-scoped marker, `new` bounded on one and `per_room` on
+//! the other, so `room()` returning `Some`/`None` stops being a convention. That
+//! is a follow-up, not a claim to make here in the meantime.
 //!
 //! ## Density, not truncation
 //!
@@ -236,8 +248,15 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
     fn current(&self, ctx: &RagContext) -> Option<V> {
         let substrate = match &self.binding {
             SubstrateBinding::Node(s) => s.clone(),
+            // `read_room`, NOT `for_room`: this is a READ path that now runs with
+            // whatever room the turn is in, and `for_room` inserts on lookup. An
+            // inserting read would let a citizen wandering rooms accrete a
+            // permanently-empty substrate per distinct room and inflate
+            // `room_count` with rooms nothing ever projected (caught in review of
+            // #3879). A room with no projection has no view — the same honest
+            // absence as a room whose kind is missing.
             SubstrateBinding::PerRoom(rooms) => match ctx.airc_room.as_ref() {
-                Some(room) => rooms.for_room(room.as_uuid()),
+                Some(room) => rooms.read_room(room.as_uuid())?,
                 None => {
                     crate::probe!(
                         class = "rag.room_scope.no_room",
@@ -758,6 +777,34 @@ mod tests {
         assert!(
             !rendered.contains("Anwen"),
             "and never in another room's: {rendered}"
+        );
+    }
+
+    /// what this catches (review of #3879): an INSERTING read. `for_room` creates
+    /// the entry it is asked about; this source now looks up a room on EVERY
+    /// delivery, so using it here would let a citizen wandering rooms accrete a
+    /// permanently-empty substrate per distinct room — invisible until a node has
+    /// been up a week, and it would inflate `room_count`, an ops read, with rooms
+    /// nothing ever projected. Asserts the read path leaves the map's size alone.
+    #[tokio::test]
+    async fn reading_a_room_that_was_never_projected_does_not_create_one() {
+        let rooms = roster_registry(&["Anwen"]);
+        assert_eq!(rooms.room_count(), 1, "fixture projects exactly one room");
+        let source: ViewStateRagSource<RosterViewState> =
+            ViewStateRagSource::per_room(Arc::clone(&rooms));
+        for n in 0..5u128 {
+            let elsewhere = RagContext::for_persona_in_room(
+                Uuid::from_u128(0x9),
+                0,
+                Uuid::from_u128(0xd0 + n),
+            );
+            let delivery = source.deliver(&elsewhere, 500, ResolutionPreference::Raw).await;
+            assert!(delivery.items.is_empty(), "an unprojected room has no view");
+        }
+        assert_eq!(
+            rooms.room_count(),
+            1,
+            "five deliveries into unprojected rooms must not create five substrates"
         );
     }
 
