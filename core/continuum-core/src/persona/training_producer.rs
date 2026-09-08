@@ -771,6 +771,23 @@ async fn submit_plan(
                 quality = plan.quality as f64,
                 provenance = provenance,
                 outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"),
+                // THE JOIN KEY, not a count. Without it this probe says an example
+                // was accepted but not WHICH submission it became, so a room turn
+                // cannot be joined to `training_trigger_submissions` or to dispatch
+                // state — and a count can never establish a causal link, only a
+                // correlation someone will read as one (Astra, 2026-09-08).
+                //
+                // Emitted as the destination's OWN id, never minted here: an id we
+                // invented would join to nothing and would look exactly like one
+                // that did.
+                submission = %receipt
+                    .acceptance
+                    .as_ref()
+                    .map(|a| a.submission_id.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                // A replay is an acceptance the destination has SEEN BEFORE. Without
+                // this, a retry and a first submission are the same row.
+                replayed = receipt.acceptance.as_ref().is_some_and(|a| a.replayed),
                 "training trigger accepted the example (L2)"
             );
         }
