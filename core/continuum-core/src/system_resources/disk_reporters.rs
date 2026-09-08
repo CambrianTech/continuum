@@ -186,6 +186,21 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
 
     let mut dirs = vec![
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
+        // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
+        // system is supposed to manage disk; you've been defying design principles so it
+        // can't"). Worktree builds must not write into the shared target — a worktree
+        // build once latched its CARGO_MANIFEST_DIR into it and broke the main checkout
+        // (card d2cda466) — so every agent building in a worktree exports
+        // CARGO_TARGET_DIR=cargo-target-wt. That directory reached 87 GB unseen, because
+        // it was never registered: the 2026-07-13 law says a new directory the substrate
+        // writes unbounded data into gets a TrackedDir row and an eviction decision, and
+        // hand-sweeping it is exactly the compensation the law exists to end.
+        TrackedDir::new("cargo-target-wt", home.join(".continuum/cache/cargo-target-wt")),
+        // The eye's browser profiles. Playwright defaults them into the OS temp dir,
+        // where nothing of ours can see or evict them: 337 leaked profiles from 31
+        // orphaned browsers accumulated there over a week (card de9b8876). A directory
+        // under our own cache root is one the monitor can weigh and the reaper can clear.
+        TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
         // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
         // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
         // 91, Qwen3.8-27B 20, Ornith 20) and invisible to both halves of the governed-disk
