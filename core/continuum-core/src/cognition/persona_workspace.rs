@@ -443,10 +443,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // the total ≤ window.
     let grounding_budget = super::rag_source_faculty::grounding_budget_for(cfg.context_window);
     for g in cfg.grounding_sources {
-        let faculty =
-            RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
+        let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
             .with_budget(grounding_budget)
-            .with_volatile_content(g.volatile_content);
+            .with_volatile_content(g.volatile_content)
+            // Deferrability is also a LOUDNESS contract, not only a scheduling one
+            // (#3873). ColdStartCritical means "absent here is a wrong turn", so a
+            // source in this tier that delivers nothing says so in the probe
+            // ledger instead of abstaining silently — which is how `room-doctrine`
+            // sat at 0 bids in 873 consecutive ticks with nothing noticing.
+            .cold_start_critical(matches!(g.deferrability, Deferrability::ColdStartCritical));
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));

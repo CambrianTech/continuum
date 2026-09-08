@@ -92,6 +92,62 @@ impl AircDoctrineReader for airc_lib::Airc {
     }
 }
 
+/// WHY a delivery turned out the way it did — the thing an empty `RagDelivery`
+/// cannot say for itself (#3873).
+///
+/// A doctrine delivery is empty for five materially different reasons, and until
+/// this enum existed all five rendered as the same nothing: a room with no
+/// published doctrine was indistinguishable, at every seam we had, from a reader
+/// whose cache never wired up. #3873 could not be triaged past that ambiguity —
+/// "no doctrine has ever been published here" and "the source is broken" were the
+/// two live hypotheses and no instrument separated them.
+/// [[absence-rendered-as-positive-fact]]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Nothing has been observed yet — the pre-first-call sentinel. Distinct from
+    /// every real outcome so the FIRST call always reports one.
+    Unobserved,
+    /// A doctrine block was delivered.
+    Delivered,
+    /// The context belongs to another persona (defense in depth; should not occur
+    /// in production, and its appearance in the ledger is itself the finding).
+    CrossPersona,
+    /// A synthetic nil-room context — deliberately gets nothing, and deliberately
+    /// does NOT fall back to the bound room (the exam-bleed pin).
+    NilRoom,
+    /// The reader answered successfully: this room HAS no published doctrine.
+    /// The source is working; the room is empty. This is the honest normal case
+    /// and the one that was being read as a defect.
+    NoDoctrinePublished,
+    /// The reader failed. Cognition stays up, but this is NOT the normal case and
+    /// must never again look like one.
+    ReadFailed,
+    /// A doctrine exists but the budget could not carry the marker plus real
+    /// content.
+    BudgetTooSmall,
+}
+
+impl Outcome {
+    fn code(self) -> u8 {
+        self as u8
+    }
+    fn from_code(c: u8) -> Self {
+        match c {
+            1 => Self::Delivered,
+            2 => Self::CrossPersona,
+            3 => Self::NilRoom,
+            4 => Self::NoDoctrinePublished,
+            5 => Self::ReadFailed,
+            6 => Self::BudgetTooSmall,
+            // 0 and anything unrecognised: nothing observed. `from_code` only ever
+            // reads back what `code` wrote, so the fallthrough is unreachable in
+            // practice -- it is written this way because a panic here would take
+            // down cognition to report a logging detail.
+            _ => Self::Unobserved,
+        }
+    }
+}
+
 /// RoomDoctrineSource — persona-bound, reads the room doctrine from any
 /// `AircDoctrineReader`.
 pub struct RoomDoctrineSource {
@@ -101,6 +157,9 @@ pub struct RoomDoctrineSource {
     /// (legacy/test construction): pre-gate behavior.
     room_id: Option<uuid::Uuid>,
     reader: Arc<dyn AircDoctrineReader>,
+    /// The last [`Outcome`] this source reported, as a code. Transitions are what
+    /// reach the probe ledger -- see [`Self::report`].
+    last_outcome: std::sync::atomic::AtomicU8,
 }
 
 impl RoomDoctrineSource {
@@ -109,7 +168,51 @@ impl RoomDoctrineSource {
             persona_id,
             room_id: None,
             reader,
+            last_outcome: std::sync::atomic::AtomicU8::new(Outcome::Unobserved.code()),
         }
+    }
+
+    /// Emit a probe when, and only when, the outcome CHANGES.
+    ///
+    /// Per-tick reporting would be 873 rows to say one thing, and the fact worth
+    /// having is not "empty now" but "empty for a DIFFERENT reason than before".
+    /// A transition ledger is bounded by the number of real state changes -- for a
+    /// room that has simply never had doctrine published, exactly ONE row, written
+    /// on the first tick, saying so in those words.
+    ///
+    /// This is the half that answers WHY; the [`RagSourceFaculty`] absence streak
+    /// is the half that answers HOW LONG. They join on `source` + tick.
+    ///
+    /// [`RagSourceFaculty`]: crate::cognition::rag_source_faculty::RagSourceFaculty
+    /// Returns `true` when it emitted, so the transition rule is testable without
+    /// standing up a tracing subscriber to watch for the probe.
+    fn report(&self, outcome: Outcome, room: Option<uuid::Uuid>) -> bool {
+        let prev = Outcome::from_code(
+            self.last_outcome
+                .swap(outcome.code(), std::sync::atomic::Ordering::Relaxed),
+        );
+        if prev == outcome {
+            return false;
+        }
+        crate::probe!(
+            class = "rag.doctrine.outcome",
+            source = SOURCE_ID,
+            persona_id = %self.persona_id,
+            bound_room = ?self.room_id,
+            effective_room = ?room,
+            from = ?prev,
+            to = ?outcome,
+            "room-doctrine outcome changed — an empty delivery now says WHICH              empty it is (published-nothing vs read-failed vs gated out)"
+        );
+        true
+    }
+
+    /// The last outcome this source observed — the state the transition ledger is
+    /// tracking. Test-visible so a regression can assert WHICH absence occurred,
+    /// which is the whole point of the enum.
+    #[cfg(test)]
+    fn observed(&self) -> Outcome {
+        Outcome::from_code(self.last_outcome.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Bind this source to the room its reader answers for, so a context-stamped
@@ -190,6 +293,7 @@ impl RagSource for RoomDoctrineSource {
 
         // Persona-scoped (defense in depth, same shape as the roster).
         if ctx.persona_id != self.persona_id {
+            let _ = self.report(Outcome::CrossPersona, None);
             return empty(ResolutionPreference::Placeholder);
         }
         // Room resolution — TURN-PARAMETRIC (#443), the same shape RoomBoardSource
@@ -209,6 +313,7 @@ impl RagSource for RoomDoctrineSource {
                     persona_id = %ctx.persona_id,
                     "synthetic nil-room context — no doctrine, and no fallback to the bound room"
                 );
+                let _ = self.report(Outcome::NilRoom, Some(t));
                 return empty(ResolutionPreference::Placeholder);
             }
             Some(t) => Some(t),
@@ -217,19 +322,27 @@ impl RagSource for RoomDoctrineSource {
 
         let card = match self.reader.room_doctrine(effective_room).await {
             Ok(Some(card)) => card,
-            // No doctrine published for this room → no block (normal).
-            Ok(None) => return empty(resolution),
+            // No doctrine published for this room → no block. This is the NORMAL
+            // case and it is now SAYS so: #3873 spent its life as "the gate has
+            // never held" because a working source reading an empty room looked
+            // exactly like a broken one.
+            Ok(None) => {
+                let _ = self.report(Outcome::NoDoctrinePublished, effective_room);
+                return empty(resolution);
+            }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     persona_id = %self.persona_id,
                     "room_doctrine: read failed — empty delivery, cognition stays up"
                 );
+                let _ = self.report(Outcome::ReadFailed, effective_room);
                 return empty(ResolutionPreference::Placeholder);
             }
         };
 
         let Some(content) = Self::fit_body(&card.body, budget) else {
+            let _ = self.report(Outcome::BudgetTooSmall, effective_room);
             return empty(resolution);
         };
         let tokens = estimate_tokens(&content);
@@ -241,6 +354,7 @@ impl RagSource for RoomDoctrineSource {
             tokens,
             "room_doctrine: deliver"
         );
+        let _ = self.report(Outcome::Delivered, effective_room);
 
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
@@ -329,6 +443,108 @@ mod tests {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
             Ok(self.doctrine.clone())
+        }
+    }
+
+    mod which_empty_is_it {
+        use super::*;
+
+        fn source(reader: Arc<StubReader>, room: uuid::Uuid) -> RoomDoctrineSource {
+            RoomDoctrineSource::new(persona(), reader).for_room(room)
+        }
+
+        fn ctx_in(room: uuid::Uuid) -> RagContext {
+            RagContext::for_persona_in_room(persona(), 1_000_000, room)
+        }
+
+        // what this catches: regression for #3873. `room-doctrine` delivered
+        // nothing on 873 consecutive ticks and the two live hypotheses — "no
+        // doctrine was ever published here" (source fine) and "the cache never
+        // wired up" (source broken) — were INDISTINGUISHABLE at every seam we
+        // had, because both rendered as the same empty delivery. They are now
+        // different rows. [[absence-rendered-as-positive-fact]]
+        #[tokio::test]
+        async fn an_unpublished_room_and_a_broken_reader_are_different_absences() {
+            let room = uuid::Uuid::new_v4();
+            let reader = Arc::new(StubReader::new(None));
+            let src = source(reader.clone(), room);
+
+            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            assert!(d.items.is_empty(), "no doctrine published — no block");
+            assert_eq!(
+                src.observed(),
+                Outcome::NoDoctrinePublished,
+                "the honest normal case must SAY it is the normal case"
+            );
+
+            reader.set_fail(true);
+            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            assert!(d.items.is_empty(), "a failed read still keeps cognition up");
+            assert_eq!(
+                src.observed(),
+                Outcome::ReadFailed,
+                "and a BROKEN reader must not look like an empty room"
+            );
+
+            assert_ne!(
+                Outcome::NoDoctrinePublished,
+                Outcome::ReadFailed,
+                "non-degeneracy: the two states this test distinguishes must not                  be the same value, or it would pass without discriminating"
+            );
+        }
+
+        // what this catches: the transition rule. Reporting every tick would be
+        // 873 rows to say one thing, and the row that matters would be evicted
+        // from whatever window someone is reading
+        // ([[bounded-window-eviction-bug-class]]). One row per real state change:
+        // the first tick reports, an unchanged second tick does not, and a CHANGE
+        // reports again.
+        #[tokio::test]
+        async fn only_a_change_of_outcome_reaches_the_ledger() {
+            let room = uuid::Uuid::new_v4();
+            let src = source(Arc::new(StubReader::new(None)), room);
+
+            assert!(
+                src.report(Outcome::NoDoctrinePublished, Some(room)),
+                "the FIRST observation is always a transition (from Unobserved)"
+            );
+            assert!(
+                !src.report(Outcome::NoDoctrinePublished, Some(room)),
+                "a repeat of the same state must not cost a row"
+            );
+            assert!(
+                src.report(Outcome::ReadFailed, Some(room)),
+                "a real change must always be written down"
+            );
+            assert!(
+                src.report(Outcome::Delivered, Some(room)),
+                "including recovery — the end of an absence is a fact too"
+            );
+        }
+
+        // what this catches: the code<->enum round-trip that the AtomicU8 relies
+        // on. A silent collision (two outcomes sharing a code) would merge two
+        // distinct absences back into one, undoing this whole change while every
+        // other test still passed.
+        #[test]
+        fn every_outcome_survives_the_atomic_round_trip_distinctly() {
+            let all = [
+                Outcome::Unobserved,
+                Outcome::Delivered,
+                Outcome::CrossPersona,
+                Outcome::NilRoom,
+                Outcome::NoDoctrinePublished,
+                Outcome::ReadFailed,
+                Outcome::BudgetTooSmall,
+            ];
+            for o in all {
+                assert_eq!(Outcome::from_code(o.code()), o, "round-trip for {o:?}");
+            }
+            let mut codes: Vec<u8> = all.iter().map(|o| o.code()).collect();
+            codes.sort_unstable();
+            let before = codes.len();
+            codes.dedup();
+            assert_eq!(before, codes.len(), "two outcomes must never share a code");
         }
     }
 
