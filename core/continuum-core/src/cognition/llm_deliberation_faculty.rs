@@ -2196,31 +2196,12 @@ impl LlmDeliberationFaculty {
             field(&mut input, update.room_id.as_bytes());
             field(&mut input, update.text.as_bytes());
         }
-        // Collapse consecutive same-role turns into one message each (chronological).
-        // Her OWN near-duplicate turns are DROPPED after the first: replaying
-        // `assistant: X` three times teaches the model that repeating X is its
-        // established behavior — glass-boxed 2026-07-10, the courtesy spiral's
-        // strongest fuel was up to 3 byte-identical assistant turns in one thread.
-        // Dropped, not replaced with a marker: the first cut rendered
-        // "(you sent this same message again, verbatim)" in her assistant history,
-        // and the same law fired again — words in assistant turns are words the
-        // model says, and Anwen BROADCAST the marker to the room that night.
-        // Perception-side repetition awareness is the repetition brick's job
-        // (structural fact in the world channel, #121), never assistant-voice
-        // text we author ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        //
-        // The drop is NEAR-DUP (jaccard ≥ NEAR_DUP_JACCARD), not byte equality —
-        // reversing the first cut's "byte equality only, never similarity"
-        // (glass-boxed 2026-07-11): temperature varies each re-emission by a few
-        // words ("for the repetition" / "for the repetition earlier"), so byte
-        // dedup never fired while four apology variants rendered in one thread
-        // and the loop survived even a direct, personally-addressed peer
-        // instruction. Same calibrated geometry as the [repetition] fact
-        // (deliberation_budget) — identical-enough to count as loop evidence ≡
-        // identical-enough to not re-teach. Detection for the fact stays on the
-        // RAW turns, so dropped copies still count as evidence there.
+        // Coalesce consecutive same-role turns in chronological order. Content
+        // similarity cannot establish event identity: "tests passed" and "tests
+        // failed" can be near-identical, and a later identical statement can
+        // report another change of state. Preserve that history for the citizen;
+        // the existing fitter bounds it and perception facts describe repetition.
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
-        let mut kept_self: Vec<String> = Vec::new();
         // Preserve the newest external SPEECH as activity context, even when an
         // own receipt or perception fact follows it. This says what was heard,
         // never what the citizen must obey. Keep the typed boundary before
@@ -2260,15 +2241,6 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 after_stimulus = true;
                 continue;
-            }
-            if turn.is_self {
-                if kept_self.iter().any(|k| {
-                    super::deliberation_budget::jaccard(k, &line)
-                        >= super::deliberation_budget::NEAR_DUP_JACCARD
-                }) {
-                    continue;
-                }
-                kept_self.push(line.clone());
             }
             match groups.last_mut() {
                 Some((r, lines)) if *r == role && !after_stimulus => lines.push(line),
@@ -2433,11 +2405,11 @@ impl LlmDeliberationFaculty {
         input.update(b"active_result");
         let latest_result = self.working_memory.as_ref().and_then(|wm| {
             wm.active_action_full().map(|(seq, full)| {
-                field(&mut input, full.as_bytes());
-                ChatMessage::text(
-                    "user",
-                    format!("Full result of your most recent action (#{seq}):\n{full}"),
-                )
+                let message = wm.full_result_message(seq, &full);
+                // Provenance is required input too. Hash the rendered allocation
+                // once, then move it into the request without a second encoding.
+                field(&mut input, message.as_bytes());
+                ChatMessage::text("user", message)
             })
         });
 
@@ -3941,55 +3913,100 @@ mod tests {
             ))
         }
 
-        // what this catches: a persona's VERBATIM-duplicate turns are DROPPED
-        // after the first in her thread projection — replaying `assistant: X`
-        // three times teaches the model that repeating X is its established
-        // behavior (the courtesy spiral's strongest fuel, glass-boxed 2026-07-10:
-        // up to 3 byte-identical assistant turns per thread). Dropped, NOT
-        // replaced with marker text: the marker cut put authored words in her
-        // assistant voice and Anwen broadcast "(you sent this same message
-        // again, verbatim)" to the live room the same night — assistant-turn
-        // content IS the model's speech repertoire. Byte equality only; distinct
-        // messages and peers' repeats are untouched.
-        #[test]
-        fn own_verbatim_duplicates_collapse_in_the_thread() {
+        // what this catches: e731576c — fuzzy and verbatim history dedupe both
+        // lose real state changes. Inspect the actual adapter request at each
+        // step: passed -> failed -> passed must remain three distinct events.
+        #[tokio::test]
+        async fn own_history_preserves_corrections_at_each_inference_step() {
+            use crate::ai::types::{ToolCall, ToolResult};
+            use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+            use crate::cognition::working_memory::WorkingMemory;
+
+            let home = tempfile::tempdir().expect("isolated demand and emission storage");
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
             let persona = Uuid::new_v4();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let wm = Arc::new(WorkingMemory::new(16));
+            wm.set_served_window(32_768);
             let faculty = LlmDeliberationFaculty::new(
                 persona,
                 "Anwen",
                 "You are Anwen.",
-                Arc::new(HeuristicInferenceAdapter::new()),
+                Arc::new(
+                    HeuristicInferenceAdapter::new().with_request_recorder(Arc::clone(&calls)),
+                ),
             )
-            .with_context_window(32_768);
-            let same = "I apologize for any repetition. Is there something specific?";
-            let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
-                crate::identity::ActivityRoom::mint(),
-                vec![
-                    BurstTurn::attributed(false, "Asha", "hello!", None),
-                    BurstTurn::attributed(true, "Anwen", same, None),
-                    BurstTurn::attributed(false, "Asha", "still here", None),
-                    BurstTurn::attributed(true, "Anwen", same, None),
-                    BurstTurn::attributed(false, "Asha", "ok", None),
-                    BurstTurn::attributed(true, "Anwen", same, None),
-                ],
-            ));
-            let msgs = faculty.messages_within(&ws, 8_192);
-            let thread: String = msgs
-                .iter()
-                .filter(|m| m.role == "assistant")
-                .map(|m| m.content_text())
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert_eq!(
-                thread.matches(same).count(),
-                1,
-                "only the FIRST verbatim occurrence renders at all: {thread}"
-            );
-            assert!(
-                !thread.contains("same message again"),
-                "no authored marker text in her assistant voice — duplicates \
-                 drop silently (the marker got broadcast to the live room): {thread}"
-            );
+            .with_context_window(32_768)
+            .with_working_memory(Arc::clone(&wm));
+            let own_reports = [
+                "I verified the build and the tests passed.",
+                "I verified the build and the tests failed.",
+                "I verified the build and the tests passed.",
+            ];
+            let peer_updates = [
+                "The initial candidate is ready for review.",
+                "The regression test exposed a failure in that candidate.",
+                "The corrected candidate is ready for another review.",
+            ];
+            let room = crate::identity::ActivityRoom::mint();
+            let result_rooms = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+            let mut turns = Vec::new();
+            for (step, (report, update)) in own_reports.iter().zip(peer_updates).enumerate() {
+                turns.push(BurstTurn::attributed(false, "Asha", update, None));
+                turns.push(BurstTurn::attributed(true, "Anwen", *report, None));
+                let call_id = format!("verify-{step}");
+                wm.record_receipt_typed(
+                    &[Observation {
+                        call: ToolCall {
+                            id: call_id.clone(),
+                            name: "code/run".into(),
+                            input: serde_json::json!({"attempt": step}),
+                        },
+                        output: ToolOutput {
+                            result: ToolResult {
+                                tool_use_id: call_id,
+                                content: (*report).into(),
+                                is_error: None,
+                                spill_handle: None,
+                            },
+                            verb: ToolVerb::classify("code/run"),
+                            paths: Vec::new(),
+                        },
+                        status: ActStatus::Executed,
+                    }],
+                    report,
+                    Some(result_rooms[step]),
+                );
+                let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
+                    room,
+                    turns.clone(),
+                ));
+                let outcome = faculty.contribute(&ws).await.expect("deliberation outcome");
+                assert!(outcome.fault.is_none());
+                let recorded = calls.lock().expect("actual request recorder");
+                assert_eq!(recorded.len(), step + 1);
+                let request = recorded.last().expect("submitted request");
+                let history: Vec<_> = request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == "assistant")
+                    .map(|message| message.content_text())
+                    .collect();
+                assert_eq!(history, own_reports[..=step]);
+                for update in &peer_updates[..=step] {
+                    assert!(request.messages.iter().any(|message| {
+                        message.role == "user"
+                            && message.content_text().contains(&format!("Asha: {update}"))
+                    }));
+                }
+                for (index, result_room) in result_rooms[..=step].iter().enumerate() {
+                    let provenance =
+                        format!("#{}; room {result_room}; operation code/run", index + 1);
+                    assert!(request.messages.iter().any(|message| {
+                        message.role == "user" && message.content_text().contains(&provenance)
+                    }));
+                }
+            }
         }
 
         // what this catches: end-to-end through a REAL adapter (the deterministic
@@ -5894,7 +5911,7 @@ mod tests {
             assert!(
                 view.messages
                     .iter()
-                    .any(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[context] you can currently see the last 3 messages"))),
+                    .any(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[context] 3 input turns were available before prompt fitting"))),
                 "the [context] bounds fact states the visible window"
             );
 
@@ -6098,16 +6115,11 @@ mod tests {
             );
         }
 
-        // what this catches: the near-dup render drop (live specimen 2026-07-11 —
-        // Casper's ask-permission loop). Temperature varies each re-emission by a
-        // few words, so byte dedup never fires while N apology VARIANTS render as
-        // assistant turns and in-context-teach the model that repeating is its
-        // established behavior; the loop then survives even a direct peer
-        // instruction. Later near-dups (jaccard ≥ NEAR_DUP_JACCARD vs any kept own
-        // line) must DROP from the render, while the [repetition] fact — detected
-        // on the RAW turns — still reports the true count.
+        // what this catches: e731576c — repetition remains observable without
+        // deleting distinct speech events or replacing them with authored words
+        // in the citizen's own voice.
         #[test]
-        fn near_duplicate_own_turns_drop_from_render_but_still_count_as_evidence() {
+        fn near_duplicate_own_turns_remain_visible_with_repetition_evidence() {
             use crate::cognition::workspace::Burst;
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -6142,19 +6154,25 @@ mod tests {
             ));
             let view = faculty.prompt_view(&ws);
 
-            // Exactly ONE assistant rendering of the template survives.
+            // All three actual statements survive in their original order.
             let apology_renders = view
                 .messages
                 .iter()
                 .filter(|m| m.role == "assistant" && m.content_text().contains("I apologize"))
                 .count();
             assert_eq!(
-                apology_renders, 1,
-                "later near-dup own turns must drop from the render: {view:?}"
+                apology_renders, 3,
+                "similarity must not erase actual speech: {view:?}"
             );
+            let own: Vec<_> = view
+                .messages
+                .iter()
+                .filter(|message| message.role == "assistant")
+                .map(|message| message.content_text())
+                .collect();
+            assert_eq!(own, vec![v1, v2, v3]);
 
-            // The dropped copies still count as evidence: the [repetition] fact
-            // (raw-turn detection) rides the newest user content.
+            // The same raw history still supports the repetition observation.
             let all_user: String = view
                 .messages
                 .iter()
@@ -6164,7 +6182,7 @@ mod tests {
                 .join("\n");
             assert!(
                 all_user.contains("[repetition] 3 of your recent messages were nearly identical"),
-                "raw-turn fact must survive the render drop: {all_user}"
+                "raw-turn repetition fact must remain available: {all_user}"
             );
         }
 

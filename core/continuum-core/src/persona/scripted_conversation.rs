@@ -75,6 +75,8 @@ pub struct ScriptedConversation {
     /// the room that asked" are different claims, and only the second
     /// one is the contract — see `said_in`.
     said: Mutex<Vec<(Uuid, String)>>,
+    /// Explicit transport refusal; failed attempts never enter `said`.
+    say_failure: Option<String>,
     primed: AtomicUsize,
     prime_result: Mutex<Result<(), String>>,
     /// When set, `next_message` returns Err if called before `prime`
@@ -102,6 +104,7 @@ impl ScriptedConversation {
             events: Arc::new(Mutex::new(VecDeque::new())),
             perceived_backlog: VecDeque::new(),
             said: Mutex::new(Vec::new()),
+            say_failure: None,
             primed: AtomicUsize::new(0),
             prime_result: Mutex::new(Ok(())),
             require_prime: false,
@@ -153,6 +156,12 @@ impl ScriptedConversation {
     /// `BootSlotFailure`).
     pub fn with_prime_failure(self, reason: impl Into<String>) -> Self {
         *self.prime_result.lock().unwrap() = Err(reason.into());
+        self
+    }
+
+    /// Refuse publication without pretending a message reached the room.
+    pub fn with_say_failure(mut self, reason: impl Into<String>) -> Self {
+        self.say_failure = Some(reason.into());
         self
     }
 
@@ -257,6 +266,9 @@ impl PersonaConversation for ScriptedConversation {
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
+        if let Some(reason) = &self.say_failure {
+            return Err(reason.clone());
+        }
         self.said.lock().unwrap().push((room_id, text.to_string()));
         Ok(())
     }
