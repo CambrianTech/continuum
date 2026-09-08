@@ -273,6 +273,25 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
         serde_json::from_value(envelope.payload.clone()).ok()
     }
 
+    /// The turn's room as a cursor-stampable value (`null` for a roomless turn).
+    ///
+    /// A continuation offset is an index into ONE room's unit list. Before the
+    /// per-room binding (#3862) that was safe by accident: the source always read
+    /// the same room, so any cursor indexed the same list. Now the list depends on
+    /// the turn's room, so a cursor issued in room A and resumed in room B would
+    /// apply A's offset to B's roster and silently skip its first N people — the
+    /// same class of harm the per-room fix exists to end.
+    ///
+    /// It cannot ride `ContinuationCursor`'s typed fields (those are persona +
+    /// source by contract), so it rides `opaque`, which the trait defines as
+    /// source-private resume state.
+    fn cursor_room(ctx: &RagContext) -> serde_json::Value {
+        match ctx.airc_room.as_ref() {
+            Some(r) => serde_json::Value::String(r.as_uuid().to_string()),
+            None => serde_json::Value::Null,
+        }
+    }
+
     /// Pack as many whole units as fit. Shared by `deliver` and the continuation
     /// path so a resumed delivery can never use different packing rules than the
     /// first one.
@@ -337,9 +356,11 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                // The resume state IS the next unit index — the allocator never
-                // inspects it, so keeping it a plain offset is the whole cursor.
-                opaque: serde_json::json!({ "next": next }),
+                // The resume state is the next unit index PLUS the room it
+                // indexes into — an offset without its room is only meaningful
+                // while the source reads one room forever, which is exactly the
+                // assumption #3862 removed.
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: resolution,
         }
@@ -360,6 +381,27 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         // Substrate-side identity check the trait REQUIRES: a cursor issued for
         // another persona must never resume here.
         if cursor.persona_id != _ctx.persona_id {
+            return None;
+        }
+        // A cursor is an offset into ONE room's list. Refuse to resume it in a
+        // different room — the offset would silently skip that room's first N
+        // units. An absent stamp (a cursor minted before this field existed, or
+        // across a restart) is treated as a MISMATCH unless the turn is equally
+        // roomless: dropping one continuation costs a few units on one turn,
+        // resuming into the wrong room drops people from the grounding and says
+        // nothing. Note this is NOT redundant with the `room_scope_allows` check
+        // below, which the per-room binding made vacuous — `view.room()` now
+        // always equals the turn's room, so that gate can no longer fire here.
+        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null);
+        if stamped != Self::cursor_room(_ctx) {
+            crate::probe!(
+                class = "rag.continuation.room_mismatch",
+                source = %V::KIND,
+                persona_id = %_ctx.persona_id,
+                cursor_room = %stamped,
+                turn_room = %Self::cursor_room(_ctx),
+                "refused to resume a continuation minted for a different room — the                  offset indexes another room's units"
+            );
             return None;
         }
         let from = cursor.opaque.get("next")?.as_u64()? as usize;
@@ -383,7 +425,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                opaque: serde_json::json!({ "next": next }),
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: ResolutionPreference::Raw,
         })
@@ -779,6 +821,87 @@ mod tests {
             !rendered.contains("Anwen"),
             "and never in another room's: {rendered}"
         );
+    }
+
+    /// what this catches: a continuation resumed in the WRONG ROOM. A cursor is an
+    /// offset into one room's unit list. Before the per-room binding this was safe
+    /// by accident — the source read the same room forever, so every cursor
+    /// indexed the same list. Per-room resolution makes an A-issued cursor
+    /// resumable in B, where the offset would silently skip B's first N people.
+    ///
+    /// The `room_scope_allows` call in `deliver_continuation` does NOT catch it:
+    /// per-room resolution makes `view.room()` equal the turn's room by
+    /// construction, so that gate is now vacuous there. This is the guard that
+    /// replaced its teeth.
+    ///
+    /// FIXTURE NOTE, and it is the point: the other room must hold MORE members
+    /// than the cursor's offset. The first version of this test gave it one, and
+    /// it passed with the guard disabled — `from >= total` returned `None` for the
+    /// wrong reason, so the test could not tell a working guard from a missing
+    /// one. Caught by mutation-testing it. A fixture with fewer degrees of freedom
+    /// than the bug cannot fail, which is the same lesson as the single-`Substrate`
+    /// roster tests this PR replaced.
+    #[tokio::test]
+    async fn a_continuation_minted_in_one_room_is_refused_in_another() {
+        const OTHER: u128 = 0xbb;
+        let rooms = roster_registry(&["Anwen", "Asha", "Anon"]);
+        let builder = StateBuilder::standalone();
+        let other_roster: Vec<_> = ["Saoirse", "Solenne", "Sorcha", "Sinead", "Siofra"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(40 + i as u128),
+                    name,
+                    SenderKind::Agent,
+                )
+            })
+            .collect();
+        let other_len = other_roster.len();
+        rooms
+            .for_room(Uuid::from_u128(OTHER))
+            .store(builder.session(RosterViewState {
+                room_id: Uuid::from_u128(OTHER),
+                roster: other_roster,
+            }));
+        let source: ViewStateRagSource<RosterViewState> = ViewStateRagSource::per_room(rooms);
+
+        // A tight budget in ROOM yields a cursor with units left over.
+        let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
+        let cursor = first
+            .continuation
+            .expect("a partial delivery must offer a cursor");
+
+        // The offset MUST land inside the other room's list, or the `from >= total`
+        // check refuses for an unrelated reason and this test proves nothing.
+        let offset = cursor.opaque["next"].as_u64().expect("cursor carries next") as usize;
+        assert!(
+            offset < other_len,
+            "fixture is degenerate: offset {offset} is past the other room's              {other_len} members, so a MISSING guard would also return None"
+        );
+
+        // Same persona, same source, DIFFERENT room: must refuse rather than index
+        // into the other room's roster.
+        let in_other = RagContext::for_persona_in_room(
+            Uuid::from_u128(0x9),
+            0,
+            Uuid::from_u128(OTHER),
+        );
+        assert!(
+            source
+                .deliver_continuation(&in_other, cursor.clone(), 500)
+                .await
+                .is_none(),
+            "a cursor from another room must not resume here"
+        );
+
+        // ...and the SAME room still resumes, so the guard is not just refusing
+        // everything (a guard that never lets anything through is not a guard).
+        let resumed = source
+            .deliver_continuation(&ctx(), cursor, 500)
+            .await
+            .expect("same-room resume must still work");
+        assert!(!resumed.items.is_empty());
     }
 
     /// what this catches (review of #3879): an INSERTING read. `for_room` creates
