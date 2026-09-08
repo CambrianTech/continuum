@@ -143,8 +143,57 @@ impl CognitionModule {
     }
 }
 
+/// One blocking checkpoint pass shared by periodic servicing and final save.
+/// A timed-out caller does not cancel filesystem IO; the registry serializes
+/// that work and closes periodic admission before the final snapshot.
+enum CheckpointBoundary {
+    Periodic,
+    Save,
+    Shutdown,
+}
+
+async fn checkpoint_residents(boundary: CheckpointBoundary) -> Result<(), String> {
+    let outcomes = tokio::task::spawn_blocking(move || {
+        let registry = crate::cognition::persona_workspace::global();
+        match boundary {
+            CheckpointBoundary::Periodic => registry.checkpoint_volatile_all(),
+            CheckpointBoundary::Save => registry.flush_volatile_all(),
+            CheckpointBoundary::Shutdown => registry.stop_volatile_checkpoints(),
+        }
+    })
+    .await
+    .map_err(|error| format!("volatile checkpoint task failed: {error}"))?;
+    let total = outcomes.len();
+    let failed: Vec<_> = outcomes
+        .into_iter()
+        .filter_map(|(id, result)| result.err().map(|error| format!("{id}: {error}")))
+        .collect();
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "volatile checkpoint failed for {} of {total} residents: {}",
+            failed.len(),
+            failed.join("; ")
+        ))
+    }
+}
+
 #[async_trait]
 impl ServiceModule for CognitionModule {
+    /// Reusable explicit snapshot; periodic persistence remains active.
+    async fn save_state(&self) -> Result<(), String> {
+        checkpoint_residents(CheckpointBoundary::Save).await
+    }
+
+    async fn tick(&self) -> Result<(), String> {
+        checkpoint_residents(CheckpointBoundary::Periodic).await
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        checkpoint_residents(CheckpointBoundary::Shutdown).await
+    }
+
     fn config(&self) -> ModuleConfig {
         ModuleConfig {
             name: "cognition",
@@ -163,7 +212,7 @@ impl ServiceModule for CognitionModule {
             // "unlimited / module-managed"; usize::MAX overflows Tokio's
             // semaphore permit ceiling during registration.
             max_concurrency: 0,
-            tick_interval: None,
+            tick_interval: Some(std::time::Duration::from_secs(15)),
         }
     }
 

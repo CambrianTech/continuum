@@ -263,6 +263,19 @@ impl GroundingSource {
 /// routes decisions through the Workspace — without them, that grounding (#1650 /
 /// #1651) silently falls out of the live path.
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
+    assemble_workspace_cycle(cfg, WorkspaceLifetime::Ephemeral).0
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceLifetime {
+    Resident,
+    Ephemeral,
+}
+
+fn assemble_workspace_cycle(
+    cfg: PersonaBrainConfig,
+    lifetime: WorkspaceLifetime,
+) -> (WorkspaceCycle, Arc<WorkingMemory>) {
     let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
 
     // Capture the pieces the persona's BODY (the act→observe `ActingBody`) needs
@@ -301,13 +314,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     let working_memory = Arc::new(WorkingMemory::new(
         crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
     ));
-    // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
-    // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
-    // the volatile tier persisted by the previous life so she wakes MID-WORK —
-    // her recent thoughts, receipts, and own-speech ring intact across a deploy
-    // reboot. Eval forks/harnesses (defer_recall=false) stay pristine: an exam
-    // must never inherit a prior life's scratchpad.
-    if cfg.defer_recall {
+    // Persistence belongs to resident registration, independently of whether
+    // recall runs inline or deferred. Constructing a fork grants no disk access.
+    if matches!(lifetime, WorkspaceLifetime::Resident) {
         if let Some(persisted) = load_volatile(cfg.persona_id) {
             let n = persisted.wm.entries.len();
             working_memory.restore(persisted.wm);
@@ -357,32 +366,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
         }
     }
-    // MEMENTO FIX write-through: persist the volatile tier every 15s so a
-    // reboot (graceful or SIGKILL) loses at most one interval of thought.
-    // Atomic tmp+rename; spawn_blocking-free because the payload is tiny
-    // (≤ a few KB) and the interval is coarse — cadence-ladder compliant.
-    //
-    // OUTSIDE the defer_recall/bus gate above (2026-08-21). It shared that
-    // block with the dispatch listener, so on any construction where the gate
-    // was false the saver NEVER SPAWNED — save_volatile never ran — and every
-    // boot faithfully restored the same fossil. Measured: Atlas's restored
-    // snapshot was byte-identical (`entries: 16, ring: 46`) across two reboots
-    // 104 minutes and dozens of acts apart, so each restart truthfully told her
-    // "nothing has executed yet" about a claim she had worked for hours, and
-    // she rationally restarted the investigation. The saver's only real
-    // dependencies are a tokio runtime and the working-memory Arc.
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let wm = Arc::clone(&working_memory);
-        let persona_id = cfg.persona_id;
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tick.tick().await;
-                save_volatile(persona_id, &wm);
-            }
-        });
-    }
+    // The CognitionModule tick checkpoints the registry's current residents.
+    // Construction must not spawn a writer: forks share the persona UUID and
+    // replaced cycles can remain alive in callers (#3918).
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
         .with_embedder(embedder)
         // Budget recall by the served model's capability: a tight 4B window
@@ -591,17 +577,20 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // path; THIS is what instruments the path that actually runs. Best-effort —
     // if the fixtures dir can't be opened we log and run with Noop capture; a
     // persona's mind never fails to assemble over an observability hiccup.
-    match super::workspace_capture::JsonlWorkspaceCaptureSink::open_for_persona(cfg.persona_id) {
-        Ok(sink) => cycle.with_capture(Arc::new(sink.with_session(capture_session))),
-        Err(e) => {
-            tracing::warn!(
-                persona_id = %cfg.persona_id,
-                error = %e,
-                "workspace trace capture unavailable; running with Noop capture"
-            );
-            cycle
-        }
-    }
+    let cycle =
+        match super::workspace_capture::JsonlWorkspaceCaptureSink::open_for_persona(cfg.persona_id)
+        {
+            Ok(sink) => cycle.with_capture(Arc::new(sink.with_session(capture_session))),
+            Err(e) => {
+                tracing::warn!(
+                    persona_id = %cfg.persona_id,
+                    error = %e,
+                    "workspace trace capture unavailable; running with Noop capture"
+                );
+                cycle
+            }
+        };
+    (cycle, working_memory)
 }
 
 /// Persona-scoped registry of continuous minds. One `Arc<WorkspaceCycle>` per
@@ -609,7 +598,17 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
 /// runs it over the room's consolidated burst, and reads the `Decision`.
 #[derive(Default)]
 pub struct PersonaWorkspaceRegistry {
-    cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
+    cycles: Mutex<HashMap<Uuid, ResidentWorkspace>>,
+    /// Assembly opens captures and starts faculty wiring. Serialize constructors
+    /// without holding the lookup lock, so a losing lazy build has no side effects.
+    assembly: Mutex<()>,
+    /// Serializes checkpoint admission BEFORE resolving current residents and
+    /// snapshotting. Held only by blocking checkpoint work, never a turn. True
+    /// closes periodic admission once shutdown starts; queued ticks cannot
+    /// overwrite the acknowledged final checkpoint.
+    checkpoint_stopped: Mutex<bool>,
+    #[cfg(all(test, feature = "stress-tests"))]
+    checkpoint_pause: Mutex<Option<CheckpointPause>>,
     /// Per-persona fork-template: a clone of the `PersonaBrainConfig` the live
     /// cycle was built from, retained so `cognition/eval` can fork an ephemeral
     /// measurement copy without touching the living persona (see
@@ -617,6 +616,18 @@ pub struct PersonaWorkspaceRegistry {
     /// handle. Lock order is always `cycles` THEN `templates`, never the reverse,
     /// so the two can't deadlock.
     templates: Mutex<HashMap<Uuid, PersonaBrainConfig>>,
+}
+
+struct ResidentWorkspace {
+    cycle: Arc<WorkspaceCycle>,
+    // Pure-cognition residents have no ActingBody but still have memory.
+    working_memory: Arc<WorkingMemory>,
+}
+
+#[cfg(all(test, feature = "stress-tests"))]
+struct CheckpointPause {
+    admitted: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
 }
 
 /// When an eval pins a `workspace_root` (a SWE-bench repo clone, or a clean
@@ -1008,15 +1019,15 @@ async fn restore_acting_workspace_at(
 
 impl PersonaWorkspaceRegistry {
     pub fn new() -> Self {
-        Self {
-            cycles: Mutex::new(HashMap::new()),
-            templates: Mutex::new(HashMap::new()),
-        }
+        Self::default()
     }
 
     /// Look up a persona's mind. `None` if it hasn't been registered/built yet.
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
-        self.cycles.lock().get(persona_id).cloned()
+        self.cycles
+            .lock()
+            .get(persona_id)
+            .map(|entry| Arc::clone(&entry.cycle))
     }
 
     /// The personas that have a fork-template right now — i.e. the set
@@ -1104,12 +1115,22 @@ impl PersonaWorkspaceRegistry {
     /// resilience), and the fresh admission + adapter must replace the prior
     /// lifetime's. This is the production spawn path (see `supervisor.rs`).
     pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
+        let _assembly = self.assembly.lock();
         let persona_id = cfg.persona_id;
+        let template = cfg.clone();
+        // Assembly restores disk state; do it outside the lookup lock.
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, WorkspaceLifetime::Resident);
+        let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
-        self.templates.lock().insert(persona_id, cfg.clone());
-        let cycle = Arc::new(build_workspace_cycle(cfg));
-        cycles.insert(persona_id, cycle.clone());
+        self.templates.lock().insert(persona_id, template);
+        cycles.insert(
+            persona_id,
+            ResidentWorkspace {
+                cycle: Arc::clone(&cycle),
+                working_memory,
+            },
+        );
         cycle
     }
 
@@ -1119,15 +1140,95 @@ impl PersonaWorkspaceRegistry {
     /// (same as [`register_from_cfg`](Self::register_from_cfg)).
     pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
+        if let Some(existing) = self.get(&persona_id) {
+            return existing;
+        }
+        let _assembly = self.assembly.lock();
+        if let Some(existing) = self.get(&persona_id) {
+            return existing;
+        }
+        let template = cfg.clone();
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, WorkspaceLifetime::Resident);
+        let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
-        if let Some(existing) = cycles.get(&persona_id) {
-            return existing.clone();
-        }
-        self.templates.lock().insert(persona_id, cfg.clone());
-        let cycle = Arc::new(build_workspace_cycle(cfg));
-        cycles.insert(persona_id, cycle.clone());
+        self.templates.lock().insert(persona_id, template);
+        cycles.insert(
+            persona_id,
+            ResidentWorkspace {
+                cycle: Arc::clone(&cycle),
+                working_memory,
+            },
+        );
         cycle
+    }
+
+    /// Periodic crash checkpoint. A busy writer coalesces this tick; no queue
+    /// of blocking jobs accumulates behind slow storage.
+    pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+        let Some(stopped) = self.checkpoint_stopped.try_lock() else {
+            return Vec::new();
+        };
+        if *stopped {
+            return Vec::new();
+        }
+        self.write_volatile_all()
+    }
+
+    /// Explicit save is repeatable and leaves periodic persistence running.
+    pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+        let _checkpoint = self.checkpoint_stopped.lock();
+        self.write_volatile_all()
+    }
+
+    /// Shutdown boundary: drain the admitted checkpoint, close periodic writes,
+    /// then snapshot CURRENT residents. The caller must quiesce mutation first.
+    /// Blocking work can outlive an async timeout; callers must receipt that as
+    /// uncertain, never successful. No later periodic write can overtake this one.
+    pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+        let mut stopped = self.checkpoint_stopped.lock();
+        *stopped = true;
+        self.write_volatile_all()
+    }
+
+    // Only called under checkpoint_stopped. The cycle lookup lock is released
+    // before snapshot/serialization/IO, keeping room turns and roster reads free.
+    fn write_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+        let residents: Vec<_> = self
+            .cycles
+            .lock()
+            .iter()
+            .map(|(id, entry)| (*id, Arc::clone(&entry.working_memory)))
+            .collect();
+        #[cfg(all(test, feature = "stress-tests"))]
+        {
+            let pause = self.checkpoint_pause.lock().take();
+            if let Some(pause) = pause {
+                assert!(pause.admitted.send(()).is_ok(), "test awaits admission");
+                assert!(
+                    pause
+                        .resume
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .is_ok(),
+                    "test releases checkpoint"
+                );
+            }
+        }
+        residents
+            .into_iter()
+            .map(|(id, memory)| {
+                let started = std::time::Instant::now();
+                let result = save_volatile(id, &memory);
+                crate::probe!(
+                    class = "persona.volatile.checkpoint",
+                    persona_id = %id,
+                    outcome = if result.is_ok() { "ok" } else { "error" },
+                    ms = started.elapsed().as_millis() as u64,
+                    "resident volatile checkpoint completed"
+                );
+                (id, result)
+            })
+            .collect()
     }
 
     /// Fork an EPHEMERAL measurement cycle for `cognition/eval`: a faithful copy
@@ -1241,7 +1342,7 @@ impl PersonaWorkspaceRegistry {
         self.cycles
             .lock()
             .iter()
-            .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
+            .map(|(id, entry)| (*id, entry.cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
     }
 
@@ -1308,7 +1409,7 @@ impl PersonaWorkspaceRegistry {
         };
         let cycles = self.cycles.lock();
         let mut rehomed = 0usize;
-        for (id, cycle) in cycles.iter() {
+        for (id, entry) in cycles.iter() {
             if remote.contains(id) {
                 crate::probe!(
                     class = "persona.rehome.kept_remote",
@@ -1317,11 +1418,13 @@ impl PersonaWorkspaceRegistry {
                 );
                 continue;
             }
-            cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
-                adapter: Arc::clone(&adapter),
-                model: model.clone(),
-                context_window,
-            });
+            entry
+                .cycle
+                .rebind_model(super::llm_deliberation_faculty::ModelBinding {
+                    adapter: Arc::clone(&adapter),
+                    model: model.clone(),
+                    context_window,
+                });
             rehomed += 1;
         }
         rehomed
@@ -1406,29 +1509,25 @@ fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
 }
 
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
-/// leaves a torn file (a torn mind-file failing to parse = silent blank wake,
-/// the exact failure this exists to kill). Errors log loud and drop: losing
-/// one interval of scratchpad is acceptable; blocking a tick is not.
-fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
+/// leaves a torn file. Called under the registry checkpoint gate, on a blocking
+/// worker. Failures propagate to both periodic and shutdown lifecycle receipts.
+fn save_volatile(
+    persona_id: Uuid,
+    wm: &super::working_memory::WorkingMemory,
+) -> std::io::Result<()> {
     let persisted = PersistedVolatile {
         wm: wm.snapshot(),
         own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
         )),
     };
-    let write = || -> std::io::Result<()> {
-        let path = volatile_path(persona_id)?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
-    };
-    if let Err(e) = write() {
-        tracing::warn!(persona_id = %persona_id, error = %e, "volatile-tier save failed — one interval of scratchpad at risk");
+    let path = volatile_path(persona_id)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
     }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
+    std::fs::rename(&tmp, &path)
 }
 
 /// Load the previous life's volatile tier, if any. Unreadable/corrupt files
@@ -1476,7 +1575,7 @@ mod tests {
         let memory = super::super::working_memory::WorkingMemory::new(8);
         let receipt = "review complete: the caller keeps its room membership";
         memory.record_receipt(receipt);
-        save_volatile(persona, &memory);
+        save_volatile(persona, &memory).unwrap();
         assert_eq!(
             volatile_path(persona).unwrap(),
             home.path()
@@ -1496,6 +1595,224 @@ mod tests {
             resumed.snapshot().last_action,
             memory.snapshot().last_action
         );
+    }
+
+    // What this catches (#3918): replaced cycles and BOTH real eval fork paths
+    // used to keep detached writers for the resident's UUID. They must neither
+    // restore her scratchpad nor publish over her current action receipt.
+    #[tokio::test]
+    async fn resident_checkpoint_excludes_replaced_cycles_and_eval_forks() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        let old_cycle = registry.register_from_cfg(cfg_for(persona));
+        let old_memory = Arc::clone(&registry.cycles.lock()[&persona].working_memory);
+        old_memory.record_receipt("previous resident action");
+        assert!(registry.checkpoint_volatile_all().remove(0).1.is_ok());
+        assert!(registry.flush_volatile_all().remove(0).1.is_ok());
+        old_memory.record_receipt("work after an ordinary explicit save");
+        assert!(registry.checkpoint_volatile_all().remove(0).1.is_ok());
+        assert_eq!(
+            load_volatile(persona).unwrap().wm.last_action,
+            old_memory.snapshot().last_action
+        );
+
+        let current = registry.register_from_cfg(cfg_for(persona));
+        let current_memory = Arc::clone(&registry.cycles.lock()[&persona].working_memory);
+        // cfg_for uses synchronous recall: restore authority must not depend on
+        // that scheduling flag, or these residents still wake blank.
+        assert_eq!(
+            current_memory.snapshot().last_action,
+            old_memory.snapshot().last_action
+        );
+        current_memory.record_receipt("current resident finished the review");
+        let expected = current_memory.snapshot().last_action;
+        let fork = registry
+            .fork_eval_cycle(&persona, false, None, false)
+            .unwrap();
+        let adapter_fork = registry
+            .fork_eval_cycle_with_adapter(
+                &persona,
+                cfg_for(persona).adapter,
+                32_768,
+                false,
+                None,
+                false,
+                Vec::new(),
+            )
+            .unwrap();
+        for copy in [&fork, &adapter_fork] {
+            let observed = copy.run("teammate: report the review status").await;
+            assert!(!observed.perceived().contains("previous resident action"));
+            assert!(!observed
+                .perceived()
+                .contains("work after an ordinary explicit save"));
+        }
+        old_memory.record_receipt("obsolete cycle must not publish this");
+        tokio::task::yield_now().await; // the former saver's immediate first tick
+        assert!(registry.stop_volatile_checkpoints().remove(0).1.is_ok());
+        assert_eq!(load_volatile(persona).unwrap().wm.last_action, expected);
+        let checkpoint = std::fs::read(volatile_path(persona).unwrap()).unwrap();
+        current_memory.record_receipt("late mutation after shutdown boundary");
+        assert!(registry.checkpoint_volatile_all().is_empty());
+        assert_eq!(
+            std::fs::read(volatile_path(persona).unwrap()).unwrap(),
+            checkpoint
+        );
+        assert!(!Arc::ptr_eq(&old_cycle, &current));
+        drop((old_cycle, current, fork, adapter_fork, registry));
+        tokio::task::yield_now().await;
+        assert_eq!(
+            std::fs::read(volatile_path(persona).unwrap()).unwrap(),
+            checkpoint
+        );
+    }
+
+    // What this catches (#3918): a generic/deferred cycle used to read and write
+    // the resident checkpoint solely because its recall scheduler was deferred.
+    #[tokio::test]
+    async fn unregistered_cycle_has_no_persistence_authority() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let persona = Uuid::new_v4();
+        let memory = WorkingMemory::new(8);
+        memory.record_receipt("resident-only scratchpad");
+        save_volatile(persona, &memory).unwrap();
+        let before = std::fs::read(volatile_path(persona).unwrap()).unwrap();
+        let mut cfg = cfg_for(persona);
+        cfg.defer_recall = true;
+        let cycle = build_workspace_cycle(cfg);
+        let observed = cycle.run("teammate: status?").await;
+        assert!(!observed.perceived().contains("resident-only scratchpad"));
+        tokio::task::yield_now().await;
+        assert_eq!(
+            std::fs::read(volatile_path(persona).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    // What this catches (803011ea): one resident's storage failure must be
+    // reported without dropping other residents' checkpoints or claiming success.
+    #[tokio::test]
+    async fn resident_checkpoint_reports_io_failure_and_saves_other_residents() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let failed = Uuid::new_v4();
+        let healthy = Uuid::new_v4();
+        for id in [failed, healthy] {
+            registry.register_from_cfg(cfg_for(id));
+            registry.cycles.lock()[&id]
+                .working_memory
+                .record_receipt("completed real work");
+        }
+        let path = volatile_path(failed).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Deterministic on Unix and Windows: a directory cannot be overwritten
+        // by the temporary checkpoint file, regardless of user permissions.
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        let outcomes = registry.flush_volatile_all();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes
+            .iter()
+            .find(|(id, _)| *id == failed)
+            .unwrap()
+            .1
+            .is_err());
+        assert!(outcomes
+            .iter()
+            .find(|(id, _)| *id == healthy)
+            .unwrap()
+            .1
+            .is_ok());
+        assert!(load_volatile(healthy).unwrap().wm.last_action.is_some());
+    }
+
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        // What this catches (#3918): an admitted old snapshot must finish before
+        // final acknowledgement, without holding the resident lookup lock.
+        #[tokio::test]
+        async fn final_checkpoint_drains_admitted_periodic_writer_before_ack(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let home = Arc::new(tempfile::tempdir()?);
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            let registry = Arc::new(PersonaWorkspaceRegistry::new());
+            let persona = Uuid::new_v4();
+            registry.register_from_cfg(cfg_for(persona));
+            registry.cycles.lock()[&persona]
+                .working_memory
+                .record_receipt("old resident action");
+            let (admitted, ready) = tokio::sync::oneshot::channel();
+            let (resume, paused) = std::sync::mpsc::channel();
+            *registry.checkpoint_pause.lock() = Some(CheckpointPause {
+                admitted,
+                resume: paused,
+            });
+            let owner = Arc::clone(&registry);
+            let root = Arc::clone(&home);
+            let periodic = tokio::task::spawn_blocking(move || {
+                let _native = crate::paths::NativeHomeOverride::install(root.path());
+                owner.checkpoint_volatile_all()
+            });
+            timeout(Duration::from_secs(5), ready).await??;
+            let owner = Arc::clone(&registry);
+            let root = Arc::clone(&home);
+            let replacement = tokio::task::spawn_blocking(move || {
+                let _native = crate::paths::NativeHomeOverride::install(root.path());
+                let current = owner.register_from_cfg(cfg_for(persona));
+                assert!(Arc::ptr_eq(&current, &owner.get(&persona).unwrap()));
+                let memory = Arc::clone(&owner.cycles.lock()[&persona].working_memory);
+                memory.record_receipt("replacement completed the review");
+                memory
+            });
+            let current = timeout(Duration::from_secs(5), replacement).await??;
+            let expected = current.snapshot().last_action;
+            let (starting, started) = tokio::sync::oneshot::channel();
+            let owner = Arc::clone(&registry);
+            let root = Arc::clone(&home);
+            let mut final_save = tokio::task::spawn_blocking(move || {
+                let _native = crate::paths::NativeHomeOverride::install(root.path());
+                starting.send(()).unwrap();
+                owner.stop_volatile_checkpoints()
+            });
+            timeout(Duration::from_secs(5), started).await??;
+            assert!(
+                timeout(Duration::from_millis(100), &mut final_save)
+                    .await
+                    .is_err(),
+                "no final ACK while the admitted writer is paused"
+            );
+            assert!(
+                registry.checkpoint_volatile_all().is_empty(),
+                "busy periodic passes coalesce"
+            );
+            assert!(
+                registry.get(&persona).is_some(),
+                "lookup remains available during IO"
+            );
+            resume.send(()).unwrap();
+            timeout(Duration::from_secs(5), periodic)
+                .await??
+                .remove(0)
+                .1?;
+            timeout(Duration::from_secs(5), final_save)
+                .await??
+                .remove(0)
+                .1?;
+            assert_eq!(load_volatile(persona).unwrap().wm.last_action, expected);
+            let checkpoint = std::fs::read(volatile_path(persona).unwrap()).unwrap();
+            current.record_receipt("late action after final ACK");
+            assert!(registry.checkpoint_volatile_all().is_empty());
+            assert_eq!(
+                std::fs::read(volatile_path(persona).unwrap()).unwrap(),
+                checkpoint
+            );
+            Ok(())
+        }
     }
 
     fn seed_admission(now_ms: u64) -> Arc<AdmissionState> {
