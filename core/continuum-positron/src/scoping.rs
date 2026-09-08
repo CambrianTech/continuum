@@ -76,7 +76,7 @@ impl PerUserSubstrates {
     pub fn for_citizen(&self, citizen: Uuid) -> Substrate {
         self.by_citizen
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles and no invariant spans this lock, so recover the guard rather than fail a read for someone else's panic
             .entry(citizen)
             .or_insert_with(Substrate::new)
             .clone()
@@ -86,7 +86,7 @@ impl PerUserSubstrates {
     pub fn citizen_count(&self) -> usize {
         self.by_citizen
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles and no invariant spans this lock, so recover the guard rather than fail a read for someone else's panic
             .len()
     }
 }
@@ -132,17 +132,39 @@ impl PerRoomSubstrates {
     pub fn for_room(&self, room: Uuid) -> Substrate {
         self.by_room
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles, no invariant spans this lock, so recover rather than take grounding down for someone else's panic
             .entry(room)
             .or_insert_with(Substrate::new)
             .clone()
+    }
+
+    /// The room's substrate IF it exists — **never creates one**.
+    ///
+    /// The read-path sibling of [`Self::for_room`]. A projector that is about to
+    /// WRITE a room's view wants the entry created; a consumer that is merely
+    /// READING must not conjure one, or the map grows a permanently-empty entry
+    /// per distinct key it is asked about and `room_count` starts reporting rooms
+    /// that were never projected.
+    ///
+    /// That distinction became load-bearing when the citizen roster moved from a
+    /// room bound once at construction to a lookup on every delivery (#3862): the
+    /// read path now runs with whatever room the turn is in, so an inserting
+    /// lookup would let a wandering citizen accrete empty substrates nothing ever
+    /// writes. `None` is the honest answer — a room with no projection has no
+    /// view, which reads identically to a room whose kind is absent.
+    pub fn read_room(&self, room: Uuid) -> Option<Substrate> {
+        self.by_room
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) // same as `for_room`: a poisoned lock means someone else panicked while holding it, not that the map is inconsistent
+            .get(&room)
+            .cloned()
     }
 
     /// How many rooms have a substrate. Ops/telemetry read.
     pub fn room_count(&self) -> usize {
         self.by_room
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // same as `for_room`: a length read cannot observe a torn value, and an ops probe must not panic because something unrelated did
             .len()
     }
 }

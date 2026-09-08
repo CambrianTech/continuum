@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { ChatViewModel } from '@continuum/chat-view';
 import { renderChat } from './renderChat';
+import { chatWorkspace } from '@continuum/chat-view';
+import { createAnsiTarget } from './ansiTarget';
 
 /** A minimal view model builder so each test states only what it exercises. */
 function vm(overrides: Partial<ChatViewModel> = {}): ChatViewModel {
@@ -19,6 +21,20 @@ function vm(overrides: Partial<ChatViewModel> = {}): ChatViewModel {
 }
 
 describe('renderChat (ANSI)', () => {
+  // Regression #3869: a foreign-room snapshot must be visibly rejected, never
+  // displayed as this room's board or mistaken for an awaiting/empty feed.
+  it('distinguishes awaiting, ready-empty, and rejected project boards', () => {
+    const project = vm({ purpose: 'project' });
+    const target = createAnsiTarget(false);
+    const board = { room_id: project.roomId, lanes: [], cards: [] };
+    expect(target.content(chatWorkspace(project).content)).toContain('Waiting for this room');
+    expect(target.content(chatWorkspace(project, { board }).content)).toContain('No work cards');
+    const rejected = target.content(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content);
+    expect(rejected).toContain('received a board for another room');
+    expect(rejected).not.toContain('Waiting for this room');
+    expect(rejected).not.toContain('No work cards');
+  });
+
   it('renders an honest empty state, not an error, when there are no messages', () => {
     // what this catches: a blank/erroring conversation panel when a room is quiet
     // — the empty state is a normal render, matching the web widget's contract.

@@ -168,10 +168,29 @@ async fn say_in_card_room(
             (crate::cognition::bench_round::card_assignee(card), true)
         }
     };
-    let holder_name = holder
-        .and_then(|h| registry.as_ref().and_then(|r| r.get(h)))
-        .map(|rt| rt.agent_name().to_string())
-        .map(|n| if historical { format!("{n} (dispatch assignee; live board unavailable)") } else { n });
+    // A holder is a mesh citizen, not necessarily a runtime on this node.
+    // Use the same durable identity lookup as the work board; presence and
+    // local residency cannot decide whether a teammate is named in feedback.
+    let holder_name = match holder {
+        Some(id) => {
+            let alias = match operator.peer_alias(airc_core::PeerId::from_uuid(id)).await {
+                Ok(alias) => alias,
+                Err(error) => {
+                    crate::probe!(
+                        class = "benchmark.verdict.holder_name_unavailable",
+                        instance = verdict.instance_id.as_str(),
+                        card = %short,
+                        holder = %id,
+                        error = %error,
+                        "identity lookup failed — the verdict still addresses the holder by id"
+                    );
+                    None
+                }
+            };
+            Some(holder_label(id, alias.as_deref(), historical))
+        }
+        None => None,
+    };
     let line = verdict_line(verdict, holder_name.as_deref(), moved);
     let voice: Arc<airc_lib::Airc> = registry
         .as_ref()
@@ -195,6 +214,19 @@ async fn say_in_card_room(
             error = %e,
             "the verdict is recorded but the room did not hear it"
         ),
+    }
+}
+
+/// Keep an unnamed holder addressable and a historical guess visibly historical.
+fn holder_label(id: Uuid, alias: Option<&str>, historical: bool) -> String {
+    let name = alias
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::persona::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
+    if historical {
+        format!("{name} (dispatch assignee; live board unavailable)")
+    } else {
+        name
     }
 }
 
@@ -225,7 +257,11 @@ async fn holder_of(
     let Ok(set) = airc.subscription_set().await else {
         return HolderRead::Unavailable("subscription set unreadable");
     };
-    let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.channel.as_uuid() == room) else {
+    let Some(room) = set
+        .all()
+        .map(|sub| sub.as_room())
+        .find(|r| r.channel.as_uuid() == room)
+    else {
         return HolderRead::Unavailable("reading citizen is not subscribed to the card's room");
     };
     let Ok(board) = airc.work_board_in(&room).await else {
@@ -244,15 +280,32 @@ async fn holder_of(
             Some(o) => HolderRead::Held(o.as_uuid()),
             None => HolderRead::Unheld,
         },
-        crate::persona::card_holder::Hold::Lapsed | crate::persona::card_holder::Hold::Unclaimed => {
-            HolderRead::Unheld
-        }
+        crate::persona::card_holder::Hold::Lapsed
+        | crate::persona::card_holder::Hold::Unclaimed => HolderRead::Unheld,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: remote holders have no local runtime. Missing identity must
+    // not erase their address, or erase the uncertainty of an old assignment.
+    #[test]
+    fn remote_holder_feedback_preserves_identity_and_historical_uncertainty() {
+        let id = Uuid::from_u128(42);
+        let v = failed_11749();
+        let named = holder_label(id, Some("Remote teammate"), false);
+        assert!(verdict_line(&v, Some(&named), &BoardMove::ReturnedToHolder)
+            .contains("@Remote teammate "));
+        for alias in [None, Some(""), Some("  ")] {
+            let unknown = holder_label(id, alias, true);
+            let line = verdict_line(&v, Some(&unknown), &BoardMove::ReturnedToHolder);
+            assert!(line.contains("@00000000 (dispatch assignee; live board unavailable)"));
+            assert!(!line.contains(&id.to_string()));
+            assert!(line.contains("still failing: test_mutually_exclusive_group_required_options"));
+        }
+    }
 
     // what this catches: a failed grade that names no test, or no holder, or reads like a
     // score instead of an instruction (django-11749, 2026-09-07: the failing test sat in
@@ -275,15 +328,26 @@ mod tests {
     fn a_failed_verdict_names_the_holder_and_the_failing_tests_and_hands_the_card_back() {
         let v = failed_11749();
         let line = verdict_line(&v, Some("Joaquin"), &BoardMove::ReturnedToHolder);
-        assert!(line.starts_with("❌ @Joaquin django__django-11749 graded: not resolved"), "{line}");
+        assert!(
+            line.starts_with("❌ @Joaquin django__django-11749 graded: not resolved"),
+            "{line}"
+        );
         assert!(line.contains("still failing: test_mutually_exclusive_group_required_options"));
         assert!(line.contains("back with you as in-progress"));
         // No live holder: still a room line, never a panic, never a bare "@".
         let anon = verdict_line(&v, None, &BoardMove::ReturnedToHolder);
         assert!(anon.starts_with("❌ django__django-11749"), "{anon}");
-        let resolved = SweVerdict { resolved: true, f2p_passed: 1, ..v };
+        let resolved = SweVerdict {
+            resolved: true,
+            f2p_passed: 1,
+            ..v
+        };
         let ok = verdict_line(&resolved, Some("Joaquin"), &BoardMove::Closed);
-        assert!(ok.starts_with("✅ django__django-11749 RESOLVED") && ok.ends_with("The card is closed."), "{ok}");
+        assert!(
+            ok.starts_with("✅ django__django-11749 RESOLVED")
+                && ok.ends_with("The card is closed."),
+            "{ok}"
+        );
     }
 
     // what this catches: a failed board write producing a success claim in the room
@@ -294,12 +358,29 @@ mod tests {
         let v = failed_11749();
         let failed = BoardMove::Failed("state machine refused Review → InProgress".into());
         let line = verdict_line(&v, Some("Joaquin"), &failed);
-        assert!(line.contains("still failing: test_mutually_exclusive_group_required_options"), "{line}");
-        assert!(line.contains("could NOT be moved (state machine refused Review → InProgress)"), "{line}");
-        assert!(!line.contains("back with you") && !line.contains("is closed"), "{line}");
-        let resolved = SweVerdict { resolved: true, f2p_passed: 1, ..v };
+        assert!(
+            line.contains("still failing: test_mutually_exclusive_group_required_options"),
+            "{line}"
+        );
+        assert!(
+            line.contains("could NOT be moved (state machine refused Review → InProgress)"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("back with you") && !line.contains("is closed"),
+            "{line}"
+        );
+        let resolved = SweVerdict {
+            resolved: true,
+            f2p_passed: 1,
+            ..v
+        };
         let line = verdict_line(&resolved, None, &failed);
-        assert!(line.starts_with("✅") && line.contains("could NOT be moved") && !line.contains("is closed"), "{line}");
+        assert!(
+            line.starts_with("✅")
+                && line.contains("could NOT be moved")
+                && !line.contains("is closed"),
+            "{line}"
+        );
     }
-
 }

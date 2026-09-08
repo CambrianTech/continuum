@@ -208,6 +208,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // held nothing and pulled nothing. Idempotent: a citizen already in
             // the room is left alone (no epoch bump, no stream re-open).
             reseat_working_rounds(&registry).await;
+            seat_announced_rounds(&registry).await;
             unseat_finished_rounds(&registry).await;
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
@@ -390,6 +391,101 @@ async fn board_state_of(
 /// personas (`persona.inbound.catch_up_tick rooms_paged=68`, 2026-09-04) — 800
 /// store pages a minute for rooms nobody will speak in again. A room a citizen
 /// re-enters later resumes unread-first like any other; leaving loses nothing.
+/// CROSS-NODE SEATING (alpha slice S4). The rounds THIS node's tracker knows are
+/// reseated above; the rounds ANOTHER node spawned are only knowable through the parent
+/// room's wall (`experience::children`). Every node's citizens stand in the commons, so
+/// the commons' child records are readable everywhere: for each citizen-driven benchmark
+/// child not tracked here, join every local resident by name (idempotent on the daemon),
+/// then read the child's OWN standing — a paused or done round is left again at once, so
+/// a stale announcement never seats anyone into finished work.
+async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::experience::children::{project_children, CHILD_WALL_CATEGORY};
+    let local: std::collections::HashSet<String> = crate::cognition::bench_round::live_rounds()
+        .into_iter()
+        .map(|r| r.run_room_name)
+        .collect();
+    // Any live resident's view of the commons will do — the wall is the room's, not hers.
+    let Some(reader) = registry.any_live_citizen() else { return };
+    let Ok(set) = reader.airc().subscription_set().await else { return };
+    let Some(commons) = set
+        .all()
+        .map(|sub| sub.as_room())
+        .find(|r| r.name == crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
+    else {
+        return;
+    };
+    let posts = match reader.airc().wall_posts_in(&commons, Some(CHILD_WALL_CATEGORY)).await {
+        Ok(p) => p,
+        Err(e) => {
+            crate::probe!(
+                class = "bench.round.announced_unreadable",
+                error = %e.to_string(),
+                "the commons' child records could not be read — remote rounds stay invisible this pass"
+            );
+            return;
+        }
+    };
+    for child in project_children(&posts) {
+        if !child.is_citizen_benchmark() || local.contains(&child.name) {
+            continue;
+        }
+        let mut joined = 0u64;
+        let mut already = 0u64;
+        let mut failed = 0u64;
+        for rt in registry.iter() {
+            // join is idempotent on the daemon: an already-seated resident costs one call.
+            match rt.join_room(&child.name).await {
+                Ok(()) => joined += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        // Standing lives on the child's own wall; read it now that we are inside.
+        let standing = match reader
+            .airc()
+            .subscription_set()
+            .await
+            .ok()
+            .and_then(|set| set.all().map(|sub| sub.as_room()).find(|r| r.name == child.name))
+        {
+            Some(room) => reader
+                .airc()
+                .wall_posts_in(&room, Some(crate::experience::standing::STANDING_WALL_CATEGORY))
+                .await
+                .ok()
+                .and_then(|posts| crate::experience::standing::project_standing(&posts).ok()),
+            None => None,
+        };
+        // The durable "finished" fact a remote node can read is the child's ARCHIVED
+        // standing (the tracker archives its room on pause/done); no standing = fresh.
+        let finished = standing
+            .as_ref()
+            .map(|s| s.archived)
+            .unwrap_or(false); // unwrap_or: no standing yet = a fresh round, seat it
+        if finished {
+            for rt in registry.iter() {
+                if rt.airc().part_channel(Some(child.name.as_str())).await.is_ok() {
+                    already += 1;
+                }
+            }
+            crate::probe!(
+                class = "bench.round.announced_finished",
+                room = %child.name,
+                left = already,
+                "an announced round is paused or done on its own wall — residents left again"
+            );
+            continue;
+        }
+        crate::probe!(
+            class = "bench.round.seated_remote",
+            room = %child.name,
+            suite = %child.suite.clone().unwrap_or_default(), // unwrap_or: is_citizen_benchmark guarantees a suite
+            joined,
+            failed,
+            "residents seated into a round another node spawned — the board is shared, now the room is too"
+        );
+    }
+}
+
 async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
     let (mut rounds_considered, mut pass_left, mut pass_failed, mut pass_unknown) = (0u64, 0u64, 0u64, 0u64);

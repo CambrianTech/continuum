@@ -14,6 +14,7 @@
 
 import { createContentRegistry, type RenderTarget, type WorkspaceView, type ListingView, type ListingCell, type ContentView, type ContextPanelView, type PanelWidget, type GaugeView, type ContinuonView, type ServingPanelView, type SystemPanelView } from '@continuum/patterns';
 import type { ChatContentBody, MessageRowVM, MemberKind } from '@continuum/chat-view';
+import { PROJECT_PURPOSE, type ProjectContentBody } from '@continuum/chat-view';
 
 /** Unicode block ramp for terminal sparklines — the gauge's ANSI face. */
 const BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const;
@@ -79,6 +80,15 @@ export function createAnsiTarget(useColor = true): RenderTarget<string> {
   };
 
   const content = createContentRegistry<string>();
+  content.register<ProjectContentBody>(PROJECT_PURPOSE, (body) => [
+    `${body.title} — Work board`,
+    body.board.status === 'awaiting' ? 'Waiting for this room\'s work board…'
+      : body.board.status === 'rejected' ? 'Work board unavailable: received a board for another room.'
+      : body.board.snapshot.cards.length === 0 ? 'No work cards in this room yet.'
+      : body.board.snapshot.cards.map((card) => `${card.priority} [${card.state}] ${card.title} — ${card.assignee_name ?? 'Unclaimed'} (${card.hold})`).join('\n'),
+    'Conversation',
+    body.chat.isEmpty ? 'No messages yet — say hello.' : body.chat.messages.map(messageLine).join('\n'),
+  ].join('\n'));
   content.register<ChatContentBody>('chat', (body) =>
     body.isEmpty
       ? paint('dim', '  No messages yet — say hello.')

@@ -507,15 +507,24 @@ pub async fn spawn_activity_room(
         ),
     )?;
     let resolved_params = resolve_params(&recipe_def, params)?;
+    // Read before `resolved_params` moves into the binding below.
+    let child_driver = resolved_params.get("driver").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let child_suite = resolved_params.get("suite").and_then(|v| v.as_str()).map(|s| s.to_string());
     // WHERE IT ROOTS: an explicit parent wins (a sub-activity nests under the activity
     // that spawned it); else the recipe's declared BASE (a benchmark round is learning →
     // `academy`, by what it is); else nowhere in particular (the spawner's context). The
     // base room is resolved by name WITHOUT moving the spawner's focus (airc's Keep join).
+    // The parent ROOM (not just its id) is kept when we resolved it ourselves: the child
+    // record below is published on the parent's wall, and that needs a `Room`.
+    let mut parent_room: Option<airc_lib::Room> = None;
     let parent = match parent {
         Some(p) => Some(p),
         None => match recipe_def.base.as_deref() {
             Some(base) => match airc.subscribe_room(base).await {
-                Ok(room) => Some(room.channel),
+                Ok(room) => {
+                    parent_room = Some(room.clone());
+                    Some(room.channel)
+                }
                 Err(source) => {
                     crate::probe!(
                         class = "activity.base_unresolved",
@@ -586,6 +595,69 @@ pub async fn spawn_activity_room(
                 ))
             })?;
 
+        // THE CHILD ANNOUNCES ITSELF TO ITS PARENT (experience::children). A remote node's
+        // resume pass reads the parent's wall and seats its residents by NAME; without
+        // this record a round existed only on the node that spawned it. Never fails the
+        // spawn: the room and its binding stand; a missing record is said, not hidden.
+        if let Some(parent_id) = parent {
+            let parent_room = match parent_room.take() {
+                Some(r) => Some(r),
+                None => airc
+                    .subscription_set()
+                    .await
+                    .ok()
+                    .and_then(|set| set.all().map(|sub| sub.as_room()).find(|r| r.channel == parent_id)),
+            };
+            match parent_room {
+                Some(parent_room) => {
+                    let record = crate::experience::children::RoomChildRecord {
+                        room_id: room.channel.as_uuid(),
+                        name: name.to_string(),
+                        recipe: recipe.to_string(),
+                        driver: child_driver,
+                        suite: child_suite,
+                        spawned_at_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0), // unwrap_or: a pre-epoch clock stamps 0 — the record still names the room
+                    };
+                    match serde_json::to_string(&record) {
+                        Ok(body) => match airc
+                            .publish_wall_post_in(
+                                &parent_room,
+                                crate::experience::children::CHILD_WALL_CATEGORY.to_string(),
+                                body,
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(_) => crate::probe!(
+                                class = "activity.child_announced",
+                                room = %name,
+                                parent = %parent_room.name,
+                                recipe = %recipe,
+                                "the spawned activity is on its parent's wall — any node reading the parent can seat its residents"
+                            ),
+                            Err(source) => crate::probe!(
+                                class = "activity.child_announce_failed",
+                                room = %name,
+                                parent = %parent_room.name,
+                                error = %source.to_string(),
+                                "the room exists but its parent never heard of it — remote nodes cannot seat into it until a re-spawn"
+                            ),
+                        },
+                        Err(source) => tracing::warn!(%source, room = %name, "child record could not be encoded"),
+                    }
+                }
+                None => crate::probe!(
+                    class = "activity.child_announce_failed",
+                    room = %name,
+                    parent = %parent_id.as_uuid(),
+                    error = "parent room not in this peer's subscriptions",
+                    "the parent is known by id only — no wall to announce on"
+                ),
+            }
+        }
         Ok(ActivitySpawnResult {
             room_id: room.channel,
             name: room.name,

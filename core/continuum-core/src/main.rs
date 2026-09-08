@@ -569,6 +569,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // task simply parks on `rx.changed()` for the process lifetime — zero
     // CPU. The 30s give-up window from the old code was misleading anyway:
     // it never timed out the actual Bevy init, only this task's patience.
+    // The node says when it was suspended (card 94a95a98) — one row per hole in the ledger.
+    continuum_core::system_resources::absence_watch::spawn();
+
     let pm_clone = pressure_monitor.clone();
     tokio::spawn(async move {
         let mut rx = continuum_core::live::video::bevy_renderer::subscribe_ready();

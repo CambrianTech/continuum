@@ -152,7 +152,7 @@ pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
 }
 
 /// The 8-char short id every surface in the system uses to name a uuid.
-fn short8(id: &uuid::Uuid) -> String {
+pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
 }
 
