@@ -164,11 +164,7 @@ pub fn reap(timeout: Duration) -> Result<Reapable, PsFailed> {
     let rows = ps_rows(timeout)?;
     let found = reapable_from(&rows, std::process::id());
     for pid in found.browsers.iter().chain(found.eye_nodes.iter()) {
-        // SIGKILL: a headless browser whose parent is gone has nothing to flush, and a
-        // polite signal to a wedged one is how they survived a week of boots.
-        unsafe {
-            libc::kill(*pid as libc::pid_t, libc::SIGKILL);
-        }
+        kill_hard(*pid);
     }
     for dir in &found.profiles {
         if is_removable_profile(dir) {
@@ -185,6 +181,28 @@ pub fn reap(timeout: Duration) -> Result<Reapable, PsFailed> {
         );
     }
     Ok(found)
+}
+
+/// Kill without ceremony. A headless browser whose parent is gone has nothing to flush,
+/// and a polite signal to a wedged one is how these survived a week of boots.
+#[cfg(unix)]
+fn kill_hard(pid: u32) {
+    // SAFETY: kill(2) with a pid we read from the process table; an exited pid is ESRCH,
+    // which we ignore deliberately — the process being already gone is the goal.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+/// Windows has no signals; taskkill is the platform's equivalent and /T takes the
+/// browser's helper processes with it.
+#[cfg(windows)]
+fn kill_hard(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 #[cfg(test)]
