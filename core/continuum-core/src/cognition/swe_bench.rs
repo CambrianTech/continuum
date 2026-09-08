@@ -529,6 +529,50 @@ pub fn verdict_path(instance_id: &str) -> PathBuf {
 ///   and recording it would tally a broken harness as a citizen's failure (the #384 class);
 /// - a **gold-gate** verdict — the positive control proves the ENV, not the citizen. A gold
 ///   pass recorded as an instance verdict would read on the board as our result.
+/// What a new verdict does to the one already on disk for the same instance.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerdictWrite {
+    /// Nothing recorded yet, or the new verdict is at least as good: it becomes the record.
+    Record,
+    /// A RESOLVE already stands and the new verdict does not resolve. The resolve stays;
+    /// the new one is kept as history.
+    KeepTheResolve,
+}
+
+/// ONE CITIZEN'S OUTCOME IS NOT ANOTHER CITIZEN'S TO OVERWRITE.
+///
+/// sympy__sympy-22456, 2026-09-07: Mathis worked her card in her room and it came back
+/// resolved at 14:13Z (f2p 1/1). At 16:15Z a DIFFERENT citizen, holding a different card
+/// for the same upstream instance in a later round, was graded from her own checkout — a
+/// diff that broke 29 previously-passing tests — and the write replaced Mathis's outcome
+/// with `resolved: false`. Work one citizen actually did was erased by another's attempt.
+///
+/// The cause is that this file is keyed by INSTANCE while the work is done by a CARD in a
+/// room: two activities share one filename, so the newest write wins whoever earned it.
+/// The outcome belongs to the card (`bench_round`'s per-card `resolved` / `graded_at_ms`
+/// already hold it there); this per-instance file is a derived index for reporting, and
+/// treating it as the truth is what let one room's result overwrite another's. Making the
+/// card's outcome the sole record is the structural fix and its own card.
+///
+/// Until then this guard keeps the index honest: an outcome that RESOLVED is never
+/// replaced by one that did not, because a later attempt failing says something about the
+/// later attempt, not about the patch that passed. The superseding verdict is appended to
+/// the instance's regrade history rather than discarded, so both attempts stay readable.
+///
+/// A new RESOLVE always records (it can only be an improvement), and failure-over-failure
+/// records too — the freshest failure detail is what the citizen holding it needs.
+pub fn verdict_write_for(existing: Option<&SweVerdict>, new: &SweVerdict) -> VerdictWrite {
+    match existing {
+        Some(prior) if prior.resolved && !new.resolved => VerdictWrite::KeepTheResolve,
+        _ => VerdictWrite::Record,
+    }
+}
+
+/// Where an instance's superseded regrades are kept — one JSON object per line, appended.
+pub fn regrade_history_path(instance_id: &str) -> PathBuf {
+    verdict_dir().join(format!("{instance_id}.regrades.jsonl"))
+}
+
 pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<PathBuf>, String> {
     if is_gold || verdict.error.is_some() || verdict.instance_id.is_empty() {
         return Ok(None);
@@ -549,6 +593,28 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
         .unwrap_or_default(); // unwrap_or: nothing serving at grade time = honest empty, never a guess
     let verdict = &verdict;
     let body = serde_json::to_string_pretty(verdict).map_err(|e| e.to_string())?;
+    // A resolve on disk is never replaced by a later failure — the losing verdict goes to
+    // the instance's regrade history instead, where it stays readable.
+    if verdict_write_for(read_verdict(&verdict.instance_id).as_ref(), verdict)
+        == VerdictWrite::KeepTheResolve
+    {
+        let history = regrade_history_path(&verdict.instance_id);
+        let line = serde_json::to_string(verdict).map_err(|e| e.to_string())?; // file format on disk: one JSON object per line in the instance's regrade history, read back by the score projection and by hand
+        use std::io::Write as _;
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&history)
+            .and_then(|mut f| writeln!(f, "{line}"));
+        crate::probe!(
+            class = "benchmark.verdict.downgrade_refused",
+            instance = verdict.instance_id.as_str(),
+            f2p = format!("{}/{}", verdict.f2p_passed, verdict.f2p_total),
+            history_written = appended.is_ok(),
+            "another citizen's card already resolved this instance — her outcome stands and this later attempt is recorded as a regrade beside it"
+        );
+        return Ok(None);
+    }
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(Some(path))
 }
@@ -4797,6 +4863,23 @@ FAIL: test_broken (expressions.tests.CombinedExprTests)";
         );
         // No f2p tests at all is not "everything already passes": nothing to void on.
         assert_eq!(pristine_gate(&[]), PristineGate::Holds { pristine_green: vec![] });
+    }
+
+
+    // what this catches: the harness erasing a resolve the team earned (sympy-22456,
+    // 2026-09-07: resolved 14:13Z by one citizen, overwritten 16:15Z by another citizen's
+    // failed regrade of the same instance, and the reported score lost a point that a real
+    // patch had won).
+    #[test]
+    fn a_resolve_is_never_replaced_by_a_later_failure() {
+        let resolved = SweVerdict { instance_id: "sympy__sympy-22456".into(), resolved: true, f2p_passed: 1, f2p_total: 1, ..Default::default() };
+        let failed = SweVerdict { instance_id: "sympy__sympy-22456".into(), resolved: false, f2p_passed: 0, f2p_total: 1, ..Default::default() };
+        assert_eq!(verdict_write_for(Some(&resolved), &failed), VerdictWrite::KeepTheResolve);
+        // Everything else records: nothing on disk, a fresh resolve, or failure over failure.
+        assert_eq!(verdict_write_for(None, &failed), VerdictWrite::Record);
+        assert_eq!(verdict_write_for(Some(&failed), &resolved), VerdictWrite::Record, "a resolve is always an improvement");
+        assert_eq!(verdict_write_for(Some(&failed), &failed), VerdictWrite::Record, "the freshest failure detail is what she acts on");
+        assert_eq!(verdict_write_for(Some(&resolved), &resolved), VerdictWrite::Record);
     }
 
 }
