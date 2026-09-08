@@ -739,7 +739,11 @@ impl PrebuiltCore {
             return Err(format!("prebuilt core {} is not a file", path.display()));
         }
         let build_sha = binary_build_sha(&path).await?;
-        Self::from_report(path, build_sha, git_head_short_sha().as_deref())
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("cannot locate checkout for prebuilt verification: {e}"))?;
+        let git_dir = std::env::var_os("GIT_DIR");
+        let checkout_sha = prebuilt_checkout_sha(&cwd, git_dir.as_deref()).await?;
+        Self::from_report(path, build_sha, checkout_sha.as_deref())
     }
 
     fn from_report(
@@ -1431,6 +1435,77 @@ fn git_head_short_sha() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Unlike the legacy best-effort HEAD lookup, a prebuilt deploy may self-anchor
+/// only outside a repository. A broken/inaccessible checkout is not an absence.
+async fn prebuilt_checkout_sha(
+    cwd: &Path,
+    git_dir: Option<&std::ffi::OsStr>,
+) -> Result<Option<String>, String> {
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("cannot inspect prebuilt checkout {}: {e}", cwd.display()))?;
+    if git_dir.is_none() && !has_git_checkout(&cwd)? {
+        return Ok(None);
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&cwd)
+        .args(["rev-parse", "--short", "HEAD"])
+        .env_remove("GIT_DIR")
+        .stdin(Stdio::null());
+    if let Some(git_dir) = git_dir {
+        cmd.env("GIT_DIR", git_dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))?
+        .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot verify prebuilt checkout HEAD in {}: git exited {}: {}",
+            cwd.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    let head = String::from_utf8(output.stdout)
+        .map_err(|e| format!("prebuilt checkout HEAD is not UTF-8: {e}"))?;
+    let head = head.trim();
+    if head.is_empty() {
+        return Err("prebuilt checkout HEAD lookup returned no SHA".into());
+    }
+    Ok(Some(head.to_owned()))
+}
+
+/// Detect repository metadata without asking Git to read HEAD. Both a normal
+/// `.git` directory and a linked worktree/submodule's `.git` file count, even if
+/// broken; Git must then verify the selected checkout. Bare repositories count
+/// too. Metadata permission errors must not downgrade verification to standalone.
+fn has_git_checkout(cwd: &Path) -> Result<bool, String> {
+    fn present(path: &Path) -> Result<bool, String> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("cannot inspect Git metadata {}: {e}", path.display())),
+        }
+    }
+    for ancestor in cwd.ancestors() {
+        if present(&ancestor.join(".git"))?
+            || (present(&ancestor.join("HEAD"))? && present(&ancestor.join("objects"))?)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live pid.
@@ -2787,6 +2862,109 @@ mod tests {
             super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some("abc123f"))
                 .unwrap();
         assert_eq!(ready.build_sha, "abc123f0123456789");
+    }
+
+    // Regression for PR3902: failed Git inside a checkout must not become the
+    // standalone self-anchor. Use real Git metadata and worktree selection;
+    // process cwd/environment stay local to each command, never global test state.
+    #[tokio::test]
+    async fn prebuilt_checkout_lookup_distinguishes_absence_from_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let standalone = tmp.path().join("standalone");
+        let hooks = tmp.path().join("empty-hooks");
+        for path in [&repo, &standalone, &hooks] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=Continuum tests",
+                    "-c",
+                    "user.email=tests@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "maintenance.auto=false",
+                    "-c",
+                    "gc.auto=0",
+                ])
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", hooks.display()))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+                .args(args)
+                .output()
+                .expect("Git is required for checkout provenance tests");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+
+        git(&repo, &["init", "--quiet"]);
+        assert!(
+            super::prebuilt_checkout_sha(&repo, None).await.is_err(),
+            "a checkout with no readable HEAD cannot self-anchor"
+        );
+        git(&repo, &["commit", "--allow-empty", "--quiet", "-m", "fixture"]);
+        git(&repo, &["checkout", "--detach", "--quiet", "HEAD"]);
+        let head = git(&repo, &["rev-parse", "--short", "HEAD"]);
+        assert_eq!(
+            super::prebuilt_checkout_sha(&repo, None).await.unwrap(),
+            Some(head.clone())
+        );
+
+        git(
+            &repo,
+            &["worktree", "add", "--detach", "--quiet", "../linked", "HEAD"],
+        );
+        let linked = tmp.path().join("linked");
+        let nested = linked.join("src");
+        std::fs::create_dir(&nested).unwrap();
+        assert!(linked.join(".git").is_file());
+        assert_eq!(
+            super::prebuilt_checkout_sha(&nested, None).await.unwrap(),
+            Some(head.clone())
+        );
+
+        // A sibling checkout must not bind a standalone invocation, but an
+        // explicit GIT_DIR must bind it, including when that selection is broken.
+        let absent = super::prebuilt_checkout_sha(&standalone, None)
+            .await
+            .unwrap();
+        assert!(absent.is_none());
+        assert!(super::PrebuiltCore::from_report(
+            standalone.join("core"),
+            "abc123f".into(),
+            absent.as_deref(),
+        )
+        .is_ok());
+        assert_eq!(
+            super::prebuilt_checkout_sha(&standalone, Some(repo.join(".git").as_os_str()))
+                .await
+                .unwrap(),
+            Some(head),
+        );
+        assert!(
+            super::prebuilt_checkout_sha(&standalone, Some(tmp.path().join("missing").as_os_str()))
+                .await
+                .is_err()
+        );
+
+        std::fs::write(linked.join(".git"), "gitdir: missing-checkout\n").unwrap();
+        assert!(
+            super::prebuilt_checkout_sha(&nested, None).await.is_err(),
+            "a broken worktree gitfile is not a standalone installation"
+        );
     }
 
     // what this catches: card 67f53b63 — an inherited build request, an available
