@@ -51,7 +51,9 @@ crate::action_command! {
         let entries_queued = p.entries.len();
         for entry in p.entries {
             // Best-effort: drop on a full queue rather than block the submitter.
-            let _ = this.state.log_tx.try_send(entry);
+            // Counted: see `enqueue_log`. A batch that bypassed it hid its whole size
+            // from the drain.
+            let _ = crate::modules::logger::enqueue_log(&this.state.log_tx, entry);
         }
         this.state.requests_processed.fetch_add(1, Ordering::Relaxed);
         Ok(WriteLogBatchResult { entries_queued })

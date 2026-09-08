@@ -670,50 +670,77 @@ impl Runtime {
     /// all: the SIGTERM handler killed sentinels, slept a flat 2s, and
     /// `_exit`ed — so no module ever saved on a real stop. The handler now
     /// runs this first ([`install_signal_shutdown`]).
-    pub async fn shutdown(&self) {
-        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
+    /// Stop every module: DRAIN, then save, then join — each phase bounded, all modules
+    /// in parallel — and return a receipt saying what actually reached disk.
+    ///
+    /// The drain phase is new and it is the point. Suspending a module's tick is not a
+    /// drain (`quiesce_all` stops each mind's self-tick and leaves room input arriving and
+    /// active turns running), so without it `save_state` could be taken underneath a turn
+    /// halfway through writing, and the result was indistinguishable from a clean save.
+    pub async fn shutdown(&self) -> ShutdownReceipt {
+        const PER_PHASE: std::time::Duration = std::time::Duration::from_secs(2);
         let modules = self.registry.list_modules();
-        info!("Shutting down {} modules (parallel, 2s bound each)...", modules.len());
+        info!(
+            "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
+            modules.len()
+        );
         let started = std::time::Instant::now();
         let futs = modules.iter().filter_map(|name| {
             self.registry.get_by_name(name).map(|module| {
                 let name = name.clone();
                 async move {
                     let t = std::time::Instant::now();
-                    // Save first, then join — each half under the bound.
-                    let saved = tokio::time::timeout(PER_MODULE, module.save_state()).await;
-                    let joined = tokio::time::timeout(PER_MODULE, module.shutdown()).await;
-                    let outcome = match (saved, joined) {
-                        (Ok(Ok(())), Ok(Ok(()))) => "ok",
-                        (Err(_), _) | (_, Err(_)) => "timeout",
-                        _ => "error",
+                    // 1. Stop taking new work and let in-flight work finish. A module
+                    //    that cannot drain in time still gets its save attempted — a
+                    //    mid-turn snapshot beats no snapshot — but the receipt says so.
+                    let drain = match tokio::time::timeout(PER_PHASE, module.drain()).await {
+                        Ok(Ok(0)) => DrainOutcome::Drained,
+                        Ok(Ok(in_flight)) => DrainOutcome::Incomplete { in_flight },
+                        Ok(Err(e)) => DrainOutcome::Unknown { reason: e },
+                        Err(_) => DrainOutcome::Unknown {
+                            reason: format!("drain exceeded {}s", PER_PHASE.as_secs()),
+                        },
+                    };
+
+                    // 2. Save. This is the phase whose failure is DATA, not tidiness.
+                    let saved = tokio::time::timeout(PER_PHASE, module.save_state()).await;
+                    let outcome = match saved {
+                        Err(_) => ModuleStopOutcome::SaveTimedOut,
+                        Ok(Err(e)) => ModuleStopOutcome::SaveFailed { error: e },
+                        Ok(Ok(())) => {
+                            // 3. Join, only meaningful once the state is durable.
+                            match tokio::time::timeout(PER_PHASE, module.shutdown()).await {
+                                Err(_) => ModuleStopOutcome::JoinTimedOut,
+                                Ok(Err(e)) => ModuleStopOutcome::JoinFailed { error: e },
+                                Ok(Ok(())) => ModuleStopOutcome::Clean,
+                            }
+                        }
                     };
                     crate::probe!(
                         class = "shutdown.step",
                         module = %name,
-                        outcome = outcome,
+                        outcome = format!("{outcome:?}"),
+                        drain = format!("{drain:?}"),
                         ms = t.elapsed().as_millis() as u64,
-                        "module save-and-join"
+                        "module drain-save-join"
                     );
-                    (name, outcome)
+                    ModuleStop {
+                        // `list_modules` yields &'static str; the receipt owns its names
+                        // because it outlives the registry borrow and crosses the wire.
+                        module: name.to_string(),
+                        drain,
+                        outcome,
+                        ms: t.elapsed().as_millis() as u64,
+                    }
                 }
             })
         });
-        let reports = futures::future::join_all(futs).await;
-        let slow: Vec<String> = reports
-            .iter()
-            .filter(|(_, o)| *o != "ok")
-            .map(|(n, _)| n.to_string())
-            .collect();
-        info!(
-            "All modules shut down in {}ms{}",
-            started.elapsed().as_millis(),
-            if slow.is_empty() {
-                String::new()
-            } else {
-                format!(" (non-ok: {})", slow.join(", "))
-            }
-        );
+        let receipt = ShutdownReceipt {
+            modules: futures::future::join_all(futs).await,
+            total_ms: started.elapsed().as_millis() as u64,
+        };
+        info!("{}", receipt.summary());
+        receipt
     }
 
     /// Verify all required modules are registered for the given
@@ -1392,15 +1419,565 @@ pub fn install_signal_shutdown(rt: Arc<Runtime>) {
 
 /// Run the save-and-join broadcast from a signal handler, bounded overall —
 /// a stop must complete in seconds even if the runtime misbehaves.
+/// What one module did when the node was told to stop.
+///
+/// Three phases, in the order the runtime broadcasts them, each with its own outcome —
+/// because they fail differently and a caller that only learns "shutdown finished" cannot
+/// tell a clean stop from one that abandoned a half-written turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ModuleStopOutcome.ts"
+)]
+pub enum ModuleStopOutcome {
+    /// Drained, saved and joined within the bound.
+    Clean,
+    /// `save_state` did not finish inside its bound. THE STATE IS UNKNOWN, not merely
+    /// old: the write may have been half-applied. This is the case a caller must not
+    /// report as success.
+    SaveTimedOut,
+    /// `save_state` returned an error and said why.
+    SaveFailed { error: String },
+    /// Saved, but `shutdown` did not return inside its bound. State is durable; the
+    /// module's resources were abandoned to process exit.
+    JoinTimedOut,
+    /// `shutdown` returned an error after a successful save.
+    JoinFailed { error: String },
+}
+
+impl ModuleStopOutcome {
+    /// Did EVERY phase this module ran complete? The only outcome that can support a
+    /// durability claim.
+    ///
+    /// An earlier version answered `true` for `JoinTimedOut` and `JoinFailed`, on the
+    /// reasoning that a module which saved and then failed to let go is untidy rather
+    /// than lossy. **That was wrong, and the trait's own contract says so:** `shutdown`
+    /// is documented as "release resources, FLUSH BUFFERS", and the logger's
+    /// implementation is literally `flush_all`. A module whose join failed is a module
+    /// whose final flush may not have happened, so its last writes are exactly as gone as
+    /// a failed save's. Found by Astra, who read the contract I had written and I had not.
+    ///
+    /// The phase distinction is still carried in the variant, because it tells a reader
+    /// WHERE the stop broke. It just cannot decide whether the state is on disk.
+    pub fn completed(&self) -> bool {
+        matches!(self, ModuleStopOutcome::Clean)
+    }
+}
+
+/// What the DRAIN phase achieved, kept separate from the save/join outcome.
+///
+/// These were one enum and it lost information: an incomplete drain followed by a join
+/// timeout produced `JoinTimedOut`, the drain result was discarded, and the module then
+/// reported its state durable — a save taken mid-turn, described as clean. They are
+/// orthogonal facts about the same module and neither may overwrite the other.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/system/DrainOutcome.ts")]
+pub enum DrainOutcome {
+    /// Nothing was in flight when the module stopped taking work.
+    Drained,
+    /// The bound expired with work outstanding, so whatever was saved next is a snapshot
+    /// taken mid-turn.
+    Incomplete { in_flight: u32 },
+    /// `drain` itself errored or timed out. How much was in flight is UNKNOWN — which is
+    /// why this is not `Incomplete { in_flight: 0 }`, a number nobody measured.
+    Unknown { reason: String },
+}
+
+impl DrainOutcome {
+    /// Did the module stop taking work with nothing outstanding? Anything else means the
+    /// save that followed may be torn.
+    pub fn is_quiet(&self) -> bool {
+        matches!(self, DrainOutcome::Drained)
+    }
+}
+
+/// One module's line in the receipt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ModuleStop.ts")]
+pub struct ModuleStop {
+    pub module: String,
+    pub drain: DrainOutcome,
+    pub outcome: ModuleStopOutcome,
+    #[ts(type = "number")]
+    pub ms: u64,
+}
+
+impl ModuleStop {
+    /// Did this module's state reach disk INTACT? Both halves must hold: every phase
+    /// completed, AND the module was quiet when its state was taken.
+    ///
+    /// A save that succeeded over a still-running turn wrote something — it just did not
+    /// write a consistent something. A join that failed may have skipped the flush that
+    /// puts the save on disk. Either way the answer is no, and reporting either as
+    /// durable is the failure this whole receipt exists to prevent.
+    pub fn state_is_durable(&self) -> bool {
+        self.outcome.completed() && self.drain.is_quiet()
+    }
+}
+
+/// WHAT ACTUALLY HAPPENED when the node stopped.
+///
+/// `Runtime::shutdown` used to return `()`. It logged non-ok modules to the core's own
+/// log and told the caller nothing, so `continuum stop` printed a success line and exited
+/// 0 whether every module had saved or none had. A stop whose result only exists in the
+/// log of the process that just exited is not a result anybody can act on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ShutdownReceipt.ts"
+)]
+pub struct ShutdownReceipt {
+    pub modules: Vec<ModuleStop>,
+    #[ts(type = "number")]
+    pub total_ms: u64,
+}
+
+impl ShutdownReceipt {
+    /// Modules whose durable state did NOT reach disk intact. Empty is the only value
+    /// that justifies reporting a clean stop.
+    pub fn unsaved(&self) -> Vec<&ModuleStop> {
+        self.modules
+            .iter()
+            .filter(|m| !m.state_is_durable())
+            .collect()
+    }
+
+    /// Every module's state is durable. Deliberately NOT "nothing went wrong" — a module
+    /// that saved and then failed to join is clean by this measure, because the thing at
+    /// stake is the citizen's state, not the tidiness of the exit.
+    pub fn state_is_durable(&self) -> bool {
+        self.unsaved().is_empty()
+    }
+
+    /// One line a human can act on, without reading the process's log after it exited.
+    pub fn summary(&self) -> String {
+        let unsaved = self.unsaved();
+        if unsaved.is_empty() {
+            return format!(
+                "{} modules stopped, all state durable, {}ms",
+                self.modules.len(),
+                self.total_ms
+            );
+        }
+        let names: Vec<String> = unsaved
+            .iter()
+            .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
+            .collect();
+        format!(
+            "{} of {} modules did NOT save: {}",
+            unsaved.len(),
+            self.modules.len(),
+            names.join(", ")
+        )
+    }
+}
+
+/// ONE shutdown, owned.
+///
+/// This was a bare `OnceLock` plus a free function, and the tests for it had to build
+/// their own `watch` channel — so they asserted a property of `tokio::sync::watch` and
+/// would have stayed green if the production publisher regressed from `send_replace` back
+/// to `send`. Established by Astra reading the source, NOT by an executed mutation run —
+/// nobody has yet watched that test go red, and the weaker claim is the true one.
+///
+/// As an instance, a test can construct the SAME owner over a real `Runtime` and drive the
+/// real `begin` / publisher, instead of a look-alike. Same reason `AdmissionGate` is a
+/// type: an invariant that can only be reached through a global is an invariant whose
+/// tests drift into testing something adjacent.
+pub struct ShutdownOperation {
+    result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
+    started: std::sync::atomic::AtomicBool,
+}
+
+impl ShutdownOperation {
+    pub fn new() -> Self {
+        Self {
+            result: tokio::sync::watch::channel(None).0,
+            started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Start the broadcast over `rt` if it has not started, and return a view of the
+    /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
+    /// request — joins the first broadcast rather than running `save_state` twice over
+    /// the same state.
+    pub fn begin(&self, rt: Option<Arc<Runtime>>) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+        if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            match rt {
+                Some(rt) => {
+                    let tx = self.result.clone();
+                    // Detached ON PURPOSE: this is the task whose whole point is that no
+                    // connection owns it. A socket handler is cancelled when its client
+                    // goes away, and a shutdown cancelled after ingress closed leaves the
+                    // node refusing work with nothing saved.
+                    tokio::spawn(async move {
+                        let receipt = rt.shutdown().await;
+                        // send_replace, NEVER send: `send` returns Err and DROPS the value
+                        // when the last receiver has gone — and the receiver that goes
+                        // away is the disconnecting CLI, so `send` loses the terminal
+                        // receipt in precisely the case this design exists for. A later
+                        // subscriber would then wait forever on a `None` that never
+                        // changes.
+                        let _ = tx.send_replace(Some(receipt));
+                    });
+                }
+                None => {
+                    // No runtime: nothing to save AND nothing that could have saved.
+                    // Publishing an empty receipt says exactly that, rather than leaving
+                    // every observer waiting on a broadcast that will never run.
+                    let _ = self.result.send_replace(Some(ShutdownReceipt {
+                        modules: Vec::new(),
+                        total_ms: 0,
+                    }));
+                }
+            }
+        }
+        self.result.subscribe()
+    }
+}
+
+impl Default for ShutdownOperation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The process's one shutdown. `watch::channel` is not `const`, so the instance is built
+/// on first use; the `OnceLock` being `static` is what lets `begin` take `&'static self`
+/// and hand the receiver out with no lifetime attached to a caller.
+static SHUTDOWN: std::sync::OnceLock<ShutdownOperation> = std::sync::OnceLock::new();
+
+fn process_shutdown() -> &'static ShutdownOperation {
+    SHUTDOWN.get_or_init(ShutdownOperation::new)
+}
+
+/// START the node's shutdown if it has not started, and hand back a view of its result.
+///
+/// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
+/// operation is owned rather than free-standing.
+pub fn begin_shutdown() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(signal_runtime())
+}
+
+/// Wait for the shutdown to finish, up to `budget`.
+///
+/// `None` means it is still running — NOT that it failed and not that state is durable.
+/// The distinction matters to the caller's exit code: a stop we stopped waiting for is
+/// unknown, and unknown is not success.
+pub async fn await_shutdown(
+    mut rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>,
+    budget: std::time::Duration,
+) -> Option<ShutdownReceipt> {
+    if let Some(r) = rx.borrow_and_update().clone() {
+        return Some(r);
+    }
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.changed()).await {
+            Ok(Ok(())) => {
+                if let Some(r) = rx.borrow_and_update().clone() {
+                    return Some(r);
+                }
+                // A change that is still `None`: keep waiting.
+            }
+            // THE SENDER IS GONE. `changed()` returns `Err(RecvError)` immediately and
+            // forever once the owner drops, so testing only for the TIMEOUT spun this loop
+            // at full speed until the deadline — burning a core for the whole budget on
+            // the one path where nothing can ever arrive. Found in source review by Astra.
+            Ok(Err(_)) => return None,
+            // Budget spent. The operation is still running, un-cancelled; unknown is not
+            // failure and not success.
+            Err(_) => return None,
+        }
+    }
+}
+
+/// The runtime the signal handlers stop, for callers that need the SAME one — the
+/// resident `system/shutdown` verb runs the identical broadcast, so it must not reach
+/// for a second registry. One runtime, one stop path, two triggers.
+pub fn signal_runtime() -> Option<Arc<Runtime>> {
+    SIGNAL_RUNTIME.get().cloned()
+}
+
 pub async fn run_signal_shutdown() {
-    if let Some(rt) = SIGNAL_RUNTIME.get() {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rt.shutdown()).await;
+    // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
+    // signal arriving while the verb is running joins that broadcast instead of starting
+    // a second one over the same state. The bound is deliberately larger than one phase:
+    // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
+    // and a tighter cap here would cut off the save phase on any node slow enough to
+    // need it.
+    let rx = begin_shutdown();
+    match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
+        Some(receipt) => {
+            // A signal handler cannot return an exit code to anyone, so the receipt's only
+            // readers are the log and the probe ledger — which is exactly why it is
+            // written here rather than dropped. `_exit` follows immediately.
+            if !receipt.state_is_durable() {
+                eprintln!(
+                    "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
+                    receipt.summary()
+                );
+            }
+        }
+        None => {
+            eprintln!(
+                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod conditional_modules_tests {
     use super::*;
+
+
+    /// The shutdown result must survive the disappearance of everyone watching it.
+    mod receipt_retention {
+        use super::*;
+        // The ONE recording fixture, borrowed from the dispatch tests rather than
+        // reimplemented here.
+        use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
+
+        // what this catches: `watch::Sender::send` dropping the terminal receipt when the
+        // last receiver has gone. That receiver is the CLI, and its disconnect is the case
+        // this whole design exists to survive — so `send` loses the receipt in exactly the
+        // situation it matters, and the next subscriber (a retried request, or the signal
+        // path joining the same broadcast) waits forever on a `None` that never changes.
+        //
+        // DRIVEN THROUGH THE REAL OWNER. The first version of this test built its own
+        // `watch` and called `send_replace` itself, so it asserted a property of tokio and
+        // would have stayed GREEN if the production publisher regressed to `send` — a
+        // SOURCE-REVIEW finding by Astra, reasoned from the code rather than executed as a
+        // mutation run, and labelled that way because she insisted on the distinction when
+        // a relay upgraded it to "she ran it". S6 supplied the shape of the fix —
+        // make the operation an instance so a test can hold the same one production holds.
+        // This constructs a real `ShutdownOperation` over a real `Runtime` with the
+        // existing `RecordingModule`, drops every caller, and only then resubscribes.
+        #[tokio::test]
+        async fn the_receipt_survives_every_observer_going_away() {
+            // A plain local: `begin` needs only `&self` — it clones the owned sender
+            // before the spawn and the returned Receiver borrows nothing. My first version
+            // leaked a `'static` instance to satisfy a lifetime the code never required.
+            let op = ShutdownOperation::new();
+
+            let runtime = Arc::new(Runtime::new());
+            let (module, _received) = RecordingModule::new("stop-recorder", Vec::new());
+            runtime.register(module);
+
+            // The only observer disconnects — the CLI died, was interrupted, timed out.
+            let rx = op.begin(Some(runtime));
+            drop(rx);
+
+            // Wait for the owner to publish. It is a detached task, so this polls a FRESH
+            // subscription rather than the one we dropped.
+            let mut seen = None;
+            for _ in 0..200 {
+                if let Some(r) = op.result.borrow().clone() {
+                    seen = Some(r);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let receipt = seen.expect("the owner must publish even with no receivers left");
+            assert!(
+                receipt.modules.iter().any(|m| m.module == "stop-recorder"),
+                "the receipt must describe the module the runtime actually stopped, got {:?}",
+                receipt.modules
+            );
+
+            // And a subscriber arriving AFTER every observer left still learns what
+            // happened — which is the property `send` would have destroyed.
+            let late = op.result.subscribe();
+            assert_eq!(
+                late.borrow().clone(),
+                Some(receipt),
+                "a late subscriber must still see the terminal receipt"
+            );
+        }
+
+        // what this catches: `begin` running the broadcast twice. A signal racing the stop
+        // verb, or a retried request, must JOIN the first operation — running `save_state`
+        // twice over the same state is the corruption the idempotence exists to prevent.
+        #[tokio::test]
+        async fn a_second_begin_joins_the_first_instead_of_restarting_it() {
+            let op = ShutdownOperation::new();
+            let runtime = Arc::new(Runtime::new());
+            let (module, _r) = RecordingModule::new("join-recorder", Vec::new());
+            let saves = module.saves.clone();
+            runtime.register(module);
+
+            let _first = op.begin(Some(runtime.clone()));
+            // A second caller with a runtime it would otherwise stop.
+            let _second = op.begin(Some(runtime));
+
+            let mut receipt = None;
+            for _ in 0..200 {
+                if let Some(r) = op.result.borrow().clone() {
+                    receipt = Some(r);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let _receipt = receipt.expect("the operation must complete");
+            // ONE BROADCAST, not one receipt row. Counting rows would pass even if the
+            // second `begin` ran a parallel broadcast, because each publication produces
+            // one row per module regardless of how many times the module was stopped.
+            // What must be true is that the module's `save_state` ran ONCE — saving twice
+            // over the same state is the corruption the idempotence exists to prevent.
+            assert_eq!(
+                saves.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "a second begin must JOIN the first, not stop the module again"
+            );
+        }
+
+        // what this catches: `await_shutdown` treating a still-running stop as a finished
+        // one. Its timeout does not cancel anything — the operation is in a task no
+        // connection owns — so `None` means UNKNOWN, and a caller that read it as failure
+        // or as success would be wrong in opposite directions.
+        #[tokio::test]
+        async fn an_unfinished_shutdown_reports_unknown_rather_than_a_verdict() {
+            let (tx, rx) = tokio::sync::watch::channel(None::<ShutdownReceipt>);
+            // A SECOND receiver, held here, is what makes the liveness assertion mean
+            // anything: `await_shutdown` consumes the one it is given and drops it, so
+            // with only that one alive `is_closed()` becomes true purely because WE
+            // stopped watching — which is not the fact under test and would have made
+            // this assertion fail (or, worse, pass for the wrong reason on a later
+            // refactor). Astra caught it at runtime.rs:1754.
+            let _observer = tx.subscribe();
+            let out = await_shutdown(rx, std::time::Duration::from_millis(30)).await;
+            assert!(
+                out.is_none(),
+                "a stop still in flight must not produce a receipt"
+            );
+            // Nothing was cancelled by our giving up: the operation can still publish,
+            // and `_observer` proves the channel is live rather than merely unobserved.
+            assert!(!tx.is_closed(), "giving up watching must not end the shutdown");
+            let receipt = ShutdownReceipt {
+                modules: Vec::new(),
+                total_ms: 3,
+            };
+            tx.send_replace(Some(receipt.clone()));
+            assert_eq!(
+                _observer.borrow().clone(),
+                Some(receipt),
+                "the operation we stopped waiting for must still be able to report"
+            );
+        }
+    }
+
+    /// The shutdown receipt's semantics. These are pure and cheap, and they exist because
+    /// the whole rail turns on ONE distinction: a module that failed to SAVE lost state,
+    /// and a module that failed to JOIN merely exited untidily. Collapse them and
+    /// `continuum stop` goes back to reporting success for a stop that lost a citizen's
+    /// working memory.
+    mod shutdown_receipt {
+        use super::*;
+
+        fn stop(module: &str, outcome: ModuleStopOutcome) -> ModuleStop {
+            ModuleStop {
+                module: module.to_string(),
+                drain: DrainOutcome::Drained,
+                outcome,
+                ms: 1,
+            }
+        }
+
+        // what this catches: a save timeout treated as a successful stop. This is the
+        // exact value the CLI's exit code keys on.
+        // what this catches: a failed JOIN being read as durable state. I originally
+        // ruled that a module which saved and then failed to let go was untidy rather
+        // than lossy — but `ServiceModule::shutdown` is contractually "release resources,
+        // FLUSH BUFFERS", and the logger's implementation is `flush_all`. A join that did
+        // not finish is a flush that may not have happened, which makes the last writes
+        // exactly as gone as a failed save's. Astra read the contract I had written and
+        // I had not.
+        #[test]
+        fn only_a_fully_completed_stop_can_support_a_durability_claim() {
+            assert!(ModuleStopOutcome::Clean.completed());
+            assert!(!ModuleStopOutcome::SaveTimedOut.completed());
+            assert!(!ModuleStopOutcome::SaveFailed {
+                error: "disk full".into()
+            }
+            .completed());
+            // The two that used to pass, and must not.
+            assert!(!ModuleStopOutcome::JoinTimedOut.completed());
+            assert!(!ModuleStopOutcome::JoinFailed {
+                error: "task refused to join".into()
+            }
+            .completed());
+        }
+
+        // what this catches: THE clobber. When drain and save/join shared one enum, an
+        // incomplete drain followed by a join timeout produced `JoinTimedOut`, the drain
+        // result was discarded, and the module reported its state durable — a save taken
+        // mid-turn, described as clean. Found in review by Astra, not by me.
+        #[test]
+        fn an_incomplete_drain_survives_a_failing_join_and_stays_non_durable() {
+            let torn = ModuleStop {
+                module: "cognition".into(),
+                drain: DrainOutcome::Incomplete { in_flight: 3 },
+                outcome: ModuleStopOutcome::JoinTimedOut,
+                ms: 1,
+            };
+            // The join outcome alone would once have said "saved, just untidy".
+            assert!(!torn.outcome.completed());
+            // The whole module is NOT durable, because the save was taken over a turn.
+            assert!(!torn.state_is_durable());
+            assert_eq!(torn.drain, DrainOutcome::Incomplete { in_flight: 3 });
+        }
+
+        // what this catches: a drain that FAILED being reported as a measured zero.
+        // "I could not find out how much was in flight" is not "nothing was in flight".
+        #[test]
+        fn a_failed_drain_is_unknown_not_a_measured_zero() {
+            let unknown = DrainOutcome::Unknown {
+                reason: "drain exceeded 2s".into(),
+            };
+            assert!(!unknown.is_quiet());
+            assert_ne!(unknown, DrainOutcome::Incomplete { in_flight: 0 });
+            assert_ne!(unknown, DrainOutcome::Drained);
+        }
+
+        // what this catches: a summary that hides which module lost state. "3 modules did
+        // not save" without names sends the reader to a log that the exiting process may
+        // not have flushed.
+        #[test]
+        fn the_summary_names_the_modules_that_did_not_save() {
+            let receipt = ShutdownReceipt {
+                modules: vec![
+                    stop("logger", ModuleStopOutcome::Clean),
+                    stop("cognition", ModuleStopOutcome::SaveTimedOut),
+                ],
+                total_ms: 42,
+            };
+            assert!(!receipt.state_is_durable());
+            assert_eq!(receipt.unsaved().len(), 1);
+            let summary = receipt.summary();
+            assert!(summary.contains("cognition"), "got: {summary}");
+            assert!(!summary.contains("logger"), "clean modules are noise here: {summary}");
+        }
+
+        // what this catches: an EMPTY receipt reading as a successful stop. A core that
+        // registered no modules, or a shutdown that never ran one, produces an empty list
+        // — and "all state durable" over zero modules is true but says nothing. The
+        // summary must show the count so a reader can see it was zero.
+        #[test]
+        fn an_empty_receipt_reports_the_count_it_actually_stopped() {
+            let receipt = ShutdownReceipt {
+                modules: Vec::new(),
+                total_ms: 0,
+            };
+            assert!(receipt.state_is_durable());
+            assert!(
+                receipt.summary().contains("0 modules"),
+                "an empty stop must say so: {}",
+                receipt.summary()
+            );
+        }
+    }
 
     /// Card 506a388c: the socket route (uu / IPC / MCP / desktop) dispatched
     /// typed and legacy commands directly and never consulted the interceptor
@@ -1931,19 +2508,27 @@ mod piece_2_pr3_dispatch_tests {
     use std::any::Any;
     use std::sync::Arc;
 
-    struct RecordingModule {
+    /// `pub(super)` so sibling test mods can use the ONE recording fixture instead of
+    /// each writing their own — the duplication CLAUDE.md's task #155 exists to stop.
+    pub(super) struct RecordingModule {
         name: &'static str,
         subscriptions: Vec<ArtifactSelector>,
         received: Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>,
+        /// How many times the runtime asked this module to SAVE. Counting broadcasts
+        /// rather than receipt rows is the difference between "the receipt mentions this
+        /// module once" and "the module was stopped once" — a second broadcast could stop
+        /// it again and still produce one row per publication.
+        pub(super) saves: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl RecordingModule {
-        fn new(
+        pub(super) fn new(
             name: &'static str,
             subscriptions: Vec<ArtifactSelector>,
         ) -> (Arc<Self>, Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>) {
             let received = Arc::new(Mutex::new(Vec::new()));
             let module = Arc::new(Self {
+                saves: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 name,
                 subscriptions,
                 received: received.clone(),
@@ -1954,6 +2539,14 @@ mod piece_2_pr3_dispatch_tests {
 
     #[async_trait]
     impl ServiceModule for RecordingModule {
+        /// Counts the runtime's save BROADCASTS at this module. The idempotence test
+        /// asserts on this rather than on receipt rows: a second `begin` that ran a
+        /// parallel broadcast would call this twice while still publishing one receipt.
+        async fn save_state(&self) -> Result<(), String> {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
         fn config(&self) -> ModuleConfig {
             ModuleConfig {
                 name: self.name,

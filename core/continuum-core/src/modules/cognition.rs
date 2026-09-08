@@ -167,6 +167,52 @@ impl ServiceModule for CognitionModule {
         }
     }
 
+    /// CLOSE THE DOOR AND WAIT FOR THE CITIZENS TO FINISH THEIR TURNS.
+    ///
+    /// This is the module the drain phase exists for. Everything else in a stopping node
+    /// either holds no work or holds a buffer; cognition holds a citizen mid-thought, and
+    /// a `save_state` taken across that boundary writes a working memory that is half of
+    /// one turn and half of the next.
+    ///
+    /// Two steps, in this order:
+    ///
+    /// 1. `turn_ingress::close()` — no service loop admits another turn. NOT
+    ///    `quiesce_all`, whose contract is the opposite: a quiesced citizen stops
+    ///    wandering and deliberately STAYS reachable, so she would keep starting turns
+    ///    while we tried to save her.
+    /// 2. Wait for the turns already admitted to finish, bounded.
+    ///
+    /// The count comes from the permits the loops hold, not from `activity_gate`'s
+    /// `engaged` flag: engagement is stamped at serving-lane acquisition, so a turn that
+    /// has taken a message and is still composing context is not engaged, and draining on
+    /// that flag would walk past exactly the turns whose loss leaves no trace.
+    ///
+    /// Returns the number still running when the budget expired — a citizen who is still
+    /// thinking is a fact the receipt reports, not one it waits forever for.
+    async fn drain(&self) -> Result<u32, String> {
+        const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+        // Inside the runtime's 2s phase bound, so the deadline that fires is this one,
+        // with a count, rather than the outer timeout, which produces no number.
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(1_800);
+
+        let first_to_close = crate::cognition::turn_ingress::close();
+        let deadline = std::time::Instant::now() + BUDGET;
+        while std::time::Instant::now() < deadline {
+            if crate::cognition::turn_ingress::in_flight() == 0 {
+                return Ok(0);
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        let left = crate::cognition::turn_ingress::in_flight();
+        crate::probe!(
+            class = "cognition.drain.incomplete",
+            in_flight = left,
+            first_to_close = first_to_close,
+            "citizens were still inside turns when the drain budget expired — whatever is saved next is a snapshot taken mid-turn, and the receipt says so"
+        );
+        Ok(left.min(u32::MAX as u64) as u32)
+    }
+
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // No init needed. Recipes are JSON data walked by the host
         // (TS recipe loader for the chat path today; future Rust
