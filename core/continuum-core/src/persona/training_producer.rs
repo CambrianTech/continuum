@@ -266,6 +266,37 @@ impl CapturedCredit {
         })
     }
 
+    /// Derive the selection capture from the card a turn was rooted onto.
+    ///
+    /// **Pure, so it is testable with no cycle, no hands and no executor** — the same
+    /// judgment/effect split [`plan`] uses. The EFFECT (attaching this to the turn
+    /// before the rooting await in `root_at_held_card`) lands with the consumer that
+    /// reads it; this is the judgment half.
+    ///
+    /// `WorkCard::owner` and `claim_id` are both `Option` and travel together or not
+    /// at all: a card the work store never claimed yields `claim: None`, and NOTHING
+    /// may substitute a default — not the acting persona, not a nil claim. Such a
+    /// turn is still card-linked, so it stages; it simply can never be stamped, and
+    /// no later settlement may supply the receipt it never had.
+    pub fn from_selected_card(card: &airc_work::WorkCard) -> Self {
+        let claim = match (card.owner, card.claim_id) {
+            (Some(owner), Some(claim_id)) => Some(ClaimReceipt {
+                claim_id: claim_id.as_uuid(),
+                owner,
+                // A claim yields OWNER. Reviewer and Finder are different hands on
+                // the same card and are not derivable from a claim alone.
+                role: CreditRole::Owner,
+            }),
+            // Either half missing is no receipt. An owner without a claim is not an
+            // accepted claim, and a claim without an owner names nobody.
+            _ => None,
+        };
+        Self {
+            card_id: card.card_id.as_uuid(),
+            claim,
+        }
+    }
+
     /// Card-linked turns STAGE; only truly unlinked conversation submits at
     /// completion. Presence of the card — not of the claim — is the test, because
     /// she was rooted at that checkout and her edits landed there regardless of
@@ -811,6 +842,79 @@ mod tests {
     // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
     // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
     // failed-case assertion passes while proving nothing.
+    // what this catches: a FABRICATED claim receipt. `WorkCard::owner` and `claim_id`
+    // are both Option. A turn rooted at a card carrying neither is STILL card-linked
+    // — she stood in that checkout and her edits landed there — so it must stage. But
+    // it must never acquire a receipt it did not have, and no later settlement may
+    // supply one. If this ever defaulted the missing pair (to the acting persona, to
+    // a nil claim), that turn becomes stampable and a citizen is credited for
+    // accountability nobody recorded. Contract stated by Astra 2026-09-08.
+    #[test]
+    fn a_claimless_card_stages_as_card_linked_without_inventing_a_receipt() {
+        fn card(
+            owner: Option<airc_core::PeerId>,
+            claim: Option<airc_work::ClaimId>,
+        ) -> airc_work::WorkCard {
+            airc_work::WorkCard {
+                card_id: airc_work::WorkCardId::new(),
+                repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+                title: "t".to_string(),
+                body: None,
+                priority: airc_work::Priority::P2,
+                lane_id: None,
+                state: airc_work::CardState::Claimed,
+                owner,
+                claim_id: claim,
+                claim_expires_at_ms: None,
+                last_heartbeat_at_ms: None,
+                pull_request: None,
+                created_by: airc_core::PeerId::new(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                reviews: None,
+            }
+        }
+
+        let bare = card(None, None);
+        let captured = CapturedCredit::from_selected_card(&bare);
+        assert_eq!(captured.card_id, bare.card_id.as_uuid());
+        assert!(
+            captured.is_card_linked(),
+            "a claimless card is still card-linked — it stages, her edits landed there"
+        );
+        assert!(
+            captured.claim.is_none(),
+            "no receipt may be invented for a card the work store never claimed"
+        );
+
+        // POSITIVE CONTROL: a real owner+claim pair MUST produce a receipt. Without
+        // this the assertion above would pass identically if `from_selected_card`
+        // never populated a receipt at all.
+        let owner = airc_core::PeerId::new();
+        let claimed = card(
+            Some(owner),
+            Some(airc_work::ClaimId::from_uuid(Uuid::new_v4())),
+        );
+        let receipt = CapturedCredit::from_selected_card(&claimed)
+            .claim
+            .expect("a real owner+claim pair must produce a receipt");
+        assert_eq!(receipt.owner, owner, "the receipt carries the store's own owner");
+        assert_eq!(receipt.role, CreditRole::Owner, "a claim yields Owner");
+
+        // HALF A PAIR IS NOT A PAIR: an owner with no claim is not an accepted
+        // claim, and a claim with no owner names nobody.
+        assert!(
+            CapturedCredit::from_selected_card(&card(Some(owner), None)).claim.is_none(),
+            "an owner without a claim is not an accepted claim"
+        );
+        assert!(
+            CapturedCredit::from_selected_card(&card(None, Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))))
+                .claim
+                .is_none(),
+            "a claim without an owner names nobody"
+        );
+    }
+
     // what this catches: a dropped `#[entity(indexed)]` on the staging keys. Field
     // presence alone is not the claim — settlement arrives PER CARD and asks "what
     // did this citizen stage against it", and playback joins on the SUBMITTED
