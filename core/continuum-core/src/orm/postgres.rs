@@ -388,7 +388,7 @@ impl PostgresAdapter {
             // that cannot see this statement's uncommitted row — a Create+Update of
             // the same new row in one batch would read back "not found" — and on a
             // one-connection pool it blocks for the 10s pool timeout first.
-            Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
+            Ok(rows) if rows > 0 => self.read(collection, id).await, // MUTATION: authorised single-defect check, reverted after the run
             Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
             Err(e) => {
                 // Schema evolution: auto-add missing columns and retry.
