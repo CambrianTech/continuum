@@ -1510,22 +1510,9 @@ pub fn start_server(
         // boot path wasn't even rotating. Eviction is safe by
         // construction here (rotated `.N` generations only, never the
         // live file), so this class is OWNED rather than deferred.
-        // The citizens' workspaces get their owner (card 58c27b0c): dormant, non-resident
-        // workspaces only, and only after every uncommitted thing in one is archived and
-        // read back. A persona's memory is never evicted.
-        if let Some(citizens_dir) = crate::system_resources::tracked_dir("citizens") {
-            broker.register(Arc::new(
-                crate::system_resources::citizen_workspace_pool::CitizenWorkspacePool::new(
-                    citizens_dir,
-                    crate::system_resources::citizen_workspace_pool::DEFAULT_CITIZENS_BUDGET_BYTES,
-                ),
-            ) as Arc<dyn crate::paging::pool::ResourcePool>);
-            log_info!(
-                "ipc",
-                "server",
-                "CitizenWorkspacePool registered with PressureBroker (dormant workspaces only; memory never evicted)"
-            );
-        }
+        // Citizen workspace eviction remains unregistered until preservation can
+        // restore local commits and refs as well as dirty files. A clean checkout
+        // can contain the only copy of a citizen's autosaved work (#3920).
 
         for class in ["logs", "probes"] {
             // The pool governs ONE writer's ledger (live file + its `.N` generations)
