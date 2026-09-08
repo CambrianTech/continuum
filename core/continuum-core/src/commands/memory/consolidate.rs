@@ -107,7 +107,7 @@ fn shared_lessons_from_list(
     listed: serde_json::Value,
     since: Option<&str>,
 ) -> Result<Vec<MemoryRecord>, CommandError> {
-    let listed: DataListResult = serde_json::from_value(listed).map_err(|e| {
+    let listed: DataListResult = serde_json::from_value(listed).map_err(|e| { // Decode the Value-native data/list response once; owned rows move into the typed receipt.
         CommandError::Internal(format!("memory/consolidate: invalid data/list result: {e}"))
     })?;
     if listed.items.len() != listed.total as usize {
@@ -136,7 +136,7 @@ fn shared_lessons_from_list(
             ),
             other => other,
         };
-        let record: MemoryRecord = serde_json::from_value(data).map_err(|e| {
+        let record: MemoryRecord = serde_json::from_value(data).map_err(|e| { // Decode one persisted ORM row at corpus hydration; no typed-to-Value round trip.
             CommandError::Internal(format!(
                 "memory/consolidate: invalid shared-lesson row {index}: {e}; watermark unchanged"
             ))
@@ -176,8 +176,8 @@ where
                         "module", "memory_consolidate",
                         "shared lesson {} not accepted; stopping before advancing its timestamp ({}): {}",
                         record.id,
-                        outcome.error_kind.as_deref().unwrap_or("unspecified"),
-                        outcome.error.as_deref().unwrap_or("no diagnostic")
+                        outcome.error_kind.as_deref().unwrap_or("unspecified"), // Missing diagnostic stays explicit; success:false already determined refusal.
+                        outcome.error.as_deref().unwrap_or("no diagnostic") // Display-only absence label; never substituted into a receipt or cursor.
                     );
                     return result;
                 }

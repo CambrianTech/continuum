@@ -322,8 +322,8 @@ async fn submit_plan(
                 persona = %persona_name,
                 domain = %plan.trait_kind,
                 provenance = provenance,
-                error_kind = %receipt.error_kind.as_deref().unwrap_or("unspecified"),
-                error = %receipt.error.as_deref().unwrap_or("submit returned success:false"),
+                error_kind = %receipt.error_kind.as_deref().unwrap_or("unspecified"), // Missing diagnostic stays explicit after the receipt's success:false refusal.
+                error = %receipt.error.as_deref().unwrap_or("submit returned success:false"), // Display-only absence label; the typed receipt remains unchanged.
                 "training trigger did not report successful submission"
             );
             tracing::warn!(
@@ -362,7 +362,7 @@ pub(crate) async fn submit_training<T: Transport>(
         .commands()
         .execute_value("genome/training-trigger/submit", params)
         .await?;
-    Ok(serde_json::from_value(receipt)?)
+    Ok(serde_json::from_value(receipt)?) // Decode the Value-native command response once; producers share this typed receipt.
 }
 
 #[cfg(test)]
