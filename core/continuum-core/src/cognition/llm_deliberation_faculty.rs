@@ -639,7 +639,6 @@ impl LlmDeliberationFaculty {
         );
     }
 
-
     /// What the prompt MUST carry before any reserve may claim a token: the tool schemas,
     /// the bare framing, and room for at least one message.
     ///
@@ -873,8 +872,12 @@ impl LlmDeliberationFaculty {
             // offered) announces itself: the body builder bounds the model's
             // thinking on it (card 12ef9c10), the lane class stays Turn.
             purpose: Some(
-                if output_cap.is_some() { "cognition/act" } else { "cognition/deliberation" }
-                    .to_string(),
+                if output_cap.is_some() {
+                    "cognition/act"
+                } else {
+                    "cognition/deliberation"
+                }
+                .to_string(),
             ),
             persona_id: Some(self.persona_id.to_string()),
         }
@@ -1002,7 +1005,10 @@ impl LlmDeliberationFaculty {
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
-        let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text, Some(&self.persona_name)), ws);
+        let decision = self.silence_a_parroted_draft(
+            decision_from_response(&resp.text, Some(&self.persona_name)),
+            ws,
+        );
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
@@ -1194,7 +1200,9 @@ impl LlmDeliberationFaculty {
             for (i, unit) in c.parts.iter().enumerate() {
                 let next_bytes = unit_bytes + unit.len() + usize::from(i > 0);
                 let with_notice = next_bytes + 1 + notice_bound.len();
-                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice) > budget_tokens {
+                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice)
+                    > budget_tokens
+                {
                     break;
                 }
                 unit_bytes = next_bytes;
@@ -1215,9 +1223,8 @@ impl LlmDeliberationFaculty {
             // — a quieter lie than the empty block this replaces.
             let omitted = c.parts.len() - kept_units.len();
             let notice = format!("…{omitted} more not shown (context budget){how}");
-            let unit_tokens = Self::context_piece_tokens(
-                c.faculty.as_str(), unit_bytes + 1 + notice.len(),
-            );
+            let unit_tokens =
+                Self::context_piece_tokens(c.faculty.as_str(), unit_bytes + 1 + notice.len());
             used += unit_tokens;
             let body = format!("{}\n{notice}", kept_units.join("\n"));
             partial.push(format!(
@@ -1337,7 +1344,7 @@ impl LlmDeliberationFaculty {
                 .iter()
                 .map(|(c, _)| c.salience)
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
-            // `None` = nothing survived at all, which is maximal harm, never "no finding".
+                                                                                       // `None` = nothing survived at all, which is maximal harm, never "no finding".
             let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
             if fires {
                 let verdict = match cheapest_kept {
@@ -2084,7 +2091,10 @@ impl LlmDeliberationFaculty {
                 .broadcast
                 .iter()
                 .filter(|c| c.decision.is_none() && c.trailing)
-                .filter(|c| (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID) == wm_trail)
+                .filter(|c| {
+                    (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
+                        == wm_trail
+                })
             {
                 if !c.content.trim().is_empty() {
                     // Same `[faculty]` banner the system block gives its sections —
@@ -2153,6 +2163,14 @@ impl LlmDeliberationFaculty {
             history: messages,
             stimulus,
             latest_result,
+            room_updates: ws
+                .room_updates
+                .iter()
+                .map(|message| {
+                    let body = message.render_room_update();
+                    ChatMessage::text("user", body)
+                })
+                .collect(),
         }
     }
 
@@ -2173,7 +2191,9 @@ impl LlmDeliberationFaculty {
     }
 
     fn working_context_header_cost() -> usize {
-        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
+        deliberation_prompt::WORKING_CONTEXT_HEADER
+            .len()
+            .div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
     fn framing_cost(system: &str) -> usize {
@@ -2285,9 +2305,7 @@ impl LlmDeliberationFaculty {
             // (ladder rung 4) replaces this with true causal subtrees.
             let continues_cluster = |m: &ChatMessage| {
                 let body = m.content_text();
-                m.role == "assistant"
-                    || body.starts_with("Full result of")
-                    || body.starts_with('⚙')
+                m.role == "assistant" || body.starts_with("Full result of") || body.starts_with('⚙')
             };
             let mut opener_advance = 0usize;
             while start + 1 < messages.len()
@@ -2297,10 +2315,11 @@ impl LlmDeliberationFaculty {
                 start += 1;
                 opener_advance += 1;
             }
-            }
+        }
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
         prompt.history.extend(prompt.stimulus);
+        prompt.history.extend(prompt.room_updates);
         prompt.history.extend(prompt.latest_result);
         Ok(prompt.history)
     }
@@ -2411,12 +2430,14 @@ struct PromptMessages {
     history: Vec<ChatMessage>,
     stimulus: Option<ChatMessage>,
     latest_result: Option<ChatMessage>,
+    room_updates: Vec<ChatMessage>,
 }
 
 impl PromptMessages {
     fn required_tokens(&self) -> usize {
         self.stimulus
             .iter()
+            .chain(self.room_updates.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
             .sum()
@@ -2734,7 +2755,10 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            }, Some(ws.room_id), self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP));
+            },
+            Some(ws.room_id),
+            self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
+        );
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -2779,7 +2803,11 @@ impl Faculty for LlmDeliberationFaculty {
             let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
             let _ = std::fs::create_dir_all(&dir);
             use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(f, "{row}");
             }
         }
@@ -3260,11 +3288,13 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
     runs.push(("system", cum as u32));
     for m in messages {
         let body = m.content_text();
-        let label = if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙') {
-            "grounding"
-        } else {
-            "history"
-        };
+        let label =
+            if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙')
+            {
+                "grounding"
+            } else {
+                "history"
+            };
         cum += est_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
         match runs.last_mut() {
             Some((l, end)) if *l == label => *end = cum as u32,
@@ -3280,7 +3310,10 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
 /// the same path as the decision, and the settle loop folds it into the per-task
 /// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
 /// `latency_ms` is always present (the adapter times every request).
-fn metrics_from(persona: &str, resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
+fn metrics_from(
+    persona: &str,
+    resp: &TextGenerationResponse,
+) -> crate::cognition::workspace::TurnMetrics {
     // The lane's PREFILL-vs-DECODE split (llama-server `timings`), when present:
     // cache_n/prompt_n is the KV-cache hit/miss, prompt_ms/predicted_ms the
     // wall-clock split that lets the harness see where Metal time actually goes.
@@ -3371,16 +3404,38 @@ mod tests {
     // with zero tools (2026-09-04). The filter runs on the raw command names.
     #[test]
     fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
-        let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "code/git/apply"]
-            .iter()
-            .map(|n| NativeToolSpec {
-                name: (*n).to_string(),
-                description: String::new(),
-                input_schema: crate::ai::types::ToolInputSchema { schema_type: "object".to_string(), properties: serde_json::json!({}), required: None, definitions: None },
-            })
-            .collect();
+        let raw: Vec<NativeToolSpec> = [
+            "code/read",
+            "work/state",
+            "chat/send",
+            "commands/list",
+            "room/join",
+            "code/git/status",
+            "code/git/apply",
+        ]
+        .iter()
+        .map(|n| NativeToolSpec {
+            name: (*n).to_string(),
+            description: String::new(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        })
+        .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-        assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"], "git/apply is a reviewer verb, not a hand");
+        assert_eq!(
+            hands,
+            [
+                "code/read",
+                "work/state",
+                "commands/list",
+                "code/git/status"
+            ],
+            "git/apply is a reviewer verb, not a hand"
+        );
     }
 
     // what this catches: the live registry's command names drifting away from the
@@ -3394,9 +3449,18 @@ mod tests {
             return; // no registry in this test build — nothing to assert against
         }
         let hands = hands_surface(&raw);
-        assert!(!hands.is_empty(), "hands surface is empty against the live registry");
-        assert!(hands.len() < raw.len(), "hands surface should be a strict subset");
-        assert!(hands.iter().any(|s| s.name == "commands/list"), "the discovery pair must survive");
+        assert!(
+            !hands.is_empty(),
+            "hands surface is empty against the live registry"
+        );
+        assert!(
+            hands.len() < raw.len(),
+            "hands surface should be a strict subset"
+        );
+        assert!(
+            hands.iter().any(|s| s.name == "commands/list"),
+            "the discovery pair must survive"
+        );
     }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
@@ -3666,58 +3730,58 @@ mod tests {
         // PLUS the generation cap never exceeds the served window. Regression for the
         // abstain-every-tick reliability bug.
         // what this catches: an ACT turn's completion is bounded by ACT_OUTPUT_CAP
-    // under the reserve, and a message turn (no cap) still gets the whole
-    // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
-    // the lane); capping message turns would truncate answers.
-    #[tokio::test]
-    async fn an_act_turn_is_capped_under_the_reserved_room() {
-        let window = 32_768u32;
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Ivar",
-            "You are Ivar, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window);
-        let ws = Workspace::new("act on the card");
-        let view = faculty.prompt_view(&ws);
-        let binding = faculty.binding.load_full();
-        let reserve = faculty.completion_reserve_within(window);
-        let act = faculty.build_request_within(
-            &binding,
+        // under the reserve, and a message turn (no cap) still gets the whole
+        // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
+        // the lane); capping message turns would truncate answers.
+        #[tokio::test]
+        async fn an_act_turn_is_capped_under_the_reserved_room() {
+            let window = 32_768u32;
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(window);
+            let ws = Workspace::new("act on the card");
+            let view = faculty.prompt_view(&ws);
+            let binding = faculty.binding.load_full();
+            let reserve = faculty.completion_reserve_within(window);
+            let act = faculty.build_request_within(
+                &binding,
                 view.completion_reserve,
-            view.messages.clone(),
-            None,
-            view.system.clone(),
-            None,
-            Some(ws.room_id),
-            Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
-        );
-        assert_eq!(
-            act.max_tokens,
-            Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
-            "an act turn is capped under the reserve"
-        );
-        let msg = faculty.build_request_within(
-            &binding,
+                view.messages.clone(),
+                None,
+                view.system.clone(),
+                None,
+                Some(ws.room_id),
+                Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+            );
+            assert_eq!(
+                act.max_tokens,
+                Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
+                "an act turn is capped under the reserve"
+            );
+            let msg = faculty.build_request_within(
+                &binding,
                 view.completion_reserve,
-            view.messages.clone(),
-            None,
-            view.system.clone(),
-            None,
-            Some(ws.room_id),
-            None,
-        );
+                view.messages.clone(),
+                None,
+                view.system.clone(),
+                None,
+                Some(ws.room_id),
+                None,
+            );
             assert_eq!(
                 msg.max_tokens,
                 Some(reserve),
                 "a message turn keeps the reserved room"
             );
-    }
+        }
 
-    #[test]
+        #[test]
         fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -4112,8 +4176,7 @@ mod tests {
                 let faculty = faculty_with_the_real_registry(narrow);
                 // A MESSAGE turn — so the narrowing can only be the window.
                 let ws = Workspace::new("anything open?");
-                let selected =
-                    faculty.select_tool_surface(&ws, narrow);
+                let selected = faculty.select_tool_surface(&ws, narrow);
 
                 assert_eq!(
                     selected.reason,
@@ -4164,11 +4227,7 @@ mod tests {
                 for (label, window, ws) in [
                     ("full", fits, Workspace::new("anything open?")),
                     ("hands/work", fits, work_turn()),
-                    (
-                        "hands/budget",
-                        narrow,
-                        Workspace::new("anything open?"),
-                    ),
+                    ("hands/budget", narrow, Workspace::new("anything open?")),
                 ] {
                     let faculty = faculty_with_the_real_registry(window);
                     let selected = faculty.select_tool_surface(&ws, window);
@@ -5029,8 +5088,7 @@ mod tests {
             // their own activities per [[activities-are-self-hosting]]). Same
             // conscious trade as vision/look above.
             const AGENTIC_SURFACE_CEILING: u32 = 10700;
-            let surface =
-                faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
+            let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
                 "the agentic surface is now {surface} tokens (measured 10098, ceiling \
@@ -5062,7 +5120,8 @@ mod tests {
             // and "we were spending her window on tools we withheld". Only the second
             // was ever true here.
             assert!(
-                view.user_text().contains("LATEST: did the deploy fix land?"),
+                view.user_text()
+                    .contains("LATEST: did the deploy fix land?"),
                 "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff)\n{}",
@@ -5183,8 +5242,7 @@ mod tests {
         #[test]
         fn fit_front_advances_in_quanta_not_per_act() {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-            let faculty =
-                LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let msgs: Vec<ChatMessage> = (0..40)
                 .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
                 .collect();
@@ -5206,6 +5264,7 @@ mod tests {
                             history: msgs[..n].to_vec(),
                             stimulus: None,
                             latest_result: None,
+                            room_updates: Vec::new(),
                         },
                         budget,
                     )
@@ -5236,7 +5295,10 @@ mod tests {
             // tool-result continuation, the front advances past the fragment.
             let mut clustered: Vec<ChatMessage> = Vec::new();
             for i in 0..30 {
-                clustered.push(ChatMessage::text("user", format!("q{i} {}", "word ".repeat(60))));
+                clustered.push(ChatMessage::text(
+                    "user",
+                    format!("q{i} {}", "word ".repeat(60)),
+                ));
                 clustered.push(ChatMessage::text(
                     "assistant",
                     format!("a{i} {}", "word ".repeat(60)),
@@ -5248,6 +5310,7 @@ mod tests {
                         history: clustered,
                         stimulus: None,
                         latest_result: None,
+                        room_updates: Vec::new(),
                     },
                     budget,
                 )
@@ -5272,6 +5335,7 @@ mod tests {
                 ],
                 stimulus: None,
                 latest_result: None,
+                room_updates: Vec::new(),
             };
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -5362,7 +5426,10 @@ mod tests {
                 BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
                 BurstTurn::attributed(true, "Casper", v3, Some(5)),
             ];
-            let ws = Workspace::new(Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
+            let ws = Workspace::new(Burst::from_turns(
+                crate::identity::ActivityRoom::mint(),
+                turns,
+            ));
             let view = faculty.prompt_view(&ws);
 
             // Exactly ONE assistant rendering of the template survives.
@@ -5638,6 +5705,16 @@ mod tests {
                         .with_working_memory(wm);
                 let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
                 let stimulus = "Review PR #3858 against its actual source.";
+                let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+                    event_id: Uuid::new_v4(),
+                    lamport: 1,
+                    peer_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    text: format!(
+                        "A colleague's additional evidence: {}",
+                        "retained evidence ".repeat(80)
+                    ),
+                });
                 let mut ws = Workspace::new(Burst::from_turns(
                     room,
                     vec![
@@ -5653,9 +5730,13 @@ mod tests {
                     ],
                 ));
                 ws.workspace_deliverable = true;
+                ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
                 ws.broadcast.push(Contribution::context(
                     FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
-                    format!("Held activity context: continue independent source review.{}", "x".repeat(padding)),
+                    format!(
+                        "Held activity context: continue independent source review.{}",
+                        "x".repeat(padding)
+                    ),
                     0.9,
                     "held claims",
                 ));
@@ -5688,6 +5769,13 @@ mod tests {
                 assert_eq!(adapter.call_count(), 1);
                 let seen = adapter.seen.lock().unwrap();
                 let request = &seen[0];
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|message| message.content_text().ends_with(&update.text)),
+                    "room updates must survive alongside the original task and complete result"
+                );
                 assert!(request
                     .messages
                     .iter()
@@ -5719,10 +5807,11 @@ mod tests {
                     schema_tokens,
                     faculty.select_tool_surface(&ws, window).tokens
                 );
-                let wire_tokens = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-                    + LlmDeliberationFaculty::messages_cost(&request.messages)
-                    + schema_tokens
-                    + request.max_tokens.unwrap() as usize;
+                let wire_tokens =
+                    LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
+                        + LlmDeliberationFaculty::messages_cost(&request.messages)
+                        + schema_tokens
+                        + request.max_tokens.unwrap() as usize;
                 assert!(
                     wire_tokens <= window as usize,
                     "wire {wire_tokens} > window {window}"
@@ -5730,7 +5819,7 @@ mod tests {
             }
         }
 
-        // what this catches: an indivisible oversized stimulus OR active result
+        // what this catches: an indivisible oversized stimulus, room update or active result
         // must fault before inference, including self-ticks with no chat turns.
         // It must still publish demand, so refusal cannot freeze a small window.
         #[tokio::test]
@@ -5739,22 +5828,35 @@ mod tests {
             use crate::cognition::working_set::WorkingSetRegistry;
 
             let window = 8192u32;
-            for oversized_stimulus in [true, false] {
+            for oversized_part in 0..3 {
                 let persona = Uuid::new_v4();
                 let adapter = Arc::new(ScriptedAdapter::new(vec![]));
                 let registry = WorkingSetRegistry::new();
                 let wm = Arc::new(WorkingMemory::new(8));
                 wm.set_served_window(window);
                 let oversized = "payload ".repeat(window as usize);
-                let mut ws = if oversized_stimulus {
+                let mut ws = if oversized_part == 0 {
                     Workspace::new(&oversized)
-                } else {
+                } else if oversized_part == 1 {
                     wm.record_receipt(&format!(
                         "{oversized}\nclaimable_now: 29\ntotal_on_board: 43"
                     ));
                     let mut ws = Workspace::new("");
                     ws.turns.clear();
                     ws.self_initiated = true;
+                    ws
+                } else {
+                    wm.record_receipt("complete active result");
+                    let mut ws = Workspace::new("original task stays required");
+                    ws.room_updates = Arc::new(vec![Arc::new(
+                        crate::persona::service_loop::IncomingMessage {
+                            event_id: Uuid::new_v4(),
+                            lamport: 1,
+                            peer_id: Uuid::new_v4(),
+                            room_id: Uuid::new_v4(),
+                            text: oversized,
+                        },
+                    )]);
                     ws
                 };
                 ws.now_ms = Some(1);

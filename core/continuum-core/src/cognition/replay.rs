@@ -67,6 +67,8 @@ struct TraceLine {
     captured_at_ms: u64,
     room_id: String,
     world_state: String,
+    #[serde(default)]
+    room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
     /// The assembled broadcast that reached the decider this tick. Absent on
     /// older traces (pre-context-replay) → empty, handled as "no broadcast".
     #[serde(default)]
@@ -149,9 +151,9 @@ pub struct BudgetLayer {
 
 /// The prompt-budget ledger for the replayed turn: what each layer of her prompt
 /// cost, totalled. `total_tokens = world_state_tokens + context_tokens`, and
-/// `layers` accounts the reconstructed broadcast (the RAG layers she actually
+/// `layers` accounts the reconstructed broadcast and supplemental room inputs (the layers she actually
 /// saw), sorted most-expensive first. Honest about scope: this accounts the
-/// load-bearing CONTENT layers (world_state + broadcast), not the fixed system
+/// load-bearing CONTENT layers (world_state + broadcast + room inputs), not the fixed system
 /// framing — those are the layers you tune, the ones a bad RAG step bloats.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct PromptBudget {
@@ -197,12 +199,55 @@ struct ResolvedBurst {
     room: String,
     source: String,
     broadcast: Vec<Contribution>,
+    room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
+}
+
+impl ResolvedBurst {
+    fn from_trace(line: &TraceLine, room: String, source: String) -> Self {
+        Self {
+            world_state: line.world_state.clone(),
+            room,
+            source,
+            room_updates: line.room_updates.clone(),
+            broadcast: line
+                .context
+                .iter()
+                .map(|c| {
+                    Contribution::context(
+                        FacultyId::from_kebab(&c.faculty),
+                        c.content.clone(),
+                        c.salience,
+                        c.reasoning.clone(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn take_workspace(&mut self, room: crate::identity::ActivityRoom) -> Workspace {
+        let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+            room,
+            self.world_state.clone(),
+        ));
+        ws.room_updates = std::sync::Arc::new(
+            std::mem::take(&mut self.room_updates)
+                .into_iter()
+                .map(std::sync::Arc::new)
+                .collect(),
+        );
+        ws.broadcast = std::mem::take(&mut self.broadcast);
+        ws
+    }
 }
 
 /// Build the prompt-budget ledger from the burst + the reconstructed broadcast.
 /// Every layer line-itemed in the SAME token unit the RAG sources budget against,
 /// sorted most-expensive first — the "obsess over every prompt layer" instrument.
-fn build_budget(world_state: &str, broadcast: &[Contribution]) -> PromptBudget {
+fn build_budget(
+    world_state: &str,
+    broadcast: &[Contribution],
+    room_updates: &[crate::persona::service_loop::IncomingMessage],
+) -> PromptBudget {
     let world_state_tokens = estimate_prompt_tokens(world_state);
     let mut layers: Vec<BudgetLayer> = broadcast
         .iter()
@@ -212,6 +257,16 @@ fn build_budget(world_state: &str, broadcast: &[Contribution]) -> PromptBudget {
             share_pct: 0.0, // filled once we know the total
         })
         .collect();
+    if !room_updates.is_empty() {
+        layers.push(BudgetLayer {
+            faculty: "room-inputs".into(),
+            tokens: room_updates
+                .iter()
+                .map(|m| estimate_prompt_tokens(&m.render_room_update()))
+                .fold(0u32, u32::saturating_add),
+            share_pct: 0.0,
+        });
+    }
     let context_tokens: u32 = layers.iter().map(|l| l.tokens).sum();
     let total_tokens = world_state_tokens.saturating_add(context_tokens);
     if total_tokens > 0 {
@@ -248,6 +303,7 @@ fn resolve_burst(
             world_state: ws.clone(),
             room,
             source: "supplied".to_string(),
+            room_updates: Vec::new(),
             broadcast: Vec::new(),
         });
     }
@@ -286,26 +342,11 @@ fn resolve_burst(
     }
     let line = &lines[idx as usize];
     let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone());
-    // Rebuild the broadcast the decider actually saw from the captured context,
-    // so a deliberation faculty replays against its REAL input — not a blind one.
-    let broadcast = line
-        .context
-        .iter()
-        .map(|c| {
-            Contribution::context(
-                FacultyId::from_kebab(&c.faculty),
-                c.content.clone(),
-                c.salience,
-                c.reasoning.clone(),
-            )
-        })
-        .collect();
-    Ok(ResolvedBurst {
-        world_state: line.world_state.clone(),
+    Ok(ResolvedBurst::from_trace(
+        line,
         room,
-        source: format!("capture@{turn} ({}ms)", line.captured_at_ms),
-        broadcast,
-    })
+        format!("capture@{turn} ({}ms)", line.captured_at_ms),
+    ))
 }
 
 #[derive(Default)]
@@ -337,10 +378,12 @@ impl ActionCommand for CognitionReplay {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
-        let burst = resolve_burst(&p, &persona_uuid)?;
+        let mut burst = resolve_burst(&p, &persona_uuid)?;
         let room = Uuid::parse_str(&burst.room).map_err(|_| {
             CommandError::Invalid(format!("room_id '{}' is not a valid UUID", burst.room))
         })?;
+        let room = crate::identity::ActivityRoom::from_uuid(room)
+            .map_err(|error| CommandError::Invalid(format!("room_id '{}': {error}", burst.room)))?;
 
         // Fork the LIVE cycle the humane way: a measured copy, isolated for the
         // duration, paged back out after — her real mind is never touched.
@@ -386,14 +429,9 @@ impl ActionCommand for CognitionReplay {
 
         // Cost the prompt BEFORE the broadcast moves into the workspace — the
         // ledger of every layer she saw, in the RAG sources' own token unit.
-        let budget = build_budget(&burst.world_state, &burst.broadcast);
+        let budget = build_budget(&burst.world_state, &burst.broadcast, &burst.room_updates);
 
-        let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
-            crate::identity::ActivityRoom::from_uuid(room)
-                .expect("replay room is parsed-or-minted above, never nil"), // parsed-or-minted two lines up; nil is unreachable here
-            burst.world_state.clone(),
-        ));
-        ws.broadcast = burst.broadcast;
+        let ws = burst.take_workspace(room);
         let bids = cycle.replay(&ws, only.as_ref()).await;
 
         drop(isolation);
@@ -452,6 +490,29 @@ crate::register_stateless_command!(CognitionReplay);
 mod tests {
     use super::*;
 
+    // What this catches (c5910be2): a caller-supplied nil room must be refused
+    // before an eval fork is created, rather than panicking after UUID parsing.
+    #[tokio::test]
+    async fn replay_rejects_invalid_activity_room_before_forking() {
+        let persona = Uuid::new_v4();
+        for room in [Uuid::nil().to_string(), "not-a-uuid".into()] {
+            let error = CognitionReplay
+                .run(
+                    &Ctx::default(),
+                    CognitionReplayParams {
+                        persona_id: persona.to_string().into(),
+                        faculty: Some("recall".into()),
+                        world_state: Some("original replay input".into()),
+                        turn: None,
+                        room_id: Some(room),
+                    },
+                )
+                .await
+                .expect_err("invalid room must fail before looking up a live cycle");
+            assert!(matches!(error, CommandError::Invalid(message) if message.contains("room_id")));
+        }
+    }
+
     // What this catches (f098571b): the HOME-absent launch disabled both live
     // writers and made both inspection/replay readers look in a different root.
     // Use the actual sink constructors and readers with the existing isolated
@@ -472,6 +533,7 @@ mod tests {
         let bid = Contribution::context(FacultyId::Recall, grounding, 0.8, "fixture provenance");
         let trace = WorkspaceTrace {
             world_state: request.into(),
+            room_updates: Default::default(),
             room_id: room,
             bids: vec![bid.clone()],
             context_broadcast: vec![bid.clone()],
@@ -554,6 +616,104 @@ mod tests {
         assert_eq!(restored.broadcast[0].content, grounding);
     }
 
+    // The real capture writer, read mirror, reconstruction and LLM request must
+    // agree on coaching input. Older records remain readable with no updates.
+    #[tokio::test]
+    async fn captured_room_inputs_reach_the_replayed_request() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::ai::types::TextGenerationRequest;
+        use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
+        use crate::cognition::workspace::{Faculty, WorkspaceCaptureSink, WorkspaceTrace};
+        use crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink;
+        use crate::persona::service_loop::IncomingMessage;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let room = crate::identity::ActivityRoom::mint();
+        let update = Arc::new(IncomingMessage {
+            event_id: Uuid::new_v4(),
+            lamport: 2,
+            peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            text: "The teammate's updated review target is src/new.rs; check the failing case."
+                .into(),
+        });
+        let task = "Review the original src/lib.rs change and preserve its regression.";
+        let receipt = "The source read completed successfully: regression_case exists.";
+        let context = vec![Contribution::context(
+            FacultyId::from_kebab("working-memory"),
+            receipt,
+            0.9,
+            "action receipt",
+        )];
+        let trace = WorkspaceTrace {
+            world_state: task.into(),
+            room_updates: Arc::new(vec![Arc::clone(&update)]),
+            room_id: room.as_uuid(),
+            bids: context.clone(),
+            context_broadcast: context.clone(),
+            broadcast: context,
+            decision: None,
+            timings: Vec::new(),
+        };
+        {
+            let sink = JsonlWorkspaceCaptureSink::open(dir.path(), persona).unwrap();
+            sink.record(&trace);
+        }
+        let raw = std::fs::read_to_string(dir.path().join(format!("{persona}.jsonl"))).unwrap();
+        let line: TraceLine = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
+        assert_eq!(line.room_updates, vec![update.as_ref().clone()]);
+        let mut burst =
+            ResolvedBurst::from_trace(&line, room.as_uuid().to_string(), "test capture".into());
+        let budget = build_budget(&burst.world_state, &burst.broadcast, &burst.room_updates);
+        assert!(budget
+            .layers
+            .iter()
+            .any(|l| l.faculty == "room-inputs" && l.tokens > 0));
+        let ws = burst.take_workspace(room);
+        assert_eq!(ws.world_state, task);
+        assert_eq!(ws.room_id, room.as_uuid());
+        let requests = Arc::new(Mutex::new(Vec::<TextGenerationRequest>::new()));
+        let adapter =
+            Arc::new(HeuristicInferenceAdapter::new().with_request_recorder(Arc::clone(&requests)));
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+            .with_context_window(32_768);
+        let bid = faculty
+            .contribute(&ws)
+            .await
+            .expect("replayed deliberation");
+        assert!(bid.fault.is_none());
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let text = requests[0]
+            .messages
+            .iter()
+            .map(|m| m.content_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains(task));
+        assert!(
+            requests[0]
+                .system_prompt
+                .as_deref()
+                .is_some_and(|system| system.contains(receipt)),
+            "captured context must reach the replayed system prompt"
+        );
+        assert!(text.contains(&update.render_room_update()));
+        assert_eq!(
+            requests[0].room_id.as_deref(),
+            Some(room.as_uuid().to_string().as_str())
+        );
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(raw.lines().next().unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("room_updates");
+        assert!(serde_json::from_value::<TraceLine>(legacy)
+            .unwrap()
+            .room_updates
+            .is_empty());
+    }
+
     // what this catches: the burst resolver must FAIL LOUD (never an empty burst)
     // when neither a supplied world_state nor a readable capture exists — the
     // no-fallback contract for the factory's input step.
@@ -625,7 +785,7 @@ mod tests {
                 "r",
             ),
         ];
-        let b = build_budget("hello there", &broadcast);
+        let b = build_budget("hello there", &broadcast, &[]);
         assert_eq!(b.world_state_tokens, estimate_prompt_tokens("hello there"));
         assert_eq!(
             b.context_tokens,

@@ -56,7 +56,7 @@ use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// System-level, configurable `PersonaConversation` impl. Public
@@ -64,7 +64,8 @@ use uuid::Uuid;
 /// `#[cfg(test)]`.
 pub struct ScriptedConversation {
     high_water: u64,
-    events: Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>,
+    events: Arc<Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>>,
+    perceived_backlog: VecDeque<Arc<IncomingMessage>>,
     /// Every reply the loop posted, WITH the room it was posted into.
     /// The room is recorded because "she answered" and "she answered
     /// the room that asked" are different claims, and only the second
@@ -94,7 +95,8 @@ impl ScriptedConversation {
     pub fn new() -> Self {
         Self {
             high_water: 0,
-            events: Mutex::new(VecDeque::new()),
+            events: Arc::new(Mutex::new(VecDeque::new())),
+            perceived_backlog: VecDeque::new(),
             said: Mutex::new(Vec::new()),
             primed: AtomicUsize::new(0),
             prime_result: Mutex::new(Ok(())),
@@ -125,6 +127,13 @@ impl ScriptedConversation {
     pub fn with_events(self, events: Vec<Result<Option<IncomingMessage>, String>>) -> Self {
         *self.events.lock().unwrap() = VecDeque::from(events);
         self
+    }
+
+    /// Lease the scripted source so an in-flight tool can inject an arrival at
+    /// an exact boundary, without a sleep, second conversation, or live transport.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn event_feed(&self) -> ScriptedConversationFeed {
+        ScriptedConversationFeed(Arc::clone(&self.events))
     }
 
     /// Set the pre-attach high-water mark — what `high_water_mark`
@@ -212,7 +221,35 @@ impl PersonaConversation for ScriptedConversation {
                 None => Ok(None),
             };
         }
+        if let Some(message) = self.perceived_backlog.pop_front() {
+            return Ok(Some(Arc::unwrap_or_clone(message)));
+        }
         self.events.lock().unwrap().pop_front().unwrap_or(Ok(None))
+    }
+
+    async fn perceive_ready(
+        &mut self,
+    ) -> Result<&std::collections::VecDeque<Arc<IncomingMessage>>, String> {
+        if self.require_prime && self.primed.load(Ordering::SeqCst) == 0 {
+            return Err("ScriptedConversation::perceive_ready called before prime()".into());
+        }
+        let mut events = self
+            .events
+            .lock()
+            .map_err(|_| "scripted conversation lock poisoned".to_string())?;
+        for _ in 0..super::airc_persona_conversation::CATCH_UP_PAGE {
+            if self.perceived_backlog.len() >= super::airc_persona_conversation::INBOX_CAPACITY {
+                return Err(
+                    "retained room attention reached inbox capacity; input remains queued".into(),
+                );
+            }
+            match events.pop_front() {
+                Some(Ok(Some(message))) => self.perceived_backlog.push_back(Arc::new(message)),
+                Some(Err(error)) => return Err(error),
+                Some(Ok(None)) | None => break,
+            }
+        }
+        Ok(&self.perceived_backlog)
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
@@ -224,6 +261,21 @@ impl PersonaConversation for ScriptedConversation {
         &self,
     ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
         self.citizen.clone()
+    }
+}
+
+/// The input side of a scripted conversation; the service remains its sole reader.
+#[derive(Clone)]
+#[cfg(any(test, feature = "test-fixtures"))]
+pub struct ScriptedConversationFeed(Arc<Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>>);
+
+#[cfg(any(test, feature = "test-fixtures"))]
+impl ScriptedConversationFeed {
+    pub fn push(&self, event: Result<Option<IncomingMessage>, String>) {
+        self.0
+            .lock()
+            .expect("scripted input lock poisoned")
+            .push_back(event); // A poisoned fixture cannot safely inject input; fail the simulation explicitly.
     }
 }
 

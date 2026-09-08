@@ -68,7 +68,7 @@ const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
 /// How often the store-backed catch-up pages every subscribed room's tail.
 const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Events paged per room per catch-up tick.
-const CATCH_UP_PAGE: usize = 32;
+pub(crate) const CATCH_UP_PAGE: usize = 32;
 /// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
@@ -342,6 +342,10 @@ pub struct AircPersonaConversation {
     /// A consumed epoch whose async reattach has not finished. `next_message`
     /// is cancellation-safe: a competing service-loop wake cannot lose it.
     refresh_pending: bool,
+    /// Input already perceived during work, still owned for later room attention.
+    perceived_backlog: std::collections::VecDeque<Arc<IncomingMessage>>,
+    /// A live event being admitted; retained across cancellation at the work bridge.
+    ready_event: Option<Arc<TranscriptEvent>>,
     /// The persona's own peer_id, captured at construction. Used by
     /// `next_message` to skip self-loop echoes WITHIN the projection
     /// — the service loop ALSO skips by persona's instance peer_id;
@@ -417,6 +421,8 @@ impl AircPersonaConversation {
             runtime,
             rooms: None,
             refresh_pending: false,
+            perceived_backlog: std::collections::VecDeque::new(),
+            ready_event: None,
             own_peer_id,
             inbox: None,
             pump: None,
@@ -470,6 +476,15 @@ impl AircPersonaConversation {
         }
         self.rejoin_backlog
             .retain(|message| rooms.contains(&message.room_id));
+        self.perceived_backlog
+            .retain(|message| rooms.contains(&message.room_id));
+        if self
+            .ready_event
+            .as_ref()
+            .is_some_and(|event| !rooms.contains(&event.room_id.as_uuid()))
+        {
+            self.ready_event = None;
+        }
         self.rooms = Some(rooms);
         Ok(active)
     }
@@ -611,7 +626,7 @@ impl AircPersonaConversation {
 
 /// In-process inbox depth between the pump and the loop. A turn in progress
 /// can leave the loop away for minutes; 8k events is hours of a busy room.
-const INBOX_CAPACITY: usize = 8_192;
+pub(crate) const INBOX_CAPACITY: usize = 8_192;
 
 /// The live stream is dead when a catch-up tick admits events from the store
 /// while no live frame arrived since the previous tick. The first tick after
@@ -674,48 +689,13 @@ async fn reopen_live_stream(
     }
 }
 
-#[async_trait]
-impl PersonaConversation for AircPersonaConversation {
-    /// Eagerly opens the airc subscribe stream. Idempotent — calling
-    /// twice is a no-op after the first.
-    ///
-    /// Replaces the slice-11 lazy-on-first-next_message subscribe.
-    /// `serve_persona_loop` calls this once at boot so the daemon
-    /// round-trip lands at startup instead of on the first cognition
-    /// turn. The lazy branch in `next_message` stays as a fallback
-    /// for callers that don't call `prime` first (e.g., direct
-    /// integration tests). Per [[no-fallbacks-ever]] the fallback
-    /// has identical semantics — it's not a degraded path, it's a
-    /// later-binding path.
-    async fn prime(&mut self) -> Result<(), String> {
-        if self.rooms.is_some() {
-            return Ok(());
-        }
-        if !self.refresh_membership().await? {
-            return Ok(());
-        }
-        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
-        // this persona. Post-reboot the personas were room-deaf (0 perceptual
-        // decodes) while the core-positron raw-attach path received fine — this
-        // pins whether prime() even ran per persona.
-        crate::probe!(
-            class = "persona.inbound.subscribe_opened",
-            persona = %self.own_peer_id,
-            "persona chat subscribe stream opened (#146)"
-        );
-        // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
-        // first runtime room-join can never replay pre-subscribe history as fresh
-        // perception (the #131 "room starts at join" rule, preserved under replay).
-        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0); // unwrap_or: an unreadable watermark = 0 (never read), the documented floor
-        Ok(())
-    }
-
-    async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
-        let events = self.page_subscribed_rooms(limit).await?;
-        Ok(events.iter().map(|e| e.lamport).max().unwrap_or(0)) // unwrap_or: an empty page has no lamport; 0 = never read
-    }
-
-    async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
+impl AircPersonaConversation {
+    async fn next_message_inner(
+        &mut self,
+        wait: bool,
+        take_retained: bool,
+    ) -> Result<Option<IncomingMessage>, String> {
+        let mut ready_scan_remaining = CATCH_UP_PAGE;
         // Per [[no-fallbacks-ever]]: prime() is the substrate's
         // single contract for opening the subscribe stream. If a
         // caller reaches next_message without having primed, the
@@ -746,10 +726,34 @@ impl PersonaConversation for AircPersonaConversation {
         // over-counts skips for events the conversation already
         // knows aren't relevant.
         loop {
+            if !wait
+                && !self.refresh_pending
+                && !matches!(self.membership_epoch.has_changed(), Ok(true))
+            // Closed receiver means fixed membership, matching the parked changed() branch below.
+            {
+                if ready_scan_remaining == 0 {
+                    return Ok(None);
+                }
+                ready_scan_remaining -= 1;
+            }
             // Rejoin-replayed turns first — they are OLDER than anything the live
             // stream will yield, and ordering is what keeps an addressed kickoff
             // ahead of the chatter that follows it.
-            if !self.refresh_pending && !self.membership_epoch.has_changed().unwrap_or(false) {
+            if !self.refresh_pending && !matches!(self.membership_epoch.has_changed(), Ok(true)) {
+                // A closed fixed-membership receiver cannot announce another refresh.
+                if take_retained {
+                    if let Some(message) = self.perceived_backlog.pop_front() {
+                        return Ok(Some(Arc::unwrap_or_clone(message)));
+                    }
+                }
+                if let Some(event) = self.ready_event.clone() {
+                    let message = self.admit_event(event).await;
+                    self.ready_event = None;
+                    if message.is_some() {
+                        return Ok(message);
+                    }
+                    continue;
+                }
                 if let Some(replayed) = self.rejoin_backlog.pop_front() {
                     return Ok(Some(replayed));
                 }
@@ -790,32 +794,35 @@ impl PersonaConversation for AircPersonaConversation {
                     // store whether the room moved on; if it did, the stream is dead —
                     // re-open it and replay the gap, exactly as a membership change does.
                     _ = tokio::time::sleep_until(self.next_catch_up), if active => Polled::Quiet,
+                    _ = std::future::ready(()), if !wait => return Ok(None),
                 }
             };
             let reason: &'static str = match polled {
-                Polled::Event(ev) => match ev {
-                    None => {
-                        crate::probe!(
-                        class = "persona.inbound.stream_ended",
-                                    persona = %self.own_peer_id,
-                                    "airc subscribe stream ended unrecoverably — airc-lib dropped \
-                                     the subscription (likely wire-schema drift between continuum \
-                                     and airc builds, or the EventStream was released). NOT \
-                                     auto-resubscribing: airc-lib owns transient reconnection, so \
-                                     a terminal end here is a real fault to fix, not a hiccup to heal."
-                                );
-                        return Ok(None);
-                    }
-                    Some(Err(lag)) => {
-                        return Err(format!("live stream lag: {lag}"));
-                    }
-                    Some(Ok(event)) => {
-                        if let Some(msg) = self.admit_event(event).await {
-                            return Ok(Some(msg));
+                Polled::Event(ev) => {
+                    match ev {
+                        None => {
+                            crate::probe!(
+                            class = "persona.inbound.stream_ended",
+                                        persona = %self.own_peer_id,
+                                        "airc subscribe stream ended unrecoverably — airc-lib dropped \
+                                         the subscription (likely wire-schema drift between continuum \
+                                         and airc builds, or the EventStream was released). NOT \
+                                         auto-resubscribing: airc-lib owns transient reconnection, so \
+                                         a terminal end here is a real fault to fix, not a hiccup to heal."
+                                    );
+                            return Ok(None);
                         }
-                        continue;
+                        Some(Err(lag)) => {
+                            return Err(format!("live stream lag: {lag}"));
+                        }
+                        Some(Ok(event)) => {
+                            // Own the event before any await in admission. A cancelled
+                            // ready-drain resumes this same event on its next call.
+                            self.ready_event = Some(event);
+                            continue;
+                        }
                     }
-                },
+                }
                 Polled::Membership => {
                     self.refresh_pending = true;
                     "room membership changed at runtime — refreshing the subscription snapshot"
@@ -896,6 +903,70 @@ impl PersonaConversation for AircPersonaConversation {
             };
         }
     }
+}
+
+#[async_trait]
+impl PersonaConversation for AircPersonaConversation {
+    /// Eagerly opens the airc subscribe stream. Idempotent — calling
+    /// twice is a no-op after the first.
+    ///
+    /// Replaces the slice-11 lazy-on-first-next_message subscribe.
+    /// `serve_persona_loop` calls this once at boot so the daemon
+    /// round-trip lands at startup instead of on the first cognition
+    /// turn. The lazy branch in `next_message` stays as a fallback
+    /// for callers that don't call `prime` first (e.g., direct
+    /// integration tests). Per [[no-fallbacks-ever]] the fallback
+    /// has identical semantics — it's not a degraded path, it's a
+    /// later-binding path.
+    async fn prime(&mut self) -> Result<(), String> {
+        if self.rooms.is_some() {
+            return Ok(());
+        }
+        if !self.refresh_membership().await? {
+            return Ok(());
+        }
+        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
+        // this persona. Post-reboot the personas were room-deaf (0 perceptual
+        // decodes) while the core-positron raw-attach path received fine — this
+        // pins whether prime() even ran per persona.
+        crate::probe!(
+            class = "persona.inbound.subscribe_opened",
+            persona = %self.own_peer_id,
+            "persona chat subscribe stream opened (#146)"
+        );
+        // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
+        // first runtime room-join can never replay pre-subscribe history as fresh
+        // perception (the #131 "room starts at join" rule, preserved under replay).
+        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0); // unwrap_or: an unreadable watermark = 0 (never read), the documented floor
+        Ok(())
+    }
+
+    async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
+        let events = self.page_subscribed_rooms(limit).await?;
+        Ok(events.iter().map(|e| e.lamport).max().unwrap_or(0)) // unwrap_or: an empty page has no lamport; 0 = never read
+    }
+
+    async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
+        self.next_message_inner(true, true).await
+    }
+
+    async fn perceive_ready(
+        &mut self,
+    ) -> Result<&std::collections::VecDeque<Arc<IncomingMessage>>, String> {
+        for _ in 0..CATCH_UP_PAGE {
+            if self.perceived_backlog.len() >= INBOX_CAPACITY {
+                return Err(
+                    "retained room attention reached inbox capacity; input remains queued"
+                        .to_string(),
+                );
+            }
+            match self.next_message_inner(false, false).await? {
+                Some(message) => self.perceived_backlog.push_back(Arc::new(message)),
+                None => break,
+            }
+        }
+        Ok(&self.perceived_backlog)
+    }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
         self.runtime
@@ -962,6 +1033,67 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
 
 #[cfg(test)]
 mod tests {
+    // what this catches: c5910be2 — ready intake must use the real decoder, keep
+    // both rooms, return promptly on an empty inbox, and retain source ownership
+    // if a drive drops its snapshot before submitting another request.
+    #[tokio::test]
+    async fn ready_room_input_is_shared_and_retained_for_later_attention() {
+        use super::*;
+        use crate::persona::airc_citizen::StubAircCitizen;
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let rooms = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let runtime = Arc::new(StubAircCitizen::new(own).with_rooms(rooms.clone()));
+        let mut conversation = AircPersonaConversation::new(runtime);
+        // Lease the existing in-process inbox at the pump/consumer boundary;
+        // no daemon or transport owner is started by this regression.
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        conversation.rooms = Some(rooms.clone());
+        conversation.inbox = Some(rx);
+        let mut ids = Vec::new();
+        for (index, room) in rooms.iter().enumerate() {
+            let id = Uuid::new_v4();
+            ids.push(id);
+            let event = event_from_row(
+                *room,
+                crate::persona::durable_history::RoomRow {
+                    id,
+                    sender: peer,
+                    occurred_at_ms: index as u64,
+                    text: format!("colleague input {index}"),
+                },
+            );
+            tx.send(Ok(Arc::new(event))).await.unwrap();
+        }
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            conversation.perceive_ready(),
+        )
+        .await
+        .expect("ready drain must not wait for another arrival")
+        .unwrap();
+        let snapshot = snapshot.clone();
+        assert_eq!(snapshot.len(), 2);
+        let repeated = conversation.perceive_ready().await.unwrap();
+        for (index, message) in snapshot.iter().enumerate() {
+            assert_eq!(message.event_id, ids[index]);
+            assert_eq!(message.room_id, rooms[index]);
+            assert_eq!(message.peer_id, peer);
+            assert!(
+                Arc::ptr_eq(message, &repeated[index]),
+                "snapshots lease the same input object"
+            );
+        }
+        drop(snapshot);
+        for id in ids {
+            assert_eq!(
+                conversation.next_message().await.unwrap().unwrap().event_id,
+                id
+            );
+        }
+        assert!(conversation.perceive_ready().await.unwrap().is_empty());
+    }
+
     /// what this catches: e0d64552 — the actual membership commands persisted
     /// their changes but bypassed the epoch that refreshes a living stream.
     /// This uses an isolated real scope, not a mocked membership notification.
@@ -1546,7 +1678,6 @@ impl AircPersonaConversation {
         }
         // Every non-chunk event advances the rejoin-replay watermark, so a
         // later reopen replays only what this stream genuinely never saw.
-        self.last_lamport = self.last_lamport.max(event.lamport);
         // #146 diagnostic: EVERY raw event this persona's subscribe
         // stream yields, before any filter. If this probe never fires
         // under a room burst, the stream is empty → airc-lib delivery
@@ -1573,6 +1704,7 @@ impl AircPersonaConversation {
         // event process-wide (the bridge dedups by event id); this is
         // the single emitter the grade-on-done subscriber hears.
         crate::modules::work::bridge_wire_work_event(&event).await;
+        self.last_lamport = self.last_lamport.max(event.lamport);
         // Recover a perceptual room turn. Two on-wire shapes
         // reach a persona's subscribe stream and both are
         // messages it must hear: a peer's plain-text `say()`
