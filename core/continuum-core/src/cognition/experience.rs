@@ -131,6 +131,10 @@ pub struct ExperienceRecord {
     /// The final act→observe world-state (each action's observation folded in) —
     /// the shape of how she got there, for forensics + expansion synthesis.
     pub world_state: String,
+    /// Source-labelled supplemental inputs that accompanied this episode's answer.
+    /// Old records have none. Only the turn's admitted inputs are stored here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub room_updates: Vec<crate::persona::service_loop::IncomingMessage>,
     /// How many times she acted before settling — the effort proxy (near the
     /// budget = struggle). Surfaced today via `SettleOutcome.acts`.
     pub acts: u32,
@@ -159,6 +163,21 @@ pub struct ExperienceRecord {
 }
 
 impl ExperienceRecord {
+    /// Render the full learning input at the teacher boundary, preserving the
+    /// original stored task and each supplemental event's room and sender.
+    pub fn training_prompt(&self) -> String {
+        let mut prompt = self.task.prompt.clone();
+        self.append_room_updates(&mut prompt);
+        prompt
+    }
+
+    fn append_room_updates(&self, prompt: &mut String) {
+        for message in &self.room_updates {
+            prompt.push_str("\n\n");
+            prompt.push_str(&message.render_room_update());
+        }
+    }
+
     /// Capture a lived eval episode in full, at the grading site — BEFORE the lean
     /// `EvalTaskResult` truncates the answer and drops the trajectory. `ok`/`grade`
     /// are the grader's verdict; `settled` carries her lived trajectory.
@@ -169,6 +188,11 @@ impl ExperienceRecord {
             grade: grade.to_string(),
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
+            room_updates: settled
+                .room_updates
+                .iter()
+                .map(|m| m.as_ref().clone())
+                .collect(),
             acts: settled.acts as u32,
             source: ExperienceSource::Eval,
             room: Some(settled.room),
@@ -191,6 +215,7 @@ impl ExperienceRecord {
             grade: result.grade.clone(),
             answer: result.answer.clone(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: result.acts,
             source: ExperienceSource::Eval,
             // The outcome is already folded away at this seam — the room went with
@@ -258,6 +283,11 @@ impl ExperienceRecord {
             },
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
+            room_updates: settled
+                .room_updates
+                .iter()
+                .map(|m| m.as_ref().clone())
+                .collect(),
             acts: settled.acts as u32,
             source: ExperienceSource::Lived,
             room: Some(settled.room),
@@ -286,6 +316,7 @@ impl ExperienceRecord {
             grade: detail.to_string(),
             answer: artifact.to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 0,
             source: ExperienceSource::Eval,
             // Grading is stateless over the artifact — no turn, no room carried.
@@ -336,6 +367,7 @@ impl ExperienceRecord {
             // The lesson itself is the teaching material the synthesizer integrates.
             answer: record.content.clone(),
             world_state: format!("received via memory/share from {shared_by}"),
+            room_updates: Default::default(),
             acts: 0,
             source: ExperienceSource::Received,
             // A received lesson arrives out-of-turn — no room carried.
@@ -471,7 +503,11 @@ pub fn salient_teach_set(
         .iter()
         .filter(|r| detector.assess(r).is_some())
         .filter(|r| r.task.test.is_some())
-        .map(|r| r.task.clone())
+        .map(|r| {
+            let mut task = r.task.clone();
+            r.append_room_updates(&mut task.prompt);
+            task
+        })
         .collect()
 }
 
@@ -678,6 +714,7 @@ mod tests {
             spoken: Some(answer.to_string()),
             acts,
             world_state: world_state.to_string(),
+            room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
@@ -719,6 +756,7 @@ mod tests {
             grade: "error[E0308]: mismatched types — expected String, found &str".to_string(),
             answer: "fn rev(s: &str) -> &str { s }".to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 3,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -786,6 +824,7 @@ mod tests {
             grade: "no match".to_string(),
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 8,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -798,6 +837,7 @@ mod tests {
             grade: "tests passed".to_string(),
             answer: "ok".to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 1,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -810,6 +850,7 @@ mod tests {
             grade: "no match".to_string(),
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 2,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -912,7 +953,8 @@ mod tests {
         );
 
         // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
-        let faulted = SettleOutcome::infra_failure(uuid::Uuid::from_u128(7), "lane 58057 refused qwen3");
+        let faulted =
+            SettleOutcome::infra_failure(uuid::Uuid::from_u128(7), "lane 58057 refused qwen3");
         let lived_fault = ExperienceRecord::from_lived_turn("ping", &faulted);
         assert!(
             !lived_fault.ok,
@@ -935,6 +977,7 @@ mod tests {
             spoken: None,
             acts: 8,
             world_state: "budget exhausted after 8 acts".into(),
+            room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
@@ -1042,6 +1085,7 @@ mod tests {
             grade: "no match".to_string(),
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 2,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -1077,6 +1121,7 @@ mod tests {
             grade: "error[E0308]".to_string(),
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 3,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -1129,6 +1174,7 @@ mod tests {
             grade: "error[E0308]".to_string(),
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 4,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
@@ -1143,6 +1189,7 @@ mod tests {
             spoken: None,
             acts: 8,
             world_state: String::new(),
+            room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
@@ -1365,8 +1412,11 @@ mod tests {
                 &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
                 &mut files,
             );
-            assert!(!files.is_empty(), "the source walk found nothing — the guard \
-                would be vacuously green, which is worse than red");
+            assert!(
+                !files.is_empty(),
+                "the source walk found nothing — the guard \
+                would be vacuously green, which is worse than red"
+            );
 
             let mut callers: Vec<String> = Vec::new();
             for (path, src) in &files {

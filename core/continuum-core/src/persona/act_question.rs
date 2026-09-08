@@ -32,8 +32,8 @@
 //!   refusal is invisible is a gate nobody can debug.
 
 use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
-use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 use crate::persona::supervisor::HostedPersona;
+use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 
 /// How many run-room rows the write-or-release gate reads to count a holder's
 /// acts since her last write. 80 rows was ~15 minutes of a five-coder room
@@ -121,16 +121,14 @@ pub(crate) async fn ask_the_act_question(
     {
         if let Some(citizen) = conversation.stream_citizen() {
             let claims_result = citizen.active_claims().await;
-            let claims_err =
-                claims_result.as_ref().err().map(|e| e.to_string());
+            let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
             let claims = claims_result.unwrap_or_default();
             let held: Vec<&airc_lib::WorkCard> = claims
                 .iter()
                 .filter(|c| {
                     matches!(
                         c.state,
-                        airc_work::CardState::InProgress
-                            | airc_work::CardState::Claimed
+                        airc_work::CardState::InProgress | airc_work::CardState::Claimed
                     )
                 })
                 .collect();
@@ -139,8 +137,9 @@ pub(crate) async fn ask_the_act_question(
             // resolution was ambiguous, her hands stayed at home, and every act
             // landed in her own repo copy (Lorcan, 2026-09-04). The other card
             // stays held; its turn comes when it is the freshest.
-            let held: Vec<&airc_lib::WorkCard> =
-                crate::persona::work_focus::focus_card(held).into_iter().collect();
+            let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_card(held)
+                .into_iter()
+                .collect();
             crate::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
@@ -175,16 +174,20 @@ pub(crate) async fn ask_the_act_question(
                     // `held_work_burst`); paged from the durable store, the
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
-                    let page = crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS).await;
+                    let page =
+                        crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS)
+                            .await;
                     let last_state = match &page {
                         Ok(rows) => {
                             let about: Vec<String> = held
                                 .iter()
                                 .flat_map(|c| {
-                                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
-                                    let inst = crate::commands::benchmark::parse_card_title(&c.title)
-                                        .map(|(_, i)| i)
-                                        .unwrap_or_default();  // unwrap_or: a non-bench title has no instance to scope on
+                                    let id8: String =
+                                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                                    let inst =
+                                        crate::commands::benchmark::parse_card_title(&c.title)
+                                            .map(|(_, i)| i)
+                                            .unwrap_or_default(); // unwrap_or: a non-bench title has no instance to scope on
                                     [id8, inst]
                                 })
                                 .collect();
@@ -209,14 +212,23 @@ pub(crate) async fn ask_the_act_question(
                     );
                     // No page = no note (a fresh card carries none); the absence is not a quantity.
                     let progress = match &page {
-                        Ok(rows) => crate::persona::work_burst::card_progress(rows, ctx.identity.peer_id.as_uuid()),
+                        Ok(rows) => crate::persona::work_burst::card_progress(
+                            rows,
+                            ctx.identity.peer_id.as_uuid(),
+                        ),
                         Err(_) => crate::persona::work_burst::CardProgress::default(),
                     };
                     let acts_without_write = page
                         .as_ref()
-                        .map(|rows| crate::persona::work_burst::acts_since_last_write(rows, ctx.identity.peer_id.as_uuid()))
+                        .map(|rows| {
+                            crate::persona::work_burst::acts_since_last_write(
+                                rows,
+                                ctx.identity.peer_id.as_uuid(),
+                            )
+                        })
                         .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence
-                    if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS {
+                    if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS
+                    {
                         crate::probe!(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
@@ -233,8 +245,11 @@ pub(crate) async fn ask_the_act_question(
                             if crate::commands::benchmark::parse_review_title(&c.title).is_some() {
                                 continue;
                             }
-                            let Some(claim_id) = c.claim_id.clone() else { continue };
-                            let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                            let Some(claim_id) = c.claim_id.clone() else {
+                                continue;
+                            };
+                            let id8: String =
+                                c.card_id.as_uuid().to_string().chars().take(8).collect();
                             let reason = format!(
                                 "released by the substrate: {acts_without_write} acts without a write"
                             );
@@ -270,7 +285,12 @@ pub(crate) async fn ask_the_act_question(
                             }
                         }
                     }
-                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&held, &last_state, acts_without_write, &progress);
+                    let burst_text = crate::persona::work_burst::held_work_burst_gated(
+                        &held,
+                        &last_state,
+                        acts_without_write,
+                        &progress,
+                    );
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually
@@ -284,10 +304,7 @@ pub(crate) async fn ask_the_act_question(
                         burst_text,
                     );
                     let work_framing =
-                        crate::cognition::workspace::TurnFraming::self_thread(
-                            false,
-                        )
-                        .on_workspace();
+                        crate::cognition::workspace::TurnFraming::self_thread(false).on_workspace();
                     // HANDS FOLLOW THE CARD (#456). Her held card may be a
                     // staged benchmark checkout — a real git repo under
                     // `workspace/swe/<instance>`. Without rooting her hands
@@ -331,9 +348,7 @@ pub(crate) async fn ask_the_act_question(
                     let work_hands = match &card_workspace {
                         Some(ws) => {
                             let hands =
-                                crate::cognition::persona_workspace::ActingHands::of(
-                                    &cycle,
-                                );
+                                crate::cognition::persona_workspace::ActingHands::of(&cycle);
                             match crate::cognition::persona_workspace::root_acting_workspace(
                                 &cycle,
                                 &ws.to_string_lossy(),
@@ -373,7 +388,9 @@ pub(crate) async fn ask_the_act_question(
                                         // she never guesses an interpreter.
                                         body.working_memory.pin_fact(
                                             "env",
-                                            &crate::persona::instance_env_fact::instance_env_fact(&ws),
+                                            &crate::persona::instance_env_fact::instance_env_fact(
+                                                &ws,
+                                            ),
                                         );
                                     }
                                     crate::probe!(
@@ -408,11 +425,12 @@ pub(crate) async fn ask_the_act_question(
                         }
                         None => None,
                     };
-                    let work = crate::cognition::act_observe::drive_to_settle(
+                    let work = crate::cognition::act_observe::drive_to_settle_with_input(
                         &cycle,
                         burst,
                         LIVE_MAX_ACTS,
                         work_framing,
+                        conversation,
                     )
                     .await;
                     // Give her back her own hands BEFORE anything else can
@@ -420,10 +438,8 @@ pub(crate) async fn ask_the_act_question(
                     // Acted) must leave her rooted at home (#312).
                     if let Some(hands) = &work_hands {
                         if let Err(e) =
-                            crate::cognition::persona_workspace::restore_acting_workspace(
-                                hands,
-                            )
-                            .await
+                            crate::cognition::persona_workspace::restore_acting_workspace(hands)
+                                .await
                         {
                             tracing::error!(
                                 persona = %ctx.identity.agent_name,
@@ -443,13 +459,9 @@ pub(crate) async fn ask_the_act_question(
                         }
                     }
                     let (work_step, _) =
-                        crate::cognition::act_observe::SettleStep::from_settled(
-                            work,
-                        );
+                        crate::cognition::act_observe::SettleStep::from_settled(work);
                     match work_step {
-                        crate::cognition::act_observe::SettleStep::Spoke(
-                            text,
-                        ) => {
+                        crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —
                             // that report earned its send.
                             crate::probe!(
@@ -463,9 +475,7 @@ pub(crate) async fn ask_the_act_question(
                             // is the A.6 arrival room already resolved
                             // for this turn, so the report lands in the
                             // room whose work it reports on.
-                            if let Err(e) =
-                                conversation.say_in(turn_room, &text).await
-                            {
+                            if let Err(e) = conversation.say_in(turn_room, &text).await {
                                 tracing::warn!(
                                     error = %e,
                                     "work-turn report failed to send"
