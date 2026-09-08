@@ -53,6 +53,15 @@ impl TrackedDir {
         &self.path
     }
 
+    /// The cache CLASS this directory is. Public because a pool's identity must be
+    /// derived from it rather than hardcoded: two `CargoTargetPool`s both answering
+    /// `"disk-cargo-target"` meant `PressureBroker::register` (dedup-by-name)
+    /// silently REPLACED the first with the second, leaving the shared cache
+    /// ungoverned while two boot lines claimed otherwise.
+    pub fn class(&self) -> &'static str {
+        self.name
+    }
+
     /// The cache-class name. `path` and `bytes` already had accessors;
     /// this one was missing, so a pool built over the class had to
     /// re-declare its own name and could drift from the reporter's.
