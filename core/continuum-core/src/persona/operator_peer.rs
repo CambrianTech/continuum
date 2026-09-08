@@ -147,7 +147,7 @@ pub async fn ensure_operator_peer(
             }
             for channel in project_bases.iter() {
                 match rt.subscribe_room(channel.as_str()).await {
-                    Ok(()) => crate::probe!(
+                    Ok(_) => crate::probe!(
                         class = "operator.peer.project_base_subscribed",
                         room = %channel.as_str(),
                         "operator self-peer subscribed the project base room (the org room from the git remote)"
