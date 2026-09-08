@@ -278,8 +278,8 @@ impl ScriptedConversationFeed {
     pub fn push(&self, event: Result<Option<IncomingMessage>, String>) {
         self.0
             .lock()
-            .expect("scripted input lock poisoned")
-            .push_back(event); // A poisoned fixture cannot safely inject input; fail the simulation explicitly.
+            .expect("scripted input lock poisoned") // A poisoned fixture cannot safely inject input; fail the simulation explicitly.
+            .push_back(event);
     }
 }
 

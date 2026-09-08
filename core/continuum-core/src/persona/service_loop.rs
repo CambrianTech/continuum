@@ -2599,10 +2599,11 @@ async fn run_self_cycle(
         ctx.identity.peer_id,
         tick_room,
     );
+    let room_invariant =
+        "focus room comes from a live claim's real room; default_room is minted v4 — never nil";
+    let activity_room = crate::identity::ActivityRoom::from_uuid(tick_room).expect(room_invariant); // claim rooms are spawned real; default_room minted v4 — nil unreachable
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        crate::identity::ActivityRoom::from_uuid(tick_room).expect(
-            "focus room comes from a live claim's real room; default_room is minted v4 — never nil",
-        ), // claim rooms are spawned real; default_room minted v4 — nil unreachable
+        activity_room,
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
