@@ -40,27 +40,32 @@
 //! is a snapshot cache with interior sharing, so this is a read, not a fetch: no
 //! daemon I/O on the compose path.
 //!
-//! ## ⚠️ BEFORE YOU SWAP A LIVE SOURCE ONTO THIS — read this first
+//! ## Room scope: use [`ViewStateRagSource::per_room`], never a bound room
 //!
-//! The obvious next move is to replace `room_roster_source` at its binding site
-//! (`persona/supervisor.rs`, the sanctioned "RAG sources … bound on the brain at
-//! boot" seam) with `ViewStateRagSource<RosterViewState>`. **Do not, yet.**
+//! **Superseded 2026-09-07 — the section that stood here said "do not swap a live
+//! source onto this, yet", because a single `Substrate` is keyed by kind alone and
+//! could hold only the FOCUSED room's roster.** That prerequisite has since been
+//! met: `PerRoomSubstrates` gives every room its own substrate, and
+//! `ipc/positron_source.rs::sink` writes EVERY room's view into it unconditionally,
+//! mirroring only the focused room onto the node substrate. The old text is left
+//! described rather than deleted because it was read as current during the #3862
+//! diagnosis and sent it one hop sideways.
 //!
-//! The `Substrate` cache is keyed by **kind alone**. `continuum_positron`'s
-//! `revisions.rs` names the fix as a future extension: *"multiple live instances
-//! (per-room widgets), the key extends from the bare kind string to a
-//! `(room_id, kind)` tuple."* Until that lands, the node substrate holds exactly
-//! ONE room's roster — the focused room's.
+//! What replaced it is a rule with a sharper edge, learned by shipping the bug the
+//! old text warned about in a different shape: the source was bound with
+//! `for_room(identity.default_room)`, one handle resolved at construction. The room
+//! gate then abstained on every turn the citizen took anywhere else — 662 of 873
+//! ticks, bound #general, every turn in #continuum — and she stood among people
+//! seeing nobody. Personas are first-class MULTI-room subscribers
+//! ([[personas-are-first-class-multi-room-subscribers]]); a room fixed at boot is
+//! not a room they stay in.
 //!
-//! So a swap today would trade a source that is sometimes wrong for one that is
-//! reliably EMPTY: this adapter's room gate correctly abstains for any persona
-//! whose turn is in a different room than the focused one, and personas are
-//! first-class MULTI-room subscribers ([[personas-are-first-class-multi-room-subscribers]]).
-//! Most citizens would go blind rather than mis-sighted. That is not a repair.
-//!
-//! **The prerequisite is per-room instancing (`(room_id, kind)`).** With it, this
-//! adapter serves every room correctly and the bespoke sources retire. Without it,
-//! this module is a proven seam waiting on its substrate.
+//! So: a **room-scoped** kind (one whose [`RagRenderable::room`] answers `Some`)
+//! is constructed with [`ViewStateRagSource::per_room`], which takes the REGISTRY
+//! and resolves the turn's room per delivery. A **node-scoped** kind (the bench
+//! board — one global fold, `room() == None`) keeps [`ViewStateRagSource::new`].
+//! The two constructors exist so the wrong binding is unstatable: there is no way
+//! to hand a room-scoped source a single room.
 //!
 //! ## Density, not truncation
 //!
