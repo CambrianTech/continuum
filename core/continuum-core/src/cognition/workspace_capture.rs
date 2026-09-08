@@ -32,6 +32,8 @@ use super::workspace::{
 /// v2 added per-faculty `timings` (the speed axis / dashboard feed).
 const SCHEMA_VERSION: u32 = 2;
 
+pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/workspace-traces";
+
 /// One faculty's bid, projected to a serializable shape. The internal
 /// [`Contribution`] is intentionally NOT `Serialize` (it's a live cognition
 /// type) — we own the wire format here so the capture schema can evolve
@@ -125,6 +127,17 @@ pub struct JsonlWorkspaceCaptureSink {
 }
 
 impl JsonlWorkspaceCaptureSink {
+    /// Use the same native-aware fixture root as introspection and replay.
+    pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
+        let dir = crate::persona::recorder::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve capture home directory",
+            )
+        })?;
+        Self::open(&dir, persona_id)
+    }
+
     /// Open (create + append) the per-persona trace file under `dir`, creating
     /// `dir` if needed. Returns an error only on filesystem failure; the caller
     /// degrades to `Noop` capture on error (never fails persona spawn).

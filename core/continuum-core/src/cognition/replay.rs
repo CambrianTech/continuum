@@ -39,9 +39,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 /// Where the live cycle writes its per-persona workspace traces (mirror of
 /// `persona_workspace`'s capture wiring). The replay reads the SAME files.
 fn traces_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces"))
+    crate::persona::recorder::fixture_dir(super::workspace_capture::FIXTURE_DIR)
 }
 
 /// One captured bid from the assembled `context` (the broadcast the decider saw).
@@ -255,7 +253,7 @@ fn resolve_burst(
     }
 
     let dir = traces_dir()
-        .ok_or_else(|| CommandError::Invalid("HOME unset — cannot locate workspace traces; pass `world_state` to replay against a supplied burst".into()))?;
+        .ok_or_else(|| CommandError::Invalid("cannot resolve capture home directory; pass `world_state` to replay against a supplied burst".into()))?;
     let path = dir.join(format!("{persona_id}.jsonl"));
     let raw = std::fs::read_to_string(&path).map_err(|e| {
         CommandError::Invalid(format!(
@@ -454,6 +452,108 @@ crate::register_stateless_command!(CognitionReplay);
 mod tests {
     use super::*;
 
+    // What this catches (f098571b): the HOME-absent launch disabled both live
+    // writers and made both inspection/replay readers look in a different root.
+    // Use the actual sink constructors and readers with the existing isolated
+    // native-home seam, not hand-authored JSON or process environment mutation.
+    #[test]
+    fn native_home_capture_round_trips_through_inspection_and_replay() {
+        use crate::ai::types::{ChatMessage, FinishReason, TextGenerationResponse, UsageMetrics};
+        use crate::cognition::prompt_capture::{JsonlPromptCaptureSink, PromptCaptureSink};
+        use crate::cognition::workspace::{WorkspaceCaptureSink, WorkspaceTrace};
+        use crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink;
+
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let persona = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let request = "Review the subscribed-room change and report its actual receipt.";
+        let grounding = "The ongoing review belongs to this room.";
+        let bid = Contribution::context(FacultyId::Recall, grounding, 0.8, "fixture provenance");
+        let trace = WorkspaceTrace {
+            world_state: request.into(),
+            room_id: room,
+            bids: vec![bid.clone()],
+            context_broadcast: vec![bid.clone()],
+            broadcast: vec![bid],
+            decision: None,
+            timings: Vec::new(),
+        };
+        let workspace = JsonlWorkspaceCaptureSink::open_for_persona(persona).unwrap();
+        workspace.record(&trace);
+        drop(workspace);
+
+        let response = TextGenerationResponse {
+            text: "The source review is complete.".into(),
+            finish_reason: FinishReason::Stop,
+            model: "fixture-model".into(),
+            provider: "fixture".into(),
+            usage: UsageMetrics::default(),
+            response_time_ms: 1,
+            request_id: "capture-roundtrip".into(),
+            content: None,
+            tool_calls: None,
+            reasoning: None,
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let prompt = JsonlPromptCaptureSink::open_for_persona(persona).unwrap();
+        prompt.record(
+            persona,
+            room,
+            "stimulus",
+            0,
+            grounding,
+            &[ChatMessage::text("user", request)],
+            &[],
+            &response,
+        );
+        drop(prompt);
+
+        let persona_text = persona.to_string();
+        for (relative, field, expected) in [
+            (
+                super::super::workspace_capture::FIXTURE_DIR,
+                "world_state",
+                request,
+            ),
+            (
+                super::super::prompt_capture::FIXTURE_DIR,
+                "system",
+                grounding,
+            ),
+        ] {
+            assert!(home
+                .path()
+                .join(relative)
+                .join(format!("{persona}.jsonl"))
+                .is_file());
+            let rows =
+                super::super::introspect_commands::tail_persona_jsonl(relative, &persona_text, 1)
+                    .unwrap();
+            assert_eq!(rows.len(), 1);
+            let row: serde_json::Value = serde_json::from_str(&rows[0]).unwrap();
+            assert_eq!(row[field], expected);
+            assert_eq!(row["room_id"], room.to_string());
+        }
+        let restored = resolve_burst(
+            &CognitionReplayParams {
+                persona_id: persona_text.into(),
+                faculty: None,
+                world_state: None,
+                turn: None,
+                room_id: None,
+            },
+            &persona,
+        )
+        .unwrap();
+        assert_eq!(restored.world_state, request);
+        assert_eq!(restored.room, room.to_string());
+        assert_eq!(restored.broadcast.len(), 1);
+        assert_eq!(restored.broadcast[0].content, grounding);
+    }
+
     // what this catches: the burst resolver must FAIL LOUD (never an empty burst)
     // when neither a supplied world_state nor a readable capture exists — the
     // no-fallback contract for the factory's input step.
@@ -494,7 +594,10 @@ mod tests {
         assert_eq!(b.source, "supplied");
         // #425: a replay with no named room MINTS a real activity — never nil.
         let minted = Uuid::parse_str(&b.room).expect("room is a real uuid");
-        assert!(!minted.is_nil(), "an unnamed replay room is minted, not nil");
+        assert!(
+            !minted.is_nil(),
+            "an unnamed replay room is minted, not nil"
+        );
         // A bare supplied burst carries NO broadcast — this is the invariant the
         // run() guard relies on to refuse a blind deliberation replay.
         assert!(
