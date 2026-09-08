@@ -47,6 +47,11 @@ skipped_known_red: number,
  */
 skipped_already_on_board: number, 
 /**
+ * Instances a citizen's card already resolved: they stay in the round's sample and
+ * its score, and are not offered as work again (2026-09-08).
+ */
+skipped_already_resolved: number, 
+/**
  * Redundant duplicate cards CLOSED by this call (only when `prune` was set).
  * Cards under a live claim are never counted here because they are never
  * closed — see `contended_tasks`.

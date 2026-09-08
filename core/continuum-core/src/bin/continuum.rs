@@ -75,9 +75,34 @@ async fn main() {
     }
 }
 
+fn local_help_requested(command: &str, args: &[String]) -> bool {
+    matches!(command, "-h" | "--help" | "help")
+        || (matches!(
+            command,
+            "start"
+                | "reboot"
+                | "restart"
+                | "boot"
+                | "stop"
+                | "desktop"
+                | "ui"
+                | "orphans"
+                | "deploy-verify"
+                | "verify"
+        ) && args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")))
+}
+
 async fn run() -> Result<(), CliError> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(usage)?;
+    let rest: Vec<String> = args.collect();
+    // Lifecycle verbs bypass remote command dispatch. Handle their help before
+    // any checkout registration, process inspection, stop, build, or launch.
+    if local_help_requested(&first, &rest) {
+        eprintln!("{}", usage());
+        return Ok(());
+    }
+    let mut args = rest.into_iter();
     // Every CLI run from inside a repo records that checkout for the core
     // (repo-card staging reads it); the first deploy after #3706 would otherwise
     // start with an empty registry until the next `start`/`reboot`.
@@ -2340,7 +2365,7 @@ fn locate_core_server_binary() -> Option<PathBuf> {
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Ok(home) = home_dir().map(PathBuf::from) {
         let candidate = home.join(".continuum").join("bin").join(BIN);
         if candidate.is_file() {
             return Some(candidate);
@@ -2398,6 +2423,32 @@ fn tail(path: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Regression for card 25fadb8f: reboot --help stopped a live core. Every
+    // local verb must take the help return, including when --force is present;
+    // remote verbs must retain their schema-derived help path.
+    #[test]
+    fn lifecycle_help_precedes_actions_and_remote_help_stays_remote() {
+        for command in [
+            "start", "reboot", "restart", "boot", "stop", "desktop", "ui", "orphans",
+            "deploy-verify", "verify",
+        ] {
+            for flag in ["-h", "--help"] {
+                assert!(super::local_help_requested(
+                    command,
+                    &["--force".into(), flag.into()]
+                ));
+            }
+            assert!(!super::local_help_requested(command, &["--force".into()]));
+        }
+        for command in ["help", "-h", "--help"] {
+            assert!(super::local_help_requested(command, &[]));
+        }
+        assert!(!super::local_help_requested(
+            "serving/status",
+            &["--help".into()]
+        ));
+    }
+
     // what this catches: the direct-exec launch path losing the manifest's
     // runtime library dirs. On a CUDA Windows node that loss is fatal BEFORE
     // main() — STATUS_DLL_NOT_FOUND (0xC0000135), no output, empty start log,
