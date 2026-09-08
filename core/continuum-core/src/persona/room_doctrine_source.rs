@@ -140,26 +140,6 @@ enum Outcome {
     BudgetTooSmall,
 }
 
-impl Outcome {
-    fn code(self) -> u8 {
-        self as u8
-    }
-    fn from_code(c: u8) -> Self {
-        match c {
-            1 => Self::Delivered,
-            2 => Self::CrossPersona,
-            3 => Self::NilRoom,
-            4 => Self::NotObservedInReadWindow,
-            5 => Self::ReadFailed,
-            6 => Self::BudgetTooSmall,
-            // 0 and anything unrecognised: nothing observed. `from_code` only ever
-            // reads back what `code` wrote, so the fallthrough is unreachable in
-            // practice -- it is written this way because a panic here would take
-            // down cognition to report a logging detail.
-            _ => Self::Unobserved,
-        }
-    }
-}
 
 /// RoomDoctrineSource — persona-bound, reads the room doctrine from any
 /// `AircDoctrineReader`.
@@ -185,7 +165,9 @@ pub struct RoomDoctrineSource {
     ///
     /// Bounded by the persona's subscribed rooms, which is a handful; a room she
     /// never takes a turn in never gets an entry.
-    observed: std::sync::Mutex<std::collections::HashMap<Option<uuid::Uuid>, (Outcome, u64)>>,
+    observed: std::sync::Mutex<
+        crate::cognition::bounded_room_ledger::BoundedRoomLedger<Option<uuid::Uuid>, (Outcome, u64)>,
+    >,
 }
 
 impl RoomDoctrineSource {
@@ -194,7 +176,11 @@ impl RoomDoctrineSource {
             persona_id,
             room_id: None,
             reader,
-            observed: std::sync::Mutex::new(std::collections::HashMap::new()),
+            observed: std::sync::Mutex::new(
+                crate::cognition::bounded_room_ledger::BoundedRoomLedger::new(
+                    crate::cognition::bounded_room_ledger::ROOMS_TRACKED,
+                ),
+            ),
         }
     }
 
@@ -219,9 +205,26 @@ impl RoomDoctrineSource {
     ///
     /// So the two probes count different populations: the faculty's streak counts
     /// TICKS WITHOUT A BID; this outcome is the last ACTUAL READ, which on a
-    /// cached path may be several ticks old. The probe therefore carries
-    /// `observed_age_ms` — the reader can see how stale the observation is instead
-    /// of assuming it is this tick's.
+    /// cached path may be several ticks old.
+    ///
+    /// The probe carries `since_previous_evaluation_ms`, and the name has now been
+    /// corrected TWICE, which is worth recording because both errors were the
+    /// same one.
+    ///
+    /// It was first `observed_age_ms`, described as the age of the observation at
+    /// this tick. It is not: this function runs only on a source evaluation, every
+    /// evaluation rewrites the timestamp (transition or not), and cache hits never
+    /// reach here at all.
+    ///
+    /// It was then `since_previous_read_ms` — still wrong, and @Astra caught that
+    /// too. `CrossPersona` and `NilRoom` both return BEFORE any reader I/O, so an
+    /// interval bounded by one of those did not span a read at all. EVALUATION is
+    /// the honest word: the span between the last two times this source was asked
+    /// and answered, whatever it did to answer.
+    ///
+    /// Naming a measurement for the thing you wish it measured is how a diagnostic
+    /// lies quietly, and doing it twice in one PR is why the name is now derived
+    /// from the code path rather than from the intent.
     ///
     /// Returns `true` when it emitted, so the transition rule is testable without
     /// standing up a tracing subscriber to watch for the probe.
@@ -250,7 +253,7 @@ impl RoomDoctrineSource {
             effective_room = ?room,
             from = ?prev_outcome,
             to = ?outcome,
-            observed_age_ms = now.saturating_sub(prev_at),
+            since_previous_evaluation_ms = now.saturating_sub(prev_at),
             "room-doctrine outcome changed for THIS room — an empty delivery now              says WHICH empty it is (unobserved-in-window vs read-failed vs gated              out), and how old the previous observation was"
         );
         true
@@ -623,31 +626,6 @@ mod tests {
             assert_eq!(src.observed_in(None), Outcome::Unobserved);
         }
 
-        // what this catches: the code<->enum round-trip the stored representation
-        // relies
-        // on. A silent collision (two outcomes sharing a code) would merge two
-        // distinct absences back into one, undoing this whole change while every
-        // other test still passed.
-        #[test]
-        fn every_outcome_survives_the_atomic_round_trip_distinctly() {
-            let all = [
-                Outcome::Unobserved,
-                Outcome::Delivered,
-                Outcome::CrossPersona,
-                Outcome::NilRoom,
-                Outcome::NotObservedInReadWindow,
-                Outcome::ReadFailed,
-                Outcome::BudgetTooSmall,
-            ];
-            for o in all {
-                assert_eq!(Outcome::from_code(o.code()), o, "round-trip for {o:?}");
-            }
-            let mut codes: Vec<u8> = all.iter().map(|o| o.code()).collect();
-            codes.sort_unstable();
-            let before = codes.len();
-            codes.dedup();
-            assert_eq!(before, codes.len(), "two outcomes must never share a code");
-        }
     }
 
     // what this catches: #443 — a citizen taking a turn in a per-run BENCH room
