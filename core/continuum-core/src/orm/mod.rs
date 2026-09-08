@@ -21,7 +21,6 @@
 //! - JSON hydration: Automatically parse JSON fields
 
 pub mod adapter;
-pub mod batch;
 pub mod connection_manager;
 pub mod entity;
 pub mod migration;
@@ -36,7 +35,6 @@ pub mod vector;
 mod derive_test;
 
 pub use adapter::StorageAdapter;
-pub use batch::OrmBatch;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
 pub use entity::{
     base_entity_fields, is_base_entity_column, BaseEntity, OrmEntity, OrmEntityRegistry,
