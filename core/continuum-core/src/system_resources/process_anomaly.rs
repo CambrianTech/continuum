@@ -34,16 +34,36 @@ pub fn parse_ps_rss(out: &str) -> Vec<ResidentProcess> {
         .collect()
 }
 
+/// Why a `ps` read produced no rows — a failed read is never an empty list (card
+/// c7ae34b2: a read that could not complete must not return the empty value of its
+/// success type; five instances on 2026-09-08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsReadFailed {
+    /// `ps` could not be spawned or exited with an error.
+    Spawn,
+    /// `ps` did not finish inside the bound; the reader thread was abandoned.
+    Timeout,
+}
+
+impl std::fmt::Display for PsReadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn => f.write_str("ps could not be run"),
+            Self::Timeout => f.write_str("ps did not finish inside the bound"),
+        }
+    }
+}
+
 /// Processes above `floor_bytes`, largest first. Bounded: the read runs on its own
-/// thread and is abandoned after `timeout`; a failed or slow read returns an EMPTY list,
-/// never a guess.
+/// thread and is abandoned after `timeout`. A failed or slow read is an `Err` naming
+/// why — never an empty list that reads as "nothing to name".
 ///
 /// The first cut polled `try_wait` and read stdout only after exit. `ps -axo` on a
 /// developer Mac prints more than the 64 KB pipe buffer (700 processes with full comm
 /// paths), so ps blocked on a full pipe, never exited, the 2 s bound killed it, and the
 /// monitor named nothing while fseventsd sat at 21 GB (2026-09-08 03:3xZ, batch13).
 /// `output()` drains stdout while waiting; the timeout wraps the whole call.
-pub fn residents_above(floor_bytes: u64, timeout: Duration) -> Vec<ResidentProcess> {
+pub fn residents_above(floor_bytes: u64, timeout: Duration) -> Result<Vec<ResidentProcess>, PsReadFailed> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let out = Command::new("ps")
@@ -53,15 +73,16 @@ pub fn residents_above(floor_bytes: u64, timeout: Duration) -> Vec<ResidentProce
         let _ = tx.send(out);
     });
     let text = match rx.recv_timeout(timeout) {
-        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).to_string(),
-        _ => return Vec::new(),
+        Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        Ok(_) => return Err(PsReadFailed::Spawn),
+        Err(_) => return Err(PsReadFailed::Timeout),
     };
     let mut rows: Vec<ResidentProcess> = parse_ps_rss(&text)
         .into_iter()
         .filter(|p| p.rss_bytes >= floor_bytes)
         .collect();
     rows.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
-    rows
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -90,7 +111,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_real_ps_read_names_this_process() {
-        let rows = residents_above(0, Duration::from_secs(5));
+        let rows = residents_above(0, Duration::from_secs(5)).expect("ps must run on this box"); // expect: the test's premise
         let me = std::process::id();
         assert!(rows.iter().any(|r| r.pid == me), "ps read returned {} rows, none is pid {me}", rows.len());
     }
