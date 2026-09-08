@@ -77,7 +77,8 @@
 //! Making it genuinely unstatable means splitting the scope into the type — a
 //! room-scoped and a node-scoped marker, `new` bounded on one and `per_room` on
 //! the other, so `room()` returning `Some`/`None` stops being a convention. That
-//! is a follow-up, not a claim to make here in the meantime.
+//! is issue #3881 (with a compile-fail test as its acceptance), not a claim to
+//! make here in the meantime.
 //!
 //! ## Density, not truncation
 //!
