@@ -521,6 +521,113 @@ fn do_delete(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<bo
     }
 }
 
+/// Apply ONE batch operation on an already-open transaction.
+///
+/// Returns `Err` on any failure so [`do_batch`] can roll the whole batch back.
+/// The pre-transaction version of this logic folded failures into a
+/// `{"success": false}` JSON element and kept going, which is what let a batch
+/// half-apply while reporting success.
+fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> {
+    match op.operation_type {
+        BatchOperationType::Create => {
+            let (Some(id), Some(data)) = (op.id, op.data) else {
+                return Err("create requires both id and data".to_string());
+            };
+            let record = DataRecord {
+                id,
+                collection: op.collection,
+                data,
+                metadata: RecordMetadata::default(),
+            };
+            let r = do_create(conn, record);
+            if r.success {
+                Ok(json!({"success": true}))
+            } else {
+                Err(r.error.unwrap_or_else(|| "create failed".to_string()))
+            }
+        }
+        BatchOperationType::Read => {
+            let Some(id) = op.id else {
+                return Err("read requires an id".to_string());
+            };
+            let r = do_read(conn, &op.collection, &id);
+            if r.success {
+                Ok(json!({"success": true, "data": r.data}))
+            } else {
+                Err(r.error.unwrap_or_else(|| "read failed".to_string()))
+            }
+        }
+        BatchOperationType::Update => {
+            let (Some(id), Some(data)) = (op.id, op.data) else {
+                return Err("update requires both id and data".to_string());
+            };
+            let r = do_update(conn, &op.collection, &id, data, true);
+            if r.success {
+                Ok(json!({"success": true}))
+            } else {
+                Err(r.error.unwrap_or_else(|| "update failed".to_string()))
+            }
+        }
+        BatchOperationType::Delete => {
+            let Some(id) = op.id else {
+                return Err("delete requires an id".to_string());
+            };
+            let r = do_delete(conn, &op.collection, &id);
+            if r.success {
+                Ok(json!({"success": true}))
+            } else {
+                Err(r.error.unwrap_or_else(|| "delete failed".to_string()))
+            }
+        }
+    }
+}
+
+/// Run a batch ATOMICALLY: all operations commit, or none do.
+///
+/// `BEGIN IMMEDIATE` takes the write lock up front rather than upgrading a read
+/// lock mid-batch, so a concurrent writer cannot wedge us halfway through. The
+/// caller holds the writer mutex for the whole call, so this connection is never
+/// already inside a transaction.
+///
+/// **Why this is all-or-nothing rather than best-effort:** a partially applied
+/// batch is indistinguishable, to the caller, from a complete one — the previous
+/// implementation returned `StorageResult::ok` with the failures buried in the
+/// per-operation JSON, and `supports_transactions: true` was declared by this
+/// adapter while nothing here ever opened a transaction. A parent row that
+/// survives its failed children is a record claiming more than actually happened.
+fn do_batch(conn: &Connection, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
+    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+        return StorageResult::err(format!("Failed to open batch transaction: {}", e));
+    }
+
+    let mut results = Vec::with_capacity(operations.len());
+    for (index, op) in operations.into_iter().enumerate() {
+        match do_batch_one(conn, op) {
+            Ok(value) => results.push(value),
+            Err(e) => {
+                // Roll back FIRST, then report. The rollback failing does not
+                // change the verdict — the batch did not succeed either way.
+                if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
+                    return StorageResult::err(format!(
+                        "Batch operation {} failed ({}), and rollback also failed: {}",
+                        index, e, rollback_err
+                    ));
+                }
+                return StorageResult::err(format!(
+                    "Batch operation {} failed, entire batch rolled back: {}",
+                    index, e
+                ));
+            }
+        }
+    }
+
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        let _ = conn.execute_batch("ROLLBACK");
+        return StorageResult::err(format!("Failed to commit batch: {}", e));
+    }
+    StorageResult::ok(results)
+}
+
 /// SQL keyword for a CascadeRule. Same mapping for sqlite + postgres
 /// (both speak SQL-standard cascade keywords).
 fn cascade_rule_sql(rule: super::types::CascadeRule) -> &'static str {
@@ -1175,51 +1282,22 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
-        let mut results = Vec::with_capacity(operations.len());
-        for op in operations {
-            let result = match op.operation_type {
-                BatchOperationType::Create => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
-                        let record = DataRecord {
-                            id,
-                            collection: op.collection,
-                            data,
-                            metadata: RecordMetadata::default(),
-                        };
-                        let r = self.create(record).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
-                    }
-                }
-                BatchOperationType::Read => {
-                    if let Some(id) = op.id {
-                        let r = self.read(&op.collection, &id).await;
-                        json!({"success": r.success, "data": r.data, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
-                    }
-                }
-                BatchOperationType::Update => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
-                        let r = self.update(&op.collection, &id, data, true).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
-                    }
-                }
-                BatchOperationType::Delete => {
-                    if let Some(id) = op.id {
-                        let r = self.delete(&op.collection, &id).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
-                    }
-                }
-            };
-            results.push(result);
-        }
-        StorageResult::ok(results)
+        // Every operation runs on the SINGLE writer connection inside one
+        // transaction. Dispatching through `self.create(...)` per operation (as
+        // this did before) autocommits each row independently, which is why the
+        // batch could half-apply.
+        let conn = match self.get_writer() {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_batch(&conn, operations)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
@@ -1332,6 +1410,88 @@ mod tests {
         assert!(read_result.success, "Read failed: {:?}", read_result.error);
         let data = read_result.data.unwrap();
         assert_eq!(data.data["name"], "test-user");
+    }
+
+    // what this catches: a batch that HALF-APPLIES while reporting success. Until this
+    // test, `batch` was a plain loop of individually autocommitting create/update calls
+    // that folded each failure into a {"success": false} JSON element and returned
+    // StorageResult::ok regardless — so a parent row survived a failing child and the
+    // caller could not tell. Both adapters declared supports_transactions: true while
+    // neither ever opened a transaction (the flag is read by nothing).
+    //
+    // The consumer is card 0d51573a: a StagedCredit parent and its StagedCreditGeneration
+    // children are written as ONE unit. A surviving parent whose children were rolled
+    // back is a credit record whose generation provenance silently vanished — the exact
+    // "claims cleaner provenance than actually happened" defect the card exists to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failing_operation_rolls_back_every_earlier_operation_in_the_batch() {
+        let (adapter, _dir) = setup_adapter().await;
+
+        let parent = "staged-credit-parent".to_string();
+
+        // The second operation is malformed (Create with no data), so it fails AFTER
+        // the first has already been applied inside the transaction.
+        let failing = vec![
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "staged_credit".to_string(),
+                id: Some(parent.clone()),
+                data: Some(json!({"cardId": "0d51573a"})),
+            },
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "staged_credit".to_string(),
+                id: Some("staged-credit-child".to_string()),
+                data: None,
+            },
+        ];
+
+        let result = adapter.batch(failing).await;
+        assert!(
+            !result.success,
+            "a batch containing a failing operation must not report success"
+        );
+
+        // THE INVARIANT: the operation that already succeeded must not survive.
+        let orphan = adapter.read("staged_credit", &parent).await;
+        assert!(
+            !orphan.success,
+            "the parent row survived a rolled-back batch — the batch half-applied"
+        );
+
+        // POSITIVE CONTROL: without this, an implementation that rolled back
+        // unconditionally (or never wrote at all) would pass every assertion above.
+        let good = vec![
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "staged_credit".to_string(),
+                id: Some(parent.clone()),
+                data: Some(json!({"cardId": "0d51573a"})),
+            },
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "staged_credit".to_string(),
+                id: Some("staged-credit-child".to_string()),
+                data: Some(json!({"stagedCreditId": "staged-credit-parent"})),
+            },
+        ];
+        let committed = adapter.batch(good).await;
+        assert!(
+            committed.success,
+            "a well-formed batch must commit: {:?}",
+            committed.error
+        );
+        assert!(
+            adapter.read("staged_credit", &parent).await.success,
+            "a committed batch must leave its rows readable"
+        );
+        assert!(
+            adapter
+                .read("staged_credit", &"staged-credit-child".to_string())
+                .await
+                .success,
+            "a committed batch must leave EVERY row readable, not just the first"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
