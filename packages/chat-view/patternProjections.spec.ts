@@ -50,6 +50,18 @@ const vm: ChatViewModel = {
 };
 
 describe('chat → pattern projections', () => {
+  // Regression b742642d: project rooms must carry a board body, and a late
+  // snapshot from another room must never appear as the selected room's work.
+  it('projects project content with only its own board snapshot', () => {
+    const project = { ...vm, purpose: 'project' };
+    const board = { room_id: vm.roomId, lanes: [], cards: [] };
+    expect(chatWorkspace(project, { board }).content).toMatchObject({
+      purpose: 'project', body: { title: vm.roomName, board: { status: 'ready', snapshot: board }, chat: { messages: vm.messages } },
+    });
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).toMatchObject({ board: { status: 'rejected', reason: 'foreign-room' } });
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).not.toHaveProperty('board.snapshot');
+    expect(chatWorkspace(project).content.body).toMatchObject({ board: { status: 'awaiting' } });
+  });
   // what this catches: the roster projects to the people-`Listing` — the cell
   // template resolves glyph/badges/status so a target only draws them.
   it('projects the roster into the people Listing', () => {

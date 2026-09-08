@@ -20,6 +20,7 @@ import { LitElement, html, css, nothing, type PropertyValues, type TemplateResul
 import type { ArenaViewState, CanvasViewState, ChatState } from '@continuum/chat-view';
 import {
   chatViewModel,
+  PROJECT_PURPOSE,
   focusedLiveTab,
   focusedPersonaTab,
   historyRowsFromPoll,
@@ -1315,6 +1316,14 @@ export class ChatWidget extends LitElement {
       color: var(--content-tertiary, #667);
       padding: var(--spacing-xs) 0;
     }
+    .project-workspace { padding: var(--spacing-md); min-width: 0; }
+    .project-heading { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+    .project-heading h2 { margin: 0; }
+    .project-cards { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: 0.75rem; }
+    .project-card { border: 1px solid var(--border-color, #384350); border-radius: 0.6rem; padding: 1rem; overflow-wrap: anywhere; }
+    .project-card h3 { font-size: 1rem; margin: 0.6rem 0; }
+    .project-card-meta { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.8rem; }
+    .project-description { white-space: pre-wrap; }
     /* ACADEMY LANDING — the campus page: hero strip, live board, chat below. */
     .academy-landing {
       display: flex;
@@ -5926,7 +5935,7 @@ export class ChatWidget extends LitElement {
     }
     // Pin to the live edge on new content (messages AND stream deltas)
     // unless the READER deliberately scrolled up — intent, not position.
-    if ((changed.has('state') || changed.has('_typing')) && !persona && !this._userScrolledUp) {
+    if ((changed.has('state') || changed.has('_typing')) && !persona && this.state?.purpose !== PROJECT_PURPOSE && !this._userScrolledUp) {
       this._autoScrolling = true;
       this.scrollToLatest();
       // Release after the scroll's events flush (scroll events are sync-ish
