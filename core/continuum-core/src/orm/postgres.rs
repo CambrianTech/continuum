@@ -383,7 +383,12 @@ impl PostgresAdapter {
             params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
 
         match client.execute(&sql, &params_ref).await {
-            Ok(rows) if rows > 0 => self.read(collection, id).await,
+            // read_on, NOT self.read: self.read checks out its OWN pooled
+            // connection, which inside a batch transaction is a DIFFERENT session
+            // that cannot see this statement's uncommitted row — a Create+Update of
+            // the same new row in one batch would read back "not found" — and on a
+            // one-connection pool it blocks for the 10s pool timeout first.
+            Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
             Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
             Err(e) => {
                 // Schema evolution: auto-add missing columns and retry.
@@ -405,7 +410,8 @@ impl PostgresAdapter {
                     self.invalidate_column_cache(&bare_table).await;
                     // Retry the update after adding columns
                     match client.execute(&sql, &params_ref).await {
-                        Ok(rows) if rows > 0 => self.read(collection, id).await,
+                        // Same reason as the first read-back: stay on this client.
+                        Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
                         Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
                         Err(e2) => StorageResult::err(format!(
                             "Update failed [{}] after schema evolution: {}",
