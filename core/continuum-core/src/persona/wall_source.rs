@@ -60,9 +60,23 @@ use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
-/// Source identifier — the deliberation faculty renders this delivery
-/// under a `[room-board]` header (generic `[<source_id>]` projection).
-const SOURCE_ID: &str = "room-board";
+/// Source identifier -- the deliberation faculty renders this delivery under a
+/// `[room-wall]` header (generic `[<source_id>]` projection), so this string is
+/// what a CITIZEN reads above the pinned posts, not just what a grep finds.
+///
+/// It was `"room-board"` until #3874. That was not a naming quibble: the WALL
+/// announced itself as the BOARD while `room_board_source.rs` -- the work board
+/// -- emitted `"room-kanban"`. Every id-first reader landed in the wrong file,
+/// and it cost a wrong row in a published census (2026-09-08) plus a landmine
+/// warning to a citizen mid-task.
+///
+/// Renamed ONE WAY on purpose. Swapping both (`room-board` -> the kanban,
+/// `wall` -> `room-board`) would have made an EXISTING id change meaning, so a
+/// replay corpus or a prompt capture keyed on `room-board` would silently start
+/// resolving to a different source. Retiring an id and minting a fresh one has
+/// no such window: `room-board` now names nothing, and nothing that reads it
+/// gets a wrong answer instead of no answer.
+const SOURCE_ID: &str = "room-wall";
 
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
@@ -589,6 +603,29 @@ mod tests {
             }
             Ok(self.posts.clone())
         }
+    }
+
+    /// what this catches (#3874): an id that names a thing it does not read. This
+    /// source reads the WALL and announced itself as `room-board`, while
+    /// `room_board_source.rs` -- the work board -- emits `room-kanban`. An id-first
+    /// reader landed in the wrong file every time, which cost a wrong row in a
+    /// published census and a landmine warning to a citizen mid-task.
+    ///
+    /// The assertion is on the CONSTANT rather than a rendered block because the
+    /// constant IS the block header (`[<source_id>]`, generic projection) -- what a
+    /// citizen reads above the pinned posts. A test on prose would not have caught
+    /// the original, since the prose was accurate about the wall all along; only the
+    /// id lied.
+    #[test]
+    fn the_wall_announces_itself_as_the_wall() {
+        assert_eq!(
+            SOURCE_ID, "room-wall",
+            "this source reads the WALL; `room-board` named the work board and sent              readers to room_board_source.rs (#3874)"
+        );
+        assert_ne!(
+            SOURCE_ID, "room-kanban",
+            "and it must never collide with the work board's id -- two sources under              one header would make the grounding block ambiguous to the citizen"
+        );
     }
 
     /// what this catches (#3883): the wall reading the room it was BOUND to instead

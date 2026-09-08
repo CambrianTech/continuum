@@ -192,10 +192,10 @@ boot. When the airc↔grid trust bridge lands, the hardcoded ceiling becomes the
 peer's resolved `TrustLevel` (a same-account Owner peer regains full access).
 
 **Slice 4 — Wall grounding (DONE + measured).** A **`WallSource`** RAG source
-(`source_id = "room-board"`, same shape as roster/doctrine: a `WallReader`
+(`source_id = "room-wall"`, same shape as roster/doctrine: a `WallReader`
 trait over airc, persona-scoped, fails-safe-empty, test stub) reads
 `Airc::wall_posts` — the room's currently-pinned shared documents after the
-supersede chain — and packages them into a `[room-board]` system-prompt block,
+supersede chain — and packages them into a `[room-wall]` system-prompt block,
 one `[category]` header per post. These are the **exact airc rows a human edits
 on the room wall and a widget renders**: one shared data layer, two faces, no
 continuum-side copy of mutable widget-edited state. The WRITE face is
@@ -223,7 +223,7 @@ substring-graded task, "What is the project codename pinned on the room board?",
 
 **Lift = +1.0.** The glass-box capture
 (`~/.continuum/fixtures/prompt-captures/<persona>.jsonl`) shows the TREATMENT
-prompt carrying the literal `[room-board]\n[decision]\nProject codename … is
+prompt carrying the literal `[room-wall]\n[decision]\nProject codename … is
 GOLDFINCH.` block — the exact grounding that was absent before the fix (why the
 first attempt produced zero lift). Logged dated + test-anchored to the progress
 ledger (`~/.continuum/progress/<persona>.jsonl`, notes `wall-AB CONTROL` /
