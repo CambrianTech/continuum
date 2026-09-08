@@ -1298,6 +1298,10 @@ impl LlmDeliberationFaculty {
         // found both (2026-08-20, Atlas/Kira/Benchy on build 2281e8b81). Recorded here
         // because the shape is the one this codebase keeps paying for.
         //
+        // NOTE (#3874): the `room-board` in the rows below is the WALL under its OLD
+        // id, retired in favour of `room-wall`. These lines RECORD A MEASUREMENT taken
+        // while that id was live, so they keep it — rewriting a past observation to
+        // match present naming would falsify the evidence the hole was found from.
         // HOLE 1 — strict `>` against a population with NO salience spread. The live
         // rows: Atlas kept `roster(0.90), room-kanban(0.90)` and dropped
         // `workspace-map(0.90)`; Benchy kept `room-board(0.90)` and dropped
