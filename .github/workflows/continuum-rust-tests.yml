@@ -170,6 +170,33 @@ jobs:
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
 
+      # Compile-fail guards (#3881). `--lib` above CANNOT run these: proving a
+      # wrong construction does not compile requires a compile step, and the
+      # only in-toolchain way to assert that is a ```compile_fail doctest,
+      # which lives behind `--doc`. Without this step the guard would have been
+      # written, merged, and never executed once in CI — built-but-never-wired,
+      # which is the same class of defect #3881 exists to prevent.
+      #
+      # Filtered rather than the whole doctest surface deliberately: no doctest
+      # has ever run on a Linux runner here, so an unfiltered `--doc` could go
+      # red for reasons that predate this PR. Turning the rest on is its own
+      # card, not a side effect of this one.
+      #
+      # The `2 passed` assertion is load-bearing. A filter that matches NOTHING
+      # exits 0 — so if the struct is renamed, the step would go green while
+      # testing nothing at all. The count turns that silent zero into a failure.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        run: |
+          set -o pipefail
+          cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
+
       # ts-rs binding-drift gate (was its own workflow until 2026-08-16).
       #
       # Rust types carry `#[derive(TS)]` + `#[ts(export_to = "…/protocol/typescript/…")]`.
