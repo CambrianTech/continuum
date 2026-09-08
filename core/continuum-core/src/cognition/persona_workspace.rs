@@ -871,10 +871,33 @@ pub(crate) async fn root_at_held_card(
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
     let focus = crate::persona::work_focus::focus_card(held.iter())?;
-    let ws = crate::persona::staged_workspace::workspace_for_held_cards(
-        &peer_id,
-        std::iter::once(focus.title.as_str()),
-    )?;
+    // Resolve through the SAME authority that staged the card at claim time
+    // (`card_staging::checkout_path_for`), which keys a generic repo card on its
+    // CARD ID via airc's per-card worktree.
+    //
+    // This used to ask `staged_workspace::workspace_for_held_cards` for a match on
+    // the card's DISPLAY TITLE — and every path in that module is rooted at
+    // `staging_root(peer)`, the SWE-BENCH staging area. Card work does not live
+    // there, so a generic repo card never matched, the resolver returned `None`,
+    // and the `?` here dropped the whole function: her hands silently stayed at the
+    // resident root while she believed she was working the card. Kimi's build.rs
+    // edit (eb5a2606, 2026-09-08) landed in the resident workspace that way. The
+    // title was the symptom; asking a benchmark-shaped resolver about an ordinary
+    // repo card was the defect.
+    let Some(ws) = crate::modules::card_staging::checkout_path_for(&peer_id, focus) else {
+        // NOT a silent `?`. The ambiguous case has always been probed; the
+        // not-found case was the one that said nothing, which is why this went
+        // unnoticed until a citizen's commit turned up in the wrong tree.
+        crate::probe!(
+            class = "persona.work.checkout_unresolved",
+            peer = %peer_id,
+            card = %focus.card_id.as_uuid(),
+            repo = %focus.repo,
+            "held card has no checkout on this node — her hands stay at the resident \
+             root for this turn, and anything she writes lands there, NOT in the card"
+        );
+        return None;
+    };
     // Never trust the registry over the engine: a failed restore could leave a
     // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
     // correct repo-relative edit answered "File not found … did you mean swe/…").
