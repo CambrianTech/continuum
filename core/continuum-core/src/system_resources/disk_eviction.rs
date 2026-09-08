@@ -35,12 +35,65 @@ use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
 use super::disk_reporters::{dir_size_bytes, TrackedDir};
 
-/// Default cargo-target budget: 50 GiB. Generous for a warm dev cache,
-/// an order of magnitude under the 363 GB the unswept cache reached.
-/// Plumbing this through config.env's single owner is part of the
-/// de-hardcode audit (task #124); the constant is the safe default a
-/// public user gets with zero configuration.
+/// FLOOR for the cargo-target budget: 50 GiB. This was the whole budget until
+/// 2026-09-08, and on a large developer machine it is not a cache budget at all
+/// — it is a scheduled `cargo clean`.
+///
+/// MEASURED on BigMama (1.9 TB volume), from this pool's own eviction log:
+///
+/// ```text
+/// evictions in one day   36
+/// GB freed that day      356
+/// median gap             13.5 minutes
+/// ```
+///
+/// This workspace's debug tree passes 50 GiB during an ordinary
+/// `cargo test -p continuum-core`, so the pool sat permanently over budget, the
+/// broker asked for relief on every tick, and the eviction obliged — forever.
+/// The code did exactly what it was told; it was told the wrong number. Every
+/// build on that machine started near-cold, which is where the day's
+/// "Windows rustc is flaky" and "~70 minutes to rebuild" reports came from.
+///
+/// It survives as the FLOOR rather than the budget: a small laptop still gets
+/// exactly the behaviour it had before, and nothing regresses anywhere.
 pub const DEFAULT_CARGO_TARGET_BUDGET_BYTES: u64 = 50 * 1024 * 1024 * 1024;
+
+/// After this many evictions in one run, a build cache is not being MANAGED —
+/// its budget is below the working set and it is being emptied on a loop.
+/// Deliberately small: a healthy cache is trimmed occasionally, and the machine
+/// that produced #3906 reached 36 in a single day.
+const EVICTIONS_BEFORE_CALLING_IT_THRASH: u64 = 8;
+
+/// The cargo-target budget for a machine, DERIVED from the volume that holds it
+/// — 10% of the volume, floored at [`DEFAULT_CARGO_TARGET_BUDGET_BYTES`].
+///
+/// This is not a new policy invention: it is the shape
+/// [`serving_tier_reserve_bytes`] already uses two functions below, for the same
+/// reason its doc gives — a derived budget is generous exactly where the drive
+/// is, and a constant cannot be. The build cache is the one artifact class whose
+/// working set scales with the WORKSPACE rather than the user, so a fixed number
+/// is guaranteed to be wrong on one end or the other; it was wrong on the big
+/// end, which is the end that hurts, because that is where the work happens.
+///
+/// Volumes in GiB, and the floor wins at or below 500 GiB (500/10 = 50):
+///
+/// | volume | budget | vs. the old constant |
+/// |---|---|---|
+/// | 256 GiB laptop | 50 GiB (floor) | unchanged |
+/// | 500 GiB | 50 GiB (floor) | unchanged — the crossover |
+/// | 512 GiB | 51.2 GiB | derived, barely |
+/// | 1900 GiB workstation | 190 GiB | no longer thrashes |
+/// | 4000 GiB | 400 GiB | headroom to match |
+///
+/// The first draft of this table claimed 512 GiB fell to the floor. It does not,
+/// and the regression test below caught it — which is the argument for asserting
+/// a derivation's TABLE rather than one convenient point on it.
+///
+/// The floor is what keeps this safe: a machine too small for the derived value
+/// keeps today's behaviour exactly, so this can regress nobody.
+pub fn cargo_target_budget_bytes(volume_total_bytes: u64) -> u64 {
+    (volume_total_bytes / 10).max(DEFAULT_CARGO_TARGET_BUDGET_BYTES)
+}
 
 /// Non-blocking exclusive flock on `path`. `Some(file)` holds the lock
 /// until dropped; `None` = someone else (a live cargo build) holds it.
@@ -63,6 +116,50 @@ fn try_exclusive_flock(path: &Path) -> Option<std::fs::File> {
     file.try_lock_exclusive().ok().map(|_| file)
 }
 
+/// WHY an eviction did nothing. #3906, at @Astra's request: "declined eviction
+/// deserves a typed reason."
+///
+/// The pool logged what it FREED and never logged what it DECLINED, so a guard
+/// that held and a guard that was never reached produced the identical record:
+/// silence. That is the same absence-versus-refusal defect this card turned out
+/// to be three instances of, sitting inside the mechanism meant to diagnose it.
+///
+/// It matters here specifically because the open question on #3906 is whether
+/// the flock guard holds on Windows. That question is unanswerable from a log
+/// that cannot distinguish "a live build held the lock, so I stood down" from
+/// "I never ran". These variants are that distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclinedEviction {
+    /// The tracked directory does not exist — nothing to evict, and NOT a sign
+    /// the guard worked.
+    NoSuchDirectory,
+    /// A live cargo build holds the target-dir lock. THIS IS THE GUARD WORKING,
+    /// and until now it was indistinguishable from the guard never running.
+    BuildHoldsRootLock,
+    /// A live cargo build holds `debug/.cargo-lock`. Same as above, one level in.
+    BuildHoldsDebugLock,
+}
+
+impl DeclinedEviction {
+    /// One line an operator can act on, per reason.
+    fn why(self) -> &'static str {
+        match self {
+            Self::NoSuchDirectory => {
+                "the tracked cargo-target directory does not exist — this pool is \
+                 managing nothing, which is worth knowing before trusting its numbers"
+            }
+            Self::BuildHoldsRootLock => {
+                "a live cargo build holds the target-dir lock — standing down, the \
+                 build's cache is safe"
+            }
+            Self::BuildHoldsDebugLock => {
+                "a live cargo build holds debug/.cargo-lock — standing down, the \
+                 build's cache is safe"
+            }
+        }
+    }
+}
+
 /// Budget-capped eviction owner for the shared cargo-target cache.
 /// Shares its [`TrackedDir`] with the disk reporter — one measurement,
 /// two consumers. Pressure = cached usage / budget, so this pool goes
@@ -71,11 +168,16 @@ fn try_exclusive_flock(path: &Path) -> Option<std::fs::File> {
 pub struct CargoTargetPool {
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
+    /// Evictions this run. A build cache that must be emptied REPEATEDLY is not a
+    /// cache being managed — it is a budget below the working set. See
+    /// [`CargoTargetPool::note_eviction`].
+    evictions: std::sync::atomic::AtomicU64,
 }
 
 impl CargoTargetPool {
     pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64) -> Self {
         Self {
+            evictions: std::sync::atomic::AtomicU64::new(0),
             tracked,
             budget_bytes: budget_bytes.max(1),
         }
@@ -84,6 +186,48 @@ impl CargoTargetPool {
     /// The eviction ladder, cheapest-regret first. Each rung is fully
     /// reproducible by the next build; order matters — incremental
     /// state is the biggest win with the smallest rebuild cost.
+    /// Record a decline WITH ITS REASON, and answer 0 as before. Behaviour is
+    /// unchanged; the difference is that the ledger can now tell a guard that
+    /// HELD from a guard that never ran.
+    fn declined(&self, reason: DeclinedEviction) -> u64 {
+        crate::clog_warn!(
+            "💾 cargo-target eviction DECLINED ({:?}): {}",
+            reason,
+            reason.why()
+        );
+        0
+    }
+
+    /// Count this eviction and say something once it stops being housekeeping.
+    ///
+    /// The whole failure took days to find for want of this line. The pool logged
+    /// what it freed and never what the freeing MEANT, so 36 evictions and 356 GB
+    /// of destroyed compilation in one measured day looked exactly like 36
+    /// successful housekeeping runs. Three agents blamed Windows, rustc, and each
+    /// other; one `continuum reboot` was killed by its own stall detector for
+    /// running long on a cache that had just been wiped. All of it downstream of a
+    /// number nobody could see was wrong.
+    ///
+    /// A count is enough. No new probe, no new sink — it turns "the governor is
+    /// working" into "the governor is thrashing" at the one place that already
+    /// knows both facts.
+    fn note_eviction(&self) {
+        let n = self
+            .evictions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        // Loud at the threshold, then every further multiple: never per-eviction
+        // noise on a healthy machine, never silent on a sick one.
+        if n < EVICTIONS_BEFORE_CALLING_IT_THRASH || n % EVICTIONS_BEFORE_CALLING_IT_THRASH != 0 {
+            return;
+        }
+        crate::clog_warn!(
+            "💾 cargo-target evicted {} times this run against a {} GB budget — that is a              budget BELOW this workspace's working set, not housekeeping. Every build here              is starting cold and paying the full rebuild again. The budget derives from the              volume (cargo_target_budget_bytes); a volume this pool could not resolve falls              back to the floor, which is the first thing to check.",
+            n,
+            self.budget_bytes / (1024 * 1024 * 1024)
+        );
+    }
+
     fn ladder(root: &Path) -> [PathBuf; 3] {
         [
             root.join("debug/incremental"),
@@ -109,19 +253,19 @@ impl ResourcePool for CargoTargetPool {
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         let root = self.tracked.path().to_path_buf();
         if !root.exists() {
-            return 0;
+            return self.declined(DeclinedEviction::NoSuchDirectory);
         }
         // Safety invariant 1: hold cargo's lock files exclusively for the
         // whole eviction, or do nothing. Guards held in scope until return.
         let _root_lock = match try_exclusive_flock(&root.join(".cargo-lock")) {
             Some(lock) => lock,
-            None => return 0,
+            None => return self.declined(DeclinedEviction::BuildHoldsRootLock),
         };
         let debug_lock_path = root.join("debug/.cargo-lock");
         let _debug_lock = if debug_lock_path.parent().is_some_and(Path::exists) {
             match try_exclusive_flock(&debug_lock_path) {
                 Some(lock) => Some(lock),
-                None => return 0,
+                None => return self.declined(DeclinedEviction::BuildHoldsDebugLock),
             }
         } else {
             None
@@ -147,6 +291,7 @@ impl ResourcePool for CargoTargetPool {
                 freed / (1024 * 1024 * 1024),
                 self.budget_bytes / (1024 * 1024 * 1024)
             );
+            self.note_eviction();
         }
         freed
     }
@@ -986,6 +1131,54 @@ mod tests {
                 vec![9u8; 3000],
                 "cold artifact never overwritten"
             );
+        }
+
+        // what this catches: regression for #3906 — the cargo-target budget was a
+        // FLAT 50 GiB, which sits BELOW this workspace's debug tree on a
+        // workstation. Measured consequence on a 1.9 TB box: 36 evictions and
+        // 356 GB of compilation destroyed in one day, median 13.5 minutes apart,
+        // so every build started cold and three agents blamed the toolchain.
+        //
+        // The derivation must (a) actually raise the budget on a big volume —
+        // a fix that returned the floor everywhere would pass a weaker test while
+        // changing nothing — and (b) never LOWER it on a small one, or this
+        // regresses the machines it was already correct for.
+        #[test]
+        fn the_cargo_target_budget_is_derived_from_the_volume_and_never_below_the_floor() {
+            const GIB: u64 = 1024 * 1024 * 1024;
+            let floor = DEFAULT_CARGO_TARGET_BUDGET_BYTES;
+
+            // Small machines: unchanged. This is what makes the change safe to
+            // ship everywhere rather than only where it was measured.
+            assert_eq!(cargo_target_budget_bytes(256 * GIB), floor);
+            // The crossover is exactly 500 GiB (500/10 == the 50 GiB floor).
+            assert_eq!(cargo_target_budget_bytes(500 * GIB), floor);
+            // And one GiB above it the derivation takes over — asserted because
+            // my first doc table claimed 512 GiB was still on the floor, and this
+            // test is what proved otherwise.
+            assert!(cargo_target_budget_bytes(512 * GIB) > floor);
+            // A volume smaller than the floor still yields the floor, never 0 and
+            // never the volume — a budget of nothing is a permanent `cargo clean`.
+            assert_eq!(cargo_target_budget_bytes(8 * GIB), floor);
+            assert_eq!(cargo_target_budget_bytes(0), floor);
+
+            // The measured machine: 1.9 TB. This is the assertion that would have
+            // failed before the fix, and it is the only one that matters to the
+            // defect.
+            let bigmama = cargo_target_budget_bytes(1900 * GIB);
+            assert_eq!(bigmama, 190 * GIB);
+            assert!(
+                bigmama > floor,
+                "non-degeneracy: on the volume that produced #3906 the derived                  budget MUST exceed the old constant, or nothing changed"
+            );
+
+            // Monotonic in the volume — a bigger drive never gets a smaller cache.
+            let mut prev = 0;
+            for tb in [0u64, 256, 512, 1000, 1900, 4000, 8000] {
+                let b = cargo_target_budget_bytes(tb * GIB);
+                assert!(b >= prev, "budget must not shrink as the volume grows");
+                prev = b;
+            }
         }
 
         // what this catches: the capacity derivation (#287-style) — 10% of
