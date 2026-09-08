@@ -83,7 +83,7 @@ const MIN_TRAINING_QUALITY: f32 = 0.45;
 /// bucket: writing the patch, judging someone else's patch, and naming the defect
 /// in the first place are different skills, and a curriculum that mixes them
 /// teaches none of them. The role is half the bucket key for exactly that reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CreditRole {
     /// Authored the submission — the submission's `publisher`.
     Owner,
@@ -136,7 +136,7 @@ pub struct OutcomeStamp {
 /// examples is worse than no bucket** — the genome loop pages a gene against a
 /// benchmark for weights it was not trained from. Same one-value-two-meanings
 /// shape as the rest of this class; the fix is to carry the served fact.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServedProvenance {
     /// `TextGenerationResponse::model` — what answered, not what was configured.
     pub model: String,
@@ -183,7 +183,7 @@ pub struct CapturedCredit {
 
 /// The claim receipt captured AT SELECTION — the evidence that this citizen was
 /// accountable for this card at the moment the turn began.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClaimReceipt {
     /// `WorkCard::claim_id` as accepted.
     pub claim_id: Uuid,
@@ -278,6 +278,89 @@ impl CapturedCredit {
         // rather than as `Option::is_some` on something whose meaning is elsewhere.
         !self.card_id.is_nil()
     }
+}
+
+/// ONE card-linked turn, held until its card settles (card 0d51573a).
+///
+/// A card-linked turn must NOT submit at completion. An unstamped example is an
+/// immediate POSITIVE SFT target and submission is one-way — `TrainingExample` is
+/// `{prompt, completion}` with no preference schema anywhere in the tree — so a turn
+/// submitted before its card settles cannot be withdrawn when that card later fails.
+/// Observed live 2026-09-08: a citizen accumulating toward a training threshold on a
+/// card still in `Claimed` with no settlement.
+///
+/// Lives in the citizen's own [`crate::persona::home::PersonaHome`], alongside
+/// `engrams.sqlite` — persistence inside its existing owner, per-citizen, NOT a new
+/// global queue ([[source-drain-is-the-universal-pattern]]: the drain is settlement).
+///
+/// ## Two write-once halves, at two different times
+///
+/// **SELECTION IS IMMUTABLE.** `card_id`, `claim_id`, `owner`, `role` and
+/// `submitted_request_id` are written when the turn begins and never rewritten. A
+/// MISSING CLAIM REMAINS MISSING: `claim_id` is `None` for a turn rooted at a card
+/// whose `WorkCard::owner`/`claim_id` were absent, and no later settlement may fill
+/// it in. That turn still stages (it was card-linked) and can never be stamped.
+///
+/// **SERVED PROVENANCE IS ATTACHED LATER**, once the generation returns, and only
+/// ever added — never overwriting a selection field.
+///
+/// ## Why the id IS the submission id
+///
+/// Per the #278 contract the submit gains an optional `submissionId` minted ONCE and
+/// reused on every retry, so the destination can recognise a replay. Making it this
+/// row's primary key means there is no second identifier to keep in sync, and a retry
+/// necessarily reuses it because it is reading the same row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "staged_credit")]
+pub struct StagedCredit {
+    /// The `submissionId` carried to the training-trigger, minted once at stage time
+    /// and reused on every retry. Primary key, so the derive pulls in the BaseEntity
+    /// columns and a retry cannot mint a second one for the same batch.
+    #[entity(primary_key)]
+    pub id: Uuid,
+
+    /// The card this turn is credited to. Indexed: settlement arrives per-card and
+    /// asks "what did this citizen stage against it".
+    #[entity(indexed)]
+    pub card_id: Uuid,
+
+    /// The accepted claim captured at SELECTION. `None` means no receipt was taken
+    /// and none may ever be supplied — this row can stage but never stamp.
+    #[entity(indexed)]
+    pub claim_id: Option<Uuid>,
+
+    /// The claim's owner, as the work store spells it. `None` exactly when
+    /// `claim_id` is `None`; the two travel together or not at all.
+    pub owner: Option<Uuid>,
+
+    /// Which hand the citizen had in the card. JSON because it is a tagged enum.
+    #[entity(json)]
+    pub role: Option<CreditRole>,
+
+    /// **THE JOIN KEY**: `TextGenerationRequest.request_id` as SUBMITTED, assigned or
+    /// retained once before submit and shared with the Mind capture's `CycleId`. The
+    /// adapter's response id, when it differs, lives in `served` and NEVER replaces
+    /// this — otherwise the correlation key is silently swapped for one the capture
+    /// never saw, and playback breaks precisely on a lane substitution.
+    #[entity(indexed)]
+    pub submitted_request_id: String,
+
+    /// What ACTUALLY served the generation, attached once the response returns.
+    /// `None` until then. Never overwrites a selection field.
+    #[entity(json)]
+    pub served: Option<ServedProvenance>,
+
+    /// The stimulus, held verbatim so the staged example is the turn she was
+    /// actually handed rather than a re-derived approximation.
+    pub prompt: String,
+
+    /// Her reply, likewise verbatim.
+    pub completion: String,
+
+    /// When this turn was staged (epoch ms). Not a settlement clock — a staged row
+    /// whose card never settles is never submitted, and that is correct, not a leak.
+    pub staged_at_ms: u64,
 }
 
 /// A scored, gated, classified training example ready to submit. The pure product
@@ -730,6 +813,61 @@ mod tests {
     // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
     // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
     // failed-case assertion passes while proving nothing.
+    // what this catches: a dropped `#[entity(indexed)]` on the staging keys. Field
+    // presence alone is not the claim — settlement arrives PER CARD and asks "what
+    // did this citizen stage against it", and playback joins on the SUBMITTED
+    // request id. Without those indexes both become table scans on a store that
+    // grows one row per card-linked turn, and nothing anywhere reports it: the
+    // queries still return the right answers, just slower forever. Card 0d51573a.
+    #[test]
+    fn staged_credit_indexes_the_three_keys_settlement_and_playback_join_on() {
+        use crate::orm::OrmEntity;
+        let schema = StagedCredit::collection_schema();
+        assert_eq!(schema.collection, "staged_credit");
+
+        let indexed: std::collections::BTreeSet<&str> = schema
+            .fields
+            .iter()
+            .filter(|f| f.indexed)
+            .map(|f| f.name.as_str())
+            .collect();
+
+        for key in ["cardId", "claimId", "submittedRequestId"] {
+            assert!(
+                indexed.contains(key),
+                "staged_credit must INDEX {key:?} — settlement looks up by card and \
+                 playback joins on the submitted request id; indexed fields are {indexed:?}"
+            );
+        }
+
+        // POSITIVE CONTROL: a field I deliberately did NOT index must not be
+        // indexed, or this test would pass with `indexed` blanket-set on everything
+        // and would be asserting nothing about my attributes.
+        assert!(
+            !indexed.contains("prompt"),
+            "prompt must not be indexed — if it is, this test cannot distinguish my \
+             three deliberate indexes from every field being indexed by default"
+        );
+    }
+
+    // what this catches: the staging collection colliding with an existing one.
+    // `OrmEntity::COLLECTION` must be unique across BOTH the Rust registry and
+    // entity_schemas.json, and a collision is a registration-time hard error — i.e.
+    // it fails at BOOT, on a citizen's machine, not here, unless this test exists.
+    #[test]
+    fn staged_credit_registers_without_colliding_with_an_existing_collection() {
+        use crate::orm::entity::OrmEntityRegistry;
+        use crate::orm::OrmEntity;
+        let registry = OrmEntityRegistry::new();
+        registry
+            .register::<StagedCredit>()
+            .expect("StagedCredit must register cleanly");
+        let resolved = registry
+            .resolve("staged_credit")
+            .expect("staged_credit collection must resolve");
+        assert_eq!(resolved.collection, "staged_credit");
+    }
+
     #[test]
     fn a_verdict_is_required_to_stamp_and_settle_carries_the_verdict_it_was_given() {
         let classifier = DomainClassifier::new();
