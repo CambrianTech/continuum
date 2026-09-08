@@ -184,6 +184,24 @@ fn step_desktop_beside(repo_root: &std::path::Path) -> Outcome {
 }
 
 /// Beside: the eye-node perception provider (retry-dials the core itself).
+/// Reap the eyes an earlier boot left behind, BEFORE spawning this boot's eye. Every
+/// boot span­ned a fresh eye-node and looked for none of its predecessors: 17 of them and
+/// 31 orphaned browsers had accumulated on the M5 by 2026-09-08. Same shape as
+/// `step_adopt_lanes` — a boot owns the process tree it is about to add to.
+fn step_reap_eyes() -> Outcome {
+    match crate::system_resources::eye_reaper::reap(std::time::Duration::from_secs(5)) {
+        Ok(found) if found.is_empty() => Outcome::Ok("no eyes left behind".into()),
+        Ok(found) => Outcome::Ok(format!(
+            "reaped {} orphaned browser(s), {} previous eye-node(s), {} profile dir(s)",
+            found.browsers.len(),
+            found.eye_nodes.len(),
+            found.profiles.len()
+        )),
+        // A process table we could not read is said, never a silent "nothing to do".
+        Err(why) => Outcome::Skipped(format!("could not read the process table: {why}")),
+    }
+}
+
 fn step_eye_node_beside(repo_root: &std::path::Path) -> Outcome {
     let eye = repo_root.join("apps/eye-node/src/index.ts");
     if !eye.exists() {
@@ -233,6 +251,8 @@ pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path:
         Some(root) => {
             let t = Instant::now();
             receipt.push("desktop-beside", t, step_desktop_beside(root));
+            let t = Instant::now();
+            receipt.push("reap-eyes", t, step_reap_eyes());
             let t = Instant::now();
             receipt.push("eye-node-beside", t, step_eye_node_beside(root));
         }
