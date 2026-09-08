@@ -34,16 +34,14 @@
 //! messages not realtime") — realtime is the default path, not a
 //! best-effort add-on.
 //!
-//! ## Rate: subscription is unlimited, observers are budgeted
+//! ## Rate: latest-state frames coalesce to the connection's budget
 //!
-//! A subscribed kind (a human renderer) forwards every change. An
-//! observed-only kind (AI perception) forwards at most its
-//! `budget_hz`. When a kind is both, the subscription wins (unlimited).
-//! When several observers name the same kind on one connection, the
-//! highest budget wins — one socket carries one stream per kind, and
-//! the most-demanding watcher sets its cadence. `budget_hz == 0` means
-//! snapshot-only: the observer got its snapshot from `handle`, but no
-//! live forwarder is attached.
+//! A subscribed kind has a `RENDERER_HZ` frame budget; observers request
+//! their own `budget_hz`. The highest budget naming a kind wins — one
+//! connection carries one stream per kind, and the most-demanding watcher
+//! sets its cadence. `budget_hz == 0` means snapshot-only: the observer got
+//! its snapshot from `handle`, but requests no live forwarder. Token streams
+//! use a separate rail and are unaffected by state-frame coalescing.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -61,22 +59,17 @@ use crate::scoping::SessionSubstrate;
 /// How fast a kind's live `State` frames are forwarded on this
 /// connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForwardRate {
-    /// Every change — a subscribed human renderer wants all of them.
-    Unlimited,
-    /// At most `hz` frames per second — an observer's perception
+struct ForwardRate {
+    /// At most `hz` frames per second, from the subscription or observer
     /// budget. `hz` is always `>= 1` (0-budget observers get no
-    /// forwarder at all, so they never reach this variant).
-    Hz(u32),
+    /// forwarder at all, so they never construct a rate).
+    hz: u32,
 }
 
 impl ForwardRate {
-    /// Minimum spacing between forwarded frames. `Unlimited` → zero.
+    /// Minimum spacing between forwarded frames.
     fn min_interval(self) -> Duration {
-        match self {
-            ForwardRate::Unlimited => Duration::ZERO,
-            ForwardRate::Hz(hz) => Duration::from_secs_f64(1.0 / hz as f64),
-        }
+        Duration::from_secs_f64(1.0 / self.hz as f64)
     }
 }
 
@@ -106,7 +99,7 @@ fn frame_kinds(msg: &ClientMessage) -> Vec<String> {
     }
 }
 
-/// A subscribed renderer's frame budget. NOT `Unlimited`: state kinds are
+/// A subscribed renderer's frame budget. State kinds are
 /// latest-wins snapshots riding a `watch` channel, so intermediate revisions
 /// are legally skippable — and a boot-replay/burst that folds thousands of
 /// messages must NOT become thousands of socket frames (the 2026-07-30 "load
@@ -124,7 +117,7 @@ const RENDERER_HZ: u32 = 10;
 fn desired_rates(conn: &Connection) -> HashMap<String, ForwardRate> {
     let mut rates: HashMap<String, ForwardRate> = HashMap::new();
     for kind in &conn.subscription.kinds {
-        rates.insert(kind.clone(), ForwardRate::Hz(RENDERER_HZ));
+        rates.insert(kind.clone(), ForwardRate { hz: RENDERER_HZ });
     }
     for obs in conn.observers.values() {
         if obs.budget_hz == 0 {
@@ -134,11 +127,9 @@ fn desired_rates(conn: &Connection) -> HashMap<String, ForwardRate> {
         }
         for kind in &obs.kinds {
             match rates.get(kind) {
-                // A subscription on this kind outranks any observer.
-                Some(ForwardRate::Unlimited) => {}
-                Some(ForwardRate::Hz(existing)) if *existing >= obs.budget_hz => {}
+                Some(existing) if existing.hz >= obs.budget_hz => {}
                 _ => {
-                    rates.insert(kind.clone(), ForwardRate::Hz(obs.budget_hz));
+                    rates.insert(kind.clone(), ForwardRate { hz: obs.budget_hz });
                 }
             }
         }

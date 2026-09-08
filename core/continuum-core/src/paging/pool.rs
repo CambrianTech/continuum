@@ -730,34 +730,11 @@ where
 
     /// Snapshot stats for monitoring + PressureBroker queries.
     pub async fn stats(&self) -> PoolStats {
-        let entries = self.inner.entries.read();
-        let mut total_bytes: u64 = 0;
-        let mut pinned_count: usize = 0;
-        for entry in entries.values() {
-            total_bytes += entry.size_bytes;
-            if entry.pin_count.load(Ordering::Acquire) > 0 {
-                pinned_count += 1;
-            }
-        }
-        let max_bytes = self.inner.config.max_bytes;
-        let pressure = if max_bytes > 0 {
-            total_bytes as f64 / max_bytes as f64
-        } else {
-            0.0
-        };
-        let inflight_count = self.inner.inflight.lock().await.len();
-        PoolStats {
-            name: self.inner.config.name.clone(),
-            entry_count: entries.len(),
-            pinned_count,
-            total_bytes,
-            max_bytes,
-            pressure,
-            hit_count: self.inner.hits.load(Ordering::Relaxed),
-            miss_count: self.inner.misses.load(Ordering::Relaxed),
-            eviction_count: self.inner.evictions.load(Ordering::Relaxed),
-            inflight_count,
-        }
+        // The synchronous snapshot releases the entries guard before we wait
+        // for inflight loads. Monitoring must not stall entry writers/eviction.
+        let mut stats = self.stats_blocking();
+        stats.inflight_count = self.inner.inflight.lock().await.len();
+        stats
     }
 
     /// Reduce occupancy to 75% of max_bytes by evicting unpinned entries
@@ -1086,6 +1063,8 @@ mod tests {
         assert_eq!(r2.unwrap(), 123);
     }
 
+    // what this catches: card d2698cdc — stats waiting for the inflight map
+    // must release the entries lock while preserving its occupancy snapshot.
     #[tokio::test]
     async fn stats_pressure_tracks_occupancy() {
         let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
@@ -1095,9 +1074,23 @@ mod tests {
             eviction_priority: lru_priority(),
         });
         pool.insert("k".to_string(), vec![0; 25]);
-        let stats = pool.stats().await;
+        let inflight_guard = pool.inner.inflight.lock().await;
+        let mut pending_stats = std::pin::pin!(pool.stats());
+        assert!(futures::poll!(pending_stats.as_mut()).is_pending());
+        assert!(
+            pool.inner.entries.try_write().is_some(),
+            "a stats wait must not retain the synchronous entries guard"
+        );
+        pool.insert("later".to_string(), vec![0; 10]);
+        drop(inflight_guard);
+        let stats = pending_stats.await;
+        assert_eq!(stats.entry_count, 1, "occupancy is the pre-wait snapshot");
         assert_eq!(stats.total_bytes, 25);
+        assert_eq!(stats.inflight_count, 0);
         assert!((stats.pressure - 0.25).abs() < 0.001);
+        let current = pool.stats().await;
+        assert_eq!(current.entry_count, 2);
+        assert_eq!(current.total_bytes, 35);
     }
 
     #[tokio::test]

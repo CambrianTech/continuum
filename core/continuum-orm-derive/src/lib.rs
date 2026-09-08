@@ -334,18 +334,13 @@ struct ForeignKeyAttr {
     on_update: CascadeRuleAttr,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 enum CascadeRuleAttr {
+    #[default]
     Restrict,
     Cascade,
     SetNull,
     NoAction,
-}
-
-impl Default for CascadeRuleAttr {
-    fn default() -> Self {
-        CascadeRuleAttr::Restrict
-    }
 }
 
 fn parse_cascade_rule(s: &str) -> Option<CascadeRuleAttr> {

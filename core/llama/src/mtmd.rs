@@ -16,7 +16,8 @@
 //! let model = Model::load("qwen2-vl-7b.gguf", ModelParams::default())?;
 //! let mut lctx = model.new_context(ContextParams::default())?;
 //! let mtmd = MtmdContext::from_file("mmproj-qwen2-vl.gguf", &model)?;
-//! let n_past = mtmd.eval_image(&mut lctx, "<__media__>What's in this picture?", &png_bytes, 0, 512, 0)?;
+//! let eval = MtmdEvalParams { n_past: 0, n_batch: 512, seq_id: 0, logits_last: true };
+//! let n_past = mtmd.eval_image(&mut lctx, "<__media__>What's in this picture?", &png_bytes, &eval)?;
 //! // ... continue with normal sampler.sample(&lctx, ...) loop, starting from n_past
 //! ```
 //!
@@ -38,6 +39,20 @@ use std::ptr::NonNull;
 pub enum MediaKind {
     Image,
     Audio,
+}
+
+/// Where and how to evaluate a media prompt in an existing llama context.
+/// Shared by image and audio evaluation; media bytes remain borrowed separately.
+#[derive(Debug, Clone, Copy)]
+pub struct MtmdEvalParams {
+    /// Starting position in the context; evaluation returns the advanced position.
+    pub n_past: sys::llama_pos,
+    /// Maximum number of tokens per evaluation batch.
+    pub n_batch: i32,
+    /// Sequence in the shared context that receives the tokens.
+    pub seq_id: sys::llama_seq_id,
+    /// Compute final-token logits when sampling follows this evaluation.
+    pub logits_last: bool,
 }
 
 /// Multimodal projector context. Loaded once per (mmproj, model) pair and
@@ -96,13 +111,13 @@ impl MtmdContext {
 
     /// Tokenize `text` (which must contain the media marker, see
     /// `default_marker()`) together with `image_bytes`, then evaluate the
-    /// resulting interleaved chunks through `lctx` starting at `n_past`.
+    /// resulting interleaved chunks through `lctx` starting at `params.n_past`.
     ///
     /// Returns the new `n_past` after evaluation — the caller continues
-    /// the normal sampler-loop from this position. `seq_id` selects which
+    /// the normal sampler-loop from this position. `params.seq_id` selects which
     /// sequence in the shared context receives the tokens.
     ///
-    /// `logits_last` controls whether logits for the very last token are
+    /// `params.logits_last` controls whether logits for the very last token are
     /// computed (true if the next step is sampling, false if more eval
     /// calls follow).
     ///
@@ -115,12 +130,9 @@ impl MtmdContext {
         lctx: &mut Context,
         text: &str,
         image_bytes: &[u8],
-        n_past: i32,
-        n_batch: i32,
-        seq_id: i32,
-        logits_last: bool,
+        params: &MtmdEvalParams,
     ) -> Result<i32, String> {
-        self.eval_media(lctx, text, image_bytes, n_past, n_batch, seq_id, logits_last, MediaKind::Image)
+        self.eval_media(lctx, text, image_bytes, params, MediaKind::Image)
     }
 
     /// Audio analogue of `eval_image`. The underlying mtmd helper
@@ -140,12 +152,9 @@ impl MtmdContext {
         lctx: &mut Context,
         text: &str,
         audio_bytes: &[u8],
-        n_past: i32,
-        n_batch: i32,
-        seq_id: i32,
-        logits_last: bool,
+        params: &MtmdEvalParams,
     ) -> Result<i32, String> {
-        self.eval_media(lctx, text, audio_bytes, n_past, n_batch, seq_id, logits_last, MediaKind::Audio)
+        self.eval_media(lctx, text, audio_bytes, params, MediaKind::Audio)
     }
 
     /// Internal workhorse — single-bitmap eval (image OR audio, whichever
@@ -157,10 +166,7 @@ impl MtmdContext {
         lctx: &mut Context,
         text: &str,
         media_bytes: &[u8],
-        n_past: i32,
-        n_batch: i32,
-        seq_id: i32,
-        logits_last: bool,
+        params: &MtmdEvalParams,
         kind: MediaKind,
     ) -> Result<i32, String> {
         // Step 1: load bitmap from raw bytes — the helper auto-detects
@@ -260,16 +266,16 @@ impl MtmdContext {
         }
 
         // Step 4: evaluate the chunks through llama_context, advancing n_past.
-        let mut new_n_past: sys::llama_pos = n_past;
+        let mut new_n_past = params.n_past;
         let eval_rc = unsafe {
             sys::mtmd_helper_eval_chunks(
                 self.ptr.as_ptr(),
                 lctx.as_ptr(),
                 chunks.as_ptr(),
-                n_past,
-                seq_id,
-                n_batch,
-                logits_last,
+                params.n_past,
+                params.seq_id,
+                params.n_batch,
+                params.logits_last,
                 &mut new_n_past,
             )
         };
