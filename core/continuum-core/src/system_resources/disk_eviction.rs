@@ -50,12 +50,15 @@ use super::disk_reporters::{dir_size_bytes, TrackedDir};
 /// This workspace's debug tree passes 50 GiB during an ordinary
 /// `cargo test -p continuum-core`, so the pool sat permanently over budget, the
 /// broker asked for relief on every tick, and the eviction obliged — forever.
-/// The code did exactly what it was told; it was told the wrong number. Every
-/// build on that machine started near-cold, which is where the day's
-/// "Windows rustc is flaky" and "~70 minutes to rebuild" reports came from.
+/// The code did exactly what it was told; it was told the wrong number. Those
+/// reports of "Windows rustc is flaky" and "~70 minutes to rebuild" arrived the
+/// same day, and this is the leading explanation for them — not a demonstrated
+/// one. Whether any particular build was denied a warm cache was never observed.
 ///
-/// It survives as the FLOOR rather than the budget: a small laptop still gets
-/// exactly the behaviour it had before, and nothing regresses anywhere.
+/// It survives as the FLOOR rather than the budget: at or below the crossover
+/// volume the computed budget is byte-identical to this constant, so the change
+/// is a no-op there. That is a statement about THIS number, not a guarantee about
+/// the eviction behaviour it feeds.
 pub const DEFAULT_CARGO_TARGET_BUDGET_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 
 /// Is this gap between two evictions short enough that the cache did not survive
@@ -82,12 +85,16 @@ fn thrash_warning_due(run: u32) -> bool {
 /// housekeeping. A count cannot tell 36-in-a-day from 36-in-a-month, and only one
 /// of those is the defect.
 ///
-/// So the signal is the GAP between consecutive evictions. This threshold is the
-/// gap below which a build cache is being emptied faster than a build can use it:
-/// the measured defect ran at a 13.5-minute median, and a full
-/// `cargo test -p continuum-core` on a warm cache is comfortably longer than 30
-/// minutes on the machines that hit this. An eviction arriving inside this window
-/// means the previous build's cache did not survive to be reused.
+/// So the signal is the GAP between consecutive evictions, and the threshold is
+/// chosen — not derived — from two observations: the measured defect ran at a
+/// 13.5-minute median, and a full `cargo test -p continuum-core` on the machines
+/// that hit it takes longer than 30 minutes.
+///
+/// An eviction inside that window is therefore SUSPICIOUS, not conclusive. This
+/// function sees only timestamps: it does not know which rung ran (the ladder may
+/// have taken incremental state alone), whether a build was in flight, or whether
+/// anything was reused. A short gap is consistent with a cache being emptied
+/// faster than a build can use it; it does not establish it.
 const THRASH_GAP_MS: u64 = 30 * 60 * 1000;
 
 /// How many consecutive fast gaps before saying so. Two, because one short gap is
@@ -126,13 +133,17 @@ const CONSECUTIVE_FAST_GAPS_BEFORE_WARNING: u32 = 2;
 /// | 256 GB laptop | 238 GiB | 50 GiB (floor) | unchanged |
 /// | 500 GB | 465 GiB | 50 GiB (floor) | unchanged |
 /// | 1 TB | 931 GiB | 93 GiB | ~1.9x |
-/// | 2 TB workstation | 1863 GiB | 186 GiB | no longer thrashes |
-/// | 4 TB | 3725 GiB | 372 GiB | headroom to match |
+/// | 2 TB workstation | 1863 GiB | 186 GiB | 3.7x the old budget |
+/// | 4 TB | 3725 GiB | 372 GiB | 7.4x |
 ///
-/// The floor is what keeps this safe: every machine at or below ~537 GB behaves
-/// exactly as it does today, so this can regress nobody. It also means the fix
-/// does NOTHING for small machines — if a laptop is thrashing, this is not the
-/// change that helps it, and that is worth knowing rather than assuming.
+/// The right-hand column is the BUDGET RATIO and nothing more. Whether a larger
+/// budget ends the observed eviction cadence on a given machine is untested —
+/// plausible, since the pool evicts when over budget, but not demonstrated, and
+/// the earlier version of this table asserted "no longer thrashes" as if it were.
+///
+/// At or below ~537 GB the computed budget equals the floor, so those machines
+/// see no change from this function. It also means the fix does NOTHING for small
+/// machines: if a laptop is thrashing, this is not the change that helps it.
 pub fn cargo_target_budget_bytes(volume_total_bytes: u64) -> u64 {
     (volume_total_bytes / 10).max(DEFAULT_CARGO_TARGET_BUDGET_BYTES)
 }
@@ -1565,9 +1576,9 @@ mod tests {
         // FLAT 50 GiB, which sits BELOW this workspace's debug tree on a
         // workstation. Measured consequence on a 1.9 TB box: 36 evictions and
         // 356 GB of compilation destroyed in one day, median 13.5 minutes apart,
-        // at a cadence no build could outlive, and three agents blamed the
-        // toolchain. (Frequency is what was measured; whether any individual build
-        // started cold was never observed — see note_eviction.)
+        // at a 13.5-minute median, and three agents blamed the toolchain. (The
+        // frequency is what was measured; whether any build was denied a warm
+        // cache was never observed — see note_eviction.)
         //
         // The derivation must (a) actually raise the budget on a big volume —
         // a fix that returned the floor everywhere would pass a weaker test while

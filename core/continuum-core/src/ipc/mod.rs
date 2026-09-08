@@ -1461,9 +1461,9 @@ pub fn start_server(
         // AND THE BUDGET IS DERIVED FROM THE VOLUME, not a constant (#3906). A fixed
         // 50 GiB sat BELOW this workspace's debug tree on a workstation, so the pool was
         // permanently over budget and evicted every ~13 minutes all day: 36 evictions and
-        // 356 GB of compilation destroyed in one measured day, at a cadence no build
-        // could outlive. (That is the measured FREQUENCY; this pool never observes
-        // whether a given build reused the cache, and the warning says so.)
+        // 356 GB of compilation destroyed in one measured day, at a 13.5-minute
+        // median. (That is the measured FREQUENCY; this pool never observes whether
+        // a given build reused the cache, and the warning says so.)
         // `cargo-target-wt` is a build cache for the SAME workspace
         // and was already at 87 GB, so giving it the flat constant would have reproduced
         // the defect on a second cache the day it was registered. A volume we cannot
