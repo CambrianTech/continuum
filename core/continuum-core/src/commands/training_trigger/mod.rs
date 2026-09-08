@@ -105,35 +105,63 @@ pub(crate) mod test_support {
     /// wired, so dispatch end-to-end (submit → genome/job-create →
     /// LocalCandleFineTuner) actually runs. Returns the trigger (for `state`
     /// accessors) + the executor (the dispatch entrypoint the tests call).
-    pub(crate) async fn build_runtime_with_trigger_and_genome(
-    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
-        use crate::genome::fine_tuning::{FineTuningRegistry, LocalCandleFineTuner};
-        use crate::modules::genome::GenomeModule;
-
-        let registry = Arc::new(ModuleRegistry::new());
-        let trigger = Arc::new(TrainingTriggerModule::new());
-        registry.register(trigger.clone());
-
-        let ft_registry = Arc::new(FineTuningRegistry::new());
-        ft_registry.register(Arc::new(LocalCandleFineTuner::new()));
-        registry.register(Arc::new(GenomeModule::new(ft_registry)));
-
-        let executor = Arc::new(CommandExecutor::new(registry.clone()));
-        registry.install_executor_on_all(executor.clone());
-        (trigger, executor)
+    pub(crate) async fn build_runtime_with_trigger_and_genome() -> (
+        Arc<TrainingTriggerModule>,
+        Arc<CommandExecutor>,
+        tempfile::TempDir,
+    ) {
+        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
+        let (trigger, executor) = build_runtime(adapter, true).await;
+        (trigger, executor, dir)
     }
 
-    /// Install an executor with the trigger module but NO genome module — so
-    /// `genome/job-create` is unregistered and any dispatch attempt fails loud at
-    /// the executor. Simulates the "boot ordering / dependency missing" fault the
-    /// trigger must survive WITHOUT losing curated examples (the bucket-preservation
-    /// contract).
-    pub(crate) async fn build_runtime_trigger_only(
-    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
-        let registry = Arc::new(ModuleRegistry::new());
-        let trigger = Arc::new(TrainingTriggerModule::new());
-        registry.register(trigger.clone());
+    pub(crate) async fn build_runtime_trigger_only() -> (
+        Arc<TrainingTriggerModule>,
+        Arc<CommandExecutor>,
+        tempfile::TempDir,
+    ) {
+        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
+        let (trigger, executor) = build_runtime(adapter, false).await;
+        (trigger, executor, dir)
+    }
 
+    /// Same actual owner and command route, with a caller-owned durable fixture
+    /// so tests can recreate the owner against the same database after a restart.
+    pub(crate) async fn build_runtime(
+        adapter: Arc<dyn crate::orm::StorageAdapter>,
+        with_genome: bool,
+    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
+        use crate::genome::fine_tuning::{FineTuningRegistry, LocalCandleFineTuner};
+        let genome = with_genome.then(|| {
+            let registry = Arc::new(FineTuningRegistry::new());
+            registry.register(Arc::new(LocalCandleFineTuner::new()));
+            registry
+        });
+        build_runtime_with_registry(adapter, genome).await
+    }
+
+    /// Provider fixtures share the same initialized durable owner and isolated
+    /// journal/artifact bindings as the ordinary end-to-end fixture.
+    pub(crate) async fn build_runtime_with_registry(
+        adapter: Arc<dyn crate::orm::StorageAdapter>,
+        genome: Option<Arc<crate::genome::fine_tuning::FineTuningRegistry>>,
+    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
+        use crate::modules::genome::GenomeModule;
+        let registry = Arc::new(ModuleRegistry::new());
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let job_board = Arc::new(
+            crate::genome::fine_tuning::TrainingJobBoard::with_test_storage(artifacts.clone()),
+        );
+        let trigger = Arc::new(TrainingTriggerModule::with_test_board(job_board.clone()));
+        trigger.state.initialize_storage(adapter).await.unwrap();
+        registry.register(trigger.clone());
+        if let Some(ft_registry) = genome {
+            registry.register(Arc::new(GenomeModule::with_test_storage(
+                ft_registry,
+                job_board,
+                artifacts,
+            )));
+        }
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
         registry.install_executor_on_all(executor.clone());
         (trigger, executor)

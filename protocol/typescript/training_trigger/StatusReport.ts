@@ -5,4 +5,13 @@ import type { PendingBucketView } from "./PendingBucketView";
  * `genome/training-trigger/status` output — all pending buckets, sorted by
  * `(persona_id, trait_kind, base_model)` for deterministic operator diffing.
  */
-export type StatusReport = { success: boolean, buckets: Array<PendingBucketView>, };
+export type StatusReport = { success: boolean, 
+/**
+ * Both indexed metadata scans have completed at least one pass since boot.
+ * Until then, buckets is a recovered snapshot, not a complete backlog count.
+ */
+initialScanComplete: boolean, 
+/**
+ * Known buckets whose retained payload recovery still has pages to read.
+ */
+recoveringBuckets: number, buckets: Array<PendingBucketView>, };

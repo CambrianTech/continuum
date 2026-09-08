@@ -24,6 +24,11 @@ use super::fine_tuning_error_kind;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateParams {
+    /// Correlates the trigger's durable intent with the actual created handle.
+    /// Evidence only: provider creation is not made idempotent by this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub trigger_dispatch_id: Option<uuid::Uuid>,
     #[serde(flatten)]
     pub request: TrainingJobRequest,
     /// Force a specific provider (e.g. `"openai"`, `"local-candle"`). Honored only
@@ -46,7 +51,7 @@ pub struct JobCreateParams {
 /// The created job: its handle plus the provider the coordinator selected. The
 /// provider is surfaced for telemetry + operators validating that locality
 /// preference fired.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/JobCreateResult.ts"
@@ -61,7 +66,7 @@ pub struct JobCreateResult {
 /// `success=false` carries `error` (+ `errorKind` when the failure came from the
 /// adapter rather than the coordinator). See the module docs for why expected
 /// domain failures are data, not a transport `Err`.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts"
@@ -87,13 +92,23 @@ crate::action_command! {
     /// unsatisfiable preference, or an adapter rejection, the outcome is
     /// `success=false` with the reason (and an `errorKind` slug for adapter
     /// failures) — branch on it; this is never a silent fallback.
-    pub struct GenomeJobCreate { coordinator: Arc<FineTuningCoordinator> }
+    pub struct GenomeJobCreate {
+        coordinator: Arc<FineTuningCoordinator>,
+        #[cfg(test)]
+        test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+        #[cfg(test)]
+        test_artifacts: Arc<tempfile::TempDir>,
+    }
     name: "genome/job-create",
     access: Privileged,
     params: JobCreateParams,
     output: JobCreateOutcome,
     run(this, _ctx, p) => {
         let mut p = p;
+        // Real adapter tests must never choose a native genome output directory.
+        // The fixture owns the fallback; an explicit test request still wins.
+        #[cfg(test)]
+        p.request.local_artifact_dir.get_or_insert_with(|| this.test_artifacts.path().to_path_buf());
         // 0. Resolve the dataset: by name from disk, or inline — exactly one.
         //    An empty dataset must never reach an adapter (it would "train"
         //    on nothing and burn a job slot).
@@ -230,8 +245,13 @@ crate::action_command! {
                 // the floor and the loop stops at "trained", never "measured +
                 // adopted" ([[dev-task-learning-loop-gap-map]] L3,
                 // docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md).
-                crate::genome::fine_tuning::TrainingJobBoard::global().register(
+                #[cfg(not(test))]
+                let job_board = crate::genome::fine_tuning::TrainingJobBoard::global();
+                #[cfg(test)]
+                let job_board = this.test_job_board.as_ref();
+                job_board.register(
                     crate::genome::fine_tuning::WatchedJob {
+                        trigger_dispatch_id: p.trigger_dispatch_id,
                         handle: handle.clone(),
                         persona_id: watched_persona_id,
                         persona_name: watched_persona_name,
@@ -271,6 +291,8 @@ mod tests {
         let registry = registry_with(ids);
         GenomeJobCreate {
             coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            test_artifacts: Arc::new(tempfile::tempdir().unwrap()),
         }
     }
 
@@ -294,6 +316,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -308,6 +331,68 @@ mod tests {
         assert_eq!(result.handle.provider_job_id, "openai-job-1");
     }
 
+    // What this catches (278afa6c): the real command must register to its owned
+    // ledger and pass fixture output to the provider, preserving explicit paths.
+    #[tokio::test]
+    async fn job_fixture_owns_ledger_and_supplies_artifact_directory() {
+        use crate::genome::fine_tuning::{
+            job_board::DispatchLookup, FineTuningRegistry, RecordingFineTuningAdapter,
+            TrainingJobBoard, RECORDING_BASE_PREFIX,
+        };
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let ledger = artifacts.path().join("jobs-ledger.jsonl");
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let adapter = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(adapter.clone());
+        let command = GenomeJobCreate {
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        };
+        let explicit_output = artifacts.path().join("explicit");
+        for output in [None, Some(explicit_output.clone())] {
+            let mut request = request_for(RECORDING_BASE_PREFIX);
+            request.local_artifact_dir = output;
+            let dispatch_id = uuid::Uuid::new_v4();
+            let outcome = command
+                .run(
+                    &Ctx::default(),
+                    JobCreateParams {
+                        trigger_dispatch_id: Some(dispatch_id),
+                        request,
+                        preferred_provider: None,
+                        dataset_name: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(outcome.success, "{outcome:?}");
+            let handle = outcome.result.unwrap().handle;
+            assert!(
+                matches!(board.lookup_trigger_dispatch(dispatch_id, 0).unwrap(),
+                DispatchLookup::Observed(ref observed) if observed.local_id == handle.local_id)
+            );
+            // A second board can find the receipt only from this fixture's journal.
+            let replay = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+            assert!(
+                matches!(replay.lookup_trigger_dispatch(dispatch_id, 0).unwrap(),
+                DispatchLookup::Observed(ref observed) if observed.local_id == handle.local_id)
+            );
+        }
+        let captures = adapter.captures();
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.len(), 2);
+        assert_eq!(
+            captures[0].local_artifact_dir.as_deref(),
+            Some(artifacts.path())
+        );
+        assert_eq!(
+            captures[1].local_artifact_dir.as_deref(),
+            Some(explicit_output.as_path())
+        );
+    }
+
     // what this catches: empty registry → success=false with the NoCapableAdapter
     // text, NOT a transport Err. The outcome-as-data contract: expected domain
     // failures come through success=false, not an Err that would read as a substrate
@@ -318,6 +403,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: None,
@@ -342,6 +428,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: empty_req,
                     preferred_provider: None,
                     dataset_name: None,
@@ -356,6 +443,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: None,
                     dataset_name: Some("also-named".into()),
@@ -378,6 +466,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: req,
                     preferred_provider: None,
                     dataset_name: Some("no-such-dataset-xyz".into()),
@@ -403,6 +492,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 JobCreateParams {
+                    trigger_dispatch_id: None,
                     request: request_for("gpt-4o-mini"),
                     preferred_provider: Some("mistral".into()),
                     dataset_name: None,

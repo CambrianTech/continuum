@@ -27,6 +27,10 @@ use crate::sdk_codegen::DynCommand;
 pub struct GenomeModule {
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
+    #[cfg(test)]
+    test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    #[cfg(test)]
+    test_artifacts: Arc<tempfile::TempDir>,
 }
 
 impl GenomeModule {
@@ -39,6 +43,26 @@ impl GenomeModule {
         Self {
             registry,
             coordinator,
+            #[cfg(test)]
+            test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            #[cfg(test)]
+            test_artifacts: Arc::new(tempfile::tempdir().expect("genome test artifact directory")),
+        }
+    }
+
+    /// The ordinary command family and real adapters, with fixture-owned storage.
+    #[cfg(test)]
+    pub(crate) fn with_test_storage(
+        registry: Arc<FineTuningRegistry>,
+        test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+        test_artifacts: Arc<tempfile::TempDir>,
+    ) -> Self {
+        let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
+        Self {
+            registry,
+            coordinator,
+            test_job_board,
+            test_artifacts,
         }
     }
 
@@ -78,6 +102,10 @@ impl ServiceModule for GenomeModule {
         crate::commands::genome::command_objects(
             Arc::clone(&self.registry),
             Arc::clone(&self.coordinator),
+            #[cfg(test)]
+            Arc::clone(&self.test_job_board),
+            #[cfg(test)]
+            Arc::clone(&self.test_artifacts),
         )
     }
 

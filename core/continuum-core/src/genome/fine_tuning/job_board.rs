@@ -71,6 +71,8 @@ use super::types::JobHandle;
 /// the board on snapshot; the `handle.local_id` is the board key.
 #[derive(Debug, Clone)]
 pub struct WatchedJob {
+    /// Exact durable trigger intent which produced this handle, when present.
+    pub trigger_dispatch_id: Option<Uuid>,
     /// The handle to poll — `handle.provider_id` looks the adapter back up in the
     /// [`super::FineTuningRegistry`], `handle.local_id` is the stable board key.
     pub handle: JobHandle,
@@ -109,9 +111,20 @@ pub struct TrainingJobBoard {
     jobs: DashMap<Uuid, WatchedJob>,
     /// Append-only journal path; `None` disables journaling.
     ledger: Option<PathBuf>,
+    #[cfg(test)]
+    _test_directory: Option<std::sync::Arc<tempfile::TempDir>>,
+}
+
+/// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
+/// establishes that an uncertain dispatch did not create a provider job.
+pub(crate) enum DispatchLookup {
+    Observed(JobHandle),
+    NotObserved,
+    Incomplete { next_offset: u64 },
 }
 
 static GLOBAL: OnceLock<TrainingJobBoard> = OnceLock::new();
+const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
 
 /// `~/.continuum/genome/jobs-ledger.jsonl` — sibling of the job artifact dirs
 /// (the MLX adapter's `job_dir_for` uses the same `~/.continuum/genome` root).
@@ -128,6 +141,93 @@ fn now_ms() -> u128 {
 }
 
 impl TrainingJobBoard {
+    /// Normal path reads the existing live board. Recovery scans at most 64 KiB
+    /// of its existing journal per call, with an explicit continuation offset.
+    /// Caller performs this filesystem boundary on a blocking worker.
+    pub(crate) fn lookup_trigger_dispatch(
+        &self,
+        dispatch_id: Uuid,
+        offset: u64,
+    ) -> Result<DispatchLookup, String> {
+        use std::io::{Read, Seek, SeekFrom};
+        if let Some(handle) = self.jobs.iter().find_map(|job| {
+            (job.trigger_dispatch_id == Some(dispatch_id)).then(|| job.handle.clone())
+        }) {
+            return Ok(DispatchLookup::Observed(handle));
+        }
+        let Some(path) = &self.ledger else {
+            return Ok(DispatchLookup::NotObserved);
+        };
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DispatchLookup::NotObserved)
+            }
+            Err(e) => return Err(format!("read training dispatch journal: {e}")),
+        };
+        let len = file.metadata().map_err(|e| e.to_string())?.len();
+        if offset > len {
+            return Err("training dispatch journal shrank during recovery".into());
+        }
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut bytes = Vec::with_capacity(DISPATCH_JOURNAL_PAGE_BYTES as usize);
+        file.take(DISPATCH_JOURNAL_PAGE_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.is_empty() {
+            return Ok(DispatchLookup::NotObserved);
+        }
+        let Some(last_newline) = bytes.iter().rposition(|b| *b == b'\n') else {
+            if bytes.len() as u64 == DISPATCH_JOURNAL_PAGE_BYTES {
+                return Err(
+                    "training dispatch journal record exceeds the bounded recovery page".into(),
+                );
+            }
+            return Ok(DispatchLookup::Incomplete {
+                next_offset: offset,
+            });
+        };
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            event: String,
+            #[serde(default)]
+            trigger_dispatch_id: Option<Uuid>,
+            #[serde(default)]
+            local_id: Option<Uuid>,
+            #[serde(default)]
+            provider_id: Option<String>,
+            #[serde(default)]
+            provider_job_id: Option<String>,
+        }
+        for line in bytes[..=last_newline]
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let entry: Entry = serde_json::from_slice(line)
+                .map_err(|e| format!("malformed training dispatch journal entry: {e}"))?;
+            if entry.event == "registered" && entry.trigger_dispatch_id == Some(dispatch_id) {
+                return Ok(DispatchLookup::Observed(JobHandle {
+                    local_id: entry
+                        .local_id
+                        .ok_or("training dispatch evidence omitted local_id")?,
+                    provider_id: entry
+                        .provider_id
+                        .ok_or("training dispatch evidence omitted provider_id")?,
+                    provider_job_id: entry
+                        .provider_job_id
+                        .ok_or("training dispatch evidence omitted provider_job_id")?,
+                }));
+            }
+        }
+        let next_offset = offset + last_newline as u64 + 1;
+        if next_offset < len {
+            Ok(DispatchLookup::Incomplete { next_offset })
+        } else {
+            Ok(DispatchLookup::NotObserved)
+        }
+    }
+
     /// The one board for this core. Lazily built on first touch; the first build
     /// replays the ledger — jobs a previous core left in flight are journaled dead
     /// (`killed-by-reboot`) and reported loud, so a severed flywheel tail is
@@ -155,7 +255,17 @@ impl TrainingJobBoard {
         TrainingJobBoard {
             jobs: DashMap::new(),
             ledger,
+            #[cfg(test)]
+            _test_directory: None,
         }
+    }
+
+    /// Keep the fixture journal alive for every owner sharing this board.
+    #[cfg(test)]
+    pub(crate) fn with_test_storage(directory: std::sync::Arc<tempfile::TempDir>) -> Self {
+        let mut board = Self::with_ledger(Some(directory.path().join("jobs-ledger.jsonl")));
+        board._test_directory = Some(directory);
+        board
     }
 
     /// Append one JSON line to the ledger. Never blocks or panics the caller: an
@@ -236,6 +346,7 @@ impl TrainingJobBoard {
     pub fn register(&self, job: WatchedJob) {
         self.journal(&serde_json::json!({
             "event": "registered",
+            "trigger_dispatch_id": job.trigger_dispatch_id,
             "local_id": job.handle.local_id.to_string(),
             "provider_id": job.handle.provider_id,
             "provider_job_id": job.handle.provider_job_id,
@@ -291,6 +402,7 @@ mod tests {
 
     fn watched(local_id: Uuid, provider: &str) -> WatchedJob {
         WatchedJob {
+            trigger_dispatch_id: None,
             handle: JobHandle {
                 provider_id: provider.to_string(),
                 provider_job_id: "job-x".to_string(),
@@ -303,6 +415,90 @@ mod tests {
             eval_set: Some("docs/genome/coder-eval.jsonl".to_string()),
             signature: None,
         }
+    }
+
+    // What this catches (278afa6c): a concrete correlated handle survives loss
+    // of the live board; earlier/unrelated records and partial scans cannot be
+    // mistaken for proof that the dispatch did not happen.
+    #[test]
+    fn trigger_evidence_survives_restart_and_pages_without_false_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.jsonl");
+        let board = TrainingJobBoard::with_ledger(Some(path.clone()));
+        let dispatch_id = Uuid::new_v4();
+        let local_id = Uuid::new_v4();
+        for _ in 0..512 {
+            board.register(watched(Uuid::new_v4(), "unrelated-provider"));
+            if std::fs::metadata(&path).unwrap().len() > 2 * DISPATCH_JOURNAL_PAGE_BYTES {
+                break;
+            }
+        }
+        let target_offset = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            target_offset > 2 * DISPATCH_JOURNAL_PAGE_BYTES,
+            "actual journal bytes must force multiple pages before the target"
+        );
+        let mut target = watched(local_id, "local-candle");
+        target.trigger_dispatch_id = Some(dispatch_id);
+        board.register(target);
+        assert!(
+            matches!(board.lookup_trigger_dispatch(dispatch_id, 0).unwrap(),
+            DispatchLookup::Observed(handle) if handle.local_id == local_id)
+        );
+        drop(board);
+        let recovered = TrainingJobBoard::with_ledger(Some(path.clone()));
+        let mut cursor = match recovered.lookup_trigger_dispatch(dispatch_id, 0).unwrap() {
+            DispatchLookup::Incomplete { next_offset } => next_offset,
+            _ => panic!("fixture must cross the bounded journal page"),
+        };
+        assert!(cursor > 0 && cursor <= DISPATCH_JOURNAL_PAGE_BYTES);
+        assert!(cursor < target_offset);
+        loop {
+            match recovered
+                .lookup_trigger_dispatch(dispatch_id, cursor)
+                .unwrap()
+            {
+                DispatchLookup::Incomplete { next_offset } => {
+                    assert!(next_offset > cursor);
+                    cursor = next_offset;
+                }
+                DispatchLookup::Observed(handle) => {
+                    assert_eq!(handle.local_id, local_id);
+                    assert_eq!(handle.provider_id, "local-candle");
+                    break;
+                }
+                DispatchLookup::NotObserved => {
+                    panic!("lost correlated evidence after a partial scan")
+                }
+            }
+        }
+        let end = std::fs::metadata(&path).unwrap().len();
+        assert!(matches!(
+            recovered
+                .lookup_trigger_dispatch(Uuid::new_v4(), end)
+                .unwrap(),
+            DispatchLookup::NotObserved
+        ));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"event\":")
+            .unwrap();
+        assert!(
+            matches!(recovered.lookup_trigger_dispatch(dispatch_id, end).unwrap(),
+            DispatchLookup::Incomplete { next_offset } if next_offset == end)
+        );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"bad}\n")
+            .unwrap();
+        assert!(recovered.lookup_trigger_dispatch(dispatch_id, end).is_err());
+        assert!(recovered
+            .lookup_trigger_dispatch(dispatch_id, u64::MAX)
+            .is_err());
     }
 
     // what this catches: the claim-once contract. A registered job is visible in the

@@ -11,6 +11,11 @@ import type { TrainingDataset } from "./fine_tuning/TrainingDataset";
  */
 export type JobCreateParams = { 
 /**
+ * Correlates the trigger's durable intent with the actual created handle.
+ * Evidence only: provider creation is not made idempotent by this field.
+ */
+triggerDispatchId?: string, 
+/**
  * Force a specific provider (e.g. `"openai"`, `"local-candle"`). Honored only
  * if that provider is in the capable set; otherwise the outcome is
  * `success=false` — never a silent fallback to a different provider.
