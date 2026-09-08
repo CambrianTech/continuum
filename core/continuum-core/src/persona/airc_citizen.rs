@@ -118,7 +118,7 @@ pub trait AircCitizen:
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError>;
 
     /// Watch receiver whose value increments whenever this citizen's room
-    /// membership GROWS at runtime (a join after spawn) — the perception
+    /// membership changes at runtime (a join or leave after spawn) — the perception
     /// stream's rebuild cue (P0 20b44763). airc-lib's
     /// `subscribe_subscribed_filtered` snapshots the subscribed-channel
     /// list ONCE at subscribe time, so a room joined later (benchmark
@@ -335,10 +335,7 @@ pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
     let runtimes: Vec<_> = reg.iter().collect();
     for rt in runtimes {
         if let Ok(set) = rt.airc().subscription_set().await {
-            if let Some(sub) = set
-                .all()
-                .find(|s| s.as_room().channel.as_uuid() == room_id)
-            {
+            if let Some(sub) = set.all().find(|s| s.as_room().channel.as_uuid() == room_id) {
                 return Some(sub.name.to_string());
             }
         }

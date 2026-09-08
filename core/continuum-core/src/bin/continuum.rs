@@ -6,6 +6,7 @@
 //!                     # refuses if a core is running but not answering — `--force` reclaims it
 //! continuum reboot           # stop everything, rebuild on a free machine, relaunch
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
+//! continuum reboot --prebuilt <path> # validate that core first, then hand off without rebuilding
 //! continuum stop             # stop the running core
 //! continuum ping             # dispatch a command to the running core
 //! continuum ping '{"message":"hi"}'
@@ -35,6 +36,10 @@ use continuum_core::runtime::deploy_provenance::{
     cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
 };
 use serde_json::Value;
+
+#[cfg(windows)]
+#[path = "continuum/windows_launch.rs"]
+mod windows_launch;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
@@ -104,7 +109,7 @@ async fn run() -> Result<(), CliError> {
         eprintln!("{}", usage());
         return Ok(());
     }
-    let mut args = rest.into_iter();
+    let args = rest.into_iter();
     // Every CLI run from inside a repo records that checkout for the core
     // (repo-card staging reads it); the first deploy after #3706 would otherwise
     // start with an empty registry until the next `start`/`reboot`.
@@ -127,10 +132,7 @@ async fn run() -> Result<(), CliError> {
             }
             start(flags.iter().any(|a| a == "--force")).await
         }
-        "reboot" | "restart" => {
-            let force = args.any(|a| a == "--force");
-            reboot(force).await
-        }
+        "reboot" | "restart" => reboot(RebootOptions::parse(args)?).await,
         // The typed boot plan (BOOT-IS-A-TYPED-PLAN.md, slice 1): deterministic
         // runtime bring-up of an ALREADY-BUILT binary — lane adopt-or-reap,
         // transport, core launch + #194 verify, optional Beside rails — one
@@ -690,12 +692,94 @@ async fn start(force: bool) -> Result<(), String> {
 }
 
 /// `continuum reboot` — stop + rebuild + relaunch the core.
-/// Unlike `continuum start` this never no-ops on an up core: it runs the FULL
-/// `stop` teardown first (core, split-brains, orphans, serving lanes), builds
-/// the fresh binary on a machine that is no longer serving a model, then
-/// launches. This is the canonical operator rebuild-after-edit verb — one
-/// command, no manual kill dance ([[validate-via-pure-rust-not-npm-jtag]]).
-async fn reboot(force: bool) -> Result<(), String> {
+/// Reboot keeps its existing lease/force contract for both source and prebuilt
+/// deployment. An invalid or repeated option must not silently request a swap.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RebootOptions {
+    force: bool,
+    prebuilt: Option<PathBuf>,
+}
+
+impl RebootOptions {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+        let mut options = Self::default();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--force" if !options.force => options.force = true,
+                "--prebuilt" if options.prebuilt.is_none() => {
+                    let path = args
+                        .next()
+                        .filter(|p| !p.is_empty() && !p.starts_with('-'))
+                        .ok_or("reboot --prebuilt requires a core binary path")?;
+                    options.prebuilt = Some(PathBuf::from(path));
+                }
+                "--force" | "--prebuilt" => return Err(format!("duplicate reboot option {arg}")),
+                _ => {
+                    return Err(format!(
+                        "unknown reboot option {arg}; use --force or --prebuilt <path>"
+                    ))
+                }
+            }
+        }
+        Ok(options)
+    }
+}
+
+/// An explicitly selected artifact whose loader and provenance were checked while
+/// the previous core was still alive. Launch and verification borrow this SAME
+/// path/SHA pair; neither may re-resolve an ambient installed-binary override.
+#[derive(Debug, PartialEq, Eq)]
+struct PrebuiltCore {
+    path: PathBuf,
+    build_sha: String,
+}
+
+impl PrebuiltCore {
+    async fn prepare(path: &Path) -> Result<Self, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|e| format!("prebuilt core {} cannot be resolved: {e}", path.display()))?;
+        if !path.is_file() {
+            return Err(format!("prebuilt core {} is not a file", path.display()));
+        }
+        let build_sha = binary_build_sha(&path).await?;
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("cannot locate checkout for prebuilt verification: {e}"))?;
+        let git_dir = std::env::var_os("GIT_DIR");
+        let checkout_sha = prebuilt_checkout_sha(&cwd, git_dir.as_deref()).await?;
+        Self::from_report(path, build_sha, checkout_sha.as_deref())
+    }
+
+    fn from_report(
+        path: PathBuf,
+        build_sha: String,
+        checkout_sha: Option<&str>,
+    ) -> Result<Self, String> {
+        // Reuse #194's credible-SHA and short/full-SHA comparison. Without a
+        // checkout the artifact anchors its own receipt; unknown/malformed
+        // provenance still fails. With a checkout it must also match HEAD.
+        deploy_verdict(
+            Some(&build_sha),
+            checkout_sha.unwrap_or(&build_sha),
+            if checkout_sha.is_some() {
+                "git HEAD of this checkout"
+            } else {
+                "selected prebuilt artifact"
+            },
+            &path.display().to_string(),
+        )?;
+        Ok(Self { path, build_sha })
+    }
+}
+
+/// Rebuild source by default, or hand off to an explicitly validated prebuilt
+/// core. Both use the same leases, selective teardown and deploy verification.
+async fn reboot(options: RebootOptions) -> Result<(), String> {
+    let prebuilt = match options.prebuilt {
+        Some(path) => Some(PrebuiltCore::prepare(&path).await?),
+        None => None,
+    };
+    let force = options.force;
     let socket = socket_path();
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
     // the policy AND the path). A core swap kills spawned trainer children
@@ -798,21 +882,32 @@ async fn reboot(force: bool) -> Result<(), String> {
     let old = running_core_pids();
     if old.is_empty() {
         println!("▶ no core running — starting fresh (socket={socket})");
+    } else if let Some(candidate) = &prebuilt {
+        println!(
+            "▶ rebooting core (socket={socket}): replacing pid(s) {} with verified prebuilt {} (build {}) — no rebuild",
+            old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","),
+            candidate.path.display(), candidate.build_sha,
+        );
     } else {
         println!(
             "▶ rebooting core (socket={socket}): stopping pid(s) {} FIRST, then building on a free machine",
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    stop_with(true).await?;
-    // `launch_core`'s `wait_for_death` on `old` is now trivially satisfied —
-    // kept as the honesty check that the stop actually took.
-    // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
+    // Publish the claim before teardown for the WHOLE build/swap. Held until this function returns, so a
     // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
     // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
-    let _deploy_claim =
-        DeployClaimGuard::take(git_head_short_sha().as_deref().unwrap_or("unknown"));
-    let secs = launch_core(&old, LaunchSource::FromSource).await?;
+    let target_sha = prebuilt
+        .as_ref()
+        .map(|p| p.build_sha.clone())
+        .or_else(git_head_short_sha);
+    let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    stop_with(true).await?;
+    // Keep the launcher's wait as the honesty check that teardown actually took.
+    let source = prebuilt
+        .as_ref()
+        .map_or(LaunchSource::FromSource, LaunchSource::Prebuilt);
+    let secs = launch_core(&old, source).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
     // answer on the same socket and this reboot would report success while running dead code.
@@ -828,9 +923,10 @@ async fn reboot(force: bool) -> Result<(), String> {
     // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
     // deliberately skips. Getting this wrong in either direction re-creates the noise this
     // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
-    let rebuilt_cli = locate_start_script().is_ok()
+    let rebuilt_cli = prebuilt.is_none()
+        && locate_start_script().is_ok()
         && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
-    verify_deployed_build(rebuilt_cli).await
+    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
 }
 
 /// Prove the running core is built from the source this deploy shipped — the honest half of
@@ -862,6 +958,13 @@ const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 /// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
 /// warning on every successful deploy.
 async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
+    verify_deployed_build_against(rebuilt_cli, None).await
+}
+
+async fn verify_deployed_build_against(
+    rebuilt_cli: bool,
+    prebuilt: Option<&PrebuiltCore>,
+) -> Result<(), String> {
     let socket = socket_path();
     // The RUNNING core's provenance, from the process itself. BOUNDED: a core
     // that accepts the socket mid-boot but never answers made `continuum
@@ -888,13 +991,22 @@ async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
         .map(str::to_string);
 
     // What the deploy SHOULD have shipped.
-    let (expected, expected_source) = match git_head_short_sha() {
-        Some(head) => (head, "git HEAD of this checkout".to_string()),
-        None => {
-            let artifact = resolve_core_artifact()?;
-            let sha = binary_build_sha(&artifact)?;
-            (sha, format!("artifact {}", artifact.display()))
-        }
+    let (expected, expected_source) = match prebuilt {
+        Some(candidate) => (
+            candidate.build_sha.clone(),
+            format!(
+                "prebuilt artifact {} (no rebuild)",
+                candidate.path.display()
+            ),
+        ),
+        None => match git_head_short_sha() {
+            Some(head) => (head, "git HEAD of this checkout".to_string()),
+            None => {
+                let artifact = resolve_core_artifact()?;
+                let sha = binary_build_sha(&artifact).await?;
+                (sha, format!("artifact {}", artifact.display()))
+            }
+        },
     };
 
     let running_desc = describe_running_core(&socket);
@@ -1065,6 +1177,23 @@ fn apply_runtime_library_path(cmd: &mut std::process::Command) {
     apply_runtime_library_env_in(cmd, &root, std::env::consts::OS);
 }
 
+/// The candidate's provenance probe and the actual launch need the same loader
+/// environment. Configure only the child; never export into the calling shell.
+fn apply_core_runtime_env(cmd: &mut std::process::Command) {
+    for (k, v) in continuum_core::config_env::read_all() {
+        cmd.env(k, v);
+    }
+    apply_runtime_library_path(cmd);
+}
+
+/// Direct launches retain the caller's cwd and the core's positional socket
+/// contract. An explicit prebuilt path never goes through artifact discovery.
+fn direct_core_command(artifact: &Path, socket: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(artifact);
+    cmd.arg(socket);
+    cmd
+}
+
 /// Read the child's effective environment, including config.env assignments and
 /// explicit removals. Looking only at our own environment loses launch overrides.
 fn command_env(cmd: &std::process::Command, key: &str) -> Option<std::ffi::OsString> {
@@ -1231,10 +1360,25 @@ fn home_dir() -> Result<String, String> {
 /// Ask an on-disk `continuum-core-server` artifact for its embedded build SHA
 /// (`--build-sha`, exits before any socket/side-effect). Loud on any failure — an artifact
 /// that cannot state its provenance cannot anchor a deploy receipt.
-fn binary_build_sha(artifact: &Path) -> Result<String, String> {
-    let out = std::process::Command::new(artifact)
-        .arg("--build-sha")
-        .output()
+async fn binary_build_sha(artifact: &Path) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(artifact);
+    apply_core_runtime_env(&mut cmd);
+    cmd.arg("--build-sha").stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a provenance probe has no UI.
+    }
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.kill_on_drop(true);
+    let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| {
+            format!(
+                "{} --build-sha did not answer within 30 s; provenance is unavailable",
+                artifact.display()
+            )
+        })?
         .map_err(|e| format!("cannot run {} --build-sha: {e}", artifact.display()))?;
     if !out.status.success() {
         return Err(format!(
@@ -1295,6 +1439,77 @@ fn git_head_short_sha() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Unlike the legacy best-effort HEAD lookup, a prebuilt deploy may self-anchor
+/// only outside a repository. A broken/inaccessible checkout is not an absence.
+async fn prebuilt_checkout_sha(
+    cwd: &Path,
+    git_dir: Option<&std::ffi::OsStr>,
+) -> Result<Option<String>, String> {
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("cannot inspect prebuilt checkout {}: {e}", cwd.display()))?;
+    if git_dir.is_none() && !has_git_checkout(&cwd)? {
+        return Ok(None);
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&cwd)
+        .args(["rev-parse", "--short", "HEAD"])
+        .env_remove("GIT_DIR")
+        .stdin(Stdio::null());
+    if let Some(git_dir) = git_dir {
+        cmd.env("GIT_DIR", git_dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))?
+        .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot verify prebuilt checkout HEAD in {}: git exited {}: {}",
+            cwd.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    let head = String::from_utf8(output.stdout)
+        .map_err(|e| format!("prebuilt checkout HEAD is not UTF-8: {e}"))?;
+    let head = head.trim();
+    if head.is_empty() {
+        return Err("prebuilt checkout HEAD lookup returned no SHA".into());
+    }
+    Ok(Some(head.to_owned()))
+}
+
+/// Detect repository metadata without asking Git to read HEAD. Both a normal
+/// `.git` directory and a linked worktree/submodule's `.git` file count, even if
+/// broken; Git must then verify the selected checkout. Bare repositories count
+/// too. Metadata permission errors must not downgrade verification to standalone.
+fn has_git_checkout(cwd: &Path) -> Result<bool, String> {
+    fn present(path: &Path) -> Result<bool, String> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("cannot inspect Git metadata {}: {e}", path.display())),
+        }
+    }
+    for ancestor in cwd.ancestors() {
+        if present(&ancestor.join(".git"))?
+            || (present(&ancestor.join("HEAD"))? && present(&ancestor.join("objects"))?)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live pid.
@@ -1400,6 +1615,14 @@ fn wait_verdict(silent_for_secs: u64, stall_limit_secs: u64) -> WaitVerdict {
 /// `None` when the group is gone or `ps` is unavailable, so the caller falls back to the log
 /// signal rather than reading "cannot tell" as "stalled" — the same refusal-to-guess the socket
 /// and VRAM fixes landed on tonight.
+///
+/// THE READING IS NOT MONOTONIC, and assuming it was is what made this watchdog kill healthy
+/// builds (card 6c91036c). `ps -g` sums cputime over the group members alive AT THAT INSTANT, so
+/// when a long-running rustc finishes its crate and cargo replaces it, that child's accumulated
+/// time LEAVES the sum and the total DROPS. Measured on this Intel Mac 20s apart, mid-build:
+/// `0:00.03 0:01.59 43:08.67` (~2589s) then `0:00.03 0:01.64 0:01.40` (~3s) — a 43-minute rustc
+/// exited at a crate boundary and the group total fell by three orders of magnitude while the
+/// build was making perfectly ordinary progress. See [`cpu_reading_shows_progress`].
 #[cfg(unix)]
 fn build_group_cpu_secs(pgid: u32) -> Option<u64> {
     let out = std::process::Command::new("ps")
@@ -1422,6 +1645,35 @@ fn build_group_cpu_secs(pgid: u32) -> Option<u64> {
 #[cfg(not(unix))]
 fn build_group_cpu_secs(_pgid: u32) -> Option<u64> {
     None
+}
+
+/// Did this CPU reading show the build group doing work since the last one?
+///
+/// Card 6c91036c. The obvious test — `reading > last` — is WRONG, because group cputime is not
+/// monotonic (see [`build_group_cpu_secs`]). Treating only an increase as progress latches a
+/// high-water mark that no later reading can beat: once a 43-minute rustc has been counted and
+/// then exits, every subsequent sample is far BELOW the mark, the comparison is false forever,
+/// and the stall clock is never reset again. Five minutes later the watchdog kills a healthy
+/// build and reports that it "burned no CPU" — the one thing the readings prove it did.
+///
+/// ANY MOVEMENT is progress; direction never carried information. A genuinely stuck build holds
+/// the sum CONSTANT — a hung exec burns nothing and spawns nothing — so `!=` still catches every
+/// stall the `>` version caught. It only stops mis-reading normal crate-boundary churn as death.
+///
+/// WHAT NEITHER COMPARISON CATCHES, and an earlier draft of this comment claimed the opposite
+/// (Astra caught it on review): a SPINNING hang. The log arm and the CPU arm reset the SAME
+/// `last_progress_at`, so a spin that keeps burning CPU keeps resetting that one clock and the
+/// stall check can never fire, no matter how silent the log goes. Log silence is not an
+/// independent signal here. The only thing bounding a spin is the outer `MAX_WAIT_SECS` ceiling.
+/// That was equally true of `>` — this change neither introduces nor fixes it — but the comment
+/// must not claim a guarantee the code does not make, or the next reader will build on it.
+///
+/// This bites the LOW END HARDEST, which is the opposite of the intent: the high-water mark is
+/// set by the longest-running single rustc, so a slow machine compiling one crate for 43 minutes
+/// wedges the detector permanently the moment that crate lands, while a fast machine cycling
+/// children quickly never accumulates a mark big enough to matter.
+fn cpu_reading_shows_progress(reading: u64, last: u64) -> bool {
+    reading != last
 }
 
 /// `ps -o cputime=` renders `[[dd-]hh:]mm:ss`. Sum right-to-left so every shape parses without
@@ -1879,11 +2131,13 @@ fn locate_bash() -> Result<PathBuf, String> {
 /// verb. Collapsing the two is what produced a `reboot` that re-ran a
 /// month-old artifact under a banner promising a fresh build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaunchSource {
+enum LaunchSource<'a> {
     /// Whatever is already installed is fine — the caller wants a live core.
     Installed,
     /// Build first. The caller is deploying source they just edited.
     FromSource,
+    /// A caller-selected artifact, validated before reboot's teardown.
+    Prebuilt(&'a PrebuiltCore),
 }
 
 /// The resolved launch, given the policy and what actually exists on this machine.
@@ -1897,6 +2151,8 @@ enum LaunchPlan {
     /// this machine has no source tree. Legal, but it must SAY SO: it is a restart,
     /// not a deploy.
     InstalledWithoutRebuild,
+    /// Exec the already-validated caller-selected artifact, without source work.
+    Prebuilt,
     /// Nothing to run.
     NoLaunchable,
 }
@@ -1905,11 +2161,15 @@ enum LaunchPlan {
 /// process. Every branch below cost a real outage or a false success line at some
 /// point; the table in the tests is the record of which.
 fn plan_launch(
-    policy: LaunchSource,
+    policy: LaunchSource<'_>,
     env_from_source: bool,
     have_script: bool,
     have_installed: bool,
 ) -> LaunchPlan {
+    if matches!(policy, LaunchSource::Prebuilt(_)) {
+        // The explicit command-line intent wins over inherited source/build env.
+        return LaunchPlan::Prebuilt;
+    }
     let want_source = env_from_source || policy == LaunchSource::FromSource;
     match (want_source, have_script, have_installed) {
         (true, true, _) => LaunchPlan::Script,
@@ -1928,7 +2188,7 @@ fn plan_launch(
     }
 }
 
-async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64, String> {
+async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result<u64, String> {
     let socket = socket_path();
     let logfile = start_logfile();
     let log = std::fs::File::create(&logfile)
@@ -1957,8 +2217,13 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     // default — the two callers want opposite things and neither should have to
     // infer the other's intent.
     let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
-    let script = locate_start_script().ok();
-    let server_bin = locate_core_server_binary();
+    let (script, server_bin) = if matches!(policy, LaunchSource::Prebuilt(_)) {
+        // Already prepared: neither an installed override nor a source script
+        // may redirect this explicit artifact or add work to the handoff.
+        (None, None)
+    } else {
+        (locate_start_script().ok(), locate_core_server_binary())
+    };
     let plan = plan_launch(
         policy,
         env_from_source,
@@ -1967,6 +2232,17 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     );
 
     let mut cmd = match plan {
+        LaunchPlan::Prebuilt => {
+            let LaunchSource::Prebuilt(candidate) = policy else {
+                unreachable!("only a validated prebuilt source selects this plan")
+            };
+            eprintln!(
+                "▶ starting verified prebuilt core: {} (build {}, no rebuild; log: {logfile})",
+                candidate.path.display(),
+                candidate.build_sha
+            );
+            direct_core_command(&candidate.path, &socket)
+        }
         LaunchPlan::Script => {
             let script = script.expect("plan_launch only picks Script when one was found");
             if env_from_source || policy == LaunchSource::FromSource {
@@ -1988,8 +2264,6 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             c
         }
         LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => {
-            // borrow: the spawn-failure diagnostic below reports which binary it
-            // tried, so `server_bin` has to outlive this arm.
             let bin = server_bin
                 .as_ref()
                 .expect("plan_launch only picks Installed when one was found");
@@ -2007,7 +2281,6 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             // result and has to stay machine-parseable when a command
             // auto-starts the core on its way through.
             eprintln!("▶ starting core: {} (log: {logfile})", bin.display());
-            let mut c = std::process::Command::new(bin);
             // THE SOCKET PATH IS A POSITIONAL ARGUMENT, and this call site is the
             // only one that ever forgot it. `main.rs` requires argv[1] and exits 1
             // with its usage text when it is missing — so from the moment the
@@ -2016,8 +2289,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             // log. The env var below is set too (and `endpoint_paths::core_socket`
             // now honours it server-side), but argv is the binary's documented
             // contract and is what `ps` shows an operator.
-            c.arg(&socket);
-            c
+            direct_core_command(bin, &socket)
         }
         LaunchPlan::NoLaunchable => {
             return Err(if env_from_source || policy == LaunchSource::FromSource {
@@ -2048,9 +2320,6 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     // file order so duplicate assignments resolve last-wins exactly as `source` would.
     // On the Script path the script re-sources the same file afterwards — same values,
     // so this is idempotent there rather than a second source of truth.
-    for (k, v) in continuum_core::config_env::read_all() {
-        cmd.env(k, v);
-    }
     // …and so do the manifest's RUNTIME LIBRARY DIRS, for the same reason and
     // the same class of bug one layer down.
     //
@@ -2073,7 +2342,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     // because a binary-only install has no repo to read — and that layout is
     // not an independent guess: it is the manifest's own `extract`
     // destination, the same contract expressed at the other end.
-    apply_runtime_library_path(&mut cmd);
+    apply_core_runtime_env(&mut cmd);
     // We ARE the continuum binary — may this deploy rebuild our own image?
     //
     // The guard below used to be unconditional, and that is the whole of #422: a
@@ -2090,8 +2359,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
         }
     }
-    cmd.env("CONTINUUM_CORE_SOCKET", &socket)
-        .stdin(Stdio::null())
+    cmd.env("CONTINUUM_CORE_SOCKET", &socket);
+    #[cfg(not(windows))]
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     // Detach so the core outlives this CLI invocation. Unix: setsid() in the
@@ -2106,8 +2376,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         });
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
+    let spawned = {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         // NOT DETACHED_PROCESS. That flag gives the child NO console at all, and the start script
         // is bash — a console-subsystem program that needs one. Under DETACHED_PROCESS it died
@@ -2127,12 +2396,16 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         // receipt — the operator then launches through a Scheduled Task (schtasks), which
         // runs outside any job, until the supervisor slice lands.
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
-    }
-    #[cfg(windows)]
-    let spawned = {
-        use std::os::windows::process::CommandExt;
-        match cmd.spawn() {
+        // Redirecting stdio does not prevent Rust's Windows spawn from also
+        // inheriting the launcher's other pipe writers. Those kept PowerShell
+        // waiting for EOF after a successful reboot (card 9bc0fc5e). The native
+        // boundary allows only its owned null/log handles, on BOTH attempts.
+        match windows_launch::spawn_logged(
+            &cmd,
+            &log,
+            &log_err,
+            CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+        ) {
             Ok(child) => {
                 eprintln!("▶ supervisor=breakaway: the core left this session's job object (survives the session)");
                 Ok(child)
@@ -2145,20 +2418,27 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
                      /tr \"<the same start command>\" /sc once /st 00:00 /ru <user> /rl highest /f \
                      && schtasks /run /tn continuum-core"
                 );
-                cmd.creation_flags(0x0000_0200 | 0x0800_0000);
-                cmd.spawn()
+                windows_launch::spawn_logged(
+                    &cmd,
+                    &log,
+                    &log_err,
+                    CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                )
             }
             Err(e) => Err(e),
         }
     };
     #[cfg(not(windows))]
     let spawned = cmd.spawn();
-    let mut child = spawned.map_err(|e| match &server_bin {
-        Some(bin) => format!("failed to spawn the core server {}: {e}", bin.display()),
-        None => format!(
+    let mut child = spawned.map_err(|e| match plan {
+        LaunchPlan::Script => format!(
             "failed to spawn the source-build start script via bash: {e}. The start script \
              is bash; on Windows that needs bash on PATH (Git Bash). Installing \
              continuum-core-server avoids the script entirely."
+        ),
+        _ => format!(
+            "failed to spawn the core server {}: {e}",
+            cmd.get_program().to_string_lossy()
         ),
     })?;
 
@@ -2223,7 +2503,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         // exists to protect. CPU burned by the process group is the second signal, and it is the
         // one that distinguishes working-silently from hung: a stuck exec sits at 0.0%.
         if let Some(cpu) = build_group_cpu_secs(build_pgid) {
-            if cpu > last_cpu_secs {
+            if cpu_reading_shows_progress(cpu, last_cpu_secs) {
                 last_cpu_secs = cpu;
                 last_progress_at = std::time::Instant::now();
             }
@@ -2568,6 +2848,226 @@ fn tail(path: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: card 67f53b63 — a missing/misspelled prebuilt path
+    // must not fall through to a source reboot, and --force only changes leases.
+    #[test]
+    fn prebuilt_reboot_options_are_explicit_and_strict() {
+        let parse = |args: &[&str]| super::RebootOptions::parse(args.iter().map(|s| s.to_string()));
+        assert_eq!(parse(&[]).unwrap(), super::RebootOptions::default());
+        for args in [
+            vec!["--force", "--prebuilt", "release dir/core.exe"],
+            vec!["--prebuilt", "release dir/core.exe", "--force"],
+        ] {
+            let options = parse(&args).unwrap();
+            assert!(options.force);
+            assert_eq!(
+                options.prebuilt.as_deref(),
+                Some(std::path::Path::new("release dir/core.exe"))
+            );
+        }
+        for args in [
+            vec!["--prebuilt"],
+            vec!["--prebuilt", ""],
+            vec!["--prebuilt", "--force"],
+            vec!["--prebuit", "core.exe"],
+            vec!["core.exe"],
+            vec!["--force", "--force"],
+            vec!["--prebuilt", "one", "--prebuilt", "two"],
+            vec!["--force", "--prebuilt", "core.exe", "--from-source"],
+        ] {
+            assert!(
+                parse(&args).is_err(),
+                "invalid request must stop at parsing: {args:?}"
+            );
+        }
+    }
+
+    // what this catches: card 67f53b63 — provenance is checked before a
+    // candidate can select the direct launch plan, including on installed nodes.
+    #[tokio::test]
+    async fn prebuilt_reboot_rejects_unusable_or_mismatched_candidates() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            super::PrebuiltCore::prepare(&tmp.path().join("absent-core"))
+                .await
+                .is_err()
+        );
+        assert!(super::PrebuiltCore::prepare(tmp.path()).await.is_err());
+        let artifact = tmp.path().join("core");
+        for report in ["", "unknown", "abc123", "not-a-sha", "def456a"] {
+            assert!(super::PrebuiltCore::from_report(
+                artifact.clone(),
+                report.into(),
+                Some("abc123f")
+            )
+            .is_err());
+        }
+        for report in ["", "unknown", "abc123", "not-a-sha"] {
+            assert!(
+                super::PrebuiltCore::from_report(artifact.clone(), report.into(), None).is_err()
+            );
+        }
+        let ready =
+            super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some("abc123f"))
+                .unwrap();
+        assert_eq!(ready.build_sha, "abc123f0123456789");
+    }
+
+    // Regression for PR3902: failed Git inside a checkout must not become the
+    // standalone self-anchor. Use real Git metadata and worktree selection;
+    // process cwd/environment stay local to each command, never global test state.
+    #[tokio::test]
+    async fn prebuilt_checkout_lookup_distinguishes_absence_from_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let standalone = tmp.path().join("standalone");
+        let hooks = tmp.path().join("empty-hooks");
+        for path in [&repo, &standalone, &hooks] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=Continuum tests",
+                    "-c",
+                    "user.email=tests@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "maintenance.auto=false",
+                    "-c",
+                    "gc.auto=0",
+                ])
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", hooks.display()))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+                .args(args)
+                .output()
+                .expect("Git is required for checkout provenance tests");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+
+        git(&repo, &["init", "--quiet"]);
+        assert!(
+            super::prebuilt_checkout_sha(&repo, None).await.is_err(),
+            "a checkout with no readable HEAD cannot self-anchor"
+        );
+        git(&repo, &["commit", "--allow-empty", "--quiet", "-m", "fixture"]);
+        git(&repo, &["checkout", "--detach", "--quiet", "HEAD"]);
+        let head = git(&repo, &["rev-parse", "--short", "HEAD"]);
+        assert_eq!(
+            super::prebuilt_checkout_sha(&repo, None).await.unwrap(),
+            Some(head.clone())
+        );
+
+        git(
+            &repo,
+            &["worktree", "add", "--detach", "--quiet", "../linked", "HEAD"],
+        );
+        let linked = tmp.path().join("linked");
+        let nested = linked.join("src");
+        std::fs::create_dir(&nested).unwrap();
+        assert!(linked.join(".git").is_file());
+        assert_eq!(
+            super::prebuilt_checkout_sha(&nested, None).await.unwrap(),
+            Some(head.clone())
+        );
+
+        // A sibling checkout must not bind a standalone invocation, but an
+        // explicit GIT_DIR must bind it, including when that selection is broken.
+        let absent = super::prebuilt_checkout_sha(&standalone, None)
+            .await
+            .unwrap();
+        assert!(absent.is_none());
+        assert!(super::PrebuiltCore::from_report(
+            standalone.join("core"),
+            "abc123f".into(),
+            absent.as_deref(),
+        )
+        .is_ok());
+        assert_eq!(
+            super::prebuilt_checkout_sha(&standalone, Some(repo.join(".git").as_os_str()))
+                .await
+                .unwrap(),
+            Some(head),
+        );
+        assert!(
+            super::prebuilt_checkout_sha(&standalone, Some(tmp.path().join("missing").as_os_str()))
+                .await
+                .is_err()
+        );
+
+        std::fs::write(linked.join(".git"), "gitdir: missing-checkout\n").unwrap();
+        assert!(
+            super::prebuilt_checkout_sha(&nested, None).await.is_err(),
+            "a broken worktree gitfile is not a standalone installation"
+        );
+    }
+
+    // what this catches: card 67f53b63 — an inherited build request, an available
+    // source script or installed artifact must not redirect an explicit candidate.
+    // Assert the production Command's path/argv/cwd, not a duplicate launch model.
+    #[test]
+    fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
+        let candidate = super::PrebuiltCore::from_report(
+            std::path::PathBuf::from("verified release/core.exe"),
+            "abc123f".into(),
+            None,
+        )
+        .unwrap();
+        for have_script in [false, true] {
+            for have_installed in [false, true] {
+                for env_from_source in [false, true] {
+                    assert_eq!(
+                        super::plan_launch(
+                            super::LaunchSource::Prebuilt(&candidate),
+                            env_from_source,
+                            have_script,
+                            have_installed
+                        ),
+                        super::LaunchPlan::Prebuilt,
+                    );
+                }
+            }
+        }
+        let cmd = super::direct_core_command(&candidate.path, "socket from caller");
+        assert_eq!(cmd.get_program(), candidate.path.as_os_str());
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            vec![std::ffi::OsStr::new("socket from caller")]
+        );
+        assert!(
+            cmd.get_current_dir().is_none(),
+            "inherit repository cwd and its AIRC/workspace scope"
+        );
+        assert!(super::deploy_verdict(
+            Some("def456a"),
+            &candidate.build_sha,
+            "prebuilt candidate",
+            "replacement core"
+        )
+        .is_err());
+        assert!(super::deploy_verdict(
+            Some("abc123f"),
+            &candidate.build_sha,
+            "prebuilt candidate",
+            "replacement core"
+        )
+        .is_ok());
+    }
+
     // Regression for card 25fadb8f: reboot --help stopped a live core. Every
     // local verb must take the help return, including when --force is present;
     // remote verbs must retain their schema-derived help path.
@@ -2889,6 +3389,45 @@ mod tests {
             assert_eq!(wait_verdict(10, stall), WaitVerdict::Progressing);
             // Even at the far end of a 40-minute build, recent output is life.
             assert_eq!(wait_verdict(stall - 1, stall), WaitVerdict::Progressing);
+        }
+
+        /// what this catches: regression for card 6c91036c — the watchdog killing a HEALTHY
+        /// build and reporting it "burned no CPU" while rustc sat at 631% in its own process
+        /// group. Reproduced on a real deploy of f49409fa2 on the Intel Mac.
+        ///
+        /// The readings here are the MEASURED ones, taken 20s apart mid-build: the group total
+        /// was ~2589s while a 43-minute rustc was alive, then ~3s once that child finished its
+        /// crate and cargo replaced it. Group cputime sums only members alive at that instant,
+        /// so a child exiting REMOVES its accumulated time and the total drops.
+        ///
+        /// THIS TEST MUST DRIVE THE READING DOWN. A test that only ever feeds increasing values
+        /// passes against `reading > last` — the buggy comparison — which is presumably how the
+        /// defect shipped with the rest of the watchdog well covered. The descent IS the bug.
+        #[test]
+        fn a_cpu_reading_that_drops_is_progress_because_a_finished_child_leaves_the_group() {
+            // The measured pair. Under `>` this returns false and the stall clock never resets
+            // again for the life of the build.
+            assert!(
+                cpu_reading_shows_progress(3, 2589),
+                "a group total that FELL because a long rustc finished its crate is a build \
+                 making progress, not a dead one"
+            );
+            // Ordinary within-crate accumulation is still progress.
+            assert!(cpu_reading_shows_progress(2589, 3));
+            // And a build that is genuinely stuck holds the sum CONSTANT — the one reading that
+            // must NOT reset the clock, or the watchdog never fires at all.
+            assert!(
+                !cpu_reading_shows_progress(2589, 2589),
+                "an unchanged group total is the signature of a hung exec: it burns no CPU and \
+                 spawns no children, and it is the only thing this watchdog exists to catch"
+            );
+            // A climbing total reads as progress, which is what keeps an ordinary build alive.
+            // It also means a SPINNING hang is not caught by this watchdog at all: the CPU arm
+            // and the log arm reset the same clock, so a spin resets it forever and only
+            // MAX_WAIT_SECS bounds it. True of `>` as well — not a regression, just not a
+            // guarantee. Asserted so nobody 'fixes' this into an equality check believing the
+            // log arm would still cover the spin; it would not.
+            assert!(cpu_reading_shows_progress(2590, 2589));
         }
 
         /// what this catches: the opposite failure — never giving up. A script that has said
@@ -3387,7 +3926,8 @@ fn usage() -> String {
      Lifecycle:\n  \
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
-       continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime);\n                                       verifies the RUNNING core's build SHA before reporting success\n  \
+       continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
+       continuum reboot --prebuilt <path>\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
      \n\

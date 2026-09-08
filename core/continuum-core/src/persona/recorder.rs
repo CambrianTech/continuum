@@ -378,7 +378,7 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
         Some(d) => d,
-        None => return, // HOME unset; treat as opted-out, no warning spam
+        None => return, // No home directory is available to this embedding.
     };
     let fname = filename_for(&input.persona.display_name, input.message_id);
     persist_json_payload(&dir, &fname, &payload);
@@ -432,8 +432,6 @@ fn persist_json_payload<T: Serialize>(dir: &Path, fname: &str, payload: &T) {
 // process environment is never touched.
 #[cfg(test)]
 thread_local! {
-    static TEST_FIXTURE_ROOT: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
     static TEST_DISABLED: std::cell::RefCell<Option<bool>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -448,14 +446,36 @@ fn disabled() -> bool {
         .unwrap_or(false)
 }
 
-fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    #[cfg(test)]
-    if let Some(root) = TEST_FIXTURE_ROOT.with(|r| r.borrow().clone()) {
-        return Some(root.join(relative));
+/// Shared fixture policy for live capture and its readers. Explicit HOME keeps
+/// its existing override semantics; native hosts need not inherit a shell HOME.
+pub(crate) fn fixture_dir(relative: &str) -> Option<PathBuf> {
+    crate::paths::home_dir().map(|h| h.join(relative))
+}
+
+/// Reuses the recorder's per-thread fixture isolation for capture/read tests.
+/// No process-wide HOME or disable flag is changed, including during unwinding.
+#[cfg(test)]
+pub(crate) struct EnvRestore {
+    _home: crate::paths::NativeHomeOverride,
+    disabled: Option<bool>,
+}
+
+#[cfg(test)]
+impl EnvRestore {
+    pub(crate) fn install(home: &Path, disabled: Option<&str>) -> Self {
+        Self {
+            _home: crate::paths::NativeHomeOverride::install(home),
+            disabled: TEST_DISABLED
+                .with(|d| d.replace(Some(matches!(disabled, Some("1" | "true" | "TRUE"))))),
+        }
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(relative))
+}
+
+#[cfg(test)]
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        TEST_DISABLED.with(|d| *d.borrow_mut() = self.disabled.take());
+    }
 }
 
 /// Filename: `<persona>-<msgid_prefix>-<ts>-rust.json`. The `-rust`
@@ -625,32 +645,6 @@ mod tests {
         PersonaTurnFrame::from_inbox_frame(frame)
             .replay_record()
             .expect("fixture frame is non-empty")
-    }
-
-    /// Per-thread fixture-root override (#7): points THIS thread's recorder at
-    /// the test's tempdir (plus an optional disable flag) without touching the
-    /// process environment. The old HOME-swap under a private lock only
-    /// serialized recorder tests against each other — every other parallel
-    /// test reading HOME, or writing a fixture mid-swap, raced it. Same
-    /// `install(path, disabled)` shape as the env version it replaces.
-    struct EnvRestore;
-
-    impl EnvRestore {
-        fn install(home: &std::path::Path, disabled: Option<&str>) -> Self {
-            TEST_FIXTURE_ROOT.with(|r| *r.borrow_mut() = Some(home.to_path_buf()));
-            // None mirrors the old remove_var: an inherited process-level
-            // disable must not leak into a test that expects writes.
-            TEST_DISABLED
-                .with(|d| *d.borrow_mut() = Some(matches!(disabled, Some("1" | "true" | "TRUE"))));
-            Self
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            TEST_FIXTURE_ROOT.with(|r| *r.borrow_mut() = None);
-            TEST_DISABLED.with(|d| *d.borrow_mut() = None);
-        }
     }
 
     /// What this catches: filename includes persona name (whitespace
@@ -829,8 +823,12 @@ mod tests {
             .map(|e| e.expect("fixture entry").path())
             .collect();
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].to_string_lossy().contains("/frame-"));
-        assert!(entries[0].to_string_lossy().ends_with("-rust.json"));
+        let filename = entries[0]
+            .file_name()
+            .expect("fixture filename")
+            .to_string_lossy();
+        assert!(filename.starts_with("frame-"));
+        assert!(filename.ends_with("-rust.json"));
 
         let body = std::fs::read_to_string(&entries[0]).expect("fixture json readable");
         let json: serde_json::Value = serde_json::from_str(&body).expect("fixture json parses");

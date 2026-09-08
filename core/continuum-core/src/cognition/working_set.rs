@@ -76,17 +76,27 @@ pub fn global() -> WorkingSetRegistry {
 /// Where one mind's measured demand lives across restarts — beside the rest of
 /// her durable state, because it IS her property and should travel with her.
 /// Mirrors `persona_workspace::volatile_path`'s layout exactly.
-fn personas_root() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into()); // JUSTIFIED unwrap_or_else: a HOME-less process is a real environment, not an unknown quantity; "." keeps the path RELATIVE so a demand file lands somewhere inspectable instead of at the filesystem root
-    std::path::PathBuf::from(home).join(".continuum/personas")
+fn personas_root() -> std::io::Result<std::path::PathBuf> {
+    crate::paths::home_dir()
+        .map(|home| home.join(".continuum/personas"))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve persistent home directory",
+            )
+        })
 }
 
-fn demand_path(persona: Uuid) -> std::path::PathBuf {
-    personas_root().join(persona.to_string()).join("working-set.json")
+fn demand_path(persona: Uuid) -> std::io::Result<std::path::PathBuf> {
+    Ok(personas_root()?
+        .join(persona.to_string())
+        .join("working-set.json"))
 }
 
-fn emission_path(persona: Uuid) -> std::path::PathBuf {
-    personas_root().join(persona.to_string()).join("emission.json")
+fn emission_path(persona: Uuid) -> std::io::Result<std::path::PathBuf> {
+    Ok(personas_root()?
+        .join(persona.to_string())
+        .join("emission.json"))
 }
 
 /// One mind's observed demand.
@@ -205,14 +215,26 @@ impl WorkingSetRegistry {
     /// so it records at double (a floor on true demand, and the growth path — see
     /// [`PersonaEmission::peak_tokens`]). Zero-token completions are the empty-
     /// completion fault's territory, not a data point to drag the peak with.
-    pub(crate) fn record_emission(&self, persona: Uuid, output_tokens: u32, hit_cap: bool, now_ms: u64) {
+    pub(crate) fn record_emission(
+        &self,
+        persona: Uuid,
+        output_tokens: u32,
+        hit_cap: bool,
+        now_ms: u64,
+    ) {
         if output_tokens == 0 {
             return;
         }
         let updated = self.record_emission_in_memory(persona, output_tokens, hit_cap, now_ms);
         // Same persistence contract as demand: every observation, atomic, best-effort
         // — a restart is a pause, and a mind must not re-earn its reply size per boot.
-        let path = emission_path(persona);
+        let path = match emission_path(persona) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(persona_id = %persona, %error, "emission root unavailable — measurement remains in memory");
+                return;
+            }
+        };
         let write = || -> std::io::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -268,7 +290,13 @@ impl WorkingSetRegistry {
     /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
     /// fail to parse and silently wake her at the cold-start window.
     fn save(persona: Uuid, demand: &PersonaDemand) {
-        let path = demand_path(persona);
+        let path = match demand_path(persona) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(persona_id = %persona, %error, "working-set root unavailable — measurement remains in memory");
+                return;
+            }
+        };
         let write = || -> std::io::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -289,7 +317,13 @@ impl WorkingSetRegistry {
     /// earned rather than the cold-start floor. Unreadable/absent = no observation
     /// (honest), never an invented number.
     pub fn rehydrate(&self, persona: Uuid) {
-        let path = demand_path(persona);
+        let path = match demand_path(persona) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(persona_id = %persona, %error, "working-set root unavailable — prior demand could not be loaded");
+                return;
+            }
+        };
         let Ok(bytes) = std::fs::read(&path) else {
             return;
         };
@@ -312,7 +346,7 @@ impl WorkingSetRegistry {
         }
         // The emission twin rides the same rehydration pass: absent/unreadable stays
         // silent (the reserve falls back to the cold-start share — honest, never invented).
-        if let Ok(bytes) = std::fs::read(emission_path(persona)) {
+        if let Ok(bytes) = emission_path(persona).and_then(std::fs::read) {
             match serde_json::from_slice::<PersonaEmission>(&bytes) {
                 Ok(e) if e.peak_tokens > 0 => {
                     self.emitted.insert(persona, e);
@@ -349,7 +383,14 @@ impl WorkingSetRegistry {
     /// Unreadable or absent files stay silent — the same honesty `rehydrate` keeps. A
     /// ghost persona dir with no `working-set.json` contributes nothing rather than a zero.
     pub fn rehydrate_all(&self) -> usize {
-        let Ok(entries) = std::fs::read_dir(personas_root()) else {
+        let root = match personas_root() {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::warn!(%error, "working-set root unavailable — persisted demand could not be enumerated");
+                return 0;
+            }
+        };
+        let Ok(entries) = std::fs::read_dir(root) else {
             return 0; // no personas root yet — a fresh install, not an error
         };
         let mut adopted = 0;
@@ -470,7 +511,10 @@ mod tests {
         assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
         reg.record_emission_in_memory(p(1), 3_000, true, 2_000);
         let e = reg.emission_of(p(1)).expect("observed");
-        assert_eq!(e.peak_tokens, 6_000, "a Length stop is a floor, not a measurement");
+        assert_eq!(
+            e.peak_tokens, 6_000,
+            "a Length stop is a floor, not a measurement"
+        );
         assert_eq!(e.turns, 2);
         // and, as on the demand side, a later small reply never lowers the peak
         reg.record_emission_in_memory(p(1), 40, false, 3_000);
@@ -485,15 +529,15 @@ mod tests {
     // restart is a PAUSE, not a death.
     #[test]
     fn a_measured_peak_survives_a_restart_so_a_reboot_is_a_pause_not_a_demotion() {
-        let home = std::env::temp_dir().join(format!("ws-restart-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&home).expect("tmp home");
-        // SAFETY: single-threaded test scope; HOME is restored below.
-        let prior = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &home);
+        let home = tempfile::tempdir().expect("tmp home");
+        // HOME is absent at the shared policy seam; native discovery points at
+        // this thread's isolated home. Never mutate the parallel suite's env.
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
 
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
+        before.record_emission(persona, 321, false, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
@@ -503,18 +547,20 @@ mod tests {
             None,
             "a new registry starts genuinely empty"
         );
-        after.rehydrate(persona);
+        assert_eq!(after.rehydrate_all(), 1);
         assert_eq!(
             after.ceiling(),
             Some(24_126),
             "her measured window must survive the restart, not be re-earned turn by turn"
         );
 
-        match prior {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(after.emission_of(persona), before.emission_of(persona));
+        assert!(home
+            .path()
+            .join(".continuum/personas")
+            .join(persona.to_string())
+            .join("working-set.json")
+            .is_file());
     }
 
     // what this catches: an invented number standing in for missing data. Before any

@@ -22,9 +22,9 @@
 //! `genome/training-trigger/submit`, `/flush`, `/status` — are
 //! migrated to the typed [`DynCommand`](crate::sdk_codegen::DynCommand)
 //! registry under `commands/training_trigger/` (task #62). This module
-//! now retains only the shared [`TrainingTriggerState`] (the buckets,
-//! the per-key submit gate, the late-bound executor + the
-//! `dispatch_job_create` helper); the verbs are dep-holding commands
+//! retains the shared [`TrainingTriggerState`] (durable submissions/intents,
+//! bucket caches, the per-key submit gate, and the late-bound executor);
+//! the verbs are dep-holding commands
 //! built over that one `Arc<TrainingTriggerState>` so submit and flush
 //! serialize on the SAME `PerKeyGate` and mutate the SAME buckets.
 //! Its legacy `handle_command` arms now fail loud.
@@ -50,8 +50,11 @@
 //!   is the dumb door; the smart bits (batching, threshold logic,
 //!   dispatch) live in [`TrainingTriggerState`].
 //! - `[[no-fallbacks-ever]]` — every code path returns a typed
-//!   outcome or a typed error. Dispatch failure preserves bucket
-//!   contents so the next caller's submit can re-trigger.
+//!   outcome or a typed error. Explicit refusals can retry; uncertain
+//!   provider creation requires exact JobBoard evidence before it resolves.
+//! - Receipts follow the configured ORM commit, with that adapter's durability
+//!   policy. Keys deduplicate at this destination owner; they do not supply
+//!   cross-node consensus or exactly-once provider dispatch.
 //! - `[[rust-is-the-core-node-is-the-shell]]` — entire path is
 //!   substrate-side. The teacher persona (Rust) submits; the trigger
 //!   (Rust) batches; the genome module (Rust) dispatches; the local
@@ -63,6 +66,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -75,6 +79,10 @@ use crate::runtime::{
     PerKeyGate, ServiceModule,
 };
 use crate::sdk_codegen::DynCommand;
+
+mod durable;
+pub use durable::{AcceptanceReceipt, DispatchPhase};
+pub(crate) use durable::{DispatchFailure, DispatchResult};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
 /// LoRA-training floor — large enough to give SGD signal,
@@ -100,15 +108,19 @@ pub const DEFAULT_VALIDATION_SPLIT: f32 = 0.0;
 /// against multiple bases (local + cloud) for routing flexibility;
 /// each base gets its own bucket and its own dispatched job. The key
 /// IS the coherence guarantee — no runtime check needed.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct BucketKey {
     pub(crate) persona_id: Uuid,
     pub(crate) trait_kind: String,
     pub(crate) base_model: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PendingBatch {
+    /// Durable submission identities; payloads are stored separately, once each.
+    #[serde(skip)]
+    pub(crate) submission_ids: Vec<Uuid>,
     pub(crate) persona_name: String,
     pub(crate) source: TrainingSource,
     pub(crate) examples: Vec<TrainingExample>,
@@ -149,6 +161,29 @@ pub struct TrainingTriggerState {
     /// concern).
     pub(crate) submit_gates: PerKeyGate<BucketKey>,
     pub(crate) executor: LateBound<CommandExecutor>,
+    durable: LateBound<durable::DurableStore>,
+    acceptance_gates: PerKeyGate<Uuid>,
+    active_dispatches: DashMap<BucketKey, Arc<durable::ActiveDispatch>>,
+    hydrating: DashMap<BucketKey, durable::BucketHydration>,
+    hydrated: dashmap::DashSet<BucketKey>,
+    data: LateBound<crate::modules::data::DataState>,
+    initialization: tokio::sync::Mutex<()>,
+    initial_adapter: std::sync::OnceLock<Arc<dyn crate::orm::StorageAdapter>>,
+    recovery: tokio::sync::Mutex<()>,
+    ready: std::sync::atomic::AtomicBool,
+    stopping: std::sync::atomic::AtomicBool,
+    next_sequence: std::sync::atomic::AtomicU64,
+    pending_scan_sequence: std::sync::atomic::AtomicU64,
+    active_scan_after: std::sync::Mutex<Option<String>>,
+    cached_scan_after: std::sync::Mutex<Option<BucketKey>>,
+    initial_scan: std::sync::atomic::AtomicU8,
+    /// Finite admitted operations outlive a cancelled caller. Shutdown drains
+    /// this set; dropping a caller never aborts a writer or releases its lease.
+    operations: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
+    #[cfg(test)]
+    operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
+    #[cfg(test)]
+    pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
 }
 
 impl TrainingTriggerState {
@@ -157,6 +192,27 @@ impl TrainingTriggerState {
             buckets: Arc::new(DashMap::new()),
             submit_gates: PerKeyGate::new(),
             executor: LateBound::new("training-trigger::executor"),
+            durable: LateBound::new("training-trigger::durable-store"),
+            acceptance_gates: PerKeyGate::new(),
+            active_dispatches: DashMap::new(),
+            hydrating: DashMap::new(),
+            hydrated: dashmap::DashSet::new(),
+            data: LateBound::new("training-trigger::data"),
+            initialization: tokio::sync::Mutex::new(()),
+            initial_adapter: std::sync::OnceLock::new(),
+            recovery: tokio::sync::Mutex::new(()),
+            ready: std::sync::atomic::AtomicBool::new(false),
+            stopping: std::sync::atomic::AtomicBool::new(false),
+            next_sequence: std::sync::atomic::AtomicU64::new(1),
+            pending_scan_sequence: std::sync::atomic::AtomicU64::new(0),
+            active_scan_after: std::sync::Mutex::new(None),
+            cached_scan_after: std::sync::Mutex::new(None),
+            initial_scan: std::sync::atomic::AtomicU8::new(0),
+            operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+            #[cfg(test)]
+            operation_pause: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
         }
     }
 
@@ -165,7 +221,7 @@ impl TrainingTriggerState {
     /// internal state to production callers.
     #[cfg(test)]
     pub(crate) fn pending_bucket_count(&self) -> usize {
-        self.buckets.len()
+        self.buckets.len() + self.active_dispatches.len()
     }
 
     /// Test-only: peek the example count for a specific bucket. None
@@ -182,7 +238,15 @@ impl TrainingTriggerState {
             trait_kind: trait_kind.to_string(),
             base_model: base_model.to_string(),
         };
-        self.buckets.get(&key).map(|b| b.examples.len())
+        let pending = self.buckets.get(&key).map(|b| b.examples.len());
+        let active = self
+            .active_dispatches
+            .get(&key)
+            .map(|b| b.batch.examples.len());
+        match (pending, active) {
+            (None, None) => None,
+            (pending, active) => Some(pending.unwrap_or(0) + active.unwrap_or(0)),
+        }
     }
 
     /// Build a `TrainingJobRequest` from a drained `PendingBatch`,
@@ -196,8 +260,12 @@ impl TrainingTriggerState {
         trait_kind: &str,
         base_model: &str,
         batch: &PendingBatch,
-    ) -> Result<(JobHandle, String), String> {
-        let executor = self.executor.require()?;
+        dispatch_id: Uuid,
+    ) -> Result<(JobHandle, String), DispatchFailure> {
+        let executor = self
+            .executor
+            .require()
+            .map_err(DispatchFailure::Retryable)?;
 
         let request = TrainingJobRequest {
             persona_id,
@@ -215,8 +283,10 @@ impl TrainingTriggerState {
             local_artifact_dir: batch.local_artifact_dir.clone(),
         };
 
-        let mut params = serde_json::to_value(&request)
-            .map_err(|e| format!("serialize TrainingJobRequest: {e}"))?;
+        let mut params = serde_json::to_value(&request).map_err(|e| {
+            DispatchFailure::Retryable(format!("serialize TrainingJobRequest: {e}"))
+        })?;
+        params["triggerDispatchId"] = Value::String(dispatch_id.to_string());
         if let Some(provider) = &batch.preferred_provider {
             if let Value::Object(ref mut map) = params {
                 map.insert("preferredProvider".into(), Value::String(provider.clone()));
@@ -226,36 +296,9 @@ impl TrainingTriggerState {
         let response = executor
             .execute_json("genome/job-create", params)
             .await
-            .map_err(|e| format!("genome/job-create dispatch: {e}"))?;
+            .map_err(|e| DispatchFailure::Uncertain(format!("genome/job-create dispatch: {e}")))?;
 
-        // Unwrap the GenomeModule envelope: { success, result: { handle, selectedProvider } }
-        // or { success: false, error, errorKind }.
-        let success = response
-            .get("success")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if !success {
-            let err = response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("(no error message)")
-                .to_string();
-            return Err(format!("genome/job-create rejected: {err}"));
-        }
-        let result = response
-            .get("result")
-            .ok_or_else(|| "genome/job-create returned success without result".to_string())?;
-        let handle_value = result
-            .get("handle")
-            .cloned()
-            .ok_or_else(|| "genome/job-create result missing handle".to_string())?;
-        let handle: JobHandle = serde_json::from_value(handle_value)
-            .map_err(|e| format!("genome/job-create handle parse: {e}"))?;
-        let selected_provider = result
-            .get("selectedProvider")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "genome/job-create result missing selectedProvider".to_string())?
-            .to_string();
+        let result = decode_job_create(response)?;
 
         // L2→L3 retention (the board write) lives at the ONE birth-seam every
         // training job funnels through — the `genome/job-create` command body that
@@ -264,11 +307,59 @@ impl TrainingTriggerState {
         // and any future caller alike (compression principle), instead of one writer
         // per caller that silently misses jobs born off this path.
         // ([[dev-task-learning-loop-gap-map]] L3, docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md)
-        Ok((handle, selected_provider))
+        Ok(result)
     }
 }
 
 // ─── Module ──────────────────────────────────────────────────────────
+
+/// Consume the existing typed command envelope. Only an explicit refusal is
+/// evidence that retry is safe; malformed/transport responses may follow creation.
+fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFailure> {
+    use crate::commands::genome::job_create::JobCreateOutcome;
+    if response
+        .get("errorKind")
+        .is_some_and(|kind| !kind.is_string())
+    {
+        return Err(DispatchFailure::Uncertain(
+            "genome/job-create has malformed errorKind".into(),
+        ));
+    }
+    let response: JobCreateOutcome = serde_json::from_value(response).map_err(|error| {
+        DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
+    })?;
+    if response.success {
+        let result = response.result.ok_or_else(|| {
+            DispatchFailure::Uncertain("genome/job-create returned success without result".into())
+        })?;
+        if result.handle.provider_id.is_empty()
+            || result.handle.provider_job_id.is_empty()
+            || result.selected_provider.is_empty()
+            || result.selected_provider != result.handle.provider_id
+        {
+            return Err(DispatchFailure::Uncertain(
+                "genome/job-create has inconsistent handle/provider".into(),
+            ));
+        }
+        return Ok((result.handle, result.selected_provider));
+    }
+    if response.result.is_some() || response.error.as_ref().is_none_or(|error| error.is_empty()) {
+        return Err(DispatchFailure::Uncertain(
+            "genome/job-create has incomplete refusal evidence".into(),
+        ));
+    }
+    let error = format!(
+        "genome/job-create rejected: {}",
+        response.error.unwrap_or_default()
+    );
+    Err(match response.error_kind.as_deref() {
+        // No kind is the command's pre-provider validation/selection refusal.
+        None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
+            DispatchFailure::Retryable(error)
+        }
+        Some(_) => DispatchFailure::Uncertain(error),
+    })
+}
 
 pub struct TrainingTriggerModule {
     pub(crate) state: Arc<TrainingTriggerState>,
@@ -278,6 +369,17 @@ impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             state: Arc::new(TrainingTriggerState::new()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_board(
+        board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    ) -> Self {
+        let mut state = TrainingTriggerState::new();
+        state.test_job_board = board;
+        Self {
+            state: Arc::new(state),
         }
     }
 }
@@ -298,12 +400,25 @@ impl ServiceModule for TrainingTriggerModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
-            tick_interval: None,
+            tick_interval: Some(std::time::Duration::from_secs(30)),
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        Ok(())
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        let module = ctx
+            .registry
+            .get_by_name("data")
+            .ok_or_else(|| "training-trigger requires the data module".to_string())?;
+        let data = module
+            .as_any()
+            .downcast_ref::<crate::modules::data::DataModule>()
+            .ok_or_else(|| "training-trigger data module type mismatch".to_string())?;
+        self.state.data.install(data.state.clone());
+        self.state.ensure_storage().await
+    }
+
+    async fn tick(&self) -> Result<(), String> {
+        self.state.recover_tick().await
     }
 
     /// Expose the three dep-holding training-trigger verbs over this
@@ -337,11 +452,51 @@ impl ServiceModule for TrainingTriggerModule {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        self.state.drain_operations().await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches (278afa6c): malformed command output cannot turn an
+    // uncertain provider creation into a safe retry. Exercise the actual decoder.
+    #[test]
+    fn job_create_requires_explicit_typed_refusal_evidence() {
+        use serde_json::json;
+        for response in [
+            json!({}),
+            json!({"success": "false"}),
+            json!({"success": false}),
+            json!({"success": false, "error": "bad", "errorKind": 7}),
+            json!({"success": false, "error": "bad", "errorKind": null}),
+            json!({"success": false, "error": "bad", "errorKind": "Transient"}),
+            json!({"success": true}),
+        ] {
+            assert!(matches!(
+                decode_job_create(response),
+                Err(DispatchFailure::Uncertain(_))
+            ));
+        }
+        for kind in [
+            None,
+            Some("InvalidRequest"),
+            Some("MissingCredentials"),
+            Some("ProviderRejected"),
+        ] {
+            let mut response = json!({"success": false, "error": "explicit refusal"});
+            if let Some(kind) = kind {
+                response["errorKind"] = json!(kind);
+            }
+            assert!(matches!(
+                decode_job_create(response),
+                Err(DispatchFailure::Retryable(_))
+            ));
+        }
+    }
 
     // what this catches: every migrated verb now fails loud through the legacy
     // path, naming itself + pointing at the typed registry (no silent success that

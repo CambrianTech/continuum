@@ -23,7 +23,7 @@
 //! a low live `cached` means the loss is BETWEEN assembly and the slot — routing,
 //! eviction — not ordering; that separation is diagnostic signal, not error.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -72,10 +72,7 @@ fn wire_view(call: &CapturedCall) -> String {
 /// Longest common prefix in CHARS (not bytes — a divergence must never split a
 /// code point, because the excerpt around it goes into the report verbatim).
 fn lcp_chars(a: &str, b: &str) -> usize {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(x, y)| x == y)
-        .count()
+    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
 /// A short excerpt from both sides of the divergence point — the "what actually
@@ -147,24 +144,22 @@ pub struct PromptReuseResult {
     pub summary: String,
 }
 
-fn captures_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".continuum/fixtures/prompt-captures")
+fn captures_dir() -> Result<PathBuf, CommandError> {
+    crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+        .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))
 }
 
-fn load_tail(path: &PathBuf, tail: usize) -> Vec<CapturedCall> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut calls: Vec<CapturedCall> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<CapturedCall>(l).ok())
-        .filter(|c| c.iteration == 0)
-        .collect();
-    calls.sort_by_key(|c| c.captured_at_ms);
-    let skip = calls.len().saturating_sub(tail);
-    calls.drain(..skip);
-    calls
+fn load_tail(path: &Path, tail: usize) -> Result<Vec<CapturedCall>, CommandError> {
+    let mut calls = crate::cognition::prompt_capture::completed_file(path, usize::MAX)
+        .map_err(|error| CommandError::Internal(error.to_string()))?
+        .into_iter()
+        .map(serde_json::from_value::<CapturedCall>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CommandError::Internal(error.to_string()))?;
+    calls.retain(|call| call.iteration == 0);
+    calls.sort_by_key(|call| call.captured_at_ms);
+    calls.drain(..calls.len().saturating_sub(tail));
+    Ok(calls)
 }
 
 fn score_persona(name: &str, calls: &[CapturedCall]) -> Vec<ReusePair> {
@@ -211,8 +206,12 @@ impl ActionCommand for PromptReuse {
     type Params = PromptReuseParams;
     type Output = PromptReuseResult;
 
-    async fn run(&self, _ctx: &Ctx, p: PromptReuseParams) -> Result<PromptReuseResult, CommandError> {
-        let dir = captures_dir();
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: PromptReuseParams,
+    ) -> Result<PromptReuseResult, CommandError> {
+        let dir = captures_dir()?;
         let tail = p.tail.unwrap_or(20).clamp(2, 200) as usize;
         let files: Vec<PathBuf> = match &p.persona {
             Some(id) => vec![dir.join(format!("{id}.jsonl"))],
@@ -237,7 +236,7 @@ impl ActionCommand for PromptReuse {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let calls = load_tail(file, tail);
+            let calls = load_tail(file, tail)?;
             if calls.len() < 2 {
                 continue;
             }
@@ -320,6 +319,31 @@ mod tests {
             pairs[0].reuse_pct > 80,
             "stable head must dominate: got {}%",
             pairs[0].reuse_pct
+        );
+    }
+
+    #[test]
+    fn completed_capture_reader_preserves_first_generation_tail_filter() {
+        let dir = tempfile::tempdir().expect("prompt reuse fixture");
+        let path = dir.path().join("legacy.jsonl");
+        let rows = [(1, 0), (2, 1), (3, 0)]
+            .into_iter()
+            .map(|(at, iteration)| {
+                serde_json::json!({ "schema_version": 3, "captured_at_ms": at,
+                "iteration": iteration, "system": "stable identity", "messages": [],
+                "response": { "text": "recorded answer" } })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, rows).expect("legacy capture file");
+        let calls = load_tail(&path, 2).expect("first-generation tail");
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.captured_at_ms)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
         );
     }
 

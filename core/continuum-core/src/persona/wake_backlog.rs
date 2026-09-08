@@ -12,7 +12,7 @@
 //! (a ring), the trigger is the newest priority line (human opportunity or a
 //! mention), and every priority line drained earns its heard receipt.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use uuid::Uuid;
 
@@ -22,22 +22,33 @@ use super::service_loop::IncomingMessage;
 /// pump already dedupes the store catch-up; this catches re-open replays.
 pub(crate) struct SeenIds {
     ring: VecDeque<Uuid>,
+    ids: HashSet<Uuid>,
     cap: usize,
 }
 
 impl SeenIds {
     pub(crate) fn new(cap: usize) -> Self {
-        Self { ring: VecDeque::with_capacity(cap), cap }
+        Self {
+            ring: VecDeque::with_capacity(cap),
+            ids: HashSet::with_capacity(cap),
+            cap,
+        }
     }
 
     /// Note an id; `true` when it is NEW (first sight), `false` on a repeat.
     pub(crate) fn note(&mut self, id: Uuid) -> bool {
-        if self.ring.contains(&id) {
+        if self.ids.contains(&id) {
             return false;
         }
-        if self.ring.len() == self.cap {
-            self.ring.pop_front();
+        if self.cap == 0 {
+            return true;
         }
+        if self.ring.len() == self.cap {
+            if let Some(evicted) = self.ring.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+        self.ids.insert(id);
         self.ring.push_back(id);
         true
     }
@@ -119,9 +130,15 @@ mod tests {
     // trigger; a citizen's ambient line and any directed line still are.
     #[test]
     fn an_undirected_agent_line_never_triggers_a_turn() {
-        assert!(!triggers_a_turn(false, false), "agent wall, no mention: perceived only");
+        assert!(
+            !triggers_a_turn(false, false),
+            "agent wall, no mention: perceived only"
+        );
         assert!(triggers_a_turn(true, false), "agent naming her: a turn");
-        assert!(triggers_a_turn(false, true), "citizen chatter: conversation, a turn");
+        assert!(
+            triggers_a_turn(false, true),
+            "citizen chatter: conversation, a turn"
+        );
         assert!(triggers_a_turn(true, true));
     }
 
@@ -143,24 +160,42 @@ mod tests {
         assert!(is_stale(&m, &mut seen, 0));
     }
 
+    // The index must evict with the ordered ring; retained snapshots do not
+    // refresh recency or grow the bounded set on duplicate admission.
+    #[test]
+    fn seen_id_index_evicts_with_the_ring() {
+        let mut seen = SeenIds::new(2);
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        assert!(seen.note(a));
+        assert!(seen.note(b));
+        assert!(!seen.note(a));
+        assert!(seen.note(c));
+        assert!(seen.note(a));
+        assert!(!seen.note(c));
+        assert_eq!(seen.ids.len(), 2);
+        assert_eq!(seen.ring.len(), 2);
+        let mut empty = SeenIds::new(0);
+        assert!(empty.note(a));
+        assert!(empty.note(a));
+        assert!(empty.ids.is_empty());
+        assert!(empty.ring.is_empty());
+    }
+
     // what this catches: a human line without an @mention losing the turn to a
     // newer citizen work receipt.
     #[test]
     fn a_human_opportunity_wins_over_newer_citizen_chatter_without_a_mention() {
         use crate::cognition::workspace::TurnAttention;
-        let identity = crate::persona::persona_identity::PersonaIdentity::new(
-            Uuid::new_v4(),
-            "Kimi",
-        );
+        let identity =
+            crate::persona::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
         let human = line(1, 3, "Joel here — which card do you hold?");
         let human_id = human.event_id;
         let receipt = line(2, 900, "💭 Let me get my bearings.");
         let (picked, coalesced) = pick_trigger(vec![human, receipt], |m| {
-            TurnAttention::for_message(
-                identity.mentions(&m.text),
-                m.peer_id == Uuid::from_u128(1),
-            )
-            .requires_priority()
+            TurnAttention::for_message(identity.mentions(&m.text), m.peer_id == Uuid::from_u128(1))
+                .requires_priority()
         })
         .unwrap();
         assert_eq!(picked.event_id, human_id);

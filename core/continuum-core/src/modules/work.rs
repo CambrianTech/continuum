@@ -33,7 +33,7 @@ use airc_lib::{
     HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCardId,
 };
 
-use crate::persona::PersonaAircRuntimeRegistry;
+use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeRegistry};
 use crate::runtime::{
     CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
     ServiceModule,
@@ -113,7 +113,7 @@ fn first_transition_sighting(card_id: &str, state: &str) -> bool {
     static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
     let key = format!("{card_id}\u{1}{state}");
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&key) {
         return false;
     }
@@ -141,7 +141,8 @@ pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
         "card-state transition published onto the internal bus"
     );
     if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
-        bus.publish(WORK_CARD_STATE_CHANGED, payload, registry).await;
+        bus.publish(WORK_CARD_STATE_CHANGED, payload, registry)
+            .await;
     }
 }
 
@@ -156,7 +157,7 @@ fn first_sighting(event_id: Uuid) -> bool {
     const SEEN_CAP: usize = 256;
     static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&event_id) {
         return false;
     }
@@ -195,10 +196,10 @@ pub async fn bridge_wire_work_event(event: &airc_core::TranscriptEvent) {
 /// TTL than the claim would make "how long is my hold good for" answerable two ways.
 pub(crate) const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;
 
-/// Resolve the CALLING persona's own airc handle so work ops act as ITS key.
-/// The caller identity is the authenticated airc peer_id the gate already saw;
-/// `None` (substrate-local owner) has no persona runtime → a typed refusal.
-pub(crate) fn persona_airc(
+/// Resolve the caller's runtime, retaining the owner of live membership changes.
+/// A caller-less command uses the operator self-peer; an authenticated caller
+/// must resolve its own runtime and can never fall through to another identity.
+pub(crate) fn persona_runtime(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
     // What the CALLER actually invoked. Was hardcoded to "work commands", which
@@ -206,13 +207,13 @@ pub(crate) fn persona_airc(
     // who is here was told "work commands act as ..." and pointed at `airc work`.
     // A refusal that misnames the thing you called teaches the wrong lesson.
     family: &str,
-) -> Result<Arc<Airc>, CommandError> {
+) -> Result<Arc<PersonaAircRuntime>, CommandError> {
     // A persona acting through her toolbelt acts as HERSELF; the caller-less
     // operator acts as the OPERATOR SELF-PEER (#27, closed 2026-08-30) — the
     // human's in-core identity, booted beside the citizens. The deny below
     // survives only for the boot window before the self-peer is online.
     let Some(peer) = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()) else {
-        return crate::persona::operator_peer::operator_airc().ok_or_else(|| {
+        return crate::persona::operator_peer::operator_runtime().ok_or_else(|| {
             CommandError::Denied(format!(
                 "{family} acts as the caller's own airc identity, and the operator \
                  self-peer is not online yet this boot (it starts beside the \
@@ -221,10 +222,19 @@ pub(crate) fn persona_airc(
             ))
         });
     };
-    let rt = registry.get(peer).ok_or_else(|| {
-        CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
-    })?;
-    Ok(rt.airc().clone())
+    registry
+        .get(peer)
+        .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for persona {peer}")))
+}
+
+/// Read/write the caller's own airc handle. Membership mutations use
+/// [`persona_runtime`] instead so they also notify its live subscriptions.
+pub(crate) fn persona_airc(
+    registry: &PersonaAircRuntimeRegistry,
+    ctx: &Ctx,
+    family: &str,
+) -> Result<Arc<Airc>, CommandError> {
+    Ok(persona_runtime(registry, ctx, family)?.airc().clone())
 }
 
 /// Resolve an airc handle for an OPERATOR/curator board write — e.g.
@@ -390,8 +400,13 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 /// so the first hit is the only hit. A caller can only read boards of rooms it is
 /// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
 /// the caller can already see.
-pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
-    card_in_subscribed_rooms(airc, card_id).await.map(|(room, _)| room)
+pub(crate) async fn room_holding_card(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+) -> Option<airc_lib::Room> {
+    card_in_subscribed_rooms(airc, card_id)
+        .await
+        .map(|(room, _)| room)
 }
 
 /// The card AND the subscribed room whose board holds it — the one walk behind
@@ -722,10 +737,12 @@ impl ActionCommand for WorkClaim {
                             )
                             .await
                         }
-                        Err(e) => Staging::Failed { stage: "home", error: e.to_string() },
+                        Err(e) => Staging::Failed {
+                            stage: "home",
+                            error: e.to_string(),
+                        },
                     };
-                    let driver =
-                        crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
+                    let driver = crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
                     match (driver, &staging) {
                         (WorkDriver::Citizen, _) => crate::probe!(
                             class = "work.claim.held",
@@ -919,7 +936,9 @@ pub fn spawn_env_prewarm_for_working_rounds() {
         for name in names {
             let mut resolved = None;
             for spec in crate::commands::benchmark::known_benchmarks() {
-                let Some(dataset) = spec.swe_dataset() else { continue };
+                let Some(dataset) = spec.swe_dataset() else {
+                    continue;
+                };
                 if let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await {
                     if let Some(i) = instances.into_iter().find(|i| i.instance_id == name) {
                         resolved = Some(i);
@@ -1223,10 +1242,11 @@ pub(crate) async fn dispatch_staged_swe_solve(
             // Spawn AS the claimer when her runtime is live (she is joined to her
             // own workroom); the caller's handle is the fallback so a dispatch
             // fired before she is resident still names a real activity.
-            let spawner = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|reg| reg.get(claimer.as_uuid()))
-                .map(|rt| rt.airc().clone())
-                .unwrap_or_else(|| airc.clone()); // assignee runtime gone → curator's own handle spawns; probed below
+            let spawner =
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|reg| reg.get(claimer.as_uuid()))
+                    .map(|rt| rt.airc().clone())
+                    .unwrap_or_else(|| airc.clone()); // assignee runtime gone → curator's own handle spawns; probed below
             let name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
             let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
                 crate::experience::source::shipped::BENCHMARK_HARD_RS,
@@ -1267,7 +1287,10 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         room_name: name.clone(),
                         assignee: claimer.as_uuid(),
                     };
-                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone()); // clone: probe below still reads the local
+                    crate::cognition::bench_round::record_card_activity(
+                        card_id.as_uuid(),
+                        act.clone(),
+                    ); // clone: probe below still reads the local
                     crate::probe!(
                         class = "work.solve.room_minted",
                         card_id = %short8(card_id.as_uuid()),
@@ -1305,8 +1328,9 @@ pub(crate) async fn dispatch_staged_swe_solve(
     if !teammates.is_empty() {
         let team_room_name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
         for mate in &teammates {
-            let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|reg| reg.get(mate.as_uuid()))
+            let Some(rt) =
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|reg| reg.get(mate.as_uuid()))
             else {
                 crate::probe!(
                     class = "work.team.join_skipped",
@@ -1596,13 +1620,25 @@ impl ActionCommand for WorkRelease {
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
         let mut attempt = airc
-            .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason.clone() })
+            .release_work_claim(ReleaseWorkClaim {
+                card_id,
+                claim_id,
+                reason: p.reason.clone(),
+            })
             .await;
-        if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
-            && follow_card_room(&airc, card_id, "work/release").await.is_some()
+        if matches!(
+            attempt,
+            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+        ) && follow_card_room(&airc, card_id, "work/release")
+            .await
+            .is_some()
         {
             attempt = airc
-                .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason })
+                .release_work_claim(ReleaseWorkClaim {
+                    card_id,
+                    claim_id,
+                    reason: p.reason,
+                })
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
@@ -1724,12 +1760,22 @@ pub(crate) fn change_verdict(
 pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
     use crate::system_resources::bounded_command::probe;
     let root_s = root.to_string_lossy().to_string();
-    let status = probe("git", &["-C", &root_s, "status", "--porcelain"], CHECKOUT_READ_BOUND);
+    let status = probe(
+        "git",
+        &["-C", &root_s, "status", "--porcelain"],
+        CHECKOUT_READ_BOUND,
+    );
     let Some(porcelain) = status.stdout_if_ok() else {
         return ChangeVerdict::CouldNotLook(format!("git status: {}", status.outcome()));
     };
-    let head = probe("git", &["-C", &root_s, "log", "-1", "--format=%ct"], CHECKOUT_READ_BOUND);
-    let head_ts = head.stdout_if_ok().and_then(|t| t.trim().parse::<u64>().ok());
+    let head = probe(
+        "git",
+        &["-C", &root_s, "log", "-1", "--format=%ct"],
+        CHECKOUT_READ_BOUND,
+    );
+    let head_ts = head
+        .stdout_if_ok()
+        .and_then(|t| t.trim().parse::<u64>().ok());
     let staged_ts = std::fs::metadata(root.join(".git"))
         .and_then(|m| m.modified())
         .ok()
@@ -1808,7 +1854,11 @@ pub(crate) async fn advance_card_state_effective(
             round::settle_review_card(card_id.as_uuid(), passed);
             raw_advance(airc, card_id, CardState::Closed, via).await?;
             let parent_id = WorkCardId::from_uuid(parent);
-            let next = if passed { CardState::Closed } else { CardState::InProgress };
+            let next = if passed {
+                CardState::Closed
+            } else {
+                CardState::InProgress
+            };
             crate::probe!(
                 class = "work.review.verdict",
                 review = %short8(card_id.as_uuid()),
@@ -1863,7 +1913,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
                 .and_then(|reg| reg.get(o.as_uuid()))
                 .map(|rt| rt.agent_name().to_string())
         })
-        .unwrap_or_else(|| "the owner".to_string());  // unwrap_or: owner not resident = a neutral name in the review body
+        .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
     let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
     let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
@@ -1886,7 +1936,10 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     airc.join(&room.name).await.map_err(|e| e.to_string())?;
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    let review = airc.create_work_card(req).await.map_err(|e| e.to_string())?;
+    let review = airc
+        .create_work_card(req)
+        .await
+        .map_err(|e| e.to_string())?;
     crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
         .ok_or_else(|| "parent left its round before the review was registered".to_string())?;
     Ok(review)
@@ -1902,8 +1955,12 @@ async fn raw_advance(
     let mut attempt = airc
         .change_work_card_state(ChangeWorkCardState { card_id, state })
         .await;
-    if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
-        && follow_card_room(airc, card_id, "work/state").await.is_some()
+    if matches!(
+        attempt,
+        Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+    ) && follow_card_room(airc, card_id, "work/state")
+        .await
+        .is_some()
     {
         attempt = airc
             .change_work_card_state(ChangeWorkCardState { card_id, state })
@@ -1915,7 +1972,7 @@ async fn raw_advance(
     let room_id = room_holding_card(airc, card_id)
         .await
         .map(|r| r.channel.as_uuid().to_string())
-        .unwrap_or_default();  // unwrap_or: a card we cannot place carries an empty room on the bus
+        .unwrap_or_default(); // unwrap_or: a card we cannot place carries an empty room on the bus
     emit_card_state_changed(
         serde_json::json!({
             "card_id": card_id.as_uuid().to_string(),
@@ -2410,7 +2467,9 @@ pub struct WorkModule {
     /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
     /// to re-home the lane — through the universal primitive instead of
     /// cross-module state threading. Installed by `install_executor_on_all`.
-    executor_slot: std::sync::Arc<crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>>,
+    executor_slot: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    >,
 }
 
 impl WorkModule {
@@ -2543,7 +2602,10 @@ mod tests {
     #[test]
     fn one_transition_publishes_once_no_matter_which_feeder_sees_it_first() {
         let card = uuid::Uuid::new_v4().to_string();
-        assert!(first_transition_sighting(&card, "closed"), "first sighting publishes");
+        assert!(
+            first_transition_sighting(&card, "closed"),
+            "first sighting publishes"
+        );
         assert!(
             !first_transition_sighting(&card, "closed"),
             "the second feeder for the SAME transition must not publish again"
@@ -3095,10 +3157,25 @@ mod tests {
     // unreadable checkout is named, never assumed either way.
     #[test]
     fn a_done_without_a_write_is_no_change_and_an_unreadable_checkout_is_named() {
-        assert_eq!(change_verdict("", Some(100), Some(200)), ChangeVerdict::NoChange);
-        assert_eq!(change_verdict(" M a.py\n", Some(100), Some(200)), ChangeVerdict::Changed);
-        assert_eq!(change_verdict("", Some(300), Some(200)), ChangeVerdict::Changed);
-        assert!(matches!(change_verdict("", None, Some(200)), ChangeVerdict::CouldNotLook(_)));
-        assert!(matches!(change_verdict("", Some(1), None), ChangeVerdict::CouldNotLook(_)));
+        assert_eq!(
+            change_verdict("", Some(100), Some(200)),
+            ChangeVerdict::NoChange
+        );
+        assert_eq!(
+            change_verdict(" M a.py\n", Some(100), Some(200)),
+            ChangeVerdict::Changed
+        );
+        assert_eq!(
+            change_verdict("", Some(300), Some(200)),
+            ChangeVerdict::Changed
+        );
+        assert!(matches!(
+            change_verdict("", None, Some(200)),
+            ChangeVerdict::CouldNotLook(_)
+        ));
+        assert!(matches!(
+            change_verdict("", Some(1), None),
+            ChangeVerdict::CouldNotLook(_)
+        ));
     }
 }

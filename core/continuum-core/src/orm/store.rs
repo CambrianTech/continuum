@@ -203,7 +203,19 @@ where
     /// Overwrite an existing row's data. Increments the BaseEntity
     /// version counter (optimistic concurrency control surface).
     pub async fn update(&self, id: Uuid, entity: &T) -> Result<(), OrmStoreError> {
-        let data = serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed)?;
+        self.update_fields(id, entity).await
+    }
+
+    /// Write a concrete typed subset of this entity's columns. This avoids
+    /// re-serializing an immutable payload when only linkage metadata changes.
+    /// The adapter still owns its read/write representation and version bump;
+    /// this is not a compare-and-swap or multi-row transaction.
+    pub(crate) async fn update_fields<P: Serialize>(
+        &self,
+        id: Uuid,
+        fields: &P,
+    ) -> Result<(), OrmStoreError> {
+        let data = serde_json::to_value(fields).map_err(OrmStoreError::SerializeFailed)?;
         let result = self
             .adapter
             .update(T::COLLECTION, &id.to_string(), data, true)

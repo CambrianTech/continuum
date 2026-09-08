@@ -50,7 +50,6 @@
 //! salience-free, no new coupling. In the converged end-state this policy is just
 //! what each native faculty's `contribute()` returns.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -179,7 +178,7 @@ pub struct RagSourceFaculty {
     /// produced a meaningless streak mixing both.
     ///
     /// Bounded by the rooms this persona actually takes turns in.
-    empty_streak: Mutex<HashMap<Uuid, u32>>,
+    empty_streak: Mutex<super::bounded_room_ledger::BoundedRoomLedger<Uuid, u32>>,
 }
 
 impl RagSourceFaculty {
@@ -211,7 +210,9 @@ impl RagSourceFaculty {
             // source's ordinary silence in the ledger, which is how a real signal
             // gets buried ([[bounded-window-eviction-bug-class]]).
             cold_start_critical: false,
-            empty_streak: Mutex::new(HashMap::new()),
+            empty_streak: Mutex::new(super::bounded_room_ledger::BoundedRoomLedger::new(
+                super::bounded_room_ledger::ROOMS_TRACKED,
+            )),
         }
     }
 
@@ -292,7 +293,7 @@ impl RagSourceFaculty {
             // diagnostics-only bookkeeping; a poisoned lock must not take
             // cognition down to protect a counter. No await is held here.
             let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
-            let c = g.entry(room).or_insert(0);
+            let c = g.entry_or(room, 0);
             *c += 1;
             *c
         };
@@ -303,7 +304,7 @@ impl RagSourceFaculty {
                 persona_id = %self.persona_id,
                 room = %room,
                 consecutive_empty = streak,
-                "ColdStartCritical grounding delivered NOTHING and did not bid —                  this tier's absence is a WRONG turn, not an unenriched one. The                  source's own probe on the same tick carries WHY."
+                "ColdStartCritical grounding delivered NOTHING and did not bid —                  this tier's absence is a WRONG turn, not an unenriched one. This                  faculty is generic over every RagSource and cannot say WHY: only                  the source knows, and only if it reports at all. Where one does                  (room-doctrine emits rag.doctrine.outcome), that row reflects its                  LAST EVALUATION, which need not be this tick — a cached delivery                  never reaches the source."
             );
             return Some(streak);
         }
@@ -337,7 +338,10 @@ impl RagSourceFaculty {
         let streak = {
             // same contract as note_absence: recover the guard, never panic here.
             let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
-            g.remove(&room).unwrap_or(0)
+            // `None` here is BOTH "never absent" and "evicted", and that is
+            // deliberate: announcing a recovery for a record that was merely
+            // dropped would be the same lie this whole change is about.
+            g.take(&room).unwrap_or(0)
         };
         if streak > 0 {
             crate::probe!(
@@ -642,6 +646,68 @@ mod tests {
                 faculty.note_absence(room()),
                 Some(1),
                 "and the next absence starts a NEW streak, not a continuation"
+            );
+        }
+
+        // what this catches: @Astra's #3903 re-review — per-room keys fixed the
+        // cross-talk but left BOTH diagnostic maps retaining every room the
+        // persona ever answered in, which per-task rooms make unbounded. The
+        // second half of her requirement is the subtle one: EVICTION MUST NOT BE
+        // REPORTED AS RECOVERY. A dropped record is not an absence that ended.
+        #[tokio::test]
+        async fn an_evicted_room_is_forgotten_without_announcing_a_recovery() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            faculty.note_absence(victim);
+            assert_eq!(faculty.streak_in(victim), 1);
+
+            // Push past the bound with distinct rooms. `from_u128` starting at 2
+            // keeps every id different from the victim's.
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+
+            assert_eq!(
+                faculty.streak_in(victim),
+                0,
+                "the oldest room's diagnostics are dropped once the bound is                  exceeded — that is the leak this closes"
+            );
+            assert_eq!(
+                faculty.note_presence(victim),
+                None,
+                "and its return to content must announce NOTHING. A recovery row                  here would claim an absence ended when the record was merely                  evicted — inventing history is the failure this PR exists to stop"
+            );
+            // Non-degeneracy: a room still inside the bound DOES report, so the
+            // assertion above cannot be passing because recovery never fires.
+            let live = Uuid::from_u128(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 1);
+            assert_eq!(
+                faculty.note_presence(live),
+                Some(1),
+                "a retained room still reports its real streak"
+            );
+        }
+
+        // what this catches: revisiting an evicted room starts a NEW streak from
+        // 1 rather than resurrecting the old count — the diagnostic must not
+        // carry a number it cannot justify.
+        #[tokio::test]
+        async fn revisiting_an_evicted_room_starts_a_fresh_streak() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            for _ in 0..5 {
+                faculty.note_absence(victim);
+            }
+            assert_eq!(faculty.streak_in(victim), 5);
+
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+            assert_eq!(faculty.streak_in(victim), 0, "evicted");
+
+            assert_eq!(
+                faculty.note_absence(victim),
+                Some(1),
+                "the revisit reports a streak of ONE, not the five it can no                  longer prove"
             );
         }
 

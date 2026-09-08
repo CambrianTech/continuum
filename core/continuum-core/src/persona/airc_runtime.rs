@@ -361,20 +361,11 @@ impl PersonaAircRuntime {
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
         // layout. Use the shared helper so every actor kind shares
         // the same path schema.
-        let home = crate::context::citizen_home_path(
-            continuum_root,
-            kind,
-            provider,
-            &agent_name,
-        );
+        let home = crate::context::citizen_home_path(continuum_root, kind, provider, &agent_name);
 
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
-        if let Some(legacy) = crate::context::legacy_home_path(
-            continuum_root,
-            kind,
-            &agent_name,
-        ) {
+        if let Some(legacy) = crate::context::legacy_home_path(continuum_root, kind, &agent_name) {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
                 let new_parent = home
                     .parent()
@@ -755,7 +746,7 @@ impl PersonaAircRuntime {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+                            .unwrap_or_default(); // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
                         let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
@@ -803,7 +794,7 @@ impl PersonaAircRuntime {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+                            .unwrap_or_default(); // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
                         if let Ok(board) = hb_airc
                             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                             .await
@@ -814,7 +805,8 @@ impl PersonaAircRuntime {
                             // card, a lapsed one is left for the deck (2026-09-05: a
                             // citizen ended up on two).
                             let holds_live = snapshot.cards.iter().any(|c| {
-                                c.owner == Some(me) && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+                                c.owner == Some(me)
+                                    && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
                             });
                             for card in snapshot.cards.iter().filter(|c| {
                                 !holds_live
@@ -864,7 +856,7 @@ impl PersonaAircRuntime {
                                 .into_iter()
                                 .find(|r| r.peer == me)
                                 .map(|r| r.active_claims)
-                                .unwrap_or_default();  // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
+                                .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
                             for card in &mine {
@@ -983,7 +975,7 @@ impl PersonaAircRuntime {
                     .into_iter()
                     .find(|r| r.peer == me)
                     .map(|r| r.active_claims)
-                    .unwrap_or_default();  // unwrap_or: nothing recorded = empty, the probe says so
+                    .unwrap_or_default(); // unwrap_or: nothing recorded = empty, the probe says so
                 let mut repos: Vec<airc_lib::RepoId> =
                     claims.iter().map(|c| c.repo.clone()).collect();
                 repos.sort();
@@ -1072,10 +1064,18 @@ impl PersonaAircRuntime {
     /// Bumps the same membership epoch as `join_room`, because a subscription
     /// change is a membership change however the focus lands — routing that off
     /// this epoch must not care which verb moved it.
-    pub async fn subscribe_room(&self, name: &str) -> Result<(), AircError> {
-        self.airc.subscribe_room(name).await?;
+    pub async fn subscribe_room(&self, name: &str) -> Result<airc_lib::Room, AircError> {
+        let room = self.airc.subscribe_room(name).await?;
         self.membership_epoch.send_modify(|e| *e += 1);
-        Ok(())
+        Ok(room)
+    }
+
+    /// Leave a room and refresh the same live subscription snapshot as joining.
+    /// A rejected part (including an already-parted room) leaves the epoch alone.
+    pub async fn leave_room(&self, name: Option<&str>) -> Result<airc_lib::Room, AircError> {
+        let room = self.airc.part_channel(name).await?;
+        self.membership_epoch.send_modify(|e| *e += 1);
+        Ok(room)
     }
 
     /// Wrap an already-attached + already-joined `Arc<Airc>` into a

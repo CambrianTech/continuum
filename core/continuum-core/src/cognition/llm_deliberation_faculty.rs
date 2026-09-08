@@ -639,7 +639,6 @@ impl LlmDeliberationFaculty {
         );
     }
 
-
     /// What the prompt MUST carry before any reserve may claim a token: the tool schemas,
     /// the bare framing, and room for at least one message.
     ///
@@ -873,8 +872,12 @@ impl LlmDeliberationFaculty {
             // offered) announces itself: the body builder bounds the model's
             // thinking on it (card 12ef9c10), the lane class stays Turn.
             purpose: Some(
-                if output_cap.is_some() { "cognition/act" } else { "cognition/deliberation" }
-                    .to_string(),
+                if output_cap.is_some() {
+                    "cognition/act"
+                } else {
+                    "cognition/deliberation"
+                }
+                .to_string(),
             ),
             persona_id: Some(self.persona_id.to_string()),
         }
@@ -1002,7 +1005,10 @@ impl LlmDeliberationFaculty {
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
-        let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text, Some(&self.persona_name)), ws);
+        let decision = self.silence_a_parroted_draft(
+            decision_from_response(&resp.text, Some(&self.persona_name)),
+            ws,
+        );
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
@@ -1194,7 +1200,9 @@ impl LlmDeliberationFaculty {
             for (i, unit) in c.parts.iter().enumerate() {
                 let next_bytes = unit_bytes + unit.len() + usize::from(i > 0);
                 let with_notice = next_bytes + 1 + notice_bound.len();
-                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice) > budget_tokens {
+                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice)
+                    > budget_tokens
+                {
                     break;
                 }
                 unit_bytes = next_bytes;
@@ -1215,9 +1223,8 @@ impl LlmDeliberationFaculty {
             // — a quieter lie than the empty block this replaces.
             let omitted = c.parts.len() - kept_units.len();
             let notice = format!("…{omitted} more not shown (context budget){how}");
-            let unit_tokens = Self::context_piece_tokens(
-                c.faculty.as_str(), unit_bytes + 1 + notice.len(),
-            );
+            let unit_tokens =
+                Self::context_piece_tokens(c.faculty.as_str(), unit_bytes + 1 + notice.len());
             used += unit_tokens;
             let body = format!("{}\n{notice}", kept_units.join("\n"));
             partial.push(format!(
@@ -1337,7 +1344,7 @@ impl LlmDeliberationFaculty {
                 .iter()
                 .map(|(c, _)| c.salience)
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
-            // `None` = nothing survived at all, which is maximal harm, never "no finding".
+                                                                                       // `None` = nothing survived at all, which is maximal harm, never "no finding".
             let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
             if fires {
                 let verdict = match cheapest_kept {
@@ -2084,7 +2091,10 @@ impl LlmDeliberationFaculty {
                 .broadcast
                 .iter()
                 .filter(|c| c.decision.is_none() && c.trailing)
-                .filter(|c| (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID) == wm_trail)
+                .filter(|c| {
+                    (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
+                        == wm_trail
+                })
             {
                 if !c.content.trim().is_empty() {
                     // Same `[faculty]` banner the system block gives its sections —
@@ -2153,6 +2163,14 @@ impl LlmDeliberationFaculty {
             history: messages,
             stimulus,
             latest_result,
+            room_updates: ws
+                .room_updates
+                .iter()
+                .map(|message| {
+                    let body = message.render_room_update();
+                    ChatMessage::text("user", body)
+                })
+                .collect(),
         }
     }
 
@@ -2173,7 +2191,9 @@ impl LlmDeliberationFaculty {
     }
 
     fn working_context_header_cost() -> usize {
-        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
+        deliberation_prompt::WORKING_CONTEXT_HEADER
+            .len()
+            .div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
     fn framing_cost(system: &str) -> usize {
@@ -2285,9 +2305,7 @@ impl LlmDeliberationFaculty {
             // (ladder rung 4) replaces this with true causal subtrees.
             let continues_cluster = |m: &ChatMessage| {
                 let body = m.content_text();
-                m.role == "assistant"
-                    || body.starts_with("Full result of")
-                    || body.starts_with('⚙')
+                m.role == "assistant" || body.starts_with("Full result of") || body.starts_with('⚙')
             };
             let mut opener_advance = 0usize;
             while start + 1 < messages.len()
@@ -2297,10 +2315,11 @@ impl LlmDeliberationFaculty {
                 start += 1;
                 opener_advance += 1;
             }
-            }
+        }
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
         prompt.history.extend(prompt.stimulus);
+        prompt.history.extend(prompt.room_updates);
         prompt.history.extend(prompt.latest_result);
         Ok(prompt.history)
     }
@@ -2411,12 +2430,14 @@ struct PromptMessages {
     history: Vec<ChatMessage>,
     stimulus: Option<ChatMessage>,
     latest_result: Option<ChatMessage>,
+    room_updates: Vec<ChatMessage>,
 }
 
 impl PromptMessages {
     fn required_tokens(&self) -> usize {
         self.stimulus
             .iter()
+            .chain(self.room_updates.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
             .sum()
@@ -2721,7 +2742,7 @@ impl Faculty for LlmDeliberationFaculty {
         // owned inference request needs a copy of the selected surface.
         let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
 
-        let request = self.build_request_within(
+        let mut request = self.build_request_within(
             &binding,
             view.completion_reserve,
             messages.clone(),
@@ -2734,7 +2755,36 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            }, Some(ws.room_id), self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP));
+            },
+            Some(ws.room_id),
+            self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
+        );
+        // Identity belongs to the submitted adapter request. Provider response IDs
+        // remain separate, and one workspace can issue several calls.
+        let request_id = request
+            .request_id
+            .get_or_insert_with(|| Uuid::new_v4().to_string())
+            .clone();
+        let mut capture = self.prompt_capture.as_ref().map(|sink| {
+            super::prompt_capture::CaptureLease::start(
+                Arc::clone(sink),
+                &super::prompt_capture::PromptCall {
+                    request_id,
+                    persona_id: self.persona_id,
+                    room_id: ws.room_id,
+                    context_window: binding.context_window,
+                    cycle_id: (ws.cycle != super::workspace::CycleId::UNSTAMPED)
+                        .then_some(ws.cycle.0),
+                    cause: ws.cause.as_str(),
+                    cause_root: ws.cause.root(),
+                },
+                &request,
+            )
+        });
+        let lifecycle_recorded = self
+            .prompt_capture
+            .as_ref()
+            .is_some_and(|sink| sink.lifecycle_enabled());
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -2779,7 +2829,11 @@ impl Faculty for LlmDeliberationFaculty {
             let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
             let _ = std::fs::create_dir_all(&dir);
             use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(f, "{row}");
             }
         }
@@ -2870,6 +2924,12 @@ impl Faculty for LlmDeliberationFaculty {
                 binding.adapter.generate_text(request).await
             }
         };
+        if let Some(lease) = &mut capture {
+            match &gen_result {
+                Ok(response) => lease.finish(Some(response), None),
+                Err(error) => lease.finish(None, Some(&error.to_string())),
+            }
+        }
         let gen_await_ms = gen_start.elapsed().as_millis() as u64;
         let resp = match gen_result {
             Ok(r) => r,
@@ -2890,6 +2950,14 @@ impl Faculty for LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(e.to_string()));
             }
         };
+        if let Some(error) = resp.generation_error() {
+            tracing::warn!(
+                persona = %self.persona_name,
+                error,
+                "provider returned a failed generation; partial output is not a decision"
+            );
+            return Some(Contribution::deliberation_fault(error));
+        }
         // #139 latency split: the model call's wall time. Compare to the forwarder's
         // `persona.turn.first_token` (whole-turn spawn→first token): first_token −
         // gen_await ≈ cognition-prep (recall/embeddings/context assembly BEFORE the
@@ -2950,7 +3018,7 @@ impl Faculty for LlmDeliberationFaculty {
         // is always 0 now (single shot); the act→observe driver re-enters this
         // faculty on the NEXT tick with the result folded into perception, and that
         // tick captures itself. Best-effort; never affects the turn.
-        if let Some(cap) = &self.prompt_capture {
+        if let Some(cap) = self.prompt_capture.as_ref().filter(|_| !lifecycle_recorded) {
             let offered: Vec<String> = self.native_specs.iter().map(|s| s.name.clone()).collect();
             cap.record(
                 self.persona_id,
@@ -3260,11 +3328,13 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
     runs.push(("system", cum as u32));
     for m in messages {
         let body = m.content_text();
-        let label = if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙') {
-            "grounding"
-        } else {
-            "history"
-        };
+        let label =
+            if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙')
+            {
+                "grounding"
+            } else {
+                "history"
+            };
         cum += est_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
         match runs.last_mut() {
             Some((l, end)) if *l == label => *end = cum as u32,
@@ -3280,7 +3350,10 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
 /// the same path as the decision, and the settle loop folds it into the per-task
 /// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
 /// `latency_ms` is always present (the adapter times every request).
-fn metrics_from(persona: &str, resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
+fn metrics_from(
+    persona: &str,
+    resp: &TextGenerationResponse,
+) -> crate::cognition::workspace::TurnMetrics {
     // The lane's PREFILL-vs-DECODE split (llama-server `timings`), when present:
     // cache_n/prompt_n is the KV-cache hit/miss, prompt_ms/predicted_ms the
     // wall-clock split that lets the harness see where Metal time actually goes.
@@ -3371,16 +3444,38 @@ mod tests {
     // with zero tools (2026-09-04). The filter runs on the raw command names.
     #[test]
     fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
-        let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "code/git/apply"]
-            .iter()
-            .map(|n| NativeToolSpec {
-                name: (*n).to_string(),
-                description: String::new(),
-                input_schema: crate::ai::types::ToolInputSchema { schema_type: "object".to_string(), properties: serde_json::json!({}), required: None, definitions: None },
-            })
-            .collect();
+        let raw: Vec<NativeToolSpec> = [
+            "code/read",
+            "work/state",
+            "chat/send",
+            "commands/list",
+            "room/join",
+            "code/git/status",
+            "code/git/apply",
+        ]
+        .iter()
+        .map(|n| NativeToolSpec {
+            name: (*n).to_string(),
+            description: String::new(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        })
+        .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-        assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"], "git/apply is a reviewer verb, not a hand");
+        assert_eq!(
+            hands,
+            [
+                "code/read",
+                "work/state",
+                "commands/list",
+                "code/git/status"
+            ],
+            "git/apply is a reviewer verb, not a hand"
+        );
     }
 
     // what this catches: the live registry's command names drifting away from the
@@ -3394,9 +3489,18 @@ mod tests {
             return; // no registry in this test build — nothing to assert against
         }
         let hands = hands_surface(&raw);
-        assert!(!hands.is_empty(), "hands surface is empty against the live registry");
-        assert!(hands.len() < raw.len(), "hands surface should be a strict subset");
-        assert!(hands.iter().any(|s| s.name == "commands/list"), "the discovery pair must survive");
+        assert!(
+            !hands.is_empty(),
+            "hands surface is empty against the live registry"
+        );
+        assert!(
+            hands.len() < raw.len(),
+            "hands surface should be a strict subset"
+        );
+        assert!(
+            hands.iter().any(|s| s.name == "commands/list"),
+            "the discovery pair must survive"
+        );
     }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
@@ -3544,6 +3648,234 @@ mod tests {
             assert!(matches!(c.decision, Some(Decision::Speak { .. })));
         }
 
+        // The actual faculty/adapter boundary, not a hand-written lifecycle:
+        // request is visible while generate awaits; completion, failure and
+        // cancellation are distinct. Reading playback cannot call the adapter.
+        #[tokio::test]
+        async fn playback_captures_actual_dispatch_before_completion_and_cancellation() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let room = Uuid::new_v4();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let adapter = Arc::new(
+                HeuristicInferenceAdapter::new()
+                    .with_delay_ms(60)
+                    .with_request_recorder(Arc::clone(&calls)),
+            );
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                .with_prompt_capture(Arc::new(
+                    JsonlPromptCaptureSink::open(dir.path(), persona).expect("real capture writer"),
+                ));
+            let ws = Workspace::in_room("Review this real task and its receipt.", room)
+                .with_cycle(crate::cognition::workspace::CycleId(17));
+            let mut turn = Box::pin(faculty.contribute(&ws));
+            tokio::select! {
+                biased;
+                _ = &mut turn => panic!("delayed fixture must remain in flight"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+            }
+            let pending =
+                prompt_capture::page(dir.path(), persona, None, false, 10).expect("pending page");
+            assert_eq!(pending.entries.len(), 1);
+            let first = &pending.entries[0];
+            assert!(matches!(first.status, CallStatus::Submitted));
+            assert_eq!(first.cycle_id, Some(17));
+            assert_eq!(first.room_id, room);
+            let input =
+                prompt_capture::detail(dir.path(), persona, &first.cursor).expect("pending input");
+            assert!(input.terminal.is_none());
+            assert!(
+                input.submitted.as_ref().expect("submitted")["request"]["messages"]
+                    .to_string()
+                    .contains("Review this real task")
+            );
+            let verdict = turn.await.expect("completed deliberation");
+            assert!(verdict.decision.is_some());
+            let completed =
+                prompt_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
+                    .expect("terminal page");
+            assert_eq!(completed.entries.len(), 1);
+            assert!(matches!(completed.entries[0].status, CallStatus::Completed));
+            let detail = prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+                .expect("completed payload");
+            assert!(detail.issues.is_empty());
+            {
+                let actual = calls.lock().expect("fixture request recorder");
+                assert_eq!(actual.len(), 1, "playback reads never invoke inference");
+                assert_eq!(
+                    actual[0].request_id.as_deref(),
+                    Some(first.request_id.as_str())
+                );
+                // Match the actual serialized wire representation: f32 JSON
+                // numbers need not equal serde_json::to_value's widened f64.
+                let wire_request: serde_json::Value = serde_json::from_str(
+                    &serde_json::to_string(&actual[0]).expect("typed request wire serialization"),
+                )
+                .expect("serialized wire request JSON");
+                assert_eq!(
+                    wire_request,
+                    detail.submitted.as_ref().expect("submitted")["request"]
+                );
+            }
+            let legacy =
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("existing prompt/dataset reader");
+            assert_eq!(legacy.len(), 1);
+            assert!(legacy[0]["messages"]
+                .to_string()
+                .contains("Review this real task"));
+            assert!(legacy[0]["response"]["text"].is_string());
+
+            let mut malformed =
+                prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+                    .expect("completed payload for integrity check");
+            malformed.submitted.as_mut().expect("submitted request")["request"]
+                .as_object_mut()
+                .expect("typed request object")
+                .remove("messages");
+            assert!(
+                prompt_capture::legacy_projection(malformed).is_err(),
+                "missing required payload must stay explicit, not resemble a filtered provider failure"
+            );
+
+            let mut cancelled = Box::pin(faculty.contribute(&ws));
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => panic!("delayed fixture must remain in flight"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+            }
+            drop(cancelled);
+            let page =
+                prompt_capture::page(dir.path(), persona, None, false, 10).expect("cancelled page");
+            assert!(matches!(
+                page.entries.last().expect("terminal").status,
+                CallStatus::Cancelled
+            ));
+            assert_ne!(
+                page.entries[0].request_id, page.entries[2].request_id,
+                "two calls on one workspace have distinct actual request IDs"
+            );
+        }
+
+        #[tokio::test]
+        async fn playback_records_inference_failure_without_a_fake_response() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar.",
+                Arc::new(HeuristicInferenceAdapter::new().with_responses(Vec::new())),
+            )
+            .with_prompt_capture(Arc::new(
+                JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
+            ));
+            let ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
+            let result = faculty.contribute(&ws).await.expect("fault contribution");
+            assert!(result.fault.is_some());
+            let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+                .expect("failed call page");
+            let last = page.entries.last().expect("failed terminal");
+            assert!(matches!(last.status, CallStatus::Failed));
+            let detail =
+                prompt_capture::detail(dir.path(), persona, &last.cursor).expect("failure detail");
+            let terminal = detail.terminal.expect("failed terminal payload");
+            assert!(terminal["response"].is_null());
+            assert!(terminal["error"]
+                .as_str()
+                .expect("failure cause")
+                .contains("exhausted"));
+            assert!(
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("compatibility reader")
+                    .is_empty(),
+                "failed calls must not become training examples"
+            );
+        }
+
+        // A transport-successful provider failure must retain its partial output
+        // for inspection without accepting it as a decision or training example.
+        #[tokio::test]
+        async fn playback_excludes_typed_error_responses_from_completed_training_rows() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let mut response = HeuristicInferenceAdapter::new()
+                .generate_text(TextGenerationRequest {
+                    messages: vec![ChatMessage::text("user", "fixture input")],
+                    ..Default::default()
+                })
+                .await
+                .expect("shared fixture response");
+            // This is a valid participation decision when the provider succeeds;
+            // the identical partial text must not override either error carrier.
+            response.text = "Ship it.".into();
+            response.finish_reason = FinishReason::Stop;
+            let mut finish_error = response.clone();
+            finish_error.finish_reason = FinishReason::Error;
+            let mut field_error = response.clone();
+            field_error.error = Some("provider reported a typed failure".into());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar.",
+                Arc::new(HeuristicInferenceAdapter::new().with_responses(vec![
+                    finish_error,
+                    field_error,
+                    response,
+                ])),
+            )
+            .with_prompt_capture(Arc::new(
+                JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
+            ));
+            let ws = Workspace::in_room("Review the task.", Uuid::new_v4());
+            for _ in 0..2 {
+                let contribution = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("visible provider fault");
+                assert!(contribution.fault.is_some());
+                assert!(
+                    contribution.decision.is_none(),
+                    "a failed partial answer is not a decision"
+                );
+            }
+            let accepted = faculty.contribute(&ws).await.expect("successful control");
+            assert!(accepted.fault.is_none());
+            assert!(
+                matches!(accepted.decision, Some(Decision::Speak { text }) if text == "Ship it.")
+            );
+            let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+                .expect("typed error page");
+            assert_eq!(page.entries.len(), 6);
+            let failures: Vec<_> = page
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry.status, CallStatus::Failed))
+                .collect();
+            assert_eq!(failures.len(), 2);
+            for terminal in failures {
+                let detail = prompt_capture::detail(dir.path(), persona, &terminal.cursor)
+                    .expect("actual error response");
+                assert_eq!(
+                    detail.terminal.expect("terminal record")["response"]["text"],
+                    "Ship it.",
+                    "the actual failed partial response remains inspectable"
+                );
+            }
+            let completed =
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("completed reader");
+            assert_eq!(
+                completed.len(),
+                1,
+                "only the successful control can become a training candidate"
+            );
+            assert_eq!(completed[0]["response"]["text"], "Ship it.");
+        }
+
         // what this catches: the live-airc bug where a grown room burst + many full
         // engrams made the deliberation prompt exceed the served window, so
         // llama-server 500'd ("Context size has been exceeded") on EVERY tick and the
@@ -3666,58 +3998,58 @@ mod tests {
         // PLUS the generation cap never exceeds the served window. Regression for the
         // abstain-every-tick reliability bug.
         // what this catches: an ACT turn's completion is bounded by ACT_OUTPUT_CAP
-    // under the reserve, and a message turn (no cap) still gets the whole
-    // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
-    // the lane); capping message turns would truncate answers.
-    #[tokio::test]
-    async fn an_act_turn_is_capped_under_the_reserved_room() {
-        let window = 32_768u32;
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Ivar",
-            "You are Ivar, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window);
-        let ws = Workspace::new("act on the card");
-        let view = faculty.prompt_view(&ws);
-        let binding = faculty.binding.load_full();
-        let reserve = faculty.completion_reserve_within(window);
-        let act = faculty.build_request_within(
-            &binding,
+        // under the reserve, and a message turn (no cap) still gets the whole
+        // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
+        // the lane); capping message turns would truncate answers.
+        #[tokio::test]
+        async fn an_act_turn_is_capped_under_the_reserved_room() {
+            let window = 32_768u32;
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(window);
+            let ws = Workspace::new("act on the card");
+            let view = faculty.prompt_view(&ws);
+            let binding = faculty.binding.load_full();
+            let reserve = faculty.completion_reserve_within(window);
+            let act = faculty.build_request_within(
+                &binding,
                 view.completion_reserve,
-            view.messages.clone(),
-            None,
-            view.system.clone(),
-            None,
-            Some(ws.room_id),
-            Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
-        );
-        assert_eq!(
-            act.max_tokens,
-            Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
-            "an act turn is capped under the reserve"
-        );
-        let msg = faculty.build_request_within(
-            &binding,
+                view.messages.clone(),
+                None,
+                view.system.clone(),
+                None,
+                Some(ws.room_id),
+                Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+            );
+            assert_eq!(
+                act.max_tokens,
+                Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
+                "an act turn is capped under the reserve"
+            );
+            let msg = faculty.build_request_within(
+                &binding,
                 view.completion_reserve,
-            view.messages.clone(),
-            None,
-            view.system.clone(),
-            None,
-            Some(ws.room_id),
-            None,
-        );
+                view.messages.clone(),
+                None,
+                view.system.clone(),
+                None,
+                Some(ws.room_id),
+                None,
+            );
             assert_eq!(
                 msg.max_tokens,
                 Some(reserve),
                 "a message turn keeps the reserved room"
             );
-    }
+        }
 
-    #[test]
+        #[test]
         fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -4112,8 +4444,7 @@ mod tests {
                 let faculty = faculty_with_the_real_registry(narrow);
                 // A MESSAGE turn — so the narrowing can only be the window.
                 let ws = Workspace::new("anything open?");
-                let selected =
-                    faculty.select_tool_surface(&ws, narrow);
+                let selected = faculty.select_tool_surface(&ws, narrow);
 
                 assert_eq!(
                     selected.reason,
@@ -4164,11 +4495,7 @@ mod tests {
                 for (label, window, ws) in [
                     ("full", fits, Workspace::new("anything open?")),
                     ("hands/work", fits, work_turn()),
-                    (
-                        "hands/budget",
-                        narrow,
-                        Workspace::new("anything open?"),
-                    ),
+                    ("hands/budget", narrow, Workspace::new("anything open?")),
                 ] {
                     let faculty = faculty_with_the_real_registry(window);
                     let selected = faculty.select_tool_surface(&ws, window);
@@ -5029,8 +5356,7 @@ mod tests {
             // their own activities per [[activities-are-self-hosting]]). Same
             // conscious trade as vision/look above.
             const AGENTIC_SURFACE_CEILING: u32 = 10700;
-            let surface =
-                faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
+            let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
                 "the agentic surface is now {surface} tokens (measured 10098, ceiling \
@@ -5062,7 +5388,8 @@ mod tests {
             // and "we were spending her window on tools we withheld". Only the second
             // was ever true here.
             assert!(
-                view.user_text().contains("LATEST: did the deploy fix land?"),
+                view.user_text()
+                    .contains("LATEST: did the deploy fix land?"),
                 "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff)\n{}",
@@ -5183,8 +5510,7 @@ mod tests {
         #[test]
         fn fit_front_advances_in_quanta_not_per_act() {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-            let faculty =
-                LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let msgs: Vec<ChatMessage> = (0..40)
                 .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
                 .collect();
@@ -5206,6 +5532,7 @@ mod tests {
                             history: msgs[..n].to_vec(),
                             stimulus: None,
                             latest_result: None,
+                            room_updates: Vec::new(),
                         },
                         budget,
                     )
@@ -5236,7 +5563,10 @@ mod tests {
             // tool-result continuation, the front advances past the fragment.
             let mut clustered: Vec<ChatMessage> = Vec::new();
             for i in 0..30 {
-                clustered.push(ChatMessage::text("user", format!("q{i} {}", "word ".repeat(60))));
+                clustered.push(ChatMessage::text(
+                    "user",
+                    format!("q{i} {}", "word ".repeat(60)),
+                ));
                 clustered.push(ChatMessage::text(
                     "assistant",
                     format!("a{i} {}", "word ".repeat(60)),
@@ -5248,6 +5578,7 @@ mod tests {
                         history: clustered,
                         stimulus: None,
                         latest_result: None,
+                        room_updates: Vec::new(),
                     },
                     budget,
                 )
@@ -5272,6 +5603,7 @@ mod tests {
                 ],
                 stimulus: None,
                 latest_result: None,
+                room_updates: Vec::new(),
             };
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -5362,7 +5694,10 @@ mod tests {
                 BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
                 BurstTurn::attributed(true, "Casper", v3, Some(5)),
             ];
-            let ws = Workspace::new(Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
+            let ws = Workspace::new(Burst::from_turns(
+                crate::identity::ActivityRoom::mint(),
+                turns,
+            ));
             let view = faculty.prompt_view(&ws);
 
             // Exactly ONE assistant rendering of the template survives.
@@ -5638,6 +5973,16 @@ mod tests {
                         .with_working_memory(wm);
                 let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
                 let stimulus = "Review PR #3858 against its actual source.";
+                let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+                    event_id: Uuid::new_v4(),
+                    lamport: 1,
+                    peer_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    text: format!(
+                        "A colleague's additional evidence: {}",
+                        "retained evidence ".repeat(80)
+                    ),
+                });
                 let mut ws = Workspace::new(Burst::from_turns(
                     room,
                     vec![
@@ -5653,9 +5998,13 @@ mod tests {
                     ],
                 ));
                 ws.workspace_deliverable = true;
+                ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
                 ws.broadcast.push(Contribution::context(
                     FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
-                    format!("Held activity context: continue independent source review.{}", "x".repeat(padding)),
+                    format!(
+                        "Held activity context: continue independent source review.{}",
+                        "x".repeat(padding)
+                    ),
                     0.9,
                     "held claims",
                 ));
@@ -5688,6 +6037,13 @@ mod tests {
                 assert_eq!(adapter.call_count(), 1);
                 let seen = adapter.seen.lock().unwrap();
                 let request = &seen[0];
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|message| message.content_text().ends_with(&update.text)),
+                    "room updates must survive alongside the original task and complete result"
+                );
                 assert!(request
                     .messages
                     .iter()
@@ -5719,10 +6075,11 @@ mod tests {
                     schema_tokens,
                     faculty.select_tool_surface(&ws, window).tokens
                 );
-                let wire_tokens = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-                    + LlmDeliberationFaculty::messages_cost(&request.messages)
-                    + schema_tokens
-                    + request.max_tokens.unwrap() as usize;
+                let wire_tokens =
+                    LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
+                        + LlmDeliberationFaculty::messages_cost(&request.messages)
+                        + schema_tokens
+                        + request.max_tokens.unwrap() as usize;
                 assert!(
                     wire_tokens <= window as usize,
                     "wire {wire_tokens} > window {window}"
@@ -5730,7 +6087,7 @@ mod tests {
             }
         }
 
-        // what this catches: an indivisible oversized stimulus OR active result
+        // what this catches: an indivisible oversized stimulus, room update or active result
         // must fault before inference, including self-ticks with no chat turns.
         // It must still publish demand, so refusal cannot freeze a small window.
         #[tokio::test]
@@ -5739,22 +6096,35 @@ mod tests {
             use crate::cognition::working_set::WorkingSetRegistry;
 
             let window = 8192u32;
-            for oversized_stimulus in [true, false] {
+            for oversized_part in 0..3 {
                 let persona = Uuid::new_v4();
                 let adapter = Arc::new(ScriptedAdapter::new(vec![]));
                 let registry = WorkingSetRegistry::new();
                 let wm = Arc::new(WorkingMemory::new(8));
                 wm.set_served_window(window);
                 let oversized = "payload ".repeat(window as usize);
-                let mut ws = if oversized_stimulus {
+                let mut ws = if oversized_part == 0 {
                     Workspace::new(&oversized)
-                } else {
+                } else if oversized_part == 1 {
                     wm.record_receipt(&format!(
                         "{oversized}\nclaimable_now: 29\ntotal_on_board: 43"
                     ));
                     let mut ws = Workspace::new("");
                     ws.turns.clear();
                     ws.self_initiated = true;
+                    ws
+                } else {
+                    wm.record_receipt("complete active result");
+                    let mut ws = Workspace::new("original task stays required");
+                    ws.room_updates = Arc::new(vec![Arc::new(
+                        crate::persona::service_loop::IncomingMessage {
+                            event_id: Uuid::new_v4(),
+                            lamport: 1,
+                            peer_id: Uuid::new_v4(),
+                            room_id: Uuid::new_v4(),
+                            text: oversized,
+                        },
+                    )]);
                     ws
                 };
                 ws.now_ms = Some(1);
