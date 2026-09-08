@@ -297,11 +297,30 @@ async fn resolve_card_id(
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
-    let candidates: Vec<Uuid> = subscribed_boards(airc)
+    let boards = subscribed_boards(airc)
         .await
-        .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?
+        .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?;
+    resolve_card_id_in_boards(&boards, s)
+}
+
+/// Resolve against an already-read view, so reading a card need not fold the
+/// subscribed boards again after expanding its short id.
+fn resolve_card_id_in_boards(
+    boards: &[(airc_lib::Room, airc_lib::WorkBoardProjection)],
+    s: &str,
+) -> Result<WorkCardId, CommandError> {
+    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+        return Ok(WorkCardId::from_uuid(id));
+    }
+    let candidates: Vec<Uuid> = boards
         .iter()
-        .flat_map(|(_, board)| board.snapshot().cards.iter().map(|c| c.card_id.as_uuid()).collect::<Vec<_>>())
+        .flat_map(|(_, board)| {
+            board
+                .snapshot()
+                .cards
+                .into_iter()
+                .map(|c| c.card_id.as_uuid())
+        })
         .collect();
     crate::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
@@ -2312,7 +2331,7 @@ pub struct WorkGet {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkGetParams {
-    /// The card id — full UUID or the 8-char short id the board shows.
+    /// The card id — full UUID or short id from any room you belong to.
     pub card_id: String,
 }
 
@@ -2327,35 +2346,20 @@ pub struct WorkGetResult {
     pub claim_id: Option<String>,
 }
 
-#[async_trait]
-impl ActionCommand for WorkGet {
-    const NAME: &'static str = "work/get";
-    const ALIASES: &'static [&'static str] = &["get_task"];
-    const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
-    const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str =
-        "Read one work card in full (read-only): title, body (the task's requirements), state, \
-         owner, claim id. Accepts the 8-char short id the board shows. This is how you re-check a \
-         spec mid-task instead of asking the room.";
-    type Params = WorkGetParams;
-    type Output = WorkGetResult;
-
-    async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx, "work commands")?;
-        let card_id = resolve_card_id(&airc, &p.card_id).await?;
-        let board = airc
-            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+impl WorkGet {
+    /// Read only the caller's subscribed boards; a card lookup neither joins a
+    /// room nor moves focus. Resolution and content use the same board view.
+    async fn read_card(airc: &Arc<Airc>, requested: &str) -> Result<WorkGetResult, CommandError> {
+        let boards = subscribed_boards(airc)
             .await
-            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-            .snapshot();
-        let card = board
-            .cards
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
+        let card_id = resolve_card_id_in_boards(&boards, requested)?;
+        let card = boards
             .iter()
-            .find(|c| c.card_id == card_id)
+            .find_map(|(_, board)| board.card(card_id))
             .ok_or_else(|| {
                 CommandError::NotFound(format!(
-                    "card {} resolved but is not on the current board projection",
-                    p.card_id
+                    "card {requested} is not on any subscribed room's board"
                 ))
             })?;
         Ok(WorkGetResult {
@@ -2366,6 +2370,25 @@ impl ActionCommand for WorkGet {
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
         })
+    }
+}
+
+#[async_trait]
+impl ActionCommand for WorkGet {
+    const NAME: &'static str = "work/get";
+    const ALIASES: &'static [&'static str] = &["get_task"];
+    const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Read one work card in full (read-only): title, body (the task's requirements), state, \
+         owner, claim id. Accepts a full or short id from any room you belong to, without \
+         changing your current room. This is how you re-check a spec mid-task.";
+    type Params = WorkGetParams;
+    type Output = WorkGetResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        Self::read_card(&airc, &p.card_id).await
     }
 }
 
@@ -2955,13 +2978,12 @@ mod tests {
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
-    /// what this catches: a short card id is resolved against the boards the caller
-    /// can SEE, not the scope's cwd-derived current room. Regression for Joaquin's
-    /// `work/get 0c4317e1` (2026-09-05): her current room was a bench run room, the
-    /// card sat on the academy board she was also subscribed to, and the resolver
-    /// answered "no card matches — available: the 12 bench cards".
+    /// what this catches: card 29621b9f — resolving a subscribed room's card id
+    /// succeeded, then work/get looked only on the current board and refused it.
+    /// Exercise the actual read path after subscribing without moving focus, and
+    /// prove that a known card in a parted room remains outside the read boundary.
     #[tokio::test]
-    async fn a_card_prefix_resolves_on_any_subscribed_board_not_only_the_current_room() {
+    async fn work_get_reads_subscribed_cards_without_changing_focus() {
         let home = tempfile::tempdir().expect("temp airc home");
         let airc = Arc::new(
             Airc::open_with_wire_root_for_test(home.path(), home.path())
@@ -2970,25 +2992,100 @@ mod tests {
         );
         airc.join("academy").await.expect("join the academy");
         let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+        let mut request = CreateWorkCard::new(
+            repo.clone(),
+            "serve-time pin match gap",
+            parse_priority("p1"),
+        );
+        request.body = Some("Review the serving match against the actual source.".to_string());
         let card = airc
-            .create_work_card(CreateWorkCard::new(
-                repo,
-                "serve-time pin match gap",
-                parse_priority("p1"),
-            ))
+            .create_work_card(request)
             .await
             .expect("card created on the academy board");
-        // Focus moves to a run room: the card is no longer on the CURRENT board.
-        airc.join("bench-run-1").await.expect("join the run room");
+        let current_room = airc.join("bench-run-1").await.expect("join the run room");
+        let local_card = airc
+            .create_work_card(CreateWorkCard::new(
+                repo,
+                "local task",
+                parse_priority("p2"),
+            ))
+            .await
+            .expect("card created on the current board");
+        airc.part_channel(Some("academy"))
+            .await
+            .expect("part the academy");
 
         let prefix = card.as_uuid().simple().to_string()[..8].to_string();
+        let full_id = card.as_uuid().to_string();
+        let before = airc
+            .subscription_set()
+            .await
+            .expect("subscriptions before refused reads");
+        assert!(matches!(
+            WorkGet::read_card(&airc, &full_id).await,
+            Err(CommandError::NotFound(_))
+        ));
+        assert!(matches!(
+            WorkGet::read_card(&airc, &prefix).await,
+            Err(CommandError::Invalid(_))
+        ));
+        assert_eq!(
+            airc.subscription_set()
+                .await
+                .expect("subscriptions after refused reads"),
+            before,
+            "knowing a card id must not rejoin its room"
+        );
+
+        // This is room/join's production behavior: subscribe, preserving focus.
+        airc.subscribe_room("academy")
+            .await
+            .expect("subscribe to the card's room");
+        assert_eq!(
+            airc.current_room().await.expect("current room").channel,
+            current_room.channel
+        );
+        let before = airc
+            .subscription_set()
+            .await
+            .expect("subscriptions before reads");
         let resolved = resolve_card_id(&airc, &prefix)
             .await
             .expect("the academy card resolves by prefix from the run room");
         assert_eq!(resolved, card);
-        assert!(
-            card_in_subscribed_rooms(&airc, card).await.is_some(),
-            "the same fold answers which room holds the card"
+        for id in [&full_id, &prefix] {
+            let read = WorkGet::read_card(&airc, id)
+                .await
+                .expect("read the subscribed card");
+            assert_eq!(read.id, prefix);
+            assert_eq!(read.title, "serve-time pin match gap");
+            assert_eq!(
+                read.body.as_deref(),
+                Some("Review the serving match against the actual source.")
+            );
+            assert_eq!(read.state, "open");
+        }
+        for id in [
+            local_card.as_uuid().to_string(),
+            short8(local_card.as_uuid()),
+        ] {
+            let read = WorkGet::read_card(&airc, &id)
+                .await
+                .expect("read the current-room card");
+            assert_eq!(read.id, short8(local_card.as_uuid()));
+            assert_eq!(read.title, "local task");
+            assert!(read.body.is_none());
+        }
+        assert!(matches!(
+            WorkGet::read_card(&airc, &Uuid::nil().to_string()).await,
+            Err(CommandError::NotFound(_))
+        ));
+        assert_eq!(
+            airc.subscription_set()
+                .await
+                .expect("subscriptions after reads"),
+            before,
+            "successful and unknown-card reads must preserve subscriptions and focus"
         );
     }
 
