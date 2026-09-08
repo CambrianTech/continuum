@@ -41,7 +41,7 @@ Until (7) exists, "personas scale cross grid" is a sentence. With it, it is a ro
 | Grader trigger | **assumes this host**: `<home>/citizens/peers/<owner>/workspace/swe/<instance>` | `modules/benchmark_grade.rs:295-372` (`grade_card`) |
 | Sweep grader | grades the newest WORKED COPY on this host | `cognition/swe_verdict_sweep.rs`, `persona/staged_workspace.rs::grade_target` |
 | Verdict → holder | works locally; holder name via the LOCAL runtime registry only | `modules/verdict_board.rs::holder_of` (falls back to `bench_round::card_assignee`) |
-| Outcome credit | **missing** — turns are not stamped with the verdict | `cognition/training_producer.rs` (buffers per live turn, no card link); card cc34ac0f |
+| Outcome credit | **missing** — turns are not stamped with the verdict | `persona/training_producer.rs` (buffers per live turn, no card link); card cc34ac0f |
 | Card artifact on the wire | **missing** — `WorkCard` has no artifact field (Astra verified in `airc-work/src/model.rs`) | airc-work: new durable frame + board fold |
 
 ## The design (decided 2026-09-07, room #continuum)
@@ -99,6 +99,12 @@ S4 in parallel; S5 with S3; S6 in parallel; S7 when S3 + S4 are live on both nod
 - A grade is feedback: it reaches the hands that can act on it, or it is a number in a file.
 - A change that makes the system say less ships the probe for its new quiet state.
 - Liveness is an answered request through the socket; never a pid, never a process list.
+- Claim in the worktree, build in the worktree, **with the worktree's own target dir**: the board's
+  lease zone wants every claimed card in `~/.airc/worktrees/<card>`, and card d2cda466's poisoning
+  came from a worktree build writing into the SHARED cargo cache (`CARGO_MANIFEST_DIR` latched into
+  `~/.continuum/cache/cargo-target`). Both rules hold at once: in the worktree run
+  `CARGO_TARGET_DIR=$HOME/.continuum/cache/cargo-target-wt cargo check|test`; the shared cache is
+  touched only by `continuum reboot` from the main checkout. Never `--no-lease-required`.
 - Measure on an awake, unswapped machine: check `pmset -g log`, `vm.swapusage`, and the catch-up tick
   gaps before trusting any hourly number (2026-09-07/08 lesson).
 
