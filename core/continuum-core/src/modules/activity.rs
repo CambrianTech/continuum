@@ -611,7 +611,7 @@ pub async fn spawn_activity_room(
             match parent_room {
                 Some(parent_room) => {
                     let record = crate::experience::children::RoomChildRecord {
-                        room_id: room.channel.as_uuid().to_string(),
+                        room_id: room.channel.as_uuid(),
                         name: name.to_string(),
                         recipe: recipe.to_string(),
                         driver: child_driver,

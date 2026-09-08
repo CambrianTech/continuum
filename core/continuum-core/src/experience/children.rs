@@ -21,8 +21,8 @@ pub const CHILD_WALL_CATEGORY: &str = "children";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomChildRecord {
-    /// The child room's id, as a string uuid (the wire form the binding already uses).
-    pub room_id: String,
+    /// The child room's id.
+    pub room_id: uuid::Uuid,
     /// The child room's NAME — what a remote node joins by.
     pub name: String,
     pub recipe: String,
@@ -52,7 +52,7 @@ impl RoomChildRecord {
 /// room was announced twice (a re-spawn of the same name). Malformed posts are skipped:
 /// a parent wall may carry older shapes and one bad row must not hide the rest.
 pub fn project_children(posts: &[airc_core::doctrine::WallPostPublished]) -> Vec<RoomChildRecord> {
-    let mut by_room: std::collections::BTreeMap<String, RoomChildRecord> = Default::default();
+    let mut by_room: std::collections::BTreeMap<uuid::Uuid, RoomChildRecord> = Default::default();
     for post in posts {
         let Ok(rec) = serde_json::from_str::<RoomChildRecord>(&post.body) else {
             continue;
@@ -60,7 +60,7 @@ pub fn project_children(posts: &[airc_core::doctrine::WallPostPublished]) -> Vec
         match by_room.get(&rec.room_id) {
             Some(prev) if prev.spawned_at_ms > rec.spawned_at_ms => {}
             _ => {
-                by_room.insert(rec.room_id.clone(), rec);
+                by_room.insert(rec.room_id, rec);
             }
         }
     }
@@ -90,15 +90,15 @@ mod tests {
     #[test]
     fn only_citizen_benchmark_children_qualify_and_the_newest_record_wins() {
         let bench = RoomChildRecord {
-            room_id: "r1".into(),
+            room_id: uuid::Uuid::from_u128(1),
             name: "bench-swe-bench-verified-1".into(),
             recipe: "benchmark".into(),
             driver: Some("citizen".into()),
             suite: Some("swe-bench-verified".into()),
             spawned_at_ms: 10,
         };
-        let detached = RoomChildRecord { driver: Some("detached_solve".into()), room_id: "r2".into(), ..bench.clone() };
-        let chat = RoomChildRecord { suite: None, driver: None, room_id: "r3".into(), ..bench.clone() };
+        let detached = RoomChildRecord { driver: Some("detached_solve".into()), room_id: uuid::Uuid::from_u128(2), ..bench.clone() };
+        let chat = RoomChildRecord { suite: None, driver: None, room_id: uuid::Uuid::from_u128(3), ..bench.clone() };
         let older = RoomChildRecord { spawned_at_ms: 5, name: "stale".into(), ..bench.clone() };
         let posts = vec![
             post(&serde_json::to_string(&older).unwrap()),   // unwrap: test literal
@@ -109,7 +109,7 @@ mod tests {
         ];
         let children = project_children(&posts);
         assert_eq!(children.len(), 3, "{children:?}");
-        let r1 = children.iter().find(|c| c.room_id == "r1").expect("r1 present"); // expect: test asserts presence
+        let r1 = children.iter().find(|c| c.room_id == uuid::Uuid::from_u128(1)).expect("r1 present"); // expect: test asserts presence
         assert_eq!(r1.name, "bench-swe-bench-verified-1", "the newest record wins");
         assert!(r1.is_citizen_benchmark());
         assert!(!detached.is_citizen_benchmark());
