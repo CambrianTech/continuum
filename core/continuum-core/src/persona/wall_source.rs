@@ -299,18 +299,27 @@ impl WallSource {
 
     /// Wrap a packed slice into a delivery, minting a continuation cursor
     /// when `next` posts remain. The cursor's opaque carries the resume
-    /// index; persona_id + source_id are the substrate identity guards.
+    /// index AND the room it indexes; persona_id + source_id are the substrate
+    /// identity guards.
+    ///
+    /// `room` is the EFFECTIVE room of the delivery that minted this cursor —
+    /// an index without its room is only meaningful while the source reads one
+    /// room forever, which is the assumption #3883 removed.
     fn delivery(
         &self,
         items: Vec<RagItem>,
         used: u32,
         next: Option<usize>,
         resolution: ResolutionPreference,
+        room: Option<uuid::Uuid>,
     ) -> RagDelivery {
         let continuation = next.map(|idx| ContinuationCursor {
             persona_id: self.persona_id,
             source_id: SOURCE_ID.to_string(),
-            opaque: serde_json::json!({ "next_index": idx }),
+            opaque: serde_json::json!({
+                "next_index": idx,
+                "room": room.map(|r| r.to_string()),
+            }),
         });
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
@@ -356,11 +365,36 @@ impl RagSource for WallSource {
         if ctx.persona_id != self.persona_id {
             return empty(ResolutionPreference::Placeholder);
         }
-        // Room-scoped: the ONE shared gate (`room_scope_allows`) — probes every
-        // abstain with both rooms named (see RoomBoardSource for the rationale).
-        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
-            return empty(ResolutionPreference::Placeholder);
-        }
+        // ROOM-SCOPED, RESOLVED FROM THE TURN — not from the room this source was
+        // bound to at construction. `supervisor.rs` builds it with
+        // `.for_room(identity.default_room)`, so gating on `self.room_id` meant the
+        // wall abstained on EVERY turn the citizen took anywhere else: the same
+        // defect as the roster's (#3862), in a second source, which #3879 fixed only
+        // for the roster. Measured live after that fix landed — with the roster
+        // silent, this one was the sole surviving `rag.room_gate.abstain`,
+        // bound=#general turn=#continuum, exactly as predicted (#3883).
+        //
+        // The shape is copied from `room_board_source` rather than reinvented, nil
+        // arm included: a synthetic nil room (the eval fork) gets NOTHING and must
+        // not fall back to the bound room, or an exam sees another room's wall.
+        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
+            Some(turn) if turn.is_nil() => {
+                crate::probe!(
+                    class = "rag.room_gate.abstain",
+                    source = SOURCE_ID,
+                    bound_room = ?self.room_id,
+                    turn_room = %turn,
+                    persona_id = %ctx.persona_id,
+                    "synthetic nil-room context — no wall, and no fallback to the bound room"
+                );
+                return empty(ResolutionPreference::Placeholder);
+            }
+            Some(turn) => Some(turn),
+            // An UNSTAMPED context (background consolidation, an idle tick) keeps the
+            // bound room: it is the only room this source can honestly speak for, and
+            // it is what the pre-#3883 behaviour was for every turn.
+            None => self.room_id,
+        };
 
         // BREADCRUMB BEFORE THE READ, for the same reason as RoomBoardSource: this
         // runs under workspace.rs's 30s PERCEPTION_DEADLINE, and the ticks worth
@@ -390,7 +424,7 @@ impl RagSource for WallSource {
             "entering wall_posts — no `exit` mark for this persona means the wall read              is where the tick was cancelled"
         );
         let wall_started = std::time::Instant::now();
-        let posts = match self.reader.wall_posts(self.room_id).await {
+        let posts = match self.reader.wall_posts(effective_room).await {
             Ok(posts) => posts,
             Err(err) => {
                 tracing::warn!(
@@ -429,7 +463,7 @@ impl RagSource for WallSource {
             "wall_posts: deliver"
         );
 
-        self.delivery(items, used, next, resolution)
+        self.delivery(items, used, next, resolution, effective_room)
     }
 
     async fn deliver_continuation(
@@ -446,12 +480,41 @@ impl RagSource for WallSource {
         if ctx.persona_id != self.persona_id {
             return None;
         }
+        // A cursor is an offset into ONE room's wall. While this source read a room
+        // fixed at construction that was safe by accident — every cursor indexed the
+        // same list. Resolving the turn's room (above) makes a cursor minted in room
+        // A resumable in room B, where `next_index` would silently skip B's first N
+        // posts. Same defect, same fix, as the `--to` cursor in airc #1398: stamp the
+        // room and refuse a mismatch. An ABSENT stamp counts as a mismatch unless the
+        // turn is equally roomless — dropping one continuation costs a few posts,
+        // resuming into the wrong wall drops content and says nothing.
+        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer: no stamp means a pre-#3883 cursor, and Null mismatches every roomed turn — the refusal we want
+        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
+            Some(turn) if turn.is_nil() => return None,
+            Some(turn) => Some(turn),
+            None => self.room_id,
+        };
+        let here = match effective_room {
+            Some(r) => serde_json::Value::String(r.to_string()),
+            None => serde_json::Value::Null,
+        };
+        if stamped != here {
+            crate::probe!(
+                class = "rag.continuation.room_mismatch",
+                source = SOURCE_ID,
+                persona_id = %ctx.persona_id,
+                cursor_room = %stamped,
+                turn_room = %here,
+                "refused to resume a wall continuation minted for a different room —                  the offset indexes another room's posts"
+            );
+            return None;
+        }
         let start = cursor.opaque.get("next_index").and_then(|v| v.as_u64())? as usize;
 
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = self.reader.wall_posts(self.room_id).await.ok()?;
+        let posts = self.reader.wall_posts(effective_room).await.ok()?;
         if start >= posts.len() {
             return None;
         }
@@ -460,7 +523,7 @@ impl RagSource for WallSource {
         if items.is_empty() {
             return None;
         }
-        Some(self.delivery(items, used, next, ResolutionPreference::Raw))
+        Some(self.delivery(items, used, next, ResolutionPreference::Raw, effective_room))
     }
 }
 
@@ -526,6 +589,127 @@ mod tests {
             }
             Ok(self.posts.clone())
         }
+    }
+
+    /// what this catches (#3883): the wall reading the room it was BOUND to instead
+    /// of the room the turn is in. `supervisor.rs` binds it with
+    /// `.for_room(identity.default_room)`, so before this fix a citizen working
+    /// anywhere else was grounded on her default room's wall — or, once the shared
+    /// gate refused it, on nothing. Measured live after #3879 landed: with the roster
+    /// fixed and silent, THIS was the sole surviving `rag.room_gate.abstain`,
+    /// bound=#general turn=#continuum.
+    ///
+    /// The room argument is the only observable proof — the returned posts say
+    /// nothing about which room they came from — which is why StubReader records it.
+    #[tokio::test]
+    async fn a_roomed_turn_reads_the_turns_wall_not_the_bound_one() {
+        let reader = Arc::new(StubReader::new(vec![post("plan", "body")]));
+        // safe: literals, valid UUIDs — a parse failure here is a typo in this test.
+        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
+        let turn = Uuid::parse_str("00000000-0000-0000-0000-0000000000dd").unwrap();
+        assert_ne!(bound, turn, "fixture is degenerate if these match");
+        let source = WallSource::new(persona(), reader.clone()).for_room(bound);
+        let delivery = source
+            .deliver(
+                &RagContext::for_persona_in_room(persona(), 1_000_000, turn),
+                1_000,
+                ResolutionPreference::Raw,
+            )
+            .await;
+        assert_eq!(
+            // safe: test-local Mutex, single-threaded here.
+            *reader.asked_for.lock().unwrap(),
+            Some(Some(turn)),
+            "the wall must ask for the TURN's room; `Some(bound)` is #3883 and              `None` is the pre-bind fall-through"
+        );
+        assert!(
+            !delivery.items.is_empty(),
+            "and it must actually DELIVER — a fix that only changed the room asked              for while still abstaining would pass the assertion above"
+        );
+    }
+
+    /// what this catches: exam bleed. A synthetic nil room (the eval fork's context)
+    /// must get NOTHING and must not fall back to the bound room — otherwise a
+    /// proctored run reads another room's pinned instructions. Copied deliberately
+    /// from `room_board_source`'s nil arm rather than reinvented.
+    #[tokio::test]
+    async fn a_nil_room_gets_no_wall_and_never_falls_back_to_the_bound_room() {
+        let reader = Arc::new(StubReader::new(vec![post("plan", "body")]));
+        // safe: literal, valid UUID.
+        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
+        let source = WallSource::new(persona(), reader.clone()).for_room(bound);
+        let delivery = source
+            .deliver(
+                &RagContext::for_persona_in_room(persona(), 1_000_000, Uuid::nil()),
+                1_000,
+                ResolutionPreference::Raw,
+            )
+            .await;
+        assert!(delivery.items.is_empty(), "a nil room must render no wall");
+        assert_eq!(
+            *reader.asked_for.lock().unwrap(),
+            None,
+            "and must not READ at all — asking for the bound room is the exam bleed"
+        );
+    }
+
+    /// what this catches: a continuation resumed in the WRONG room. A cursor is an
+    /// offset into ONE room's wall. While this source read a room fixed at
+    /// construction that was safe by accident — every cursor indexed the same list.
+    /// Resolving the turn's room makes an A-issued cursor resumable in B, where
+    /// `next_index` would silently skip B's first N posts. Same defect and same fix
+    /// as the `--to` cursor in airc #1398.
+    #[tokio::test]
+    async fn a_wall_continuation_minted_in_one_room_is_refused_in_another() {
+        let reader = Arc::new(StubReader::new(vec![
+            post("plan", "first post, long enough to need a second page"),
+            post("rules", "second post"),
+            post("rules", "third post"),
+        ]));
+        // safe: literals, valid UUIDs.
+        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
+        let room_a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
+        let room_b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
+        let source = WallSource::new(persona(), reader).for_room(bound);
+
+        // A tight budget in room A yields a cursor with posts left over.
+        let first = source
+            .deliver(
+                &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
+                12,
+                ResolutionPreference::Raw,
+            )
+            .await;
+        let cursor = first
+            .continuation
+            .expect("a partial delivery must offer a cursor");
+        assert_eq!(
+            cursor.opaque["room"], serde_json::json!(room_a.to_string()),
+            "the cursor must carry the room it indexes"
+        );
+
+        assert!(
+            source
+                .deliver_continuation(
+                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_b),
+                    cursor.clone(),
+                    1_000,
+                )
+                .await
+                .is_none(),
+            "a cursor from room A must not resume in room B"
+        );
+        assert!(
+            source
+                .deliver_continuation(
+                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
+                    cursor,
+                    1_000,
+                )
+                .await
+                .is_some(),
+            "and the SAME room must still resume — a guard that refuses everything              is not a guard"
+        );
     }
 
     // what this catches: pinned wall posts surface as a delivery the brain
