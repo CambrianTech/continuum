@@ -234,6 +234,17 @@ pub enum DeclinedEviction {
 }
 
 impl DeclinedEviction {
+    /// A stable tag for "is this the same reason as last time". Not the payload —
+    /// two IO failures with different error text are the same standing condition.
+    fn discriminant(&self) -> u8 {
+        match self {
+            Self::NoSuchDirectory => 0,
+            Self::BuildHoldsRootLock => 1,
+            Self::BuildHoldsDebugLock => 2,
+            Self::LockUnavailable(_) => 3,
+        }
+    }
+
     /// One line an operator can act on, per reason.
     fn why(&self) -> &'static str {
         match self {
@@ -271,6 +282,11 @@ pub struct CargoTargetPool {
     tier: String,
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
+    /// The last decline reason (as a discriminant) and how many times it has
+    /// repeated unchanged — so a persistent condition is reported once and then
+    /// rarely, instead of once per broker tick (@Astra, #3910 review).
+    last_decline: std::sync::atomic::AtomicU8,
+    decline_repeats: std::sync::atomic::AtomicU32,
     /// Wall-clock ms of the previous eviction, and how many consecutive gaps since
     /// have been shorter than [`THRASH_GAP_MS`]. CADENCE, not a lifetime count —
     /// see [`CargoTargetPool::note_eviction`] for why the count was wrong.
@@ -284,6 +300,8 @@ impl CargoTargetPool {
             // "cargo-target" keeps its historical pool name so nothing that reads
             // the ledger by that string breaks; every other class gets its own.
             tier: format!("disk-{}", tracked.class()),
+            last_decline: std::sync::atomic::AtomicU8::new(u8::MAX),
+            decline_repeats: std::sync::atomic::AtomicU32::new(0),
             last_eviction_ms: std::sync::atomic::AtomicU64::new(0),
             fast_gaps: std::sync::atomic::AtomicU32::new(0),
             tracked,
@@ -298,11 +316,36 @@ impl CargoTargetPool {
     /// unchanged; the difference is that the ledger can now tell a guard that
     /// HELD from a guard that never ran.
     fn declined(&self, reason: DeclinedEviction) -> u64 {
-        crate::clog_warn!(
-            "💾 cargo-target eviction DECLINED ({:?}): {}",
-            reason,
-            reason.why()
-        );
+        use std::sync::atomic::Ordering::Relaxed;
+        // Bounded, and by the REASON rather than by time: a persistent held lock or
+        // a missing root is asked again on every broker tick, so warning per attempt
+        // is a per-tick log line for a condition that has not changed. @Astra caught
+        // that the success-path cadence bound did nothing for this path.
+        //
+        // A CHANGE of reason always speaks (that is news), an unchanged reason
+        // speaks on the 1st, 8th, 64th … repeat, and the pool's identity is in the
+        // line because there is more than one of these now (#3911).
+        let key = reason.discriminant();
+        let repeats = if self.last_decline.swap(key, Relaxed) == key {
+            self.decline_repeats.fetch_add(1, Relaxed) + 1
+        } else {
+            self.decline_repeats.store(0, Relaxed);
+            0
+        };
+        let speak = repeats == 0 || repeats.is_power_of_two() && repeats % 8 == 0;
+        if speak {
+            crate::clog_warn!(
+                "💾 {} eviction DECLINED ({:?}{}): {}",
+                self.tier,
+                reason,
+                if repeats > 0 {
+                    format!(", unchanged for {repeats} attempts")
+                } else {
+                    String::new()
+                },
+                reason.why()
+            );
+        }
         0
     }
 
@@ -313,8 +356,19 @@ impl CargoTargetPool {
     /// it independently and they were right: a lifetime count cannot distinguish
     /// 36-in-a-day (the measured defect) from 36-spread-over-a-week (ordinary
     /// housekeeping), and @IntelMac's own box would have been named loudly for the
-    /// latter. What makes a cache useless is not how often it is trimmed but
-    /// whether it survives long enough to be REUSED, and that is a gap.
+    /// latter.
+    ///
+    /// WHAT THIS DOES AND DOES NOT KNOW (@Astra, second review). It knows the
+    /// INTERVAL between evictions. It does NOT know that any build started cold:
+    /// the ladder may have taken only incremental state, a build can complete
+    /// between two evictions, and no hit/miss observation reaches this function.
+    /// So the warning reports the observed frequency and names its consequence as
+    /// SUSPECTED. An earlier draft asserted "every build here is starting cold",
+    /// which is precisely the over-claim this PR exists to stop — written into the
+    /// warning added to stop it, for the third time in this file's history.
+    ///
+    /// Note the counter is CONSECUTIVE FAST GAPS, not evictions: a run of 3 means
+    /// four evictions, and the message says gaps for that reason.
     ///
     /// The whole failure took a day to find for want of a line like this: the pool
     /// logged what it FREED and never what the freeing MEANT, so 36 evictions and
@@ -342,8 +396,14 @@ impl CargoTargetPool {
         if !thrash_warning_due(run) {
             return;
         }
+        // OBSERVED FREQUENCY, then the SUSPECTED consequence — never asserted as
+        // fact. @Astra, #3910 review: this cannot establish that builds start cold.
+        // The ladder may have removed only incremental state, a build can finish
+        // between two evictions, and no hit/miss observation enters this function.
+        // What is measured is the interval. What follows from it is a suspicion,
+        // and saying more than that is the defect this whole PR is about.
         crate::clog_warn!(
-            "💾 {} evicted {} times in a row less than {} min apart (last gap {} min)              against a {} GB budget — the cache is being emptied faster than a build              can reuse it, so every build here is starting cold. That is a budget              BELOW this workspace's working set, not housekeeping. The budget derives              from the volume (cargo_target_budget_bytes); a volume this pool could not              resolve falls back to the floor, which is the first thing to check.",
+            "💾 {} saw {} consecutive eviction GAPS under {} min (last gap {} min)              against a {} GB budget. That is the frequency, not a verdict: this pool              cannot see whether any build reused the cache. SUSPECTED — a budget              below this workspace's working set, with builds paying rebuild cost they              need not. To confirm, compare a build's wall time against a run with a              larger budget. The budget derives from the volume              (cargo_target_budget_bytes); a volume this pool could not resolve falls              back to the floor, which is the first thing to check.",
             self.tier,
             run,
             THRASH_GAP_MS / 60_000,
@@ -352,12 +412,70 @@ impl CargoTargetPool {
         );
     }
 
+    /// The rungs, freed in order. The last one is `debug` ITSELF, which is why it
+    /// is not a plain `remove_dir_all` — see [`Self::free_rung`].
     fn ladder(root: &Path) -> [PathBuf; 3] {
         [
             root.join("debug/incremental"),
             root.join("tests"),
             root.join("debug"),
         ]
+    }
+
+    /// Free one rung, PRESERVING the lock this eviction is holding.
+    ///
+    /// @Astra, #3910 review: `remove_dir_all(debug)` unlinks `debug/.cargo-lock` —
+    /// the exact file whose lock is our claim to be here. On Unix the unlink
+    /// SUCCEEDS while we hold the descriptor: our fd keeps the old inode alive, the
+    /// PATH is gone, and another cargo is then free to create and lock a brand-new
+    /// `debug/.cargo-lock` while we are still deleting the tree underneath it. The
+    /// lock stops being an ownership boundary at the moment we delete the thing
+    /// being locked.
+    ///
+    /// So the `debug` rung removes debug's CHILDREN and leaves the lock file and its
+    /// parent standing. Everything under it is still reclaimed; the boundary
+    /// survives the reclaim. `debug/.cargo-lock` is a zero-length lock file — the
+    /// bytes we decline to free by keeping it are not bytes.
+    fn free_rung(rung: &Path, root: &Path) -> u64 {
+        let debug = root.join("debug");
+        if rung != debug {
+            let size = dir_size_bytes(rung);
+            return if std::fs::remove_dir_all(rung).is_ok() {
+                size
+            } else {
+                0
+            };
+        }
+        let lock = debug.join(".cargo-lock");
+        let mut freed = 0u64;
+        let Ok(entries) = std::fs::read_dir(&debug) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == lock {
+                continue;
+            }
+            // `dir_size_bytes` READS A DIRECTORY — it returns 0 for a file, so
+            // sizing children with it silently under-counts every loose artifact
+            // in `debug/` (`lib.rlib` and friends). The existing ladder test caught
+            // this the moment the rung stopped being one `remove_dir_all`.
+            let is_dir = path.is_dir();
+            let size = if is_dir {
+                dir_size_bytes(&path)
+            } else {
+                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            };
+            let removed = if is_dir {
+                std::fs::remove_dir_all(&path).is_ok()
+            } else {
+                std::fs::remove_file(&path).is_ok()
+            };
+            if removed {
+                freed = freed.saturating_add(size);
+            }
+        }
+        freed
     }
 }
 
@@ -413,10 +531,7 @@ impl ResourcePool for CargoTargetPool {
             if !rung.exists() {
                 continue;
             }
-            let size = dir_size_bytes(&rung);
-            if std::fs::remove_dir_all(&rung).is_ok() {
-                freed = freed.saturating_add(size);
-            }
+            freed = freed.saturating_add(Self::free_rung(&rung, &root));
         }
         if freed > 0 {
             self.tracked.record_freed(freed);
@@ -844,8 +959,36 @@ mod tests {
         let freed = pool.evict_at_least(u64::MAX);
         assert_eq!(freed, 5000);
         assert!(!tmp.path().join("tests").exists());
-        assert!(!tmp.path().join("debug").exists());
         assert!(tmp.path().join("release/keep.bin").exists());
+
+        // `debug/` SURVIVES NOW, AND THAT IS THE POINT (@Astra, #3910 review).
+        // This assertion used to be `!debug.exists()`. Deleting the directory also
+        // unlinked `debug/.cargo-lock` — the file whose lock is this eviction's
+        // claim to be running at all. On Unix that unlink SUCCEEDS while we hold
+        // the descriptor: our fd keeps the old inode alive, the path is free, and
+        // another cargo can create and lock a replacement while we are still
+        // deleting underneath it. The lock stops being an ownership boundary at the
+        // moment we delete the thing being locked.
+        //
+        // So the contract is: everything under `debug/` is reclaimed, and the lock
+        // file and its parent stand. The bytes we decline to free are a zero-length
+        // lock file.
+        let debug = tmp.path().join("debug");
+        assert!(debug.exists(), "the lock's parent must survive the rung");
+        assert!(
+            debug.join(".cargo-lock").exists(),
+            "the lock we hold must still be at its PATH, not merely alive on an              unlinked inode — an unlinked lock guards nothing against the next cargo"
+        );
+        let survivors: Vec<String> = std::fs::read_dir(&debug)
+            .expect("read debug")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            survivors,
+            vec![".cargo-lock".to_string()],
+            "ONLY the lock survives — anything else means the rung under-reclaimed"
+        );
     }
 
     // what this catches: safety invariant 1 — a held cargo lock (a build
@@ -1296,6 +1439,29 @@ mod tests {
                 a.tier_name(),
                 b.tier_name(),
                 "non-degeneracy: identical names are exactly what let the broker's                  dedup silently drop one of the two caches"
+            );
+
+            // AND THROUGH THE BROKER, because the getters are not where this broke.
+            // @Astra: "getter inequality alone misses the actual integration
+            // boundary that failed." The failure was `register`'s dedup-by-name
+            // (broker.rs: `pools.retain(|p| p.tier_name() != name)`), so the
+            // assertion has to survive that call — a future change that makes the
+            // names equal again would pass the getter check above and still lose a
+            // cache here.
+            let broker = crate::paging::broker::PressureBroker::new(Default::default());
+            broker.register(Arc::new(a) as Arc<dyn ResourcePool>);
+            broker.register(Arc::new(b) as Arc<dyn ResourcePool>);
+            let names: Vec<String> = broker
+                .snapshot()
+                .pools
+                .into_iter()
+                .map(|p| p.name)
+                .filter(|n| n.starts_with("disk-cargo-target"))
+                .collect();
+            assert_eq!(
+                names.len(),
+                2,
+                "BOTH build caches must survive registration — one row here is the                  regression: the shared cache silently lost its eviction owner while                  two boot log lines claimed otherwise. Got: {names:?}"
             );
         }
 
