@@ -201,21 +201,45 @@ pub struct ClaimReceipt {
 /// so deriving the outcome from the state string would collapse "settled" into
 /// "succeeded" — the same conflation, one layer down. This type therefore carries a
 /// verdict a grader actually produced, and there is no constructor from a state name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettlementVerdict {
     passed: bool,
+    /// The judge's normalized score, kept for the staged record.
+    score: f64,
+    /// WHY. `activity::Verdict` calls this "the receipt a citizen and a human both
+    /// read, and the text the curriculum keeps when the task failed" — so a
+    /// settlement that discards it throws away the only part a failure leaves behind.
+    reason: String,
 }
 
 impl SettlementVerdict {
-    /// Build from a graded result. The caller must hold an ACTUAL outcome — this is
-    /// the seam where "I verified the card's result" is asserted, so it takes a
-    /// bool a grader computed rather than a state the card merely reached.
-    pub fn from_graded(passed: bool) -> Self {
-        Self { passed }
+    /// The ONLY constructor, and it takes an activity's ACTUAL judgment.
+    ///
+    /// Deliberately not `from_graded(bool)`: a bool is something a caller asserts,
+    /// and "clean turn / Closed is not success proof" (Astra, 2026-09-08). A card
+    /// reaching a terminal state is not evidence that the work succeeded —
+    /// `is_terminal_card_state` accepts `closed | done | merged` and `closed` covers
+    /// abandonment. Requiring a [`crate::cognition::activity::Verdict`] means the
+    /// evidence is produced by an `ActivityAdapter::judge`, so "I settled it because
+    /// the board said Closed" is not expressible here.
+    pub fn from_activity(verdict: &crate::cognition::activity::Verdict) -> Self {
+        Self {
+            passed: verdict.passed,
+            score: verdict.score,
+            reason: verdict.reason.clone(),
+        }
     }
 
-    pub fn passed(self) -> bool {
+    pub fn passed(&self) -> bool {
         self.passed
+    }
+
+    pub fn score(&self) -> f64 {
+        self.score
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
     }
 }
 
@@ -742,7 +766,7 @@ mod tests {
         // A PASSING verdict stamps and buckets on domain x role.
         let passed = captured
             .clone()
-            .settle(SettlementVerdict::from_graded(true))
+            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")))
             .expect("test: a captured claim receipt can be stamped");
         assert!(passed.outcome, "settle must carry a PASSING verdict through");
         let planned = plan(&classifier, "How do I pool websockets?", substantial, Some(passed))
@@ -757,7 +781,7 @@ mod tests {
         // must then be refused by the evidence floor. If `settle` hardcoded `true`,
         // this plans a bucket and the assertion below fails — that is the mutation.
         let failed = captured
-            .settle(SettlementVerdict::from_graded(false))
+            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::fail("the patch did not apply")))
             .expect("test: a receipt stamps regardless of which way the verdict went");
         assert!(
             !failed.outcome,
@@ -786,7 +810,7 @@ mod tests {
              because her edits landed in that checkout either way"
         );
         assert!(
-            claimless.settle(SettlementVerdict::from_graded(true)).is_none(),
+            claimless.settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"))).is_none(),
             "no receipt captured at selection means no stamp is constructible later — \
              a settlement cannot retroactively invent accountability"
         );
