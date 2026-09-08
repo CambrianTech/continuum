@@ -196,6 +196,14 @@ pub struct LlmDeliberationFaculty {
     /// rebuilds while [`Self::describe_tool_tokens`] is consulted on EVERY
     /// prompt assembly (per-turn serde of ~a dozen schemas, pure waste).
     tool_surface_tokens: usize,
+    /// Token cost of serializing `hands_specs` — memoized for the same reason as
+    /// `tool_surface_tokens`, and needed for the same accounting.
+    ///
+    /// Without it the budget prices the FULL registry on a turn that sends only
+    /// hands, which is not a cosmetic error: `prompt_view_within` subtracts this
+    /// from the message budget, so over-pricing trims conversation to fit room
+    /// that was never occupied. Card dec1a7ff.
+    hands_surface_tokens: usize,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -260,6 +268,7 @@ impl LlmDeliberationFaculty {
             native_specs: Vec::new(),
             hands_specs: Vec::new(),
             tool_surface_tokens: 0,
+            hands_surface_tokens: 0,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -368,6 +377,7 @@ impl LlmDeliberationFaculty {
             self.native_specs.clear();
             self.hands_specs.clear();
             self.tool_surface_tokens = 0;
+            self.hands_surface_tokens = 0;
             return;
         }
         // Offer the working set in the WIRE DIALECT, charset-legal per the OpenAI
@@ -410,6 +420,79 @@ impl LlmDeliberationFaculty {
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
         self.tool_surface_tokens = Self::tool_surface_tokens_of(&self.native_specs);
+        self.hands_surface_tokens = Self::tool_surface_tokens_of(&self.hands_specs);
+    }
+
+    /// Is this turn an ACT on a deliverable, rather than a message turn?
+    ///
+    /// Asked by two independent concerns — the surface selection (a work turn takes
+    /// her hands, for focus) and the ACT output cap — so it lives in one place
+    /// rather than being spelled twice and drifting.
+    fn is_work_turn(&self, ws: &Workspace) -> bool {
+        ws.workspace_deliverable && !self.hands_specs.is_empty()
+    }
+
+    /// The tool surface THIS turn will send, what it COSTS, and WHY — decided once.
+    ///
+    /// # Why this is a struct and not a token count
+    ///
+    /// Before card dec1a7ff the decision lived in `contribute` and the accounting
+    /// lived in [`Self::prompt_view_within`], 80 lines and one method apart. The
+    /// accounting could not see the decision, so it priced the FULL registry
+    /// unconditionally via `describe_tool_tokens`. That was correct until #3829 made
+    /// the surface a per-turn choice; afterwards one accessor meant two different
+    /// things — "what the whole registry costs" and "what this turn is sending" —
+    /// and they diverged on every work turn.
+    ///
+    /// The harm was not a wrong number. `prompt_view_within` subtracts the tool cost
+    /// from the message budget, so over-pricing trims the conversation to fit room
+    /// that was never occupied: the citizen lost grounding she had window for. That
+    /// is the #206 cliff's harm class arriving through the ACCOUNTING rather than
+    /// through the surface.
+    ///
+    /// So the reason travels WITH the number. It has to, because the same value is
+    /// right for one reason and wrong for another — see
+    /// [`SelectedSurface::demand_tokens`].
+    fn select_tool_surface(&self, ws: &Workspace, context_window: u32) -> SelectedSurface<'_> {
+        if self.native_specs.is_empty() {
+            return SelectedSurface {
+                specs: None,
+                tokens: 0,
+                reason: SurfaceReason::NoTools,
+            };
+        }
+        // A work turn takes her HANDS for FOCUS, not for size — that choice predates
+        // the window budget and is independent of it.
+        let is_work_turn = self.is_work_turn(ws);
+        let tool_budget =
+            super::context_budget::ContextBudget::from_window(context_window).tool_surface_tokens();
+        let surface_fits = self.describe_tool_tokens() <= tool_budget;
+        // Order matters for the REASON, not for the outcome: a work turn that also
+        // overflows is still reported as HandsForWork, because focus is why she was
+        // never going to get the full surface on this turn.
+        let reason = if is_work_turn {
+            SurfaceReason::HandsForWork
+        } else if !surface_fits {
+            SurfaceReason::HandsForBudget
+        } else {
+            SurfaceReason::Full
+        };
+        match reason {
+            SurfaceReason::Full => SelectedSurface {
+                specs: Some(&self.native_specs),
+                tokens: self.tool_surface_tokens,
+                reason,
+            },
+            // The fallback is hands, NEVER nothing: `hands_surface` keeps the
+            // `commands/` discovery pair, so a withheld verb stays one
+            // `commands/list` away. Amputating the surface is the #206 cliff
+            // (14/14 SWE acts spent on `commands/help`, 0 edits).
+            _ => SelectedSurface {
+                specs: Some(&self.hands_specs),
+                tokens: self.hands_surface_tokens,
+                reason,
+            },
+        }
     }
 
     /// Serde-and-count the tool surface ONCE per rebuild — the only place the
@@ -1479,9 +1562,14 @@ impl LlmDeliberationFaculty {
         // here, AND the human-readable tool MENU inside `compose_system` (counted in
         // `framing_tokens`). Whether that duplication is intended is an open
         // question, not something this comment should assert either way.
+        // The SELECTED surface, not the whole registry: `contribute` narrows to her
+        // hands on a work turn, and subtracting the full registry here trimmed the
+        // conversation to fit room that was never occupied (card dec1a7ff). One
+        // decision, made once, consulted by the budget and by the request alike.
+        let selected = self.select_tool_surface(ws, context_window);
         let budget = (context_window as usize)
             .saturating_sub(completion_reserve)
-            .saturating_sub(self.describe_tool_tokens());
+            .saturating_sub(selected.tokens);
 
         // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
         // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
@@ -1620,7 +1708,10 @@ impl LlmDeliberationFaculty {
             .saturating_add(Self::assembled_context_cost(ws))
             .saturating_add(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
             .saturating_add(completion_reserve)
-            .saturating_add(self.describe_tool_tokens());
+            // UNTRUNCATED per this probe's contract — which for the tool surface
+            // means the full registry ONLY when the window is what withheld it.
+            // See `SelectedSurface::demand_tokens`.
+            .saturating_add(selected.demand_tokens(self.describe_tool_tokens()));
         if let Some(reg) = &self.working_set {
             reg.record(
                 self.persona_id,
@@ -2169,6 +2260,63 @@ impl LlmDeliberationFaculty {
 /// tokenize far denser than English — so we OVER-count tokens to stay safely
 /// under `n_ctx`. The completion reserve absorbs the remaining slack.
 /// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
+/// WHY a turn's tool surface is what it is.
+///
+/// Carried alongside the cost because the cost alone cannot be interpreted: see
+/// [`SelectedSurface::demand_tokens`], where two of these arms want different
+/// numbers from the same selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceReason {
+    /// She has no native specs at all — nothing to offer, nothing to price.
+    NoTools,
+    /// The whole registry fit its share of the served window and was offered.
+    Full,
+    /// A WORK turn takes her hands for FOCUS. The full surface was never wanted
+    /// on this turn, so nothing was truncated and nothing was lost.
+    HandsForWork,
+    /// The full surface did NOT fit its share of the served window. She wanted it
+    /// and the window refused it — this arm is a truncation, the others are not.
+    HandsForBudget,
+}
+
+/// The tool surface a turn actually sends, its cost, and why it is that surface.
+///
+/// One decision, consulted by both the budget math and the request builder, so the
+/// two can no longer disagree about what is on the wire (card dec1a7ff).
+pub(crate) struct SelectedSurface<'a> {
+    /// Exactly what goes into the request. `None` only when there are no tools.
+    specs: Option<&'a [NativeToolSpec]>,
+    /// Cost of what is actually SENT — the number the message budget must use.
+    tokens: usize,
+    reason: SurfaceReason,
+}
+
+impl SelectedSurface<'_> {
+    /// What an UNTRUNCATED demand measurement should price for this turn.
+    ///
+    /// `delib.turn.demand` is deliberately the demand, not the send: its contract is
+    /// that "every term is the UNTRUNCATED one", so that a p95 of what-was-sent can
+    /// never re-derive the cap that produced it and freeze it forever. That contract
+    /// makes the right term depend on WHY the surface narrowed:
+    ///
+    /// - [`SurfaceReason::HandsForBudget`] — the full surface WAS wanted and the
+    ///   window refused it. Demand legitimately includes the full cost; reporting
+    ///   the hands cost here would hide exactly the pressure the probe exists to
+    ///   measure.
+    /// - every other arm — the full surface was never wanted (focus, or there are no
+    ///   tools, or it fit and was sent). Pricing it would inflate `over_window` and
+    ///   report a turn as near-overflow when it is not.
+    ///
+    /// Same value, two verdicts, decided by the reason. That is the whole argument
+    /// for the reason existing.
+    fn demand_tokens(&self, full_surface_tokens: usize) -> usize {
+        match self.reason {
+            SurfaceReason::HandsForBudget => full_surface_tokens,
+            _ => self.tokens,
+        }
+    }
+}
+
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
@@ -2376,7 +2524,6 @@ impl Faculty for LlmDeliberationFaculty {
         // models emit those calls as JSON-in-prose, which the parse path below
         // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
-        let is_work_turn = ws.workspace_deliverable && !self.hands_specs.is_empty();
         // WHICH surface she is offered is a question about her WINDOW, not about the
         // kind of turn she is taking. It used to be the latter: a work turn got her
         // hands, and every MESSAGE turn got the whole registry — so the tier least able
@@ -2395,40 +2542,41 @@ impl Faculty for LlmDeliberationFaculty {
         // discovery pair, so a withheld verb stays one `commands/list` away. Amputating
         // the surface is the #206 cliff (14/14 SWE acts spent on `commands/help`, 0
         // edits) and this must never become that.
-        let tool_budget = super::context_budget::ContextBudget::from_window(
-            binding.context_window,
-        )
-        .tool_surface_tokens();
-        let surface_fits = self.describe_tool_tokens() <= tool_budget;
-        let tools = if self.native_specs.is_empty() {
-            None
-        } else if is_work_turn || !surface_fits {
-            if !is_work_turn {
-                // Only the BUDGET path is a row: a work turn narrowing is routine and
-                // already understood, but a message turn narrowing means she cannot see
-                // verbs she would otherwise have been offered. Whoever later asks "why
-                // did she never call X" needs this line to exist.
-                crate::probe!(
-                    class = "delib.tool_surface.withheld",
-                    persona = %self.persona_name,
-                    offered = self.hands_specs.len() as u64,
-                    full = self.native_specs.len() as u64,
-                    surface_tokens = self.describe_tool_tokens() as u64,
-                    budget_tokens = tool_budget as u64,
-                    context_window = binding.context_window,
-                    "the full tool surface exceeds its share of the served window — \
-                     offering her hands; the discovery pair still reaches the rest"
-                );
-            }
-            // A WORK turn offers her HANDS, not the whole registry: 37 schemas were
-            // 8.5k of a ~22k-token prefill per act (2026-09-05, KV reuse 0.0). The
-            // discovery pair stays so anything else remains one call away. Chosen on
-            // the raw command names at rebuild (`hands_surface`); never an empty
-            // surface — that mutes her hands entirely.
-            Some(self.hands_specs.clone())
-        } else {
-            Some(self.native_specs.clone())
-        };
+        //
+        // The decision itself lives in [`Self::select_tool_surface`] so that the
+        // budget math in `prompt_view_within` reaches the SAME answer — those two
+        // disagreed for the life of #3829, and the budget's copy priced the full
+        // registry on turns that sent hands (card dec1a7ff).
+        let selected = self.select_tool_surface(ws, binding.context_window);
+        if selected.reason == SurfaceReason::HandsForBudget {
+            // Only the BUDGET path is a row: a work turn narrowing is routine and
+            // already understood, but a message turn narrowing means she cannot see
+            // verbs she would otherwise have been offered. Whoever later asks "why
+            // did she never call X" needs this line to exist.
+            //
+            // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
+            // did not get — reported apart because one field used to carry the full
+            // registry's cost beside a count of her hands, and reconciling the two
+            // gave a nonsense tokens-per-tool.
+            crate::probe!(
+                class = "delib.tool_surface.withheld",
+                persona = %self.persona_name,
+                offered = self.hands_specs.len() as u64,
+                full = self.native_specs.len() as u64,
+                surface_tokens = selected.tokens as u64,
+                withheld_tokens = self.describe_tool_tokens() as u64,
+                budget_tokens = super::context_budget::ContextBudget::from_window(
+                    binding.context_window
+                )
+                .tool_surface_tokens() as u64,
+                context_window = binding.context_window,
+                "the full tool surface exceeds its share of the served window — \
+                 offering her hands; the discovery pair still reaches the rest"
+            );
+        }
+        // Selection and budget accounting borrow the cached schemas. Only the
+        // owned inference request needs a copy of the selected surface.
+        let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
 
         let request =
             self.build_request_within(&binding, messages.clone(), tools, view.system.clone(), {
@@ -2438,7 +2586,7 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            }, Some(ws.room_id), is_work_turn.then_some(Self::ACT_OUTPUT_CAP));
+            }, Some(ws.room_id), self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP));
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -3709,6 +3857,212 @@ mod tests {
             .with_parts(parts)
         }
 
+        /// Card dec1a7ff: #3829 made the tool surface a per-turn decision but left the
+        /// ACCOUNTING pricing the full registry, so a work turn's message budget was
+        /// short by (full − hands) and trimmed conversation to fit room that was never
+        /// occupied. These pin what is COUNTED against what is SENT.
+        mod the_budget_prices_the_surface_it_actually_sends {
+            use super::*;
+
+            /// The smallest 1 KiB-aligned window whose tool-surface share ADMITS the
+            /// whole registry — and the largest that does not.
+            ///
+            /// ASKED of [`ContextBudget`], never re-derived from its denominator. Two
+            /// literals stood here (50,944 and 24,832, read off that module's
+            /// calibration table) and the crate's own de-hardcode guard caught them in
+            /// CI, correctly: a window constant that does not scale with the served
+            /// window is exactly what that guard exists to stop, and a test fixture is
+            /// not an exemption from it. Spelling `/ 4` here instead would have
+            /// duplicated `TOOL_SURFACE_DENOM`, which is the same defect wearing a
+            /// different hat — so this searches with the real predicate and stays
+            /// correct if the share is ever re-cut.
+            fn window_admitting(full_surface_tokens: usize) -> u32 {
+                (1..=512)
+                    .map(|k| k * 1024)
+                    .find(|w| {
+                        crate::cognition::context_budget::ContextBudget::from_window(*w)
+                            .tool_surface_tokens()
+                            >= full_surface_tokens
+                    })
+                    .expect("some served window admits the full surface")
+            }
+
+            /// `(admits_the_full_surface, does_not)` — both derived from the registry's
+            /// measured cost, so neither can drift away from the bound it is meant to
+            /// straddle. The narrow one is one alignment step below the smallest
+            /// admitting window, i.e. the largest that still refuses.
+            fn calibrated_windows() -> (u32, u32) {
+                let full = faculty_with_the_real_registry(1024).tool_surface_tokens;
+                let admits = window_admitting(full);
+                (admits, admits - 1024)
+            }
+
+            fn faculty_with_the_real_registry(window: u32) -> LlmDeliberationFaculty {
+                LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Asha",
+                    "You are Asha.",
+                    Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+                )
+                .with_context_window(window)
+                .with_tools(persona_tools::native_tool_specs())
+            }
+
+            fn work_turn() -> Workspace {
+                let mut ws = Workspace::new("fix the failing test");
+                ws.workspace_deliverable = true;
+                ws
+            }
+
+            // what this catches: the original defect. A work turn sends HANDS, so the
+            // budget must subtract the hands' cost. Before this, `budget` subtracted
+            // the whole registry — the citizen silently lost (full − hands) tokens of
+            // conversation on every act turn, on a window that had room for it.
+            // MUTATION-PROVED: point `SelectedSurface.tokens` at `tool_surface_tokens`
+            // on the hands arms and this fails on the strict inequality.
+            #[test]
+            fn a_work_turn_is_budgeted_for_its_hands_not_for_the_registry_it_withheld() {
+                let (fits, _narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(fits);
+                let selected = faculty.select_tool_surface(&work_turn(), fits);
+
+                assert_eq!(
+                    selected.reason,
+                    SurfaceReason::HandsForWork,
+                    "a deliverable turn takes hands for FOCUS — and on this window the \
+                     full surface would have fit, so nothing but focus can explain it"
+                );
+                assert_eq!(
+                    selected.tokens, faculty.hands_surface_tokens,
+                    "the budget must be charged for what goes on the wire"
+                );
+                assert!(
+                    selected.tokens < faculty.tool_surface_tokens,
+                    "the saving must be REAL: hands ({}) must cost less than the registry \
+                     ({}), otherwise this test would pass while pricing nothing",
+                    selected.tokens,
+                    faculty.tool_surface_tokens
+                );
+            }
+
+            // what this catches: silently re-deriving a cap from a send. The demand
+            // probe's contract is that every term is UNTRUNCATED, so when the WINDOW is
+            // what withheld the surface, demand must still price the full registry —
+            // report the hands here and the pressure the probe exists to measure
+            // disappears exactly when it starts mattering.
+            // MUTATION-PROVED: make `demand_tokens` return `self.tokens` unconditionally
+            // and this fails.
+            #[test]
+            fn a_budget_withheld_surface_still_reports_the_full_registry_as_demand() {
+                let (_fits, narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(narrow);
+                // A MESSAGE turn — so the narrowing can only be the window.
+                let ws = Workspace::new("anything open?");
+                let selected =
+                    faculty.select_tool_surface(&ws, narrow);
+
+                assert_eq!(
+                    selected.reason,
+                    SurfaceReason::HandsForBudget,
+                    "this window's share cannot hold the registry, and it is not a work turn"
+                );
+                assert_eq!(
+                    selected.tokens, faculty.hands_surface_tokens,
+                    "she is SENT her hands"
+                );
+                assert_eq!(
+                    selected.demand_tokens(faculty.describe_tool_tokens()),
+                    faculty.tool_surface_tokens,
+                    "…but she WANTED the registry and the window refused it — demand is \
+                     the untruncated number or it is worthless for provisioning"
+                );
+            }
+
+            // what this catches: the mirror error — inflating `over_window` on a turn
+            // that never wanted the full surface. A work turn narrows for FOCUS, so
+            // nothing was truncated and demand must not pretend otherwise; otherwise
+            // every act turn reports as near-overflow and the number stops meaning
+            // anything.
+            // MUTATION-PROVED: make `demand_tokens` return the full cost unconditionally
+            // and this fails.
+            #[test]
+            fn a_focus_narrowed_surface_does_not_inflate_demand_with_what_it_never_wanted() {
+                let (fits, _narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(fits);
+                let selected = faculty.select_tool_surface(&work_turn(), fits);
+
+                assert_eq!(
+                    selected.demand_tokens(faculty.describe_tool_tokens()),
+                    faculty.hands_surface_tokens,
+                    "focus is not truncation — the registry was never wanted on this turn"
+                );
+            }
+
+            // what this catches: the whole defect class, stated as the invariant rather
+            // than case by case. The reported cost must be the cost OF the reported
+            // surface — which is exactly what `delib.tool_surface.withheld` violated by
+            // printing a count of her hands beside the registry's price.
+            // MUTATION-PROVED: swap either arm's `tokens` for the other memo and this
+            // fails on that arm.
+            #[test]
+            fn the_cost_reported_is_always_the_cost_of_the_surface_reported() {
+                let (fits, narrow) = calibrated_windows();
+                for (label, window, ws) in [
+                    ("full", fits, Workspace::new("anything open?")),
+                    ("hands/work", fits, work_turn()),
+                    (
+                        "hands/budget",
+                        narrow,
+                        Workspace::new("anything open?"),
+                    ),
+                ] {
+                    let faculty = faculty_with_the_real_registry(window);
+                    let selected = faculty.select_tool_surface(&ws, window);
+                    let specs = selected.specs.as_ref().expect("a tool surface was offered");
+                    assert_eq!(
+                        selected.tokens,
+                        LlmDeliberationFaculty::tool_surface_tokens_of(specs),
+                        "[{label}] the price must be the price of THESE specs, not of a \
+                         surface that stayed home"
+                    );
+                }
+            }
+
+            // what this catches: a "simplification" that points the structurally-mute
+            // sensor at the selected surface. `min_window_for_agentic_surface` asks a
+            // DIFFERENT question — "how large a window hosts the WHOLE agentic surface"
+            // — so it legitimately keeps the full cost, and narrowing it would quietly
+            // lower the bar below which we warn that a citizen cannot act.
+            // MUTATION-PROVED: swap `describe_tool_tokens()` for the hands memo in
+            // `min_window_for_agentic_surface` and this fails.
+            #[test]
+            fn the_structurally_mute_sensor_still_asks_for_the_whole_surface() {
+                let (_fits, narrow) = calibrated_windows();
+                let faculty = faculty_with_the_real_registry(narrow);
+                let needed = faculty.min_window_for_agentic_surface();
+
+                // The discriminator has to be the bound a HANDS-based sensor would
+                // produce, not a constant. The first version of this test asserted
+                // `needed >= tool_surface_tokens` and the mutation it was written for
+                // did not move it: hands + framing already clears the registry's raw
+                // token count, so the assertion held while the sensor measured the
+                // wrong surface. A bound satisfied by accident pins nothing.
+                let hands_based = (faculty.hands_surface_tokens as u32
+                    + faculty.framing_floor_tokens())
+                .div_ceil(LlmDeliberationFaculty::COMPLETION_SHARE_DENOM - 1)
+                .saturating_mul(LlmDeliberationFaculty::COMPLETION_SHARE_DENOM);
+
+                assert!(
+                    needed > hands_based,
+                    "the bound must be STRICTLY more demanding than a hands-only one \
+                     ({needed} vs {hands_based}): it answers 'can this window host the \
+                     agentic surface at all', never 'what did we send this turn'. Equal \
+                     means the sensor was narrowed to the selected surface and the \
+                     'she is structurally mute below here' warning now fires too late."
+                );
+            }
+        }
+
         // what this catches: a greedy conversation that eats every token grounding
         // needs. `messages_within` fills whatever it is handed, so passing it the
         // whole post-framing pool leaves grounding exactly zero — and GROWING THE
@@ -4532,18 +4886,30 @@ mod tests {
                  flips back the surface genuinely shrank, which is GOOD news: restore the \
                  original `needed <= window` narrative and drop the ceiling"
             );
-            // #327, PROVEN rather than asserted away: at 8192 the newest burst line does
-            // NOT survive. The framing is intact and the hands are intact — the CONVERSATION
-            // is what got zero. That is the whole defect in one assertion, and it is the
-            // reason the requirement above must be reported to the governor instead of
-            // silently absorbed. A citizen served here can hold her tools and her identity
-            // and still not hear the question.
+            // #327, and the assertion here is now the SURVIVAL check rather than its
+            // inverse. It used to read `!contains(…)` — "at 8192 the newest burst line
+            // does NOT survive; the framing is intact and the hands are intact, the
+            // CONVERSATION is what got zero" — with a note to restore the survival check
+            // if it ever flipped. It flipped. Card dec1a7ff flipped it.
+            //
+            // Note WHAT changed, because the old note guessed wrong about the cause: the
+            // surface did NOT shrink and the framing did NOT shrink. The ceiling
+            // assertion above still passes and `needed > window` still holds, both
+            // measuring the same surface as before. What changed is that the budget
+            // stopped RESERVING for a surface it does not send. This turn narrows to her
+            // hands, and the message budget used to subtract the whole registry anyway —
+            // so the conversation was trimmed to fit room that was never occupied, and
+            // the newest line fell off the end of a window that had space for it.
+            //
+            // That is the difference between "this window is too small for a citizen"
+            // and "we were spending her window on tools we withheld". Only the second
+            // was ever true here.
             assert!(
-                !view
-                    .user_text()
-                    .contains("LATEST: did the deploy fix land?"),
-                "if this now PASSES at 8192, the surface or framing shrank and #327 is fixed \
-                 — delete this assertion and restore the survival check"
+                view.user_text().contains("LATEST: did the deploy fix land?"),
+                "the newest burst line must survive once the budget prices the surface it \
+                 actually sends — if this regresses, the accounting is double-counting the \
+                 withheld registry again (card dec1a7ff)\n{}",
+                &view.user_text()[..view.user_text().len().min(600)]
             );
             assert!(
                 view.system.contains("Taking your turn"),
