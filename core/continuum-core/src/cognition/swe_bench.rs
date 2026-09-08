@@ -599,7 +599,7 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
         == VerdictWrite::KeepTheResolve
     {
         let history = regrade_history_path(&verdict.instance_id);
-        let line = serde_json::to_string(verdict).map_err(|e| e.to_string())?;
+        let line = serde_json::to_string(verdict).map_err(|e| e.to_string())?; // file format on disk: one JSON object per line in the instance's regrade history, read back by the score projection and by hand
         use std::io::Write as _;
         let appended = std::fs::OpenOptions::new()
             .create(true)
