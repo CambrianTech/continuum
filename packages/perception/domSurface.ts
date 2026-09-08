@@ -161,6 +161,21 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       ...resolveLaunch(opts),
       ...(extraArgs.length > 0 ? { args: extraArgs } : {}),
     });
+    // Until initialization returns a surface, no caller owns this browser.
+    // In particular, observe/hotEdit cannot close a session that never returned.
+    try {
+      return await DomSurface.initialize(browser, opts);
+    } catch (error) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'Browser initialization and cleanup failed', { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  private static async initialize(browser: Browser, opts: DomSurfaceOptions): Promise<DomSurface> {
     // PERCEPTION_GRANT_MEDIA=1 pre-grants microphone + camera to the page so the
     // fake device publishes without a permission prompt nobody can click.
     const grantMedia = process.env.PERCEPTION_GRANT_MEDIA === '1';
