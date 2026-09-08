@@ -270,6 +270,10 @@ tikv-jemallocator = "0.6"
 # 95.9GB-commit-on-63GB incident. Version pinned to one already in the lockfile.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_System_ProcessStatus", "Win32_Foundation"] }
+# Tokio's Mio sockets must not survive a core restart inside preserved children.
+# Keep the fixed release as a resolution floor, including without our lockfile.
+# Mio #1946 creates sockets with WSA_FLAG_NO_HANDLE_INHERIT (since 1.2.1).
+mio = { version = "1.2.3", default-features = false }
 
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
