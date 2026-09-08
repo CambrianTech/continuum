@@ -2742,7 +2742,7 @@ impl Faculty for LlmDeliberationFaculty {
         // owned inference request needs a copy of the selected surface.
         let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
 
-        let request = self.build_request_within(
+        let mut request = self.build_request_within(
             &binding,
             view.completion_reserve,
             messages.clone(),
@@ -2759,6 +2759,32 @@ impl Faculty for LlmDeliberationFaculty {
             Some(ws.room_id),
             self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
         );
+        // Identity belongs to the submitted adapter request. Provider response IDs
+        // remain separate, and one workspace can issue several calls.
+        let request_id = request
+            .request_id
+            .get_or_insert_with(|| Uuid::new_v4().to_string())
+            .clone();
+        let mut capture = self.prompt_capture.as_ref().map(|sink| {
+            super::prompt_capture::CaptureLease::start(
+                Arc::clone(sink),
+                &super::prompt_capture::PromptCall {
+                    request_id,
+                    persona_id: self.persona_id,
+                    room_id: ws.room_id,
+                    context_window: binding.context_window,
+                    cycle_id: (ws.cycle != super::workspace::CycleId::UNSTAMPED)
+                        .then_some(ws.cycle.0),
+                    cause: ws.cause.as_str(),
+                    cause_root: ws.cause.root(),
+                },
+                &request,
+            )
+        });
+        let lifecycle_recorded = self
+            .prompt_capture
+            .as_ref()
+            .is_some_and(|sink| sink.lifecycle_enabled());
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -2898,6 +2924,12 @@ impl Faculty for LlmDeliberationFaculty {
                 binding.adapter.generate_text(request).await
             }
         };
+        if let Some(lease) = &mut capture {
+            match &gen_result {
+                Ok(response) => lease.finish(Some(response), None),
+                Err(error) => lease.finish(None, Some(&error.to_string())),
+            }
+        }
         let gen_await_ms = gen_start.elapsed().as_millis() as u64;
         let resp = match gen_result {
             Ok(r) => r,
@@ -2918,6 +2950,14 @@ impl Faculty for LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(e.to_string()));
             }
         };
+        if let Some(error) = resp.generation_error() {
+            tracing::warn!(
+                persona = %self.persona_name,
+                error,
+                "provider returned a failed generation; partial output is not a decision"
+            );
+            return Some(Contribution::deliberation_fault(error));
+        }
         // #139 latency split: the model call's wall time. Compare to the forwarder's
         // `persona.turn.first_token` (whole-turn spawn→first token): first_token −
         // gen_await ≈ cognition-prep (recall/embeddings/context assembly BEFORE the
@@ -2978,7 +3018,7 @@ impl Faculty for LlmDeliberationFaculty {
         // is always 0 now (single shot); the act→observe driver re-enters this
         // faculty on the NEXT tick with the result folded into perception, and that
         // tick captures itself. Best-effort; never affects the turn.
-        if let Some(cap) = &self.prompt_capture {
+        if let Some(cap) = self.prompt_capture.as_ref().filter(|_| !lifecycle_recorded) {
             let offered: Vec<String> = self.native_specs.iter().map(|s| s.name.clone()).collect();
             cap.record(
                 self.persona_id,
@@ -3606,6 +3646,234 @@ mod tests {
             );
             // The heuristic adapter acks (never emits PASS), so this is a Speak.
             assert!(matches!(c.decision, Some(Decision::Speak { .. })));
+        }
+
+        // The actual faculty/adapter boundary, not a hand-written lifecycle:
+        // request is visible while generate awaits; completion, failure and
+        // cancellation are distinct. Reading playback cannot call the adapter.
+        #[tokio::test]
+        async fn playback_captures_actual_dispatch_before_completion_and_cancellation() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let room = Uuid::new_v4();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let adapter = Arc::new(
+                HeuristicInferenceAdapter::new()
+                    .with_delay_ms(60)
+                    .with_request_recorder(Arc::clone(&calls)),
+            );
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                .with_prompt_capture(Arc::new(
+                    JsonlPromptCaptureSink::open(dir.path(), persona).expect("real capture writer"),
+                ));
+            let ws = Workspace::in_room("Review this real task and its receipt.", room)
+                .with_cycle(crate::cognition::workspace::CycleId(17));
+            let mut turn = Box::pin(faculty.contribute(&ws));
+            tokio::select! {
+                biased;
+                _ = &mut turn => panic!("delayed fixture must remain in flight"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+            }
+            let pending =
+                prompt_capture::page(dir.path(), persona, None, false, 10).expect("pending page");
+            assert_eq!(pending.entries.len(), 1);
+            let first = &pending.entries[0];
+            assert!(matches!(first.status, CallStatus::Submitted));
+            assert_eq!(first.cycle_id, Some(17));
+            assert_eq!(first.room_id, room);
+            let input =
+                prompt_capture::detail(dir.path(), persona, &first.cursor).expect("pending input");
+            assert!(input.terminal.is_none());
+            assert!(
+                input.submitted.as_ref().expect("submitted")["request"]["messages"]
+                    .to_string()
+                    .contains("Review this real task")
+            );
+            let verdict = turn.await.expect("completed deliberation");
+            assert!(verdict.decision.is_some());
+            let completed =
+                prompt_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
+                    .expect("terminal page");
+            assert_eq!(completed.entries.len(), 1);
+            assert!(matches!(completed.entries[0].status, CallStatus::Completed));
+            let detail = prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+                .expect("completed payload");
+            assert!(detail.issues.is_empty());
+            {
+                let actual = calls.lock().expect("fixture request recorder");
+                assert_eq!(actual.len(), 1, "playback reads never invoke inference");
+                assert_eq!(
+                    actual[0].request_id.as_deref(),
+                    Some(first.request_id.as_str())
+                );
+                // Match the actual serialized wire representation: f32 JSON
+                // numbers need not equal serde_json::to_value's widened f64.
+                let wire_request: serde_json::Value = serde_json::from_str(
+                    &serde_json::to_string(&actual[0]).expect("typed request wire serialization"),
+                )
+                .expect("serialized wire request JSON");
+                assert_eq!(
+                    wire_request,
+                    detail.submitted.as_ref().expect("submitted")["request"]
+                );
+            }
+            let legacy =
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("existing prompt/dataset reader");
+            assert_eq!(legacy.len(), 1);
+            assert!(legacy[0]["messages"]
+                .to_string()
+                .contains("Review this real task"));
+            assert!(legacy[0]["response"]["text"].is_string());
+
+            let mut malformed =
+                prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+                    .expect("completed payload for integrity check");
+            malformed.submitted.as_mut().expect("submitted request")["request"]
+                .as_object_mut()
+                .expect("typed request object")
+                .remove("messages");
+            assert!(
+                prompt_capture::legacy_projection(malformed).is_err(),
+                "missing required payload must stay explicit, not resemble a filtered provider failure"
+            );
+
+            let mut cancelled = Box::pin(faculty.contribute(&ws));
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => panic!("delayed fixture must remain in flight"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+            }
+            drop(cancelled);
+            let page =
+                prompt_capture::page(dir.path(), persona, None, false, 10).expect("cancelled page");
+            assert!(matches!(
+                page.entries.last().expect("terminal").status,
+                CallStatus::Cancelled
+            ));
+            assert_ne!(
+                page.entries[0].request_id, page.entries[2].request_id,
+                "two calls on one workspace have distinct actual request IDs"
+            );
+        }
+
+        #[tokio::test]
+        async fn playback_records_inference_failure_without_a_fake_response() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar.",
+                Arc::new(HeuristicInferenceAdapter::new().with_responses(Vec::new())),
+            )
+            .with_prompt_capture(Arc::new(
+                JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
+            ));
+            let ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
+            let result = faculty.contribute(&ws).await.expect("fault contribution");
+            assert!(result.fault.is_some());
+            let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+                .expect("failed call page");
+            let last = page.entries.last().expect("failed terminal");
+            assert!(matches!(last.status, CallStatus::Failed));
+            let detail =
+                prompt_capture::detail(dir.path(), persona, &last.cursor).expect("failure detail");
+            let terminal = detail.terminal.expect("failed terminal payload");
+            assert!(terminal["response"].is_null());
+            assert!(terminal["error"]
+                .as_str()
+                .expect("failure cause")
+                .contains("exhausted"));
+            assert!(
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("compatibility reader")
+                    .is_empty(),
+                "failed calls must not become training examples"
+            );
+        }
+
+        // A transport-successful provider failure must retain its partial output
+        // for inspection without accepting it as a decision or training example.
+        #[tokio::test]
+        async fn playback_excludes_typed_error_responses_from_completed_training_rows() {
+            use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+            let dir = tempfile::tempdir().expect("capture fixture directory");
+            let persona = Uuid::new_v4();
+            let mut response = HeuristicInferenceAdapter::new()
+                .generate_text(TextGenerationRequest {
+                    messages: vec![ChatMessage::text("user", "fixture input")],
+                    ..Default::default()
+                })
+                .await
+                .expect("shared fixture response");
+            // This is a valid participation decision when the provider succeeds;
+            // the identical partial text must not override either error carrier.
+            response.text = "Ship it.".into();
+            response.finish_reason = FinishReason::Stop;
+            let mut finish_error = response.clone();
+            finish_error.finish_reason = FinishReason::Error;
+            let mut field_error = response.clone();
+            field_error.error = Some("provider reported a typed failure".into());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar.",
+                Arc::new(HeuristicInferenceAdapter::new().with_responses(vec![
+                    finish_error,
+                    field_error,
+                    response,
+                ])),
+            )
+            .with_prompt_capture(Arc::new(
+                JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
+            ));
+            let ws = Workspace::in_room("Review the task.", Uuid::new_v4());
+            for _ in 0..2 {
+                let contribution = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("visible provider fault");
+                assert!(contribution.fault.is_some());
+                assert!(
+                    contribution.decision.is_none(),
+                    "a failed partial answer is not a decision"
+                );
+            }
+            let accepted = faculty.contribute(&ws).await.expect("successful control");
+            assert!(accepted.fault.is_none());
+            assert!(
+                matches!(accepted.decision, Some(Decision::Speak { text }) if text == "Ship it.")
+            );
+            let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+                .expect("typed error page");
+            assert_eq!(page.entries.len(), 6);
+            let failures: Vec<_> = page
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry.status, CallStatus::Failed))
+                .collect();
+            assert_eq!(failures.len(), 2);
+            for terminal in failures {
+                let detail = prompt_capture::detail(dir.path(), persona, &terminal.cursor)
+                    .expect("actual error response");
+                assert_eq!(
+                    detail.terminal.expect("terminal record")["response"]["text"],
+                    "Ship it.",
+                    "the actual failed partial response remains inspectable"
+                );
+            }
+            let completed =
+                prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+                    .expect("completed reader");
+            assert_eq!(
+                completed.len(),
+                1,
+                "only the successful control can become a training candidate"
+            );
+            assert_eq!(completed[0]["response"]["text"], "Ship it.");
         }
 
         // what this catches: the live-airc bug where a grown room burst + many full

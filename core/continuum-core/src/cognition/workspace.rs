@@ -1404,6 +1404,8 @@ impl Arbiter for SituationFocusArbiter {
 /// requirement]]) knowing the exact inputs + competition beats any log.
 #[derive(Debug, Clone)]
 pub struct WorkspaceTrace {
+    pub cycle: CycleId,
+    pub cause: Cause,
     pub world_state: String,
     /// Supplemental inputs admitted before this tick; shared with the live burst.
     pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
@@ -2338,6 +2340,8 @@ impl WorkspaceCycle {
             );
         }
         self.capture.record(&WorkspaceTrace {
+            cycle: ws.cycle,
+            cause: ws.cause,
             world_state: ws.world_state.clone(),
             room_updates: Arc::clone(&ws.room_updates),
             room_id: ws.room_id,

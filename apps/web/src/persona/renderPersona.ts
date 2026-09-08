@@ -16,6 +16,9 @@
  * the SAME live `persona:vitals` pulse the roster compass draws.
  */
 
+import './playback.css';
+import { openPlayback, renderPlayback } from './playback';
+
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import type {
   PersonaBrainRegionVM,
@@ -235,7 +238,7 @@ function regionCard(r: PersonaBrainRegionVM): TemplateResult {
         </div>`,
       )}
       <div class="region-actions">
-        <button class="p-btn" disabled title="coming soon — cognition log view isn't wired yet">
+        <button class="p-btn" @click=${openPlayback} title="Read the recorded model calls for this mind">
           View log
         </button>
         <button class="p-btn" disabled title="coming soon — state inspection isn't wired yet">
@@ -572,7 +575,7 @@ export class PersonaPageElement extends LitElement {
     if (!body) return html``;
     const content: Record<PersonaTab, TemplateResult> = {
       overview: html`${aboutSection(body)}${homeSection(body)}${workSection(body, 3)}${recordSection(body)}`,
-      mind: html`${sightSection(body)}${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
+      mind: html`${renderPlayback(body.personaId)}${sightSection(body)}${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
       genome: html`${genomeSection(body)}`,
       work: html`${workSection(body)}${recordSection(body)}${claimsSection(body)}`,
       wall: html`${writingsSection(body)}`,

@@ -104,6 +104,15 @@ export type {
   LayoutChild,
   TrustLevel,
 } from './generated/experience';
+/** Recorded Mind playback contract, vendored from the canonical Rust types. */
+export type { CognitionPlaybackParams } from './generated/cognition/CognitionPlaybackParams';
+export type { CognitionPlaybackResult } from './generated/cognition/CognitionPlaybackResult';
+export type { PlaybackPage } from './generated/cognition/PlaybackPage';
+export type { PlaybackDetail } from './generated/cognition/PlaybackDetail';
+export type { CallHeader } from './generated/cognition/CallHeader';
+export type { CallStatus } from './generated/cognition/CallStatus';
+export type { PayloadRef } from './generated/cognition/PayloadRef';
+export type { PersonaRef } from './generated/identity/PersonaRef';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';
 /** Typed, string-free accessors generated from the Rust command/event specs. */

@@ -529,8 +529,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // under the same fixtures root as the workspace trace. So "what tokens was she
     // fed, what did she emit?" is answerable token-for-token. Native hosts use
     // the recorder's shared home discovery even without a shell HOME variable.
+    // A persona can respawn within one process and restart its cycle counter.
+    // Both capture owners receive the SAME construction session, so session +
+    // persona + CycleId joins every request without a singular workspace call ID.
+    let capture_session = Uuid::new_v4();
     match super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
-        Ok(sink) => deliberation = deliberation.with_prompt_capture(Arc::new(sink)),
+        Ok(sink) => {
+            deliberation =
+                deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)))
+        }
         Err(e) => tracing::warn!(
             persona_id = %cfg.persona_id,
             error = %e,
@@ -585,7 +592,7 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // if the fixtures dir can't be opened we log and run with Noop capture; a
     // persona's mind never fails to assemble over an observability hiccup.
     match super::workspace_capture::JsonlWorkspaceCaptureSink::open_for_persona(cfg.persona_id) {
-        Ok(sink) => cycle.with_capture(Arc::new(sink)),
+        Ok(sink) => cycle.with_capture(Arc::new(sink.with_session(capture_session))),
         Err(e) => {
             tracing::warn!(
                 persona_id = %cfg.persona_id,
