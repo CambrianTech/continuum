@@ -289,6 +289,25 @@ pub struct Contribution {
     /// distinct `InferenceFailed` outcome instead of a lying `Passed`. `None` on
     /// every healthy contribution.
     pub fault: Option<String>,
+    /// Every generation THIS contribution dispatched, in dispatch order, faults
+    /// included (card 0d51573a).
+    ///
+    /// A `Vec`, not an `Option`: a faculty may retry, and a one-to-one field for a
+    /// one-to-many domain is a mistake I have already made once on this card. EMPTY
+    /// means the faculty generated nothing — a different fact from a faculty whose
+    /// generation FAILED, and the two must not collapse.
+    ///
+    /// **RELATIONSHIP TO [`fault`](Self::fault), which is NOT superseded.** `fault`
+    /// is the CONTRIBUTION's verdict-level failure: one message, read by
+    /// [`Workspace::deliberation_fault`], turned by the settle step into a distinct
+    /// `InferenceFailed` outcome instead of a lying `Passed`. These receipts are
+    /// PER-CALL provenance: which request id was submitted, what actually served it,
+    /// and which individual calls faulted. A contribution can have several receipts
+    /// and one `fault`, or receipts with no `fault` at all — a retry that failed then
+    /// succeeded produced a real fault receipt and no contribution-level failure.
+    /// Neither field can be derived from the other and neither should be removed for
+    /// the other's sake.
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     /// The model's **verbatim generation** for this verdict — the raw response text
     /// EXACTLY as the model emitted it, BEFORE the tool-call/PASS parser lifted a
     /// [`Decision`] from it. Set ONLY by the deliberation faculty on its verdict
@@ -377,6 +396,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -436,6 +456,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -465,6 +486,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: Some(error),
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -1188,6 +1210,30 @@ impl Workspace {
     /// `Some` means the settle step MUST surface `InferenceFailed` — a failed model
     /// is never a silence. The settle step checks this BEFORE [`decision`], so a
     /// fault can never be read as a `Pass` ([[fallbacks-are-illegal-fail-loud]]).
+    /// Every generation THIS TURN dispatched, in broadcast order, faults included
+    /// (card 0d51573a).
+    ///
+    /// This is the ordered collection credit is traced through. There is no canonical
+    /// singular request for a cycle — a turn may dispatch several calls and some may
+    /// fail — so a single request id could not represent it, and
+    /// [`Workspace::metrics`] aggregates across the cycle and cannot say which call
+    /// produced what.
+    ///
+    /// Faults are INCLUDED deliberately. Filtering to served-only would make a turn
+    /// that failed twice and succeeded once indistinguishable from a turn that
+    /// succeeded once, and the staged record would then claim cleaner provenance
+    /// than the turn actually had.
+    ///
+    /// Distinct from [`deliberation_fault`](Self::deliberation_fault), which is the
+    /// contribution-level verdict failure the settle step turns into
+    /// `InferenceFailed`. A turn can have fault RECEIPTS here and no deliberation
+    /// fault at all — a retry that failed and then succeeded is exactly that.
+    pub fn generation_receipts(
+        &self,
+    ) -> impl Iterator<Item = &crate::cognition::provenance::GenerationReceipt> {
+        self.broadcast.iter().flat_map(|c| c.receipts.iter())
+    }
+
     pub fn deliberation_fault(&self) -> Option<&str> {
         self.broadcast
             .iter()
@@ -2419,6 +2465,53 @@ impl WorkspaceCycle {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: receipts being filtered to served-only, and losing their
+    // dispatch order. Card 0d51573a. A turn that FAILED twice then succeeded once
+    // must not read as a turn that simply succeeded — filtering faults out would make
+    // the staged record claim cleaner provenance than the turn actually had, which is
+    // the exact substitution this card exists to prevent. Order matters because the
+    // receipts ARE the sequence of what the turn attempted.
+    #[test]
+    fn generation_receipts_keep_every_call_in_order_including_the_ones_that_failed() {
+        use crate::cognition::provenance::GenerationReceipt;
+
+        let mut first = Contribution::context(FacultyId::Recall, "recalled", 0.5, "why");
+        first.receipts = vec![GenerationReceipt::faulted("req-1", "timeout")];
+        let mut second = Contribution::context(FacultyId::Deliberation, "verdict", 0.9, "why");
+        second.receipts = vec![
+            GenerationReceipt::faulted("req-2", "lane refused the model"),
+            GenerationReceipt::faulted("req-3", "retried and served"),
+        ];
+
+        let mut ws = Workspace::new("stimulus");
+        ws.broadcast = vec![first, second];
+
+        let ids: Vec<&str> = ws
+            .generation_receipts()
+            .map(|r| r.submitted_request_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["req-1", "req-2", "req-3"],
+            "receipts come back in dispatch order across contributions"
+        );
+        assert_eq!(
+            ws.generation_receipts().count(),
+            3,
+            "every dispatched call is present — faults are receipts, not absences"
+        );
+
+        // POSITIVE CONTROL: a turn that dispatched nothing yields nothing, so the
+        // assertions above are about collection and not about a method that always
+        // returns a fixed list.
+        let empty = Workspace::new("stimulus");
+        assert_eq!(
+            empty.generation_receipts().count(),
+            0,
+            "a turn that generated nothing has no receipts — distinct from one that faulted"
+        );
+    }
     use super::*;
 
     mod causality {
