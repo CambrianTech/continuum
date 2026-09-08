@@ -642,24 +642,24 @@ impl LlamaCppBackend {
             .map_err(|e| format!("new_context failed: {e}"))?;
 
         // Eval text + media into the context, advancing n_past.
+        let eval_params = llama::MtmdEvalParams {
+            n_past: 0,
+            n_batch: self.config.n_batch as i32,
+            seq_id: 0,
+            logits_last: true,
+        };
         let eval_result = match kind {
             llama::MediaKind::Image => mtmd.eval_image(
                 &mut ctx,
                 prompt_with_marker,
                 media_bytes,
-                0,
-                self.config.n_batch as i32,
-                0,
-                true,
+                &eval_params,
             ),
             llama::MediaKind::Audio => mtmd.eval_audio(
                 &mut ctx,
                 prompt_with_marker,
                 media_bytes,
-                0,
-                self.config.n_batch as i32,
-                0,
-                true,
+                &eval_params,
             ),
         };
         let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;

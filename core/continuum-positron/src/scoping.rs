@@ -78,7 +78,7 @@ impl PerUserSubstrates {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles and no invariant spans this lock, so recover the guard rather than fail a read for someone else's panic
             .entry(citizen)
-            .or_insert_with(Substrate::new)
+            .or_default()
             .clone()
     }
 
@@ -134,7 +134,7 @@ impl PerRoomSubstrates {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles, no invariant spans this lock, so recover rather than take grounding down for someone else's panic
             .entry(room)
-            .or_insert_with(Substrate::new)
+            .or_default()
             .clone()
     }
 
