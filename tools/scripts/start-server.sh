@@ -1129,4 +1129,15 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
     || echo "  ⚠ background desktop build failed — run npm run build -w @continuum/web to diagnose" >&2) &
 fi
 
+# A HOSTING NODE DOES NOT SLEEP (card 94a95a98). On 2026-09-07 the M5 idle-slept on
+# battery and then cycled Maintenance Sleep on AC for three hours while hosting five
+# citizens: the core ran only inside 180 s dark-wake windows, and every hourly number
+# read that evening was taken on a suspended machine. caffeinate holds the system-sleep
+# and idle-sleep assertions for exactly the core's lifetime (it wraps the exec), so the
+# assertion can never outlive the core or be forgotten by a later launcher. On battery
+# macOS may still sleep; the core says so itself (boot.absent, absence_watch.rs).
+if [ "$(uname -s)" = "Darwin" ] && command -v caffeinate >/dev/null 2>&1; then
+  echo "  power: holding the system-sleep assertion for the core's lifetime (caffeinate -s -i)"
+  exec caffeinate -s -i "$CORE_BIN" "$CONTINUUM_SOCKET"
+fi
 exec "$CORE_BIN" "$CONTINUUM_SOCKET"
