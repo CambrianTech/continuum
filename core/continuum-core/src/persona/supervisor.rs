@@ -700,12 +700,20 @@ pub async fn materialize_adapters(
         // fine, because the two read different code
         // ([[citizens-cannot-see-each-other-the-prompt-promises-presence-and-delivers-nothing]]).
         // One definition, two render targets — eyes and mind cannot drift.
+        // The REGISTRY, not `for_room(identity.default_room)`. Binding one room here
+        // is what made the promise in the comment above false: the source answered
+        // with the default room's roster on every turn, so `room_scope_allows`
+        // abstained for a citizen working anywhere else — measured 2026-09-07 at 662
+        // abstains of 873 ticks, bound #general, turns in #continuum, and the citizen
+        // never learned who was in the room she was standing in (#3862). The store
+        // was never the problem: `positron_source::sink` writes EVERY room's view
+        // into `PerRoomSubstrates` and mirrors only the focused one onto the node
+        // substrate, so #continuum's roster was being stored the whole time with
+        // nobody reading it.
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::RosterViewState,
-            >::new(
-                crate::ipc::global_room_substrates().for_room(identity.default_room),
-            ));
+            >::per_room(crate::ipc::global_room_substrates()));
         cognition.set_roster_source(roster_source.clone());
 
         // The benchmark board, read from the SAME `BenchViewState` fold the
