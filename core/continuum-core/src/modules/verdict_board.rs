@@ -222,7 +222,7 @@ fn holder_label(id: Uuid, alias: Option<&str>, historical: bool) -> String {
     let name = alias
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| id.to_string()); // unwrap_or: unknown identity stays addressable, never disappears from feedback
+        .unwrap_or_else(|| crate::persona::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
     if historical {
         format!("{name} (dispatch assignee; live board unavailable)")
     } else {
@@ -301,9 +301,8 @@ mod tests {
         for alias in [None, Some(""), Some("  ")] {
             let unknown = holder_label(id, alias, true);
             let line = verdict_line(&v, Some(&unknown), &BoardMove::ReturnedToHolder);
-            assert!(line.contains(&format!(
-                "@{id} (dispatch assignee; live board unavailable)"
-            )));
+            assert!(line.contains("@00000000 (dispatch assignee; live board unavailable)"));
+            assert!(!line.contains(&id.to_string()));
             assert!(line.contains("still failing: test_mutually_exclusive_group_required_options"));
         }
     }
