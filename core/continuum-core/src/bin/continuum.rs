@@ -1400,6 +1400,14 @@ fn wait_verdict(silent_for_secs: u64, stall_limit_secs: u64) -> WaitVerdict {
 /// `None` when the group is gone or `ps` is unavailable, so the caller falls back to the log
 /// signal rather than reading "cannot tell" as "stalled" — the same refusal-to-guess the socket
 /// and VRAM fixes landed on tonight.
+///
+/// THE READING IS NOT MONOTONIC, and assuming it was is what made this watchdog kill healthy
+/// builds (card 6c91036c). `ps -g` sums cputime over the group members alive AT THAT INSTANT, so
+/// when a long-running rustc finishes its crate and cargo replaces it, that child's accumulated
+/// time LEAVES the sum and the total DROPS. Measured on this Intel Mac 20s apart, mid-build:
+/// `0:00.03 0:01.59 43:08.67` (~2589s) then `0:00.03 0:01.64 0:01.40` (~3s) — a 43-minute rustc
+/// exited at a crate boundary and the group total fell by three orders of magnitude while the
+/// build was making perfectly ordinary progress. See [`cpu_reading_shows_progress`].
 #[cfg(unix)]
 fn build_group_cpu_secs(pgid: u32) -> Option<u64> {
     let out = std::process::Command::new("ps")
@@ -1422,6 +1430,35 @@ fn build_group_cpu_secs(pgid: u32) -> Option<u64> {
 #[cfg(not(unix))]
 fn build_group_cpu_secs(_pgid: u32) -> Option<u64> {
     None
+}
+
+/// Did this CPU reading show the build group doing work since the last one?
+///
+/// Card 6c91036c. The obvious test — `reading > last` — is WRONG, because group cputime is not
+/// monotonic (see [`build_group_cpu_secs`]). Treating only an increase as progress latches a
+/// high-water mark that no later reading can beat: once a 43-minute rustc has been counted and
+/// then exits, every subsequent sample is far BELOW the mark, the comparison is false forever,
+/// and the stall clock is never reset again. Five minutes later the watchdog kills a healthy
+/// build and reports that it "burned no CPU" — the one thing the readings prove it did.
+///
+/// ANY MOVEMENT is progress; direction never carried information. A genuinely stuck build holds
+/// the sum CONSTANT — a hung exec burns nothing and spawns nothing — so `!=` still catches every
+/// stall the `>` version caught. It only stops mis-reading normal crate-boundary churn as death.
+///
+/// WHAT NEITHER COMPARISON CATCHES, and an earlier draft of this comment claimed the opposite
+/// (Astra caught it on review): a SPINNING hang. The log arm and the CPU arm reset the SAME
+/// `last_progress_at`, so a spin that keeps burning CPU keeps resetting that one clock and the
+/// stall check can never fire, no matter how silent the log goes. Log silence is not an
+/// independent signal here. The only thing bounding a spin is the outer `MAX_WAIT_SECS` ceiling.
+/// That was equally true of `>` — this change neither introduces nor fixes it — but the comment
+/// must not claim a guarantee the code does not make, or the next reader will build on it.
+///
+/// This bites the LOW END HARDEST, which is the opposite of the intent: the high-water mark is
+/// set by the longest-running single rustc, so a slow machine compiling one crate for 43 minutes
+/// wedges the detector permanently the moment that crate lands, while a fast machine cycling
+/// children quickly never accumulates a mark big enough to matter.
+fn cpu_reading_shows_progress(reading: u64, last: u64) -> bool {
+    reading != last
 }
 
 /// `ps -o cputime=` renders `[[dd-]hh:]mm:ss`. Sum right-to-left so every shape parses without
@@ -2223,7 +2260,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         // exists to protect. CPU burned by the process group is the second signal, and it is the
         // one that distinguishes working-silently from hung: a stuck exec sits at 0.0%.
         if let Some(cpu) = build_group_cpu_secs(build_pgid) {
-            if cpu > last_cpu_secs {
+            if cpu_reading_shows_progress(cpu, last_cpu_secs) {
                 last_cpu_secs = cpu;
                 last_progress_at = std::time::Instant::now();
             }
@@ -2889,6 +2926,45 @@ mod tests {
             assert_eq!(wait_verdict(10, stall), WaitVerdict::Progressing);
             // Even at the far end of a 40-minute build, recent output is life.
             assert_eq!(wait_verdict(stall - 1, stall), WaitVerdict::Progressing);
+        }
+
+        /// what this catches: regression for card 6c91036c — the watchdog killing a HEALTHY
+        /// build and reporting it "burned no CPU" while rustc sat at 631% in its own process
+        /// group. Reproduced on a real deploy of f49409fa2 on the Intel Mac.
+        ///
+        /// The readings here are the MEASURED ones, taken 20s apart mid-build: the group total
+        /// was ~2589s while a 43-minute rustc was alive, then ~3s once that child finished its
+        /// crate and cargo replaced it. Group cputime sums only members alive at that instant,
+        /// so a child exiting REMOVES its accumulated time and the total drops.
+        ///
+        /// THIS TEST MUST DRIVE THE READING DOWN. A test that only ever feeds increasing values
+        /// passes against `reading > last` — the buggy comparison — which is presumably how the
+        /// defect shipped with the rest of the watchdog well covered. The descent IS the bug.
+        #[test]
+        fn a_cpu_reading_that_drops_is_progress_because_a_finished_child_leaves_the_group() {
+            // The measured pair. Under `>` this returns false and the stall clock never resets
+            // again for the life of the build.
+            assert!(
+                cpu_reading_shows_progress(3, 2589),
+                "a group total that FELL because a long rustc finished its crate is a build \
+                 making progress, not a dead one"
+            );
+            // Ordinary within-crate accumulation is still progress.
+            assert!(cpu_reading_shows_progress(2589, 3));
+            // And a build that is genuinely stuck holds the sum CONSTANT — the one reading that
+            // must NOT reset the clock, or the watchdog never fires at all.
+            assert!(
+                !cpu_reading_shows_progress(2589, 2589),
+                "an unchanged group total is the signature of a hung exec: it burns no CPU and \
+                 spawns no children, and it is the only thing this watchdog exists to catch"
+            );
+            // A climbing total reads as progress, which is what keeps an ordinary build alive.
+            // It also means a SPINNING hang is not caught by this watchdog at all: the CPU arm
+            // and the log arm reset the same clock, so a spin resets it forever and only
+            // MAX_WAIT_SECS bounds it. True of `>` as well — not a regression, just not a
+            // guarantee. Asserted so nobody 'fixes' this into an equality check believing the
+            // log arm would still cover the spin; it would not.
+            assert!(cpu_reading_shows_progress(2590, 2589));
         }
 
         /// what this catches: the opposite failure — never giving up. A script that has said
