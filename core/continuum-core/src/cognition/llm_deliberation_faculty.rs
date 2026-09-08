@@ -453,7 +453,7 @@ impl LlmDeliberationFaculty {
     /// So the reason travels WITH the number. It has to, because the same value is
     /// right for one reason and wrong for another — see
     /// [`SelectedSurface::demand_tokens`].
-    fn select_tool_surface(&self, ws: &Workspace, context_window: u32) -> SelectedSurface {
+    fn select_tool_surface(&self, ws: &Workspace, context_window: u32) -> SelectedSurface<'_> {
         if self.native_specs.is_empty() {
             return SelectedSurface {
                 specs: None,
@@ -479,7 +479,7 @@ impl LlmDeliberationFaculty {
         };
         match reason {
             SurfaceReason::Full => SelectedSurface {
-                specs: Some(self.native_specs.clone()),
+                specs: Some(&self.native_specs),
                 tokens: self.tool_surface_tokens,
                 reason,
             },
@@ -488,7 +488,7 @@ impl LlmDeliberationFaculty {
             // `commands/list` away. Amputating the surface is the #206 cliff
             // (14/14 SWE acts spent on `commands/help`, 0 edits).
             _ => SelectedSurface {
-                specs: Some(self.hands_specs.clone()),
+                specs: Some(&self.hands_specs),
                 tokens: self.hands_surface_tokens,
                 reason,
             },
@@ -2283,15 +2283,15 @@ pub(crate) enum SurfaceReason {
 ///
 /// One decision, consulted by both the budget math and the request builder, so the
 /// two can no longer disagree about what is on the wire (card dec1a7ff).
-pub(crate) struct SelectedSurface {
+pub(crate) struct SelectedSurface<'a> {
     /// Exactly what goes into the request. `None` only when there are no tools.
-    specs: Option<Vec<NativeToolSpec>>,
+    specs: Option<&'a [NativeToolSpec]>,
     /// Cost of what is actually SENT — the number the message budget must use.
     tokens: usize,
     reason: SurfaceReason,
 }
 
-impl SelectedSurface {
+impl SelectedSurface<'_> {
     /// What an UNTRUNCATED demand measurement should price for this turn.
     ///
     /// `delib.turn.demand` is deliberately the demand, not the send: its contract is
@@ -2574,7 +2574,9 @@ impl Faculty for LlmDeliberationFaculty {
                  offering her hands; the discovery pair still reaches the rest"
             );
         }
-        let tools = selected.specs.clone();
+        // Selection and budget accounting borrow the cached schemas. Only the
+        // owned inference request needs a copy of the selected surface.
+        let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
 
         let request =
             self.build_request_within(&binding, messages.clone(), tools, view.system.clone(), {
