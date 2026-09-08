@@ -1021,6 +1021,24 @@ pub struct Workspace {
     /// [`TurnAttention::requires_priority`]. A human speaker alone does not mean
     /// the message names this persona.
     pub attention: TurnAttention,
+    /// Every generation this turn dispatched, faults included (card 0d51573a).
+    ///
+    /// **ORDER IS PHASE-THEN-FACULTY, NOT CHRONOLOGY.** `join_all` resolves in INPUT
+    /// order, so this is: phase 1 bids in faculty order, then phase 2, with each
+    /// faculty's own receipts in the order it produced them. A faculty that awaited a
+    /// slow prerequisite before generating still appears at its input position, so
+    /// this must NOT be read as wall-clock dispatch order. If true chronology is ever
+    /// needed, it needs a real submission ordinal rather than a re-reading of this
+    /// sequence (Astra, 2026-09-08).
+    ///
+    /// **PROVENANCE IS NOT SUBJECT TO ATTENTION.** Deliberately NOT derived from
+    /// [`broadcast`](Self::broadcast): broadcast is the FOCUSED set after
+    /// `SalienceArbiter` truncates to capacity, so a faculty that GENERATED but lost
+    /// attention would lose its receipt — and an invisible fault is exactly what this
+    /// card exists to prevent. What a turn generated is a fact about the turn; what
+    /// earned a place in the prompt is a judgement about relevance. Populated from
+    /// the same `all_bids` full-competition set the capture sink records.
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
     /// persona's own thread with no inbound message — versus a turn driven by an
     /// arriving message or an examiner's question? Drives the `[Your own time]`
@@ -1086,6 +1104,7 @@ impl Workspace {
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
             attention: TurnAttention::Ambient,
+            receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
             now_ms: burst_now,
@@ -1210,10 +1229,10 @@ impl Workspace {
     /// `Some` means the settle step MUST surface `InferenceFailed` — a failed model
     /// is never a silence. The settle step checks this BEFORE [`decision`], so a
     /// fault can never be read as a `Pass` ([[fallbacks-are-illegal-fail-loud]]).
-    /// Every generation THIS TURN dispatched, in broadcast order, faults included
-    /// (card 0d51573a).
+    /// Every generation THIS TURN dispatched, faults included, in phase-then-faculty
+    /// order — see [`Workspace::receipts`], which this returns (card 0d51573a).
     ///
-    /// This is the ordered collection credit is traced through. There is no canonical
+    /// This is the collection credit is traced through. There is no canonical
     /// singular request for a cycle — a turn may dispatch several calls and some may
     /// fail — so a single request id could not represent it, and
     /// [`Workspace::metrics`] aggregates across the cycle and cannot say which call
@@ -1231,7 +1250,7 @@ impl Workspace {
     pub fn generation_receipts(
         &self,
     ) -> impl Iterator<Item = &crate::cognition::provenance::GenerationReceipt> {
-        self.broadcast.iter().flat_map(|c| c.receipts.iter())
+        self.receipts.iter()
     }
 
     pub fn deliberation_fault(&self) -> Option<&str> {
@@ -2365,6 +2384,13 @@ impl WorkspaceCycle {
         // decider saw, the final broadcast, and the decision.
         let mut all_bids = context_bids;
         all_bids.extend(decision_bids);
+        // Provenance rides the FULL competition, not the focused broadcast — a
+        // faculty whose bid lost attention still dispatched its generation, and a
+        // fault that was truncated away is the one most worth keeping.
+        ws.receipts = all_bids
+            .iter()
+            .flat_map(|c| c.receipts.iter().cloned())
+            .collect();
         // WHERE THIS TICK'S LATENCY WENT, on the always-on probe stream.
         //
         // `timings` already holds per-faculty wall-clock for every faculty across
@@ -2466,50 +2492,53 @@ impl WorkspaceCycle {
 #[cfg(test)]
 mod tests {
 
-    // what this catches: receipts being filtered to served-only, and losing their
-    // dispatch order. Card 0d51573a. A turn that FAILED twice then succeeded once
-    // must not read as a turn that simply succeeded — filtering faults out would make
-    // the staged record claim cleaner provenance than the turn actually had, which is
-    // the exact substitution this card exists to prevent. Order matters because the
-    // receipts ARE the sequence of what the turn attempted.
-    #[test]
-    fn generation_receipts_keep_every_call_in_order_including_the_ones_that_failed() {
+    // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
+    // `ws.broadcast` is the FOCUSED set — SalienceArbiter truncates to capacity — so
+    // deriving receipts from it silently drops the generations of any faculty that
+    // lost the attention competition. Astra found that in my first implementation,
+    // which flat_mapped broadcast; my previous test could not catch it because it
+    // hand-assembled `ws.broadcast` and never ran the arbiter at all.
+    //
+    // THIS TEST DRIVES THE REAL CYCLE so the truncation actually happens. A fault
+    // receipt from a losing faculty is precisely the record worth keeping — a failed
+    // call that got truncated away is invisible exactly when someone needs it.
+    #[tokio::test]
+    async fn a_losing_faculty_keeps_its_receipt_even_though_attention_dropped_its_bid() {
         use crate::cognition::provenance::GenerationReceipt;
 
-        let mut first = Contribution::context(FacultyId::Recall, "recalled", 0.5, "why");
-        first.receipts = vec![GenerationReceipt::faulted("req-1", "timeout")];
-        let mut second = Contribution::context(FacultyId::Deliberation, "verdict", 0.9, "why");
-        second.receipts = vec![
-            GenerationReceipt::faulted("req-2", "lane refused the model"),
-            GenerationReceipt::faulted("req-3", "retried and served"),
-        ];
+        let mut loud = Contribution::context(FacultyId::Recall, "loud", 0.9, "wins attention");
+        loud.receipts = vec![GenerationReceipt::faulted("req-loud", "served after retry")];
+        let mut quiet = Contribution::context(FacultyId::WorldModel, "quiet", 0.1, "loses attention");
+        quiet.receipts = vec![GenerationReceipt::faulted("req-quiet", "lane refused the model")];
 
-        let mut ws = Workspace::new("stimulus");
-        ws.broadcast = vec![first, second];
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(loud)),
+            Arc::new(FixedFaculty(quiet)),
+        ];
+        // capacity 1 — one of the two bids MUST be truncated.
+        let ws = cycle(faculties, 1).run("burst").await;
+
+        // POSITIVE CONTROL: the truncation really happened. Without this the receipt
+        // assertion below would pass just as well on a cycle that kept both bids,
+        // and would be asserting nothing about attention.
+        assert_eq!(
+            ws.broadcast.len(),
+            1,
+            "capacity 1 must drop one bid — otherwise this test never exercises truncation"
+        );
 
         let ids: Vec<&str> = ws
             .generation_receipts()
             .map(|r| r.submitted_request_id.as_str())
             .collect();
-        assert_eq!(
-            ids,
-            vec!["req-1", "req-2", "req-3"],
-            "receipts come back in dispatch order across contributions"
+        assert!(
+            ids.contains(&"req-quiet"),
+            "the TRUNCATED faculty's receipt must survive — provenance is not subject \
+             to attention; got {ids:?}"
         );
-        assert_eq!(
-            ws.generation_receipts().count(),
-            3,
-            "every dispatched call is present — faults are receipts, not absences"
-        );
-
-        // POSITIVE CONTROL: a turn that dispatched nothing yields nothing, so the
-        // assertions above are about collection and not about a method that always
-        // returns a fixed list.
-        let empty = Workspace::new("stimulus");
-        assert_eq!(
-            empty.generation_receipts().count(),
-            0,
-            "a turn that generated nothing has no receipts — distinct from one that faulted"
+        assert!(
+            ids.contains(&"req-loud"),
+            "the surviving faculty's receipt is kept too; got {ids:?}"
         );
     }
     use super::*;

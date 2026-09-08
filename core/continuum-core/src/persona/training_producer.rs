@@ -309,6 +309,47 @@ impl CapturedCredit {
     }
 }
 
+/// ONE dispatched generation, as a correlation ROW — the index that
+/// [`StagedCredit::receipts`] cannot carry (card 0d51573a).
+///
+/// The ORM's `FieldType` set has no collection type, so the parent's receipts are an
+/// opaque JSON column and nothing inside them is indexable. Playback's correlation
+/// runs FROM a generation TO the credit, so that direction needs a real index; these
+/// rows are it. They hold REFERENCES only — the response payload stays in the parent
+/// and is not duplicated here.
+///
+/// **`submitted_request_id` IS NOT ASSUMED GLOBALLY UNIQUE** (Astra, 2026-09-08).
+/// Nothing in the producer contract proves a request id is unique across every staged
+/// credit ever written, and a unique index on it alone would reject a legitimate write
+/// the first time that assumption failed — silently turning a provenance record into a
+/// dropped one. Uniqueness is asserted on the PAIR, which is the thing that genuinely
+/// cannot repeat: one turn does not dispatch the same request id twice.
+///
+/// The row is a child in the truest sense: `on_delete = "cascade"`, so it cannot
+/// outlive the credit it describes and there is no orphan class to reap.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "staged_credit_generation")]
+#[entity(index(
+    name = "idx_staged_credit_generation_pair",
+    fields = ["stagedCreditId", "submittedRequestId"],
+    unique = true
+))]
+pub struct StagedCreditGeneration {
+    #[entity(primary_key)]
+    pub id: Uuid,
+
+    /// The staged credit this generation belongs to.
+    #[entity(indexed)]
+    #[entity(foreign_key("staged_credit.id", on_delete = "cascade"))]
+    pub staged_credit_id: Uuid,
+
+    /// The SUBMITTED request id — the join key playback holds. Indexed on its own so
+    /// the generation-to-credit lookup is a real index hit, not a scan.
+    #[entity(indexed)]
+    pub submitted_request_id: String,
+}
+
 /// ONE card-linked turn, held until its card settles (card 0d51573a).
 ///
 /// A card-linked turn must NOT submit at completion. An unstamped example is an
@@ -367,13 +408,18 @@ pub struct StagedCredit {
     #[entity(json)]
     pub role: Option<CreditRole>,
 
-    /// **THE JOIN KEY**: `TextGenerationRequest.request_id` as SUBMITTED, assigned or
-    /// retained once before submit and shared with the Mind capture's `CycleId`. The
-    /// adapter's response id, when it differs, lives in `served` and NEVER replaces
-    /// this — otherwise the correlation key is silently swapped for one the capture
-    /// never saw, and playback breaks precisely on a lane substitution.
-    #[entity(indexed)]
-    pub submitted_request_id: String,
+    /// EVERY generation this turn dispatched, in dispatch order, faults included.
+    ///
+    /// A cycle makes multiple calls and there is no canonical singular request, so
+    /// this replaces the single `submitted_request_id` that used to sit here — a
+    /// one-to-one field for a one-to-many domain. Stored as an opaque JSON payload
+    /// because the ORM has no collection `FieldType`, which is exactly why the
+    /// correlation index cannot live in here and gets its own child rows in
+    /// [`StagedCreditGeneration`].
+    ///
+    /// The FULL receipts stay here; the child rows are references, not copies.
+    #[entity(json)]
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 
     /// What ACTUALLY served the generation, attached once the response returns.
     /// `None` until then. Never overwrites a selection field.
@@ -934,21 +980,30 @@ mod tests {
             .map(|f| f.name.as_str())
             .collect();
 
-        for key in ["cardId", "claimId", "submittedRequestId"] {
+        // The PARENT indexes what settlement looks up by. `submittedRequestId` is NOT
+        // here any more: a cycle dispatches many generations, the receipts are an
+        // opaque JSON column (the ORM has no collection FieldType), and nothing inside
+        // a JSON column is indexable — so the correlation index moved to the child
+        // rows. Asserting it on the parent would now assert a lie.
+        for key in ["cardId", "claimId"] {
             assert!(
                 indexed.contains(key),
-                "staged_credit must INDEX {key:?} — settlement looks up by card and \
-                 playback joins on the submitted request id; indexed fields are {indexed:?}"
+                "staged_credit must INDEX {key:?} — settlement looks up by card; \
+                 indexed fields are {indexed:?}"
             );
         }
+        assert!(
+            !indexed.contains("submittedRequestId"),
+            "the correlation index belongs to staged_credit_generation now; leaving a \
+             stale one here would suggest a lookup the parent cannot actually serve"
+        );
 
-        // POSITIVE CONTROL: a field I deliberately did NOT index must not be
-        // indexed, or this test would pass with `indexed` blanket-set on everything
-        // and would be asserting nothing about my attributes.
+        // POSITIVE CONTROL: a field deliberately NOT indexed must not be, or this test
+        // would pass with `indexed` blanket-set and assert nothing about my attributes.
         assert!(
             !indexed.contains("prompt"),
             "prompt must not be indexed — if it is, this test cannot distinguish my \
-             three deliberate indexes from every field being indexed by default"
+             deliberate indexes from every field being indexed by default"
         );
     }
 
