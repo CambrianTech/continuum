@@ -13,11 +13,22 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let submodule = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // Resolve the manifest dir AT RUNTIME, not compile time. `env!(...)
+    // expands when build.rs itself is compiled and bakes ONE checkout's
+    // absolute path into the cached build-script binary — with our shared
+    // target dir that poisons every other worktree (a sibling checkout
+    // reusing the fingerprinted script would point at this tree's vendor/
+    // llama.cpp, or fail to find its own). Cargo sets CARGO_MANIFEST_DIR for
+    // each build-script invocation, so env::var tracks whichever checkout is
+    // actually building. (env! was a no-op optimization here — the path was
+    // only ever used at run time.)
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect(
+        "CARGO_MANIFEST_DIR must be set when cargo runs this build script",
+    ));
+    let submodule = manifest_dir
         .join("..")
         .join("vendor")
         .join("llama.cpp");
-
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
 
