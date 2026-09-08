@@ -1023,10 +1023,10 @@ impl TrainingTriggerState {
                 .run_owned(key, move |state, key| async move {
                     let missing = heads.into_iter().any(|(id, intent)| {
                         if intent {
-                            !state
+                            state
                                 .active_dispatches
                                 .get(&key)
-                                .is_some_and(|active| active.intent.base.id == id.to_string())
+                                .is_none_or(|active| active.intent.base.id != id.to_string())
                         } else {
                             !state.contains_submission(&key, id)
                         }
