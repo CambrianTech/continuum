@@ -85,7 +85,7 @@ bucket key becomes domain × role × outcome. This is cc34ac0f, unchanged; it ju
 | S4 | Dispatch/reseat seats room residents from any node | Fable (M5) | `bench.round.seated {peer, node}` for a 5090 citizen in an M5 round |
 | S5 | Verdict line names the remote holder by publisher identity | Astra | `benchmark.verdict.line_posted {holder}` = her name, on her node's transcript |
 | S6 | Outcome credit on submissions | IntelMac (cc34ac0f) | `training.example.stamped {card, role, outcome}` on both nodes after one settle |
-| S7 | The measured cross-node seeded round vs the solo baseline | Fable dispatches; everyone reads | the four axes in `benchmark/rounds` enrichment; a pace-ledger row; the README line |
+| S7 | The measured cross-node seeded round vs the solo baseline (baseline = the seed-3 verified round already running on the M5 alone, room 92715a7e; the cross-node run re-dispatches seed 3 with the 5090's citizens seated) | Fable dispatches; everyone reads | the four axes in `benchmark/rounds` enrichment; a pace-ledger row; the README line |
 
 Order: S1 → S2 → S3 (one PR each, small; S1 in airc, S2/S3 in continuum on top of #3866/#3868) ;
 S4 in parallel; S5 with S3; S6 in parallel; S7 when S3 + S4 are live on both nodes.
