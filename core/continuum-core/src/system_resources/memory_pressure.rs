@@ -209,6 +209,27 @@ impl PressureLevel {
     /// Normalize raw pressure (used/total) to 0.0-1.0 action range.
     /// 0.0 = at or below floor (no concern), 1.0 = at or above ceiling (emergency).
     /// Linear interpolation between PRESSURE_FLOOR and PRESSURE_CEILING.
+    /// Swap is its own pressure axis. macOS counts swapped-out and compressible pages
+    /// as "available", so `from_pressure` read NORMAL on 2026-09-08 while swap sat at
+    /// 40 of 41 GB and the model server paged weights from disk at 1–9 t/s. Half the
+    /// swap file in use is High whatever the page counters say; nine tenths is Critical.
+    pub fn from_swap(swap_pct: f64) -> Self {
+        if swap_pct >= 0.90 {
+            Self::Critical
+        } else if swap_pct >= 0.50 {
+            Self::High
+        } else if swap_pct >= 0.25 {
+            Self::Warning
+        } else {
+            Self::Normal
+        }
+    }
+
+    /// The worse of two readings — the level the node acts on.
+    pub fn worse(a: Self, b: Self) -> Self {
+        if b.to_u8() > a.to_u8() { b } else { a }
+    }
+
     fn normalize(pressure: f64) -> f64 {
         ((pressure - PRESSURE_FLOOR) / (PRESSURE_CEILING - PRESSURE_FLOOR)).clamp(0.0, 1.0)
     }
@@ -784,6 +805,12 @@ impl MemoryPressureMonitor {
             let available = available_from(&st.sys);
             let used = total.saturating_sub(available);
             let swap_used = st.sys.used_swap();
+            let swap_total = st.sys.total_swap();
+            let swap_pct = if swap_total > 0 {
+                swap_used as f64 / swap_total as f64
+            } else {
+                0.0
+            };
 
             // Process RSS.
             let rss = if let Some(p) = st.pid {
@@ -801,7 +828,10 @@ impl MemoryPressureMonitor {
             } else {
                 0.0
             };
-            let level = PressureLevel::from_pressure(pressure);
+            let level = PressureLevel::worse(
+                PressureLevel::from_pressure(pressure),
+                PressureLevel::from_swap(swap_pct),
+            );
 
             // Atomics + cross-module level — lock-free reads from anywhere.
             self.current_rss.store(rss, Ordering::Relaxed);
@@ -832,6 +862,51 @@ impl MemoryPressureMonitor {
                 .filter(|(_, e)| !e.disabled)
                 .map(|(i, e)| (i, e.reporter.clone()))
                 .collect();
+
+            // THE LEDGER HEARS IT. Until 2026-09-08 this monitor spoke only through the
+            // log line below; the probe ledger — the thing every reader and every retro
+            // opens — held zero rows while swap was full. A row on every level change,
+            // and every 30 polls (60 s) while High or Critical.
+            let should_probe = consecutive_at_level == 1
+                || (level.to_u8() >= PressureLevel::High.to_u8() && st.log_counter.is_multiple_of(30));
+            if should_probe {
+                crate::probe!(
+                    class = "memory.pressure",
+                    level = %level,
+                    pressure_pct = (pressure * 100.0) as u64,
+                    avail_mb = available / (1024 * 1024),
+                    swap_mb = swap_used / (1024 * 1024),
+                    swap_pct = (swap_pct * 100.0) as u64,
+                    rss_mb = rss / (1024 * 1024),
+                    consecutive = consecutive_at_level,
+                    "memory pressure as the node reads it — swap is its own axis, so a full swap file is High even when the page counters read free"
+                );
+                // NAME THE ANOMALY. fseventsd at 26 GB beside a 22 GB model server is a
+                // fault, not background; a reader who only sees "swap full" has to go
+                // find it by hand. Only at High/Critical, only once per probe window —
+                // the full process refresh is not free.
+                if level.to_u8() >= PressureLevel::High.to_u8() {
+                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+                    let floor = total / 4;
+                    for (pid, proc) in st.sys.processes() {
+                        let mem = proc.memory();
+                        if mem < floor || Some(*pid) == st.pid {
+                            continue;
+                        }
+                        let name = proc.name().to_string_lossy().to_string();
+                        if name.contains("llama-server") {
+                            continue;
+                        }
+                        crate::probe!(
+                            class = "memory.pressure.anomaly",
+                            process = %name,
+                            pid = pid.as_u32(),
+                            rss_gb = mem / (1024 * 1024 * 1024),
+                            "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
+                        );
+                    }
+                }
+            }
 
             (
                 total,
@@ -1189,4 +1264,24 @@ mod tests {
     fn export_bindings_memory_budget_snapshot() {
         MemoryBudgetSnapshot::export_all(&ts_rs::Config::default()).unwrap();
     }
+
+    // what this catches: swap dropping out of the level again (2026-09-08: swap 40/41 GB,
+    // from_pressure NORMAL, decode 1–9 t/s, zero ledger rows) — half the swap file is High,
+    // nine tenths is Critical, and the node acts on the worse of the two axes.
+    #[test]
+    fn a_full_swap_file_is_high_pressure_whatever_the_page_counters_say() {
+        assert_eq!(PressureLevel::from_swap(0.98), PressureLevel::Critical);
+        assert_eq!(PressureLevel::from_swap(0.55), PressureLevel::High);
+        assert_eq!(PressureLevel::from_swap(0.30), PressureLevel::Warning);
+        assert_eq!(PressureLevel::from_swap(0.0), PressureLevel::Normal);
+        assert_eq!(
+            PressureLevel::worse(PressureLevel::from_pressure(0.40), PressureLevel::from_swap(0.98)),
+            PressureLevel::Critical
+        );
+        assert_eq!(
+            PressureLevel::worse(PressureLevel::from_pressure(0.96), PressureLevel::from_swap(0.0)),
+            PressureLevel::Critical
+        );
+    }
+
 }
