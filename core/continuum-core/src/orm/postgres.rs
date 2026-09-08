@@ -174,6 +174,251 @@ impl PostgresAdapter {
             format!("{}.{}", self.schema, table)
         }
     }
+
+    /// `create` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn create_on(
+        &self,
+        client: &deadpool_postgres::Client,
+        record: DataRecord,
+    ) -> StorageResult<DataRecord> {
+        let bare_table = naming::to_table_name(&record.collection);
+        let qualified_table = self.table_ref(&record.collection);
+        let now: DateTime<Utc> = Utc::now();
+        let now_rfc3339 = now.to_rfc3339();
+
+        // Ensure table exists (auto-create from data shape).
+        // Invalidate column type cache only when the cached helper actually
+        // hit Postgres — if the row introduced no new columns, both caches
+        // stay warm and we save 2 round-trips on the steady-state hot path.
+        let schema_changed = match self
+            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        if schema_changed {
+            self.invalidate_column_cache(&bare_table).await;
+        }
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+
+        // Build column list and values
+        let mut columns = vec![
+            "id".to_string(),
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "version".to_string(),
+        ];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
+            Box::new(record.id.clone()),
+            Box::new(now),
+            Box::new(now),
+            Box::new(1_i64),
+        ];
+
+        if let Value::Object(data) = &record.data {
+            for (key, value) in data {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                columns.push(col_name);
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
+            qualified_table,
+            columns.join(", "),
+            placeholders.join(", ")
+        );
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            Ok(rows) => {
+                if rows == 0 {
+                    // ON CONFLICT DO NOTHING — record already exists
+                    return StorageResult::err(format!("Record already exists: {}", record.id));
+                }
+                StorageResult::ok(DataRecord {
+                    metadata: RecordMetadata {
+                        created_at: now_rfc3339.clone(),
+                        updated_at: now_rfc3339,
+                        version: 1,
+                        ..record.metadata
+                    },
+                    ..record
+                })
+            }
+            Err(e) => {
+                // Diagnostic: include column names + types for debugging serialization errors
+                let col_info: Vec<String> = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
+                        format!("${}: {}({})", i + 1, c, pg_type)
+                    })
+                    .collect();
+                StorageResult::err(format!(
+                    "Insert failed [{}]: {:?} | columns: [{}]",
+                    qualified_table,
+                    e,
+                    col_info.join(", ")
+                ))
+            }
+        }
+    }
+
+    /// `read` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn read_on(
+        &self,
+        client: &deadpool_postgres::Client,
+        collection: &str,
+        id: &UUID,
+    ) -> StorageResult<DataRecord> {
+        let table = self.table_ref(collection);
+
+        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
+
+        let rows = match client.query(&sql, &[&id]).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format_pg_error(&e);
+                if msg.contains("does not exist") {
+                    return StorageResult::err(format!("Record not found: {}", id));
+                }
+                return StorageResult::err(format!("Query failed: {}", msg));
+            }
+        };
+
+        if rows.is_empty() {
+            return StorageResult::err(format!("Record not found: {}", id));
+        }
+
+        match row_to_record(&rows[0], collection, rows[0].columns()) {
+            Ok(record) => StorageResult::ok(record),
+            Err(e) => StorageResult::err(format!("Row conversion failed: {}", e)),
+        }
+    }
+
+    /// `delete` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn delete_on(
+        &self,
+        client: &deadpool_postgres::Client,
+        collection: &str,
+        id: &UUID,
+    ) -> StorageResult<bool> {
+        let table = self.table_ref(collection);
+        let sql = format!("DELETE FROM {} WHERE id = $1", table);
+
+        match client.execute(&sql, &[&id]).await {
+            Ok(rows) => StorageResult::ok(rows > 0),
+            Err(e) => StorageResult::err(format!("Delete failed: {}", e)),
+        }
+    }
+
+    /// `update` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn update_on(
+        &self,
+        client: &deadpool_postgres::Client,
+        collection: &str,
+        id: &UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<DataRecord> {
+        let bare_table = naming::to_table_name(collection);
+        let table = self.table_ref(collection);
+        let now: DateTime<Utc> = Utc::now();
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+
+        let mut sets = vec!["updated_at = $1".to_string()];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
+        let mut idx = 1_usize;
+
+        if increment_version {
+            sets.push("version = version + 1".to_string());
+        }
+
+        if let Value::Object(obj) = &data {
+            for (key, value) in obj {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                idx += 1;
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                sets.push(format!("{} = ${}", col_name, idx));
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        idx += 1;
+        params.push(Box::new(id.clone()));
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = ${}",
+            table,
+            sets.join(", "),
+            idx
+        );
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            Ok(rows) if rows > 0 => self.read(collection, id).await,
+            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+            Err(e) => {
+                // Schema evolution: auto-add missing columns and retry.
+                // Evict the ensured-columns cache first — it lied (claimed a
+                // column existed that Postgres just rejected), so we must hit
+                // information_schema to rebuild ground truth.
+                let err_msg = format_pg_error(&e);
+                if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    self.ensured_columns_cache.write().await.remove(&bare_table);
+                    if let Err(evolve_err) =
+                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
+                            .await
+                    {
+                        return StorageResult::err(format!(
+                            "Update failed [{}]: {} (schema evolution also failed: {})",
+                            bare_table, err_msg, evolve_err
+                        ));
+                    }
+                    self.invalidate_column_cache(&bare_table).await;
+                    // Retry the update after adding columns
+                    match client.execute(&sql, &params_ref).await {
+                        Ok(rows) if rows > 0 => self.read(collection, id).await,
+                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => StorageResult::err(format!(
+                            "Update failed [{}] after schema evolution: {}",
+                            bare_table,
+                            format_pg_error(&e2)
+                        )),
+                    }
+                } else {
+                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                }
+            }
+        }
+    }
 }
 
 impl Default for PostgresAdapter {
@@ -760,101 +1005,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let bare_table = naming::to_table_name(&record.collection);
-        let qualified_table = self.table_ref(&record.collection);
-        let now: DateTime<Utc> = Utc::now();
-        let now_rfc3339 = now.to_rfc3339();
-
-        // Ensure table exists (auto-create from data shape).
-        // Invalidate column type cache only when the cached helper actually
-        // hit Postgres — if the row introduced no new columns, both caches
-        // stay warm and we save 2 round-trips on the steady-state hot path.
-        let schema_changed = match self
-            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => return StorageResult::err(e),
-        };
-        if schema_changed {
-            self.invalidate_column_cache(&bare_table).await;
-        }
-
-        // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
-
-        // Build column list and values
-        let mut columns = vec![
-            "id".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "version".to_string(),
-        ];
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
-            Box::new(record.id.clone()),
-            Box::new(now),
-            Box::new(now),
-            Box::new(1_i64),
-        ];
-
-        if let Value::Object(data) = &record.data {
-            for (key, value) in data {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                let col_name = naming::to_snake_case(key);
-                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
-                columns.push(col_name);
-                params.push(value_to_pg_typed(value, pg_type));
-            }
-        }
-
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
-            qualified_table,
-            columns.join(", "),
-            placeholders.join(", ")
-        );
-
-        let params_ref: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
-
-        match client.execute(&sql, &params_ref).await {
-            Ok(rows) => {
-                if rows == 0 {
-                    // ON CONFLICT DO NOTHING — record already exists
-                    return StorageResult::err(format!("Record already exists: {}", record.id));
-                }
-                StorageResult::ok(DataRecord {
-                    metadata: RecordMetadata {
-                        created_at: now_rfc3339.clone(),
-                        updated_at: now_rfc3339,
-                        version: 1,
-                        ..record.metadata
-                    },
-                    ..record
-                })
-            }
-            Err(e) => {
-                // Diagnostic: include column names + types for debugging serialization errors
-                let col_info: Vec<String> = columns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
-                        format!("${}: {}({})", i + 1, c, pg_type)
-                    })
-                    .collect();
-                StorageResult::err(format!(
-                    "Insert failed [{}]: {:?} | columns: [{}]",
-                    qualified_table,
-                    e,
-                    col_info.join(", ")
-                ))
-            }
-        }
+        self.create_on(&client, record).await
     }
 
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
@@ -866,30 +1017,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let table = self.table_ref(collection);
-
-        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
-
-        let rows = match client.query(&sql, &[&id]).await {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format_pg_error(&e);
-                if msg.contains("does not exist") {
-                    return StorageResult::err(format!("Record not found: {}", id));
-                }
-                return StorageResult::err(format!("Query failed: {}", msg));
-            }
-        };
-
-        if rows.is_empty() {
-            return StorageResult::err(format!("Record not found: {}", id));
-        }
-
-        match row_to_record(&rows[0], collection, rows[0].columns()) {
-            Ok(record) => StorageResult::ok(record),
-            Err(e) => StorageResult::err(format!("Row conversion failed: {}", e)),
-        }
+        self.read_on(&client, collection, id).await
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -1151,83 +1279,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let bare_table = naming::to_table_name(collection);
-        let table = self.table_ref(collection);
-        let now: DateTime<Utc> = Utc::now();
-
-        // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
-
-        let mut sets = vec!["updated_at = $1".to_string()];
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
-        let mut idx = 1_usize;
-
-        if increment_version {
-            sets.push("version = version + 1".to_string());
-        }
-
-        if let Value::Object(obj) = &data {
-            for (key, value) in obj {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                idx += 1;
-                let col_name = naming::to_snake_case(key);
-                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
-                sets.push(format!("{} = ${}", col_name, idx));
-                params.push(value_to_pg_typed(value, pg_type));
-            }
-        }
-
-        idx += 1;
-        params.push(Box::new(id.clone()));
-
-        let sql = format!(
-            "UPDATE {} SET {} WHERE id = ${}",
-            table,
-            sets.join(", "),
-            idx
-        );
-        let params_ref: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
-
-        match client.execute(&sql, &params_ref).await {
-            Ok(rows) if rows > 0 => self.read(collection, id).await,
-            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-            Err(e) => {
-                // Schema evolution: auto-add missing columns and retry.
-                // Evict the ensured-columns cache first — it lied (claimed a
-                // column existed that Postgres just rejected), so we must hit
-                // information_schema to rebuild ground truth.
-                let err_msg = format_pg_error(&e);
-                if err_msg.contains("does not exist") && err_msg.contains("column") {
-                    self.ensured_columns_cache.write().await.remove(&bare_table);
-                    if let Err(evolve_err) =
-                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
-                            .await
-                    {
-                        return StorageResult::err(format!(
-                            "Update failed [{}]: {} (schema evolution also failed: {})",
-                            bare_table, err_msg, evolve_err
-                        ));
-                    }
-                    self.invalidate_column_cache(&bare_table).await;
-                    // Retry the update after adding columns
-                    match client.execute(&sql, &params_ref).await {
-                        Ok(rows) if rows > 0 => self.read(collection, id).await,
-                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-                        Err(e2) => StorageResult::err(format!(
-                            "Update failed [{}] after schema evolution: {}",
-                            bare_table,
-                            format_pg_error(&e2)
-                        )),
-                    }
-                } else {
-                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
-                }
-            }
-        }
+        self.update_on(&client, collection, id, data, increment_version).await
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
@@ -1239,60 +1291,102 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let table = self.table_ref(collection);
-        let sql = format!("DELETE FROM {} WHERE id = $1", table);
-
-        match client.execute(&sql, &[&id]).await {
-            Ok(rows) => StorageResult::ok(rows > 0),
-            Err(e) => StorageResult::err(format!("Delete failed: {}", e)),
-        }
+        self.delete_on(&client, collection, id).await
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
+        // ONE checked-out connection for the whole batch. Dispatching through
+        // `self.create(...)` per operation (as this did before) takes a DIFFERENT
+        // pooled connection each time, so a transaction opened on any one of them
+        // could not cover the others — which is why the batch could half-apply.
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        if let Err(e) = client.batch_execute("BEGIN").await {
+            return StorageResult::err(format!("Failed to open batch transaction: {}", e));
+        }
+
         let mut results = Vec::with_capacity(operations.len());
-        for op in operations {
-            let result = match op.operation_type {
-                BatchOperationType::Create => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
+        for (index, op) in operations.into_iter().enumerate() {
+            let outcome: Result<Value, String> = match op.operation_type {
+                BatchOperationType::Create => match (op.id, op.data) {
+                    (Some(id), Some(data)) => {
                         let record = DataRecord {
                             id,
                             collection: op.collection,
                             data,
                             metadata: RecordMetadata::default(),
                         };
-                        let r = self.create(record).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
+                        let r = self.create_on(&client, record).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "create failed".to_string()))
+                        }
                     }
-                }
-                BatchOperationType::Read => {
-                    if let Some(id) = op.id {
-                        let r = self.read(&op.collection, &id).await;
-                        json!({"success": r.success, "data": r.data, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
+                    _ => Err("create requires both id and data".to_string()),
+                },
+                BatchOperationType::Read => match op.id {
+                    Some(id) => {
+                        let r = self.read_on(&client, &op.collection, &id).await;
+                        if r.success {
+                            Ok(json!({"success": true, "data": r.data}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "read failed".to_string()))
+                        }
                     }
-                }
-                BatchOperationType::Update => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
-                        let r = self.update(&op.collection, &id, data, true).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
+                    None => Err("read requires an id".to_string()),
+                },
+                BatchOperationType::Update => match (op.id, op.data) {
+                    (Some(id), Some(data)) => {
+                        let r = self.update_on(&client, &op.collection, &id, data, true).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "update failed".to_string()))
+                        }
                     }
-                }
-                BatchOperationType::Delete => {
-                    if let Some(id) = op.id {
-                        let r = self.delete(&op.collection, &id).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
+                    _ => Err("update requires both id and data".to_string()),
+                },
+                BatchOperationType::Delete => match op.id {
+                    Some(id) => {
+                        let r = self.delete_on(&client, &op.collection, &id).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "delete failed".to_string()))
+                        }
                     }
-                }
+                    None => Err("delete requires an id".to_string()),
+                },
             };
-            results.push(result);
+
+            match outcome {
+                Ok(value) => results.push(value),
+                Err(e) => {
+                    if let Err(rollback_err) = client.batch_execute("ROLLBACK").await {
+                        return StorageResult::err(format!(
+                            "Batch operation {} failed ({}), and rollback also failed: {}",
+                            index, e, rollback_err
+                        ));
+                    }
+                    return StorageResult::err(format!(
+                        "Batch operation {} failed, entire batch rolled back: {}",
+                        index, e
+                    ));
+                }
+            }
+        }
+
+        if let Err(e) = client.batch_execute("COMMIT").await {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return StorageResult::err(format!("Failed to commit batch: {}", e));
         }
         StorageResult::ok(results)
     }
