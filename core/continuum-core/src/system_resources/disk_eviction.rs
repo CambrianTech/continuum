@@ -667,7 +667,20 @@ mod tests {
         // in-flight-set hazard to reason about. Deferring is for
         // classes where blind deletion is UNSAFE (a grading instance,
         // a served model); there is nothing unsafe here to defer for.
-        let owned = ["cargo-target", "genome-models", "logs", "probes"];
+        let owned = [
+            "cargo-target",
+            // Same owner and the same rule as the shared target: derived build output,
+            // re-creatable by definition, evicted oldest-artifact-first under pressure.
+            "cargo-target-wt",
+            "genome-models",
+            "logs",
+            "probes",
+            // Owner: perception::eye_reaper. A profile whose browser is gone is dead
+            // weight the instant the browser dies, so eviction is not age-based — the
+            // reaper removes every profile no live process names, at boot and on the
+            // pressure edge.
+            "eye-profiles",
+        ];
         let deferred = [
             (
                 "hf-hub",

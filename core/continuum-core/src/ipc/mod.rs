@@ -1452,16 +1452,24 @@ pub fn start_server(
         // artifacts only (safe on any user's machine — the next build
         // recreates everything it deletes). Shares its TrackedDir with the
         // disk reporter — one measurement per class.
-        if let Some(cargo_dir) = crate::system_resources::tracked_dir("cargo-target") {
-            broker.register(Arc::new(crate::system_resources::CargoTargetPool::new(
-                cargo_dir,
-                crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES,
-            )) as Arc<dyn crate::paging::pool::ResourcePool>);
-            log_info!(
-                "ipc",
-                "server",
-                "CargoTargetPool registered with PressureBroker (budget-capped, flock-guarded)"
-            );
+        // BOTH build caches, not just the shared one. Worktree builds are required to
+        // write into `cargo-target-wt` so they cannot poison the main checkout's target
+        // (card d2cda466), and that directory then grew to 87 GB unweighed because it was
+        // registered nowhere — the 2026-07-13 law with a new name on it. Same pool, same
+        // budget, same flock discipline; the broker now sees both.
+        for class in ["cargo-target", "cargo-target-wt"] {
+            if let Some(cargo_dir) = crate::system_resources::tracked_dir(class) {
+                broker.register(Arc::new(crate::system_resources::CargoTargetPool::new(
+                    cargo_dir,
+                    crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES,
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                let line = format!(
+                    "CargoTargetPool registered with PressureBroker for {class} \
+                     (budget-capped, flock-guarded)"
+                );
+                log_info!("ipc", "server", "{}", line);
+            }
         }
 
         // Rotation-generation eviction owners (2026-08-06): the
