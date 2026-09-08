@@ -30,12 +30,16 @@ describe('webContentRegistry — purpose dispatch', () => {
   // Regression b742642d: selecting a project used to replace the whole app with
   // an unregistered-purpose error. Missing feed and empty board are distinct.
   it('renders project content before and after the room board arrives', () => {
-    const body = { title: 'Example project', chat: { messages: [], transcript: [], isEmpty: true } };
+    const body = { title: 'Example project', board: { status: 'awaiting' }, chat: { messages: [], transcript: [], isEmpty: true } };
     expect(markup(webContentRegistry.render({ purpose: 'project', body }))).toContain('Waiting for this room');
-    const loaded = markup(webContentRegistry.render({ purpose: 'project', body: { ...body, board: { room_id: 'room', lanes: [], cards: [] } } }));
+    const loaded = markup(webContentRegistry.render({ purpose: 'project', body: { ...body, board: { status: 'ready', snapshot: { room_id: 'room', lanes: [], cards: [] } } } }));
     expect(loaded).toContain('No work cards');
     expect(loaded).toContain('Conversation');
     expect(loaded).not.toContain('Waiting for this room');
+    const rejected = markup(webContentRegistry.render({ purpose: 'project', body: { ...body, board: { status: 'rejected', reason: 'foreign-room' } } }));
+    expect(rejected).toContain('received a board for another room');
+    expect(rejected).not.toContain('Waiting for this room');
+    expect(rejected).not.toContain('No work cards');
   });
   const model = (over: Partial<ForgeModelView> = {}): ForgeModelView => ({
     model_id: 'qwen3-coder',

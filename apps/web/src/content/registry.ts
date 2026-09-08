@@ -106,11 +106,13 @@ webContentRegistry.register<ChatContentBody>('chat', (body) => chatContent(body)
 webContentRegistry.register<ProjectContentBody>(PROJECT_PURPOSE, (body) => html`
   <section class="project-workspace" aria-label="Project workspace">
     <header class="project-heading"><h2>${body.title}</h2><span>Work board</span></header>
-    ${body.board === undefined
+    ${body.board.status === 'awaiting'
       ? html`<p role="status">Waiting for this room's work board…</p>`
-      : body.board.cards.length === 0
+      : body.board.status === 'rejected'
+        ? html`<p role="alert">Work board unavailable: received a board for another room.</p>`
+      : body.board.snapshot.cards.length === 0
         ? html`<p>No work cards in this room yet.</p>`
-        : html`<ul class="project-cards">${body.board.cards.map((card) => html`
+        : html`<ul class="project-cards">${body.board.snapshot.cards.map((card) => html`
           <li class="project-card">
             <div class="project-card-meta"><span>${card.priority}</span><span>${card.state.replaceAll('_', ' ')}</span></div>
             <h3>${card.title}</h3>

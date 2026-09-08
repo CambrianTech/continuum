@@ -56,10 +56,11 @@ describe('chat → pattern projections', () => {
     const project = { ...vm, purpose: 'project' };
     const board = { room_id: vm.roomId, lanes: [], cards: [] };
     expect(chatWorkspace(project, { board }).content).toMatchObject({
-      purpose: 'project', body: { title: vm.roomName, board, chat: { messages: vm.messages } },
+      purpose: 'project', body: { title: vm.roomName, board: { status: 'ready', snapshot: board }, chat: { messages: vm.messages } },
     });
-    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).not.toHaveProperty('board');
-    expect(chatWorkspace(project).content.body).not.toHaveProperty('board');
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).toMatchObject({ board: { status: 'rejected', reason: 'foreign-room' } });
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).not.toHaveProperty('board.snapshot');
+    expect(chatWorkspace(project).content.body).toMatchObject({ board: { status: 'awaiting' } });
   });
   // what this catches: the roster projects to the people-`Listing` — the cell
   // template resolves glyph/badges/status so a target only draws them.

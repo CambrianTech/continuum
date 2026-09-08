@@ -82,9 +82,10 @@ export function createAnsiTarget(useColor = true): RenderTarget<string> {
   const content = createContentRegistry<string>();
   content.register<ProjectContentBody>(PROJECT_PURPOSE, (body) => [
     `${body.title} — Work board`,
-    body.board === undefined ? 'Waiting for this room\'s work board…'
-      : body.board.cards.length === 0 ? 'No work cards in this room yet.'
-      : body.board.cards.map((card) => `${card.priority} [${card.state}] ${card.title} — ${card.assignee_name ?? 'Unclaimed'} (${card.hold})`).join('\n'),
+    body.board.status === 'awaiting' ? 'Waiting for this room\'s work board…'
+      : body.board.status === 'rejected' ? 'Work board unavailable: received a board for another room.'
+      : body.board.snapshot.cards.length === 0 ? 'No work cards in this room yet.'
+      : body.board.snapshot.cards.map((card) => `${card.priority} [${card.state}] ${card.title} — ${card.assignee_name ?? 'Unclaimed'} (${card.hold})`).join('\n'),
     'Conversation',
     body.chat.isEmpty ? 'No messages yet — say hello.' : body.chat.messages.map(messageLine).join('\n'),
   ].join('\n'));
