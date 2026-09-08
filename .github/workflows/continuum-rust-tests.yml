@@ -204,6 +204,13 @@ jobs:
       # they had never executed — so `orm::postgres` was covered by compilation
       # only. Four transactional defects reached this branch through that gap.
       #
+      # SERIALISED deliberately. All 11 of these share the one `test_orm` schema,
+      # and `test_pg_clear_all` calls clear_all, which enumerates every collection
+      # and truncates each — so run in parallel it deletes the other tests' rows
+      # mid-flight and they fail as though the adapter were broken. Astra's
+      # review caught this before the first run; the alternative is a schema per
+      # test, which is the better fix and its own change.
+      #
       # The `passed` count is load-bearing for the same reason the doctest step
       # below asserts its own: `--ignored` with a filter that matches nothing
       # exits 0, so a renamed module or a test that stops being marked would
@@ -214,7 +221,7 @@ jobs:
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           set -o pipefail
-          cargo test -p continuum-core --lib orm::postgres -- --ignored 2>&1 | tee pg.log
+          cargo test -p continuum-core --lib orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
           echo "postgres tests passed: ${passed:-0}"
           if [ "${passed:-0}" -lt 1 ]; then
