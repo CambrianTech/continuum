@@ -53,7 +53,7 @@ pub fn spawn() {
                 // A clock before the epoch is its own absence of measurement; say so once.
                 crate::probe!(
                     class = "boot.absent",
-                    from_ms = prev.unwrap_or(0),
+                    from_ms = prev.unwrap_or(0), // unwrap_or: 0 = no previous reading, a legible absence in the row
                     to_ms = 0u64,
                     gap_s = 0u64,
                     cause = "clock_unreadable",
@@ -64,7 +64,7 @@ pub fn spawn() {
             if let Some(gap_s) = prev.and_then(|p| absence_gap_s(p, now)) {
                 crate::probe!(
                     class = "boot.absent",
-                    from_ms = prev.unwrap_or(0),
+                    from_ms = prev.unwrap_or(0), // unwrap_or: unreachable here (gap needs prev) — 0 stays legible
                     to_ms = now,
                     gap_s = gap_s,
                     cause = "suspended",
