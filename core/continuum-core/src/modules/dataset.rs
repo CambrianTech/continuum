@@ -466,10 +466,10 @@ impl DatasetService {
             .captures_dir
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".continuum/fixtures/prompt-captures")
-            });
+            .or_else(|| {
+                crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+            })
+            .ok_or_else(|| "cannot resolve capture home directory".to_string())?;
         if !dir.is_dir() {
             return Err(format!(
                 "capturesDir not found: {} (default ~/.continuum/fixtures/prompt-captures)",
@@ -496,17 +496,9 @@ impl DatasetService {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let Ok(cap) = serde_json::from_str::<Value>(line) else {
-                    continue;
-                };
+            let captures = crate::cognition::prompt_capture::completed_file(&path, usize::MAX)
+                .map_err(|error| format!("capture {}: {error}", path.display()))?;
+            for cap in captures {
                 if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
                     if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
                         continue;
@@ -1288,11 +1280,7 @@ mod tests {
             "messages": [{ "role": "user", "content": "[measurement] solve the task" }],
             "response": { "text": "Working the benchmark instance now." }
         });
-        create_test_csv(
-            &captures_dir,
-            "asha.jsonl",
-            &format!("{live}\n{fork}\n"),
-        );
+        create_test_csv(&captures_dir, "asha.jsonl", &format!("{live}\n{fork}\n"));
 
         let params = |name: &str, include_forks: bool| FromCapturesParams {
             captures_dir: Some(captures_dir.to_str().unwrap().to_string()),
@@ -1307,12 +1295,16 @@ mod tests {
         };
 
         // Default: the fork tick is excluded — only the lived room turn trains.
-        let v = service().from_captures(&params("live-only", false)).unwrap();
+        let v = service()
+            .from_captures(&params("live-only", false))
+            .unwrap();
         assert_eq!(v.total_examples, 1, "nil-room fork must be excluded");
 
         // Explicit opt-in: both convert (a fork corpus is a legitimate goal,
         // it just must never be the silent default).
-        let v = service().from_captures(&params("with-forks", true)).unwrap();
+        let v = service()
+            .from_captures(&params("with-forks", true))
+            .unwrap();
         assert_eq!(v.total_examples, 2, "opt-in must include the fork tick");
     }
 

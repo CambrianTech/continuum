@@ -1,0 +1,26 @@
+/* Recorded mind log: compact chronology beside readable, full-width payloads. */
+.mind-playback { border: 1px solid var(--border, #31414b); border-radius: 14px; margin: 20px 0; overflow: hidden; background: var(--surface, #101a23); }
+.mp-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px; }
+.mp-heading h3 { margin: 5px 0; font-size: 19px; }
+.mp-heading p, .mp-muted { color: var(--text-muted, #a1b0bf); font-size: 12px; line-height: 1.6; }
+.mp-heading p { margin: 0; }
+.mp-eyebrow { color: var(--accent, #66d5c2); font-size: 10px; letter-spacing: .15em; }
+.mp-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 20px; border-block: 1px solid var(--border, #31414b); font-size: 12px; }
+.mp-controls span { margin-left: auto; color: var(--text-muted, #a1b0bf); }
+.mp-layout { display: grid; grid-template-columns: minmax(165px, 230px) minmax(0, 1fr); min-height: 180px; }
+.mp-calls { max-height: 740px; overflow-y: auto; border-right: 1px solid var(--border, #31414b); }
+.mp-call { display: grid; grid-template-columns: 1fr auto; width: 100%; padding: 13px; gap: 6px; background: none; border: 0; border-bottom: 1px solid var(--border, #31414b); text-align: left; color: inherit; cursor: pointer; }
+.mp-call[aria-current=true] { background: color-mix(in srgb, var(--accent, #66d5c2) 12%, transparent); box-shadow: inset 3px 0 var(--accent, #66d5c2); }
+.mp-call > span:nth-of-type(2), .mp-call > code { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-call time, .mp-call code { font-size: 10px; color: var(--text-muted, #a1b0bf); }
+.mp-status { font-size: 10px; color: var(--accent, #66d5c2); }
+.mp-status[data-status=failed], .mp-status[data-status=cancelled] { color: #f3b77e; }
+.mp-record { padding: 18px; min-width: 0; }
+.mp-provenance { display: flex; flex-wrap: wrap; gap: 7px 16px; color: var(--text-muted, #a1b0bf); font-size: 11px; overflow-wrap: anywhere; }
+.mp-message { margin: 8px 0; border: 1px solid var(--border, #31414b); border-radius: 7px; overflow: hidden; }
+.mp-message summary { padding: 9px 12px; font-size: 12px; cursor: pointer; }
+.mp-message pre, .mp-output { max-height: 460px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; font-size: 12px; line-height: 1.6; margin: 0; tab-size: 2; }
+.mp-message pre { border-top: 1px solid var(--border, #31414b); }
+.mp-issue { color: #f3b77e; border-left: 2px solid #f3b77e; padding: 8px 12px; margin: 12px 20px; font-size: 12px; overflow-wrap: anywhere; }
+.mind-playback > .mp-muted { padding: 0 20px 12px; }
+@media (max-width: 700px) { .mp-layout { grid-template-columns: 1fr; } .mp-calls { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--border, #31414b); } .mp-heading { align-items: flex-start; } }

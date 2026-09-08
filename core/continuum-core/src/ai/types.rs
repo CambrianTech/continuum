@@ -727,6 +727,19 @@ impl ChatMessage {
 }
 
 impl TextGenerationResponse {
+    /// A provider can carry a failed generation inside an otherwise successful
+    /// transport response. Borrow its reason so recorders and consumers agree
+    /// before accepting any partial text or tool proposals as a completed call.
+    pub fn generation_error(&self) -> Option<&str> {
+        match self.error.as_deref() {
+            Some(error) => Some(error),
+            None if self.finish_reason == FinishReason::Error => {
+                Some("provider returned finish_reason=error without error details")
+            }
+            None => None,
+        }
+    }
+
     /// Check if response has tool calls
     pub fn has_tool_calls(&self) -> bool {
         self.tool_calls

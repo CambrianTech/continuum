@@ -29,6 +29,16 @@ const protoDir = (sub) => join(root, 'protocol', 'typescript', sub);
 const genDir = (sub) => join(root, 'sdk', 'typescript', 'generated', sub);
 
 const VENDORED = [
+  // Recorded Mind playback: actual command/view contract plus the referenced
+  // persona identity. Mirror folders so ./Sibling and ../identity imports work.
+  { src: 'cognition', dest: 'cognition', name: 'CognitionPlaybackParams' },
+  { src: 'cognition', dest: 'cognition', name: 'CognitionPlaybackResult' },
+  { src: 'cognition', dest: 'cognition', name: 'PlaybackPage' },
+  { src: 'cognition', dest: 'cognition', name: 'PlaybackDetail' },
+  { src: 'cognition', dest: 'cognition', name: 'CallHeader' },
+  { src: 'cognition', dest: 'cognition', name: 'CallStatus' },
+  { src: 'cognition', dest: 'cognition', name: 'PayloadRef' },
+  { src: 'identity', dest: 'identity', name: 'PersonaRef' },
   // chat widget closure (positron payloads → views)
   { src: 'positron', dest: 'views', name: 'ChatViewState' },
   { src: 'positron', dest: 'views', name: 'ChatMessageView' },

@@ -222,6 +222,8 @@ The persona that talks to her host in three months and recalls things from today
 | Per-turn orchestration | `persona/service_loop.rs` (driver) + `persona/unified.rs` (a thin orchestration method on the brain) | Drive turns through the verbs. No new pipeline. |
 | Input during active work | `PersonaConversation::perceive_ready` → `cognition/act_observe` → `Burst.room_updates` | Same inbox and driver; retained ownership, explicit room attribution, complete prompt accounting. |
 | Supplemental input provenance | `WorkspaceTrace` / `SettleOutcome` → `ExperienceRecord.room_updates` | Shared event handles on the live path; typed, defaulted capture fields preserve the full source-labelled input for replay and curriculum. |
+| Exact request lifecycle | `LlmDeliberationFaculty` → `PromptCaptureSink` | Borrow the actual typed request before awaiting inference. The submitted `request_id` stays distinct from provider response identity; completion, failure, cancellation and capture gaps remain explicit. |
+| Recorded playback | `cognition/prompt_capture_store.rs` → `cognition/playback` → Mind View log | Existing capture owner, bounded offset index and selected payload reads. No inference or tool execution. A shared construction session + persona + `CycleId` joins workspace traces to multiple actual requests; `Cause` retains the original source. |
 | Inference verb | `cognition/generate_response.rs::evaluate_response` | The substrate's agent inference. Provider-routed, typed errors. |
 | Shared analysis | `cognition/shared_analysis/mod.rs::analyze` | Single-flight cache + base model. ONE inference per message across personas. |
 | Specialty match | `cognition/response_orchestrator.rs::score_persona` | Per-persona relevance + lead election. |

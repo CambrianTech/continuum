@@ -18,6 +18,7 @@
  */
 
 import './theme.css';
+import { configurePlayback, focusPlayback, refreshPlayback } from './persona/playback';
 import {
   Continuum,
   WebSocketTransport,
@@ -202,8 +203,12 @@ async function main(): Promise<void> {
   // ui"): while a persona tab is focused, poll her admitted-engram store +
   // genome coverage and hand the feed to the mind tab's learning stream. Real
   // rows only — the section renders awaiting/empty states until data lands.
+  configurePlayback(async (params) => JSON.parse(await transport.execute(
+    buildCommandUri('cognition/playback'), JSON.stringify(params))),
+    () => { widget.mindRevision += 1; });
   let mindTimer: ReturnType<typeof setInterval> | undefined;
   const pollMind = async (personaId: string): Promise<void> => {
+    await refreshPlayback(personaId);
     try {
       const raw = await transport.execute(
         buildCommandUri('cognition/recall-engrams'),
@@ -312,6 +317,7 @@ async function main(): Promise<void> {
     }
   };
   const focusMind = (personaId: string | undefined): void => {
+    focusPlayback(personaId);
     if (mindTimer !== undefined) clearInterval(mindTimer);
     mindTimer = undefined;
     if (personaId === undefined) {

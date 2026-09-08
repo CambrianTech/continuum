@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# replay-turn.sh — the glass-box turn-replay harness.
+# replay-turn.sh — a fresh-inference A/B probe, NOT execution-free playback.
+# Inspect recorded history without inference via cognition/playback or Mind → View log.
 #
 # WHY THIS EXISTS (the principle Joel hammered): you must NEVER have to guess why
 # an LLM inferenced something — you must be able to REPLAY the exact turn, see the
@@ -8,8 +9,8 @@
 # holds the verbatim system prompt + message thread of a real turn. This harness
 # feeds that EXACT prompt back through the live inference seam (`ai/generate`,
 # which takes `system_prompt` + `messages` verbatim) so the reading is fresh by
-# construction — there is no capture-file-staleness window, the response IS the
-# measurement. It then re-runs with one labelled mutation (default: strip the
+# construction — the newly generated response IS the
+# measurement, not an exact replay of past model state. It then re-runs with one labelled mutation (default: strip the
 # [Silence Option] affordance block) and prints the A/B delta. That is how you
 # prove "it works" / "it doesn't" instead of theorizing.
 #
@@ -68,19 +69,31 @@ fi
 echo "capture: $CAP"
 echo "turn   : $TURN     model: $MODEL     mutate: $MUTATE"
 
+# The canonical reader joins lifecycle rows and refuses missing payloads. Do not
+# parse raw JSONL here: submission and terminal records intentionally store the
+# full request only once. The bounded command returns completed calls only.
+python3 - "$CAP" "$WORK" <<'PYQUERY'
+import sys, json, pathlib, uuid
+persona = str(uuid.UUID(pathlib.Path(sys.argv[1]).stem.removesuffix(".prev")))
+with open(pathlib.Path(sys.argv[2]) / "capture-query.json", "w") as target:
+    json.dump({"persona_id": persona, "limit": 100, "previous": pathlib.Path(sys.argv[1]).stem.endswith(".prev")}, target)
+PYQUERY
+"$CU" cognition/prompt "$(cat "$WORK/capture-query.json")" >"$WORK/captures.json"
+
 # --- extract the chosen turn → paramsA (verbatim) + paramsB (one variable stripped) ---
-python3 - "$CAP" "$TURN" "$MODEL" "$MUTATE" "$STRIP_RE" "$WORK" <<'PY'
+python3 - "$WORK/captures.json" "$TURN" "$MODEL" "$MUTATE" "$STRIP_RE" "$WORK" <<'PY'
 import sys, json, re, os
 cap, turn, model, mutate, strip_re, work = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]=="1", sys.argv[5], sys.argv[6]
-recs = [json.loads(l) for l in open(cap).read().splitlines() if l.strip()]
-if not recs: sys.exit("capture has no records")
+recs = [json.loads(row) for row in json.load(open(cap, encoding="utf-8"))["records"]]
+if not recs: sys.exit("capture has no completed records")
+if not -len(recs) <= turn < len(recs): sys.exit("turn is outside the bounded 100-call capture window")
 rec = recs[turn]
 system = rec.get("system","")
 messages = rec.get("messages",[])
 # messages is the verbatim thread the model saw — feed it straight back.
 def params(sysp):
     return {"model": model, "system_prompt": sysp, "messages": messages,
-            "temperature": 0.0}  # greedy: deterministic, so A/B is a clean one-variable test
+            "temperature": 0.0}  # greedy A/B probe; a fresh model run is not deterministic playback
 json.dump(params(system), open(f"{work}/paramsA.json","w"))
 stripped = re.sub(strip_re, "", system, flags=re.DOTALL) if mutate else system
 json.dump(params(stripped), open(f"{work}/paramsB.json","w"))
