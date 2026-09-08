@@ -1133,6 +1133,33 @@ impl ServingDaemonModule {
     /// one candidate, so the reconcile serves that model or (if it has dropped off
     /// disk) nothing. Suppress subtracts; pin intersects; the planner still owns
     /// the choice among whatever remains.
+    /// What to tell a human when nothing is serving. "No local weights" is a LIE when the
+    /// weights are there and every candidate was refused for a nameable reason.
+    fn no_candidate_reason(&self) -> String {
+        let (kept, refused) = servable_candidates_with_refusals(
+            &self.catalog.snapshot(),
+            &self.suppressed.borrow(),
+            &self.pinned.borrow(),
+        );
+        if !kept.is_empty() {
+            return "a candidate exists but no plan was produced — read serving.plan".to_string();
+        }
+        if refused.is_empty() {
+            return "no servable model on disk — the planner found no local weights to \
+                    bring up (pull one with `continuum models/pull`)"
+                .to_string();
+        }
+        let named = refused
+            .iter()
+            .map(|r| format!("{} ({})", r.model_id, r.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "no candidate to host citizens — {} model(s) on disk were refused: {named}",
+            refused.len()
+        )
+    }
+
     fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
@@ -1797,11 +1824,7 @@ impl ServingDaemonModule {
                     // live → empty transition; the guard above is not held across the await.
                     // This arm is sync (reconcile_to_plan); the teardown awaits in tick().
                     self.idle_pending.store(true, Ordering::SeqCst);
-                    let flipped = ServingSnapshot::degraded(
-                        "no servable model on disk — the planner found no local weights \
-                         to bring up (pull one with `continuum models/pull`)"
-                            .to_string(),
-                    );
+                    let flipped = ServingSnapshot::degraded(self.no_candidate_reason());
                     Self::emit_serving(self.bus.get(), &flipped);
                     let _ = self.serving_tx.send_replace(flipped);
                 }
@@ -3807,25 +3830,73 @@ fn footprint_from_parts(
 /// "what the autonomic plan may serve," shared by [`ServingDaemonModule::live_candidates`]
 /// (the plan) and the tier-down ranker (#56, so a shrink can only re-home to a model the
 /// plan would itself have picked — never a divergent second catalog).
-fn servable_candidates(
+/// Why a model on disk is not a candidate to host minds. Stated, never implied: a node
+/// that says "no servable model" while its weights sit there sends whoever is reading it
+/// hunting for a missing file (2026-09-08: the 5090 hosted zero citizens for an hour, and
+/// three of us spent it eliminating the wrong causes, because `candidates: 0` named none
+/// of the models it had refused or why).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCandidate {
+    pub model_id: String,
+    pub reason: &'static str,
+}
+
+pub const REFUSED_SUPPRESSED: &str = "suppressed by an unload this boot — serving/load re-permits it";
+pub const REFUSED_NOT_PINNED: &str = "another model is pinned — serving/unpin frees the choice";
+pub const REFUSED_INELIGIBLE: &str = "not a base model for citizens (persona_serving_eligible = false)";
+
+/// The candidates, and everything that was refused with its reason. Pure over the
+/// snapshot so the accounting is tested rather than restated at the probe site.
+fn servable_candidates_with_refusals(
     snapshot: &CatalogSnapshot,
     suppressed: &HashSet<String>,
     pinned: &Option<String>,
-) -> Vec<ModelFootprint> {
+) -> (Vec<ModelFootprint>, Vec<RefusedCandidate>) {
     let ineligible: HashSet<String> = snapshot
         .models
         .values()
         .filter(|live| !live.model.persona_serving_eligible)
         .map(|live| live.model.id.clone())
         .collect();
-    candidates_from_snapshot(snapshot)
-        .into_iter()
-        .filter(|c| !suppressed.contains(&c.model_id))
-        .filter(|c| match pinned.as_ref() {
-            Some(p) => p == &c.model_id,
-            None => !ineligible.contains(&c.model_id),
-        })
-        .collect()
+    let mut kept = Vec::new();
+    let mut refused = Vec::new();
+    for c in candidates_from_snapshot(snapshot) {
+        let reason = if suppressed.contains(&c.model_id) {
+            Some(REFUSED_SUPPRESSED)
+        } else {
+            match pinned.as_ref() {
+                Some(pin) if pin != &c.model_id => Some(REFUSED_NOT_PINNED),
+                None if ineligible.contains(&c.model_id) => Some(REFUSED_INELIGIBLE),
+                _ => None,
+            }
+        };
+        match reason {
+            Some(reason) => refused.push(RefusedCandidate { model_id: c.model_id.clone(), reason }),
+            None => kept.push(c),
+        }
+    }
+    (kept, refused)
+}
+
+fn servable_candidates(
+    snapshot: &CatalogSnapshot,
+    suppressed: &HashSet<String>,
+    pinned: &Option<String>,
+) -> Vec<ModelFootprint> {
+    let (kept, refused) = servable_candidates_with_refusals(snapshot, suppressed, pinned);
+    // Say WHY there is nothing to serve, at the only moment anyone cares: when the answer
+    // is none. A refusal list of one line per model beats an hour of elimination.
+    if kept.is_empty() && !refused.is_empty() {
+        for r in &refused {
+            crate::probe!(
+                class = "serving.plan.candidate_refused",
+                model_id = %r.model_id,
+                reason = r.reason,
+                "a model on disk was refused as a base for citizens — this is why the node has no candidate"
+            );
+        }
+    }
+    kept
 }
 
 /// Only a model that can SPEAK is a base-model candidate. An embedding or reranking
@@ -6507,4 +6578,51 @@ mod tests {
         );
         assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
     }
+
+    // what this catches: a node saying "no servable model on disk" while its weights sit
+    // there (the 5090, 2026-09-08: zero citizens for an hour, candidates: 0, and the plan
+    // named neither the models it refused nor why). Every refusal has a reason and the
+    // reason reaches the reader.
+    #[test]
+    fn every_refused_candidate_is_named_with_its_reason() {
+        use std::collections::HashSet;
+        let snap = test_catalog().snapshot();
+        // ELIGIBLE too: the three opt-out rows (an embedding model, the benchmark
+        // opponent, Devstral) are refused for a different reason and would make the last
+        // assertion here read as a bug in the filter rather than as the catalog's intent.
+        let any = snap
+            .models
+            .values()
+            .find(|l| {
+                l.status.availability == Availability::Ready
+                    && can_serve_minds(&l.model)
+                    && l.model.persona_serving_eligible
+                    && footprint_for(&l.model).is_some()
+            })
+            .map(|l| l.model.id.clone());
+        let Some(model_id) = any else {
+            return; // a catalog with nothing ready has nothing to refuse
+        };
+        // Suppressed by an unload.
+        let mut sup = HashSet::new();
+        sup.insert(model_id.clone());
+        let (kept, refused) = servable_candidates_with_refusals(&snap, &sup, &None);
+        assert!(!kept.iter().any(|c| c.model_id == model_id));
+        assert!(
+            refused.iter().any(|r| r.model_id == model_id && r.reason == REFUSED_SUPPRESSED),
+            "a suppressed model names the unload: {refused:?}"
+        );
+        // Another model pinned.
+        let (kept, refused) =
+            servable_candidates_with_refusals(&snap, &HashSet::new(), &Some("not-a-real-model".to_string()));
+        assert!(kept.is_empty(), "nothing matches a pin for a model that is not here");
+        assert!(
+            refused.iter().all(|r| r.reason == REFUSED_NOT_PINNED) && !refused.is_empty(),
+            "every refusal names the pin: {refused:?}"
+        );
+        // Nothing suppressed, nothing pinned: eligible rows survive.
+        let (kept, _) = servable_candidates_with_refusals(&snap, &HashSet::new(), &None);
+        assert!(kept.iter().any(|c| c.model_id == model_id));
+    }
+
 }
