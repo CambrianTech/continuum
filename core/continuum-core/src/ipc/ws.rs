@@ -425,6 +425,105 @@ mod tests {
     use super::*;
     use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse};
 
+    // Socket ownership regression (a8cef9d0): a child serving a model can outlive
+    // the core. Dropping the core's listeners must release their ports while
+    // that child is still alive. Mio 1.1.1 inherited both TCP and UDP sockets.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn sockets_release_ports_while_spawned_child_survives() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Child, Command, Stdio};
+        use std::time::Duration;
+
+        struct OwnedChild(Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                // Only this test's exact child; failure must never orphan it.
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tcp_addr = tcp.local_addr().unwrap();
+        let udp_addr = udp.local_addr().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("child.log");
+        let mut child = OwnedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ipc::ws::tests::socket_owner_child_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("CONTINUUM_TEST_SOCKET_OWNER_CHILD", temp.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(&log_path).unwrap())
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !temp.path().join("ready").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before ready: {}",
+                std::fs::read_to_string(&log_path).unwrap()
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "child startup timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(tcp);
+        drop(udp);
+        let rebound_tcp = tokio::net::TcpListener::bind(tcp_addr).await;
+        let rebound_udp = tokio::net::UdpSocket::bind(udp_addr).await;
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "child must still be alive"
+        );
+        assert!(
+            rebound_tcp.is_ok(),
+            "TCP listener leaked to child: {rebound_tcp:?}"
+        );
+        assert!(
+            rebound_udp.is_ok(),
+            "UDP socket leaked to child: {rebound_udp:?}"
+        );
+        std::fs::write(temp.path().join("release"), b"release").unwrap();
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success(), "child status: {status}");
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "child exit timeout");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn socket_owner_child_fixture() {
+        let Some(root) = std::env::var_os("CONTINUUM_TEST_SOCKET_OWNER_CHILD") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !root.join("release").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parent did not release child"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// An inert nav registry for connection-handler tests: real type, fixed
     /// empty room set, fresh bus. Anonymous test connections never call
     /// `ensure`, and a citizen-scoped test that does gets a projector writing
