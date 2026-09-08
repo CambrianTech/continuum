@@ -10,7 +10,7 @@
 //! The tempting shape is `Option<GenerationReceipt>` — present on success, absent on
 //! failure. That is wrong here and the reason is measured: `LlmDeliberationFaculty`
 //! accepts `Ok(TextGenerationResponse)` even when `finish_reason` is
-//! [`FinishReason::Error`], so partial failed text can become a decision (Astra,
+//! [`crate::ai::types::FinishReason::Error`], so partial failed text can become a decision (Astra,
 //! 2026-09-08). **If a fault were modelled as an absence, a generation that failed and
 //! a generation that never happened would be the same value** — and the turn's record
 //! would then claim cleaner provenance than the turn actually had. Every dispatched
@@ -26,7 +26,11 @@
 //! them hands playback an id the capture never saw, and it breaks precisely on a lane
 //! substitution — the case the whole card exists for.
 
-use crate::ai::types::{FinishReason, TextGenerationResponse};
+// `FinishReason` is deliberately NOT imported here: classification goes through
+// `TextGenerationResponse::generation_error()` (#3917), the single shared
+// definition of "did this call fail". Matching on the enum directly would grow a
+// second, divergent rule.
+use crate::ai::types::TextGenerationResponse;
 
 /// ONE dispatched generation, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,21 +80,15 @@ impl GenerationReceipt {
     /// partial failed text being recorded as a served generation.
     pub fn from_response(submitted_request_id: impl Into<String>, response: &TextGenerationResponse) -> Self {
         let submitted_request_id = submitted_request_id.into();
-        // BOTH conditions, per the measured defect: an adapter signals failure with
-        // `finish_reason=Error` OR by populating `error`, and either can arrive inside
-        // an `Ok(..)` carrying partial text.
-        let faulted = matches!(response.finish_reason, FinishReason::Error) || response.error.is_some();
-        let outcome = if faulted {
+        // THE SHARED CLASSIFIER, not a local rule (#3917, canary 261b25fc). It covers
+        // BOTH signals — `error` populated, or a bare `finish_reason=Error` — and it
+        // is deliberately the ONLY definition of "did this call fail" in the tree.
+        // An inline copy here would drift from the faculty that gates on the same
+        // question, and the two disagreeing is exactly how a fault gets recorded as a
+        // decision (Astra, 2026-09-08).
+        let outcome = if let Some(detail) = response.generation_error() {
             GenerationOutcome::Faulted {
-                // The adapter's own words when it gave any; the finish_reason is the
-                // fallback description, never a substitute for a real message.
-                detail: response.error.clone().unwrap_or_else(|| {
-                    format!(
-                        "adapter returned finish_reason={} with {} chars of text",
-                        response.finish_reason,
-                        response.text.len()
-                    )
-                }),
+                detail: detail.to_string(),
                 model: Some(response.model.clone()),
                 provider: Some(response.provider.clone()),
             }
