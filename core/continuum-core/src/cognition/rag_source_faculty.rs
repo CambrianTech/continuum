@@ -50,7 +50,7 @@
 //! salience-free, no new coupling. In the converged end-state this policy is just
 //! what each native faculty's `contribute()` returns.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -160,6 +160,25 @@ pub struct RagSourceFaculty {
     stable: bool,
     budget: u32,
     clock: Clock,
+    /// `true` when the assembler registered this grounding as
+    /// [`Deferrability::ColdStartCritical`] — meaning its absence is a WRONG turn,
+    /// not merely an unenriched one. Only these are held to the loudness contract
+    /// below; a defer-tolerant source is ALLOWED to be quietly absent.
+    ///
+    /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
+    cold_start_critical: bool,
+    /// Consecutive ticks this source has delivered NOTHING, PER ROOM. See
+    /// [`Self::note_absence`] for why a counter exists at all.
+    ///
+    /// KEYED BY ROOM, because a grounding source answers for whatever room the
+    /// turn is in (`Workspace::room_id`). A single counter was the first version
+    /// and @Astra caught it on review of #3903: content in room B would have
+    /// closed — and reported the length of — room A's absence, and a citizen
+    /// alternating between a room that grounds and one that does not would have
+    /// produced a meaningless streak mixing both.
+    ///
+    /// Bounded by the rooms this persona actually takes turns in.
+    empty_streak: Mutex<super::bounded_room_ledger::BoundedRoomLedger<Uuid, u32>>,
 }
 
 impl RagSourceFaculty {
@@ -185,7 +204,25 @@ impl RagSourceFaculty {
             // cfg.context_window))` so the ceiling tracks the LIVE served window.
             budget: grounding_budget_for(crate::cognition::serving_plan::MIN_SERVE_CTX),
             clock: wall_clock(),
+            // Not cold-start-critical until the assembler says so. The safe
+            // direction for a LOUDNESS contract is the opposite of the safe
+            // direction for a SCHEDULING one: over-declaring here would put every
+            // source's ordinary silence in the ledger, which is how a real signal
+            // gets buried ([[bounded-window-eviction-bug-class]]).
+            cold_start_critical: false,
+            empty_streak: Mutex::new(super::bounded_room_ledger::BoundedRoomLedger::new(
+                super::bounded_room_ledger::ROOMS_TRACKED,
+            )),
         }
+    }
+
+    /// Declare that this grounding's absence is WRONG, not merely unenriched —
+    /// mirroring [`Deferrability::ColdStartCritical`] at the assembly layer.
+    ///
+    /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
+    pub fn cold_start_critical(mut self, critical: bool) -> Self {
+        self.cold_start_critical = critical;
+        self
     }
 
     /// Override the resolved salience directly (e.g. a learned signal) — escape
@@ -214,6 +251,110 @@ impl RagSourceFaculty {
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Record that this source delivered NOTHING this tick, and say so when it is
+    /// a source whose absence is wrong.
+    ///
+    /// ## Why this exists (#3873)
+    ///
+    /// `room-doctrine` — the PARTICIPATION GATE, the lone source deliberately kept
+    /// synchronous because a cold-start `None` would let a persona speak in a room
+    /// it shouldn't — bid **0 times in 873 consecutive ticks over 11.7 h**, and
+    /// nothing anywhere noticed. `evicted=[]` on all 873 rows, so attention never
+    /// removed it: it simply never offered. The census that found it was looking
+    /// for something else.
+    ///
+    /// It was invisible because the abstain below is CORRECT and SILENT, and
+    /// because a second live path (`compose_for_turn`) carried the same content,
+    /// so the citizens were fine. A dead registration with a working spare stays
+    /// dead until the day the spare breaks too — which is exactly what happened to
+    /// the roster, whose spare was the SAME broken `Arc` (#3862, 662 abstains, a
+    /// citizen standing in a room seeing nobody).
+    ///
+    /// The whole point of the ColdStartCritical tier is that its absence is a
+    /// WRONG turn. So its absence must not be silent.
+    ///
+    /// ## Why a streak, and why powers of two
+    ///
+    /// A probe on EVERY empty tick would be 873 rows for one fact, and the fact
+    /// that matters is not "empty now" but "empty CONTINUOUSLY". Firing on the
+    /// 1st, 2nd, 4th, 8th … consecutive miss costs ~log2(n) rows — 10 rows across
+    /// those 873 ticks — and keeps both ends legible: the onset is in the ledger
+    /// immediately, and the duration is in the ledger without drowning it.
+    ///
+    /// Returns the streak length WHEN IT REPORTED, so the decision to report is
+    /// testable without standing up a tracing subscriber to watch for the probe.
+    fn note_absence(&self, room: Uuid) -> Option<u32> {
+        if !self.cold_start_critical {
+            return None;
+        }
+        let streak = {
+            // diagnostics-only bookkeeping; a poisoned lock must not take
+            // cognition down to protect a counter. No await is held here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            let c = g.entry_or(room, 0);
+            *c += 1;
+            *c
+        };
+        if streak.is_power_of_two() {
+            crate::probe!(
+                class = "rag.coldstart.absent",
+                source = self.source.source_id(),
+                persona_id = %self.persona_id,
+                room = %room,
+                consecutive_empty = streak,
+                "ColdStartCritical grounding delivered NOTHING and did not bid —                  this tier's absence is a WRONG turn, not an unenriched one. This                  faculty is generic over every RagSource and cannot say WHY: only                  the source knows, and only if it reports at all. Where one does                  (room-doctrine emits rag.doctrine.outcome), that row reflects its                  LAST EVALUATION, which need not be this tick — a cached delivery                  never reaches the source."
+            );
+            return Some(streak);
+        }
+        None
+    }
+
+    /// How long THIS room's current absence streak is. Test-visible so the live
+    /// `contribute` path can be asserted without reaching into the map.
+    #[cfg(test)]
+    fn streak_in(&self, room: Uuid) -> u32 {
+        self.empty_streak
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only, same as note_absence
+            .get(&room)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Record that this source delivered content, closing any absence streak.
+    ///
+    /// The restore row is not decoration: an absence with no end in the ledger is
+    /// indistinguishable from an absence still running when the census was taken,
+    /// and the streak length is the only place the DURATION is written down.
+    ///
+    /// Returns the closed streak's length when it reported one (same reason as
+    /// [`Self::note_absence`]).
+    fn note_presence(&self, room: Uuid) -> Option<u32> {
+        if !self.cold_start_critical {
+            return None;
+        }
+        let streak = {
+            // same contract as note_absence: recover the guard, never panic here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            // `None` here is BOTH "never absent" and "evicted", and that is
+            // deliberate: announcing a recovery for a record that was merely
+            // dropped would be the same lie this whole change is about.
+            g.take(&room).unwrap_or(0)
+        };
+        if streak > 0 {
+            crate::probe!(
+                class = "rag.coldstart.restored",
+                source = self.source.source_id(),
+                persona_id = %self.persona_id,
+                room = %room,
+                was_empty_for = streak,
+                "ColdStartCritical grounding is bidding again"
+            );
+            return Some(streak);
+        }
+        None
     }
 }
 
@@ -250,8 +391,10 @@ impl Faculty for RagSourceFaculty {
         // Empty delivery → abstain (the source had nothing, or degraded to empty
         // per the good-citizen doctrine). No empty bid clutters the workspace.
         if delivery.items.is_empty() {
+            let _ = self.note_absence(ws.room_id);
             return None;
         }
+        let _ = self.note_presence(ws.room_id);
 
         // One context block per source: concatenate the delivered atomic units.
         // The deliberation faculty renders this under a `[<source_id>]` header.
@@ -370,6 +513,237 @@ mod tests {
             _budget: u32,
         ) -> Option<RagDelivery> {
             None
+        }
+    }
+
+    mod coldstart_absence_is_loud {
+        use super::*;
+
+        fn room() -> Uuid {
+            Uuid::parse_str("00000000-0000-0000-0000-0000000b0b0b").unwrap()
+        }
+
+        fn critical(source: Arc<StubSource>) -> RagSourceFaculty {
+            RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming)
+                .cold_start_critical(true)
+                .with_clock(Arc::new(|| 1_000))
+        }
+
+        // what this catches: regression for #3873 — `room-doctrine`, the
+        // ColdStartCritical participation gate, delivered nothing on 873
+        // consecutive ticks and NOTHING said so, because an empty delivery
+        // abstains silently and a second live path carried the same content. The
+        // tier whose absence is a WRONG turn must not be able to be quietly
+        // absent. Powers of two: 1,2,4,8 report; 3,5,6,7 do not.
+        #[tokio::test]
+        async fn a_cold_start_critical_source_reports_its_absence_on_a_log2_schedule() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let reported: Vec<Option<u32>> =
+                (0..8).map(|_| faculty.note_absence(room())).collect();
+
+            assert_eq!(
+                reported,
+                vec![
+                    Some(1),
+                    Some(2),
+                    None,
+                    Some(4),
+                    None,
+                    None,
+                    None,
+                    Some(8)
+                ],
+                "the onset must be in the ledger immediately and the duration must                  keep arriving, without one fact costing 873 rows"
+            );
+        }
+
+        // what this catches: the guard above must not fire for sources that are
+        // ALLOWED to be quietly absent. A defer-tolerant source's first-tick miss
+        // is by design (wall, kanban, active-work, media-perception), and putting
+        // their ordinary silence in the ledger is how the one row that matters
+        // gets evicted from the window someone is reading
+        // ([[bounded-window-eviction-bug-class]]).
+        #[tokio::test]
+        async fn a_defer_tolerant_source_stays_silent_when_absent() {
+            let faculty =
+                RagSourceFaculty::new(persona(), Arc::new(StubSource::new("room-wall", &[])), SaliencePolicy::StandingFraming)
+                    .with_clock(Arc::new(|| 1_000));
+            let reported: Vec<Option<u32>> =
+                (0..8).map(|_| faculty.note_absence(room())).collect();
+            assert!(
+                reported.iter().all(|r| r.is_none()),
+                "cold_start_critical defaults to false; only the assembler's                  declaration opts a source into the loudness contract"
+            );
+        }
+
+        // what this catches: regression for @Astra's #3903 review finding 2 — one
+        // counter for a source that answers for whatever room the turn is in
+        // meant CONTENT IN ROOM B CLOSED AND REPORTED ROOM A'S ABSENCE, and a
+        // citizen alternating between a grounding room and a bare one produced a
+        // streak that mixed both and meant nothing.
+        //
+        // NON-DEGENERACY: two different rooms, driven to different streak
+        // lengths, asserted different — with one counter this cannot hold.
+        #[tokio::test]
+        async fn one_room_s_absence_streak_never_answers_for_another() {
+            let a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
+            let b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
+            assert_ne!(a, b, "non-degeneracy: two DIFFERENT rooms");
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+
+            for _ in 0..3 {
+                faculty.note_absence(a);
+            }
+            faculty.note_absence(b);
+            assert_eq!(faculty.streak_in(a), 3);
+            assert_eq!(faculty.streak_in(b), 1);
+            assert_ne!(
+                faculty.streak_in(a),
+                faculty.streak_in(b),
+                "non-degeneracy: with a single counter these would be equal and                  the test could not fail"
+            );
+
+            // Content in B closes B's streak and says B's length — never A's.
+            assert_eq!(
+                faculty.note_presence(b),
+                Some(1),
+                "the recovery row must carry the length of THIS room's absence"
+            );
+            assert_eq!(
+                faculty.streak_in(a),
+                3,
+                "and room A's absence must still be running, untouched"
+            );
+            assert_eq!(
+                faculty.note_presence(a),
+                Some(3),
+                "A's own recovery still reports A's own length"
+            );
+        }
+
+        // what this catches: an absence with no END in the ledger is
+        // indistinguishable from one still running when the census was taken —
+        // which is precisely the reading that made #3873 look like a permanent
+        // dead gate. The recovery row carries the streak length, and it is the
+        // only place the DURATION is written down.
+        #[tokio::test]
+        async fn recovery_closes_the_streak_and_reports_how_long_it_ran() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            for _ in 0..5 {
+                faculty.note_absence(room());
+            }
+            assert_eq!(
+                faculty.note_presence(room()),
+                Some(5),
+                "the restore row must carry the length of the absence it ended"
+            );
+            assert_eq!(
+                faculty.note_presence(room()),
+                None,
+                "a source that was never absent has no recovery to announce"
+            );
+            assert_eq!(
+                faculty.note_absence(room()),
+                Some(1),
+                "and the next absence starts a NEW streak, not a continuation"
+            );
+        }
+
+        // what this catches: @Astra's #3903 re-review — per-room keys fixed the
+        // cross-talk but left BOTH diagnostic maps retaining every room the
+        // persona ever answered in, which per-task rooms make unbounded. The
+        // second half of her requirement is the subtle one: EVICTION MUST NOT BE
+        // REPORTED AS RECOVERY. A dropped record is not an absence that ended.
+        #[tokio::test]
+        async fn an_evicted_room_is_forgotten_without_announcing_a_recovery() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            faculty.note_absence(victim);
+            assert_eq!(faculty.streak_in(victim), 1);
+
+            // Push past the bound with distinct rooms. `from_u128` starting at 2
+            // keeps every id different from the victim's.
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+
+            assert_eq!(
+                faculty.streak_in(victim),
+                0,
+                "the oldest room's diagnostics are dropped once the bound is                  exceeded — that is the leak this closes"
+            );
+            assert_eq!(
+                faculty.note_presence(victim),
+                None,
+                "and its return to content must announce NOTHING. A recovery row                  here would claim an absence ended when the record was merely                  evicted — inventing history is the failure this PR exists to stop"
+            );
+            // Non-degeneracy: a room still inside the bound DOES report, so the
+            // assertion above cannot be passing because recovery never fires.
+            let live = Uuid::from_u128(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 1);
+            assert_eq!(
+                faculty.note_presence(live),
+                Some(1),
+                "a retained room still reports its real streak"
+            );
+        }
+
+        // what this catches: revisiting an evicted room starts a NEW streak from
+        // 1 rather than resurrecting the old count — the diagnostic must not
+        // carry a number it cannot justify.
+        #[tokio::test]
+        async fn revisiting_an_evicted_room_starts_a_fresh_streak() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            for _ in 0..5 {
+                faculty.note_absence(victim);
+            }
+            assert_eq!(faculty.streak_in(victim), 5);
+
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+            assert_eq!(faculty.streak_in(victim), 0, "evicted");
+
+            assert_eq!(
+                faculty.note_absence(victim),
+                Some(1),
+                "the revisit reports a streak of ONE, not the five it can no                  longer prove"
+            );
+        }
+
+        // what this catches: the accounting has to run through the real
+        // `contribute` path, not only through the helpers. An empty source still
+        // abstains (behaviour unchanged — no empty bid clutters the workspace)
+        // and a non-empty one still bids; the loudness rides alongside both.
+        #[tokio::test]
+        async fn contribute_still_abstains_on_empty_and_bids_on_content() {
+            let silent = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            assert!(
+                silent.contribute(&Workspace::new("anything")).await.is_none(),
+                "an empty delivery must not become an empty bid"
+            );
+            assert_eq!(
+                silent.streak_in(Workspace::new("anything").room_id),
+                1,
+                "and the abstain must have been counted on the live path"
+            );
+
+            let speaking = critical(Arc::new(StubSource::new(
+                "room-doctrine",
+                &["This room is for coordination."],
+            )));
+            assert!(
+                speaking
+                    .contribute(&Workspace::new("anything"))
+                    .await
+                    .is_some(),
+                "a source with content still bids"
+            );
+            assert_eq!(
+                speaking.streak_in(Workspace::new("anything").room_id),
+                0,
+                "and a bidding source carries no absence"
+            );
         }
     }
 

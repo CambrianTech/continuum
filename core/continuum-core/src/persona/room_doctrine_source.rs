@@ -92,6 +92,55 @@ impl AircDoctrineReader for airc_lib::Airc {
     }
 }
 
+/// WHY a delivery turned out the way it did — the thing an empty `RagDelivery`
+/// cannot say for itself (#3873).
+///
+/// A doctrine delivery is empty for five materially different reasons, and until
+/// this enum existed all five rendered as the same nothing: a room with no
+/// published doctrine was indistinguishable, at every seam we had, from a reader
+/// whose cache never wired up. #3873 could not be triaged past that ambiguity —
+/// "no doctrine has ever been published here" and "the source is broken" were the
+/// two live hypotheses and no instrument separated them.
+/// [[absence-rendered-as-positive-fact]]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Nothing has been observed yet — the pre-first-call sentinel. Distinct from
+    /// every real outcome so the FIRST call always reports one.
+    Unobserved,
+    /// A doctrine block was delivered.
+    Delivered,
+    /// The context belongs to another persona (defense in depth; should not occur
+    /// in production, and its appearance in the ledger is itself the finding).
+    CrossPersona,
+    /// A synthetic nil-room context — deliberately gets nothing, and deliberately
+    /// does NOT fall back to the bound room (the exam-bleed pin).
+    NilRoom,
+    /// The reader answered successfully and returned nothing **within the window
+    /// it reads**. This is NOT "the room has no doctrine", and naming it that was
+    /// the first version of this enum -- caught by @Astra on review of #3903.
+    ///
+    /// THE BOUND, verified in `airc.rs::room_doctrine_in` rather than assumed:
+    /// it calls `page_recent_filtered(filter, 200)` and `continue`s past events
+    /// that fail to decode. So `Ok(None)` means *no decodable
+    /// `DoctrinePublished` event in the latest 200 events of this room*. In a
+    /// busy room that is minutes. A doctrine published an hour ago is invisible
+    /// to it, and an undecodable one is silently skipped.
+    ///
+    /// Calling that `NoDoctrinePublished` renders COULD_NOT_LOOK as
+    /// MEASURED_ABSENT -- the exact defect this enum exists to prevent,
+    /// committed inside the enum. Establishing real absence needs a complete
+    /// indexed projection, which this reader is not.
+    /// [[absence-rendered-as-positive-fact]]
+    NotObservedInReadWindow,
+    /// The reader failed. Cognition stays up, but this is NOT the normal case and
+    /// must never again look like one.
+    ReadFailed,
+    /// A doctrine exists but the budget could not carry the marker plus real
+    /// content.
+    BudgetTooSmall,
+}
+
+
 /// RoomDoctrineSource — persona-bound, reads the room doctrine from any
 /// `AircDoctrineReader`.
 pub struct RoomDoctrineSource {
@@ -101,6 +150,24 @@ pub struct RoomDoctrineSource {
     /// (legacy/test construction): pre-gate behavior.
     room_id: Option<uuid::Uuid>,
     reader: Arc<dyn AircDoctrineReader>,
+    /// The last [`Outcome`] observed PER ROOM, with the wall-clock ms at which it
+    /// was observed. Transitions are what reach the probe ledger -- see
+    /// [`Self::report`].
+    ///
+    /// KEYED BY ROOM because this source is TURN-PARAMETRIC (#443): it answers
+    /// for whatever room the turn is in. A single cell was the first version and
+    /// it was wrong three ways, all caught by @Astra on review of #3903 — the
+    /// same outcome in room B was suppressed by room A's, alternating rooms
+    /// emitted a transition every tick with no state having changed, and a
+    /// recovery in B would have been reported as room A's absence ending. The
+    /// key is `Option<Uuid>` because an UNSTAMPED context (background
+    /// consolidation) is its own scope, not a room.
+    ///
+    /// Bounded by the persona's subscribed rooms, which is a handful; a room she
+    /// never takes a turn in never gets an entry.
+    observed: std::sync::Mutex<
+        crate::cognition::bounded_room_ledger::BoundedRoomLedger<Option<uuid::Uuid>, (Outcome, u64)>,
+    >,
 }
 
 impl RoomDoctrineSource {
@@ -109,7 +176,100 @@ impl RoomDoctrineSource {
             persona_id,
             room_id: None,
             reader,
+            observed: std::sync::Mutex::new(
+                crate::cognition::bounded_room_ledger::BoundedRoomLedger::new(
+                    crate::cognition::bounded_room_ledger::ROOMS_TRACKED,
+                ),
+            ),
         }
+    }
+
+    /// Emit a probe when, and only when, THIS ROOM's outcome changes.
+    ///
+    /// Per-tick reporting would be 873 rows to say one thing, and the fact worth
+    /// having is not "empty now" but "empty for a DIFFERENT reason than before".
+    /// A transition ledger is bounded by the number of real state changes -- for a
+    /// room whose doctrine the reader has never seen in its window, exactly ONE
+    /// row, written on the first tick, saying so in those words.
+    ///
+    /// ## What this does NOT join with (corrected, #3903 review)
+    ///
+    /// An earlier version of this doc claimed the source outcome and the
+    /// [`RagSourceFaculty`] absence streak "join on source + tick". They do not,
+    /// and I had not checked it. Two reasons, both verified:
+    ///
+    /// 1. There is no shared tick or cycle id on either probe.
+    /// 2. `CachedRagSource::deliver` returns `cached.delivery.clone()` WITHOUT
+    ///    calling the inner source (`cached_source.rs`, the `answers` fast path),
+    ///    so on a cache hit this function never runs at all.
+    ///
+    /// So the two probes count different populations: the faculty's streak counts
+    /// TICKS WITHOUT A BID; this outcome is the last ACTUAL READ, which on a
+    /// cached path may be several ticks old.
+    ///
+    /// The probe carries `since_previous_evaluation_ms`, and the name has now been
+    /// corrected TWICE, which is worth recording because both errors were the
+    /// same one.
+    ///
+    /// It was first `observed_age_ms`, described as the age of the observation at
+    /// this tick. It is not: this function runs only on a source evaluation, every
+    /// evaluation rewrites the timestamp (transition or not), and cache hits never
+    /// reach here at all.
+    ///
+    /// It was then `since_previous_read_ms` — still wrong, and @Astra caught that
+    /// too. `CrossPersona` and `NilRoom` both return BEFORE any reader I/O, so an
+    /// interval bounded by one of those did not span a read at all. EVALUATION is
+    /// the honest word: the span between the last two times this source was asked
+    /// and answered, whatever it did to answer.
+    ///
+    /// Naming a measurement for the thing you wish it measured is how a diagnostic
+    /// lies quietly, and doing it twice in one PR is why the name is now derived
+    /// from the code path rather than from the intent.
+    ///
+    /// Returns `true` when it emitted, so the transition rule is testable without
+    /// standing up a tracing subscriber to watch for the probe.
+    ///
+    /// [`RagSourceFaculty`]: crate::cognition::rag_source_faculty::RagSourceFaculty
+    /// `now_ms` is THE TURN'S clock (`ctx.now_ms`), never `SystemTime::now()` —
+    /// `SubstrateContext` documents that so observations stamp consistently and
+    /// replay stays deterministic.
+    fn report(&self, outcome: Outcome, room: Option<uuid::Uuid>, now_ms: u64) -> bool {
+        let now = now_ms;
+        // lock poisoning here would mean a panic inside this tiny map update; the
+        // observation ledger is diagnostics, and taking cognition down to protect
+        // its bookkeeping is the wrong trade.
+        let mut guard = self.observed.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = guard.insert(room, (outcome, now));
+        let (prev_outcome, prev_at) = prev.unwrap_or((Outcome::Unobserved, now));
+        if prev_outcome == outcome {
+            return false;
+        }
+        drop(guard);
+        crate::probe!(
+            class = "rag.doctrine.outcome",
+            source = SOURCE_ID,
+            persona_id = %self.persona_id,
+            bound_room = ?self.room_id,
+            effective_room = ?room,
+            from = ?prev_outcome,
+            to = ?outcome,
+            since_previous_evaluation_ms = now.saturating_sub(prev_at),
+            "room-doctrine outcome changed for THIS room — an empty delivery now              says WHICH empty it is (unobserved-in-window vs read-failed vs gated              out), and how old the previous observation was"
+        );
+        true
+    }
+
+    /// The last outcome observed FOR ONE ROOM. Test-visible so a regression can
+    /// assert WHICH absence occurred and that room A's state never answers for
+    /// room B — the whole point of both the enum and the key.
+    #[cfg(test)]
+    fn observed_in(&self, room: Option<uuid::Uuid>) -> Outcome {
+        self.observed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only ledger, same as report()
+            .get(&room)
+            .map(|(o, _)| *o)
+            .unwrap_or(Outcome::Unobserved)
     }
 
     /// Bind this source to the room its reader answers for, so a context-stamped
@@ -190,6 +350,7 @@ impl RagSource for RoomDoctrineSource {
 
         // Persona-scoped (defense in depth, same shape as the roster).
         if ctx.persona_id != self.persona_id {
+            let _ = self.report(Outcome::CrossPersona, None, ctx.now_ms);
             return empty(ResolutionPreference::Placeholder);
         }
         // Room resolution — TURN-PARAMETRIC (#443), the same shape RoomBoardSource
@@ -209,6 +370,7 @@ impl RagSource for RoomDoctrineSource {
                     persona_id = %ctx.persona_id,
                     "synthetic nil-room context — no doctrine, and no fallback to the bound room"
                 );
+                let _ = self.report(Outcome::NilRoom, Some(t), ctx.now_ms);
                 return empty(ResolutionPreference::Placeholder);
             }
             Some(t) => Some(t),
@@ -217,19 +379,29 @@ impl RagSource for RoomDoctrineSource {
 
         let card = match self.reader.room_doctrine(effective_room).await {
             Ok(Some(card)) => card,
-            // No doctrine published for this room → no block (normal).
-            Ok(None) => return empty(resolution),
+            // Nothing in the reader's WINDOW → no block. Not "no doctrine
+            // exists": the reader pages the latest 200 events and skips decode
+            // failures, so this is an unobserved, not an absence. #3873 spent
+            // its life as "the gate has never held" because a working source
+            // reading an empty window looked exactly like a broken one — and
+            // this variant must not re-tell that story in the other direction.
+            Ok(None) => {
+                let _ = self.report(Outcome::NotObservedInReadWindow, effective_room, ctx.now_ms);
+                return empty(resolution);
+            }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     persona_id = %self.persona_id,
                     "room_doctrine: read failed — empty delivery, cognition stays up"
                 );
+                let _ = self.report(Outcome::ReadFailed, effective_room, ctx.now_ms);
                 return empty(ResolutionPreference::Placeholder);
             }
         };
 
         let Some(content) = Self::fit_body(&card.body, budget) else {
+            let _ = self.report(Outcome::BudgetTooSmall, effective_room, ctx.now_ms);
             return empty(resolution);
         };
         let tokens = estimate_tokens(&content);
@@ -241,6 +413,7 @@ impl RagSource for RoomDoctrineSource {
             tokens,
             "room_doctrine: deliver"
         );
+        let _ = self.report(Outcome::Delivered, effective_room, ctx.now_ms);
 
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
@@ -330,6 +503,129 @@ mod tests {
             }
             Ok(self.doctrine.clone())
         }
+    }
+
+    mod which_empty_is_it {
+        use super::*;
+
+        fn source(reader: Arc<StubReader>, room: uuid::Uuid) -> RoomDoctrineSource {
+            RoomDoctrineSource::new(persona(), reader).for_room(room)
+        }
+
+        fn ctx_in(room: uuid::Uuid) -> RagContext {
+            RagContext::for_persona_in_room(persona(), 1_000_000, room)
+        }
+
+        // what this catches: regression for #3873. `room-doctrine` delivered
+        // nothing on 873 consecutive ticks and the two live hypotheses — "no
+        // doctrine was ever published here" (source fine) and "the cache never
+        // wired up" (source broken) — were INDISTINGUISHABLE at every seam we
+        // had, because both rendered as the same empty delivery. They are now
+        // different rows. [[absence-rendered-as-positive-fact]]
+        #[tokio::test]
+        async fn an_unpublished_room_and_a_broken_reader_are_different_absences() {
+            let room = uuid::Uuid::new_v4();
+            let reader = Arc::new(StubReader::new(None));
+            let src = source(reader.clone(), room);
+
+            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            assert!(d.items.is_empty(), "no doctrine published — no block");
+            assert_eq!(
+                src.observed_in(Some(room)),
+                Outcome::NotObservedInReadWindow,
+                "an empty WINDOW must say it is a window, not an absence"
+            );
+
+            reader.set_fail(true);
+            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            assert!(d.items.is_empty(), "a failed read still keeps cognition up");
+            assert_eq!(
+                src.observed_in(Some(room)),
+                Outcome::ReadFailed,
+                "and a BROKEN reader must not look like an unobserved window"
+            );
+
+            assert_ne!(
+                Outcome::NotObservedInReadWindow,
+                Outcome::ReadFailed,
+                "non-degeneracy: the two states this test distinguishes must not                  be the same value, or it would pass without discriminating"
+            );
+        }
+
+        // what this catches: the transition rule. Reporting every tick would be
+        // 873 rows to say one thing, and the row that matters would be evicted
+        // from whatever window someone is reading
+        // ([[bounded-window-eviction-bug-class]]). One row per real state change:
+        // the first tick reports, an unchanged second tick does not, and a CHANGE
+        // reports again.
+        #[tokio::test]
+        async fn only_a_change_of_outcome_reaches_the_ledger() {
+            let room = uuid::Uuid::new_v4();
+            let src = source(Arc::new(StubReader::new(None)), room);
+
+            assert!(
+                src.report(Outcome::NotObservedInReadWindow, Some(room), 1_000),
+                "the FIRST observation is always a transition (from Unobserved)"
+            );
+            assert!(
+                !src.report(Outcome::NotObservedInReadWindow, Some(room), 1_000),
+                "a repeat of the same state must not cost a row"
+            );
+            assert!(
+                src.report(Outcome::ReadFailed, Some(room), 1_200),
+                "a real change must always be written down"
+            );
+            assert!(
+                src.report(Outcome::Delivered, Some(room), 1_300),
+                "including recovery — the end of an absence is a fact too"
+            );
+        }
+
+        // what this catches: regression for @Astra's #3903 review finding 2 — the
+        // first version kept ONE outcome cell for a source that is
+        // TURN-PARAMETRIC across rooms (#443). Room A's state then answered for
+        // room B three ways: B's first observation was suppressed when it matched
+        // A's, alternating rooms emitted a transition every tick with no state
+        // having changed, and a recovery in B would have been reported as A's
+        // absence ending.
+        //
+        // NON-DEGENERACY, stated because a fixture with fewer degrees of freedom
+        // than the bug cannot fail: this needs TWO rooms with DIFFERENT outcomes,
+        // and it asserts the rooms differ and the outcomes differ before relying
+        // on them. [[fixture-with-fewer-degrees-of-freedom-than-the-bug]]
+        #[test]
+        fn one_room_s_outcome_never_answers_for_another() {
+            let a = uuid::Uuid::new_v4();
+            let b = uuid::Uuid::new_v4();
+            assert_ne!(a, b, "non-degeneracy: two DIFFERENT rooms");
+            let src = source(Arc::new(StubReader::new(None)), a);
+
+            assert!(src.report(Outcome::NotObservedInReadWindow, Some(a), 1_000));
+            // Room B has never been observed, so its FIRST observation is a
+            // transition even though it carries the same outcome as A's.
+            assert!(
+                src.report(Outcome::NotObservedInReadWindow, Some(b), 1_010),
+                "B's first observation must not be suppressed by A's state"
+            );
+            // Neither room has changed, so going back to A reports nothing.
+            assert!(
+                !src.report(Outcome::NotObservedInReadWindow, Some(a), 1_020),
+                "alternating rooms must not manufacture transitions"
+            );
+            // A real change in B, and A is untouched by it.
+            assert!(src.report(Outcome::Delivered, Some(b), 1_030));
+            assert_eq!(src.observed_in(Some(a)), Outcome::NotObservedInReadWindow);
+            assert_eq!(src.observed_in(Some(b)), Outcome::Delivered);
+            assert_ne!(
+                src.observed_in(Some(a)),
+                src.observed_in(Some(b)),
+                "non-degeneracy: the two rooms must hold DIFFERENT outcomes, or                  this test would pass with the key removed"
+            );
+            // An UNSTAMPED context (background consolidation) is its own scope,
+            // not either room.
+            assert_eq!(src.observed_in(None), Outcome::Unobserved);
+        }
+
     }
 
     // what this catches: #443 — a citizen taking a turn in a per-run BENCH room

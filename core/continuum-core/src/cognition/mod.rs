@@ -83,6 +83,9 @@ pub mod pass_intent;
 pub mod perception_facts;
 pub mod persona_tools;
 pub mod persona_workspace;
+/// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
+/// requires of anything that accumulates (#3903 review).
+pub(crate) mod bounded_room_ledger;
 pub mod prefill_throttle;
 pub mod prompt_capture;
 pub mod rag_source_faculty;
