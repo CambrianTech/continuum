@@ -33,11 +33,11 @@ use async_trait::async_trait;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line_addressed};
+use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
+use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
@@ -659,12 +659,11 @@ impl LlmDeliberationFaculty {
     /// overshoot was never the packer misbehaving: it is the floor correctly refusing to
     /// compress. Holding the reserve fixed while the floor grows is the actual error.
     ///
-    /// So the reserve takes the SMALLER of "the share we want" and "what is left after the
-    /// prompt's irreducible cost". Both floor terms are pure over `&self` — the tool schemas
-    /// and the bare framing — which is what lets `prompt_view_within` and
-    /// `build_request_within` compute the SAME number without threading a workspace through.
-    /// That agreement is load-bearing: the prompt is sized to leave exactly this, and
-    /// generation is capped at exactly this, so `prompt + completion` cannot reach `n_ctx`.
+    /// This is the desired reserve after the model's standing floor. Prompt assembly
+    /// also measures this activity's complete stimulus/action payload and may yield
+    /// more room to it. The resulting reserve travels on `DeliberationPromptView`
+    /// into `build_request_within`; the request never recomputes an older, larger
+    /// reserve after the prompt has already spent those tokens.
     ///
     /// Reuses the identical `fixed` term as [`Self::min_window_for_agentic_surface`], so the
     /// bound that WARNS about a too-small window and the reserve that LIVES within one can
@@ -769,6 +768,7 @@ impl LlmDeliberationFaculty {
     fn build_request_within(
         &self,
         binding: &ModelBinding,
+        reserve: u32,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
@@ -786,7 +786,6 @@ impl LlmDeliberationFaculty {
         // 61b6e54d). None = the reserve alone (message turns, tests).
         output_cap: Option<u32>,
     ) -> TextGenerationRequest {
-        let reserve = self.completion_reserve_within(binding.context_window);
         let max_tokens = match output_cap {
             Some(cap) if cap < reserve => {
                 crate::probe!(
@@ -1036,7 +1035,7 @@ impl LlmDeliberationFaculty {
         ws.broadcast
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
-            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
+            .map(|c| Self::context_piece_tokens(c.faculty.as_str(), c.content.len()))
             .sum()
     }
 
@@ -1156,9 +1155,9 @@ impl LlmDeliberationFaculty {
         let mut partial: Vec<String> = Vec::new();
         let mut used = 0usize;
         for c in ctx {
-            // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
-            let header = est_tokens(c.faculty.as_str()) + 2;
-            let piece = header + est_tokens(&c.content);
+            // Charge the rendered bytes together, rounded UP. Separately flooring
+            // name/body estimates undercounted some byte residues at the window edge.
+            let piece = Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
             if used + piece <= budget_tokens {
                 used += piece;
                 selected.push((c, c.content.clone()));
@@ -1168,22 +1167,23 @@ impl LlmDeliberationFaculty {
             // that does. `parts` is never empty (every constructor seeds it), so
             // a single-part contribution simply finds no fitting prefix and falls
             // through to the drop below — byte-identical to the old behavior.
+            // The source's list notice is part of its payload. Reserve the
+            // widest possible notice before admitting any units, not afterward.
+            let how = match c.expand_command {
+                Some(cmd) => format!(" — run `{cmd}` to see all {}", c.parts.len()),
+                None => String::new(),
+            };
+            let notice_bound = format!("…{} more not shown (context budget){how}", c.parts.len());
             let mut kept_units: Vec<&str> = Vec::new();
-            let mut unit_tokens = header;
+            let mut unit_bytes = 0usize;
             for (i, unit) in c.parts.iter().enumerate() {
-                // Units are joined by "\n" — charge the separator from the second on.
-                let cost = est_tokens(unit) + usize::from(i > 0);
-                if used + unit_tokens + cost > budget_tokens {
+                let next_bytes = unit_bytes + unit.len() + usize::from(i > 0);
+                let with_notice = next_bytes + 1 + notice_bound.len();
+                if used + Self::context_piece_tokens(c.faculty.as_str(), with_notice) > budget_tokens {
                     break;
                 }
-                unit_tokens += cost;
+                unit_bytes = next_bytes;
                 kept_units.push(unit.as_str());
-            }
-            if kept_units.len() == c.parts.len() {
-                // Can only happen if the estimator disagrees with itself; treat as whole.
-                used += unit_tokens;
-                selected.push((c, c.content.clone()));
-                continue;
             }
             if kept_units.is_empty() {
                 dropped.push(format!(
@@ -1199,17 +1199,11 @@ impl LlmDeliberationFaculty {
             // partial board as the whole board and reports work that isn't there
             // — a quieter lie than the empty block this replaces.
             let omitted = c.parts.len() - kept_units.len();
-            // Name the EXACT verb, never "the matching command" — she cannot run a
-            // description, and a name she has to guess is a name she gets wrong
-            // ([[command-names-must-be-accurate]]). The source declares it
-            // (`RagSource::expand_command`, no default impl); a source with nothing
-            // more to fetch says only how much was omitted.
-            let how = match c.expand_command {
-                Some(cmd) => format!(" — run `{cmd}` to see all {}", c.parts.len()),
-                None => String::new(),
-            };
             let notice = format!("…{omitted} more not shown (context budget){how}");
-            used += unit_tokens + est_tokens(&notice);
+            let unit_tokens = Self::context_piece_tokens(
+                c.faculty.as_str(), unit_bytes + 1 + notice.len(),
+            );
+            used += unit_tokens;
             let body = format!("{}\n{notice}", kept_units.join("\n"));
             partial.push(format!(
                 "{}({}/{} units,tok={}→{})",
@@ -1538,9 +1532,9 @@ impl LlmDeliberationFaculty {
 
     /// [`prompt_view`] against an explicit served window. See that method.
     fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
-        // The reply's reserved room — the SAME value `build_request_within` passes
-        // as `max_tokens`, so the prompt is sized to leave exactly what generation
-        // is then allowed to use. One source: [`Self::completion_reserve_within`].
+        // Desired reply room from the existing measured-reserve policy. Below,
+        // it yields to the current payload's measured floor; that planned value
+        // travels with the view into `build_request_within` as `max_tokens`.
         let completion_reserve = self.completion_reserve_within(context_window) as usize;
 
         // The NATIVE tool schemas ride the served window too: the gateway injects
@@ -1585,14 +1579,18 @@ impl LlmDeliberationFaculty {
         // (both the silence block and the [Your own time] block are gated and add a
         // few dozen tokens each).
         let holds_live_work = Self::holds_live_work(ws);
-        let framing_tokens = est_tokens(&self.compose_system_holding(
-            "",
-            &expanded,
-            ws.directed_at_self,
-            ws.self_initiated,
-            ws.now_ms,
-            holds_live_work,
-        ));
+        let framing_tokens = Self::framing_cost(
+            &self
+                .compose_system_split(
+                    "",
+                    &expanded,
+                    ws.directed_at_self,
+                    ws.self_initiated,
+                    ws.now_ms,
+                    holds_live_work,
+                )
+                .stable,
+        );
 
         // The conversation — role-attributed turns built from `ws.turns` (own posts
         // → assistant, peers → user), kept to the most-recent tail when it would
@@ -1633,7 +1631,7 @@ impl LlmDeliberationFaculty {
         // pool exactly as before (the fairness cap between grounding and
         // conversation is unchanged — only which claimant holds the reservation).
         let contribution_cost =
-            |c: &Contribution| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
+            |c: &Contribution| Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
         let offered = || {
             ws.broadcast
                 .iter()
@@ -1647,9 +1645,39 @@ impl LlmDeliberationFaculty {
             // header against this reservation before any contribution renders, so a
             // floor sized to the contribution ALONE under-reserves by exactly the
             // header and delivers nothing. Reserve the delivered shape: header + item.
-            .map(|cost| cost + est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
+            .map(|cost| cost + Self::working_context_header_cost())
             .unwrap_or(0)
             .min(after_framing / 2);
+        // The volatile framing (clock + own-time/presence) rides the FACTS phase
+        // of the conversation — flicker-class content, before the ask — never the
+        // system message it invalidated on every act (see the split note below).
+        let trailing_framing = deliberation_prompt::compose_trailing(
+            ws.now_ms,
+            ws.self_initiated,
+            ws.directed_at_self,
+            holds_live_work,
+        );
+        let all_messages = self.messages_unfitted(
+            ws,
+            (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
+        );
+
+        // The actual stimulus and received action payload are irreducible input,
+        // not optional conversation fill. Reuse the existing reserve policy, but
+        // let its desired room yield to their measured floor. Keep this exact
+        // planned reserve on the view and pass it into the generation request.
+        let desired_completion_reserve = completion_reserve;
+        let mandatory_tokens = framing_tokens
+            .saturating_add(selected.tokens)
+            .saturating_add(ctx_floor)
+            .saturating_add(all_messages.required_tokens());
+        let completion_reserve = desired_completion_reserve
+            .min((context_window as usize).saturating_sub(mandatory_tokens))
+            .max(Self::COMPLETION_FLOOR_TOKENS as usize);
+        let after_framing = (context_window as usize)
+            .saturating_sub(completion_reserve)
+            .saturating_sub(selected.tokens)
+            .saturating_sub(framing_tokens);
         let msg_budget = after_framing.saturating_sub(ctx_floor);
         // LATENCY-BUDGETED FILL (act-latency law + compression ladder): a
         // bigger served window is only a gift if its content earns the prefill
@@ -1666,7 +1694,10 @@ impl LlmDeliberationFaculty {
         // rate constant is deliberately below every measured ingest
         // (636-676 t/s live) so the cap over-admits rather than starves.
         let latency_fill_cap = PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S;
-        let msg_budget = if msg_budget > latency_fill_cap {
+        let fill_budget = all_messages
+            .required_tokens()
+            .saturating_add(latency_fill_cap);
+        let msg_budget = if msg_budget > fill_budget {
             crate::probe!(
                 class = "delib.fill.latency_capped",
                 persona = %self.persona_name,
@@ -1675,23 +1706,10 @@ impl LlmDeliberationFaculty {
                 "conversation fill capped by the act-latency target — window headroom \
                  is reserve for content that earns its prefill, never default fill",
             );
-            latency_fill_cap
+            fill_budget
         } else {
             msg_budget
         };
-        // The volatile framing (clock + own-time/presence) rides the FACTS phase
-        // of the conversation — flicker-class content, before the ask — never the
-        // system message it invalidated on every act (see the split note below).
-        let trailing_framing = deliberation_prompt::compose_trailing(
-            ws.now_ms,
-            ws.self_initiated,
-            ws.directed_at_self,
-            holds_live_work,
-        );
-        let all_messages = self.messages_unfitted(
-            ws,
-            (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
-        );
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -1704,10 +1722,10 @@ impl LlmDeliberationFaculty {
         // cap that produced it and freezes it forever. Every term below is therefore
         // the UNTRUNCATED one.
         let demand_tokens = framing_tokens
-            .saturating_add(Self::messages_cost(&all_messages))
+            .saturating_add(all_messages.tokens())
             .saturating_add(Self::assembled_context_cost(ws))
-            .saturating_add(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
-            .saturating_add(completion_reserve)
+            .saturating_add(Self::working_context_header_cost())
+            .saturating_add(desired_completion_reserve)
             // UNTRUNCATED per this probe's contract — which for the tool surface
             // means the full registry ONLY when the window is what withheld it.
             // See `SelectedSurface::demand_tokens`.
@@ -1728,7 +1746,7 @@ impl LlmDeliberationFaculty {
             demand_tokens,
             context_window,
             framing_tokens,
-            conversation_tokens = Self::messages_cost(&all_messages),
+            conversation_tokens = all_messages.tokens(),
             grounding_tokens = Self::assembled_context_cost(ws),
             completion_reserve,
             // The honest headline: >1.0 means this turn wanted more window than it had,
@@ -1738,7 +1756,10 @@ impl LlmDeliberationFaculty {
             "turn demand vs served window"
         );
 
-        let messages = self.fit_messages(all_messages, msg_budget);
+        let (messages, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
+            Ok(messages) => (messages, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
 
         // Whatever remains after framing + conversation goes to enrichment
         // context. The framing estimate above was taken with an EMPTY context,
@@ -1748,13 +1769,13 @@ impl LlmDeliberationFaculty {
         // systematically exceeds the estimate by ~50 tokens (masked by
         // rounding slop until the tool-menu example grew the prompt to the
         // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
-        let used_msg_tokens: usize = messages.iter().map(|m| est_tokens(&m.content_text())).sum();
+        let used_msg_tokens = Self::messages_cost(&messages);
         // Grounding gets everything the conversation did not actually use — never
         // less than the floor reserved above.
         let ctx_budget = after_framing
             .saturating_sub(used_msg_tokens)
-            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
-            .max(ctx_floor.saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER)));
+            .saturating_sub(Self::working_context_header_cost())
+            .max(ctx_floor.saturating_sub(Self::working_context_header_cost()));
         let context = self.render_assembled_context_within(
             ws,
             ctx_budget,
@@ -1796,9 +1817,24 @@ impl LlmDeliberationFaculty {
                 holds_live_work,
             )
             .stable;
+        // This is the native request estimate, not a backend tokenizer count.
+        // Adapters may add model-specific framing; live acceptance still checks
+        // their captured request/usage rather than assuming this estimate exact.
+        let wire_tokens = Self::framing_cost(&system)
+            .saturating_add(Self::messages_cost(&messages))
+            .saturating_add(selected.tokens)
+            .saturating_add(completion_reserve);
+        let capacity_error = capacity_error.or_else(|| {
+            (wire_tokens > context_window as usize).then_some(PromptCapacityError {
+                required_tokens: wire_tokens,
+                budget_tokens: context_window as usize,
+            })
+        });
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {
             system,
+            completion_reserve: completion_reserve as u32,
+            capacity_error,
             messages,
             segments,
         }
@@ -1836,8 +1872,10 @@ impl LlmDeliberationFaculty {
     /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
     /// so it neither bleeds identity nor replays the transcript (the echo-loop root
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
+    #[cfg(test)]
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
+            .expect("test workspace must fit its complete current stimulus and action result")
     }
 
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
@@ -1848,11 +1886,7 @@ impl LlmDeliberationFaculty {
     /// it has run the question "how much did this turn actually want?" is
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::working_set`] measures this.
-    fn messages_unfitted(
-        &self,
-        ws: &Workspace,
-        trailing_framing: Option<&str>,
-    ) -> Vec<ChatMessage> {
+    fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
         // Collapse consecutive same-role turns into one message each (chronological).
         // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
@@ -1878,6 +1912,18 @@ impl LlmDeliberationFaculty {
         // RAW turns, so dropped copies still count as evidence there.
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
         let mut kept_self: Vec<String> = Vec::new();
+        // Preserve the newest external SPEECH as activity context, even when an
+        // own receipt or perception fact follows it. This says what was heard,
+        // never what the citizen must obey. Keep the typed boundary before
+        // same-role coalescing can bury it inside room history (f09424d4).
+        // Source-item/ambient causal provenance remains card 27fdf307; do not
+        // infer an instruction or a work assignment from these bytes.
+        let stimulus_index = ws
+            .turns
+            .iter()
+            .rposition(|turn| !turn.is_self && turn.voice == TurnVoice::Speech);
+        let mut stimulus = None;
+        let mut after_stimulus = false;
         // Every display name in the window (peers + self) — the participant set
         // vocative geometry matches against so a message that names its addressee
         // renders `Asha (to Anwen): …` / `(to you)`. Glass-boxed 2026-07-10: a
@@ -1892,9 +1938,14 @@ impl LlmDeliberationFaculty {
         participants.push(self.persona_name.clone());
         participants.sort();
         participants.dedup();
-        for turn in &ws.turns {
+        for (index, turn) in ws.turns.iter().enumerate() {
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
+            if Some(index) == stimulus_index {
+                stimulus = Some(ChatMessage::text(role, line));
+                after_stimulus = true;
+                continue;
+            }
             if turn.is_self {
                 if kept_self.iter().any(|k| {
                     super::deliberation_budget::jaccard(k, &line)
@@ -1905,9 +1956,10 @@ impl LlmDeliberationFaculty {
                 kept_self.push(line.clone());
             }
             match groups.last_mut() {
-                Some((r, lines)) if *r == role => lines.push(line),
+                Some((r, lines)) if *r == role && !after_stimulus => lines.push(line),
                 _ => groups.push((role, vec![line])),
             }
+            after_stimulus = false;
         }
         let mut messages: Vec<ChatMessage> = groups
             .into_iter()
@@ -1965,12 +2017,9 @@ impl LlmDeliberationFaculty {
         // the ask and the ask stays after them (the 2026-07-20 parrot-loop
         // bisect); the pinned result stays nearest generation (#392); trailing
         // grounding stays out of the system prefix (#205/#2415). The ask is
-        // the LAST user turn of the conversation, peeled here and re-attached
-        // after the churn so stable content is a strict prefix of the stream.
-        let ask: Option<ChatMessage> = match messages.last() {
-            Some(m) if m.role == "user" => messages.pop(),
-            _ => None, // pure self-tick: assistant history only, no ask to peel
-        };
+        // newest external Speech, retained as a typed stimulus before coalescing
+        // and attached after the churn. A later own receipt or perception cannot
+        // silently turn it into evictable history.
 
         // TRAILING proprioception (#205): contributions marked [`Contribution::trailing`]
         // — the working-memory reasoning trail, the FULL most-recent action result,
@@ -1992,8 +2041,8 @@ impl LlmDeliberationFaculty {
         // structured tool_use/tool_result Parts: `content_text()` is blind to non-Text
         // parts, so Parts would undercount in `fit_messages`/`messages_cost` and risk a
         // window-edge overflow — and the live GGUF chat template renders text reliably.
-        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
-        // the accessor so it stops re-prefilling once the turn settles (#139/#165).
+        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated
+        // by active_action_full so it stops re-prefilling after settlement (#139/#165).
         // GROUNDING BEFORE THE RING (2026-08-24, wire-diffed on round 706215f4):
         // with the ring append-only mid-settle (the 8/24 eviction fix), each new
         // result APPENDED after grounding DISPLACED the byte-identical
@@ -2058,16 +2107,18 @@ impl LlmDeliberationFaculty {
         if let Some(framing) = trailing_framing {
             messages.push(ChatMessage::text("user", framing.to_string()));
         }
-        if let Some(ask) = ask {
-            messages.push(ask);
-        }
-        if let Some(wm) = &self.working_memory {
-            // Pinned full-latest LAST — the act she is inside right now, nearest
-            // generation (#392).
-            if let Some(block) = wm.pinned_active_result_block() {
-                messages.push(ChatMessage::text("user", block));
-            }
-        }
+        // Use the actual received action payload. The old pinned block clipped
+        // its head before this fitter clipped its tail: the two cuts could leave
+        // only a truncation notice. Oversized output paging belongs to the
+        // existing spill/tool-output producer, never to a generic byte reducer.
+        let latest_result = self.working_memory.as_ref().and_then(|wm| {
+            wm.active_action_full().map(|(seq, full)| {
+                ChatMessage::text(
+                    "user",
+                    format!("Full result of your most recent action (#{seq}):\n{full}"),
+                )
+            })
+        });
 
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled
@@ -2076,10 +2127,14 @@ impl LlmDeliberationFaculty {
         // single-message shape the faculty sent before this refactor. NOT a fallback
         // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
         // real, valid input, and this is its faithful representation.
-        if messages.is_empty() {
-            return vec![ChatMessage::text("user", ws.world_state.clone())];
+        if messages.is_empty() && stimulus.is_none() && latest_result.is_none() {
+            stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
-        messages
+        PromptMessages {
+            history: messages,
+            stimulus,
+            latest_result,
+        }
     }
 
     /// The per-message chat-template overhead every message pays, whether it is being
@@ -2093,13 +2148,35 @@ impl LlmDeliberationFaculty {
     // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
     const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
 
+    fn context_piece_tokens(faculty: &str, body_bytes: usize) -> usize {
+        // The actual rendered shape is "\n[faculty]\n<body>\n".
+        (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
+    }
+
+    fn working_context_header_cost() -> usize {
+        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
+    }
+
+    fn framing_cost(system: &str) -> usize {
+        // System is a message too; the template also opens the assistant's
+        // generation turn. Charge both wrappers using the same format allowance.
+        est_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
+    }
+
     /// What this conversation costs whole, with no budget applied — the conversational
     /// half of a turn's demand ([`super::working_set`]).
     fn messages_cost(messages: &[ChatMessage]) -> usize {
-        messages
-            .iter()
-            .map(|m| est_tokens(&m.content_text()) + Self::PER_MESSAGE_TEMPLATE_TOKENS)
-            .sum()
+        messages.iter().map(Self::message_cost).sum()
+    }
+
+    fn message_cost(message: &ChatMessage) -> usize {
+        // The assembler emits Text. Borrow its bytes for every budget pass;
+        // content_text() would allocate another full payload merely to count it.
+        let tokens = match &message.content {
+            crate::ai::types::MessageContent::Text(text) => est_tokens(text),
+            crate::ai::types::MessageContent::Parts(_) => est_tokens(&message.content_text()),
+        };
+        tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
     /// The window-start advance QUANTUM divisor: when the conversation outgrows
@@ -2129,27 +2206,50 @@ impl LlmDeliberationFaculty {
     /// vastly more than the last few k of oldest history
     /// ([[collapse-dont-clip-condense-the-past-never-erode-it]] — and when the
     /// jump does land, it drops whole turns, never a mid-message shear).
-    fn fit_messages(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
+    fn fit_messages(
+        &self,
+        mut prompt: PromptMessages,
+        budget_tokens: usize,
+    ) -> Result<Vec<ChatMessage>, PromptCapacityError> {
+        let required_tokens = prompt.required_tokens();
+        // A quiet self-tick still needs one complete situation message. It has
+        // no external stimulus to protect, but returning zero messages is not a
+        // valid provider request. Preserve its newest whole context or fault.
+        let ambient_tokens = if required_tokens == 0 {
+            match prompt.history.last() {
+                Some(message) => Self::message_cost(message),
+                None => 0, // no history and no required payload: assembly supplies the quiet world-state
+            }
+        } else {
+            0
+        };
+        let minimum_tokens = required_tokens + ambient_tokens;
+        if minimum_tokens > budget_tokens {
+            return Err(PromptCapacityError {
+                required_tokens: minimum_tokens,
+                budget_tokens,
+            });
+        }
+        let history_budget = budget_tokens - required_tokens;
+        let messages = &prompt.history;
         // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
         // with `messages_cost` so measurement and fitting charge identically.
-        let per_message_template_tokens = Self::PER_MESSAGE_TEMPLATE_TOKENS;
-        let costs: Vec<usize> = messages
-            .iter()
-            .map(|m| est_tokens(&m.content_text()) + per_message_template_tokens)
-            .collect();
+        let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
         let total: usize = costs.iter().sum();
-        let mut fitted: Vec<ChatMessage> = Vec::new();
-        if total <= budget_tokens {
-            fitted = messages.clone();
-        } else if messages.len() > 1 {
-            let min_drop = total - budget_tokens;
+        let mut start = 0usize;
+        if total > history_budget {
+            let min_drop = total - history_budget;
             let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
             let drop_q = min_drop.div_ceil(quantum).saturating_mul(quantum);
             let mut dropped = 0usize;
-            let mut start = 0usize;
-            // Whole messages only, and never the newest — it is what the turn
-            // is about (the pre-existing guarantee, preserved).
-            while start + 1 < messages.len() && dropped < drop_q {
+            // Only optional history yields. Stimulus and action payload are typed
+            // slots outside this eviction range, even when both render as user.
+            let drop_end = if required_tokens == 0 {
+                messages.len().saturating_sub(1)
+            } else {
+                messages.len()
+            };
+            while start < drop_end && dropped < drop_q {
                 dropped += costs[start];
                 start += 1;
             }
@@ -2175,46 +2275,15 @@ impl LlmDeliberationFaculty {
                 && opener_advance < 6
                 && continues_cluster(&messages[start])
             {
-                dropped += costs[start];
                 start += 1;
                 opener_advance += 1;
             }
-            if total - dropped <= budget_tokens {
-                fitted = messages[start..].to_vec();
             }
-            // else: the surviving suffix alone still exceeds the budget (a
-            // giant newest message) — fall through to the tail-trim guarantee.
-        }
-        // The newest message alone can exceed the whole budget (a giant single burst
-        // at a tiny window). Keep its trimmed tail regardless — a turn must reach the
-        // model — mirroring the old guarantee that the burst was never dropped whole.
-        if fitted.is_empty() {
-            if let Some(last) = messages.last() {
-                let body = tail_to_tokens(
-                    &last.content_text(),
-                    budget_tokens.saturating_sub(per_message_template_tokens),
-                );
-                // FAIL LOUD, never a blank mind: with the budget squeezed to ~0
-                // this arm used to emit ONE EMPTY user message — the model
-                // deliberated on nothing and every persona greeting-looped
-                // (2026-07-30 outage: spawn-pinned 7936 window minus reserve +
-                // tool schemas + framing left msg_budget=0, silently). An empty
-                // conversation from a NON-empty room is a substrate arithmetic
-                // bug; refuse it visibly instead of feeding it to the model.
-                if body.trim().is_empty() {
-                    tracing::error!(
-                        budget_tokens,
-                        dropped_turns = messages.len(),
-                        probe_class = "delib.prompt.empty",
-                        "window arithmetic left NO room for conversation — refusing to \
-                         emit a blank turn (fail loud, never a blank mind)"
-                    );
-                    return Vec::new();
-                }
-                return vec![ChatMessage::text(last.role.clone(), body)];
-            }
-        }
-        fitted
+        // Move the surviving messages; fitting never clones the entire prompt.
+        prompt.history.drain(..start);
+        prompt.history.extend(prompt.stimulus);
+        prompt.history.extend(prompt.latest_result);
+        Ok(prompt.history)
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
@@ -2317,11 +2386,55 @@ impl SelectedSurface<'_> {
     }
 }
 
+/// Prompt roles are provider-facing; these slots retain the substrate's meaning
+/// until fitting is complete. They confer no authority on a message's author.
+struct PromptMessages {
+    history: Vec<ChatMessage>,
+    stimulus: Option<ChatMessage>,
+    latest_result: Option<ChatMessage>,
+}
+
+impl PromptMessages {
+    fn required_tokens(&self) -> usize {
+        self.stimulus
+            .iter()
+            .chain(self.latest_result.iter())
+            .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
+            .sum()
+    }
+
+    fn tokens(&self) -> usize {
+        LlmDeliberationFaculty::messages_cost(&self.history) + self.required_tokens()
+    }
+}
+
+/// The received stimulus/action payload cannot be represented in this window.
+/// No partial payload is submitted: the existing fault and demand paths expose
+/// the capacity problem without recording it as a citizen's decision to pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptCapacityError {
+    pub required_tokens: usize,
+    pub budget_tokens: usize,
+}
+
+impl std::fmt::Display for PromptCapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "complete prompt input requires {} tokens, but only {} are available",
+            self.required_tokens, self.budget_tokens
+        )
+    }
+}
+
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
 pub struct DeliberationPromptView {
     pub system: String,
+    /// Exactly the reserve charged by this plan, also used by the wire request.
+    pub completion_reserve: u32,
+    pub capacity_error: Option<PromptCapacityError>,
     /// The role-attributed conversation thread sent to the model — the persona's
     /// OWN posts as `assistant`, peers' as `user` (PERSONA-COGNITION-PIPELINE §7.5).
     /// Replaces the single flat `user` string that collapsed her own turns into the
@@ -2468,6 +2581,17 @@ impl Faculty for LlmDeliberationFaculty {
             }
         };
         let view = self.prompt_view_within(ws, binding.context_window);
+        if let Some(error) = view.capacity_error {
+            crate::probe!(
+                class = "delib.prompt.capacity",
+                persona = %self.persona_name,
+                required_tokens = error.required_tokens,
+                budget_tokens = error.budget_tokens,
+                context_window = binding.context_window,
+                "stimulus and action payload cannot fit; refusing an incomplete prompt"
+            );
+            return Some(Contribution::deliberation_fault(error.to_string()));
+        }
         // FAIL LOUD, never a blank mind (companion to the `delib.prompt.empty`
         // probe in the fitter): a view with NO conversation from a room that HAS
         // turns means the budget arithmetic starved the prompt. Skipping the turn
@@ -2578,8 +2702,13 @@ impl Faculty for LlmDeliberationFaculty {
         // owned inference request needs a copy of the selected surface.
         let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
 
-        let request =
-            self.build_request_within(&binding, messages.clone(), tools, view.system.clone(), {
+        let request = self.build_request_within(
+            &binding,
+            view.completion_reserve,
+            messages.clone(),
+            tools,
+            view.system.clone(),
+            {
                 // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
                 // teammates) + reserved-marker stops (#158, don't fabricate
                 // [action]/[recall] receipts). Combined into one stop list.
@@ -3278,6 +3407,23 @@ mod tests {
     mod prompt_shaping {
         use super::*;
 
+        fn history_with_stimulus(stimulus: &str) -> Workspace {
+            use crate::cognition::workspace::Burst;
+            let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
+            Workspace::new(Burst::from_turns(
+                room,
+                vec![
+                    BurstTurn::attributed(
+                        false,
+                        "Peer",
+                        "old chatter line\n".repeat(2000),
+                        Some(1),
+                    ),
+                    BurstTurn::attributed(false, "Peer", stimulus, Some(2)),
+                ],
+            ))
+        }
+
         // what this catches: the ONE-live-source window rule (no clamp). The turn's window is
         // `adapter.live_served_window().unwrap_or(binding.context_window)` — the lane the
         // persona is ACTUALLY on, reported by its own adapter. `Some(w)` adopts the live slot
@@ -3414,9 +3560,7 @@ mod tests {
 
             // A burst far bigger than the whole window (a grown room history), with a
             // recognizable LAST line that must survive the head-trim.
-            let mut burst = "old chatter line\n".repeat(2000);
-            burst.push_str("LATEST: did the deploy fix land?");
-            let mut ws = Workspace::new(&burst);
+            let mut ws = history_with_stimulus("LATEST: did the deploy fix land?");
             // Several oversized context bids — recall engrams that alone blow the budget.
             ws.broadcast.push(Contribution::context(
                 FacultyId::Recall,
@@ -3472,9 +3616,7 @@ mod tests {
             .with_context_window(window);
 
             // A conversation big enough to absorb every token the floor doesn't hold.
-            let mut burst = "old chatter line\n".repeat(2000);
-            burst.push_str("LATEST: how is the card going?");
-            let mut ws = Workspace::new(&burst);
+            let mut ws = history_with_stimulus("LATEST: how is the card going?");
             // A recall bid that outranks active-work on salience and dwarfs the budget —
             // without reserved-first selection it would spend the floor's reservation.
             ws.broadcast.push(Contribution::context(
@@ -3537,6 +3679,7 @@ mod tests {
         let reserve = faculty.completion_reserve_within(window);
         let act = faculty.build_request_within(
             &binding,
+                view.completion_reserve,
             view.messages.clone(),
             None,
             view.system.clone(),
@@ -3551,6 +3694,7 @@ mod tests {
         );
         let msg = faculty.build_request_within(
             &binding,
+                view.completion_reserve,
             view.messages.clone(),
             None,
             view.system.clone(),
@@ -3558,7 +3702,11 @@ mod tests {
             Some(ws.room_id),
             None,
         );
-        assert_eq!(msg.max_tokens, Some(reserve), "a message turn keeps the reserved room");
+            assert_eq!(
+                msg.max_tokens,
+                Some(reserve),
+                "a message turn keeps the reserved room"
+            );
     }
 
     #[test]
@@ -3575,9 +3723,7 @@ mod tests {
             .with_context_window(window);
 
             // Drive the prompt to its budget ceiling (oversized burst + context bids).
-            let mut burst = "old chatter line\n".repeat(2000);
-            burst.push_str("LATEST: did the deploy fix land?");
-            let mut ws = Workspace::new(&burst);
+            let mut ws = history_with_stimulus("LATEST: did the deploy fix land?");
             ws.broadcast.push(Contribution::context(
                 FacultyId::Recall,
                 &"deploy pipeline observation; ".repeat(2000),
@@ -3591,6 +3737,7 @@ mod tests {
             let binding = faculty.binding.load_full();
             let request = faculty.build_request_within(
                 &binding,
+                view.completion_reserve,
                 view.messages.clone(),
                 None,
                 view.system.clone(),
@@ -3603,8 +3750,7 @@ mod tests {
                 .max_tokens
                 .expect("deliberation must bound generation to the reserved room");
             assert_eq!(
-                cap,
-                faculty.completion_reserve_within(window),
+                cap, view.completion_reserve,
                 "the generation cap IS the reserved room — one source of truth"
             );
             // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
@@ -4191,7 +4337,7 @@ mod tests {
                  the whole board and she reports work that isn't there\n{block}"
             );
             assert!(
-                est_tokens(&block) <= budget * 2,
+                est_tokens(&block) <= budget,
                 "the prefix must respect the budget it was given (got {} for budget {budget})\n{block}",
                 est_tokens(&block)
             );
@@ -4518,6 +4664,10 @@ mod tests {
             );
 
             let view = faculty.prompt_view(&ws);
+            assert!(view.capacity_error.is_none(), "{view:?}");
+            assert!(view
+                .user_text()
+                .contains("fix the __eq__ comparison in sympy Expr"));
             let in_tail = view
                 .messages
                 .iter()
@@ -4671,9 +4821,7 @@ mod tests {
 
             // Under real burst pressure the whole prompt + the one tool + reserve fit
             // the served window — the exact condition llama-server checks before 400.
-            let mut burst = "old chatter line\n".repeat(2000);
-            burst.push_str("LATEST: did the deploy fix land?");
-            let mut ws = Workspace::new(&burst);
+            let mut ws = history_with_stimulus("LATEST: did the deploy fix land?");
             ws.broadcast.push(Contribution::context(
                 FacultyId::Recall,
                 &"deploy pipeline observation; ".repeat(2000),
@@ -4681,8 +4829,9 @@ mod tests {
                 "recalled",
             ));
             let view = faculty.prompt_view(&ws);
-            let reserve = faculty.completion_reserve_within(window) as usize; // derive, never re-spell the fraction: a mirror keeps PASSING while measuring the old split
-            let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
+            let reserve = view.completion_reserve as usize;
+            let prompt =
+                est_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
 
             // This assertion used to demand that framing + the FULL tool surface + the
             // reply reserve all fit an 8192 window. That is arithmetically impossible and
@@ -5043,7 +5192,16 @@ mod tests {
             let mut prev_first: Option<String> = None;
             let mut last_fit: Vec<ChatMessage> = Vec::new();
             for n in 20..=40 {
-                let fit = faculty.fit_messages(msgs[..n].to_vec(), budget);
+                let fit = faculty
+                    .fit_messages(
+                        PromptMessages {
+                            history: msgs[..n].to_vec(),
+                            stimulus: None,
+                            latest_result: None,
+                        },
+                        budget,
+                    )
+                    .expect("whole history suffix fits");
                 assert!(!fit.is_empty());
                 let first = fit.first().map(|m| m.content_text());
                 if prev_first.is_some() && first != prev_first {
@@ -5076,7 +5234,16 @@ mod tests {
                     format!("a{i} {}", "word ".repeat(60)),
                 ));
             }
-            let fit = faculty.fit_messages(clustered, budget);
+            let fit = faculty
+                .fit_messages(
+                    PromptMessages {
+                        history: clustered,
+                        stimulus: None,
+                        latest_result: None,
+                    },
+                    budget,
+                )
+                .expect("whole history suffix fits");
             assert_eq!(
                 fit.first().unwrap().role,
                 "user",
@@ -5088,6 +5255,22 @@ mod tests {
                 "fitted cost {} exceeds budget {budget}",
                 LlmDeliberationFaculty::messages_cost(&last_fit)
             );
+            // A quantum larger than the optional history must not evict every
+            // message on a quiet self-tick with no external stimulus or result.
+            let ambient = || PromptMessages {
+                history: vec![
+                    ChatMessage::text("user", "old situation ".repeat(30)),
+                    ChatMessage::text("user", "current situation ".repeat(20)),
+                ],
+                stimulus: None,
+                latest_result: None,
+            };
+            let ambient_cost =
+                LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
+            let fitted = faculty.fit_messages(ambient(), ambient_cost).unwrap();
+            assert_eq!(fitted.len(), 1);
+            assert_eq!(fitted[0].content_text(), "current situation ".repeat(20));
+            assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
         }
 
         // what this catches: the rent ledger's spine (compression-ladder rung
@@ -5411,6 +5594,187 @@ mod tests {
                     .unwrap()
                     .pop_front()
                     .ok_or_else(|| "scripted adapter exhausted".to_string())
+            }
+        }
+
+        // what this catches: f09424d4, Kimi's actual ask vanished while the
+        // newest one-line result became only board counts / a clipping notice.
+        // Inspect the REQUEST the adapter received, including the paid schemas
+        // and planned reply reserve, not an intermediate text helper.
+        #[tokio::test]
+        async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
+            // Exercise every byte remainder at the grounding boundary: a floor
+            // per name/body used to charge less than their concatenated bytes.
+            for padding in 0..3 {
+                use crate::cognition::working_memory::WorkingMemory;
+                use crate::cognition::workspace::Burst;
+
+                let window = 32_768u32;
+                let persona = Uuid::new_v4();
+                let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                    FinishReason::Stop,
+                    "PASS",
+                    None,
+                )]));
+                let wm = Arc::new(WorkingMemory::new(8));
+                wm.set_served_window(window);
+                let result = format!(
+                    "src/lib.rs:42: concrete_review_target\n{{\"payload\":\"{}\"}}\nclaimable_now: 29\ntotal_on_board: 43",
+                    "x".repeat(window as usize * 2),
+                );
+                wm.record_receipt(&result);
+                let faculty =
+                    LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                        .with_context_window(window)
+                        .with_tools(vec![read_tool()])
+                        .with_working_memory(wm);
+                let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
+                let stimulus = "Review PR #3858 against its actual source.";
+                let mut ws = Workspace::new(Burst::from_turns(
+                    room,
+                    vec![
+                        BurstTurn::attributed(
+                            true,
+                            "Ivar",
+                            "I completed the previous independent activity.",
+                            Some(0),
+                        ),
+                        BurstTurn::attributed(false, "Reviewer", stimulus, Some(1)),
+                        BurstTurn::attributed(true, "Ivar", "I fetched the board.", Some(2)),
+                        BurstTurn::perception("The board projection refreshed."),
+                    ],
+                ));
+                ws.workspace_deliverable = true;
+                ws.broadcast.push(Contribution::context(
+                    FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                    format!("Held activity context: continue independent source review.{}", "x".repeat(padding)),
+                    0.9,
+                    "held claims",
+                ));
+
+                let unfitted = faculty.messages_unfitted(&ws, None);
+                assert_eq!(
+                    unfitted
+                        .history
+                        .iter()
+                        .filter(|message| message.role == "assistant")
+                        .count(),
+                    2,
+                    "extracting the stimulus must not coalesce the self turns on opposite sides"
+                );
+                assert!(
+                    unfitted.required_tokens()
+                        > PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S
+                );
+                let view = faculty.prompt_view(&ws);
+                assert!(view.capacity_error.is_none(), "{view:?}");
+                assert!(
+                    view.completion_reserve < faculty.completion_reserve_within(window),
+                    "fixture must force reserve to yield, not pass in a roomy window"
+                );
+                let contribution = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("a verdict or named fault");
+                assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
+                assert_eq!(adapter.call_count(), 1);
+                let seen = adapter.seen.lock().unwrap();
+                let request = &seen[0];
+                assert!(request
+                    .messages
+                    .iter()
+                    .any(|message| message.content_text().contains(stimulus)));
+                assert!(
+                    request
+                        .messages
+                        .last()
+                        .unwrap()
+                        .content_text()
+                        .ends_with(&result),
+                    "the actual action payload survives byte-for-byte, not only its footer"
+                );
+                assert!(request
+                    .system_prompt
+                    .as_ref()
+                    .unwrap()
+                    .contains("Held activity context"));
+                assert_eq!(
+                    request.max_tokens,
+                    Some(
+                        view.completion_reserve
+                            .min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)
+                    )
+                );
+                let schema_tokens =
+                    LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap());
+                assert_eq!(
+                    schema_tokens,
+                    faculty.select_tool_surface(&ws, window).tokens
+                );
+                let wire_tokens = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
+                    + LlmDeliberationFaculty::messages_cost(&request.messages)
+                    + schema_tokens
+                    + request.max_tokens.unwrap() as usize;
+                assert!(
+                    wire_tokens <= window as usize,
+                    "wire {wire_tokens} > window {window}"
+                );
+            }
+        }
+
+        // what this catches: an indivisible oversized stimulus OR active result
+        // must fault before inference, including self-ticks with no chat turns.
+        // It must still publish demand, so refusal cannot freeze a small window.
+        #[tokio::test]
+        async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
+            use crate::cognition::working_memory::WorkingMemory;
+            use crate::cognition::working_set::WorkingSetRegistry;
+
+            let window = 8192u32;
+            for oversized_stimulus in [true, false] {
+                let persona = Uuid::new_v4();
+                let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+                let registry = WorkingSetRegistry::new();
+                let wm = Arc::new(WorkingMemory::new(8));
+                wm.set_served_window(window);
+                let oversized = "payload ".repeat(window as usize);
+                let mut ws = if oversized_stimulus {
+                    Workspace::new(&oversized)
+                } else {
+                    wm.record_receipt(&format!(
+                        "{oversized}\nclaimable_now: 29\ntotal_on_board: 43"
+                    ));
+                    let mut ws = Workspace::new("");
+                    ws.turns.clear();
+                    ws.self_initiated = true;
+                    ws
+                };
+                ws.now_ms = Some(1);
+                let faculty =
+                    LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                        .with_context_window(window)
+                        .with_working_memory(wm)
+                        .with_working_set(registry.clone());
+                let view = faculty.prompt_view(&ws);
+                let error = view
+                    .capacity_error
+                    .expect("indivisible input exceeds the real window");
+                assert!(error.required_tokens > error.budget_tokens);
+                let fault = faculty
+                    .contribute(&ws)
+                    .await
+                    .expect("capacity is a named substrate fault");
+                assert!(fault.fault.is_some());
+                assert!(
+                    fault.decision.is_none(),
+                    "capacity refusal is not a citizen choosing Pass"
+                );
+                assert_eq!(
+                    adapter.call_count(),
+                    0,
+                    "do not submit a footer or clipping notice"
+                );
+                assert!(registry.demand_of(persona).unwrap().peak_tokens > window);
             }
         }
 
