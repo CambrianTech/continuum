@@ -177,8 +177,6 @@ pub struct CapturedCredit {
     /// A later settlement cannot retroactively invent a selection receipt that was
     /// not taken, and the type is shaped so it cannot try.
     pub claim: Option<ClaimReceipt>,
-    /// What actually served the turn being credited.
-    pub served: ServedProvenance,
 }
 
 /// The claim receipt captured AT SELECTION — the evidence that this citizen was
@@ -857,7 +855,6 @@ mod tests {
     #[test]
     fn staged_credit_registers_without_colliding_with_an_existing_collection() {
         use crate::orm::entity::OrmEntityRegistry;
-        use crate::orm::OrmEntity;
         let registry = OrmEntityRegistry::new();
         registry
             .register::<StagedCredit>()
@@ -884,13 +881,6 @@ mod tests {
              case returns None from the quality gate and the floor is never exercised"
         );
 
-        let served = ServedProvenance {
-            // The SERVED model, deliberately unlike any configured profile id —
-            // carrying the actual one is the whole point.
-            model: "qwen3.8-27b".to_string(),
-            provider: "local".to_string(),
-            request_id: "req-0d51573a".to_string(),
-        };
         let captured = CapturedCredit {
             card_id: Uuid::from_u128(0x0d51573a),
             claim: Some(ClaimReceipt {
@@ -898,7 +888,6 @@ mod tests {
                 owner: airc_core::PeerId::from_u128(0xe2f0e022),
                 role: CreditRole::Owner,
             }),
-            served: served.clone(),
         };
 
         // A PASSING verdict stamps and buckets on domain x role.
@@ -940,7 +929,6 @@ mod tests {
         let claimless = CapturedCredit {
             card_id: Uuid::from_u128(0x0d51573a),
             claim: None,
-            served,
         };
         assert!(
             claimless.is_card_linked(),
