@@ -581,13 +581,61 @@ mod tests {
             json!(stamped.bucket_key()),
             "the widened bucket is what the example is filed under"
         );
-        // The regression that would be invisible: gym lookup keys on the domain.
-        // If this ever reads the widened bucket, every credited example loses its
-        // eval set silently.
+        // The regression that would be invisible: the gym lookup keys on the BARE
+        // domain. If it ever reads the widened bucket, every credited example loses
+        // its eval set silently.
+        //
+        // THE OLD VERSION OF THIS CHECK NEVER GUARDED ANYTHING, and it took Astra's
+        // review of 17e8c2f37 plus a precondition assert to prove it. It compared
+        // `gym_for_trait(trait_kind).is_some()` against `params["evalSet"].is_some()`
+        // — but `build_submit_params` inserts `evalSet` IFF that same lookup is Some,
+        // and the fixture above classifies as `conversation`, WHICH HAS NO GYM. Both
+        // sides were `false`, so it passed as `false == false`, identically whether
+        // the production lookup used the bare domain or the widened bucket. The exact
+        // regression it was written for could not have failed it.
+        //
+        // So this is re-anchored on a fixture that MAPS TO A REAL GYM. `code` is the
+        // one trait with a committed eval set, and the path is asserted literally
+        // rather than as `is_some()`: "there is some gym" is the weaker claim that let
+        // the tautology hide.
+        let code_reply = "Here is the fix: the bug is a null deref in the cargo build \
+            script. Add an `if let Some(x) = opt` guard before the `.unwrap()`, return \
+            an `Err` with the missing-field name, and the async function compiles and \
+            the test passes against the typescript interface.";
+        let code_stamped = plan(
+            &classifier,
+            "Why does my Rust function panic?",
+            code_reply,
+            Some(stamp),
+        )
+        .expect("a substantive code reply with a PASSING verdict must plan");
         assert_eq!(
-            crate::cognition::gym::gym_for_trait(&stamped.trait_kind).is_some(),
-            params.get("evalSet").is_some(),
-            "evalSet presence must follow the BARE domain's gym, not the widened bucket"
+            code_stamped.trait_kind, "code",
+            "fixture must classify as `code`, or the eval-path assertions below go \
+             vacuous the way the `conversation` fixture did"
+        );
+        assert_eq!(
+            crate::cognition::gym::gym_for_trait(&code_stamped.trait_kind),
+            Some("docs/genome/coder-eval.jsonl"),
+            "the BARE domain must resolve to the coder gym — the exact path, not merely some path"
+        );
+        // The regression, stated positively: the WIDENED bucket has no gym at all, so
+        // a lookup that keyed on it would drop the eval set. This is the assertion the
+        // old `false == false` comparison was supposed to be making.
+        assert_eq!(
+            crate::cognition::gym::gym_for_trait(&code_stamped.bucket_key()),
+            None,
+            "the widened bucket ({}) must NOT resolve to a gym — which is exactly why \
+             the lookup has to use the bare domain",
+            code_stamped.bucket_key()
+        );
+        let code_params =
+            build_submit_params(Uuid::from_u128(7), "Cass", "qwen", &code_stamped, "live-turn");
+        assert_eq!(
+            code_params["evalSet"],
+            json!("docs/genome/coder-eval.jsonl"),
+            "the dispatched example must carry the BARE domain's eval set, so the L3 \
+             sentinel can A/B the gene it produces"
         );
     }
 
