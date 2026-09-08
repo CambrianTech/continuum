@@ -3318,33 +3318,67 @@ pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError>
 /// "Fix Permutation constructor to compose non-disjoint cycles left-to-right",
 /// the exact task, sitting in a commit) graded as "no candidate patch" — the
 /// harness punishing her best engineering habit. With `base` given, diff from
-/// there; unknown rev (odd staging) falls back to the dirty-tree read rather
-/// than failing the grade.
+/// there. An unreadable base is an error: falling back to HEAD would silently
+/// substitute a different candidate, especially when shipping work to another node.
 pub(crate) fn workspace_candidate_diff_from(
     ws: &str,
     base: Option<&str>,
 ) -> Result<String, CommandError> {
-    if let Some(base) = base {
-        let mut args: Vec<&str> = vec!["diff", base, "--", "."];
-        args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
-        let out = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(ws)
-            .output()
-            .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
-        if out.status.success() {
-            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
-        }
-        // Unknown base in this tree — fall through to the dirty-tree read.
+    let base = base.unwrap_or("HEAD"); // unwrap_or: the no-base caller explicitly requests working changes against HEAD
+    if base.is_empty() || base.starts_with('-') {
+        return Err(CommandError::Invalid(
+            "candidate base must name a single git commit".into(),
+        ));
     }
-    let mut args: Vec<&str> = vec!["diff", "HEAD", "--", "."];
+    // Resolve exactly one commit before diffing: revision ranges and tree/blob
+    // objects are not an instance base, even though `git diff` accepts them.
+    let revision = format!("{base}^{{commit}}");
+    let resolved = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options", &revision])
+        .current_dir(ws)
+        .output()
+        .map_err(|e| CommandError::Internal(format!("could not resolve candidate base: {e}")))?;
+    if !resolved.status.success() {
+        return Err(CommandError::Invalid(format!(
+            "candidate base {base} must name a single git commit: {}",
+            String::from_utf8_lossy(&resolved.stderr).trim()
+        )));
+    }
+    let commit = String::from_utf8(resolved.stdout)
+        .map_err(|e| CommandError::Internal(format!("invalid git commit id: {e}")))?;
+    // A transferable patch must contain binary changes and must not depend on
+    // this machine's external diff/textconv programs or display preferences.
+    let mut args: Vec<&str> = vec![
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        commit.trim(),
+        "--",
+        ".",
+    ];
     args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
     let out = std::process::Command::new("git")
         .args(&args)
         .current_dir(ws)
         .output()
         .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    if !out.status.success() {
+        return Err(CommandError::Internal(format!(
+            "could not read {ws}'s candidate against {base} ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    String::from_utf8(out.stdout).map_err(|e| {
+        CommandError::Internal(format!(
+            "candidate diff is not UTF-8; refusing to change patch bytes: {e}"
+        ))
+    })
 }
 
 /// The `benchmark/swe-grade` body, callable without a command context — the
@@ -3917,6 +3951,112 @@ crate::register_stateless_command!(BenchmarkSweSetup);
 #[cfg(test)]
 mod swe_setup_tests {
     use super::*;
+
+    // Regression 273da4a7: a cross-node candidate must preserve committed and
+    // binary work against its declared base, exclude scope secrets, and fail
+    // rather than silently substituting HEAD when that base cannot be read.
+    #[test]
+    fn candidate_patch_roundtrips_from_its_exact_base_or_fails() {
+        // Regression #3871: Windows CRLF producers must transfer to an LF grader.
+        for autocrlf in ["false", "true", "input"] {
+            let root = tempfile::tempdir().expect("test: temporary git repository");
+            let ws = root.path().to_str().expect("test: UTF-8 temporary path");
+            let git = |args: &[&str]| {
+                let out = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root.path())
+                    .output()
+                    .expect("test: git is required for patch extraction");
+                assert!(
+                    out.status.success(),
+                    "git {args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                String::from_utf8(out.stdout).expect("test: git metadata is UTF-8")
+            };
+            git(&["init", "--quiet"]);
+            git(&["config", "core.autocrlf", autocrlf]);
+            let newline = if autocrlf == "false" { "\n" } else { "\r\n" };
+            std::fs::write(root.path().join("code.txt"), format!("before{newline}"))
+                .expect("test: seed text");
+            std::fs::write(root.path().join("data.bin"), [0, 1, 2, 3]).expect("test: seed binary");
+            git(&["add", "."]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "base",
+            ]);
+            let base = git(&["rev-parse", "HEAD"]).trim().to_string();
+            std::fs::write(root.path().join("code.txt"), format!("after{newline}"))
+                .expect("test: change text");
+            std::fs::write(root.path().join("data.bin"), [0, 9, 8, 7])
+                .expect("test: change binary");
+            std::fs::create_dir(root.path().join(".airc")).expect("test: scope directory");
+            std::fs::write(root.path().join(".airc/identity.key"), "fixture-secret")
+                .expect("test: scope marker");
+            git(&["add", "."]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "solution",
+            ]);
+            git(&["config", "diff.external", "missing-external-diff-fixture"]);
+            let patch =
+                workspace_candidate_diff_from(ws, Some(&base)).expect("test: exact-base patch");
+            assert!(patch.contains("+after") && patch.contains("GIT binary patch"));
+            assert!(!patch.contains("fixture-secret") && !patch.contains("identity.key"));
+            assert!(workspace_candidate_diff_from(ws, Some("missing-base-fixture")).is_err());
+            assert!(workspace_candidate_diff_from(ws, Some("--stat")).is_err());
+            assert!(workspace_candidate_diff_from(ws, Some(&format!("{base}...HEAD"))).is_err());
+            assert!(workspace_candidate_diff_from(ws, Some("HEAD:code.txt")).is_err());
+            let patch_file = root.path().join("candidate.patch");
+            std::fs::write(&patch_file, &patch).expect("test: materialize transfer patch");
+            let receiver = tempfile::tempdir().expect("test: separate receiving node checkout");
+            let receiver_ws = receiver.path().to_str().expect("test: receiver path");
+            git(&["clone", "--no-local", "--no-checkout", ws, receiver_ws]);
+            git(&["-C", receiver_ws, "config", "core.autocrlf", "false"]);
+            git(&["-C", receiver_ws, "checkout", "--detach", &base]);
+            git(&[
+                "-C",
+                receiver_ws,
+                "apply",
+                patch_file.to_str().expect("test: patch path"),
+            ]);
+            assert_eq!(
+                std::fs::read(receiver.path().join("code.txt")).expect("test: applied text"),
+                b"after\n"
+            );
+            assert_eq!(
+                std::fs::read(receiver.path().join("data.bin")).expect("test: applied binary"),
+                [0, 9, 8, 7]
+            );
+            // Latin-1 text is not necessarily detected as binary by git. The String
+            // patch API must reject it explicitly instead of replacing its bytes.
+            std::fs::write(root.path().join("code.txt"), b"caf\xe9\n").expect("test: latin-1 text");
+            let error = workspace_candidate_diff_from(ws, Some(&base))
+                .expect_err("test: non-UTF-8 patch rejected");
+            assert!(
+                matches!(error, CommandError::Internal(ref message) if message.contains("candidate diff is not UTF-8; refusing to change patch bytes"))
+            );
+            let not_repo = tempfile::tempdir().expect("test: non-repository directory");
+            assert!(
+                workspace_candidate_diff(not_repo.path().to_str().expect("test: temp path"))
+                    .is_err()
+            );
+        }
+    }
 
     // what this catches: the card body must NEVER leak held-out material — a
     // build that formats the gold patch, test patch, or test ids into the card
