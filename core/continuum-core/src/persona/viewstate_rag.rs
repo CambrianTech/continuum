@@ -40,27 +40,45 @@
 //! is a snapshot cache with interior sharing, so this is a read, not a fetch: no
 //! daemon I/O on the compose path.
 //!
-//! ## ⚠️ BEFORE YOU SWAP A LIVE SOURCE ONTO THIS — read this first
+//! ## Room scope: use [`ViewStateRagSource::per_room`], never a bound room
 //!
-//! The obvious next move is to replace `room_roster_source` at its binding site
-//! (`persona/supervisor.rs`, the sanctioned "RAG sources … bound on the brain at
-//! boot" seam) with `ViewStateRagSource<RosterViewState>`. **Do not, yet.**
+//! **Superseded 2026-09-07 — the section that stood here said "do not swap a live
+//! source onto this, yet", because a single `Substrate` is keyed by kind alone and
+//! could hold only the FOCUSED room's roster.** That prerequisite has since been
+//! met: `PerRoomSubstrates` gives every room its own substrate, and
+//! `ipc/positron_source.rs::sink` writes EVERY room's view into it unconditionally,
+//! mirroring only the focused room onto the node substrate. The old text is left
+//! described rather than deleted because it was read as current during the #3862
+//! diagnosis and sent it one hop sideways.
 //!
-//! The `Substrate` cache is keyed by **kind alone**. `continuum_positron`'s
-//! `revisions.rs` names the fix as a future extension: *"multiple live instances
-//! (per-room widgets), the key extends from the bare kind string to a
-//! `(room_id, kind)` tuple."* Until that lands, the node substrate holds exactly
-//! ONE room's roster — the focused room's.
+//! What replaced it is a rule with a sharper edge, learned by shipping the bug the
+//! old text warned about in a different shape: the source was bound with
+//! `for_room(identity.default_room)`, one handle resolved at construction. The room
+//! gate then abstained on every turn the citizen took anywhere else — 662 of 873
+//! ticks, bound #general, every turn in #continuum — and she stood among people
+//! seeing nobody. Personas are first-class MULTI-room subscribers
+//! ([[personas-are-first-class-multi-room-subscribers]]); a room fixed at boot is
+//! not a room they stay in.
 //!
-//! So a swap today would trade a source that is sometimes wrong for one that is
-//! reliably EMPTY: this adapter's room gate correctly abstains for any persona
-//! whose turn is in a different room than the focused one, and personas are
-//! first-class MULTI-room subscribers ([[personas-are-first-class-multi-room-subscribers]]).
-//! Most citizens would go blind rather than mis-sighted. That is not a repair.
+//! So: a **room-scoped** kind (one whose [`RagRenderable::room`] answers `Some`)
+//! is constructed with [`ViewStateRagSource::per_room`], which takes the REGISTRY
+//! and resolves the turn's room per delivery. A **node-scoped** kind (the bench
+//! board — one global fold, `room() == None`) keeps [`ViewStateRagSource::new`].
+//! The two constructors exist so the right binding is the obvious one and the
+//! wrong one has to be chosen deliberately: `per_room` takes the registry, so it
+//! CANNOT be handed a single room.
 //!
-//! **The prerequisite is per-room instancing (`(room_id, kind)`).** With it, this
-//! adapter serves every room correctly and the bespoke sources retire. Without it,
-//! this module is a proven seam waiting on its substrate.
+//! **They do not make the wrong binding impossible, and this comment used to say
+//! they did.** `new` is public and generic over any `V: RagRenderable`, so
+//! `ViewStateRagSource::<RosterViewState>::new(substrate)` — precisely the #3862
+//! binding — still compiles. Nothing in the type system refuses it; only this
+//! paragraph does, and a comment asserting a guarantee the compiler does not
+//! enforce is the exact shape that cost 662 ticks (caught in review of #3879).
+//! Making it genuinely unstatable means splitting the scope into the type — a
+//! room-scoped and a node-scoped marker, `new` bounded on one and `per_room` on
+//! the other, so `room()` returning `Some`/`None` stops being a convention. That
+//! is issue #3881 (with a compile-fail test as its acceptance), not a claim to
+//! make here in the meantime.
 //!
 //! ## Density, not truncation
 //!
@@ -169,16 +187,53 @@ fn estimate_tokens(text: &str) -> u32 {
 ///
 /// Generic over the kind, so N kinds cost N small impls and zero new plumbing.
 pub struct ViewStateRagSource<V: RagRenderable> {
-    /// The same substrate instance the WS server serves — a shared snapshot cache,
-    /// so reading it is cheap and cannot diverge from what a browser sees.
-    substrate: Substrate,
+    /// Which substrate this kind reads. See [`SubstrateBinding`] — a room-scoped
+    /// kind resolves the TURN's room per delivery; a node-scoped one holds one
+    /// handle for the life of the source.
+    binding: SubstrateBinding,
     _kind: std::marker::PhantomData<V>,
 }
 
+/// Where a [`ViewStateRagSource`] reads its view from.
+///
+/// The distinction is not an optimization — it is the difference between a citizen
+/// seeing the room she is IN and seeing a room she is not in. `PerRoomSubstrates`
+/// already stores every room's view on every projection (`positron_source.rs`
+/// writes `rooms.for_room(room_id)` unconditionally and mirrors only the FOCUSED
+/// room onto the node substrate), so the per-room store is populated for rooms
+/// nothing has ever read.
+enum SubstrateBinding {
+    /// ONE substrate for every turn. Correct only for kinds that describe the NODE
+    /// rather than a room (the bench board is a single global fold), which are the
+    /// same kinds whose [`RagRenderable::room`] answers `None`.
+    Node(Substrate),
+    /// Resolved per delivery from the turn's room. The registry is held, never a
+    /// single room's handle: binding one room at construction is what made a
+    /// citizen abstain on every turn outside it (#3862 — the roster was bound to
+    /// `identity.default_room` and the citizen worked elsewhere, so
+    /// `room_scope_allows` correctly refused 662 of 873 ticks).
+    PerRoom(std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>),
+}
+
 impl<V: RagRenderable> ViewStateRagSource<V> {
+    /// A NODE-scoped source: one substrate, every turn. Use only for a kind whose
+    /// [`RagRenderable::room`] returns `None`.
     pub fn new(substrate: Substrate) -> Self {
         Self {
-            substrate,
+            binding: SubstrateBinding::Node(substrate),
+            _kind: std::marker::PhantomData,
+        }
+    }
+
+    /// A ROOM-scoped source: reads the store of whatever room the turn is in.
+    ///
+    /// This is the constructor a room-scoped kind must use. It takes the REGISTRY,
+    /// not a room, precisely so no caller can bind a room at construction time.
+    pub fn per_room(
+        rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>,
+    ) -> Self {
+        Self {
+            binding: SubstrateBinding::PerRoom(rooms),
             _kind: std::marker::PhantomData,
         }
     }
@@ -186,9 +241,55 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
     /// Read + deserialize the current view, or `None` when the kind has never been
     /// stored (a cold boot before the first projection) or the payload does not
     /// match this build's shape. Both are honest absences: no block is rendered.
-    fn current(&self) -> Option<V> {
-        let envelope = self.substrate.cache().get(V::KIND)?;
+    ///
+    /// A room-scoped source on a turn with NO room (`ctx.airc_room == None` —
+    /// background consolidation, an idle tick) also answers `None`, and says so:
+    /// there is no room whose people it could honestly report. That is an absence,
+    /// not a fallback to some other room's store.
+    fn current(&self, ctx: &RagContext) -> Option<V> {
+        let substrate = match &self.binding {
+            SubstrateBinding::Node(s) => s.clone(),
+            // `read_room`, NOT `for_room`: this is a READ path that now runs with
+            // whatever room the turn is in, and `for_room` inserts on lookup. An
+            // inserting read would let a citizen wandering rooms accrete a
+            // permanently-empty substrate per distinct room and inflate
+            // `room_count` with rooms nothing ever projected (caught in review of
+            // #3879). A room with no projection has no view — the same honest
+            // absence as a room whose kind is missing.
+            SubstrateBinding::PerRoom(rooms) => match ctx.airc_room.as_ref() {
+                Some(room) => rooms.read_room(room.as_uuid())?,
+                None => {
+                    crate::probe!(
+                        class = "rag.room_scope.no_room",
+                        source = %V::KIND,
+                        persona_id = %ctx.persona_id,
+                        "room-scoped view has no room to read: this turn carries no room context"
+                    );
+                    return None;
+                }
+            },
+        };
+        let envelope = substrate.cache().get(V::KIND)?;
         serde_json::from_value(envelope.payload.clone()).ok()
+    }
+
+    /// The turn's room as a cursor-stampable value (`null` for a roomless turn).
+    ///
+    /// A continuation offset is an index into ONE room's unit list. Before the
+    /// per-room binding (#3862) that was safe by accident: the source always read
+    /// the same room, so any cursor indexed the same list. Now the list depends on
+    /// the turn's room, so a cursor issued in room A and resumed in room B would
+    /// apply A's offset to B's roster and silently skip its first N people — the
+    /// same class of harm the per-room fix exists to end.
+    ///
+    /// It cannot ride `ContinuationCursor`'s typed fields (those are persona +
+    /// source by contract), so it rides `opaque`, which the trait defines as
+    /// source-private resume state.
+    fn cursor_room(ctx: &RagContext) -> serde_json::Value {
+        match ctx.airc_room.as_ref() {
+            Some(r) => serde_json::Value::String(r.as_uuid().to_string()),
+            None => serde_json::Value::Null,
+        }
     }
 
     /// Pack as many whole units as fit. Shared by `deliver` and the continuation
@@ -235,7 +336,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         budget: u32,
         resolution: ResolutionPreference,
     ) -> RagDelivery {
-        let view = self.current();
+        let view = self.current(_ctx);
         // The ONE room gate, not a second copy of it: a room-scoped kind whose
         // view describes a DIFFERENT room than this turn abstains, with the same
         // probe every other room-scoped source emits.
@@ -255,9 +356,11 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                // The resume state IS the next unit index — the allocator never
-                // inspects it, so keeping it a plain offset is the whole cursor.
-                opaque: serde_json::json!({ "next": next }),
+                // The resume state is the next unit index PLUS the room it
+                // indexes into — an offset without its room is only meaningful
+                // while the source reads one room forever, which is exactly the
+                // assumption #3862 removed.
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: resolution,
         }
@@ -280,8 +383,29 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         if cursor.persona_id != _ctx.persona_id {
             return None;
         }
+        // A cursor is an offset into ONE room's list. Refuse to resume it in a
+        // different room — the offset would silently skip that room's first N
+        // units. An absent stamp (a cursor minted before this field existed, or
+        // across a restart) is treated as a MISMATCH unless the turn is equally
+        // roomless: dropping one continuation costs a few units on one turn,
+        // resuming into the wrong room drops people from the grounding and says
+        // nothing. Note this is NOT redundant with the `room_scope_allows` check
+        // below, which the per-room binding made vacuous — `view.room()` now
+        // always equals the turn's room, so that gate can no longer fire here.
+        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer, not a stand-in: no stamp means a cursor minted before this field existed, and Null makes it MISMATCH every roomed turn — which is the refusal we want
+        if stamped != Self::cursor_room(_ctx) {
+            crate::probe!(
+                class = "rag.continuation.room_mismatch",
+                source = %V::KIND,
+                persona_id = %_ctx.persona_id,
+                cursor_room = %stamped,
+                turn_room = %Self::cursor_room(_ctx),
+                "refused to resume a continuation minted for a different room — the                  offset indexes another room's units"
+            );
+            return None;
+        }
         let from = cursor.opaque.get("next")?.as_u64()? as usize;
-        let view = self.current()?;
+        let view = self.current(_ctx)?;
         if !room_scope_allows(view.room(), _ctx, V::KIND) {
             return None;
         }
@@ -301,7 +425,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                opaque: serde_json::json!({ "next": next }),
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: ResolutionPreference::Raw,
         })
@@ -468,8 +592,20 @@ mod tests {
     use continuum_positron::{RosterViewState, SenderKind, StateBuilder};
     use uuid::Uuid;
 
-    fn roster_substrate(names: &[&str]) -> Substrate {
-        let substrate = Substrate::new();
+    use continuum_positron::scoping::PerRoomSubstrates;
+    use std::sync::Arc;
+
+    /// The room every roster fixture below is stamped with, and the one [`ctx`]
+    /// puts the turn in.
+    const ROOM: u128 = 0xaa;
+
+    /// Store a roster for `room` in that room's OWN substrate and hand back the
+    /// registry — the shape production uses. Tests go through the registry rather
+    /// than a bare `Substrate` so they exercise the live binding: a roster test
+    /// that constructs a single substrate cannot fail when the source binds the
+    /// wrong room, which is exactly how #3862 stayed green.
+    fn roster_registry_for(room: u128, names: &[&str]) -> Arc<PerRoomSubstrates> {
+        let rooms = Arc::new(PerRoomSubstrates::new());
         let builder = StateBuilder::standalone();
         let roster = names
             .iter()
@@ -482,18 +618,24 @@ mod tests {
                 )
             })
             .collect();
-        substrate.store(builder.session(RosterViewState {
-            room_id: Uuid::from_u128(0xaa),
-            roster,
-        }));
-        substrate
+        rooms
+            .for_room(Uuid::from_u128(room))
+            .store(builder.session(RosterViewState {
+                room_id: Uuid::from_u128(room),
+                roster,
+            }));
+        rooms
+    }
+
+    fn roster_registry(names: &[&str]) -> Arc<PerRoomSubstrates> {
+        roster_registry_for(ROOM, names)
     }
 
     /// A turn context stamped with the SAME room the fixtures build, so the
     /// shared room gate allows delivery (an unstamped ctx would pass too, but
     /// stamping is what a live turn does).
     fn ctx() -> RagContext {
-        RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(0xaa))
+        RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(ROOM))
     }
 
     // what this catches: the mind's roster line carries NO liveness flag — `[ready]`/
@@ -579,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn a_present_peer_reaches_the_citizens_grounding() {
         let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::new(roster_substrate(&["Anwen", "Asha"]));
+            ViewStateRagSource::per_room(roster_registry(&["Anwen", "Asha"]));
         let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
         let rendered = delivery
             .items
@@ -598,7 +740,7 @@ mod tests {
     #[tokio::test]
     async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
         let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::new(roster_substrate(&["Anwen", "Asha", "Anon"]));
+            ViewStateRagSource::per_room(roster_registry(&["Anwen", "Asha", "Anon"]));
         // 8 tokens, against ~4-token member lines: fits two, not three. (12 was
         // the first guess and it fit ALL THREE exactly — the packing was right and
         // the test's arithmetic was wrong, which is worth saying out loud because
@@ -623,9 +765,186 @@ mod tests {
     #[tokio::test]
     async fn a_complete_delivery_offers_no_continuation() {
         let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::new(roster_substrate(&["Anwen"]));
+            ViewStateRagSource::per_room(roster_registry(&["Anwen"]));
         let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 1);
+        assert!(delivery.continuation.is_none());
+    }
+
+    /// what this catches (regression for #3862): a room-scoped source that binds ONE
+    /// room and answers with it forever. The roster was constructed as
+    /// `for_room(identity.default_room)`, so a citizen working anywhere else got her
+    /// default room's view, the shared room gate correctly refused it, and she stood
+    /// in a room full of people seeing nobody — 662 abstains in 873 ticks, bound
+    /// #general, every turn in #continuum.
+    ///
+    /// The registry here holds BOTH rooms, which is what production looks like:
+    /// `positron_source::sink` writes every room's view unconditionally. So this
+    /// fails on the old binding not because the other room's data is missing, but
+    /// because the source never asked for it.
+    #[tokio::test]
+    async fn the_roster_follows_the_turn_into_a_room_that_is_not_the_first_one() {
+        const OTHER: u128 = 0xbb;
+        let rooms = roster_registry(&["Anwen"]);
+        // The SECOND room's own roster, stored beside the first — different people.
+        let builder = StateBuilder::standalone();
+        rooms
+            .for_room(Uuid::from_u128(OTHER))
+            .store(builder.session(RosterViewState {
+                room_id: Uuid::from_u128(OTHER),
+                roster: vec![crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(42),
+                    "Saoirse",
+                    SenderKind::Agent,
+                )],
+            }));
+
+        let source: ViewStateRagSource<RosterViewState> = ViewStateRagSource::per_room(rooms);
+        let in_other = RagContext::for_persona_in_room(
+            Uuid::from_u128(0x9),
+            0,
+            Uuid::from_u128(OTHER),
+        );
+        let delivery = source.deliver(&in_other, 500, ResolutionPreference::Raw).await;
+        let rendered = delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("
+");
+        assert!(
+            rendered.contains("Saoirse"),
+            "a turn in a room must be grounded in THAT room's people: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Anwen"),
+            "and never in another room's: {rendered}"
+        );
+    }
+
+    /// what this catches: a continuation resumed in the WRONG ROOM. A cursor is an
+    /// offset into one room's unit list. Before the per-room binding this was safe
+    /// by accident — the source read the same room forever, so every cursor
+    /// indexed the same list. Per-room resolution makes an A-issued cursor
+    /// resumable in B, where the offset would silently skip B's first N people.
+    ///
+    /// The `room_scope_allows` call in `deliver_continuation` does NOT catch it:
+    /// per-room resolution makes `view.room()` equal the turn's room by
+    /// construction, so that gate is now vacuous there. This is the guard that
+    /// replaced its teeth.
+    ///
+    /// FIXTURE NOTE, and it is the point: the other room must hold MORE members
+    /// than the cursor's offset. The first version of this test gave it one, and
+    /// it passed with the guard disabled — `from >= total` returned `None` for the
+    /// wrong reason, so the test could not tell a working guard from a missing
+    /// one. Caught by mutation-testing it. A fixture with fewer degrees of freedom
+    /// than the bug cannot fail, which is the same lesson as the single-`Substrate`
+    /// roster tests this PR replaced.
+    #[tokio::test]
+    async fn a_continuation_minted_in_one_room_is_refused_in_another() {
+        const OTHER: u128 = 0xbb;
+        let rooms = roster_registry(&["Anwen", "Asha", "Anon"]);
+        let builder = StateBuilder::standalone();
+        let other_roster: Vec<_> = ["Saoirse", "Solenne", "Sorcha", "Sinead", "Siofra"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                crate::ipc::positron_source::test_roster_slot(
+                    Uuid::from_u128(40 + i as u128),
+                    name,
+                    SenderKind::Agent,
+                )
+            })
+            .collect();
+        let other_len = other_roster.len();
+        rooms
+            .for_room(Uuid::from_u128(OTHER))
+            .store(builder.session(RosterViewState {
+                room_id: Uuid::from_u128(OTHER),
+                roster: other_roster,
+            }));
+        let source: ViewStateRagSource<RosterViewState> = ViewStateRagSource::per_room(rooms);
+
+        // A tight budget in ROOM yields a cursor with units left over.
+        let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
+        let cursor = first
+            .continuation
+            .expect("a partial delivery must offer a cursor");
+
+        // The offset MUST land inside the other room's list, or the `from >= total`
+        // check refuses for an unrelated reason and this test proves nothing.
+        let offset = cursor.opaque["next"].as_u64().expect("cursor carries next") as usize;
+        assert!(
+            offset < other_len,
+            "fixture is degenerate: offset {offset} is past the other room's              {other_len} members, so a MISSING guard would also return None"
+        );
+
+        // Same persona, same source, DIFFERENT room: must refuse rather than index
+        // into the other room's roster.
+        let in_other = RagContext::for_persona_in_room(
+            Uuid::from_u128(0x9),
+            0,
+            Uuid::from_u128(OTHER),
+        );
+        assert!(
+            source
+                .deliver_continuation(&in_other, cursor.clone(), 500)
+                .await
+                .is_none(),
+            "a cursor from another room must not resume here"
+        );
+
+        // ...and the SAME room still resumes, so the guard is not just refusing
+        // everything (a guard that never lets anything through is not a guard).
+        let resumed = source
+            .deliver_continuation(&ctx(), cursor, 500)
+            .await
+            .expect("same-room resume must still work");
+        assert!(!resumed.items.is_empty());
+    }
+
+    /// what this catches (review of #3879): an INSERTING read. `for_room` creates
+    /// the entry it is asked about; this source now looks up a room on EVERY
+    /// delivery, so using it here would let a citizen wandering rooms accrete a
+    /// permanently-empty substrate per distinct room — invisible until a node has
+    /// been up a week, and it would inflate `room_count`, an ops read, with rooms
+    /// nothing ever projected. Asserts the read path leaves the map's size alone.
+    #[tokio::test]
+    async fn reading_a_room_that_was_never_projected_does_not_create_one() {
+        let rooms = roster_registry(&["Anwen"]);
+        assert_eq!(rooms.room_count(), 1, "fixture projects exactly one room");
+        let source: ViewStateRagSource<RosterViewState> =
+            ViewStateRagSource::per_room(Arc::clone(&rooms));
+        for n in 0..5u128 {
+            let elsewhere = RagContext::for_persona_in_room(
+                Uuid::from_u128(0x9),
+                0,
+                Uuid::from_u128(0xd0 + n),
+            );
+            let delivery = source.deliver(&elsewhere, 500, ResolutionPreference::Raw).await;
+            assert!(delivery.items.is_empty(), "an unprojected room has no view");
+        }
+        assert_eq!(
+            rooms.room_count(),
+            1,
+            "five deliveries into unprojected rooms must not create five substrates"
+        );
+    }
+
+    /// what this catches: the honest absence on a roomless turn. Background
+    /// consolidation and idle ticks carry no room, and a room-scoped source has no
+    /// room whose people it could report. It must render nothing rather than reach
+    /// for whatever room happens to be in the registry — the fallback that would
+    /// silently reintroduce exactly the cross-room bleed above.
+    #[tokio::test]
+    async fn a_roomless_turn_gets_no_roster_rather_than_an_arbitrary_rooms() {
+        let source: ViewStateRagSource<RosterViewState> =
+            ViewStateRagSource::per_room(roster_registry(&["Anwen"]));
+        let roomless = RagContext::for_persona(Uuid::from_u128(0x9), 0);
+        let delivery = source.deliver(&roomless, 500, ResolutionPreference::Raw).await;
+        assert!(delivery.items.is_empty(), "{:?}", delivery.items);
+        assert_eq!(delivery.tokens_used, 0);
         assert!(delivery.continuation.is_none());
     }
 
@@ -635,7 +954,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_view_renders_no_block_rather_than_an_empty_header() {
         let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::new(Substrate::new());
+            ViewStateRagSource::per_room(Arc::new(PerRoomSubstrates::new()));
         let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
