@@ -81,7 +81,7 @@ impl PostgresAdapter {
     /// Cache is invalidated per-table when schema evolution adds columns.
     async fn cached_column_types(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         bare_table: &str,
     ) -> HashMap<String, String> {
         // Check cache first (read lock — concurrent reads OK)
@@ -123,7 +123,7 @@ impl PostgresAdapter {
     /// means the cache absorbed the call.
     async fn ensure_table_exists_cached(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         qualified_table: &str,
         bare_table: &str,
         data: &Value,
@@ -180,7 +180,7 @@ impl PostgresAdapter {
     /// thin wrapper that checks out its own connection.
     async fn create_on(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         record: DataRecord,
     ) -> StorageResult<DataRecord> {
         let bare_table = naming::to_table_name(&record.collection);
@@ -193,7 +193,7 @@ impl PostgresAdapter {
         // hit Postgres — if the row introduced no new columns, both caches
         // stay warm and we save 2 round-trips on the steady-state hot path.
         let schema_changed = match self
-            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
+            .ensure_table_exists_cached(client, &qualified_table, &bare_table, &record.data)
             .await
         {
             Ok(c) => c,
@@ -204,7 +204,7 @@ impl PostgresAdapter {
         }
 
         // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let col_types = self.cached_column_types(client, &bare_table).await;
 
         // Build column list and values
         let mut columns = vec![
@@ -284,7 +284,7 @@ impl PostgresAdapter {
     /// thin wrapper that checks out its own connection.
     async fn read_on(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         collection: &str,
         id: &UUID,
     ) -> StorageResult<DataRecord> {
@@ -318,7 +318,7 @@ impl PostgresAdapter {
     /// thin wrapper that checks out its own connection.
     async fn delete_on(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         collection: &str,
         id: &UUID,
     ) -> StorageResult<bool> {
@@ -336,7 +336,7 @@ impl PostgresAdapter {
     /// thin wrapper that checks out its own connection.
     async fn update_on(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         collection: &str,
         id: &UUID,
         data: Value,
@@ -347,7 +347,7 @@ impl PostgresAdapter {
         let now: DateTime<Utc> = Utc::now();
 
         // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let col_types = self.cached_column_types(client, &bare_table).await;
 
         let mut sets = vec!["updated_at = $1".to_string()];
         let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
@@ -399,7 +399,7 @@ impl PostgresAdapter {
                 if err_msg.contains("does not exist") && err_msg.contains("column") {
                     self.ensured_columns_cache.write().await.remove(&bare_table);
                     if let Err(evolve_err) =
-                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
+                        ensure_table_exists_pg(client, &table, &bare_table, &self.schema, &data)
                             .await
                     {
                         return StorageResult::err(format!(
@@ -547,7 +547,7 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
 
 /// Query column data types from information_schema for type-aware parameter coercion
 async fn get_column_types(
-    client: &deadpool_postgres::Client,
+    client: &impl deadpool_postgres::GenericClient,
     table: &str,
     schema: &str,
 ) -> HashMap<String, String> {
@@ -1309,14 +1309,24 @@ impl StorageAdapter for PostgresAdapter {
             Ok(p) => p,
             Err(e) => return StorageResult::err(e),
         };
-        let client = match pool.get().await {
+        // `mut` because `transaction()` borrows the client mutably.
+        let mut client = match pool.get().await {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
-        if let Err(e) = client.batch_execute("BEGIN").await {
-            return StorageResult::err(format!("Failed to open batch transaction: {}", e));
-        }
+        // A REAL `tokio_postgres::Transaction`, not a raw BEGIN. Its `Drop` impl
+        // issues the rollback, which is the whole point: an error path I write can
+        // only cover the failures I anticipated, but a CANCELLED future never
+        // reaches any of my code at all. With a raw BEGIN, a cancelled batch
+        // returned a connection to the pool with an ACTIVE transaction on it and
+        // poisoned the next borrower. The guard cannot be forgotten because it is
+        // not a code path (Astra, 2026-09-08: "prefer the existing transaction
+        // guard").
+        let tx = match client.transaction().await {
+            Ok(tx) => tx,
+            Err(e) => return StorageResult::err(format!("Failed to open batch transaction: {}", e)),
+        };
 
         let mut results = Vec::with_capacity(operations.len());
         for (index, op) in operations.into_iter().enumerate() {
@@ -1329,7 +1339,7 @@ impl StorageAdapter for PostgresAdapter {
                             data,
                             metadata: RecordMetadata::default(),
                         };
-                        let r = self.create_on(&client, record).await;
+                        let r = self.create_on(&tx, record).await;
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
@@ -1340,7 +1350,7 @@ impl StorageAdapter for PostgresAdapter {
                 },
                 BatchOperationType::Read => match op.id {
                     Some(id) => {
-                        let r = self.read_on(&client, &op.collection, &id).await;
+                        let r = self.read_on(&tx, &op.collection, &id).await;
                         if r.success {
                             Ok(json!({"success": true, "data": r.data}))
                         } else {
@@ -1351,7 +1361,7 @@ impl StorageAdapter for PostgresAdapter {
                 },
                 BatchOperationType::Update => match (op.id, op.data) {
                     (Some(id), Some(data)) => {
-                        let r = self.update_on(&client, &op.collection, &id, data, true).await;
+                        let r = self.update_on(&tx, &op.collection, &id, data, true).await;
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
@@ -1362,7 +1372,7 @@ impl StorageAdapter for PostgresAdapter {
                 },
                 BatchOperationType::Delete => match op.id {
                     Some(id) => {
-                        let r = self.delete_on(&client, &op.collection, &id).await;
+                        let r = self.delete_on(&tx, &op.collection, &id).await;
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
@@ -1376,12 +1386,10 @@ impl StorageAdapter for PostgresAdapter {
             match outcome {
                 Ok(value) => results.push(value),
                 Err(e) => {
-                    if let Err(rollback_err) = client.batch_execute("ROLLBACK").await {
-                        return StorageResult::err(format!(
-                            "Batch operation {} failed ({}), and rollback also failed: {}",
-                            index, e, rollback_err
-                        ));
-                    }
+                    // No explicit ROLLBACK: returning here drops `tx`, and its Drop
+                    // rolls back. Writing the rollback by hand would be a second
+                    // path that has to stay correct — and would still miss the
+                    // cancellation case the guard covers for free.
                     return StorageResult::err(format!(
                         "Batch operation {} failed, entire batch rolled back: {}",
                         index, e
@@ -1390,8 +1398,10 @@ impl StorageAdapter for PostgresAdapter {
             }
         }
 
-        if let Err(e) = client.batch_execute("COMMIT").await {
-            let _ = client.batch_execute("ROLLBACK").await;
+        // Committing CONSUMES the transaction, so nothing can be applied after
+        // this point, and a failure to commit drops it — rolled back, not
+        // half-applied.
+        if let Err(e) = tx.commit().await {
             return StorageResult::err(format!("Failed to commit batch: {}", e));
         }
         StorageResult::ok(results)
@@ -1657,7 +1667,7 @@ impl StorageAdapter for PostgresAdapter {
 /// `bare_table` is the unqualified name for information_schema queries.
 /// `schema` is the schema name for information_schema filtering.
 async fn ensure_table_exists_pg(
-    client: &deadpool_postgres::Client,
+    client: &impl deadpool_postgres::GenericClient,
     qualified_table: &str,
     bare_table: &str,
     schema: &str,
