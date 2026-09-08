@@ -9,7 +9,8 @@
  * generous timeout. It needs a Chromium browser present; that's our stated expectation.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { chromium, type Browser } from 'playwright';
 import { DomSurface } from './domSurface';
 import type { ProbeNode } from './surface';
 
@@ -44,6 +45,50 @@ describe('DomSurface — the web Surface (Percept · Probe · Actuator · diff)'
   afterEach(async () => {
     await surface?.close();
     surface = undefined;
+  });
+
+  // Regression: failed open never returns a session for the caller's finally
+  // to close. Exercise real Chromium, and clean up even if the assertion fails.
+  it.each(['navigation', 'newPage'] as const)('closes Chromium after failed %s during open', { timeout: 45_000 }, async (stage) => {
+    const launch = chromium.launch.bind(chromium);
+    let browser: Browser | undefined;
+    const setupError = new Error('injected page creation failure');
+    const launchSpy = vi.spyOn(chromium, 'launch').mockImplementation(async (options) => {
+      browser = await launch(options);
+      if (stage === 'newPage') vi.spyOn(browser, 'newPage').mockRejectedValueOnce(setupError);
+      return browser;
+    });
+    try {
+      const opening = DomSurface.open({ url: stage === 'navigation' ? 'invalid://failed-open' : FIXTURE });
+      if (stage === 'newPage') await expect(opening).rejects.toBe(setupError);
+      else await expect(opening).rejects.toThrow();
+      expect(browser).toBeDefined();
+      expect(browser!.isConnected()).toBe(false);
+    } finally {
+      launchSpy.mockRestore();
+      await browser?.close();
+    }
+  });
+
+  it('preserves both initialization and cleanup errors', { timeout: 45_000 }, async () => {
+    const launch = chromium.launch.bind(chromium);
+    let browser: Browser | undefined;
+    const setupError = new Error('page creation failed');
+    const closeError = new Error('browser close failed');
+    const launchSpy = vi.spyOn(chromium, 'launch').mockImplementation(async (options) => {
+      browser = await launch(options);
+      vi.spyOn(browser, 'newPage').mockRejectedValueOnce(setupError);
+      vi.spyOn(browser, 'close').mockRejectedValueOnce(closeError);
+      return browser;
+    });
+    try {
+      await expect(DomSurface.open({ url: FIXTURE })).rejects.toMatchObject({
+        errors: [setupError, closeError], cause: setupError,
+      });
+    } finally {
+      launchSpy.mockRestore();
+      await browser?.close();
+    }
   });
 
   // what this catches: the whole Surface contract for the DOM in one flow — a regression
