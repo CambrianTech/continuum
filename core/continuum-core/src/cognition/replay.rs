@@ -532,6 +532,8 @@ mod tests {
         let grounding = "The ongoing review belongs to this room.";
         let bid = Contribution::context(FacultyId::Recall, grounding, 0.8, "fixture provenance");
         let trace = WorkspaceTrace {
+            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
+            cause: crate::cognition::workspace::Cause::Synthetic,
             world_state: request.into(),
             room_updates: Default::default(),
             room_id: room,
@@ -648,6 +650,8 @@ mod tests {
             "action receipt",
         )];
         let trace = WorkspaceTrace {
+            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
+            cause: crate::cognition::workspace::Cause::Synthetic,
             world_state: task.into(),
             room_updates: Arc::new(vec![Arc::clone(&update)]),
             room_id: room.as_uuid(),

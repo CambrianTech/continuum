@@ -232,6 +232,8 @@ mod tests {
             expand_command: None,
         };
         let trace = WorkspaceTrace {
+            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
+            cause: crate::cognition::workspace::Cause::Synthetic,
             world_state: "what's the call?".to_string(),
             room_updates: Default::default(),
             room_id: room,

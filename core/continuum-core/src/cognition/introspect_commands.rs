@@ -75,6 +75,10 @@ pub(super) fn tail_persona_jsonl(
 pub struct CognitionTrace;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionTraceParams.ts"
+)]
 pub struct CognitionTraceParams {
     /// The persona (UUID) whose cognition to inspect — yours or a peer's.
     pub persona_id: crate::identity::PersonaRef,
@@ -84,6 +88,10 @@ pub struct CognitionTraceParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionTraceResult.ts"
+)]
 pub struct CognitionTraceResult {
     pub persona_id: crate::identity::PersonaRef,
     pub count: u32,
@@ -128,15 +136,27 @@ impl ActionCommand for CognitionTrace {
 pub struct CognitionPrompt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPromptParams.ts"
+)]
 pub struct CognitionPromptParams {
     /// The persona (UUID) whose verbatim LLM I/O to inspect.
     pub persona_id: crate::identity::PersonaRef,
     /// How many recent LLM calls to return (newest last). Default 10, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Read the retained previous capture segment instead of the current one.
+    #[serde(default)]
+    #[ts(optional)]
+    pub previous: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPromptResult.ts"
+)]
 pub struct CognitionPromptResult {
     pub persona_id: crate::identity::PersonaRef,
     pub count: u32,
@@ -163,16 +183,36 @@ impl ActionCommand for CognitionPrompt {
         p: CognitionPromptParams,
     ) -> Result<CognitionPromptResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
-        let records = tail_persona_jsonl(
-            super::prompt_capture::FIXTURE_DIR,
-            p.persona_id.as_str(),
-            limit,
-        )?;
-        Ok(CognitionPromptResult {
-            persona_id: p.persona_id,
-            count: records.len() as u32,
-            records,
+        let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
+            .map_err(|_| CommandError::Invalid("persona_id must be a UUID".into()))?;
+        let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
+            .ok_or_else(|| {
+                CommandError::Internal("cannot resolve capture home directory".into())
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let suffix = if p.previous == Some(true) {
+                // Omitted optional flag selects the current retained segment.
+                ".prev"
+            } else {
+                ""
+            };
+            let records = super::prompt_capture::completed_file(
+                &dir.join(format!("{persona}{suffix}.jsonl")),
+                limit.min(MAX_LIMIT),
+            )
+            .map_err(|error| CommandError::Internal(error.to_string()))?
+            .into_iter()
+            .map(|value| serde_json::to_string(&value)) // Existing cognition/prompt IPC contract returns combined records as JSON strings.
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| CommandError::Internal(error.to_string()))?;
+            Ok(CognitionPromptResult {
+                persona_id: p.persona_id,
+                count: records.len() as u32,
+                records,
+            })
         })
+        .await
+        .map_err(|error| CommandError::Internal(format!("prompt capture read worker: {error}")))?
     }
 }
 
@@ -182,9 +222,17 @@ impl ActionCommand for CognitionPrompt {
 pub struct CognitionPersonas;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPersonasParams.ts"
+)]
 pub struct CognitionPersonasParams {}
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/PersonaRosterEntry.ts"
+)]
 pub struct PersonaRosterEntry {
     /// The persona's UUID — pass this to `cognition/eval`, `cognition/trace`, etc.
     pub persona_id: crate::identity::PersonaRef,
@@ -194,6 +242,10 @@ pub struct PersonaRosterEntry {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPersonasResult.ts"
+)]
 pub struct CognitionPersonasResult {
     pub count: u32,
     /// Every persona with a live `WorkspaceCycle` in THIS process — the set you
@@ -238,6 +290,88 @@ impl ActionCommand for CognitionPersonas {
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object),
 // no host module. Available to any Trusted citizen as a cognition-debugging tool.
+
+/// Recorded playback is a filesystem read. It has no cycle, adapter, hands, or
+/// command executor: selecting a past tool call cannot execute that call.
+#[derive(Default)]
+pub struct CognitionPlayback;
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPlaybackParams.ts"
+)]
+pub struct CognitionPlaybackParams {
+    pub persona_id: crate::identity::PersonaRef,
+    #[serde(default)]
+    #[ts(optional)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub newer: Option<bool>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+    /// An event cursor from a page, to load just that call's stored payload.
+    #[serde(default)]
+    #[ts(optional)]
+    pub selected: Option<String>,
+}
+#[derive(Debug, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CognitionPlaybackResult.ts"
+)]
+pub struct CognitionPlaybackResult {
+    pub page: Option<super::prompt_capture::PlaybackPage>,
+    pub detail: Option<super::prompt_capture::PlaybackDetail>,
+}
+#[async_trait]
+impl ActionCommand for CognitionPlayback {
+    const NAME: &'static str = "cognition/playback";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const NATIVE: bool = false;
+    const DESCRIPTION: &'static str = "Read recorded model-call lifecycle headers or one exact captured request/response. Execution-free playback; cognition/replay separately performs fresh inference against current faculties.";
+    type Params = CognitionPlaybackParams;
+    type Output = CognitionPlaybackResult;
+    async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
+        let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
+            .map_err(|_| CommandError::Invalid("persona_id must be a UUID".into()))?;
+        let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
+            .ok_or_else(|| {
+                CommandError::Internal("cannot resolve capture home directory".into())
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let (page, detail) = if let Some(selected) = p.selected {
+                (
+                    None,
+                    Some(
+                        super::prompt_capture::detail(&dir, persona, &selected)
+                            .map_err(|error| CommandError::Internal(error.to_string()))?,
+                    ),
+                )
+            } else {
+                (
+                    Some(
+                        super::prompt_capture::page(
+                            &dir,
+                            persona,
+                            p.cursor.as_deref(),
+                            p.newer.unwrap_or(false), // Omitted direction opens the current tail or pages toward older entries.
+                            p.limit.unwrap_or(20) as usize, // Public command default; the reader independently enforces PAGE_LIMIT.
+                        )
+                        .map_err(|error| CommandError::Internal(error.to_string()))?,
+                    ),
+                    None,
+                )
+            };
+            Ok(CognitionPlaybackResult { page, detail })
+        })
+        .await
+        .map_err(|error| CommandError::Internal(format!("playback read worker: {error}")))?
+    }
+}
+crate::register_stateless_command!(CognitionPlayback);
+
 crate::register_stateless_command!(CognitionTrace);
 crate::register_stateless_command!(CognitionPrompt);
 crate::register_stateless_command!(CognitionPersonas);
