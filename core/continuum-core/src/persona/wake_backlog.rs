@@ -9,8 +9,8 @@
 //! line that @mentioned her, else the newest overall — a human line without
 //! a mention lost to any newer citizen work receipt, and the "heard by N"
 //! receipt fired only for the chosen line. Now: staleness is by event id
-//! (a ring), the trigger is the newest DIRECTED line (human/agent line or a
-//! mention), and every directed line drained earns its heard receipt.
+//! (a ring), the trigger is the newest priority line (human opportunity or a
+//! mention), and every priority line drained earns its heard receipt.
 
 use std::collections::VecDeque;
 
@@ -53,29 +53,29 @@ pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64)
     }
 }
 
-/// Can this drained line be the TRIGGER of a turn at all? A directed line
+/// Can this drained line be the TRIGGER of a turn at all? A priority line
 /// (human, or anyone naming her) always; an undirected line from a fellow
 /// CITIZEN yes — that is conversation among citizens; an undirected line from
 /// an AGENT (neither human nor citizen) NEVER — it is perceived (transcript,
 /// digest) and takes no lane. Measured 2026-09-05: 34 of Joaquin's last 60
 /// turns were message turns on BigMama's and IntelMac's walls in the project
 /// room; her held card had zero edits in eight hours (card ae4bb4fd).
-pub(crate) fn triggers_a_turn(directed: bool, sender_is_citizen: bool) -> bool {
-    directed || sender_is_citizen
+pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool) -> bool {
+    priority || sender_is_citizen
 }
 
-/// The trigger for ONE turn over the drained backlog: the newest DIRECTED line
+/// The trigger for ONE turn over the drained backlog: the newest priority line
 /// (a question put to her outranks newer ambient chatter — she answers it with
 /// the newer context visible in the transcript), else the newest overall.
 /// Returns the trigger and how many lines were coalesced into it.
 pub(crate) fn pick_trigger(
     mut qualifying: Vec<IncomingMessage>,
-    directed: impl Fn(&IncomingMessage) -> bool,
+    priority: impl Fn(&IncomingMessage) -> bool,
 ) -> Option<(IncomingMessage, usize)> {
     let coalesced = qualifying.len().saturating_sub(1);
     let picked = qualifying
         .iter()
-        .rposition(|m| directed(m))
+        .rposition(|m| priority(m))
         .map(|i| qualifying.swap_remove(i))
         .or_else(|| qualifying.pop())?;
     Some((picked, coalesced))
@@ -146,12 +146,28 @@ mod tests {
     // what this catches: a human line without an @mention losing the turn to a
     // newer citizen work receipt.
     #[test]
-    fn the_newest_directed_line_wins_over_newer_citizen_chatter() {
+    fn a_human_opportunity_wins_over_newer_citizen_chatter_without_a_mention() {
+        use crate::cognition::workspace::TurnAttention;
+        let identity = crate::persona::persona_identity::PersonaIdentity::new(
+            Uuid::new_v4(),
+            "Kimi",
+        );
         let human = line(1, 3, "Joel here — which card do you hold?");
         let human_id = human.event_id;
         let receipt = line(2, 900, "💭 Let me get my bearings.");
-        let (picked, coalesced) = pick_trigger(vec![human, receipt], |m| m.peer_id == Uuid::from_u128(1)).unwrap();
+        let (picked, coalesced) = pick_trigger(vec![human, receipt], |m| {
+            TurnAttention::for_message(
+                identity.mentions(&m.text),
+                m.peer_id == Uuid::from_u128(1),
+            )
+            .requires_priority()
+        })
+        .unwrap();
         assert_eq!(picked.event_id, human_id);
         assert_eq!(coalesced, 1);
+        assert!(
+            !identity.mentions(&picked.text),
+            "human priority does not require a name"
+        );
     }
 }

@@ -221,7 +221,7 @@ impl Faculty for DeferredFaculty {
 
     /// AMBIENT turns: non-blocking — kick the worker with the current world and
     /// return the last-good finding, never awaiting the inner faculty (the whole
-    /// point of the lane). DIRECTED turns: the ORIENTING RESPONSE — run the inner
+    /// point of the lane). Priority turns (addressed or human opportunity): run the inner
     /// faculty synchronously on THIS burst, because the deferred lane
     /// structurally serves the PREVIOUS turn's finding and an addressed question
     /// must benefit from its OWN recall (the eval fork already runs perception
@@ -229,7 +229,7 @@ impl Faculty for DeferredFaculty {
     /// parity). Cost: one fresh perception pass on turns that were already going
     /// to run full deliberation — negligible next to decode.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
-        if ws.directed_at_self {
+        if ws.attention.requires_priority() {
             // Orienting response: fresh inner perception on this burst. Probe the
             // outcome — glass-boxed 2026-07-10: a directed silver-harbor question
             // 30s after boot produced NO recall bid and the seam was dark; whether
@@ -461,14 +461,16 @@ mod tests {
         fn id(&self) -> FacultyId {
             FacultyId::Recall
         }
-        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+        async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
             tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-            Some(Contribution::context(
+            let mut finding = Contribution::context(
                 FacultyId::Recall,
                 "a slow, late recall finding",
                 0.8,
                 "deep analyzer, off the hot path",
-            ))
+            );
+            finding.cycle = ws.cycle;
+            Some(finding)
         }
     }
 
@@ -553,10 +555,25 @@ mod tests {
             "the finding must be the inner faculty's own output"
         );
 
+        // Regression for card157c095d: separating literal addressing must not
+        // demote an unmentioned human question to the previous turn's recall.
+        let human = Workspace::in_room("which port is the new gateway on?", Uuid::nil())
+            .with_cycle(CycleId(2))
+            .with_attention(crate::cognition::workspace::TurnAttention::HumanOpportunity);
+        let human_finding = deferred
+            .contribute(&human)
+            .await
+            .expect("fresh human recall");
+        assert_eq!(
+            human_finding.cycle,
+            CycleId(2),
+            "human opportunity must perceive this burst"
+        );
+
         // The same tick UNDIRECTED still behaves as the deferred lane (fast —
         // the directed run warm-published, so this serves last-good) — ambience
         // never pays the synchronous cost.
-        let ws_ambient = Workspace::in_room("idle chatter", Uuid::nil()).with_cycle(CycleId(2));
+        let ws_ambient = Workspace::in_room("idle chatter", Uuid::nil()).with_cycle(CycleId(3));
         let t = tokio::time::Instant::now();
         let _ = deferred.contribute(&ws_ambient).await;
         assert!(

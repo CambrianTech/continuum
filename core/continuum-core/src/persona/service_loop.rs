@@ -643,26 +643,18 @@ async fn serve_persona_loop_inner(
         }
         // Whatever was pending is now in hand (the yield signal is consumed here).
         crate::cognition::directed_pending::clear(self_id);
-        // Directed = a line from outside the citizenry (human, agent) or one
-        // that names her — the same addressing FACT the turn frames on.
-        // Holding work = the BOARD says she holds a card (one airc call per
-        // wake), not the acting-root registry: a holder whose hands never
-        // rooted (two held cards → ambiguous staging) still woke on every
-        // agent status line (Lorcan, 2026-09-04).
-        let holding_work = holding_work_now(conversation, self_id).await;
-        let directed_line = |m: &IncomingMessage| {
-            let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
-                .is_some_and(|r| r.get(m.peer_id).is_some());
-            turn_is_directed(
+        // Both a literal mention and a human's opportunity to speak receive
+        // priority. Only the former can tell the mind "this message names you".
+        let priority_line = |m: &IncomingMessage| {
+            crate::cognition::workspace::TurnAttention::for_message(
                 ctx.identity.persona_identity().mentions(&m.text),
-                sender_is_citizen,
-                holding_work,
                 crate::ipc::positron_presence::is_human_peer(m.peer_id),
             )
+            .requires_priority()
         };
         // Every directed line drained is HEARD (delivery receipt), whether or
         // not it becomes the trigger.
-        for m in qualifying.iter().filter(|m| directed_line(m)) {
+        for m in qualifying.iter().filter(|m| priority_line(m)) {
             crate::persona::wake_backlog::publish_heard(self_id, m);
         }
         // An undirected AGENT line (neither human nor citizen, not naming her)
@@ -673,7 +665,7 @@ async fn serve_persona_loop_inner(
         qualifying.retain(|m| {
             let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .is_some_and(|r| r.get(m.peer_id).is_some());
-            crate::persona::wake_backlog::triggers_a_turn(directed_line(m), sender_is_citizen)
+            crate::persona::wake_backlog::triggers_a_turn(priority_line(m), sender_is_citizen)
         });
         let perceived_only = before - qualifying.len();
         if perceived_only > 0 {
@@ -688,7 +680,7 @@ async fn serve_persona_loop_inner(
         // Trigger = newest DIRECTED line in the backlog (a question put to her
         // outranks newer ambient chatter — she answers it WITH the newer
         // context visible in the transcript), else the newest overall.
-        let (msg, coalesced) = match crate::persona::wake_backlog::pick_trigger(qualifying, directed_line) {
+        let (msg, coalesced) = match crate::persona::wake_backlog::pick_trigger(qualifying, priority_line) {
             Some(picked) => picked,
             None => {
                 if stream_ended {
@@ -1125,7 +1117,7 @@ async fn serve_persona_loop_inner(
                 // Per Joel 2026-06-29 ("shouldn't need to be directly addressed — it's
                 // a chat system"): ambient participation is now the DEFAULT posture,
                 // carried by the rebalanced [Conversational Presence] framing, NOT by
-                // `directed`. So `directed` is reserved for its one job — withholding
+                // priority. Literal addressing is reserved for its one job — withholding
                 // the silent-PASS hatch when a message actually NAMES her, so she cannot
                 // ghost a question put to her. Glass-box proved the gap: a cleanly-woken
                 // MSG-turn PASSed a direct question while eval turns SPOKE 36/38 (the
@@ -1138,20 +1130,18 @@ async fn serve_persona_loop_inner(
                 // self-set attention weight — never a hard mute except self-chosen or
                 // flooding) is substrate-blocked on the airc per-(persona,room) state
                 // store (#89); this is the addressing half, unblocked today.
-                let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
-                    .is_some_and(|r| r.get(msg.peer_id).is_some());
-                let directed = turn_is_directed(
+                // Human opportunity retains priority, but sender kind can be stale
+                // or shared across clients: it cannot assert that she was named.
+                let attention = crate::cognition::workspace::TurnAttention::for_message(
                     ctx.identity.persona_identity().mentions(&msg.text),
-                    sender_is_citizen,
-                    holding_work_now(conversation, ctx.identity.peer_id.as_uuid()).await,
                     crate::ipc::positron_presence::is_human_peer(msg.peer_id),
                 );
-                if directed {
+                if attention.requires_priority() {
                     // Focus = she is TAKING the turn on it; the heard receipt
                     // already fired at the drain (`wake_backlog::publish_heard`).
                     crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
                 }
-                let framing = crate::cognition::workspace::TurnFraming::message(directed);
+                let framing = crate::cognition::workspace::TurnFraming::message(attention);
 
                 // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
                 // The fan-out killer: a room burst wakes N peers, and each spends a full
@@ -1160,10 +1150,10 @@ async fn serve_persona_loop_inner(
                 // of ambient chatter (glass-boxed: first-token up to 28 min). Ambient
                 // participation is the DEFAULT and stays that way — but it is the
                 // LOWEST-priority room work. So when every shared decode slot is busy,
-                // a NON-directed turn YIELDS: she participates ambiently when there's
+                // an ambient turn YIELDS: she participates ambiently when there's
                 // capacity (a later beat, lanes free — a self-tick re-perceives the room
                 // incl. this line), never at the cost of the addressed question. A
-                // DIRECTED turn (she was named) NEVER yields — she answers now.
+                // priority turn (named or human opportunity) keeps its lane.
                 //
                 // This is resource PRIORITY, the same admission doctrine as the idle
                 // self-tick, NOT a `will_respond` gate: the substrate never decides her
@@ -1177,11 +1167,11 @@ async fn serve_persona_loop_inner(
                 // first cut didn't fire: a simultaneous room-burst wakes N peers who all
                 // read inflight=0 (none had generated yet) and stampede. The permit is
                 // held across the whole turn, so ambient concurrency is bounded no matter
-                // when everyone woke. Directed turns bypass entirely — she was named, she
-                // answers now. A yielded ambient turn defers to a later beat with free
+                // when everyone woke. Priority turns bypass entirely, including a human
+                // speaking without a mention. Ambient turns defer to a later beat with free
                 // capacity (a self-tick re-perceives the room); high_water is pre-advanced
                 // so it can't re-trigger, and the durable transcript loses nothing.
-                let _ambient_permit = if directed {
+                let _ambient_permit = if attention.requires_priority() {
                     None
                 } else {
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
@@ -1888,56 +1878,6 @@ fn push_work_board_anchor(
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
-
-/// The WORK-question burst — the input of the second gate a claim-holder's
-/// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
-/// question: her held in-progress cards, stated once, with the contract that
-/// passing remains hers. Deliberately NOT the room transcript — the subject of
-/// this turn is the work, and the card details/workspace root arrive through
-/// her own grounding exactly as on any turn.
-/// Whether an inbound room message is DIRECTED at this citizen — the framing
-/// that withholds the silent-PASS hatch and reserves a lane. Two roads in:
-/// she is named, or the speaker is NOT a fellow citizen. A human at the desk or
-/// an agent asking the room is addressing the citizens by construction (being
-/// heard is the scarce thing); citizens talking among themselves — and the
-/// work receipts they radiate — stay ambient, or twelve of them answer every
-/// receipt. Live 2026-09-03: the operator asked a work room a direct question
-/// twice and no citizen answered, because "directed" meant @mention only.
-/// Does she hold a card right now — the board's answer (`active_claims`), or
-/// the acting-root registry when the board cannot be asked (no citizen stream).
-async fn holding_work_now(
-    conversation: &dyn PersonaConversation,
-    self_id: Uuid,
-) -> bool {
-    match conversation.stream_citizen() {
-        Some(citizen) => match citizen.active_claims().await {
-            Ok(held) => !held.is_empty(),
-            Err(_) => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
-        },
-        None => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
-    }
-}
-
-/// `holding_work`: she holds a card. Then only a HUMAN line or an
-/// @mention is directed — agent status traffic in the base room is message
-/// plane for perception, not a wake (working ≠ speaking; a human's question
-/// still is). Measured 2026-09-04: 8 work turns an hour across ten holders
-/// while every agent line in #academy woke all twelve for a message turn.
-pub(crate) fn turn_is_directed(
-    mentioned: bool,
-    sender_is_citizen: bool,
-    holding_work: bool,
-    sender_is_human: bool,
-) -> bool {
-    // Agent (non-human, non-citizen) status traffic is never a wake on its own:
-    // the agents' coordination room is the citizens' base room, and every idle
-    // citizen answered every agent line with a 265 s "nothing names me" turn
-    // (Joaquin, ×6 in 30 min, 2026-09-04). An agent that wants a citizen @mentions
-    // her; a human's line is always directed. `holding_work` narrows nothing
-    // further today but stays the fact the gate reasons on.
-    let _ = (holding_work, sender_is_citizen);
-    mentioned || sender_is_human
-}
 
 
 
@@ -2760,7 +2700,7 @@ async fn run_self_cycle(
     // burst turns, so the mind still SEES that it was named and can choose to answer; it
     // is simply never COMPELLED to on the ambient tick. Anti-ghosting of a genuine direct
     // question is the REACTIVE message path's job (service_loop ~675,
-    // `TurnFraming::message(directed)`), where a real inbound question arrives as an
+    // `TurnFraming::message(attention)`), where a real inbound question arrives as an
     // addressed event — not this ambient digest tick. Framing over a structural fact,
     // never a gate on cognition ([[no-hardcoded-heuristics-to-steer-cognition]]): the
     // previous `self_thread(addressed)` was a dumb function steering the mind away from
@@ -2928,36 +2868,6 @@ async fn next_event(
 mod tests {
     use super::*;
     use airc_core::PeerId;
-
-    // what this catches: the WORK-question burst drifting from its contract — it must
-    // name each held card (short id + title) and pose the act-question with passing
-    // explicitly hers, because this text IS the second gate of a claim-holder's quiet
-    // turn (BigMama's gate-conflation fix, 2026-08-08). A burst that loses the card
-    // names starves the question; one that loses the pass-clause becomes a command.
-    #[test]
-    // what this catches: a human's (or agent's) room line is a DIRECTED turn without
-    // an @mention; citizen chatter stays ambient unless she is named (operator asked
-    // twice, nobody answered — 2026-09-03).
-    #[test]
-    fn a_non_citizen_line_is_directed_and_citizen_chatter_needs_a_mention() {
-        assert!(turn_is_directed(false, false, false, true), "human line: directed");
-        assert!(!turn_is_directed(false, false, false, false), "agent status line, idle citizen: ambient (2026-09-04)");
-        assert!(turn_is_directed(true, false, false, false), "an agent naming her: directed");
-        assert!(turn_is_directed(true, true, false, false), "a citizen naming her: directed");
-        assert!(!turn_is_directed(false, true, false, false), "citizen chatter/receipts: ambient");
-    }
-
-    // what this catches: a citizen HOLDING WORK waking for agent status traffic —
-    // every agent line in #academy woke all twelve holders (8 work turns an hour,
-    // 2026-09-04). Holding work: a human line or a mention is directed; an
-    // agent's line is message plane only.
-    #[test]
-    fn holding_work_only_a_human_line_or_a_mention_is_directed() {
-        assert!(!turn_is_directed(false, false, true, false), "agent line while holding work: ambient");
-        assert!(turn_is_directed(false, false, true, true), "human line while holding work: directed");
-        assert!(turn_is_directed(true, false, true, false), "an agent naming her: directed");
-        assert!(!turn_is_directed(false, true, true, false), "citizen receipts: ambient");
-    }
 
     // what this catches: the resume block carries HER newest thoughts only, oldest
     // first, clipped — never another citizen's line, never a receipt.

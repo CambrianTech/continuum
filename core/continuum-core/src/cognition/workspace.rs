@@ -807,7 +807,42 @@ impl From<&String> for Burst {
     }
 }
 
-/// How THIS turn is framed for the persona — the two structural facts the system
+/// Why a turn receives attention. Human participation retains foreground
+/// scheduling without claiming the speaker literally addressed this persona.
+/// Addressing comes from the raw message's identity-aware mention check (or an
+/// explicitly targeted command/eval), never from the speaker's kind alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TurnAttention {
+    #[default]
+    Ambient,
+    HumanOpportunity,
+    Addressed,
+}
+
+impl TurnAttention {
+    pub fn for_message(mentioned: bool, sender_is_human: bool) -> Self {
+        if mentioned {
+            Self::Addressed
+        } else if sender_is_human {
+            Self::HumanOpportunity
+        } else {
+            Self::Ambient
+        }
+    }
+
+    /// A literal addressing fact, used only to frame the prompt.
+    pub fn is_addressed(self) -> bool {
+        matches!(self, Self::Addressed)
+    }
+
+    /// Admission, fresh perception and foreground lanes preserve the existing
+    /// opportunity for a human to speak without having to name each citizen.
+    pub fn requires_priority(self) -> bool {
+        !matches!(self, Self::Ambient)
+    }
+}
+
+/// How THIS turn is framed for the persona — the structural facts the system
 /// prompt reflects: is it DIRECTED at her (suppress the silence escape) and is it
 /// SELF-INITIATED (the heartbeat pursuing her own thread, vs a message/eval
 /// driving it). Replaces the lone `directed: bool` that used to thread through
@@ -817,9 +852,8 @@ impl From<&String> for Burst {
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnFraming {
-    /// Directed AT the persona (@mention / DM / examiner question) — see
-    /// [`Workspace::directed_at_self`].
-    pub directed: bool,
+    /// Addressing and scheduling opportunity travel together without conflation.
+    pub attention: TurnAttention,
     /// The never-stop heartbeat pursuing her own thread (no inbound message) —
     /// see [`Workspace::self_initiated`].
     pub self_initiated: bool,
@@ -845,18 +879,18 @@ impl TurnFraming {
     /// examiner question) — directed, not self-initiated.
     pub fn directed() -> Self {
         Self {
-            directed: true,
+            attention: TurnAttention::Addressed,
             self_initiated: false,
             ..Self::default()
         }
     }
 
-    /// The message path: a turn driven by an inbound message (not self-initiated),
-    /// `directed` iff she was actually named. `false` collapses to [`ambient`] —
-    /// silence stays first-class for room chatter she wasn't addressed in.
-    pub fn message(directed: bool) -> Self {
+    /// The message path: a turn driven by an inbound message (not self-initiated).
+    /// Only literal addressing withholds the silence affordance; an unmentioned
+    /// human message keeps its scheduling opportunity and ambient prompt.
+    pub fn message(attention: TurnAttention) -> Self {
         Self {
-            directed,
+            attention,
             self_initiated: false,
             ..Self::default()
         }
@@ -866,7 +900,7 @@ impl TurnFraming {
     /// perceived (so a question reaching her on the digest path is not ghosted).
     pub fn self_thread(directed: bool) -> Self {
         Self {
-            directed,
+            attention: TurnAttention::for_message(directed, false),
             self_initiated: true,
             ..Self::default()
         }
@@ -924,15 +958,11 @@ pub struct Workspace {
     pub cycle: CycleId,
     /// What entered the bounded workspace and is broadcast (the persona's "now").
     pub broadcast: Vec<Contribution>,
-    /// Is this turn DIRECTED at this persona — a direct @mention, a DM, or (in the
-    /// eval fork) an examiner's question put TO her? When `true`, declining the turn
-    /// by emitting the bare PASS token is NOT a legitimate option: the [Silence
-    /// Option] affordance is for *ambient* participation (room chatter she is free to
-    /// let pass), never for ghosting a question asked of her. The deliberation
-    /// faculty reads this to decide whether to OFFER the silence escape — a framing
-    /// decision over a structural addressing fact (like ACL/routing), NOT a filter on
-    /// her output. `false` (the default) = ambient: silence stays first-class.
-    pub directed_at_self: bool,
+    /// The turn's addressing fact and admission opportunity. Prompt framing reads
+    /// [`directed_at_self`](Self::directed_at_self); resource scheduling reads
+    /// [`TurnAttention::requires_priority`]. A human speaker alone does not mean
+    /// the message names this persona.
+    pub attention: TurnAttention,
     /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
     /// persona's own thread with no inbound message — versus a turn driven by an
     /// arriving message or an examiner's question? Drives the `[Your own time]`
@@ -996,7 +1026,7 @@ impl Workspace {
             cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
-            directed_at_self: false,
+            attention: TurnAttention::Ambient,
             self_initiated: false,
             workspace_deliverable: false,
             now_ms: burst_now,
@@ -1031,8 +1061,19 @@ impl Workspace {
     /// escape so a question put to her is not ghosted; `false` keeps silence
     /// first-class for ambient participation.
     pub fn directed(mut self, directed: bool) -> Self {
-        self.directed_at_self = directed;
+        self.attention = TurnAttention::for_message(directed, false);
         self
+    }
+
+    pub fn with_attention(mut self, attention: TurnAttention) -> Self {
+        self.attention = attention;
+        self
+    }
+
+    /// Whether this message was actually addressed to the persona. Human
+    /// opportunity affects scheduling, not this prompt-grounding fact.
+    pub fn directed_at_self(&self) -> bool {
+        self.attention.is_addressed()
     }
 
     /// Mark whether this turn is the self-initiated heartbeat (builder form). See
@@ -1994,7 +2035,7 @@ impl WorkspaceCycle {
             .await
     }
 
-    /// The live persona path passes `directed`/`self_initiated` here so the
+    /// The live persona path passes `attention`/`self_initiated` here so the
     /// deliberation faculty's system prompt reflects whether a question was put
     /// TO her (suppress the silence escape) and whether this is her own
     /// heartbeat. The room rides ON the burst — one statement of the activity,
@@ -2025,7 +2066,7 @@ impl WorkspaceCycle {
     /// deliberation faculty knows whether to offer the silence escape (see
     /// [`Workspace::directed_at_self`]) and whether to frame the turn as the
     /// persona's own time (see [`Workspace::self_initiated`]); everything else is
-    /// identical across framings — framing only reshapes the system prompt.
+    /// identical across framings. Attention also preserves resource priority.
     async fn run_inner(
         &self,
         burst: Burst,
@@ -2044,11 +2085,11 @@ impl WorkspaceCycle {
         // Carry the structured burst straight through: `from_burst` splits it into
         // the canonical `turns` (the deliberation faculty's role-attribution source)
         // and the `world_state` text projection (every other reader) and takes the
-        // ROOM from the burst itself. Framing reshapes only the system prompt — it
-        // never touches the conversation turns.
+        // ROOM from the burst itself. Framing carries prompt and scheduling facts;
+        // it never touches the conversation turns.
         let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
-            .directed(framing.directed)
+            .with_attention(framing.attention)
             .self_initiated(framing.self_initiated)
             .workspace_deliverable(framing.workspace_deliverable)
             // #169: hand this turn the live streaming sink if the caller set one

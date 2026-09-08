@@ -37,12 +37,27 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnVoice, Workspace};
+use super::workspace::{
+    Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace,
+};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
     TextGenerationResponse,
 };
+
+/// Ambient deliberation yields to measured foreground work. Human opportunity
+/// keeps its existing turn class even when the message did not name the persona.
+fn deliberation_slot_class(
+    purpose: Option<&str>,
+    attention: TurnAttention,
+) -> crate::inference::slots::SlotClass {
+    use crate::inference::slots::{class_for, SlotClass};
+    match class_for(purpose) {
+        SlotClass::Turn if !attention.requires_priority() => SlotClass::Background,
+        class => class,
+    }
+}
 
 /// The persona's paged-in genome: the LoRA layers active for this faculty's next
 /// generation. Shared (the [`WorkspaceCycle`](super::workspace::WorkspaceCycle)
@@ -1588,7 +1603,7 @@ impl LlmDeliberationFaculty {
                 .compose_system_split(
                     "",
                     &expanded,
-                    ws.directed_at_self,
+                    ws.directed_at_self(),
                     ws.self_initiated,
                     ws.now_ms,
                     holds_live_work,
@@ -1658,7 +1673,7 @@ impl LlmDeliberationFaculty {
         let trailing_framing = deliberation_prompt::compose_trailing(
             ws.now_ms,
             ws.self_initiated,
-            ws.directed_at_self,
+            ws.directed_at_self(),
             holds_live_work,
         );
         let all_messages = self.messages_unfitted(
@@ -1815,7 +1830,7 @@ impl LlmDeliberationFaculty {
             .compose_system_split(
                 &context,
                 &expanded,
-                ws.directed_at_self,
+                ws.directed_at_self(),
                 ws.self_initiated,
                 ws.now_ms,
                 holds_live_work,
@@ -2779,24 +2794,12 @@ impl Faculty for LlmDeliberationFaculty {
         crate::probe!(
             class = "delib.defer.entered",
             persona = %self.persona_name,
-            directed = ws.directed_at_self,
+            directed = ws.directed_at_self(),
+            attention = ?ws.attention,
             "at the pre-gate hold defer"
         );
         {
-            let mut class = crate::inference::slots::class_for(request.purpose.as_deref());
-            // DIRECTEDNESS REFINES THE CLASS (2026-08-29, the convoy). `class_for`
-            // maps purpose "cognition/deliberation" to Turn — but an UNDIRECTED
-            // self-tick is ambient work wearing a turn's purpose string. During a
-            // measured hold those ambient deliberations sailed past every defer,
-            // took the faculty lane permits, and convoyed single-file into the
-            // adapter's one-permit FIFO at slow-model speed — the solve starved
-            // behind idle chatter (avail=0 at every tick-2 lane_wait, glass-boxed).
-            // An undirected deliberation yields to a hold like any Background gen;
-            // the holder's own ticks are directed and never wait. No hold active →
-            // zero change (should_defer is a no-op on a released cell).
-            if matches!(class, crate::inference::slots::SlotClass::Turn) && !ws.directed_at_self {
-                class = crate::inference::slots::SlotClass::Background;
-            }
+            let class = deliberation_slot_class(request.purpose.as_deref(), ws.attention);
             crate::inference::measured_hold::defer_while_held(
                 class,
                 Some(self.persona_id),
@@ -2809,16 +2812,17 @@ impl Faculty for LlmDeliberationFaculty {
             persona = %self.persona_name,
             "past the pre-gate defer — admission gates next"
         );
-        if ws.directed_at_self {
-            // #2561: a directed engagement marks the organism ACTIVE (with linger)
-            // — the one seam that knows directedness feeds the activity gate.
+        if ws.attention.requires_priority() {
+            // #2561: foreground engagement marks the organism ACTIVE (with linger).
+            // Human opportunity remains active without asserting a literal address.
             crate::cognition::activity_gate::note_directed();
         }
         let gen_result = {
             crate::probe!(
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
-                directed = ws.directed_at_self,
+                directed = ws.directed_at_self(),
+                attention = ?ws.attention,
                 lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
                 "at the serving-lane admission gate"
             );
@@ -2826,7 +2830,7 @@ impl Faculty for LlmDeliberationFaculty {
             // the park held no lane, so abandoning it costs nothing, and the loop
             // head drains the line next (`cognition::directed_pending`). A `None`
             // here is her CHOICE to answer first, named by the probe — not a fault.
-            let _lane = if ws.directed_at_self {
+            let _lane = if ws.attention.requires_priority() {
                 crate::cognition::resource_admission::acquire_serving_lane(true).await
             } else {
                 tokio::select! {
@@ -4591,7 +4595,7 @@ mod tests {
                     )
                     .session_stable(),
                 );
-                ws.directed_at_self = directed;
+                ws.attention = TurnAttention::for_message(directed, false);
                 ws
             };
             let undirected = faculty.prompt_view(&with_grounding(false));
@@ -6111,12 +6115,17 @@ mod tests {
         // " If you have nothing worth adding, stay silent." nudge is gone, so neither turn
         // carries it. This is a FRAMING decision over a structural addressing fact — her
         // output is never filtered.
-        #[test]
-        fn directed_turn_withholds_the_silence_escape() {
+        #[tokio::test]
+        async fn directed_turn_withholds_the_silence_escape() {
             use crate::ai::types::MessageContent;
+            use crate::cognition::workspace::{
+                SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
+            };
+            use crate::inference::slots::SlotClass;
+            use crate::persona::persona_identity::PersonaIdentity;
             let adapter = Arc::new(ScriptedAdapter::new(vec![]));
             let faculty =
-                LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter);
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Kimi", "You are Kimi.", adapter);
             // 2026-09-01: presence framing rides the conversation tail (the KV
             // split applied for real), so these assertions read the WHOLE
             // delivered prompt — system + turns — not the system string alone.
@@ -6157,6 +6166,70 @@ mod tests {
                 !directed.contains("stay silent"),
                 "and carries no 'stay silent' nudge on a directed turn either"
             );
+
+            // Regression for card157c095d: a human's opportunity (including a
+            // stale peer-kind classification) became the false instruction
+            // "This message names you". Exercise the real framing -> cycle ->
+            // prompt seam on both admission and act-result re-perception.
+            let identity = PersonaIdentity::new(faculty.persona_id, "Kimi");
+            let cycle = WorkspaceCycle::new(vec![], Arc::new(SalienceArbiter), 4);
+            for (text, human, expected_attention, expected_class) in [
+                (
+                    "Joel here — which card do you hold?",
+                    true,
+                    TurnAttention::HumanOpportunity,
+                    SlotClass::Turn,
+                ),
+                (
+                    "Astra / Codex -> IntelMac: thanks for the 3898 review.",
+                    false,
+                    TurnAttention::Ambient,
+                    SlotClass::Background,
+                ),
+                (
+                    "Astra / Codex -> IntelMac: thanks for the 3898 review.",
+                    true,
+                    TurnAttention::HumanOpportunity,
+                    SlotClass::Turn,
+                ),
+                (
+                    "Kimi, please review the patch.",
+                    false,
+                    TurnAttention::Addressed,
+                    SlotClass::Turn,
+                ),
+                (
+                    "Kimi, please review the patch.",
+                    true,
+                    TurnAttention::Addressed,
+                    SlotClass::Turn,
+                ),
+            ] {
+                let framing = TurnFraming::message(TurnAttention::for_message(
+                    identity.mentions(text),
+                    human,
+                ));
+                for situation in [Situation::FreshContext, Situation::PostAction] {
+                    let ws = cycle.run_situated(text.into(), framing, situation).await;
+                    assert_eq!(ws.attention, expected_attention, "{text}");
+                    assert_eq!(
+                        deliberation_slot_class(Some("cognition/deliberation"), ws.attention),
+                        expected_class,
+                        "human opportunity retains the foreground lane: {text}",
+                    );
+                    let delivered = whole(&faculty.prompt_view(&ws));
+                    assert_eq!(
+                        delivered.contains("This message names you"),
+                        expected_attention == TurnAttention::Addressed,
+                        "the actual prompt must not turn admission priority into addressing: {text}",
+                    );
+                    assert_eq!(
+                        delivered.contains("do not need to be addressed by name"),
+                        expected_attention != TurnAttention::Addressed,
+                        "unmentioned messages keep ordinary participation: {text}",
+                    );
+                }
+            }
         }
 
         // what this catches: the tools gate. With NO tools authorized, a tool-call

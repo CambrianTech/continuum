@@ -257,7 +257,7 @@ crate::action_command! {
             &cycle,
             burst,
             true,
-            crate::cognition::workspace::TurnFraming::message(true),
+            crate::cognition::workspace::TurnFraming::directed(),
             // One-shot directed tick: a fresh ask, so fuller grounding.
             crate::cognition::workspace::Situation::FreshContext,
             &chain,
