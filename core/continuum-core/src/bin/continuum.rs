@@ -94,6 +94,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "orphans"
                 | "deploy-verify"
                 | "verify"
+                | "checkpoint"
         ) && args
             .iter()
             .any(|arg| matches!(arg.as_str(), "-h" | "--help")))
@@ -110,6 +111,11 @@ async fn run() -> Result<(), CliError> {
         return Ok(());
     }
     let args = rest.into_iter();
+    // Offline recovery must work before a core can start, and inspection must
+    // not mutate the checkout registry as a side effect.
+    if first == "checkpoint" {
+        return checkpoint(CheckpointCommand::parse(args)?).map_err(CliError::from);
+    }
     // Every CLI run from inside a repo records that checkout for the core
     // (repo-card staging reads it); the first deploy after #3706 would otherwise
     // start with an empty registry until the next `start`/`reboot`.
@@ -359,6 +365,185 @@ fn camel_to_kebab(s: &str) -> String {
 
 fn socket_path() -> String {
     continuum_core::ipc::endpoint_paths::core_socket_path()
+}
+
+/// Explicit legacy selection, independent of a live core's command registry.
+/// Inspect emits a digest-bound plan; adopt consumes that exact plan offline.
+#[derive(Debug, PartialEq, Eq)]
+enum CheckpointCommand {
+    Inspect {
+        source: PathBuf,
+        persona_id: uuid::Uuid,
+        plan: PathBuf,
+    },
+    Adopt {
+        plan: PathBuf,
+    },
+}
+
+impl CheckpointCommand {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+        let verb = args.next().ok_or("checkpoint requires inspect or adopt")?;
+        let mut source = None;
+        let mut persona_id = None;
+        let mut plan = None;
+        let mut legacy_writers_stopped = false;
+        while let Some(flag) = args.next() {
+            if verb == "adopt" && flag == "--legacy-writers-stopped" && !legacy_writers_stopped {
+                legacy_writers_stopped = true;
+                continue;
+            }
+            let slot = match (verb.as_str(), flag.as_str()) {
+                ("inspect", "--source") => &mut source,
+                ("inspect", "--persona-id") => &mut persona_id,
+                ("inspect" | "adopt", "--plan") => &mut plan,
+                _ => {
+                    return Err(format!(
+                        "unknown or repeated checkpoint {verb} option {flag}"
+                    ))
+                }
+            };
+            if slot.is_some() {
+                return Err(format!("duplicate checkpoint option {flag}"));
+            }
+            *slot = Some(
+                args.next()
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or_else(|| format!("{flag} requires a value"))?,
+            );
+        }
+        let plan = PathBuf::from(plan.ok_or("checkpoint requires --plan <path>")?);
+        match verb.as_str() {
+            "inspect" => Ok(Self::Inspect {
+                source: PathBuf::from(source.ok_or("inspect requires --source <volatile.json>")?),
+                persona_id: persona_id.ok_or("inspect requires --persona-id <uuid>")?
+                    .parse().map_err(|error| format!("invalid persona UUID: {error}"))?,
+                plan,
+            }),
+            "adopt" if legacy_writers_stopped => Ok(Self::Adopt { plan }),
+            "adopt" => Err("adopt requires --legacy-writers-stopped: stop legacy cores and their automatic launchers before applying the inspected plan".into()),
+            _ => Err(format!("unknown checkpoint operation {verb}; use inspect or adopt")),
+        }
+    }
+}
+
+fn checkpoint(command: CheckpointCommand) -> Result<(), String> {
+    use continuum_core::cognition::persona_workspace::checkpoint_adoption::{
+        adopt, inspect, AdoptionPlan,
+    };
+    use std::io::{Read, Write};
+
+    match command {
+        CheckpointCommand::Inspect {
+            source,
+            persona_id,
+            plan,
+        } => {
+            let selection = inspect(&source, persona_id).map_err(|error| error.to_string())?;
+            let plan =
+                checkpoint_plan_output(&plan, &selection.source.path, &selection.destination_path)?;
+            let bytes = serde_json::to_vec_pretty(&selection).map_err(|error| error.to_string())?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&plan)
+                .map_err(|error| format!("create inspection plan {}: {error}", plan.display()))?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("write inspection plan {}: {error}", plan.display()))?;
+            println!("{}", String::from_utf8_lossy(&bytes));
+            eprintln!(
+                "checkpoint plan saved to {}; no checkpoint changed",
+                plan.display()
+            );
+        }
+        CheckpointCommand::Adopt { plan } => {
+            // context-budget-exempt: bounds offline plan decoding, not model input.
+            const MAX_PLAN_BYTES: u64 = 1024 * 1024;
+            let mut bytes = Vec::new();
+            std::fs::File::open(&plan)
+                .and_then(|file| file.take(MAX_PLAN_BYTES + 1).read_to_end(&mut bytes))
+                .map_err(|error| format!("read inspection plan {}: {error}", plan.display()))?;
+            if bytes.len() as u64 > MAX_PLAN_BYTES {
+                return Err("checkpoint plan exceeds the offline decoding limit".into());
+            }
+            let selection: AdoptionPlan = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid checkpoint plan: {error}"))?;
+            let receipt =
+                adopt(&selection, ensure_checkpoint_offline).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_checkpoint_offline() -> std::io::Result<()> {
+    // A launcher can have written its PID before the executable-name probe
+    // identifies it. Read failure or a malformed PID is uncertainty, not absence.
+    let recorded_pid = match std::fs::read_to_string(pidfile_for(&socket_path())) {
+        Ok(contents) => {
+            let pid = contents
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .filter(|pid| *pid > 0)
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid core PID file")
+                })?;
+            Some(pid)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    core_process_evidence()?.ensure_offline(recorded_pid)
+}
+
+/// A plan is metadata, never a checkpoint. In particular an absent destination
+/// must not be poisoned with plan JSON by an otherwise successful create_new.
+fn checkpoint_plan_output(
+    output: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<PathBuf, String> {
+    let absolute = std::path::absolute(output).map_err(|error| error.to_string())?;
+    let parent = absolute
+        .parent()
+        .ok_or("plan output has no parent")?
+        .canonicalize()
+        .map_err(|error| format!("plan output directory: {error}"))?;
+    let filename = absolute.file_name().ok_or("plan output has no filename")?;
+    if ["volatile.json", ".volatile.lock"]
+        .iter()
+        .any(|reserved| filename.to_string_lossy().eq_ignore_ascii_case(reserved))
+    {
+        return Err("inspection metadata cannot use a reserved checkpoint filename".into());
+    }
+    #[cfg(windows)]
+    if parent.components().any(|component| {
+        matches!(component,
+        std::path::Component::Prefix(prefix) if matches!(prefix.kind(),
+            std::path::Prefix::UNC(_, _) | std::path::Prefix::VerbatimUNC(_, _)))
+    }) {
+        // An SMB alias can identify the same Persona directory through a
+        // different namespace, which lexical containment cannot establish.
+        return Err("write the inspection plan to a local path, not a network share".into());
+    }
+    let output = parent.join(filename);
+    let native_personas = destination
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("checkpoint destination has no Persona store")?;
+    let source_personas = source
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("checkpoint source has no Persona store")?;
+    if output.starts_with(native_personas) || output.starts_with(source_personas) {
+        return Err("write the inspection plan outside managed Persona checkpoint storage".into());
+    }
+    Ok(output)
 }
 
 /// Dispatch through the uniform Connection to an already-running core. Lifecycle is
@@ -1471,8 +1656,18 @@ async fn prebuilt_checkout_sha(
     cmd.kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
         .await
-        .map_err(|_| format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))?
-        .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
+        .map_err(|_| {
+            format!(
+                "prebuilt checkout HEAD lookup timed out in {}",
+                cwd.display()
+            )
+        })?
+        .map_err(|e| {
+            format!(
+                "cannot read prebuilt checkout HEAD in {}: {e}",
+                cwd.display()
+            )
+        })?;
     if !output.status.success() {
         return Err(format!(
             "cannot verify prebuilt checkout HEAD in {}: git exited {}: {}",
@@ -1499,7 +1694,10 @@ fn has_git_checkout(cwd: &Path) -> Result<bool, String> {
         match std::fs::symlink_metadata(path) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(format!("cannot inspect Git metadata {}: {e}", path.display())),
+            Err(e) => Err(format!(
+                "cannot inspect Git metadata {}: {e}",
+                path.display()
+            )),
         }
     }
     for ancestor in cwd.ancestors() {
@@ -1839,18 +2037,92 @@ fn bound_elsewhere_hint(bound: &[(i32, String)], socket: &str) -> Option<String>
 /// every platform, so there is one implementation instead of a Unix tool plus an unported gap.
 /// Matching on the executable NAME rather than `pgrep -f`'s full command line is also more precise
 /// here: it cannot accidentally match the bash process that is merely launching the core.
-fn processes_named(fragment: &str) -> Vec<i32> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+struct CoreProcessEvidence {
+    core_pids: Vec<i32>,
+    observed_pids: std::collections::HashSet<i32>,
+}
+
+impl CoreProcessEvidence {
+    fn from_processes<'a>(
+        own_pid: i32,
+        processes: impl IntoIterator<Item = (i32, &'a std::ffi::OsStr, Option<&'a Path>)>,
+    ) -> std::io::Result<Self> {
+        let mut evidence = Self {
+            core_pids: Vec::new(),
+            observed_pids: Default::default(),
+        };
+        for (pid, name, exe) in processes {
+            evidence.observed_pids.insert(pid);
+            if process_matches_fragment(name, exe, "continuum-core-server") {
+                evidence.core_pids.push(pid);
+            } else if exe.is_none() && name == std::ffi::OsStr::new("continuum-core-") {
+                // Linux comm is truncated. Missing exe evidence is uncertainty;
+                // it must not count as absence or become a broad kill match.
+                return Err(std::io::Error::other(format!("cannot identify possible core PID {pid}: truncated name and unavailable executable")));
+            }
+        }
+        if !evidence.observed_pids.contains(&own_pid) {
+            return Err(std::io::Error::other(
+                "cannot establish core absence: this process is missing from the process table",
+            ));
+        }
+        Ok(evidence)
+    }
+
+    fn ensure_offline(&self, recorded_pid: Option<i32>) -> std::io::Result<()> {
+        if !self.core_pids.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!(
+                    "checkpoint adoption requires stopped cores; running PID(s): {:?}",
+                    self.core_pids
+                ),
+            ));
+        }
+        if let Some(pid) = recorded_pid.filter(|pid| self.observed_pids.contains(pid)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("checkpoint adoption refused: core PID file names a live process ({pid})"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn core_process_evidence() -> std::io::Result<CoreProcessEvidence> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    CoreProcessEvidence::from_processes(
+        std::process::id() as i32,
+        sys.processes()
+            .values()
+            .map(|process| (process.pid().as_u32() as i32, process.name(), process.exe())),
+    )
+}
+
+fn process_matches_fragment(name: &std::ffi::OsStr, exe: Option<&Path>, fragment: &str) -> bool {
+    name.to_string_lossy().contains(fragment)
+        || exe
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.to_string_lossy().contains(fragment))
+}
+
+fn processes_named(fragment: &str) -> Vec<i32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
     sys.processes()
         .values()
-        .filter(|p| {
-            p.name().to_string_lossy().contains(fragment)
-                || p.exe()
-                    .map(|e| e.to_string_lossy().contains(fragment))
-                    .unwrap_or(false)
-        })
+        .filter(|p| process_matches_fragment(p.name(), p.exe(), fragment))
         .map(|p| p.pid().as_u32() as i32)
         .collect()
 }
@@ -2848,6 +3120,163 @@ fn tail(path: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // What this catches (card 9f160b78): missing/truncated process evidence and
+    // a live PID-file process must never authorize offline memory replacement.
+    #[test]
+    fn checkpoint_offline_evidence_keeps_unknown_distinct_from_absent() {
+        use super::CoreProcessEvidence;
+        use std::ffi::OsStr;
+        use std::path::Path;
+        let own = (41, OsStr::new("continuum"), None);
+        let other = (42, OsStr::new("launcher"), None);
+        let evidence = CoreProcessEvidence::from_processes(41, [own, other]).unwrap();
+        assert!(evidence.ensure_offline(None).is_ok());
+        assert!(evidence.ensure_offline(Some(99)).is_ok());
+        assert_eq!(
+            evidence.ensure_offline(Some(42)).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(CoreProcessEvidence::from_processes(41, [other]).is_err());
+        let truncated = (43, OsStr::new("continuum-core-"), None);
+        assert!(CoreProcessEvidence::from_processes(41, [own, truncated]).is_err());
+        let resolved = (
+            43,
+            OsStr::new("continuum-core-"),
+            Some(Path::new("/bin/continuum-core-server")),
+        );
+        assert!(CoreProcessEvidence::from_processes(41, [own, resolved])
+            .unwrap()
+            .ensure_offline(None)
+            .is_err());
+        // The uncertain truncated name must not broaden process termination.
+        assert!(!super::process_matches_fragment(
+            truncated.1,
+            truncated.2,
+            "continuum-core-server"
+        ));
+        assert!(super::process_matches_fragment(
+            resolved.1,
+            resolved.2,
+            "continuum-core-server"
+        ));
+        assert!(
+            !super::process_matches_fragment(
+                OsStr::new("python"),
+                Some(Path::new("/continuum-core-server-fixtures/python")),
+                "continuum-core-server"
+            ),
+            "parent directories must not turn an unrelated executable into a core kill target"
+        );
+    }
+
+    // What this catches (card 9f160b78): inspect --plan <absent volatile.json>
+    // must not write a valid plan into a Persona's actual memory file.
+    #[test]
+    fn inspection_plan_cannot_occupy_checkpoint_or_evidence_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let source_dir = root.join("legacy").join(uuid::Uuid::new_v4().to_string());
+        let persona_dir = root.join("personas").join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&persona_dir).unwrap();
+        let sibling = root.join("legacy").join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&sibling).unwrap();
+        let source = source_dir.join("volatile.json");
+        let destination = persona_dir.join("volatile.json");
+        for invalid in [
+            &source,
+            &destination,
+            &persona_dir.join(".volatile.lock"),
+            &source_dir.join("plan.json"),
+            &sibling.join("volatile.json"),
+        ] {
+            assert!(super::checkpoint_plan_output(invalid, &source, &destination).is_err());
+            assert!(
+                !invalid.exists(),
+                "inspection must leave managed state absent"
+            );
+        }
+        let outside = root.join("plan.json");
+        assert_eq!(
+            super::checkpoint_plan_output(&outside, &source, &destination).unwrap(),
+            outside
+        );
+    }
+
+    // What this catches (card 9f160b78): a malformed recovery invocation must
+    // never select/adopt a checkpoint or imply that legacy writers are stopped.
+    #[test]
+    fn checkpoint_recovery_requires_explicit_selection_and_offline_precondition() {
+        let parse =
+            |args: &[&str]| super::CheckpointCommand::parse(args.iter().map(|arg| arg.to_string()));
+        let persona = "68d231fb-1b99-47ea-8615-14538906817a";
+        assert!(matches!(
+            parse(&[
+                "inspect",
+                "--source",
+                "old/volatile.json",
+                "--persona-id",
+                persona,
+                "--plan",
+                "plan.json"
+            ])
+            .unwrap(),
+            super::CheckpointCommand::Inspect { .. }
+        ));
+        assert_eq!(
+            parse(&["adopt", "--plan", "plan.json", "--legacy-writers-stopped"]).unwrap(),
+            super::CheckpointCommand::Adopt {
+                plan: "plan.json".into()
+            }
+        );
+        for args in [
+            vec![],
+            vec!["adopt", "--plan", "plan.json"],
+            vec!["adopt", "--plan", "plan.json", "--force"],
+            vec![
+                "adopt",
+                "--plan",
+                "plan.json",
+                "--plan",
+                "other.json",
+                "--legacy-writers-stopped",
+            ],
+            vec![
+                "adopt",
+                "--plan",
+                "plan.json",
+                "--legacy-writers-stopped",
+                "--legacy-writers-stopped",
+            ],
+            vec![
+                "inspect",
+                "--source",
+                "old/volatile.json",
+                "--plan",
+                "plan.json",
+            ],
+            vec![
+                "inspect",
+                "--source",
+                "old/volatile.json",
+                "--persona-id",
+                "invalid",
+                "--plan",
+                "plan.json",
+            ],
+            vec![
+                "inspect",
+                "--source",
+                "--persona-id",
+                persona,
+                "--plan",
+                "plan.json",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "must refuse {args:?}");
+        }
+    }
+
     // what this catches: card 67f53b63 — a missing/misspelled prebuilt path
     // must not fall through to a source reboot, and --force only changes leases.
     #[test]
@@ -2964,7 +3393,10 @@ mod tests {
             super::prebuilt_checkout_sha(&repo, None).await.is_err(),
             "a checkout with no readable HEAD cannot self-anchor"
         );
-        git(&repo, &["commit", "--allow-empty", "--quiet", "-m", "fixture"]);
+        git(
+            &repo,
+            &["commit", "--allow-empty", "--quiet", "-m", "fixture"],
+        );
         git(&repo, &["checkout", "--detach", "--quiet", "HEAD"]);
         let head = git(&repo, &["rev-parse", "--short", "HEAD"]);
         assert_eq!(
@@ -2974,7 +3406,14 @@ mod tests {
 
         git(
             &repo,
-            &["worktree", "add", "--detach", "--quiet", "../linked", "HEAD"],
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--quiet",
+                "../linked",
+                "HEAD",
+            ],
         );
         let linked = tmp.path().join("linked");
         let nested = linked.join("src");
@@ -3003,11 +3442,12 @@ mod tests {
                 .unwrap(),
             Some(head),
         );
-        assert!(
-            super::prebuilt_checkout_sha(&standalone, Some(tmp.path().join("missing").as_os_str()))
-                .await
-                .is_err()
-        );
+        assert!(super::prebuilt_checkout_sha(
+            &standalone,
+            Some(tmp.path().join("missing").as_os_str())
+        )
+        .await
+        .is_err());
 
         std::fs::write(linked.join(".git"), "gitdir: missing-checkout\n").unwrap();
         assert!(
@@ -3084,6 +3524,7 @@ mod tests {
             "orphans",
             "deploy-verify",
             "verify",
+            "checkpoint",
         ] {
             for flag in ["-h", "--help"] {
                 assert!(super::local_help_requested(
@@ -3930,6 +4371,10 @@ fn usage() -> String {
        continuum reboot --prebuilt <path>\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
+     \n\
+     Legacy checkpoint recovery (local; no running core required):\n  \
+       continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
+       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
        continuum desktop               open the desktop in your browser (alias: uu desktop)\n\

@@ -5048,7 +5048,9 @@ mod tests {
             defer_grounding: false,
             suppress_recall: false,
         };
-        crate::cognition::persona_workspace::global().register_from_cfg(cfg);
+        crate::cognition::persona_workspace::global()
+            .register_from_cfg(cfg)
+            .expect("test: resident checkpoint is readable");
 
         // One held (Claimed) card in her hands. A NON-bench title so the
         // act-question resolves no staged checkout (no hands re-root needed).
