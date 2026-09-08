@@ -36,6 +36,10 @@ use continuum_core::runtime::deploy_provenance::{
 };
 use serde_json::Value;
 
+#[cfg(windows)]
+#[path = "continuum/windows_launch.rs"]
+mod windows_launch;
+
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error("no core answering on {socket}; `{command}` requires a running core. Use `continuum start` explicitly, or wait for the current deploy to finish.")]
@@ -2127,8 +2131,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
         }
     }
-    cmd.env("CONTINUUM_CORE_SOCKET", &socket)
-        .stdin(Stdio::null())
+    cmd.env("CONTINUUM_CORE_SOCKET", &socket);
+    #[cfg(not(windows))]
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     // Detach so the core outlives this CLI invocation. Unix: setsid() in the
@@ -2143,8 +2148,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         });
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
+    let spawned = {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         // NOT DETACHED_PROCESS. That flag gives the child NO console at all, and the start script
         // is bash — a console-subsystem program that needs one. Under DETACHED_PROCESS it died
@@ -2164,12 +2168,16 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
         // receipt — the operator then launches through a Scheduled Task (schtasks), which
         // runs outside any job, until the supervisor slice lands.
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
-    }
-    #[cfg(windows)]
-    let spawned = {
-        use std::os::windows::process::CommandExt;
-        match cmd.spawn() {
+        // Redirecting stdio does not prevent Rust's Windows spawn from also
+        // inheriting the launcher's other pipe writers. Those kept PowerShell
+        // waiting for EOF after a successful reboot (card 9bc0fc5e). The native
+        // boundary allows only its owned null/log handles, on BOTH attempts.
+        match windows_launch::spawn_logged(
+            &cmd,
+            &log,
+            &log_err,
+            CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+        ) {
             Ok(child) => {
                 eprintln!("▶ supervisor=breakaway: the core left this session's job object (survives the session)");
                 Ok(child)
@@ -2182,8 +2190,12 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
                      /tr \"<the same start command>\" /sc once /st 00:00 /ru <user> /rl highest /f \
                      && schtasks /run /tn continuum-core"
                 );
-                cmd.creation_flags(0x0000_0200 | 0x0800_0000);
-                cmd.spawn()
+                windows_launch::spawn_logged(
+                    &cmd,
+                    &log,
+                    &log_err,
+                    CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                )
             }
             Err(e) => Err(e),
         }
