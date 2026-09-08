@@ -875,6 +875,10 @@ pub struct BenchmarkDispatchResult {
     /// leaves the pass rate with no honest denominator.
     #[ts(type = "number")]
     pub skipped_already_on_board: u32,
+    /// Instances a citizen's card already resolved: they stay in the round's sample and
+    /// its score, and are not offered as work again (2026-09-08).
+    #[serde(default)]
+    pub skipped_already_resolved: u32,
     /// Redundant duplicate cards CLOSED by this call (only when `prune` was set).
     /// Cards under a live claim are never counted here because they are never
     /// closed — see `contended_tasks`.
@@ -1532,6 +1536,7 @@ impl ActionCommand for BenchmarkDispatch {
                         a.skipped_needs_setup += r.skipped_needs_setup;
                         a.skipped_known_red += r.skipped_known_red;
                         a.skipped_already_on_board += r.skipped_already_on_board;
+                        a.skipped_already_resolved += r.skipped_already_resolved;
                         a.pruned_duplicates += r.pruned_duplicates;
                         a.contended_tasks += r.contended_tasks;
                         a.kickoffs += r.kickoffs;
@@ -2137,6 +2142,7 @@ impl ActionCommand for BenchmarkDispatch {
                 teammates.iter().map(|t| t.as_uuid()).collect(),
             );
         }
+        let mut skipped_already_resolved = 0u32;
         for pc in prepared.into_iter().take(take) {
             // A gym setup_shell card is prepared in the CLAIMER's workspace at claim
             // time (`card_staging`, 2026-09-03) — the early unconditional skip that
@@ -2157,6 +2163,26 @@ impl ActionCommand for BenchmarkDispatch {
             if bench_card_key(&pc.title).is_some_and(|k| live_by_task.contains_key(k)) {
                 skipped_already_on_board += 1;
                 continue;
+            }
+
+            // A CITIZEN ALREADY SOLVED THIS ONE. The seeded sample is the replication
+            // contract, so the instance stays IN the round and in its score — but it is
+            // not offered as work again. Re-offering cost us twice on 2026-09-07:
+            // astropy-13236 (resolved 08-26) was re-staged onto its August checkout, and
+            // sympy-22456's second attempt overwrote the first citizen's outcome. Neither
+            // taught anyone anything; both burned lanes we do not have.
+            if let CardWork::Swe { instance } = &pc.work {
+                if crate::cognition::swe_bench::read_verdict(&instance.instance_id)
+                    .is_some_and(|v| v.resolved)
+                {
+                    skipped_already_resolved += 1;
+                    crate::probe!(
+                        class = "bench.round.already_resolved",
+                        instance = %instance.instance_id,
+                        "a citizen's card already resolved this instance — it stays in the round's sample and its score, and is not offered as work again"
+                    );
+                    continue;
+                }
             }
 
             // The directed assignee (round-robin over the RESOLVED live roster). Always a
@@ -2590,6 +2616,7 @@ impl ActionCommand for BenchmarkDispatch {
             skipped_needs_setup,
             skipped_known_red,
             skipped_already_on_board,
+            skipped_already_resolved,
             pruned_duplicates,
             contended_tasks,
             kickoffs,
