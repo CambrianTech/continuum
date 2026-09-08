@@ -150,6 +150,7 @@ pub fn cargo_target_budget_bytes(volume_total_bytes: u64) -> u64 {
 /// this PR exists to fix, committed inside the mechanism added to fix it — the
 /// second time in two PRs I have written it, which is why the type is now the
 /// thing that prevents it rather than a comment asking me not to.
+#[derive(Debug)]
 enum LockAttempt {
     /// Held by us until the file drops.
     Acquired(std::fs::File),
@@ -176,10 +177,21 @@ fn try_exclusive_flock_detailed(path: &Path) -> LockAttempt {
     };
     match file.try_lock_exclusive() {
         Ok(()) => LockAttempt::Acquired(file),
-        // fs2 does not distinguish "would block" from a hard error in its return
-        // type; WouldBlock IS the contention signal on both platforms, and anything
-        // else is a real failure we must not read as a live build.
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => LockAttempt::HeldByAnother,
+        // CONTENTION IS NOT `WouldBlock` ON WINDOWS. @Astra caught this on the
+        // second review of #3910: `fs2` signals a held lock with the platform's own
+        // code — `EWOULDBLOCK` on Unix, but `ERROR_LOCK_VIOLATION` (33) on Windows,
+        // which `std` does not map to `ErrorKind::WouldBlock`. Matching on the kind
+        // therefore classified a GENUINELY HELD cargo lock as `Unavailable` on
+        // Windows — the same misclassification this tri-state was added to fix,
+        // inverted, and live on the only platform where I could have measured it.
+        //
+        // `fs2::lock_contended_error()` is the library's own answer to "what does
+        // contention look like here", so we ask it rather than guessing per
+        // platform. [[dir-opened-as-file-windows-only]] — Windows chooses
+        // differently and says nothing.
+        Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            LockAttempt::HeldByAnother
+        }
         Err(e) => LockAttempt::Unavailable(format!("lock query failed: {e}")),
     }
 }
@@ -1410,6 +1422,66 @@ mod tests {
             );
         }
 
+        // what this catches: @Astra, twice. First that `Option<File>` collapsed
+        // "a build holds it" and "I could not open it" into one `None`; then that
+        // my fix still misread contention ON WINDOWS, where fs2 reports
+        // ERROR_LOCK_VIOLATION (33) rather than anything std maps to
+        // `ErrorKind::WouldBlock`. Matching on the KIND classified a genuinely held
+        // cargo lock as `Unavailable` — the exact misclassification the tri-state
+        // exists to prevent, inverted, on the platform I run on.
+        //
+        // So this exercises REAL lock files rather than asserting the mapping:
+        // acquire one, then attempt it again while the first guard is alive, on
+        // whatever platform the test is running.
+        #[test]
+        fn a_held_lock_reads_as_contention_and_not_as_an_io_failure() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let lock = tmp.path().join(".cargo-lock");
+
+            let first = try_exclusive_flock_detailed(&lock);
+            let held = match first {
+                LockAttempt::Acquired(f) => f,
+                other => panic!("an uncontended lock must be Acquired, got {other:?}"),
+            };
+
+            // Same process, same file, while the first guard is alive.
+            match try_exclusive_flock_detailed(&lock) {
+                LockAttempt::HeldByAnother => {}
+                LockAttempt::Acquired(_) => {
+                    panic!("a held lock must NOT be re-acquirable — the guard would be a no-op")
+                }
+                LockAttempt::Unavailable(why) => panic!(
+                    "a held lock was reported as an IO failure ({why}) — this is the                      Windows misclassification: contention is ERROR_LOCK_VIOLATION,                      which std does not map to WouldBlock"
+                ),
+            }
+
+            drop(held);
+            // And once released it is acquirable again, so the contention above was
+            // the lock and not some permanent property of the path.
+            assert!(
+                matches!(
+                    try_exclusive_flock_detailed(&lock),
+                    LockAttempt::Acquired(_)
+                ),
+                "non-degeneracy: if this path could never be acquired, the assertion                  above would pass for the wrong reason"
+            );
+        }
+
+        // what this catches: the third state must be reachable and distinct — a path
+        // that cannot be opened is NOT evidence a build was protected.
+        #[test]
+        fn an_unopenable_lock_path_is_unavailable_not_contention() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            // A lock file whose PARENT does not exist cannot be created or opened.
+            let impossible = tmp.path().join("no-such-dir").join(".cargo-lock");
+            match try_exclusive_flock_detailed(&impossible) {
+                LockAttempt::Unavailable(_) => {}
+                other => panic!(
+                    "an unopenable path must be Unavailable, never mistaken for a                      live build holding the lock, got {other:?}"
+                ),
+            }
+        }
+
         // what this catches: a LIVE regression that #3907 shipped to canary, found by
         // S6 via @Astra. `CargoTargetPool::tier_name` returned a hardcoded
         // "disk-cargo-target" for every instance, and `PressureBroker::register`
@@ -1493,7 +1565,9 @@ mod tests {
         // FLAT 50 GiB, which sits BELOW this workspace's debug tree on a
         // workstation. Measured consequence on a 1.9 TB box: 36 evictions and
         // 356 GB of compilation destroyed in one day, median 13.5 minutes apart,
-        // so every build started cold and three agents blamed the toolchain.
+        // at a cadence no build could outlive, and three agents blamed the
+        // toolchain. (Frequency is what was measured; whether any individual build
+        // started cold was never observed — see note_eviction.)
         //
         // The derivation must (a) actually raise the budget on a big volume —
         // a fix that returned the floor everywhere would pass a weaker test while
