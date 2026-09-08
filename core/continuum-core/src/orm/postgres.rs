@@ -1386,7 +1386,7 @@ impl StorageAdapter for PostgresAdapter {
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
-                            Err(r.error.unwrap_or_else(|| "create failed".to_string()))
+                            Err(r.error.unwrap_or_else(|| "create failed".to_string())) // the adapter reported failure without detail; the operation still failed
                         }
                     }
                     _ => Err("create requires both id and data".to_string()),
@@ -1397,7 +1397,7 @@ impl StorageAdapter for PostgresAdapter {
                         if r.success {
                             Ok(json!({"success": true, "data": r.data}))
                         } else {
-                            Err(r.error.unwrap_or_else(|| "read failed".to_string()))
+                            Err(r.error.unwrap_or_else(|| "read failed".to_string())) // the adapter reported failure without detail; the operation still failed
                         }
                     }
                     None => Err("read requires an id".to_string()),
@@ -1408,7 +1408,7 @@ impl StorageAdapter for PostgresAdapter {
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
-                            Err(r.error.unwrap_or_else(|| "update failed".to_string()))
+                            Err(r.error.unwrap_or_else(|| "update failed".to_string())) // the adapter reported failure without detail; the operation still failed
                         }
                     }
                     _ => Err("update requires both id and data".to_string()),
@@ -1419,7 +1419,7 @@ impl StorageAdapter for PostgresAdapter {
                         if r.success {
                             Ok(json!({"success": true}))
                         } else {
-                            Err(r.error.unwrap_or_else(|| "delete failed".to_string()))
+                            Err(r.error.unwrap_or_else(|| "delete failed".to_string())) // the adapter reported failure without detail; the operation still failed
                         }
                     }
                     None => Err("delete requires an id".to_string()),

@@ -543,7 +543,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             if r.success {
                 Ok(json!({"success": true}))
             } else {
-                Err(r.error.unwrap_or_else(|| "create failed".to_string()))
+                Err(r.error.unwrap_or_else(|| "create failed".to_string())) // the adapter reported failure without detail; the operation still failed
             }
         }
         BatchOperationType::Read => {
@@ -554,7 +554,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             if r.success {
                 Ok(json!({"success": true, "data": r.data}))
             } else {
-                Err(r.error.unwrap_or_else(|| "read failed".to_string()))
+                Err(r.error.unwrap_or_else(|| "read failed".to_string())) // the adapter reported failure without detail; the operation still failed
             }
         }
         BatchOperationType::Update => {
@@ -565,7 +565,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             if r.success {
                 Ok(json!({"success": true}))
             } else {
-                Err(r.error.unwrap_or_else(|| "update failed".to_string()))
+                Err(r.error.unwrap_or_else(|| "update failed".to_string())) // the adapter reported failure without detail; the operation still failed
             }
         }
         BatchOperationType::Delete => {
@@ -576,7 +576,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             if r.success {
                 Ok(json!({"success": true}))
             } else {
-                Err(r.error.unwrap_or_else(|| "delete failed".to_string()))
+                Err(r.error.unwrap_or_else(|| "delete failed".to_string())) // the adapter reported failure without detail; the operation still failed
             }
         }
     }
