@@ -505,11 +505,55 @@ mod tests {
         // `{prompt, completion}` with no chosen/rejected anywhere in the tree, so
         // every bucket is an SFT target and a `/failed` bucket TRAINS THE FAILURE.
         // Until a preference-pair schema exists, a verified failure submits nothing.
+        //
+        // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN, or this test proves
+        // nothing. `score_interaction_quality` weights `task_success` at 0.25 and
+        // scores a failed outcome 0.2, so a failed turn scores `0.20 + 0.3*substance`
+        // — and `long` above (237 chars → substance 0.7) lands at 0.41, BELOW
+        // MIN_TRAINING_QUALITY 0.45. With that fixture the gate refuses the turn and
+        // the evidence floor is never reached: deleting the floor entirely left this
+        // assertion green. Found by mutation, not by reading.
+        //
+        // `substantial` is ≥500 chars → substance 0.9 → 0.47, which CLEARS the gate.
+        // The positive control below proves it: same text, outcome `true`, plans a
+        // bucket. So `None` for the failed case can only come from the floor.
+        let substantial = "Pool them behind one supervised task and hand out permits; a websocket \
+             per request will exhaust file descriptors long before it exhausts memory, and the \
+             reconnect storm is worse than the original load. Bound the pool and queue the \
+             overflow, then shed load at the queue rather than at accept() — a refused connection \
+             the caller can retry is cheaper than a half-open socket nobody owns. Size the permit \
+             count from the descriptor ceiling, not from a guess, and make the queue depth the \
+             knob you actually tune under pressure.";
+        assert!(
+            substantial.len() >= 500,
+            "fixture must clear the substance ladder's 500-char step, or the quality \
+             gate refuses the turn and this test cannot see the floor at all"
+        );
+
+        // POSITIVE CONTROL: the same text with a PASSING verdict must still plan.
+        // Without this, a fixture that happened to be gated out would make the
+        // failed-case assertion vacuous — which is exactly the bug this block had.
         assert!(
             plan(
                 &classifier,
                 "How do I pool websockets?",
-                long,
+                substantial,
+                Some(OutcomeStamp {
+                    outcome: true,
+                    role: CreditRole::Reviewer,
+                    ..stamp
+                }),
+            )
+            .is_some(),
+            "control: this fixture clears the quality gate when the verdict PASSES, \
+             so a None below is the evidence floor and not the gate"
+        );
+
+        assert!(
+            plan(
+                &classifier,
+                "How do I pool websockets?",
+                substantial,
                 Some(OutcomeStamp {
                     outcome: false,
                     role: CreditRole::Reviewer,
