@@ -32,9 +32,9 @@ const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
 
 /// Read the last `limit` JSONL lines from a per-persona fixture file under
-/// `~/.continuum/fixtures/<subdir>/<persona_id>.jsonl`. Missing file → empty.
-fn tail_persona_jsonl(
-    subdir: &str,
+/// the shared fixture directory. Missing file → empty.
+pub(super) fn tail_persona_jsonl(
+    relative_dir: &str,
     persona_id: &str,
     limit: usize,
 ) -> Result<Vec<String>, CommandError> {
@@ -49,11 +49,8 @@ fn tail_persona_jsonl(
             "persona_id '{persona_id}' is not a valid id token"
         )));
     }
-    let home = std::env::var("HOME")
-        .map_err(|_| CommandError::Internal("HOME unset; no fixtures root".into()))?;
-    let path = std::path::Path::new(&home)
-        .join(".continuum/fixtures")
-        .join(subdir)
+    let path = crate::persona::recorder::fixture_dir(relative_dir)
+        .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))?
         .join(format!("{persona_id}.jsonl"));
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
@@ -112,7 +109,11 @@ impl ActionCommand for CognitionTrace {
         p: CognitionTraceParams,
     ) -> Result<CognitionTraceResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
-        let records = tail_persona_jsonl("workspace-traces", p.persona_id.as_str(), limit)?;
+        let records = tail_persona_jsonl(
+            super::workspace_capture::FIXTURE_DIR,
+            p.persona_id.as_str(),
+            limit,
+        )?;
         Ok(CognitionTraceResult {
             persona_id: p.persona_id,
             count: records.len() as u32,
@@ -162,7 +163,11 @@ impl ActionCommand for CognitionPrompt {
         p: CognitionPromptParams,
     ) -> Result<CognitionPromptResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
-        let records = tail_persona_jsonl("prompt-captures", p.persona_id.as_str(), limit)?;
+        let records = tail_persona_jsonl(
+            super::prompt_capture::FIXTURE_DIR,
+            p.persona_id.as_str(),
+            limit,
+        )?;
         Ok(CognitionPromptResult {
             persona_id: p.persona_id,
             count: records.len() as u32,
@@ -245,8 +250,15 @@ mod tests {
     // refused, so the command can't read outside the fixtures dir.
     #[test]
     fn rejects_non_id_persona_tokens() {
-        assert!(tail_persona_jsonl("workspace-traces", "../../etc/passwd", 5).is_err());
-        assert!(tail_persona_jsonl("workspace-traces", "a/b", 5).is_err());
+        assert!(tail_persona_jsonl(
+            super::super::workspace_capture::FIXTURE_DIR,
+            "../../etc/passwd",
+            5
+        )
+        .is_err());
+        assert!(
+            tail_persona_jsonl(super::super::workspace_capture::FIXTURE_DIR, "a/b", 5).is_err()
+        );
     }
 
     // what this catches: a missing trace is an empty result, not an error — "no
@@ -254,7 +266,7 @@ mod tests {
     #[test]
     fn missing_trace_is_empty_not_error() {
         let r = tail_persona_jsonl(
-            "workspace-traces",
+            super::super::workspace_capture::FIXTURE_DIR,
             "00000000-0000-0000-0000-000000000000",
             5,
         );

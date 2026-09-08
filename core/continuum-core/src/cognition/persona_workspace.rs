@@ -527,18 +527,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // Verbatim prompt capture (best-effort): the EXACT system prompt + message
     // thread + raw response of every deliberation LLM call → a per-persona JSONL
     // under the same fixtures root as the workspace trace. So "what tokens was she
-    // fed, what did she emit?" is answerable token-for-token. HOME unset → opt-out.
-    if let Ok(dir) = std::env::var("HOME")
-        .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/prompt-captures"))
-    {
-        match super::prompt_capture::JsonlPromptCaptureSink::open(&dir, cfg.persona_id) {
-            Ok(sink) => deliberation = deliberation.with_prompt_capture(Arc::new(sink)),
-            Err(e) => tracing::warn!(
-                persona_id = %cfg.persona_id,
-                error = %e,
-                "prompt capture unavailable; deliberation runs without verbatim capture"
-            ),
-        }
+    // fed, what did she emit?" is answerable token-for-token. Native hosts use
+    // the recorder's shared home discovery even without a shell HOME variable.
+    match super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
+        Ok(sink) => deliberation = deliberation.with_prompt_capture(Arc::new(sink)),
+        Err(e) => tracing::warn!(
+            persona_id = %cfg.persona_id,
+            error = %e,
+            "prompt capture unavailable; deliberation runs without verbatim capture"
+        ),
     }
 
     faculties.push(Arc::new(deliberation));
@@ -587,23 +584,16 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // path; THIS is what instruments the path that actually runs. Best-effort —
     // if the fixtures dir can't be opened we log and run with Noop capture; a
     // persona's mind never fails to assemble over an observability hiccup.
-    match std::env::var("HOME")
-        .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces"))
-    {
-        Ok(dir) => {
-            match super::workspace_capture::JsonlWorkspaceCaptureSink::open(&dir, cfg.persona_id) {
-                Ok(sink) => cycle.with_capture(Arc::new(sink)),
-                Err(e) => {
-                    tracing::warn!(
-                        persona_id = %cfg.persona_id,
-                        error = %e,
-                        "workspace trace capture unavailable; running with Noop capture"
-                    );
-                    cycle
-                }
-            }
+    match super::workspace_capture::JsonlWorkspaceCaptureSink::open_for_persona(cfg.persona_id) {
+        Ok(sink) => cycle.with_capture(Arc::new(sink)),
+        Err(e) => {
+            tracing::warn!(
+                persona_id = %cfg.persona_id,
+                error = %e,
+                "workspace trace capture unavailable; running with Noop capture"
+            );
+            cycle
         }
-        Err(_) => cycle, // HOME unset — opt-out, no capture (no warning spam)
     }
 }
 
@@ -770,8 +760,9 @@ async fn drive_create_workspace(
 /// file engine at (a card's checkout), or nothing when she stands in her own
 /// workspace. One truth for the hands, the workspace map she perceives, and the
 /// scope her receipts carry — set at the rooting seam, cleared on restore.
-static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, ActingPlace>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static ACTING_ROOTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, ActingPlace>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Where she stands: the checkout root, and the card whose checkout it is when
 /// a held card rooted her (None for a plain workspace_root).
@@ -782,7 +773,11 @@ struct ActingPlace {
 }
 
 pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
-    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).map(|p| p.root.clone())  // poisoned lock = read the last state, same policy as every lock in this crate
+    ACTING_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&persona_id)
+        .map(|p| p.root.clone()) // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
 /// The card her hands are rooted at, if a held card rooted them. Her work
@@ -791,21 +786,36 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 /// in #academy — the base room and the agents' coordination room — because the
 /// trigger arrived there; the run room stayed empty for its reviewer).
 pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
-    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).and_then(|p| p.card)  // poisoned lock = read the last state, same policy as every lock in this crate
+    ACTING_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&persona_id)
+        .and_then(|p| p.card) // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
 fn note_acting_card(persona_id: uuid::Uuid, card: uuid::Uuid) {
-    if let Some(place) = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&persona_id) {  // poisoned lock = read the last state, same policy as every lock in this crate
+    if let Some(place) = ACTING_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(&persona_id)
+    {
+        // poisoned lock = read the last state, same policy as every lock in this crate
         place.card = Some(card);
     }
 }
 
 fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
     {
-        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
         match root {
             Some(r) => {
-                map.insert(persona_id, ActingPlace { root: r, card: None });
+                map.insert(
+                    persona_id,
+                    ActingPlace {
+                        root: r,
+                        card: None,
+                    },
+                );
             }
             None => {
                 map.remove(&persona_id);
@@ -1375,12 +1385,17 @@ impl OwnSpeechPersisted {
     }
 }
 
-fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
+fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
+    let home = crate::paths::home_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "cannot resolve persistent home directory",
+        )
+    })?;
+    Ok(home
         .join(".continuum/personas")
         .join(persona_id.to_string())
-        .join("volatile.json")
+        .join("volatile.json"))
 }
 
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
@@ -1394,8 +1409,8 @@ fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
             crate::identity::PeerId::from_uuid(persona_id),
         )),
     };
-    let path = volatile_path(persona_id);
     let write = || -> std::io::Result<()> {
+        let path = volatile_path(persona_id)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -1413,7 +1428,13 @@ fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
 /// return None LOUDLY (a mind-file that fails to parse must never be silently
 /// ignored twice — the warn is the operator's cue to look).
 fn load_volatile(persona_id: Uuid) -> Option<PersistedVolatile> {
-    let path = volatile_path(persona_id);
+    let path = match volatile_path(persona_id) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%persona_id, %error, "volatile-tier root unavailable — previous memory could not be loaded");
+            return None;
+        }
+    };
     let bytes = std::fs::read(&path).ok()?;
     match serde_json::from_slice(&bytes) {
         Ok(p) => Some(p),
@@ -1437,6 +1458,38 @@ mod tests {
     use crate::cognition::workspace::Decision;
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
     use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
+
+    // What this catches (f098571b): a native launch must restore the same durable
+    // working memory it saved, rather than start a second history under CWD.
+    #[test]
+    fn native_home_volatile_checkpoint_preserves_the_action_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let persona = Uuid::new_v4();
+        let memory = super::super::working_memory::WorkingMemory::new(8);
+        let receipt = "review complete: the caller keeps its room membership";
+        memory.record_receipt(receipt);
+        save_volatile(persona, &memory);
+        assert_eq!(
+            volatile_path(persona).unwrap(),
+            home.path()
+                .join(".continuum/personas")
+                .join(persona.to_string())
+                .join("volatile.json")
+        );
+        let saved = load_volatile(persona).expect("read the native checkpoint");
+        assert!(
+            saved.wm.last_action.is_some(),
+            "the fixture must carry real work"
+        );
+        assert_eq!(saved.wm.last_action, memory.snapshot().last_action);
+        let resumed = super::super::working_memory::WorkingMemory::new(8);
+        resumed.restore(saved.wm);
+        assert_eq!(
+            resumed.snapshot().last_action,
+            memory.snapshot().last_action
+        );
+    }
 
     fn seed_admission(now_ms: u64) -> Arc<AdmissionState> {
         let recall_meta = Arc::new(RecallMetadataRegistry::new());

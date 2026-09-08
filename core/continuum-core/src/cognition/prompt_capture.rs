@@ -28,6 +28,8 @@ use crate::ai::types::{ChatMessage, TextGenerationResponse};
 /// even offered?" because the tools param was the one request axis not captured.
 const SCHEMA_VERSION: u32 = 3;
 
+pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/prompt-captures";
+
 /// Records the verbatim request/response of one deliberation LLM call. A `None`
 /// sink (the default) means no capture — zero hot-path cost.
 pub trait PromptCaptureSink: Send + Sync {
@@ -82,6 +84,17 @@ pub struct JsonlPromptCaptureSink {
 }
 
 impl JsonlPromptCaptureSink {
+    /// Use the same native-aware fixture root as introspection and replay.
+    pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
+        let dir = crate::persona::recorder::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve capture home directory",
+            )
+        })?;
+        Self::open(&dir, persona_id)
+    }
+
     /// Open (create + append) the per-persona capture file under `dir`. Errors
     /// only on filesystem failure; the caller degrades to no capture (never fails
     /// persona spawn).
