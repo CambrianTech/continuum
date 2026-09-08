@@ -289,7 +289,7 @@ impl LivedExpansionSynthesizer {
             .iter()
             .filter(|r| r.source == ExperienceSource::Lived)
             .filter(|r| self.detector.assess(r).is_some())
-            .map(|r| r.task.prompt.trim().to_string())
+            .map(|r| r.training_prompt().trim().to_string())
             .filter(|s| !s.is_empty())
             .collect()
     }
@@ -349,6 +349,7 @@ mod tests {
             },
             answer: String::new(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 1,
             source: crate::cognition::experience::ExperienceSource::Eval,
             teammates: Vec::new(),
@@ -423,6 +424,7 @@ mod tests {
             grade: "received lesson from BigMama".to_string(),
             answer: "the call room IS the airc room — never mint a rogue call_id".to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 0,
             source: ExperienceSource::Received,
             teammates: Vec::new(),
@@ -436,6 +438,7 @@ mod tests {
             grade: "lived turn: did not converge".to_string(),
             answer: "half-finished attempt".to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 8,
             source: ExperienceSource::Lived,
             teammates: Vec::new(),
@@ -492,6 +495,7 @@ mod tests {
             },
             answer: "half-finished attempt".to_string(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 8,
             source: ExperienceSource::Lived,
             teammates: Vec::new(),
@@ -525,6 +529,7 @@ mod tests {
             grade: "received lesson from BigMama".into(),
             answer: "the call room IS the airc room".into(),
             world_state: String::new(),
+            room_updates: Default::default(),
             acts: 0,
             source: ExperienceSource::Received,
             teammates: Vec::new(),

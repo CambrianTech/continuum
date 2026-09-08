@@ -41,7 +41,7 @@ mod apply;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
-pub use settle::{drive_to_settle, settle_step};
+pub use settle::{drive_to_settle, drive_to_settle_with_input, settle_step};
 
 #[cfg(test)]
 mod tests {
@@ -113,7 +113,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: self.result_content.clone(),
                     is_error: None,
-                spill_handle: None,
+                    spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -353,8 +353,10 @@ mod tests {
 
         let edges = adm.engram_neighbors(&second);
         assert!(
-            edges.iter().any(|e| e.target == first
-                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            edges
+                .iter()
+                .any(|e| e.target == first
+                    && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
             "the second act must carry a CausedBy edge to its predecessor — \
              the `because` clause as structure, not prose; got {edges:?}"
         );
@@ -389,8 +391,7 @@ mod tests {
 
         // The kickoff / inbound message that caused this turn to happen at all.
         let trigger = Uuid::new_v4();
-        let chain =
-            ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
+        let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
 
         acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
         let first = chain.prior().expect("first act admitted onto the chain");
@@ -483,7 +484,15 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
 
         let room = Uuid::new_v4();
-        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await {
+        let acts = match apply_act(
+            &cycle,
+            &[tool_call()],
+            "check the math",
+            room,
+            &ActChain::new(),
+        )
+        .await
+        {
             ActOutcome::Acted { acts } => acts,
             other => panic!("expected Acted, got {other:?}"),
         };
@@ -535,7 +544,14 @@ mod tests {
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4(), &ActChain::new()).await,
+                apply_act(
+                    &cycle,
+                    &[tool_call()],
+                    "try",
+                    Uuid::new_v4(),
+                    &ActChain::new()
+                )
+                .await,
                 ActOutcome::NoHands
             ),
             "no hands → NoHands, never a fabricated success"
@@ -552,7 +568,14 @@ mod tests {
             .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4(), &ActChain::new()).await,
+                apply_act(
+                    &cycle,
+                    &[tool_call()],
+                    "run",
+                    Uuid::new_v4(),
+                    &ActChain::new()
+                )
+                .await,
                 ActOutcome::ExecutorError { .. }
             ),
             "a batch-level failure surfaces as ExecutorError, distinct from NoHands"
@@ -587,7 +610,8 @@ mod tests {
             &cycle,
             "[eval]\npeer: what is 2+2?",
             8,
-            TurnFraming::ambient(),)
+            TurnFraming::ambient(),
+        )
         .await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
@@ -604,7 +628,8 @@ mod tests {
     // too few — a plan, one act, a second plan ended every work turn). Bounded — the
     // budget spends and it settles, so a determined Speak is never trapped in a loop.
     #[tokio::test]
-    async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable() {
+    async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable(
+    ) {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
@@ -625,7 +650,8 @@ mod tests {
             &cycle,
             "fix the bug in sympy/core/basic.py",
             8,
-            TurnFraming::directed().on_workspace(),)
+            TurnFraming::directed().on_workspace(),
+        )
         .await;
 
         assert_eq!(
@@ -667,12 +693,8 @@ mod tests {
         )
         .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
 
-        let outcome = drive_to_settle(
-            &cycle,
-            "what do you think?",
-            8,
-            TurnFraming::directed(),)
-        .await;
+        let outcome =
+            drive_to_settle(&cycle, "what do you think?", 8, TurnFraming::directed()).await;
 
         assert_eq!(
             speaker.generations(),
@@ -749,7 +771,8 @@ mod tests {
             &cycle,
             "fix the bug",
             20,
-            TurnFraming::ambient().on_workspace(),)
+            TurnFraming::ambient().on_workspace(),
+        )
         .await;
 
         assert_eq!(
@@ -778,12 +801,7 @@ mod tests {
             8,
         )
         .with_acting(body(exec2, admission()));
-        let ambient = drive_to_settle(
-            &cycle2,
-            "look around",
-            20,
-            TurnFraming::ambient(),)
-        .await;
+        let ambient = drive_to_settle(&cycle2, "look around", 20, TurnFraming::ambient()).await;
         assert_eq!(
             ambient.acts, 20,
             "a non-workspace turn reads to the full budget — the gate scopes to \
@@ -818,7 +836,8 @@ mod tests {
             &cycle,
             "fix the bug",
             6,
-            TurnFraming::ambient().on_workspace(),)
+            TurnFraming::ambient().on_workspace(),
+        )
         .await;
         let entries = wm.recent_entries();
         let budget_facts: Vec<_> = entries
@@ -832,7 +851,9 @@ mod tests {
         // guarantee worth pinning is therefore: at settle, working memory
         // holds at least one [act-budget] fact naming the REAL budget number.
         assert!(
-            budget_facts.iter().any(|e| e.text.contains("of 6 acts") || e.text.contains("my 6 acts")),
+            budget_facts
+                .iter()
+                .any(|e| e.text.contains("of 6 acts") || e.text.contains("my 6 acts")),
             "a budget fact naming the real budget must survive to settle; got: {:?}",
             budget_facts.iter().map(|e| &e.text).collect::<Vec<_>>()
         );
@@ -854,8 +875,7 @@ mod tests {
         .with_acting(body2);
         drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
         assert!(
-            !wm2
-                .recent_entries()
+            !wm2.recent_entries()
                 .iter()
                 .any(|e| e.text.contains("[act-budget]")),
             "speech turns owe no stopwatch — the fact is scoped to workspace-deliverable turns"
@@ -876,8 +896,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let outcome =
-            drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -910,8 +929,7 @@ mod tests {
 
         // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
         // before, at 4 acts (3 consecutive identical repeats + the first).
-        let outcome =
-            drive_to_settle(&cycle, "go", 20, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(&cycle, "go", 20, TurnFraming::ambient()).await;
 
         assert_eq!(
             outcome.acts, 4,
@@ -945,7 +963,8 @@ mod tests {
             false,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
@@ -962,7 +981,8 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(
             matches!(ran, SettleStep::Acted { .. }),
@@ -980,12 +1000,31 @@ mod tests {
     /// Models hands that probe the world and learn something new each reach.
     struct ScriptedExecutor {
         results: Mutex<std::collections::VecDeque<String>>,
+        input: Mutex<
+            std::collections::VecDeque<(
+                crate::persona::scripted_conversation::ScriptedConversationFeed,
+                Vec<crate::persona::service_loop::IncomingMessage>,
+            )>,
+        >,
+        rooms: Mutex<Vec<Uuid>>,
+        pending_persona: Mutex<Option<Uuid>>,
     }
     impl ScriptedExecutor {
         fn new(results: impl IntoIterator<Item = &'static str>) -> Self {
             Self {
                 results: Mutex::new(results.into_iter().map(String::from).collect()),
+                input: Mutex::new(std::collections::VecDeque::new()),
+                rooms: Mutex::new(Vec::new()),
+                pending_persona: Mutex::new(None),
             }
+        }
+        fn with_incoming(
+            self,
+            feed: crate::persona::scripted_conversation::ScriptedConversationFeed,
+            messages: Vec<crate::persona::service_loop::IncomingMessage>,
+        ) -> Self {
+            self.input.lock().unwrap().push_back((feed, messages));
+            self
         }
     }
     #[async_trait]
@@ -993,9 +1032,18 @@ mod tests {
         async fn execute_native_batch(
             &self,
             calls: &[ToolCall],
-            _context: &ToolExecutionContext,
+            context: &ToolExecutionContext,
             _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
+            self.rooms.lock().unwrap().push(context.context_id);
+            if let Some((feed, messages)) = self.input.lock().unwrap().pop_front() {
+                for message in messages {
+                    feed.push(Ok(Some(message)));
+                }
+                if let Some(persona) = *self.pending_persona.lock().unwrap() {
+                    crate::cognition::directed_pending::signal(persona);
+                }
+            }
             let content = self
                 .results
                 .lock()
@@ -1008,7 +1056,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: content.clone(),
                     is_error: None,
-                spill_handle: None,
+                    spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -1034,6 +1082,259 @@ mod tests {
             _c: &ToolExecutionContext,
         ) -> Result<Uuid, ToolError> {
             Ok(Uuid::nil())
+        }
+    }
+
+    // what this catches: c5910be2 — an ordinary room drive could not see coaching
+    // until it settled. Inject through the conversation DURING a real tool action,
+    // then inspect the actual second/third adapter requests, not a prompt helper.
+    #[tokio::test]
+    async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::ai::types::{
+            FinishReason, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+        };
+        use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
+        use crate::cognition::workspace::{Burst, BurstTurn, Cause, TurnAttention};
+        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+
+        for framing in [
+            TurnFraming::message(TurnAttention::Addressed),
+            TurnFraming::self_thread(false).on_workspace(),
+        ] {
+            let room = Uuid::new_v4();
+            let other_room = Uuid::new_v4();
+            let colleague = Uuid::new_v4();
+            let messages = vec![
+                IncomingMessage {
+                    event_id: Uuid::new_v4(),
+                    lamport: 1,
+                    peer_id: colleague,
+                    text: "Asha, the review target moved to src/new.rs; preserve the regression."
+                        .into(),
+                    room_id: room,
+                },
+                IncomingMessage {
+                    event_id: Uuid::new_v4(),
+                    lamport: 1,
+                    peer_id: colleague,
+                    text: "Another activity has a question when you have attention available."
+                        .into(),
+                    room_id: other_room,
+                },
+            ];
+            let later_message = IncomingMessage {
+                event_id: Uuid::new_v4(),
+                lamport: 2,
+                peer_id: colleague,
+                room_id: other_room,
+                text: "Asha, newer evidence arrived during your second read; inspect src/final.rs."
+                    .into(),
+            };
+            let mut conversation = ScriptedConversation::new().require_prime_before_next_message();
+            conversation.prime().await.unwrap();
+            let exec = Arc::new(
+                ScriptedExecutor::new([
+                    "FIRST_COMPLETE_TOOL_RESULT",
+                    "SECOND_COMPLETE_TOOL_RESULT",
+                ])
+                .with_incoming(conversation.event_feed(), messages.clone())
+                .with_incoming(conversation.event_feed(), vec![later_message.clone()]),
+            );
+            let mut responses = Vec::new();
+            for step in 0..3 {
+                responses.push(TextGenerationResponse {
+                    text: if step == 2 {
+                        "PASS".into()
+                    } else {
+                        String::new()
+                    },
+                    finish_reason: if step == 2 {
+                        FinishReason::Stop
+                    } else {
+                        FinishReason::ToolUse
+                    },
+                    model: "scripted".into(),
+                    provider: "scripted".into(),
+                    usage: UsageMetrics::default(),
+                    response_time_ms: 0,
+                    request_id: format!("step-{step}"),
+                    content: None,
+                    tool_calls: (step < 2).then(|| {
+                        vec![ToolCall {
+                            id: format!("call-{step}"),
+                            name: "code/read".into(),
+                            input: serde_json::json!({ "path": format!("src/{step}.rs") }),
+                        }]
+                    }),
+                    reasoning: None,
+                    routing: None,
+                    error: None,
+                    timing: None,
+                });
+            }
+            let recorded = Arc::new(Mutex::new(Vec::<TextGenerationRequest>::new()));
+            let adapter = Arc::new(
+                HeuristicInferenceAdapter::new()
+                    .with_responses(responses)
+                    .with_request_recorder(Arc::clone(&recorded)),
+            );
+            let wm = Arc::new(WorkingMemory::new(8));
+            wm.set_served_window(32_768);
+            let adm = admission();
+            let body = body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm));
+            let persona = body.persona_id;
+            *exec.pending_persona.lock().unwrap() = Some(persona);
+            let faculty =
+                LlmDeliberationFaculty::new(body.persona_id, "Asha", "You are Asha.", adapter)
+                    .with_context_window(32_768)
+                    .with_working_memory(Arc::clone(&wm))
+                    .with_tools(vec![crate::ai::types::NativeToolSpec {
+                        name: "code/read".into(),
+                        description: "Read a workspace file".into(),
+                        input_schema: crate::ai::types::ToolInputSchema {
+                            schema_type: "object".into(),
+                            properties: serde_json::json!({ "path": { "type": "string" } }),
+                            required: Some(vec!["path".into()]),
+                            definitions: None,
+                        },
+                    }]);
+            let cycle = WorkspaceCycle::new(
+                vec![
+                    Arc::new(WorkingMemoryFaculty::new(wm)) as Arc<dyn Faculty>,
+                    Arc::new(faculty),
+                ],
+                Arc::new(SalienceArbiter),
+                8,
+            )
+            .with_acting(body);
+            let task = "Review the original src/lib.rs change and report a reproducible defect.";
+            let cause = Cause::Stimulus(Uuid::new_v4());
+            let burst = Burst::from_turns_at(
+                crate::identity::ActivityRoom::from_uuid(room).unwrap(),
+                vec![BurstTurn::attributed(
+                    false,
+                    colleague.to_string(),
+                    task,
+                    Some(1),
+                )],
+                Some(1),
+                cause,
+            );
+            let original_world = burst.rendered.clone();
+            let outcome =
+                drive_to_settle_with_input(&cycle, burst, 8, framing, &mut conversation).await;
+            assert!(
+                outcome.inference_error.is_none(),
+                "{:?}",
+                outcome.inference_error
+            );
+            assert_eq!(outcome.acts, 2);
+            assert_eq!(outcome.room, room);
+            assert_eq!(outcome.world_state, original_world);
+            assert_eq!(outcome.room_updates.len(), 3);
+            let lived =
+                crate::cognition::experience::ExperienceRecord::from_lived_turn(task, &outcome);
+            let encoded = serde_json::to_string(&lived).unwrap();
+            let mut restored: crate::cognition::experience::ExperienceRecord =
+                serde_json::from_str(&encoded).unwrap();
+            assert_eq!(restored.task.prompt, task);
+            assert_eq!(restored.world_state, original_world);
+            assert_eq!(restored.room, Some(room));
+            for update in messages.iter().chain(std::iter::once(&later_message)) {
+                assert!(restored.room_updates.contains(update));
+                assert!(restored
+                    .training_prompt()
+                    .contains(&update.render_room_update()));
+            }
+            // A later failed episode is taught with the same complete input,
+            // through the ordinary lived-curriculum selector.
+            restored.ok = false;
+            let teaching = crate::commands::genome::curriculum::LivedExpansionSynthesizer::new()
+                .select(std::slice::from_ref(&restored));
+            assert_eq!(teaching, vec![restored.training_prompt()]);
+            let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            legacy.as_object_mut().unwrap().remove("room_updates");
+            assert!(
+                serde_json::from_value::<crate::cognition::experience::ExperienceRecord>(legacy)
+                    .unwrap()
+                    .room_updates
+                    .is_empty()
+            );
+            assert_eq!(*exec.rooms.lock().unwrap(), vec![room, room]);
+            let engrams = adm.recall_recent(adm.engram_count());
+            let first_act = engrams
+                .iter()
+                .find(|e| e.content.contains("FIRST_COMPLETE_TOOL_RESULT"))
+                .expect("first action retained as an experience");
+            let second_act = engrams
+                .iter()
+                .find(|e| e.content.contains("SECOND_COMPLETE_TOOL_RESULT"))
+                .expect("second action retained as an experience");
+            assert!(adm
+                .engram_neighbors(&first_act.id)
+                .iter()
+                .any(|edge| Some(edge.target) == cause.root()
+                    && edge.kind == crate::persona::engram_graph::EdgeKind::CausedBy));
+            assert!(adm
+                .engram_neighbors(&second_act.id)
+                .iter()
+                .any(|edge| edge.target == first_act.id
+                    && edge.kind == crate::persona::engram_graph::EdgeKind::CausedBy));
+            {
+                let requests = recorded.lock().unwrap();
+                assert_eq!(requests.len(), 3);
+                for (index, request) in requests.iter().enumerate() {
+                    assert_eq!(request.room_id.as_deref(), Some(room.to_string().as_str()));
+                    let text = request
+                        .messages
+                        .iter()
+                        .map(|m| m.content_text())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    assert!(text.contains(task));
+                    if framing.self_initiated {
+                        assert!(!text.contains("This message names you"),
+                        "a priority input must not rewrite the original self-turn's addressing fact");
+                    }
+                    assert_eq!(
+                        text.matches(&later_message.text).count(),
+                        usize::from(index > 1)
+                    );
+                    for message in &messages {
+                        assert_eq!(text.matches(&message.text).count(), usize::from(index > 0));
+                        if index > 0 {
+                            assert!(text.contains(&format!(
+                                "room {}; peer {}; event {}",
+                                message.room_id, colleague, message.event_id
+                            )));
+                        }
+                    }
+                    if index > 0 {
+                        assert!(text.contains(if index == 1 {
+                            "FIRST_COMPLETE_TOOL_RESULT"
+                        } else {
+                            "SECOND_COMPLETE_TOOL_RESULT"
+                        }));
+                    }
+                }
+            }
+            // Perception did not steal these inputs from later attention in their own
+            // rooms. Each retained source is returned once by the ordinary driver.
+            assert!(
+                crate::cognition::directed_pending::is_pending(persona),
+                "cooperative intake must never acknowledge the outer driver's shared wake flag"
+            );
+            for expected in messages.into_iter().chain(std::iter::once(later_message)) {
+                assert_eq!(conversation.next_message().await.unwrap(), Some(expected));
+            }
+            assert!(conversation.next_message().await.unwrap().is_none());
+            assert!(
+                conversation.said().is_empty(),
+                "intake must not impose a reply"
+            );
+            crate::cognition::directed_pending::clear(persona);
         }
     }
 
@@ -1136,7 +1437,8 @@ mod tests {
             &cycle,
             "[eval]\npeer: where does the program start and what does it call?",
             8,
-            TurnFraming::ambient(),)
+            TurnFraming::ambient(),
+        )
         .await;
 
         assert_eq!(
@@ -1221,7 +1523,16 @@ mod tests {
         let room = Uuid::new_v4();
 
         // First act genuinely runs; its result lands in working memory.
-        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
+        let first = acts_of(
+            apply_act(
+                &cycle,
+                &[tool_call()],
+                "check the math",
+                room,
+                &ActChain::new(),
+            )
+            .await,
+        );
         assert_eq!(
             first[0].call.name, "code/run",
             "first act names the tool it ran"
@@ -1238,7 +1549,16 @@ mod tests {
 
         // Second, byte-identical act: already satisfied → short-circuit, no re-run.
         // The typed act's OUTPUT carries the nudge and the STATUS names the demotion.
-        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
+        let second = acts_of(
+            apply_act(
+                &cycle,
+                &[tool_call()],
+                "check the math",
+                room,
+                &ActChain::new(),
+            )
+            .await,
+        );
         assert!(
             matches!(second[0].status, ActStatus::AlreadySatisfied { .. }),
             "the second identical act is typed AlreadySatisfied, not Executed"
@@ -1258,7 +1578,16 @@ mod tests {
         // than the second — the proprioception climbs rather than repeating byte-identical
         // text. Without this, static-nudge spam evicts the useful receipt from the bounded
         // recency window and a greedy (temp-0) model re-emits the identical call forever.
-        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
+        let third = acts_of(
+            apply_act(
+                &cycle,
+                &[tool_call()],
+                "check the math",
+                room,
+                &ActChain::new(),
+            )
+            .await,
+        );
         let third_nudge = third[0].output.result.content.clone();
         assert_ne!(
             second_nudge, third_nudge,
@@ -1438,7 +1767,8 @@ mod tests {
         );
 
         // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
-        let second = acts_of(apply_act(&cycle, &[help], "orient again", room, &ActChain::new()).await);
+        let second =
+            acts_of(apply_act(&cycle, &[help], "orient again", room, &ActChain::new()).await);
         assert!(
             matches!(second[0].status, ActStatus::RedundantOrientation { .. }),
             "the demoted orientation is typed RedundantOrientation, not Executed"
@@ -1494,7 +1824,8 @@ mod tests {
             &cycle,
             "[eval]\npeer: concern A?",
             8,
-            TurnFraming::ambient(),)
+            TurnFraming::ambient(),
+        )
         .await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
@@ -1505,7 +1836,8 @@ mod tests {
             &cycle,
             "[eval]\npeer: a totally different concern B?",
             8,
-            TurnFraming::ambient(),)
+            TurnFraming::ambient(),
+        )
         .await;
         assert_eq!(
             b.acts, 1,
@@ -1565,7 +1897,8 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1587,7 +1920,8 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(
@@ -1631,7 +1965,8 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1659,7 +1994,8 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),)
+            &ActChain::new(),
+        )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(

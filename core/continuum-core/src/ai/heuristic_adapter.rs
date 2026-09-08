@@ -95,6 +95,10 @@ const CHARS_PER_TOKEN: usize = 4;
 /// needs a deterministic adapter with controllable timing.
 #[derive(Debug, Default)]
 pub struct HeuristicInferenceAdapter {
+    /// Optional typed response script and exact request observer. These extend
+    /// the shared fixture for real act-to-observe integration tests.
+    responses: Option<std::sync::Mutex<std::collections::VecDeque<TextGenerationResponse>>>,
+    request_recorder: Option<std::sync::Arc<std::sync::Mutex<Vec<TextGenerationRequest>>>>,
     /// Sleep injected before every `generate_text` returns. 0 (default)
     /// is the production-cheap shape. Setting this is useful for
     /// latency-floor regression tests + simulating slow-network
@@ -128,6 +132,18 @@ pub struct HeuristicInferenceAdapter {
 }
 
 impl HeuristicInferenceAdapter {
+    pub fn with_responses(mut self, responses: Vec<TextGenerationResponse>) -> Self {
+        self.responses = Some(std::sync::Mutex::new(responses.into()));
+        self
+    }
+
+    pub fn with_request_recorder(
+        mut self,
+        recorder: std::sync::Arc<std::sync::Mutex<Vec<TextGenerationRequest>>>,
+    ) -> Self {
+        self.request_recorder = Some(recorder);
+        self
+    }
     /// Zero-config constructor — what production code uses.
     pub fn new() -> Self {
         Self::default()
@@ -390,6 +406,12 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         if let Some(c) = &self.generate_observer {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        if let Some(recorder) = &self.request_recorder {
+            recorder
+                .lock()
+                .map_err(|_| "request recorder lock poisoned".to_string())?
+                .push(request.clone());
+        }
         // Inject real wall-clock if the caller configured a delay. Used
         // by latency-floor regression tests to verify the substrate's
         // turn_latency metric reflects actual elapsed time, and by
@@ -397,6 +419,13 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         // `new()` with delay=0 and pay zero overhead.
         if self.inject_delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms)).await;
+        }
+        if let Some(responses) = &self.responses {
+            return responses
+                .lock()
+                .map_err(|_| "heuristic adapter response script lock poisoned".to_string())?
+                .pop_front()
+                .ok_or_else(|| "heuristic adapter response script exhausted".to_string());
         }
         let model = request
             .model

@@ -30,7 +30,8 @@ use super::workspace::{
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
 /// v2 added per-faculty `timings` (the speed axis / dashboard feed).
-const SCHEMA_VERSION: u32 = 2;
+/// v3 adds full source-labelled supplemental room inputs.
+const SCHEMA_VERSION: u32 = 3;
 
 pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/workspace-traces";
 
@@ -102,13 +103,15 @@ impl From<&FacultyTiming> for TimingRecord {
 
 /// One serialized workspace tick — the full mechanic's view of one turn's mind.
 #[derive(Debug, Serialize)]
-struct WorkspaceTraceRecord {
+struct WorkspaceTraceRecord<'a> {
     schema_version: u32,
     captured_at_ms: u64,
     persona_id: String,
     room_id: String,
     /// The consolidated burst the mind reasoned over this tick.
     world_state: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    room_updates: Vec<&'a crate::persona::service_loop::IncomingMessage>,
     /// EVERY bid this tick (winners + losers, both phases) — the full competition.
     bids: Vec<BidRecord>,
     /// The assembled context that won attention and reached the decider (the RAG).
@@ -167,6 +170,7 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
             persona_id: self.persona_id.to_string(),
             room_id: trace.room_id.to_string(),
             world_state: trace.world_state.clone(),
+            room_updates: trace.room_updates.iter().map(AsRef::as_ref).collect(),
             bids: trace.bids.iter().map(BidRecord::from).collect(),
             context: trace
                 .context_broadcast
@@ -245,6 +249,7 @@ mod tests {
         };
         let trace = WorkspaceTrace {
             world_state: "teammate: what should we do about the red deploy?".to_string(),
+            room_updates: Default::default(),
             room_id: room,
             bids: vec![recall.clone(), verdict.clone()],
             context_broadcast: vec![recall.clone()],
@@ -325,6 +330,7 @@ mod tests {
         let sink = JsonlWorkspaceCaptureSink::open(&dir, persona).unwrap();
         let mk = |room| WorkspaceTrace {
             world_state: "burst".to_string(),
+            room_updates: Default::default(),
             room_id: room,
             bids: vec![],
             context_broadcast: vec![],

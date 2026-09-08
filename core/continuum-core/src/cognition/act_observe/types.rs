@@ -24,6 +24,9 @@ pub struct SettleOutcome {
     /// The final world-state, with each action's observation folded in — what the
     /// last tick perceived. Captured for replay/forensics.
     pub world_state: String,
+    /// Full source-labelled room inputs perceived while this turn was in flight.
+    pub room_updates:
+        std::sync::Arc<Vec<std::sync::Arc<crate::persona::service_loop::IncomingMessage>>>,
     /// The accumulated cost of settling this task: every act→observe deliberation
     /// generation's latency + tokens, summed. `tokens_per_second()` re-derives
     /// throughput from the totals. This is the speed/latency the eval reports next
@@ -66,6 +69,7 @@ impl SettleOutcome {
             spoken: None,
             acts: 0,
             world_state: String::new(),
+            room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
             touched_paths: Vec::new(),
@@ -171,6 +175,7 @@ mod tests {
             decision,
             acts: 0,
             world_state: String::new(),
+            room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error,
             touched_paths: Vec::new(),
@@ -221,7 +226,9 @@ mod tests {
             },
             None,
         ));
-        assert!(matches!(step, SettleStep::Passed { reason: Some(r) } if r == "done — patch ready"));
+        assert!(
+            matches!(step, SettleStep::Passed { reason: Some(r) } if r == "done — patch ready")
+        );
 
         // inference_error present → InferenceFailed, REGARDLESS of decision — a
         // failed model is never a chosen silence.

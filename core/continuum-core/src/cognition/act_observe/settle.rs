@@ -7,6 +7,7 @@
 //! and the eval driver (`drive_to_settle`, which loops because the grader replaces
 //! the metronome). Live and eval make a turn the IDENTICAL way; only pacing differs.
 
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::ai::types::ToolCall;
@@ -59,13 +60,37 @@ use super::types::{SettleOutcome, SettleStep};
 /// settles without a deliverable (each is re-perceived, not ended).
 pub(super) const NARRATION_BUDGET: usize = 3;
 
-pub async fn drive_to_settle(
+pub fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
     max_acts: usize,
     framing: TurnFraming,
+) -> impl std::future::Future<Output = SettleOutcome> + Send + '_ {
+    drive_with_input(cycle, burst.into(), max_acts, framing, None)
+}
+
+/// The live driver leases its existing conversation between steps. No second
+/// runner, cancellation of an in-flight tool, or replacement task is involved.
+pub fn drive_to_settle_with_input<'a>(
+    cycle: &'a WorkspaceCycle,
+    burst: Burst,
+    max_acts: usize,
+    framing: TurnFraming,
+    conversation: &'a mut dyn crate::persona::service_loop::PersonaConversation,
+) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
+    // Return the shared driver directly: an async forwarding wrapper needlessly
+    // nests its state in every live/eval caller and inflates future layout depth.
+    drive_with_input(cycle, burst, max_acts, framing, Some(conversation))
+}
+
+async fn drive_with_input(
+    cycle: &WorkspaceCycle,
+    burst: Burst,
+    max_acts: usize,
+    framing: TurnFraming,
+    conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
 ) -> SettleOutcome {
-    let settled = settle_to_outcome(cycle, burst.into(), max_acts, framing).await;
+    let settled = settle_to_outcome(cycle, burst, max_acts, framing, conversation).await;
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
@@ -76,13 +101,14 @@ pub async fn drive_to_settle(
     settled
 }
 
-/// The settle loop itself. Private so that [`drive_to_settle`] is the only way to
-/// reach it — every produced outcome therefore passes the lived-experience seam.
+/// The settle loop itself. Both public drivers reach it through the same lived-
+/// experience wrapper, so taking input cannot bypass the recording seam.
 async fn settle_to_outcome(
     cycle: &WorkspaceCycle,
-    burst: Burst,
+    mut burst: Burst,
     max_acts: usize,
-    framing: TurnFraming,
+    mut framing: TurnFraming,
+    mut conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
 ) -> SettleOutcome {
     // The turn's room comes FROM the burst — witnessed non-nil at construction,
     // so the drive can no longer disagree with the rendered header (#425).
@@ -205,7 +231,84 @@ async fn settle_to_outcome(
     const DELIBERATION_RETRY_BUDGET: u32 = 3;
     let mut delib_retries: u32 = 0;
 
+    let mut first_step = true;
+    const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+    let mut seen_inputs = None;
+    let mut input_watermark = 0;
     loop {
+        let tick_deadline = tokio::time::Instant::now() + TICK_DEADLINE;
+        if !first_step {
+            if let (Some(input), Some(body)) = (conversation.as_deref_mut(), cycle.acting()) {
+                let received = match tokio::time::timeout_at(tick_deadline, input.perceive_ready()).await {
+                    Ok(received) => received,
+                    Err(_elapsed) => Err("tick deadline exceeded during room input admission; input remains owned by the conversation".into()),
+                };
+                let admitted = received.and_then(|messages| {
+                    let recipient = crate::persona::persona_identity::PersonaIdentity::new(
+                        body.persona_id, body.persona_name.clone(),
+                    );
+                    for message in messages {
+                        if message.peer_id == body.persona_id
+                            || crate::persona::wake_backlog::is_stale(
+                                message,
+                                seen_inputs.get_or_insert_with(|| crate::persona::wake_backlog::SeenIds::new(
+                                    crate::persona::airc_persona_conversation::INBOX_CAPACITY,
+                                )),
+                                input_watermark,
+                            )
+                        {
+                            continue;
+                        }
+                        input_watermark = input_watermark.max(message.lamport);
+                        let inbox_message = crate::persona::types::InboxMessage {
+                            id: message.event_id,
+                            room_id: message.room_id,
+                            sender_id: message.peer_id,
+                            sender_name: message.peer_id.to_string(),
+                            sender_type: crate::persona::types::SenderType::Persona,
+                            content: message.text.clone(),
+                            timestamp: crate::persona::trace::now_ms(),
+                            priority: 0.5,
+                            source_modality: None,
+                            voice_session_id: None,
+                        };
+                        body.admission.admit(&inbox_message, None)
+                            .map_err(|error| format!("room input admission failed: {error}"))?;
+                        framing.attention = framing.attention.with_input(
+                            crate::cognition::workspace::TurnAttention::for_message(
+                                recipient.mentions(&message.text),
+                                crate::ipc::positron_presence::is_human_peer(message.peer_id),
+                            ),
+                        );
+                        crate::probe!(
+                            class = "persona.turn.input_perceived",
+                            persona = %body.persona_id,
+                            active_room = %room_id,
+                            input_room = %message.room_id,
+                            event_id = %message.event_id,
+                            from_peer = %message.peer_id,
+                            "room input perceived between actions; original task and causal root retained"
+                        );
+                        Arc::make_mut(&mut burst.room_updates).push(Arc::clone(message));
+                    }
+                    Ok(())
+                });
+                if let Err(error) = admitted {
+                    return SettleOutcome {
+                        room: room_id,
+                        decision: Decision::pass(),
+                        spoken: None,
+                        acts,
+                        world_state: burst.rendered.clone(),
+                        room_updates: Arc::clone(&burst.room_updates),
+                        metrics,
+                        inference_error: Some(error),
+                        touched_paths: touched,
+                    };
+                }
+            }
+        }
+        first_step = false;
         // ONE settlement step through the SHARED primitive the live heartbeat uses
         // (`settle_step`). The only thing this driver adds is the LOOP — because the
         // eval room has no metronome, the grader re-perceives by calling step again.
@@ -338,9 +441,8 @@ async fn settle_to_outcome(
         // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
         // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
         // retries; nothing stays silently becalmed again.
-        const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
-        let (step, step_metrics) = match tokio::time::timeout(
-            TICK_DEADLINE,
+        let (step, step_metrics) = match tokio::time::timeout_at(
+            tick_deadline,
             settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
         )
         .await
@@ -469,6 +571,7 @@ async fn settle_to_outcome(
                     decision: Decision::Speak { text },
                     acts,
                     world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     inference_error: None,
                     touched_paths: touched,
@@ -563,6 +666,7 @@ async fn settle_to_outcome(
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     inference_error: None,
                     touched_paths: touched,
@@ -575,6 +679,7 @@ async fn settle_to_outcome(
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     inference_error: None,
                     touched_paths: touched,
@@ -613,6 +718,7 @@ async fn settle_to_outcome(
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     inference_error: Some(error),
                     touched_paths: touched,

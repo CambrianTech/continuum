@@ -621,6 +621,11 @@ impl BurstTurn {
 /// stimulus → a single opaque turn rendered verbatim).
 #[derive(Debug, Clone)]
 pub struct Burst {
+    /// Room messages perceived while this turn was already underway. Shared with
+    /// the conversation's retained attention queue; never replace this burst's
+    /// task, room, or causal root. This is the existing chat projection, not a
+    /// replacement for the multimodal sensory faculties.
+    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
     /// The activity this turn belongs to — REQUIRED at construction, witnessed
     /// non-nil by [`ActivityRoom`]. The burst carries the room because the burst
     /// IS the perception the turn responds to: when the room rode as a separate
@@ -757,6 +762,7 @@ impl Burst {
             rendered,
             now_ms,
             cause,
+            room_updates: Arc::default(),
         }
     }
 
@@ -770,6 +776,7 @@ impl Burst {
             rendered: s,
             now_ms: None,
             cause: Cause::Synthetic,
+            room_updates: Arc::default(),
         }
     }
 }
@@ -789,6 +796,7 @@ impl From<String> for Burst {
             // A raw string arrives with no channel and no antecedent — a fixture, by
             // construction. Honest, never invented.
             cause: Cause::Synthetic,
+            room_updates: Arc::default(),
         }
     }
 }
@@ -817,9 +825,20 @@ pub enum TurnAttention {
     Ambient,
     HumanOpportunity,
     Addressed,
+    /// A priority room input became visible during an existing turn. This grants
+    /// its next perception a foreground lane without changing what originally
+    /// triggered the turn or asserting that original trigger named the persona.
+    PriorityInput,
 }
 
 impl TurnAttention {
+    pub fn with_input(self, input: Self) -> Self {
+        if !self.requires_priority() && input.requires_priority() {
+            Self::PriorityInput
+        } else {
+            self
+        }
+    }
     pub fn for_message(mentioned: bool, sender_is_human: bool) -> Self {
         if mentioned {
             Self::Addressed
@@ -922,6 +941,8 @@ impl TurnFraming {
 /// broadcast back to all faculties.
 #[derive(Debug, Clone)]
 pub struct Workspace {
+    /// Additional room inputs; the active turn's room and task remain separate.
+    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
     /// The consolidated burst / world-state at service time, as flat text — the
     /// rendered projection of [`turns`](Self::turns). Opaque to the core; the
     /// channel/recipe adapter shapes it. Every TEXT reader (recall, dashboards,
@@ -1022,6 +1043,7 @@ impl Workspace {
         Self {
             world_state: burst.rendered,
             turns: burst.turns,
+            room_updates: burst.room_updates,
             room_id: burst.room.as_uuid(),
             cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
@@ -1383,6 +1405,8 @@ impl Arbiter for SituationFocusArbiter {
 #[derive(Debug, Clone)]
 pub struct WorkspaceTrace {
     pub world_state: String,
+    /// Supplemental inputs admitted before this tick; shared with the live burst.
+    pub room_updates: Arc<Vec<Arc<crate::persona::service_loop::IncomingMessage>>>,
     /// The room/context this tick reasoned within (contextId) — so a replayed
     /// trace correlates to the room it happened in, not a floating burst.
     pub room_id: Uuid,
@@ -1911,7 +1935,9 @@ impl WorkspaceCycle {
     /// is "silence must never be ambiguous with progress" could not tell the two
     /// apart. A wait-free atomic load, safe to poll on a heartbeat.
     pub fn actions_taken(&self) -> Option<u64> {
-        self.acting.as_ref().map(|a| a.working_memory.actions_taken())
+        self.acting
+            .as_ref()
+            .map(|a| a.working_memory.actions_taken())
     }
 
     /// Begin a memory-isolated measurement window over this cycle's hippocampus.
@@ -2020,8 +2046,12 @@ impl WorkspaceCycle {
     /// use [`run_framed`](Self::run_framed) / [`run_situated`](Self::run_situated).
     #[cfg(test)]
     pub async fn run(&self, burst: impl Into<Burst>) -> Workspace {
-        self.run_inner(burst.into(), TurnFraming::ambient(), Situation::FreshContext)
-            .await
+        self.run_inner(
+            burst.into(),
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await
     }
 
     /// TEST-ONLY compat: ambient tick with an explicit room override.
@@ -2044,7 +2074,8 @@ impl WorkspaceCycle {
         // Fresh-context default: a bare framed tick is a fresh ask (fuller
         // grounding). The act→observe driver calls [`run_situated`] with
         // `PostAction` on re-perception ticks.
-        self.run_inner(burst, framing, Situation::FreshContext).await
+        self.run_inner(burst, framing, Situation::FreshContext)
+            .await
     }
 
     /// Same as [`run_framed`](Self::run_framed) but with the tick's [`Situation`]
@@ -2308,6 +2339,7 @@ impl WorkspaceCycle {
         }
         self.capture.record(&WorkspaceTrace {
             world_state: ws.world_state.clone(),
+            room_updates: Arc::clone(&ws.room_updates),
             room_id: ws.room_id,
             bids: all_bids,
             context_broadcast,

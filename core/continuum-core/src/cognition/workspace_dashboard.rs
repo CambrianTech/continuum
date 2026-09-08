@@ -233,6 +233,7 @@ mod tests {
         };
         let trace = WorkspaceTrace {
             world_state: "what's the call?".to_string(),
+            room_updates: Default::default(),
             room_id: room,
             bids: vec![recall.clone(), verdict.clone()],
             context_broadcast: vec![recall.clone()],
@@ -325,11 +326,8 @@ mod tests {
 
         // Deferred: the tick serves reprojected last-good, so the grounding faculty
         // reads ~0 and the perception max collapses back to the fast faculty.
-        let off_barrier = critical_path_us(&[
-            fast_perception.clone(),
-            grounding(3),
-            deliberation.clone(),
-        ]);
+        let off_barrier =
+            critical_path_us(&[fast_perception.clone(), grounding(3), deliberation.clone()]);
         assert_eq!(off_barrier, 200 + 5_000);
         assert_eq!(
             on_barrier - off_barrier,

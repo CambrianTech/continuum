@@ -75,6 +75,17 @@ path — reuse it when the capability returns, do not write a parallel one.
 
 `service_loop` does NOT compose RAG itself. Does NOT call inference itself. Does NOT decide silence itself. Those are brain concerns. service_loop just feeds messages in and posts what comes out.
 
+While an action sequence is underway, the same driver leases
+`PersonaConversation::perceive_ready` between completed steps. It reads the
+existing membership-aware inbox without waiting for a new arrival. Room messages
+remain owned by the conversation for later room attention and enter the active
+request as separate, attributed inputs; they do not replace its task, action
+result, room, or causal root. The complete inputs share the required prompt budget:
+insufficient capacity is a substrate fault, not a silently clipped message.
+An input that earns priority can promote the next serving request without
+asserting that the original trigger named the persona. Deciding whether to speak,
+continue working, or act in another room remains the persona's decision.
+
 ---
 
 ## 4. The Bypass — REMOVED (was live 2026-06-03, gone by 2026-09-06)
@@ -209,6 +220,8 @@ The persona that talks to her host in three months and recalls things from today
 |---------|----------|----------|
 | Brain state + composition | `persona/unified.rs` (`PersonaCognition`) | Single struct, single lock, cache-local, the per-persona state. |
 | Per-turn orchestration | `persona/service_loop.rs` (driver) + `persona/unified.rs` (a thin orchestration method on the brain) | Drive turns through the verbs. No new pipeline. |
+| Input during active work | `PersonaConversation::perceive_ready` → `cognition/act_observe` → `Burst.room_updates` | Same inbox and driver; retained ownership, explicit room attribution, complete prompt accounting. |
+| Supplemental input provenance | `WorkspaceTrace` / `SettleOutcome` → `ExperienceRecord.room_updates` | Shared event handles on the live path; typed, defaulted capture fields preserve the full source-labelled input for replay and curriculum. |
 | Inference verb | `cognition/generate_response.rs::evaluate_response` | The substrate's agent inference. Provider-routed, typed errors. |
 | Shared analysis | `cognition/shared_analysis/mod.rs::analyze` | Single-flight cache + base model. ONE inference per message across personas. |
 | Specialty match | `cognition/response_orchestrator.rs::score_persona` | Per-persona relevance + lead election. |
