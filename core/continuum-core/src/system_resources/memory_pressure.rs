@@ -888,6 +888,7 @@ impl MemoryPressureMonitor {
                 if level.to_u8() >= PressureLevel::High.to_u8() {
                     st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
                     let floor = total / 4;
+                    let mut named = 0u32;
                     for (pid, proc) in st.sys.processes() {
                         let mem = proc.memory();
                         if mem < floor || Some(*pid) == st.pid {
@@ -897,13 +898,36 @@ impl MemoryPressureMonitor {
                         if name.contains("llama-server") {
                             continue;
                         }
+                        named += 1;
                         crate::probe!(
                             class = "memory.pressure.anomaly",
                             process = %name,
                             pid = pid.as_u32(),
                             rss_gb = mem / (1024 * 1024 * 1024),
+                            source = "sysinfo",
                             "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
                         );
+                    }
+                    // sysinfo cannot read root-owned processes' memory on macOS (fseventsd
+                    // at 26.6 GB reported 0 on 2026-09-08) — `ps` can. Bounded to 2 s.
+                    if named == 0 {
+                        let self_pid = st.pid.map(|p| p.as_u32());
+                        for p in crate::system_resources::process_anomaly::residents_above(
+                            floor,
+                            std::time::Duration::from_secs(2),
+                        ) {
+                            if Some(p.pid) == self_pid || p.name.contains("llama-server") {
+                                continue;
+                            }
+                            crate::probe!(
+                                class = "memory.pressure.anomaly",
+                                process = %p.name,
+                                pid = p.pid,
+                                rss_gb = p.rss_bytes / (1024 * 1024 * 1024),
+                                source = "ps",
+                                "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
+                            );
+                        }
                     }
                 }
             }

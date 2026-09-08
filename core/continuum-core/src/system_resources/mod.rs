@@ -12,6 +12,7 @@
 //! Uses the `sysinfo` crate for cross-platform (macOS/Linux/Windows) monitoring.
 
 pub mod absence_watch;
+pub mod process_anomaly;
 pub mod bounded_command;
 pub mod concurrency;
 pub mod disk_eviction;
