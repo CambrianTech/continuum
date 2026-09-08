@@ -131,8 +131,9 @@ pub struct OutcomeStamp {
 pub struct SubmitPlan {
     /// The domain bucket — `DomainClassifier::classify(...).domain`. Becomes the
     /// `traitKind` of the `(persona_id, trait_kind, base_model)` bucket key when
-    /// UNSTAMPED; a stamped plan keys on `domain × role × outcome` (see
-    /// [`SubmitPlan::bucket_key`]).
+    /// UNSTAMPED; a stamped plan keys on `domain × role` (see
+    /// [`SubmitPlan::bucket_key`]). There is no outcome segment — a failed turn
+    /// never reaches a bucket at all.
     pub trait_kind: String,
     /// The stimulus (the triggering message text).
     pub prompt: String,
@@ -200,9 +201,16 @@ pub fn plan(
     // that makes it look handled.
     //
     // Until a preference-pair schema exists, the only honest thing a verified
-    // failure can do is keep quiet. The stamp still rides on the plan's metadata
-    // for attribution, so a failure remains ACCOUNTED FOR even though it is not
-    // TRAINED ON — which is the distinction the `/failed` bucket blurred.
+    // failure can do is keep quiet.
+    //
+    // AND KEEPING QUIET IS ALL IT DOES — a refused turn leaves NO TRACE. There is
+    // no plan, so no metadata, no bucket, and no probe. An earlier version of this
+    // comment claimed the stamp "still rides on the plan's metadata, so a failure
+    // remains ACCOUNTED FOR"; that was false, because there is no plan to carry it.
+    // Whether a refused turn SHOULD leave durable provenance is an open question
+    // and belongs at the caller that supplies the stamp, not in this pure function
+    // (astra-s6-review: a probe here would pollute pure planning, and a probe is
+    // glass-box evidence rather than durable accounting — it can be disabled).
     if stamp.is_some_and(|s| !s.outcome) {
         return None;
     }
@@ -257,9 +265,16 @@ pub fn produce(
 
     tokio::spawn(async move {
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-        // A LIVE turn carries no verdict — nothing has settled yet. `None` here is
-        // the pre-cc34ac0f path, byte-identical. The stamped path is
-        // [`produce_stamped`], driven from settle, not from the turn.
+        // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
+        // is the pre-cc34ac0f path, byte-identical.
+        //
+        // THIS IS THE ONLY NON-TEST CALL SITE, and it always passes `None`. There is
+        // no `produce_stamped` and nothing carries a settled card's verdict into this
+        // module, so the stamped path — including the evidence floor in [`plan`] — is
+        // UNREACHABLE in production today. An earlier version of this comment named
+        // `produce_stamped` as if it existed; it does not. Card 0d51573a owns minting
+        // the link (which turns produced which card, in which role) that a stamped
+        // caller would need before it could truthfully stamp anything.
         let Some(plan) = plan(classifier, &prompt, &completion, None) else {
             crate::probe!(
                 class = "training.example.skipped",
@@ -400,10 +415,12 @@ pub fn build_submit_params(
         "examples": [example],
         "source": "raw",
     });
-    // Gym lookup keys on the DOMAIN, not the widened bucket: `code/owner/passed`
-    // has no gym of its own, and the trait it measures is still `code`. Passing the
-    // bucket here would silently drop the eval set for every stamped example, which
-    // is the [[no-fallbacks-ever]] shape — a capability quietly lost, not refused.
+    // Gym lookup keys on the DOMAIN, not the widened bucket: `code/owner` has no
+    // gym of its own, and the trait it measures is still `code`. Passing the bucket
+    // here would silently drop the eval set for every stamped example, which is the
+    // [[no-fallbacks-ever]] shape — a capability quietly lost, not refused. The test
+    // asserts this positively (`gym_for_trait(bucket_key()) == None`) rather than by
+    // comparing two `is_some()`s, which is how it managed to guard nothing for so long.
     if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
         if let serde_json::Value::Object(ref mut map) = params {
             map.insert(
