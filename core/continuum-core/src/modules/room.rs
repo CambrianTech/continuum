@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::modules::work::persona_airc;
+use crate::modules::work::{persona_airc, persona_runtime};
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -353,15 +353,17 @@ impl ActionCommand for RoomJoin {
                     .to_string(),
             ));
         }
-        let airc = persona_airc(&self.registry, ctx, "room/join")?;
+        let runtime = persona_runtime(&self.registry, ctx, "room/join")?;
         // `subscribe_room`, never `join` (airc#1330): `join` would promote this
         // room to her default, so every room she is added to would silently
-        // become the one her un-named reads resolve against.
-        let room = airc
+        // become the one her un-named reads resolve against. Keep the runtime
+        // boundary: it wakes live subscriptions after the durable change.
+        let room = runtime
             .subscribe_room(name)
             .await
             .map_err(|e| CommandError::Internal(format!("join '{name}' failed: {e}")))?;
-        let is_default = airc
+        let is_default = runtime
+            .airc()
             .subscription_set()
             .await
             .ok()
@@ -426,15 +428,16 @@ impl ActionCommand for RoomLeave {
     type Output = RoomLeaveResult;
 
     async fn run(&self, ctx: &Ctx, p: RoomLeaveParams) -> Result<RoomLeaveResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx, "room/leave")?;
+        let runtime = persona_runtime(&self.registry, ctx, "room/leave")?;
         let named = p.room.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let room = airc
-            .part_channel(named)
+        let room = runtime
+            .leave_room(named)
             .await
             .map_err(|e| CommandError::Internal(format!("leave failed: {e}")))?;
         // Read the set AFTER parting so `remaining` is the fact, not an
         // arithmetic guess about what the part did.
-        let remaining = airc
+        let remaining = runtime
+            .airc()
             .subscription_set()
             .await
             .map(|s| s.all().count() as u32)
@@ -598,7 +601,10 @@ mod tests {
             room("bench-swe-run-1", false),
         ]);
         assert!(s.starts_with("You belong to 3 room(s)"), "{s}");
-        assert!(s.contains("academy") && s.contains("bench-swe-run-1"), "{s}");
+        assert!(
+            s.contains("academy") && s.contains("bench-swe-run-1"),
+            "{s}"
+        );
         assert!(
             s.contains("default room is academy"),
             "the focus must be named, not just implied: {s}"
