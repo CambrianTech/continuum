@@ -1474,6 +1474,22 @@ pub fn start_server(
         // boot path wasn't even rotating. Eviction is safe by
         // construction here (rotated `.N` generations only, never the
         // live file), so this class is OWNED rather than deferred.
+        // The citizens' workspaces get their owner (card 58c27b0c). 91 GB across twelve
+        // workspaces on 2026-09-08, decided but ownerless since July, so a human swept.
+        if let Some(citizens_dir) = crate::system_resources::tracked_dir("citizens") {
+            broker.register(Arc::new(
+                crate::system_resources::citizen_workspace_pool::CitizenWorkspacePool::new(
+                    citizens_dir,
+                    crate::system_resources::citizen_workspace_pool::DEFAULT_CITIZENS_BUDGET_BYTES,
+                ),
+            ) as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!(
+                "ipc",
+                "server",
+                "CitizenWorkspacePool registered with PressureBroker (dormant workspaces only; memory never evicted)"
+            );
+        }
+
         for class in ["logs", "probes"] {
             // The pool governs ONE writer's ledger (live file + its `.N` generations)
             // and nothing else in the directory — a stranger file must never make it

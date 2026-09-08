@@ -667,7 +667,17 @@ mod tests {
         // in-flight-set hazard to reason about. Deferring is for
         // classes where blind deletion is UNSAFE (a grading instance,
         // a served model); there is nothing unsafe here to defer for.
-        let owned = ["cargo-target", "genome-models", "logs", "probes"];
+        let owned = [
+            "cargo-target",
+            // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only. A
+            // persona's memory is never evicted, an unreadable roster evicts nothing, and
+            // the project's lending object store (every workspace is a --shared clone of
+            // it) is not this pool's to touch.
+            "citizens",
+            "genome-models",
+            "logs",
+            "probes",
+        ];
         let deferred = [
             (
                 "hf-hub",
@@ -703,14 +713,6 @@ mod tests {
             // caches (tools/models), 2 GB of mobile build output, node_modules. The by-hand
             // eviction that day (alternates to the canonical objects + repack -l, ignored
             // dirs dropped, dormant copies patch-then-dropped) is the pool's spec.
-            (
-                "citizens",
-                "58c27b0c: (1) a workspace is a `--shared` clone of the canonical repo, never \
-                 a copy — no history, no ignored caches, no foreign worktree metadata; (2) a \
-                 DORMANT citizen's workspace (uuid on no roster, no turn for 7 days) is \
-                 patch-then-dropped: dirty checkouts archived as <inst>.patch + base sha, \
-                 tree removed; stores are persona MEMORY, never auto-evicted",
-            ),
             // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
             // working-set.json are MEMORY, never auto-evicted. What IS evictable is the
             // GHOST sub-class — a dir whose uuid appears in no roster and which never
