@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { mergeCalls, PlaybackView, type CallHeader } from './playback';
+import { describe, it, expect, vi } from 'vitest';
+import type { TemplateResult } from 'lit';
+import { configurePlayback, focusPlayback, openPlayback, renderPlayback, mergeCalls, PlaybackView, type CallHeader } from './playback';
 const call = (id: string, status: CallHeader['status'] = 'submitted', at = 1): CallHeader => ({
   request_id: id, session_id: 'session', cycle_id: 7, room_id: 'actual-room', cause: 'stimulus',
   request: { generation: 'retained-segment', offset: 0, bytes: 1 }, terminal: null,
@@ -9,7 +10,55 @@ const page = (entries: CallHeader[], older: string | null = null) => ({ page: {
   entries, older, newer: entries.at(-1)?.cursor ?? null, issues: [],
 }, detail: null });
 
+// Inspect Lit's static markup separately from interpolated values, as the other
+// renderer specs do, so recorded HTML-like text cannot pass as executable markup.
+function templates(value: unknown): TemplateResult[] {
+  if (Array.isArray(value)) return value.flatMap(templates);
+  if (!value || typeof value !== 'object' || !('strings' in value) || !('values' in value)) return [];
+  const template = value as TemplateResult;
+  return [template, ...template.values.flatMap(templates)];
+}
+
+async function recordedResponse(response: Record<string, unknown>): Promise<TemplateResult[]> {
+  const header = call('recorded', 'completed');
+  configurePlayback(async (params) => params.selected ? { page: null, detail: {
+    header, submitted: { request: { systemPrompt: 'fixture', messages: [] } },
+    terminal: { response }, issues: [],
+  } } : page([header]), () => {});
+  focusPlayback('renderer-fixture'); openPlayback();
+  await vi.waitFor(() => expect(templates(renderPlayback('renderer-fixture'))
+    .some((template) => template.strings.join('').includes('Recorded model call'))).toBe(true));
+  return templates(renderPlayback('renderer-fixture'));
+}
+
 describe('recorded mind playback', () => {
+  it('keeps reasoning and the exact response collapsed, escaped, and cached', async () => {
+    const reasoning = '</pre><img src=x onerror="untrusted()">';
+    const response = { text: 'Recorded final answer', reasoning, requestId: 'provider-id',
+      content: [{ type: 'text', text: '<script>untrusted()</script>' }], routing: { peer: 'recorded-peer' } };
+    const rendered = await recordedResponse(response);
+    const reasoningPanel = rendered.find((template) => template.strings.join('').includes('<summary>Recorded reasoning</summary>'));
+    const exactPanel = rendered.find((template) => template.strings.join('').includes('<summary>Exact response</summary>'));
+    expect(reasoningPanel).toBeDefined(); expect(exactPanel).toBeDefined();
+    expect(reasoningPanel?.strings.join('')).not.toMatch(/<details[^>]*\bopen\b/);
+    expect(exactPanel?.strings.join('')).not.toMatch(/<details[^>]*\bopen\b/);
+    expect(reasoningPanel?.values).toContain(reasoning);
+    expect(exactPanel?.values).toContain(JSON.stringify(response, null, 2));
+    expect(rendered.every((template) => !template.strings.join('').includes('<img')
+      && !template.strings.join('').includes('<script'))).toBe(true);
+    const repeated = templates(renderPlayback('renderer-fixture'));
+    expect(repeated.find((template) => template.strings.join('').includes('Recorded model call')))
+      .toBe(rendered.find((template) => template.strings.join('').includes('Recorded model call')));
+  });
+
+  it('omits an absent or empty reasoning panel while retaining the complete response', async () => {
+    for (const reasoning of [undefined, null, '', '   ']) {
+      const rendered = await recordedResponse({ text: 'Recorded answer', reasoning });
+      expect(rendered.some((template) => template.strings.join('').includes('<summary>Recorded reasoning</summary>'))).toBe(false);
+      expect(rendered.some((template) => template.strings.join('').includes('<summary>Exact response</summary>'))).toBe(true);
+    }
+  });
+
   it('coalesces interleaved lifecycle events without letting older history erase a terminal', () => {
     const submitted = call('a'); const completed = call('a', 'completed', 3);
     const b = call('b', 'submitted', 2);
