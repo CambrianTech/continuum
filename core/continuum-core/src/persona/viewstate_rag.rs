@@ -392,7 +392,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         // nothing. Note this is NOT redundant with the `room_scope_allows` check
         // below, which the per-room binding made vacuous — `view.room()` now
         // always equals the turn's room, so that gate can no longer fire here.
-        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null);
+        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer, not a stand-in: no stamp means a cursor minted before this field existed, and Null makes it MISMATCH every roomed turn — which is the refusal we want
         if stamped != Self::cursor_room(_ctx) {
             crate::probe!(
                 class = "rag.continuation.room_mismatch",
