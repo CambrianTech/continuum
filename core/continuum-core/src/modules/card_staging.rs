@@ -233,13 +233,51 @@ async fn stage_shell(workspace: &Path, shell: &str) -> Staging {
     }
 }
 
+/// Does an existing checkout restage pristine for a new claim? Only when the instance
+/// has a recorded verdict and the checkout's work is not newer than it: that work was
+/// graded (or is clean), so it belongs to the settled round. No verdict, or work newer
+/// than the verdict (she kept going after a failed grade), keeps the tree.
+fn restages_pristine(verdict_ms: Option<u64>, work_ms: Option<u64>) -> bool {
+    match (verdict_ms, work_ms) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(v), Some(w)) => v >= w,
+    }
+}
+
 async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::SweInstance) -> Staging {
     use crate::cognition::swe_bench;
     let dir = workspace.join("swe").join(&instance.instance_id);
     if dir.join(".git").exists() {
-        // Already staged (a prior claim, or a re-claim after a reboot). Self-heal
-        // pre-shield checkouts so substrate artifacts never enter her patch.
-        swe_bench::shield_workspace_excludes(&dir);
+        // Already staged (a prior claim, or a re-claim after a reboot). A checkout
+        // whose work is OLDER than the instance's recorded verdict is finished work
+        // from a settled round, not hers in progress: seed-3 re-dispatched
+        // astropy-13236 (resolved 2026-08-26) and staged the claimer onto the August
+        // checkout, whose diff the sweep then rightly refused to re-grade. A settled
+        // instance starts pristine on its next claim; in-progress work (newer than
+        // any verdict, or no verdict at all) is kept.
+        let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
+        if restages_pristine(verdict_ms, work_ms) {
+            crate::probe!(
+                class = "benchmark.staging.reset_after_verdict",
+                instance = %instance.instance_id,
+                verdict_ms = verdict_ms.unwrap_or(0),
+                work_ms = work_ms.unwrap_or(0),
+                "the checkout carried work older than the instance's verdict — settled work \
+                 from an earlier round; restaging pristine for this claim"
+            );
+            if let Err(error) = swe_bench::clone_at(instance, &dir).await {
+                return Staging::Failed { stage: "checkout", error };
+            }
+        } else {
+            // Self-heal pre-shield checkouts so substrate artifacts never enter her patch.
+            swe_bench::shield_workspace_excludes(&dir);
+        }
     } else if let Err(error) = swe_bench::clone_at(instance, &dir).await {
         return Staging::Failed { stage: "checkout", error };
     }
@@ -332,4 +370,18 @@ mod tests {
             Staging::Failed { stage: "setup_shell", error: "boom".to_string() }
         );
     }
+
+    // what this catches: a re-dispatched, already-settled instance staged onto the
+    // previous round's graded checkout (astropy-13236, 2026-09-07: resolved Aug 26 by
+    // Atlas, re-dispatched by seed 3, the claimer inherited the August diff).
+    #[test]
+    fn a_settled_checkout_restages_pristine_but_in_progress_work_is_kept() {
+        assert!(!restages_pristine(None, None), "no verdict: a fresh clean tree is reused");
+        assert!(!restages_pristine(None, Some(10)), "no verdict: her work in progress stays");
+        assert!(restages_pristine(Some(20), None), "settled and clean: pristine costs nothing");
+        assert!(restages_pristine(Some(20), Some(10)), "work older than the verdict was graded");
+        assert!(restages_pristine(Some(20), Some(20)), "work at the verdict instant was graded");
+        assert!(!restages_pristine(Some(20), Some(30)), "work after a grade is a new attempt");
+    }
+
 }
