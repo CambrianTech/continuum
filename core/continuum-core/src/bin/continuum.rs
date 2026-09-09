@@ -3118,6 +3118,78 @@ fn tail(path: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// The desktop display manager's port — `CONTINUUM_UI_PORT`, else the
+/// documented default beside WS 8974 (http::desktop). ONE place; the
+/// `desktop` verb and the start/reboot receipt both read it.
+fn desktop_port() -> u16 {
+    std::env::var("CONTINUUM_UI_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8975) // unwrap_or: the display manager's documented default
+}
+
+fn desktop_url() -> String {
+    format!("http://127.0.0.1:{}/", desktop_port())
+}
+
+/// Bounded (1 s) "is the greeter answering" probe — on a deploy path, so it
+/// has a bound and a named outcome, never a hang.
+async fn desktop_answering() -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tokio::net::TcpStream::connect(("127.0.0.1", desktop_port())),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// The line a verified start/reboot ends with: WHERE the desktop is. A user
+/// must never have to know a port (Joel, 2026-09-05: "remembering port is
+/// bush league") — the CLI says the address, and `uu desktop` opens it.
+async fn desktop_receipt_line() -> String {
+    if desktop_answering().await {
+        format!("🖥  desktop: {}   (`uu desktop` opens it)", desktop_url())
+    } else {
+        format!(
+            "🖥  desktop: not serving yet on :{} — the web build lands in the background; \
+             `uu desktop` opens it once it does",
+            desktop_port()
+        )
+    }
+}
+
+fn usage() -> String {
+    "usage: continuum <start|reboot|stop|desktop|command> [json | --key value ...]  (uu = continuum)\n\
+     \n\
+     Lifecycle:\n  \
+       continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
+       continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
+       continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
+       continuum reboot --prebuilt <path>\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n  \
+       continuum stop                  stop the running core\n  \
+       continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
+     \n\
+     Legacy checkpoint recovery (local; no running core required):\n  \
+       continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
+       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
+     \n\
+     Desktop (the core serves it; no port to remember):\n  \
+       continuum desktop               open the desktop in your browser (alias: uu desktop)\n\
+     \n\
+     Commands (dispatch to the running core):\n  \
+       continuum ping\n  \
+       continuum ping --message hi                 # --key value, coerced + camelCased automatically\n  \
+       continuum ping '{\"message\":\"hi\"}'           # or a single JSON object (AI / power-user path)\n  \
+       continuum commands/list                     # discover commands dynamically (single source)\n  \
+       continuum commands/list --filter data/\n\
+     \n\
+     Env: CONTINUUM_CORE_SOCKET (default /tmp/continuum-core.sock)\n     \
+          CONTINUUM_START_SCRIPT (override the start script path)"
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     // What this catches (card 9f160b78): missing/truncated process evidence and
@@ -4317,76 +4389,4 @@ mod tests {
             "CARGO_TARGET_DIR is honored: {c:?}"
         );
     }
-}
-
-/// The desktop display manager's port — `CONTINUUM_UI_PORT`, else the
-/// documented default beside WS 8974 (http::desktop). ONE place; the
-/// `desktop` verb and the start/reboot receipt both read it.
-fn desktop_port() -> u16 {
-    std::env::var("CONTINUUM_UI_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(8975) // unwrap_or: the display manager's documented default
-}
-
-fn desktop_url() -> String {
-    format!("http://127.0.0.1:{}/", desktop_port())
-}
-
-/// Bounded (1 s) "is the greeter answering" probe — on a deploy path, so it
-/// has a bound and a named outcome, never a hang.
-async fn desktop_answering() -> bool {
-    matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            tokio::net::TcpStream::connect(("127.0.0.1", desktop_port())),
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
-/// The line a verified start/reboot ends with: WHERE the desktop is. A user
-/// must never have to know a port (Joel, 2026-09-05: "remembering port is
-/// bush league") — the CLI says the address, and `uu desktop` opens it.
-async fn desktop_receipt_line() -> String {
-    if desktop_answering().await {
-        format!("🖥  desktop: {}   (`uu desktop` opens it)", desktop_url())
-    } else {
-        format!(
-            "🖥  desktop: not serving yet on :{} — the web build lands in the background; \
-             `uu desktop` opens it once it does",
-            desktop_port()
-        )
-    }
-}
-
-fn usage() -> String {
-    "usage: continuum <start|reboot|stop|desktop|command> [json | --key value ...]  (uu = continuum)\n\
-     \n\
-     Lifecycle:\n  \
-       continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
-       continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
-       continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
-       continuum reboot --prebuilt <path>\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n  \
-       continuum stop                  stop the running core\n  \
-       continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
-     \n\
-     Legacy checkpoint recovery (local; no running core required):\n  \
-       continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
-       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
-     \n\
-     Desktop (the core serves it; no port to remember):\n  \
-       continuum desktop               open the desktop in your browser (alias: uu desktop)\n\
-     \n\
-     Commands (dispatch to the running core):\n  \
-       continuum ping\n  \
-       continuum ping --message hi                 # --key value, coerced + camelCased automatically\n  \
-       continuum ping '{\"message\":\"hi\"}'           # or a single JSON object (AI / power-user path)\n  \
-       continuum commands/list                     # discover commands dynamically (single source)\n  \
-       continuum commands/list --filter data/\n\
-     \n\
-     Env: CONTINUUM_CORE_SOCKET (default /tmp/continuum-core.sock)\n     \
-          CONTINUUM_START_SCRIPT (override the start script path)"
-        .to_string()
 }
