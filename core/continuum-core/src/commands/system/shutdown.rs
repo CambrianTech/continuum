@@ -42,9 +42,8 @@ pub struct ShutdownResult {
 }
 
 crate::action_command! {
-    /// Drain, save and join every module, then exit the process. Returns the receipt
-    /// BEFORE exiting, so the caller learns what was saved rather than only that the
-    /// process is gone.
+    /// Drain, save and join every module. Return the retained shutdown receipt before
+    /// the calling CLI tears down the process.
     pub struct SystemShutdown;
     name: "system/shutdown",
     access: Privileged,

@@ -1117,6 +1117,9 @@ mod tests {
             // Same owner and the same rule as the shared target: derived build output,
             // re-creatable by definition, evicted oldest-artifact-first under pressure.
             "cargo-target-wt",
+            // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
+            // only after complete verified preservation. Memory is never evicted.
+            "citizens",
             "genome-models",
             "logs",
             "probes",
@@ -1161,14 +1164,6 @@ mod tests {
             // caches (tools/models), 2 GB of mobile build output, node_modules. The by-hand
             // eviction that day (alternates to the canonical objects + repack -l, ignored
             // dirs dropped, dormant copies patch-then-dropped) is the pool's spec.
-            (
-                "citizens",
-                "58c27b0c: (1) a workspace is a `--shared` clone of the canonical repo, never \
-                 a copy — no history, no ignored caches, no foreign worktree metadata; (2) a \
-                 DORMANT citizen's workspace (uuid on no roster, no turn for 7 days) is \
-                 patch-then-dropped: dirty checkouts archived as <inst>.patch + base sha, \
-                 tree removed; stores are persona MEMORY, never auto-evicted",
-            ),
             // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
             // working-set.json are MEMORY, never auto-evicted. What IS evictable is the
             // GHOST sub-class — a dir whose uuid appears in no roster and which never

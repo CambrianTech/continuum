@@ -7,9 +7,9 @@
 //! that owns the CBP_Analyzer pipeline and orchestrates frame flow.
 
 use super::boot_mode::BootMode;
+use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::module_context::ModuleContext;
-use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
@@ -416,7 +416,10 @@ impl Runtime {
             .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; read it
             .clone();
         for interceptor in chain {
-            match interceptor.try_route(command, &params, caller.as_ref()).await {
+            match interceptor
+                .try_route(command, &params, caller.as_ref())
+                .await
+            {
                 Ok(InterceptorOutcome::Handled(result)) => return Some(Ok(result)),
                 Ok(InterceptorOutcome::Decline) => continue,
                 Err(e) => {
@@ -678,7 +681,12 @@ impl Runtime {
     /// active turns running), so without it `save_state` could be taken underneath a turn
     /// halfway through writing, and the result was indistinguishable from a clean save.
     pub async fn shutdown(&self) -> ShutdownReceipt {
-        const PER_PHASE: std::time::Duration = std::time::Duration::from_secs(2);
+        self.shutdown_within(std::time::Duration::from_secs(2))
+            .await
+    }
+
+    /// Share the production phase bounds with deterministic timeout tests.
+    async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
         let modules = self.registry.list_modules();
         info!(
             "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
@@ -687,29 +695,34 @@ impl Runtime {
         let started = std::time::Instant::now();
         let futs = modules.iter().filter_map(|name| {
             self.registry.get_by_name(name).map(|module| {
-                let name = name.clone();
+                // Deref, not clone: `list_modules` yields `Vec<&'static str>`, so `name`
+                // here is `&&'static str` and `.clone()` copied the OUTER reference —
+                // it never cloned a string, and the borrow it produced only compiled
+                // because the inner `&str` is 'static. Carried in from the pre-refactor
+                // `shutdown()`; saying `*name` is what was always meant.
+                let name: &'static str = *name;
                 async move {
                     let t = std::time::Instant::now();
                     // 1. Stop taking new work and let in-flight work finish. A module
                     //    that cannot drain in time still gets its save attempted — a
                     //    mid-turn snapshot beats no snapshot — but the receipt says so.
-                    let drain = match tokio::time::timeout(PER_PHASE, module.drain()).await {
+                    let drain = match tokio::time::timeout(per_phase, module.drain()).await {
                         Ok(Ok(0)) => DrainOutcome::Drained,
                         Ok(Ok(in_flight)) => DrainOutcome::Incomplete { in_flight },
                         Ok(Err(e)) => DrainOutcome::Unknown { reason: e },
                         Err(_) => DrainOutcome::Unknown {
-                            reason: format!("drain exceeded {}s", PER_PHASE.as_secs()),
+                            reason: format!("drain exceeded {}s", per_phase.as_secs()),
                         },
                     };
 
                     // 2. Save. This is the phase whose failure is DATA, not tidiness.
-                    let saved = tokio::time::timeout(PER_PHASE, module.save_state()).await;
+                    let saved = tokio::time::timeout(per_phase, module.save_state()).await;
                     let outcome = match saved {
                         Err(_) => ModuleStopOutcome::SaveTimedOut,
                         Ok(Err(e)) => ModuleStopOutcome::SaveFailed { error: e },
                         Ok(Ok(())) => {
                             // 3. Join, only meaningful once the state is durable.
-                            match tokio::time::timeout(PER_PHASE, module.shutdown()).await {
+                            match tokio::time::timeout(per_phase, module.shutdown()).await {
                                 Err(_) => ModuleStopOutcome::JoinTimedOut,
                                 Ok(Err(e)) => ModuleStopOutcome::JoinFailed { error: e },
                                 Ok(Ok(())) => ModuleStopOutcome::Clean,
@@ -1438,8 +1451,8 @@ pub enum ModuleStopOutcome {
     SaveTimedOut,
     /// `save_state` returned an error and said why.
     SaveFailed { error: String },
-    /// Saved, but `shutdown` did not return inside its bound. State is durable; the
-    /// module's resources were abandoned to process exit.
+    /// Saved, but `shutdown` did not return inside its bound. Its final flush is
+    /// unconfirmed, so the receipt cannot claim durable state.
     JoinTimedOut,
     /// `shutdown` returned an error after a successful save.
     JoinFailed { error: String },
@@ -1471,7 +1484,10 @@ impl ModuleStopOutcome {
 /// reported its state durable — a save taken mid-turn, described as clean. They are
 /// orthogonal facts about the same module and neither may overwrite the other.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/DrainOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/DrainOutcome.ts"
+)]
 pub enum DrainOutcome {
     /// Nothing was in flight when the module stopped taking work.
     Drained,
@@ -1493,7 +1509,10 @@ impl DrainOutcome {
 
 /// One module's line in the receipt.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/ModuleStop.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ModuleStop.ts"
+)]
 pub struct ModuleStop {
     pub module: String,
     pub drain: DrainOutcome,
@@ -1542,9 +1561,7 @@ impl ShutdownReceipt {
             .collect()
     }
 
-    /// Every module's state is durable. Deliberately NOT "nothing went wrong" — a module
-    /// that saved and then failed to join is clean by this measure, because the thing at
-    /// stake is the citizen's state, not the tidiness of the exit.
+    /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
         self.unsaved().is_empty()
     }
@@ -1572,25 +1589,15 @@ impl ShutdownReceipt {
     }
 }
 
-/// ONE shutdown, owned.
-///
-/// This was a bare `OnceLock` plus a free function, and the tests for it had to build
-/// their own `watch` channel — so they asserted a property of `tokio::sync::watch` and
-/// would have stayed green if the production publisher regressed from `send_replace` back
-/// to `send`. Established by Astra reading the source, NOT by an executed mutation run —
-/// nobody has yet watched that test go red, and the weaker claim is the true one.
-///
-/// As an instance, a test can construct the SAME owner over a real `Runtime` and drive the
-/// real `begin` / publisher, instead of a look-alike. Same reason `AdmissionGate` is a
-/// type: an invariant that can only be reached through a global is an invariant whose
-/// tests drift into testing something adjacent.
-pub struct ShutdownOperation {
+/// Owns an idempotent shutdown independently of requesting client lifetimes.
+/// Each instance retains its terminal receipt for late or reconnecting observers.
+struct ShutdownOperation {
     result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
     started: std::sync::atomic::AtomicBool,
 }
 
 impl ShutdownOperation {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             result: tokio::sync::watch::channel(None).0,
             started: std::sync::atomic::AtomicBool::new(false),
@@ -1601,7 +1608,10 @@ impl ShutdownOperation {
     /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
     /// request — joins the first broadcast rather than running `save_state` twice over
     /// the same state.
-    pub fn begin(&self, rt: Option<Arc<Runtime>>) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    fn begin(
+        &self,
+        rt: Option<Arc<Runtime>>,
+    ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
         if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             match rt {
                 Some(rt) => {
@@ -1642,9 +1652,7 @@ impl Default for ShutdownOperation {
     }
 }
 
-/// The process's one shutdown. `watch::channel` is not `const`, so the instance is built
-/// on first use; the `OnceLock` being `static` is what lets `begin` take `&'static self`
-/// and hand the receiver out with no lifetime attached to a caller.
+/// Initialize the process owner on first use; observers receive an owned watch handle.
 static SHUTDOWN: std::sync::OnceLock<ShutdownOperation> = std::sync::OnceLock::new();
 
 fn process_shutdown() -> &'static ShutdownOperation {
@@ -1730,7 +1738,6 @@ pub async fn run_signal_shutdown() {
 #[cfg(test)]
 mod conditional_modules_tests {
     use super::*;
-
 
     /// The shutdown result must survive the disappearance of everyone watching it.
     mod receipt_retention {
@@ -1854,7 +1861,10 @@ mod conditional_modules_tests {
             );
             // Nothing was cancelled by our giving up: the operation can still publish,
             // and `_observer` proves the channel is live rather than merely unobserved.
-            assert!(!tx.is_closed(), "giving up watching must not end the shutdown");
+            assert!(
+                !tx.is_closed(),
+                "giving up watching must not end the shutdown"
+            );
             let receipt = ShutdownReceipt {
                 modules: Vec::new(),
                 total_ms: 3,
@@ -1865,6 +1875,171 @@ mod conditional_modules_tests {
                 Some(receipt),
                 "the operation we stopped waiting for must still be able to report"
             );
+        }
+    }
+
+    /// Outcomes the runtime PRODUCES, not ones a test writes down.
+    ///
+    /// Every other receipt test constructs `ModuleStopOutcome` values as literals and
+    /// asserts on them, which describes the enum rather than the code that fills it — so
+    /// deleting the timeout handling in `shutdown` would have left them all green. These
+    /// drive a real `Runtime` with modules that genuinely exceed the phase bound. Found by
+    /// IntelMac.
+    mod outcomes_the_runtime_actually_produces {
+        use super::*;
+        use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
+        // The ServiceModule surface is not in this mod's `use super::*` reach; naming the
+        // imports beats a glob here because the two stub modules below implement the trait
+        // and a missing one shows up as four unrelated-looking errors.
+        use crate::runtime::service_module::{ModuleConfig, ModulePriority, ServiceModule};
+        // NOT from `service_module` — it does not export this; the trait itself names
+        // `super::ModuleContext`.
+        use crate::runtime::ModuleContext;
+        use async_trait::async_trait;
+        use std::any::Any;
+
+        /// A module whose SAVE never finishes inside the bound.
+        struct SlowSaver;
+        #[async_trait]
+        impl ServiceModule for SlowSaver {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "slow-saver",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                // Required: `ServiceModule::handle_command` has no default. These stubs
+                // exist to exceed a phase bound, not to serve commands.
+                Err("not handled".to_string())
+            }
+            async fn save_state(&self) -> Result<(), String> {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        /// A module that saves promptly and then never lets go.
+        struct SlowJoiner;
+        #[async_trait]
+        impl ServiceModule for SlowJoiner {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "slow-joiner",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                // Required: `ServiceModule::handle_command` has no default. These stubs
+                // exist to exceed a phase bound, not to serve commands.
+                Err("not handled".to_string())
+            }
+            async fn shutdown(&self) -> Result<(), String> {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        // what this catches: the save timeout arm being deleted or inverted. A module that
+        // cannot save inside the bound must produce `SaveTimedOut` and make the stop
+        // non-durable — this is the outcome the CLI's exit code keys on, and until now no
+        // test had ever caused one.
+        // Paused time makes the phase deadline fire before the longer inner sleep.
+        // A wall-clock scheduler stall can make both ready, producing a spurious failure.
+        #[tokio::test(start_paused = true)]
+        async fn a_module_that_cannot_save_in_time_produces_save_timed_out() {
+            let runtime = Runtime::new();
+            runtime.register(Arc::new(SlowSaver));
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "slow-saver")
+                .expect("the slow module must appear in the receipt");
+            assert_eq!(row.outcome, ModuleStopOutcome::SaveTimedOut);
+            assert!(
+                !row.state_is_durable(),
+                "a save that timed out leaves the state UNKNOWN, not merely old"
+            );
+            assert!(!receipt.state_is_durable());
+            assert!(receipt.summary().contains("slow-saver"));
+        }
+
+        // what this catches: the join timeout arm. The module SAVED, so an implementation
+        // that stopped bounding the join would report `Clean` — and with `shutdown`
+        // contractually being "release resources, FLUSH BUFFERS", that would claim
+        // durability over a flush that may not have happened.
+        // Paused time makes the phase deadline fire before the longer inner sleep.
+        // A wall-clock scheduler stall can make both ready, producing a spurious failure.
+        #[tokio::test(start_paused = true)]
+        async fn a_module_that_cannot_join_in_time_produces_join_timed_out() {
+            let runtime = Runtime::new();
+            runtime.register(Arc::new(SlowJoiner));
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "slow-joiner")
+                .expect("the slow module must appear in the receipt");
+            assert_eq!(row.outcome, ModuleStopOutcome::JoinTimedOut);
+            assert!(!row.state_is_durable());
+        }
+
+        // what this catches: the ordinary path degrading. A module that drains, saves and
+        // joins promptly must still come back Clean and durable under the same bound — or
+        // the two tests above would pass for the wrong reason.
+        // Paused for the same reason, and it matters MORE here: a control that ran on a
+        // different clock from the cases it controls is not a control.
+        #[tokio::test(start_paused = true)]
+        async fn a_prompt_module_is_clean_under_the_same_bound() {
+            let runtime = Runtime::new();
+            let (module, _r) = RecordingModule::new("prompt", Vec::new());
+            runtime.register(module);
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "prompt")
+                .expect("present");
+            assert_eq!(row.outcome, ModuleStopOutcome::Clean);
+            assert!(row.state_is_durable());
+            assert!(receipt.state_is_durable());
         }
     }
 
@@ -1957,7 +2132,10 @@ mod conditional_modules_tests {
             assert_eq!(receipt.unsaved().len(), 1);
             let summary = receipt.summary();
             assert!(summary.contains("cognition"), "got: {summary}");
-            assert!(!summary.contains("logger"), "clean modules are noise here: {summary}");
+            assert!(
+                !summary.contains("logger"),
+                "clean modules are noise here: {summary}"
+            );
         }
 
         // what this catches: an EMPTY receipt reading as a successful stop. A core that
@@ -2058,7 +2236,10 @@ mod conditional_modules_tests {
                 .await
                 .expect("an error is an answer, not None");
             let err = out.expect_err("the refusal must surface");
-            assert!(err.contains("refuses") && err.contains("the address was bad"), "{err}");
+            assert!(
+                err.contains("refuses") && err.contains("the address was bad"),
+                "{err}"
+            );
         }
 
         // what this catches: the card itself — the real airc interceptor on the
@@ -2543,7 +2724,8 @@ mod piece_2_pr3_dispatch_tests {
         /// asserts on this rather than on receipt rows: a second `begin` that ran a
         /// parallel broadcast would call this twice while still publishing one receipt.
         async fn save_state(&self) -> Result<(), String> {
-            self.saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
 

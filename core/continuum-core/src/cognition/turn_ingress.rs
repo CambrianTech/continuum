@@ -31,12 +31,6 @@ use crate::runtime::AdmissionGate;
 /// reintroduced the race the first had just removed.
 static GATE: AdmissionGate = AdmissionGate::new();
 
-/// May a service loop begin a new turn? Prefer [`admit`], which answers this AND takes
-/// ownership of the turn in one atomic step; a bare read is only safe for display.
-pub fn is_open() -> bool {
-    GATE.is_open()
-}
-
 /// SERVICE-LOOP turns running right now, across every persona in this process.
 ///
 /// # What this number does NOT include, stated because a drain keys on it
@@ -96,10 +90,13 @@ mod tests {
     // it to the service loop, so that is all this asserts.
     #[test]
     fn the_process_turn_gate_starts_open_and_empty() {
-        assert!(is_open(), "citizens must be able to take turns in a booted core");
-        // Real admission through the real gate — not a reimplementation of it.
+        // Admission exercises the same atomic gate used by the service loop.
         let permit = admit().expect("an open gate admits");
-        assert_eq!(in_flight(), 1, "an admitted turn must be visible to a drain");
+        assert_eq!(
+            in_flight(),
+            1,
+            "an admitted turn must be visible to a drain"
+        );
         drop(permit);
         assert_eq!(in_flight(), 0, "and invisible once it ends");
     }

@@ -1510,6 +1510,10 @@ pub fn start_server(
         // boot path wasn't even rotating. Eviction is safe by
         // construction here (rotated `.N` generations only, never the
         // live file), so this class is OWNED rather than deferred.
+        // Citizen workspace eviction remains unregistered until preservation can
+        // restore local commits and refs as well as dirty files. A clean checkout
+        // can contain the only copy of a citizen's autosaved work (#3920).
+
         for class in ["logs", "probes"] {
             // The pool governs ONE writer's ledger (live file + its `.N` generations)
             // and nothing else in the directory — a stranger file must never make it

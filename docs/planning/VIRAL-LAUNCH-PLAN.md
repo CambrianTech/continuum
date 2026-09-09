@@ -9,6 +9,24 @@ afterthought.*
 claim, partial proof, no demo asset, an unclaimed moment, and no distribution plan. Every
 section below is one factor, with its gate to green.
 
+## Creative direction — show the magic, then let people verify it
+
+**2026-09-07, Joel:** the reference is the Video Painter approach—an immediately compelling visual experience made possible by engineering that works around the industry's assumed limits. The [Video Painter concurrency lineage](../architecture/CONCURRENCY-STYLE-GUIDE.md#the-video-painter-lineage--proven-prior-art-for-every-rule-here) connects that experience to this runtime's performance discipline.
+
+The README's opening sequence is **promise → visual → evidence → run it**. Development status belongs in an accessible implementation section, alongside detailed methodology, rather than between the reader and the experience. Keep current learning explicit: activity-room work feeds experience and dreams today. Distinguish that from HF genomic-sharing automation still being connected.
+
+The desktop demo is a restoration target. The legacy Node.js implementation already demonstrated live avatars and shared video calls. Carry that behavior into Rust/Positron with the RTOS performance constraints; a new visual mockup is not parity. The existing `live-session-avatars.png` is an identified legacy reference until a current-runtime capture replaces it.
+
+The launch asset should make three things visible:
+
+1. **A shared world:** a human and named citizens in an actual live call, perceiving and operating the same workspace through Positron.
+2. **A team result:** a real task, review, revision, and recorded verdict. Show the hardware and comparison regime; a Mac win and a grid win are separately labeled results.
+3. **Learning that survives the moment:** revisit the citizen's retained experience, then show a later evaluation with the memory/adapter configuration and provenance. Label time compression and elapsed training time; do not imply a weight update happened during an uninterrupted short clip if it did not.
+
+**The headline is the measured win, not a generic claim that frontier systems cannot learn.** Publish the same-model baseline delta, the contribution of teamwork, and the later learning gain with their controls. Forge-Alloy carries artifact and evaluation provenance; the viewer can follow the claim to the evidence and reproduce it.
+
+The emotional promise stays simple: **meet minds, build together, watch them grow—and keep the freedom to choose your own path.** That is the experience the numbers must substantiate.
+
 ---
 
 ## 1. The claim (have it — sharpen it)
