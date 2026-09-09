@@ -63,21 +63,7 @@ A candidate adaptation does not become knowledge merely because training complet
 **It has to earn adoption.**
 
 ```text
-work
-  ↓
-experience
-  ↓
-curriculum
-  ↓
-training
-  ↓
-LoRA gene
-  ↓
-phenotype
-  ↓
-evaluation
-  ↓
-adopt / reject
+work → experience → curriculum → training → LoRA gene → phenotype → evaluation → adopt / reject
 ```
 
 Memory lets a citizen recall what happened.
@@ -766,17 +752,7 @@ Those aren't merely unsuccessful turns.
 They are **labeled gaps between intention and capability**.
 
 ```text
-intention
-    ↓
-attempt
-    ↓
-world
-    ↓
-mismatch
-    ↓
-experience
-    ↓
-lesson
+intention → attempt → world → mismatch → experience → lesson
 ```
 
 That makes failure unusually valuable.
@@ -1140,15 +1116,7 @@ human asks → AI responds → stop
 to:
 
 ```text
-world changes
-     ↓
-sentinel notices
-     ↓
-citizen perceives
-     ↓
-activity begins
-     ↓
-world changes again
+world changes → sentinel notices → citizen perceives → activity begins → world changes again
 ```
 
 The society can become event-driven rather than prompt-driven.
