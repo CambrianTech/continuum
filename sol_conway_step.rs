@@ -282,6 +282,9 @@ fn main() {
     // (2,2) survives with 2; (0,1) is born with exactly 3. All other cells
     // have the wrong count, so this set must match cell-for-cell.
     let expected = [(2usize, 1usize), (1, 2), (2, 2), (0, 1)];
+    // Hand-computed next generation of the glider: live A=(1,0) dies (1 neighbour),
+    // B=(2,1) survives (3), D=(1,2) survives (3), E=(2,2) survives (2); birth at
+    // (0,1) with exactly 3 neighbours; C=(0,2) starves (2). Pop stays 5.
     let mut ok = c.population() == 5;
     for y in 0..7usize {
         for x in 0..7usize {
