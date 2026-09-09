@@ -141,8 +141,19 @@ jobs:
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
+          # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).
+          # `apt-get update` exits 100 if ANY index fails, so on 2026-09-09 a Hash Sum
+          # mismatch on dl.google.com/linux/chrome-stable failed this step — and with it
+          # every Rust run on every branch — for a package list nothing here reads.
+          # Drop the vendor lists first, then update only the archives we install from,
+          # with retries for genuinely transient mirror errors. A real failure to fetch
+          # OUR packages still fails the step, loudly.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
             cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
             libclang-dev clang build-essential \
             libglib2.0-dev libasound2-dev libva-dev
