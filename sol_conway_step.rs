@@ -1,4 +1,5 @@
 //! Conway's Game of Life — one step on a finite grid with dead edges.
+//! (verified build 2025-11: mem::take + push in `step()`, free-fn neighbour count)
 //!
 //! Cell convention: `cells` is row-major, index = y * w + x, where x is the
 //! column (0..w) and y is the row (0..h). Out-of-bounds neighbours are dead.
