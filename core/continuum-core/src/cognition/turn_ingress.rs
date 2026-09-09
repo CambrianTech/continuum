@@ -31,12 +31,6 @@ use crate::runtime::AdmissionGate;
 /// reintroduced the race the first had just removed.
 static GATE: AdmissionGate = AdmissionGate::new();
 
-/// May a service loop begin a new turn? Prefer [`admit`], which answers this AND takes
-/// ownership of the turn in one atomic step; a bare read is only safe for display.
-pub fn is_open() -> bool {
-    GATE.is_open()
-}
-
 /// SERVICE-LOOP turns running right now, across every persona in this process.
 ///
 /// # What this number does NOT include, stated because a drain keys on it
@@ -96,8 +90,16 @@ mod tests {
     // it to the service loop, so that is all this asserts.
     #[test]
     fn the_process_turn_gate_starts_open_and_empty() {
-        assert!(is_open(), "citizens must be able to take turns in a booted core");
-        // Real admission through the real gate — not a reimplementation of it.
+        // Openness is asserted by ADMITTING, not by a separate reader: a bare `is_open`
+        // on this module had no caller at all — the service loop takes a permit — so it
+        // was dead weight and is gone.
+        //
+        // It was NOT the reachability-ratchet failure, though I first claimed it was. The
+        // scanner greps `pub struct ` / `pub enum ` (production_reachability.rs:125) and
+        // does not count functions at all, so removing one could never have moved the
+        // number. The counted item was `pub struct ShutdownOperation`, now private.
+        // Corrected by Astra, who READ the scanner rather than inferring what it measures
+        // — which is what I should have done before claiming a fix for it.
         let permit = admit().expect("an open gate admits");
         assert_eq!(in_flight(), 1, "an admitted turn must be visible to a drain");
         drop(permit);
