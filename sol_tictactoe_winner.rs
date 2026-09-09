@@ -45,11 +45,10 @@ fn main() {
     let left_col = ['X', 'O', ' ', 'X', 'O', ' ', 'X', 'O', ' '];
     assert_eq!(ttt_winner(&left_col), 'X');
 
-    let right_col = ['O', 'X', 'O', ' ', 'O', 'X', ' ', ' ', 'O']; // column 2: O, X, O → no; check col1 instead below
+    let right_col = ['X', 'O', ' ', 'O', 'X', ' ', 'O', 'X', ' ']; // column 2: X, O, X → no line at all
     assert_eq!(ttt_winner(&right_col), ' ');
 
-    let center_col = ['O', 'X', ' ', ' ', 'X', ' ', 'O', 'X', ' ']; // wait — that's not a line; use real one:
-    let center_col2 = ['O', 'X', 'O', 'X', 'O', 'X', ' ', 'O', ' ']; // column 1 is X,O,? no...
+    let center_col = ['X', 'O', 'X', 'O', 'X', 'O', 'O', ' ', 'O']; // middle column (1,4,7) is O,X,O → no line at all
     assert_eq!(ttt_winner(&center_col), ' ');
 
     let anti_diag = [' ', ' ', 'O', ' ', 'O', ' ', 'O', ' ', ' '];
