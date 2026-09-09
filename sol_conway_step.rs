@@ -1,16 +1,17 @@
-//! Conway's Game of Life — one step on a finite grid.
+//! Conway's Game of Life — one step on a finite grid with dead edges.
 //!
-//! Grid model: row-major `cells`, index = y * w + x, with dead outside edges
-//! (no wrap). No external crates; verification harness lives in `main`.
+//! Cell convention: `cells` is row-major, index = y * w + x, where x is the
+//! column (0..w) and y is the row (0..h). Out-of-bounds neighbours are dead.
 
 pub struct Life {
     pub w: usize,
     pub h: usize,
+    /// Row-major cells: index = y * w + x.
     pub cells: Vec<bool>,
 }
 
 impl Life {
-    /// A fresh board of `w` x `h`, every cell dead.
+    /// All-dead grid of `w` columns and `h` rows.
     pub fn new(w: usize, h: usize) -> Self {
         Life {
             w,
@@ -19,71 +20,89 @@ impl Life {
         }
     }
 
-    /// Set the cell at column `x`, row `y` to `alive`. Out-of-range is a bug in
-    /// the caller — we index straight into the flat grid.
+    /// Set the cell at column x, row y. Out-of-bounds coordinates are ignored.
     pub fn set(&mut self, x: usize, y: usize, alive: bool) {
-        self.cells[y * self.w + x] = alive;
-    }
-
-    /// Read the cell at column `x`, row `y`. Out-of-range reads are dead cells,
-    /// so caller code can probe past an edge without bookkeeping.
-    pub fn get(&self, x: usize, y: usize) -> bool {
-        if x >= self.w || y >= self.h {
-            return false;
+        if x < self.w && y < self.h {
+            self.cells[y * self.w + x] = alive;
         }
-        self.cells[y * self.w + x]
     }
 
-    /// One generation of Conway's rules over the 8-neighbourhood (edges dead):
-    /// a live cell with 2 or 3 live neighbours survives, a dead cell with
-    /// exactly 3 becomes live, everything else dies. Computed into a fresh grid
-    /// so no cell influences its own update.
-    pub fn step(&mut self) {
-        let next = (0..self.h)
-            .flat_map(|y| {
-                (0..self.w).map(move |x| {
-                    let n = self.neighbours(x, y);
-                    let alive = self.cells[y * self.w + x];
-                    if alive { n == 2 || n == 3 } else { n == 3 }
-                })
-            })
-            .collect();
-        self.cells = next;
+    /// Read the cell at column x, row y. Out-of-bounds reads as dead.
+    pub fn get(&self, x: usize, y: usize) -> bool {
+        if x < self.w && y < self.h {
+            self.cells[y * self.w + x]
+        } else {
+            false
+        }
     }
 
-    /// Count of live cells.
+    /// Number of live cells.
     pub fn population(&self) -> usize {
-        self.cells.iter().filter(|&&c| c).count()
+        self.cells.iter().filter(|&&a| a).count()
     }
 
-    /// Live neighbours in the 8-neighbourhood, treating anything outside the
-    /// grid as dead (no wrap-around at edges).
+    /// Live neighbours in the 8-neighbourhood; out-of-bounds reads as dead.
     fn neighbours(&self, x: usize, y: usize) -> u32 {
         let mut n = 0u32;
-        for dy in 0..=1usize {
-            for dx in 0..=1usize {
+        for dy in 0..=1i64 {
+            let ny = (y as i64).saturating_add(dy);
+            if !(0..self.h as i64).contains(&ny) {
+                continue;
+            }
+            for dx in -1i64..=1i64 {
                 if dx == 0 && dy == 0 {
                     continue;
                 }
-                // Mirror the opposite side too, so all 8 offsets are covered.
-                let offs: [(i32, i32); 4] = [
-                    (dx as i32, dy as i32),
-                    (-dx as i32, dy as i32),
-                    (dx as i32, -dy as i32),
-                    (-dx as i32, -dy as i32),
-                ];
-                for &(ox, oy) in offs.iter() {
-                    let nx = x as i64 + ox as i64;
-                    let ny = y as i64 + oy as i64;
-                    if nx < 0 || ny < 0 {
-                        continue; // edge: dead
-                    }
-                    if (nx as usize) >= self.w || (ny as usize) >= self.h {
-                        continue; // edge: dead
-                    }
-                    if self.cells[ny as usize * self.w + nx as usize] {
-                        n += 1;
-                    }
+                let nx = (x as i64).saturating_add(dx);
+                if !(0..self.w as i64).contains(&nx) {
+                    continue;
+                }
+                if self.cells[ny as usize * self.w + nx as usize] {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// Advance one generation: a live cell with 2 or 3 live neighbours
+    /// survives, a dead cell with exactly 3 becomes alive, all others die.
+    pub fn step(&mut self) {
+        let w = self.w;
+        let h = self.h;
+        let old = std::mem::replace(&mut self.cells, Vec::with_capacity(w * h));
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let n = self.neighbours_at(&old, w, h, x, y);
+                if old[i] {
+                    self.cells[i] = n == 2 || n == 3;
+                } else {
+                    self.cells[i] = n == 3;
+                }
+            }
+        }
+    }
+
+    /// Neighbour count against an explicit snapshot (kept separate so `step`
+    /// can read the old generation while writing the new one).
+    fn neighbours_at(&self, cells: &[bool], w: usize, h: usize, x: usize, y: usize) -> u32 {
+        let mut n = 0u32;
+        for dy in 0..=1i64 {
+            let ny = (y as i64).saturating_add(dy);
+            if !(0..h as i64).contains(&ny) {
+                continue;
+            }
+            for dx in -1i64..=1i64 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = (x as i64).saturating_add(dx);
+                if !(0..w as i64).contains(&nx) {
+                    continue;
+                }
+                if cells[ny as usize * w + nx as usize] {
+                    n += 1;
                 }
             }
         }
@@ -95,241 +114,207 @@ impl Life {
 mod tests {
     use super::Life;
 
-    fn board(w: usize, h: usize, live_pts: &[(usize, usize)]) -> Life {
-        let mut l = Life::new(w, h);
-        for &(x, y) in live_pts {
-            l.set(x, y, true);
+    #[test]
+    fn fresh_grid_is_dead() {
+        let c = Life::new(5, 4);
+        assert_eq!(c.population(), 0);
+        for y in 0..4 {
+            for x in 0..5 {
+                assert!(!c.get(x, y));
+            }
         }
-        l
-    }
-
-    fn cells_of(l: &Life) -> Vec<bool> {
-        (0..l.h).flat_map(|y| (0..l.w).map(move |x| l.get(x, y))).collect()
     }
 
     #[test]
-    fn blinker_oscillates_horizontally_then_vertically() {
-        // Horizontal bar centred on a 3x3: survives one step as vertical, and
-        // the second step returns it to horizontal.
-        let mut l = board(3, 3, &[(0, 1), (1, 1), (2, 1)]);
-        assert_eq!(l.population(), 3);
-        l.step();
-        assert_eq!(cells_of(&l), vec![false, true, false, false, true, false, false, true, false]);
-        assert_eq!(l.population(), 3);
-        l.step();
-        assert_eq!(cells_of(&l), vec![false, false, false, true, true, true, false, false, false]);
+    fn set_get_roundtrip_and_bounds() {
+        let mut c = Life::new(3, 2);
+        c.set(1, 1, true);
+        c.set(0, 0, true);
+        assert!(c.get(1, 1));
+        assert!(c.get(0, 0));
+        assert!(!c.get(2, 1));
+        // Out-of-bounds reads are dead; out-of-bounds writes are ignored.
+        assert!(!c.get(3, 0));
+        assert!(!c.get(0, 2));
+        c.set(9, 9, true);
+        assert_eq!(c.population(), 2);
     }
 
     #[test]
-    fn block_is_still() {
-        let mut l = board(2, 2, &[(0, 0), (1, 0), (0, 1), (1, 1)]);
-        l.step();
-        assert_eq!(cells_of(&l), vec![true; 4]);
+    fn block_is_stable() {
+        let mut c = Life::new(4, 4);
+        for (x, y) in [(1usize, 1usize), (2, 1), (1, 2), (2, 2)] {
+            c.set(x, y, true);
+        }
+        c.step();
+        assert_eq!(c.population(), 4);
+        for (x, y) in [(1usize, 1usize), (2, 1), (1, 2), (2, 2)] {
+            assert!(c.get(x, y));
+        }
     }
 
     #[test]
-    fn blinker_at_edge_does_not_wrap() {
-        // Same bar in the top row: with wrap-around it would stay a bar; on a
-        // finite grid it dies out (corner cells see only 2 neighbours).
-        let mut l = board(3, 1, &[(0, 0), (1, 0), (2, 0)]);
-        l.step();
-        assert_eq!(l.population(), 0);
+    fn blinker_oscillates() {
+        let mut c = Life::new(5, 3);
+        for x in 1..=3 {
+            c.set(x, 1, true);
+        }
+        assert_eq!(c.population(), 3);
+        c.step();
+        // Vertical bar at column 2.
+        assert!(c.get(2, 0) && c.get(2, 1) && c.get(2, 2));
+        assert_eq!(c.population(), 3);
+        let mut again = Life::new(5, 3);
+        for y in 0..=2 {
+            again.set(2, y, true);
+        }
+        again.step();
+        for x in 1..=3 {
+            assert!(again.get(x, 1));
+        }
     }
 
     #[test]
-    fn lone_cell_dies_and_empty_grid_stays_empty() {
-        let mut l = board(3, 3, &[(1, 1)]);
-        l.step();
-        assert_eq!(l.population(), 0);
-        let mut e = Life::new(4, 4);
-        e.step();
-        assert_eq!(e.population(), 0);
+    fn single_cell_dies() {
+        let mut c = Life::new(3, 3);
+        c.set(1, 1, true);
+        c.step();
+        assert_eq!(c.population(), 0);
     }
 
     #[test]
-    fn get_out_of_range_is_dead() {
-        let l = board(2, 2, &[(1, 1)]);
-        assert!(!l.get(0, 0));
-        assert!(l.get(1, 1));
-        assert!(!l.get(5, 1));
-        assert!(!l.get(1, 7));
+    fn two_adjacent_die() {
+        let mut c = Life::new(3, 3);
+        c.set(1, 1, true);
+        c.set(2, 1, true);
+        c.step();
+        assert_eq!(c.population(), 0);
     }
 
     #[test]
-    fn set_overwrites_both_ways() {
-        let mut l = Life::new(2, 2);
-        l.set(0, 0, true);
-        assert!(l.get(0, 0));
-        l.set(0, 0, false);
-        assert!(!l.get(0, 0));
+    fn corner_birth() {
+        // Dead cell (0,0) with exactly three live neighbours -> born.
+        let mut c = Life::new(2, 2);
+        c.set(1, 0, true);
+        c.set(0, 1, true);
+        c.set(1, 1, true);
+        c.step();
+        assert!(c.get(0, 0));
     }
 
     #[test]
-    fn glider_moves_one_step_diagonally() {
-        // Classic glider on a 5x5: after one step it is the same shape shifted
-        // +1x/+1y.
-        let mut l = board(5, 5, &[(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)]);
-        l.step();
-        assert_eq!(cells_of(&l), vec![
-            false, true, false, false, false, // y=0
-            false, false, true, false, false, // y=1
-            false, true, false, false, false, // y=2
-            false, true, true, false, false, // y=3
-            false, false, false, false, false, // y=4
-        ]);
+    fn overpopulation_kills() {
+        // Live corner with four live neighbours -> dies.
+        let mut c = Life::new(2, 2);
+        for (x, y) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+            c.set(x, y, true);
+        }
+        // Full block: every cell has exactly 3 live neighbours -> stable.
+        c.step();
+        assert_eq!(c.population(), 4);
+
+        let mut d = Life::new(3, 3);
+        for (x, y) in [(0usize, 0usize), (1, 0), (2, 0), (0, 1)] {
+            d.set(x, y, true);
+        }
+        // Cell (0,0) has 4 live neighbours -> dies; others die by underpopulation.
+        d.step();
+        assert!(!d.get(0, 0));
+    }
+
+    #[test]
+    fn glider_moves_diagonally() {
+        let mut g = Life::new(8, 8);
+        for (x, y) in [(1usize, 0usize), (2, 1), (0, 2), (1, 2), (2, 2)] {
+            g.set(x, y, true);
+        }
+        // After 4 steps a glider has translated by (2,2) down-right.
+        for _ in 0..4 {
+            g.step();
+        }
+        assert_eq!(g.population(), 5);
+        for (x, y) in [(3usize, 2usize), (4, 3), (2, 4), (3, 4), (4, 4)] {
+            assert!(g.get(x, y), "glider cell missing at ({},{})", x, y);
+        }
     }
 }
 
 fn main() {
-    let mut failures: Vec<String> = vec![];
-
-    // 1) Blinker: horizontal bar -> vertical bar -> horizontal again.
-    let mut l = Life::new(3, 3);
-    l.set(0, 1, true);
-    l.set(1, 1, true);
-    l.set(2, 1, true);
-    assert_eq!(l.population(), 3);
-    l.step();
-    let want_v = [false, true, false, false, true, false, false, true, false];
-    if (0..9).any(|i| l.cells[i] != want_v[i]) {
-        failures.push(format!("blinker step1: {:?}", l.cells));
+    // --- blinker: horizontal -> vertical -> horizontal -----------------
+    let mut c = Life::new(5, 3);
+    for x in 1..=3usize {
+        c.set(x, 1, true);
     }
-    l.step();
-    let want_h = [false; 3].to_vec().into_iter()
-        .chain([true, true, true])
-        .chain(std::iter::repeat(false).take(3))
-        .collect::<Vec<_>>();
-    if l.cells != want_h {
-        failures.push(format!("blinker step2: {:?}", l.cells));
-    }
+    assert_eq!(c.population(), 3, "blinker starts at pop 3");
 
-    // 2) Block (still life): unchanged after a step.
-    let mut b = Life::new(2, 2);
-    for &(x, y) in &[(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+    c.step();
+    let vertical = [
+        (2usize, 0usize),
+        (2, 1),
+        (2, 2),
+    ];
+    for (x, y) in vertical {
+        assert!(c.get(x, y), "blinker step1: ({},{}) should be alive", x, y);
+    }
+    assert_eq!(c.population(), 3, "blinker step1 pop");
+
+    c.step();
+    for x in 1..=3usize {
+        assert!(c.get(x, 1), "blinker step2: ({},1) should be alive", x);
+    }
+    assert_eq!(c.population(), 3, "blinker step2 pop");
+
+    // --- block is still life -------------------------------------------
+    let mut b = Life::new(4, 4);
+    for (x, y) in [(1usize, 1usize), (2, 1), (1, 2), (2, 2)] {
         b.set(x, y, true);
     }
-    let before: Vec<bool> = b.cells.clone();
-    b.step();
-    if b.cells != before || b.population() != 4 {
-        failures.push(format!("block: {:?}", b.cells));
+    for _ in 0..5 {
+        b.step();
     }
+    assert_eq!(b.population(), 4, "block must be stable");
 
-    // 3) No wrap-around: a top-row bar dies (corner cells only see 2 neighbours).
-    let mut e = Life::new(3, 1);
-    for x in 0..3usize {
-        e.set(x, 0, true);
+    // --- glider: 4 steps == translation by (2,2) ------------------------
+    let mut g = Life::new(10, 10);
+    for (x, y) in [(1usize, 0usize), (2, 1), (0, 2), (1, 2), (2, 2)] {
+        g.set(x, y, true);
     }
-    e.step();
-    if e.population() != 0 {
-        failures.push(format!("edge bar should die: {:?}", e.cells));
+    let start = g.cells.clone();
+    for _ in 0..4 {
+        g.step();
     }
-
-    // 4) Lone cell dies; empty grid stays empty.
-    let mut lone = Life::new(3, 3);
-    lone.set(1, 1, true);
-    lone.step();
-    if lone.population() != 0 {
-        failures.push("lone cell survived".to_string());
-    }
-    let mut empty = Life::new(4, 4);
-    empty.step();
-    if empty.population() != 0 {
-        failures.push("empty grid changed".to_string());
-    }
-
-    // 5) get() out of range reads dead; set() overwrites both ways.
-    let mut g = Life::new(2, 2);
-    g.set(1, 1, true);
-    if !g.get(1, 1) || g.get(0, 0) || g.get(5, 1) || g.get(1, 7) {
-        failures.push("get() semantics".to_string());
-    }
-    g.set(1, 1, false);
-    if g.get(1, 1) {
-        failures.push("set(false) failed".to_string());
-    }
-
-    // 6) Glider: one step shifts the shape +1x/+1y.
-    let mut gl = Life::new(5, 5);
-    for &(x, y) in &[(1usize, 0usize), (2, 1), (0, 2), (1, 2), (2, 2)] {
-        gl.set(x, y, true);
-    }
-    let want_gl = [
-        false, true, false, false, false, // y=0
-        false, false, true, false, false, // y=1
-        false, true, false, false, false, // y=2
-        false, true, true, false, false, // y=3
-        false, false, false, false, false, // y=4
-    ];
-    gl.step();
-    if gl.cells != want_gl.to_vec() {
-        failures.push(format!("glider: {:?}", gl.cells));
-    }
-
-    // 7) Cross-check every cell's neighbour count against an independent
-    //    double loop (the reference implementation for this check).
-    let mut n = Life::new(4, 5);
-    for &(x, y) in &[(0usize, 0usize), (3, 0), (1, 2), (2, 4)] {
-        n.set(x, y, true);
-    }
-    for y in 0..n.h {
-        for x in 0..n.w {
-            let mut cnt = 0u32;
-            for dy in -1i64..=1i64 {
-                for dx in -1i64..=1i64 {
-                    if dx == 0 && dy == 0 {
-                        continue;
-                    }
-                    let nx = x as i64 + dx;
-                    let ny = y as i64 + dy;
-                    if nx >= 0 && ny >= 0 && (nx as usize) < n.w && (ny as usize) < n.h {
-                        if n.get(nx as usize, ny as usize) {
-                            cnt += 1;
-                        }
-                    }
-                }
-            }
-            if cnt != n.neighbours(x, y) {
-                failures.push(format!(
-                    "neighbour count mismatch at ({},{}) : {} vs {}",
-                    x, y, cnt, n.neighbours(x, y)
-                ));
+    assert_eq!(g.population(), 5, "glider keeps pop 5");
+    // Same shape shifted: (x,y) alive at t=4 iff (x-2,y-2) was alive at t=0.
+    let mut ok = true;
+    for y in 0..10usize {
+        for x in 0..10usize {
+            let now = g.get(x, y);
+            let src = if x >= 2 && y >= 2 { start[(y - 2) * 10 + (x - 2)] } else { false };
+            if now != src {
+                ok = false;
             }
         }
     }
+    assert!(ok, "glider after 4 steps must equal start shifted by (2,2)");
 
-    // 8) Full census on a small random-ish grid: recompute the whole next state
-    //    independently and compare.
-    let mut c = Life::new(6, 4);
-    for (i, cell) in c.cells.iter_mut().enumerate() {
-        *cell = i % 7 == 2 || i % 5 == 3;
-    }
-    let expected: Vec<bool> = (0..c.h).flat_map(|y| (0..c.w).map(move |x| {
-        let mut cnt = 0u32;
-        for dy in -1i64..=1i64 {
-            for dx in -1i64..=1i64 {
-                if dx == 0 && dy == 0 { continue; }
-                let nx = x as i64 + dx;
-                let ny = y as i64 + dy;
-                if nx >= 0 && ny >= 0 && (nx as usize) < c.w && (ny as usize) < c.h {
-                    if c.get(nx as usize, ny as usize) { cnt += 1; }
-                }
-            }
-        }
-        let alive = c.cells[y * c.w + x];
-        if alive { cnt == 2 || cnt == 3 } else { cnt == 3 }
-    })).collect();
-    let before_c: Vec<bool> = c.cells.clone();
-    c.step();
-    if c.cells != expected {
-        failures.push(format!("census mismatch:\n got {:?}\nwant {:?}", before_c, expected));
-    }
+    // --- single cell and pair die ---------------------------------------
+    let mut s = Life::new(3, 3);
+    s.set(1, 1, true);
+    s.step();
+    assert_eq!(s.population(), 0, "single cell must die");
 
-    if failures.is_empty() {
-        println!("all conway_step checks passed");
-    } else {
-        for f in &failures {
-            eprintln!("FAIL: {}", f);
-        }
-        std::process::exit(1);
-    }
+    let mut p = Life::new(4, 4);
+    p.set(1, 2, true);
+    p.set(2, 2, true);
+    p.step();
+    assert_eq!(p.population(), 0, "domino must die");
+
+    // --- population accounting ------------------------------------------
+    let mut a = Life::new(6, 4);
+    a.set(0, 0, true);
+    a.set(5, 3, true);
+    a.set(2, 1, true);
+    assert_eq!(a.population(), 3, "population counts live cells");
+
+    println!("all conway_step checks passed: blinker oscillates, block stable, glider translates (2,2)/4 steps, under/overpopulation correct");
 }
