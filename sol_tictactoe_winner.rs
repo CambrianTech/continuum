@@ -72,12 +72,19 @@ fn main() {
     let mut x_win = 0u32;
     let mut o_win = 0u32;
     let mut draw = 0u32;
-    for mask in 0..(1usize << 27) {
+    for mask in 0..(1usize << 18) {
+        // Decode the board, skipping masks with an unused value slot (v == 3).
         let mut b = [' '; 9];
+        let mut valid = true;
         for i in 0..9usize {
-            let v = (mask >> (i * 3)) & 3;
-            b[i] = if v == 0 { 'X' } else if v == 1 { 'O' } else { ' ' };
+            match (mask >> (i * 2)) & 3 {
+                0 => b[i] = 'X',
+                1 => b[i] = 'O',
+                2 => {} // stays ' '
+                _ => { valid = false; break; }
+            }
         }
+        if !valid { continue; }
         // Independent reference: first uniform non-blank line in LINES order wins.
         let mut ref_w = ' ';
         for l in LINES.iter() {
