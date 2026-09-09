@@ -88,6 +88,12 @@ fn caller_airc(
 /// Instantiate a recipe as a new room.
 pub struct ActivitySpawn {
     pub registry: PersonaAircRuntimeRegistry,
+    /// Late-bound substrate executor (the ChatModule pattern), so spawning a BENCHMARK
+    /// activity can run `benchmark/dispatch` through the universal primitive rather than
+    /// re-implementing the round it owns. Installed by `install_executor_on_all`.
+    pub executor_slot: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    >,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -166,6 +172,107 @@ pub struct ActivitySpawnResult {
     pub binding_post_id: uuid::Uuid,
 }
 
+/// Translate a benchmark activity's OWN params into the `benchmark/dispatch` call that
+/// roots it. Pure, so the translation is assertable without an executor or a room — the
+/// half of the route that can silently drop a knob is exactly this one.
+///
+/// `suite` is REQUIRED: a benchmark activity with no suite has nothing to import, and the
+/// quiet version of that is what produced a spawned room with an empty board reading as a
+/// started run. Every other knob is passed through only when the caller SET it, so
+/// dispatch applies its own defaults — two defaulting layers that disagree is how a
+/// `driver` setting stops meaning anything.
+fn benchmark_dispatch_params(
+    recipe: &str,
+    params: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, CommandError> {
+    let str_param = |k: &str| -> Option<String> {
+        params
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+    };
+    let suite = str_param("suite").ok_or_else(|| {
+        CommandError::Invalid(format!(
+            "`{recipe}` is a benchmark activity and needs a `suite` to run — pass              `params.suite` (see `benchmark/list` for the names). Without it there is no              task collection to import, and the room would open with an empty board that              reads as a started run."
+        ))
+    })?;
+    let mut dispatch = serde_json::Map::new();
+    dispatch.insert("name".into(), serde_json::Value::String(suite));
+    dispatch.insert("recipe".into(), serde_json::Value::String(recipe.to_string()));
+    for (key, out) in [("instances", "instances"), ("team", "teammates")] {
+        if let Some(list) = params.get(key).and_then(|v| v.as_array()) {
+            let list: Vec<String> = list
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect();
+            dispatch.insert(out.into(), serde_json::json!(list));
+        }
+    }
+    for (key, out) in [("driver", "drive"), ("doctrine", "doctrine")] {
+        if let Some(v) = str_param(key) {
+            dispatch.insert(out.into(), serde_json::Value::String(v));
+        }
+    }
+    if let Some(v) = params.get("review_gate").and_then(serde_json::Value::as_bool) {
+        dispatch.insert("review_gate".into(), serde_json::Value::Bool(v));
+    }
+    Ok(dispatch)
+}
+
+impl ActivitySpawn {
+    /// Root a BENCHMARK activity by running its dispatch — the one verb that owns a round.
+    ///
+    /// Params are read from the recipe's own vocabulary (`suite`, `instances`, `team`,
+    /// `driver`, `doctrine`, `review_gate`) and passed on RICH, so nothing the caller set
+    /// is silently dropped on the way. `suite` is REQUIRED and its absence is a loud error
+    /// naming it: a benchmark activity with no suite has nothing to import, and the whole
+    /// reason this route exists is that the quiet version of that produced an empty board.
+    async fn dispatch_benchmark_activity(
+        &self,
+        p: ActivitySpawnParams,
+    ) -> Result<ActivitySpawnResult, CommandError> {
+        let exec = self.executor_slot.get().cloned().ok_or_else(|| {
+            CommandError::Internal(
+                "command executor not installed on activity/spawn — boot wiring gap".into(),
+            )
+        })?;
+        let dispatch = benchmark_dispatch_params(&p.recipe, &p.params)?;
+        let out = exec
+            .execute("benchmark/dispatch", serde_json::Value::Object(dispatch))
+            .await
+            .map_err(|e| CommandError::Internal(format!("benchmark/dispatch failed: {e}")))?;
+        let crate::runtime::CommandResult::Json(v) = out else {
+            return Err(CommandError::Internal(
+                "benchmark/dispatch returned a non-JSON result".into(),
+            ));
+        };
+        // The room dispatch ROOTED is the activity this call spawned — reported back in
+        // this verb's own shape so a caller never has to know which door ran.
+        let result: BenchmarkDispatchRoom = serde_json::from_value(v).map_err(|e| {
+            CommandError::Internal(format!(
+                "benchmark/dispatch result did not name the room it rooted: {e}"
+            ))
+        })?;
+        Ok(ActivitySpawnResult {
+            room_id: result.room_id,
+            name: result.room,
+            recipe: p.recipe,
+            binding_post_id: result.binding_post_id,
+        })
+    }
+}
+
+/// The half of `BenchmarkDispatchResult` this verb needs: WHICH ROOM the run rooted.
+/// Deserialized structurally rather than by importing the whole result so the two verbs
+/// stay decoupled — dispatch may grow counters forever without touching this path.
+#[derive(Debug, Deserialize)]
+struct BenchmarkDispatchRoom {
+    room: String,
+    room_id: RoomId,
+    binding_post_id: uuid::Uuid,
+}
+
 #[async_trait]
 impl ActionCommand for ActivitySpawn {
     const NAME: &'static str = "activity/spawn";
@@ -218,6 +325,25 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
+        // A BENCHMARK ACTIVITY ROOTS ITSELF THROUGH ITS RUN.
+        //
+        // We work activities, period — so this verb does not get to hand back a
+        // benchmark-shaped room and call it spawned. The benchmark recipe declares
+        // `suite`, `instances`, `team`, `driver`, `doctrine`, `review_gate`, and the plain
+        // spawn path consumes NONE of them: measured 2026-09-09, spawning with
+        // `{"suite":"coder-write-eval","instances":["sum_evens"]}` created the room, posted
+        // 0 cards and imported 0 tasks, while the knobs read as if they had. An empty
+        // benchmark room is worse than an error, because it looks like a started run.
+        //
+        // `benchmark/dispatch` is the verb that owns the whole round — resolve the roster,
+        // import the suite (task + oracle only), root the activity FROM THIS SAME RECIPE
+        // with the params bound, post the cards, send the kickoffs, track the round. So
+        // this path RUNS it, through the universal primitive, instead of refusing and
+        // making the caller know which of two doors to use. One door; the recipe decides
+        // what walking through it means.
+        if p.recipe.starts_with("benchmark/") {
+            return self.dispatch_benchmark_activity(p).await;
+        }
         spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
     }
 }
@@ -862,11 +988,21 @@ crate::register_command!(ActivityProtect);
 /// Hosts the `activity/*` verbs.
 pub struct ActivityModule {
     registry: PersonaAircRuntimeRegistry,
+    /// See [`ActivitySpawn::executor_slot`] — this module owns the slot and hands a clone
+    /// to the verb, exactly as `WorkModule` does for `benchmark/dispatch`.
+    executor_slot: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    >,
 }
 
 impl ActivityModule {
     pub fn new(registry: PersonaAircRuntimeRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            executor_slot: std::sync::Arc::new(crate::runtime::LateBound::new(
+                "activity::executor",
+            )),
+        }
     }
 }
 
@@ -903,6 +1039,7 @@ impl ServiceModule for ActivityModule {
         vec![
             Arc::new(ActivitySpawn {
                 registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
             }),
             Arc::new(ActivityRecipes),
             Arc::new(ActivityInvite {
@@ -915,6 +1052,13 @@ impl ServiceModule for ActivityModule {
                 registry: self.registry.clone(),
             }),
         ]
+    }
+
+    fn install_executor(
+        &self,
+        executor: std::sync::Arc<crate::runtime::command_executor::CommandExecutor>,
+    ) {
+        self.executor_slot.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1239,6 +1383,84 @@ mod tests {
                 serde_json::json!("4h"),
                 "unset budget rides the declared default onto the binding"
             );
+        }
+    }
+
+    /// `activity/spawn` on a benchmark recipe RUNS the round rather than handing back an
+    /// empty benchmark-shaped room. Nested per the one-mod rule.
+    mod benchmark_activities_route_to_their_run {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        fn params(pairs: &[(&str, serde_json::Value)]) -> BTreeMap<String, serde_json::Value> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        }
+
+        // what this catches: every knob the benchmark recipe declares must reach dispatch
+        // under the name dispatch reads. A rename on either side silently drops the knob —
+        // the caller sets `driver` or `team`, the run ignores it, and the round reads as if
+        // it had honoured them. That is the failure this whole route exists to end.
+        #[test]
+        fn every_recipe_knob_reaches_the_dispatch_that_reads_it() {
+            let out = benchmark_dispatch_params(
+                "benchmark/hard-rs",
+                &params(&[
+                    ("suite", serde_json::json!("coder-write-eval")),
+                    ("instances", serde_json::json!(["sum_evens", "conway_step"])),
+                    ("team", serde_json::json!(["Sahar", "Kimi"])),
+                    ("driver", serde_json::json!("citizen")),
+                    ("doctrine", serde_json::json!("work it with your own hands")),
+                    ("review_gate", serde_json::json!(true)),
+                ]),
+            )
+            .expect("a suite is present, so the translation succeeds");
+            assert_eq!(out["name"], serde_json::json!("coder-write-eval"), "suite names the run");
+            assert_eq!(out["recipe"], serde_json::json!("benchmark/hard-rs"), "the recipe rides along");
+            assert_eq!(out["instances"], serde_json::json!(["sum_evens", "conway_step"]));
+            assert_eq!(out["teammates"], serde_json::json!(["Sahar", "Kimi"]), "`team` is dispatch's `teammates`");
+            assert_eq!(out["drive"], serde_json::json!("citizen"), "`driver` is dispatch's `drive`");
+            assert_eq!(out["doctrine"], serde_json::json!("work it with your own hands"));
+            assert_eq!(out["review_gate"], serde_json::json!(true));
+        }
+
+        // what this catches: an unset knob must stay ABSENT so dispatch applies its own
+        // default. If this path inserted nulls or its own defaults there would be two
+        // defaulting layers, and the day they disagree the recipe's declared default
+        // silently stops being the one that runs.
+        #[test]
+        fn an_unset_knob_stays_absent_so_dispatch_owns_its_defaults() {
+            let out = benchmark_dispatch_params(
+                "benchmark/hard-rs",
+                &params(&[("suite", serde_json::json!("games-rs"))]),
+            )
+            .expect("suite alone is enough");
+            for absent in ["instances", "teammates", "drive", "doctrine", "review_gate"] {
+                assert!(
+                    !out.contains_key(absent),
+                    "`{absent}` was never set by the caller and must not be invented here"
+                );
+            }
+        }
+
+        // what this catches: a benchmark activity with no suite must FAIL, loudly, naming
+        // the missing param. Spawning it quietly is what produced a room with a scoreboard
+        // region, an empty board and zero imported tasks — indistinguishable from a run
+        // that started and found nothing to do.
+        #[test]
+        fn a_benchmark_activity_without_a_suite_refuses_and_says_which_param() {
+            let err = benchmark_dispatch_params(
+                "benchmark/hard-rs",
+                &params(&[("instances", serde_json::json!(["sum_evens"]))]),
+            )
+            .expect_err("no suite — there is nothing to import");
+            let msg = format!("{err:?}");
+            assert!(msg.contains("suite"), "the error names the missing param: {msg}");
+            // A blank string is the same absence, not a suite named "".
+            let blank = benchmark_dispatch_params(
+                "benchmark/hard-rs",
+                &params(&[("suite", serde_json::json!("   "))]),
+            );
+            assert!(blank.is_err(), "whitespace is not a suite name");
         }
     }
 }
