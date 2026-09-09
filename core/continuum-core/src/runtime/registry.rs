@@ -691,6 +691,14 @@ mod tests {
             why: "fixture: genome local_manager call recorder",
         },
         Unwired {
+            module: "SlowJoiner",
+            why: "fixture: a module that saves and then cannot be joined inside the                   phase bound — drives ModuleStopOutcome::JoinTimedOut, which before it                   existed only as a literal in assertions",
+        },
+        Unwired {
+            module: "SlowSaver",
+            why: "fixture: a module that cannot save inside the phase bound — drives                   ModuleStopOutcome::SaveTimedOut, the outcome the stop exit code keys on",
+        },
+        Unwired {
             module: "StubAircModule",
             why: "fixture: ChatModule's airc stand-in",
         },

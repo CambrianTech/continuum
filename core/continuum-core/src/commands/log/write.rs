@@ -40,9 +40,9 @@ crate::action_command! {
     params: WriteLogPayload,
     output: WriteLogResult,
     run(this, _ctx, p) => {
-        this.state
-            .log_tx
-            .send(p)
+        // Through the counting choke point, not the raw sender: the shutdown drain waits
+        // on that depth, and an entry enqueued around it is one the drain cannot see.
+        crate::modules::logger::enqueue_log_blocking(&this.state.log_tx, p)
             .map_err(|e| format!("Queue send failed: {e}"))?;
         this.state.requests_processed.fetch_add(1, Ordering::Relaxed);
         Ok(WriteLogResult { bytes_written: 0 })

@@ -1087,7 +1087,11 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
-    stop_with(true).await?;
+    // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
+    // running core, and refusing to continue would leave the node down over a module that
+    // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
+    // exit code carries it.
+    let _ = stop_with(true).await?;
     // Keep the launcher's wait as the honesty check that teardown actually took.
     let source = prebuilt
         .as_ref()
@@ -2845,8 +2849,205 @@ fn start_log_report(logfile: &str) -> String {
 }
 
 /// `continuum stop` — stop the running core (the detached session started by `continuum start`).
+/// How long the core gets to drain, save and join before the CLI stops waiting.
+///
+/// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
+/// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
+/// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
+const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What the graceful request achieved, if anything.
+enum GracefulStop {
+    /// The core ran the broadcast and every module's state reached disk.
+    Durable(String),
+    /// The core ran the broadcast and something did NOT save. The message names it.
+    /// The process is still stopping; the operator needs the names, not a retry.
+    Incomplete(String),
+    /// No answer — a core too wedged to answer, or a response that did not arrive inside
+    /// the budget. NOT the same as "it stopped": the caller must still tear the process
+    /// down, and must not report a clean stop.
+    NoAnswer(String),
+    /// The running core PREDATES this rail: it has no `system/shutdown` verb, so it was
+    /// never going to save and no fix in this binary can change that.
+    ///
+    /// Distinct from `NoAnswer` on purpose. Both are non-durable, but they are different
+    /// facts and an operator needs to tell them apart: this one is the expected, one-time
+    /// cost of the FIRST upgrade — the core being replaced was built before the rail
+    /// existed — whereas `NoAnswer` is a core that HAS the capability and would not use
+    /// it, which is a fault. Collapsing them would make every first rollout look like a
+    /// malfunction, and every malfunction look like a rollout.
+    LegacyCore(String),
+    /// Nothing was listening in the first place. Distinct from `NoAnswer` on purpose: a
+    /// core that never ran lost nothing, so `stop` on an already-stopped node must exit 0
+    /// rather than announce a data loss that did not happen. The sweep below still runs —
+    /// an unanswering socket is not proof that no process survives.
+    NothingRunning,
+}
+
+impl GracefulStop {
+    /// A legacy core cannot attest a final checkpoint. Keep it running until the
+    /// operator can stop it explicitly and preserve/adopt its selected checkpoint.
+    fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
+        if let (true, Self::LegacyCore(reason)) = (reboot, self) {
+            return Err(format!(
+                "reboot refused before teardown: {reason}. The existing core is still running. \
+                 Use `continuum stop`, preserve the outgoing checkpoints, and use \
+                 `continuum checkpoint inspect` / `continuum checkpoint adopt` where recovery \
+                 is needed before running `continuum reboot` again."
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Ask the running core to stop ITSELF, so every module's `save_state` runs.
+///
+/// This is the whole point of the rail. A kill — `taskkill /F` on Windows, a signal-less
+/// tree kill elsewhere — runs no module's save, so the citizens' volatile state is lost
+/// on every ordinary `stop`, and the CLI reported success because a dead process is
+/// indistinguishable from a cleanly stopped one when the only thing you check is whether
+/// it is gone.
+///
+/// The request travels the same socket path `ping` uses, so there is no new transport and
+/// no Windows-specific arrangement.
+async fn request_graceful_stop() -> GracefulStop {
+    // Ask whether anything is listening BEFORE spending the stop budget on a socket
+    // nobody holds. Without this, `stop` on an already-stopped node waits the full
+    // graceful budget and then reports state loss — 20 seconds to be told, wrongly, that
+    // a core which never ran failed to save.
+    //
+    // BUT A PING TIMEOUT IS NOT PROOF OF ABSENCE. `core_is_up` returns false for a core
+    // that is running and too wedged to answer — which is the case where state is most
+    // likely to be lost, and reporting it as "nothing was running" would exit 0 and tell
+    // the operator nothing was at stake. So absence must be corroborated by the pidfile:
+    // no answer AND no pidfile is an empty node; no answer WITH a pidfile is a core that
+    // would not speak, and that is `NoAnswer`. (The pidfile can also be stale, which is
+    // why this decides the LABEL only — the sweep below runs either way.)
+    if !core_is_up().await {
+        // A MISSING PIDFILE IS NOT PROOF THAT NOTHING IS RUNNING. It was, in the first
+        // version of this, and that is the same error as reading a ping timeout as an
+        // empty node — one layer down. A core started outside the pidfile's owner, one
+        // whose file was removed, or a second core that never wrote one, all present as
+        // "no record" while still holding the socket and a citizen's unsaved state.
+        //
+        // So absence is only claimed when the sweep can also find no process. That is
+        // what `running_core_pids` answers, and it is the same enumeration the sweep
+        // below acts on — one instrument, so the label and the action cannot disagree.
+        //
+        // It can still be wrong in the SAFE direction: `processes_named` returning empty
+        // because the enumerator itself failed reads as "nothing running". That is worth
+        // naming rather than hiding — it is the residual case, and it is why the teardown
+        // below runs regardless of what this decides.
+        // THREE OUTCOMES, not two. Each piece of evidence can say "yes", "no", or "I
+        // could not look", and only the last of those may not be rounded to "no".
+        let pidfile = pidfile_for(&socket_path());
+        let recorded = match std::fs::read_to_string(&pidfile) {
+            Ok(c) => c.trim().parse::<i32>().is_ok(),
+            // The ONLY error that means absence. A permission error, a busy file, a
+            // path on a filesystem that went away — those mean we did not find out, and
+            // `.ok()` used to flatten every one of them into "no record".
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => {
+                return GracefulStop::NoAnswer(format!(
+                    "could not read {}: {e} — whether a core is running is unknown, so this                      stop is not being called clean",
+                    pidfile
+                ));
+            }
+        };
+        // ONE snapshot answers both questions, so they cannot describe different moments.
+        let evidence = match core_process_evidence() {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                return GracefulStop::NoAnswer(format!(
+                    "could not establish whether a core is running: {error}"
+                ));
+            }
+        };
+        let survivors = !evidence.core_pids.is_empty();
+        return if recorded || survivors {
+            GracefulStop::NoAnswer(
+                "a core process is present but did not answer a ping".to_string(),
+            )
+        } else {
+            // Both instruments looked, and both found nothing.
+            GracefulStop::NothingRunning
+        };
+    }
+    let conn = connection();
+    let cmds = conn.commands();
+    let req = cmds.execute_value("system/shutdown", Value::Object(Default::default()));
+    match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
+        Ok(Ok(value)) => {
+            let durable = value
+                .get("state_is_durable")
+                .and_then(Value::as_bool)
+                // A response whose shape we do not recognise is not a durable stop. An
+                // older core answering `system/shutdown` with something else must not be
+                // read as a clean save.
+                .unwrap_or(false);
+            let summary = value
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("the core answered without a summary")
+                .to_string();
+            if durable {
+                GracefulStop::Durable(summary)
+            } else {
+                GracefulStop::Incomplete(summary)
+            }
+        }
+        Ok(Err(e)) => {
+            // A core that does not KNOW the verb is not a core that refused it. The
+            // command surface answers an unknown name with a "no handler"-shaped error,
+            // and during the first upgrade that is exactly what the outgoing core says —
+            // it was built before this rail existed.
+            let unknown = {
+                // `e` is a ClientError, not a String — formatted first so the match is on
+                // the rendered message the transport actually produced.
+                let m = format!("{e}").to_lowercase();
+                m.contains("unknown command")
+                    || m.contains("no handler")
+                    || m.contains("not found")
+                    || m.contains("unsupported")
+            };
+            if unknown {
+                GracefulStop::LegacyCore(format!(
+                    "the running core has no system/shutdown verb ({e}) — it predates this                      rail, so its modules were never going to save and this stop cannot be                      called durable"
+                ))
+            } else {
+                GracefulStop::NoAnswer(format!("the core refused the request: {e}"))
+            }
+        }
+        Err(_) => GracefulStop::NoAnswer(format!(
+            "no answer within {}s",
+            GRACEFUL_STOP_BUDGET.as_secs()
+        )),
+    }
+}
+
 async fn stop() -> Result<(), String> {
-    stop_with(false).await
+    // The operator verb answers with its EXIT CODE. `stop` returning 0 has meant only
+    // "the process is gone"; it now means "the process is gone AND every module's state
+    // reached disk", which is the question anyone typing `stop` before an upgrade is
+    // actually asking. A stop that could not save is a failure the shell can see.
+    match stop_with(false).await? {
+        // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
+        // loss that did not happen, and `stop` is used in scripts that would then treat a
+        // clean no-op as a failure.
+        GracefulStop::Durable(_) | GracefulStop::NothingRunning => Ok(()),
+        GracefulStop::Incomplete(summary) => Err(format!(
+            "the core stopped but its state is not durable: {summary}"
+        )),
+        GracefulStop::NoAnswer(why) => Err(format!(
+            "the core was forced down without saving ({why}) — volatile state since the last              save-on-write is gone"
+        )),
+        // Also a failure, and deliberately so: the operator asked for a stop and did not
+        // get a durable one. It is EXPECTED once, on the upgrade that installs the rail,
+        // and the message says which it is rather than making a rollout look like a fault.
+        GracefulStop::LegacyCore(why) => Err(format!(
+            "the outgoing core could not stop gracefully ({why}); this is the one-time cost              of installing the shutdown rail, and it is still not a durable stop"
+        )),
+    }
 }
 
 /// The one teardown, parameterized by lane fate. `keep_lanes: true` is the
@@ -2859,7 +3060,36 @@ async fn stop() -> Result<(), String> {
 /// core swap alone (Joel 2026-08-23: "if it's taking so long we need to fix
 /// that first"). The standalone `stop` verb keeps FULL teardown — an operator
 /// who says stop means everything.
-async fn stop_with(keep_lanes: bool) -> Result<(), String> {
+async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
+    // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
+    // module's `save_state` — so before it, the core gets the chance to stop itself and
+    // report what reached disk. The kill still runs afterwards either way: a core that
+    // answered is already exiting and the sweep finds nothing, and a core that did not
+    // answer still has to go. What changes is that the operator is told which of those
+    // happened instead of reading the same success line for both.
+    let graceful = request_graceful_stop().await;
+    // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
+    // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
+    // and passed `keep_lanes` because today the two callers are exactly reboot(true)/stop(false).
+    // A third caller that wants lanes kept for some OTHER reason must pass the reboot-ness
+    // separately rather than reuse this argument.
+    graceful.ensure_teardown_supported(keep_lanes)?;
+    match &graceful {
+        GracefulStop::Durable(summary) => println!("core stopped gracefully — {summary}"),
+        GracefulStop::Incomplete(summary) => {
+            eprintln!("core stopped WITH UNSAVED STATE — {summary}")
+        }
+        GracefulStop::NoAnswer(why) => {
+            eprintln!("no graceful stop ({why}); forcing — modules did not save")
+        }
+        GracefulStop::NothingRunning => {
+            println!("no core is listening; sweeping for survivors")
+        }
+        GracefulStop::LegacyCore(why) => {
+            eprintln!("FIRST UPGRADE — {why}; forcing, and its volatile state is lost")
+        }
+    }
+
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
     // Resolve identity BEFORE any tree is killed. live_lane requires a matching
@@ -2975,7 +3205,7 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     if keep_lanes {
         println!("  leaving serving lane(s) up for adoption by the next core (reboot path)");
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
-        return Ok(());
+        return Ok(graceful);
     }
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
@@ -3001,7 +3231,7 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     }
 
     let _ = std::fs::remove_file(&socket);
-    Ok(())
+    Ok(graceful)
 }
 
 /// Kill every owned engine process not descended from `keep`, reporting each
@@ -3192,6 +3422,30 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // Regression for #3929: a first upgrade must leave the legacy core available
+    // for explicit checkpoint recovery, while normal reboot outcomes may continue.
+    #[test]
+    fn legacy_core_requires_explicit_recovery_before_reboot_teardown() {
+        use super::GracefulStop;
+        let legacy = GracefulStop::LegacyCore("no shutdown handler".into());
+        let error = legacy.ensure_teardown_supported(true).unwrap_err();
+        assert!(
+            legacy.ensure_teardown_supported(false).is_ok(),
+            "explicit stop remains available"
+        );
+        assert!(error.contains("before teardown"));
+        assert!(error.contains("checkpoint inspect"));
+        assert!(error.contains("checkpoint adopt"));
+        for outcome in [
+            GracefulStop::NothingRunning,
+            GracefulStop::Durable("saved".into()),
+            GracefulStop::Incomplete("save failed".into()),
+            GracefulStop::NoAnswer("timed out".into()),
+        ] {
+            assert!(outcome.ensure_teardown_supported(true).is_ok());
+        }
+    }
+
     // What this catches (card 9f160b78): missing/truncated process evidence and
     // a live PID-file process must never authorize offline memory replacement.
     #[test]
