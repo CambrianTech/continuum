@@ -528,6 +528,28 @@ async fn serve_persona_loop_inner(
                 Wake::Stop => {}
             }
         }
+        // ADMIT THE TURN, or leave because the node is stopping.
+        //
+        // Taken the moment a wake is produced, BEFORE the match, because the
+        // `Wake::Tick` arm does its self-tick deliberation INLINE and then `continue`s —
+        // it never reaches the code below it. A permit taken after the match would have
+        // counted inbound turns and silently missed every self-directed one, which is the
+        // same blindness as draining on `activity_gate`'s `engaged` flag: that one is
+        // stamped at serving-lane acquisition, so a turn still composing its context does
+        // not appear there either. Both gaps hide turns that have consumed input and
+        // written nothing.
+        //
+        // Held to the end of the loop body, so it is released on EVERY exit path — the
+        // `continue` at the end of the tick arm included. A manual decrement would have to
+        // be repeated at each of them, and would be missed at the next one added.
+        let Some(_turn) = crate::cognition::turn_ingress::admit() else {
+            crate::probe!(
+                class = "persona.ingress.closed",
+                persona = ctx.identity.peer_id.as_uuid().to_string(),
+                "turn ingress closed for shutdown — this citizen takes no further turns and leaves her loop"
+            );
+            break;
+        };
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {

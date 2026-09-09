@@ -308,6 +308,28 @@ pub trait ServiceModule: Send + Sync + Any {
         None
     }
 
+    /// STOP TAKING NEW WORK and let what is already in flight finish, within the
+    /// caller's bound. Broadcast by [`Runtime::shutdown`] BEFORE `save_state`.
+    ///
+    /// Returns the number of items still in flight when the method returns — `0` means
+    /// drained, non-zero means the bound expired with work outstanding and whatever
+    /// `save_state` writes next is a snapshot taken mid-turn. Reporting the count rather
+    /// than a bool is what lets the receipt say how much was lost instead of only that
+    /// something was.
+    ///
+    /// This exists because suspending a module's own tick is NOT a drain. The persona
+    /// registry's `quiesce_all` stops each mind's autonomic self-tick, which is what a
+    /// measurement lease needs, and leaves room input arriving and active turns running —
+    /// so a save that follows a quiesce can still be taken underneath a turn that is
+    /// halfway through writing.
+    ///
+    /// Default is `Ok(0)`, honest for a module with no producer of its own. A module
+    /// that accepts work from outside itself implements this or its shutdown saves a
+    /// torn state BY CONTRACT.
+    async fn drain(&self) -> Result<u32, String> {
+        Ok(0)
+    }
+
     /// SAVE this node's volatile state to its durable home — the explicit half
     /// of the CBAR contract (Joel 2026-09-02: "I can call all nodes and tell
     /// them to save or load state"). Broadcast by [`Runtime::shutdown`] before

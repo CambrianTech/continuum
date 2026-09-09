@@ -24,6 +24,7 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+pub mod admission_gate;
 pub mod airc_interceptor;
 pub mod artifact_handle;
 pub mod boot_mode;
@@ -105,7 +106,12 @@ pub use provided_provider::{
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
-pub use runtime::{install_signal_shutdown, run_signal_shutdown, Runtime};
+pub use admission_gate::{AdmissionGate, Permit};
+pub use runtime::{
+    await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
+    signal_runtime, DrainOutcome, ModuleStop,
+    ModuleStopOutcome, Runtime, ShutdownReceipt,
+};
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
 };

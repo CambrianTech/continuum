@@ -45,6 +45,96 @@ use ts_rs::TS;
 /// Uses SyncSender with try_send() for GUARANTEED non-blocking.
 static GLOBAL_LOG_SENDER: OnceLock<mpsc::SyncSender<WriteLogPayload>> = OnceLock::new();
 
+/// The log queue's admission gate: is the queue accepting, and how many entries are in
+/// it, in ONE word.
+///
+/// Depth is distinct from `LoggerCommandState::pending_writes`, which counts entries the
+/// writer has already WRITTEN and not yet flushed. Both are needed to answer "is this
+/// module drained": one covers the channel, the other the file buffers, and a stop that
+/// checked only the second would flush an empty buffer and report success while entries
+/// were still queued behind it. `SyncSender` exposes no length, so depth is counted
+/// rather than inferred.
+///
+/// This was a separate `ADMITTING` bool beside a separate counter, which is the race the
+/// turn gate had just been fixed for — check admission, close lands, drain reads zero,
+/// reservation increments a queue whose writer is being joined. It is the SAME type as
+/// the turn gate now, so the invariant has one implementation instead of two that must be
+/// kept agreeing.
+static QUEUE: crate::runtime::AdmissionGate = crate::runtime::AdmissionGate::new();
+
+/// Stop accepting new log entries. Returns whether THIS call closed admission.
+pub fn close_log_admission() -> bool {
+    QUEUE.close()
+}
+
+/// Entries sitting in the channel right now. Read by the drain phase of shutdown.
+pub fn queued_log_entries() -> u64 {
+    QUEUE.in_flight()
+}
+
+/// The WRITER's release: one entry has left the channel AND been written.
+///
+/// Paired with the `forget` in the enqueue path — the producer hands the count to the
+/// writer, and the writer gives it back only after the write, so an entry being written
+/// is still in flight and a drain waiting on zero cannot race the write it is waiting for.
+fn release_queued_entry() {
+    // Constructing a permit to drop it would be clearer, but `Permit` borrows the gate and
+    // exists only to be RAII; the writer's release is a plain decrement of the same word.
+    QUEUE.release_one();
+}
+
+/// THE ONLY WAY INTO THE LOG QUEUE. Returns whether the entry was accepted.
+///
+/// One choke point on purpose: the depth was first counted inside `queue_log`, and
+/// `log/write` and `log/write-batch` send straight down `state.log_tx`, so two of the
+/// three producers were invisible and the drain would call the module quiet with entries
+/// still queued behind it. Anything that can enqueue must come through here, or the
+/// counter is decoration.
+pub fn enqueue_log_blocking(
+    sender: &mpsc::SyncSender<WriteLogPayload>,
+    payload: WriteLogPayload,
+) -> Result<(), mpsc::SendError<WriteLogPayload>> {
+    // The BLOCKING form, for `log/write`, whose caller is waiting on a result and must
+    // not have its entry silently dropped when the queue is full. Same counter, same
+    // rule — count only what the channel accepted.
+    // ADMISSION AND RESERVATION ARE ONE STEP. Checking a flag and then incrementing a
+    // separate counter lets a close land between them: the drain reads zero, declares the
+    // module quiet, and this entry then joins a queue whose writer is being joined.
+    //
+    // Reserved BEFORE the send, too: the writer runs concurrently, so an entry published
+    // before its count lands can be popped and decremented first, underflowing the depth
+    // and making the drain wait forever.
+    // ADMISSION AND RESERVATION ARE ONE STEP. Checking a flag and then incrementing a
+    // separate counter lets a close land between them: the drain reads zero, declares the
+    // module quiet, and this entry then joins a queue whose writer is being joined.
+    let Some(permit) = QUEUE.admit() else {
+        return Err(mpsc::SendError(payload));
+    };
+    if let Err(e) = sender.send(payload) {
+        return Err(e); // permit drops here: the entry was never queued, so release it
+    }
+    // The entry is now the WRITER's to release, not ours — it stays counted until the
+    // writer has written it. `forget` transfers that ownership; dropping here would
+    // uncount an entry that is still in the channel.
+    std::mem::forget(permit);
+    Ok(())
+}
+
+pub fn enqueue_log(sender: &mpsc::SyncSender<WriteLogPayload>, payload: WriteLogPayload) -> bool {
+    // Counted only on a SUCCESSFUL send: a dropped entry was never queued, and counting
+    // it leaves a depth that never returns to zero and a drain that can never complete.
+    // Same single-step admission+reservation as the blocking form, for the same reason.
+    let Some(permit) = QUEUE.admit() else {
+        return false;
+    };
+    if sender.try_send(payload).is_ok() {
+        std::mem::forget(permit); // handed to the writer; see the blocking form
+        true
+    } else {
+        false // permit drops: refused by the channel, so it was never queued
+    }
+}
+
 /// Channel capacity - if full, new messages dropped (NEVER blocks)
 const CLOG_CHANNEL_CAPACITY: usize = 4096;
 
@@ -74,7 +164,7 @@ pub fn queue_log(category: &str, level: LogLevel, component: &str, message: &str
         };
         // GUARANTEED NON-BLOCKING: try_send returns immediately
         // If channel full, message dropped - NEVER blocks caller
-        let _ = sender.try_send(payload);
+        let _ = enqueue_log(sender, payload);
     }
     // If GLOBAL_LOG_SENDER not set, silently drop (LoggerModule not initialized yet)
 }
@@ -443,7 +533,61 @@ fn format_log_entry(payload: &WriteLogPayload, timestamp: &str) -> String {
     }
 }
 
-fn flush_all(file_cache: &FileCache) {
+/// Failures the writer could not report, counted so a STOP can.
+///
+/// The writer thread runs with nowhere to return an error to, so a failed write or flush
+/// was printed to stderr and dropped. That is defensible while the process runs — a log
+/// line is not worth killing a node over — and indefensible at shutdown, where the module
+/// then returned `Ok(())` and the receipt said `Clean` over writes that never landed.
+///
+/// PER-INSTANCE, not a global. As a `static` it could not be tested: driving a real write
+/// failure would have left the count non-zero for the whole test binary, so every later
+/// `shutdown()` would report a dirty stop. That is the third time in this rail that a
+/// process-wide global was the reason a test had to be fake rather than the reason it was
+/// hard — see `AdmissionGate` and `ShutdownOperation`.
+pub type WriteFailures = Arc<AtomicU64>;
+
+/// Whether a stop may be reported clean, given what this module failed to write.
+///
+/// Pure, and separate from `shutdown` so it can be tested against a real failure count
+/// without constructing a module around env vars. The decision is the load-bearing part:
+/// with only a fully completed stop supporting durability, a module that cannot confirm
+/// its content reached disk must fail the stop rather than let the CLI's exit code claim
+/// the citizens' logs are safe.
+/// WRITE AND LATCH: attempt one log write and record the failure if it does not land.
+///
+/// One operation, shared by the writer thread and by tests, because a test that performs
+/// the latch ITSELF proves only that a counter can be incremented — not that production
+/// increments it. Deleting the production increments would have left the earlier version
+/// of the logger regression green. Astra's discriminator, and she was right.
+fn write_and_latch(
+    payload: &WriteLogPayload,
+    log_dir: &str,
+    continuum_root: &str,
+    file_cache: &FileCache,
+    headers_written: &HeaderTracker,
+    failures: &WriteFailures,
+) -> bool {
+    match write_log_message(payload, log_dir, continuum_root, file_cache, headers_written) {
+        Ok(_) => true,
+        Err(e) => {
+            failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!("❌ LoggerModule write error: {e}");
+            false
+        }
+    }
+}
+
+fn stop_outcome(failures: u64) -> Result<(), String> {
+    if failures > 0 {
+        return Err(format!(
+            "{failures} log write(s)/flush(es) failed in this process — some log content              did not reach disk"
+        ));
+    }
+    Ok(())
+}
+
+fn flush_all(file_cache: &FileCache, failures: &WriteFailures) {
     let handles: Vec<LockedFile> = {
         let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.values().cloned().collect()
@@ -451,7 +595,13 @@ fn flush_all(file_cache: &FileCache) {
 
     for locked_file in handles {
         let mut file = locked_file.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = file.flush();
+        // A flush that failed at shutdown is the whole reason `shutdown` exists for this
+        // module. Swallowing it here and returning Ok() above made the receipt claim
+        // durability for content still sitting in a buffer that never reached disk.
+        if let Err(e) = file.flush() {
+            failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!("❌ LoggerModule flush error: {e}");
+        }
     }
 }
 
@@ -477,6 +627,9 @@ pub struct LoggerCommandState {
     pub started_at: Instant,
     pub requests_processed: AtomicU64,
     pub pending_writes: Arc<AtomicU64>,
+    /// Writes and flushes this module could not complete. Non-zero means some log content
+    /// is gone, and a stop must not be reported as clean.
+    pub write_failures: WriteFailures,
 }
 
 #[cfg(test)]
@@ -492,12 +645,25 @@ impl LoggerCommandState {
             started_at: Instant::now(),
             requests_processed: AtomicU64::new(0),
             pending_writes: Arc::new(AtomicU64::new(0)),
+            write_failures: Arc::new(AtomicU64::new(0)),
         });
         (state, rx)
     }
 }
 
 impl LoggerModule {
+    /// Build a module around an existing state, so a test can drive the REAL `shutdown`
+    /// over a failure count it produced through the real write path. `new()` reads env
+    /// vars and spawns a writer thread; a test needs neither, and needs the state it can
+    /// see.
+    #[cfg(test)]
+    pub(crate) fn with_state(state: Arc<LoggerCommandState>) -> Self {
+        Self {
+            log_dir: String::new(),
+            state,
+        }
+    }
+
     pub fn new() -> Self {
         let continuum_root = std::env::var("CONTINUUM_ROOT").unwrap_or_else(|_| {
             let home = dirs::home_dir().expect("Failed to resolve home directory");
@@ -516,6 +682,7 @@ impl LoggerModule {
         let file_cache = Arc::new(Mutex::new(HashMap::new()));
         let headers_written = Arc::new(Mutex::new(HashSet::new()));
         let pending_writes = Arc::new(AtomicU64::new(0));
+        let write_failures: WriteFailures = Arc::new(AtomicU64::new(0));
 
         // Create BOUNDED sync_channel for GUARANTEED non-blocking
         // try_send() returns immediately - if full, message dropped (NEVER blocks)
@@ -530,6 +697,7 @@ impl LoggerModule {
         let writer_log_dir = log_dir.clone();
         let writer_continuum_root = continuum_root.clone();
         let writer_pending = pending_writes.clone();
+        let writer_failures = write_failures.clone();
 
         thread::spawn(move || {
             const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
@@ -542,15 +710,14 @@ impl LoggerModule {
                 |payload: &WriteLogPayload, limiter: &mut RateLimiter, pending: &mut usize| {
                     match limiter.check(&payload.category) {
                         RateDecision::Allow => {
-                            if let Err(e) = write_log_message(
+                            write_and_latch(
                                 payload,
                                 &writer_log_dir,
                                 &writer_continuum_root,
                                 &writer_file_cache,
                                 &writer_headers,
-                            ) {
-                                eprintln!("❌ LoggerModule write error: {e}");
-                            }
+                                &writer_failures,
+                            );
                             *pending += 1;
                         }
                         RateDecision::Drop => {}
@@ -565,22 +732,26 @@ impl LoggerModule {
                                 ),
                                 args: None,
                             };
-                            let _ = write_log_message(
+                            // Counted like every other write. It is the rate-limit
+                            // warning — the line that explains why other lines are
+                            // missing — so losing it silently is the one loss that also
+                            // erases the evidence of the losses.
+                            write_and_latch(
                                 &warning,
                                 &writer_log_dir,
                                 &writer_continuum_root,
                                 &writer_file_cache,
                                 &writer_headers,
+                                &writer_failures,
                             );
-                            if let Err(e) = write_log_message(
+                            write_and_latch(
                                 payload,
                                 &writer_log_dir,
                                 &writer_continuum_root,
                                 &writer_file_cache,
                                 &writer_headers,
-                            ) {
-                                eprintln!("❌ LoggerModule write error: {e}");
-                            }
+                                &writer_failures,
+                            );
                             *pending += 2;
                         }
                     }
@@ -589,20 +760,26 @@ impl LoggerModule {
             loop {
                 match log_rx.recv_timeout(FLUSH_INTERVAL) {
                     Ok(payload) => {
+                        // Decremented AFTER the write, not on receipt: an entry popped
+                        // off the channel and still being written is in flight, and a
+                        // drain that stopped waiting at the pop would race the write it
+                        // was waiting for.
                         process_payload(&payload, &mut limiter, &mut pending);
+                        release_queued_entry();
 
                         // Drain remaining messages non-blocking
                         while pending < MAX_BATCH_BEFORE_FLUSH {
                             match log_rx.try_recv() {
                                 Ok(payload) => {
                                     process_payload(&payload, &mut limiter, &mut pending);
+                                    release_queued_entry();
                                 }
                                 Err(_) => break,
                             }
                         }
 
                         if pending >= MAX_BATCH_BEFORE_FLUSH {
-                            flush_all(&writer_file_cache);
+                            flush_all(&writer_file_cache, &writer_failures);
                             writer_pending.store(0, Ordering::Relaxed);
                             pending = 0;
                         } else {
@@ -611,14 +788,14 @@ impl LoggerModule {
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if pending > 0 {
-                            flush_all(&writer_file_cache);
+                            flush_all(&writer_file_cache, &writer_failures);
                             writer_pending.store(0, Ordering::Relaxed);
                             pending = 0;
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         if pending > 0 {
-                            flush_all(&writer_file_cache);
+                            flush_all(&writer_file_cache, &writer_failures);
                         }
                         break;
                     }
@@ -632,6 +809,7 @@ impl LoggerModule {
             started_at: Instant::now(),
             requests_processed: AtomicU64::new(0),
             pending_writes,
+            write_failures,
         });
 
         Self { log_dir, state }
@@ -677,10 +855,50 @@ impl ServiceModule for LoggerModule {
         crate::commands::log::command_objects(self.state.clone())
     }
 
+    /// Wait for the log queue to empty, bounded.
+    ///
+    /// The first real implementation of the drain contract, and it is here because the
+    /// loss is concrete: `queue_log` hands entries to a writer THREAD, and `shutdown`
+    /// only ever flushed the open files. Anything still in the channel when the core
+    /// stopped was never written and never counted — including, on a bad stop, the log
+    /// lines explaining why it was stopping.
+    ///
+    /// Polls rather than signals: the writer is a plain `std::thread` on a blocking
+    /// `recv_timeout`, so there is no async completion to await, and its own flush
+    /// interval is 250ms. Returning the residual count rather than an error is what lets
+    /// the receipt say how many lines were lost instead of only that some were.
+    async fn drain(&self) -> Result<u32, String> {
+        // CLOSE ADMISSION FIRST. Waiting for the depth to reach zero while producers are
+        // still free to enqueue measures a moment, not a drain — the count can be zero
+        // and one `clog_*` later be one again, with the writer already joined.
+        close_log_admission();
+        const POLL: std::time::Duration = std::time::Duration::from_millis(25);
+        // Bounded strictly inside the runtime's 2s phase bound, so the deadline that
+        // fires is this one — with a count — rather than the outer timeout, which
+        // produces no number at all.
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
+        let deadline = std::time::Instant::now() + BUDGET;
+        while std::time::Instant::now() < deadline {
+            if queued_log_entries() == 0 && self.state.pending_writes.load(Ordering::Relaxed) == 0 {
+                return Ok(0);
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        // Both halves count: entries still in the channel, plus writes the writer has
+        // made but not flushed. A drain that reported only the channel would call a
+        // module drained while its file buffers still held lines.
+        let left = queued_log_entries() + self.state.pending_writes.load(Ordering::Relaxed);
+        Ok(left.min(u32::MAX as u64) as u32)
+    }
+
     async fn shutdown(&self) -> Result<(), String> {
         // Flush any pending writes
-        flush_all(&self.state.file_cache);
-        Ok(())
+        flush_all(&self.state.file_cache, &self.state.write_failures);
+        // AND SAY SO IF ANY OF IT FAILED. Returning Ok() here made the receipt report
+        // `Clean` for a module whose writes and flushes had been failing all along — the
+        // errors went to stderr, which on a stopping node is nobody. A module that cannot
+        // confirm its content reached disk must not let the stop be called durable.
+        stop_outcome(self.state.write_failures.load(Ordering::Relaxed))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -736,5 +954,136 @@ mod tests {
         assert!(matches!(rl.check("test"), RateDecision::Allow));
         assert!(matches!(rl.check("test"), RateDecision::Allow));
         assert!(matches!(rl.check("test"), RateDecision::Drop));
+    }
+
+    /// The stop must not be called clean when log content did not reach disk.
+    mod write_failures_reach_the_receipt {
+        use super::*;
+
+        // what this catches: a write failure being swallowed while the stop still reports
+        // clean. The writer thread has nowhere to return an error to, so failures went to
+        // stderr — which on a stopping node is nobody — and `shutdown()` returned `Ok(())`
+        // regardless. With only a fully completed stop supporting durability, that made
+        // the CLI's exit code claim the citizens' logs were safe when they were not.
+        //
+        // Drives the REAL `write_log_message` against a real unwritable destination, a
+        // real successful one after it, and the REAL decision `shutdown` delegates to.
+        #[tokio::test]
+        async fn a_failed_write_then_a_successful_one_still_ends_in_a_non_clean_stop() {
+            let tmp = tempfile::tempdir().unwrap();
+            let failures: WriteFailures = Arc::new(AtomicU64::new(0));
+            let cache: FileCache = Default::default();
+            let headers: HeaderTracker = Default::default();
+            let payload = WriteLogPayload {
+                category: "test".into(),
+                level: LogLevel::Warn,
+                component: "regression".into(),
+                message: "this write cannot land".into(),
+                args: None,
+            };
+
+            // A FILE where the log directory must be: the write genuinely cannot land.
+            let blocked = tmp.path().join("blocked");
+            std::fs::write(&blocked, b"in the way").unwrap();
+            // THE SHARED OPERATION — the same `write_and_latch` the writer thread calls.
+            // The earlier version called `write_log_message` and then did the
+            // `fetch_add` ITSELF, which proved a counter can be incremented rather than
+            // that production increments it: deleting the production latch would have
+            // left it green.
+            let landed = write_and_latch(
+                &payload,
+                &blocked.to_string_lossy(),
+                &tmp.path().to_string_lossy(),
+                &cache,
+                &headers,
+                &failures,
+            );
+            assert!(
+                !landed,
+                "a log directory that is a FILE must fail the write, not silently succeed"
+            );
+            assert_eq!(
+                failures.load(Ordering::Relaxed),
+                1,
+                "the shared write+latch must record the failure — no manual increment here"
+            );
+
+            // A LATER write SUCCEEDS. This is the case that used to read as clean: the
+            // last write worked and the buffers flushed, and nothing carried the earlier
+            // loss forward.
+            let ok_dir = tmp.path().join("writable");
+            std::fs::create_dir_all(&ok_dir).unwrap();
+            let good = write_and_latch(
+                &payload,
+                &ok_dir.to_string_lossy(),
+                &tmp.path().to_string_lossy(),
+                &cache,
+                &headers,
+                &failures,
+            );
+            assert!(good, "a writable destination must still work");
+            assert_eq!(
+                failures.load(Ordering::Relaxed),
+                1,
+                "a SUCCESSFUL write must not add a failure — the count is the earlier loss"
+            );
+
+            // THE POINT: the REAL `shutdown()` on a REAL module holding that count is not
+            // clean. Reading `stop_outcome` directly, as the earlier version did, would
+            // have stayed green if `shutdown` stopped delegating to it.
+            let (log_tx, _rx) = mpsc::sync_channel::<WriteLogPayload>(8);
+            let state = Arc::new(LoggerCommandState {
+                log_tx,
+                file_cache: cache.clone(),
+                started_at: Instant::now(),
+                requests_processed: AtomicU64::new(0),
+                pending_writes: Arc::new(AtomicU64::new(0)),
+                write_failures: failures.clone(),
+            });
+            let module = LoggerModule::with_state(state);
+            let err = module
+                .shutdown()
+                .await
+                .expect_err("a module that lost log content must not stop clean");
+            assert!(
+                err.contains('1') && err.contains("did not reach disk"),
+                "the failure must be counted and named, got: {err}"
+            );
+        }
+
+        // what this catches: the opposite error — a module with no failures refusing to
+        // stop cleanly, which would make every ordinary shutdown report data loss and
+        // train the operator to ignore the signal entirely.
+        // what this catches: a module with no failures refusing to stop cleanly, which
+        // would make every ordinary shutdown report data loss and train the operator to
+        // ignore the signal. Also through the REAL `shutdown`, so it fails if the
+        // delegation inverts.
+        #[tokio::test]
+        async fn a_module_that_wrote_everything_stops_clean() {
+            let (log_tx, _rx) = mpsc::sync_channel::<WriteLogPayload>(8);
+            let state = Arc::new(LoggerCommandState {
+                log_tx,
+                file_cache: Default::default(),
+                started_at: Instant::now(),
+                requests_processed: AtomicU64::new(0),
+                pending_writes: Arc::new(AtomicU64::new(0)),
+                write_failures: Arc::new(AtomicU64::new(0)),
+            });
+            assert!(
+                LoggerModule::with_state(state).shutdown().await.is_ok(),
+                "no failures means a clean stop"
+            );
+        }
+
+        // what this catches: the counter being process-global again. Two modules must not
+        // see each other's failures — which is exactly why this was moved off a `static`,
+        // and why a test could not drive a real failure before.
+        #[test]
+        fn one_modules_failures_do_not_condemn_anothers_stop() {
+            let mine: WriteFailures = Arc::new(AtomicU64::new(3));
+            let theirs: WriteFailures = Arc::new(AtomicU64::new(0));
+            assert!(stop_outcome(mine.load(Ordering::Relaxed)).is_err());
+            assert!(stop_outcome(theirs.load(Ordering::Relaxed)).is_ok());
+        }
     }
 }
