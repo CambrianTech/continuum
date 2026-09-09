@@ -852,34 +852,128 @@ pub(crate) async fn root_at_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
     conversation: &dyn crate::persona::service_loop::PersonaConversation,
-) -> Option<ActingHands> {
-    let citizen = conversation.stream_citizen()?;
-    let held = citizen.active_claims().await.ok()?;
+) -> HeldCardTurn {
+    // The card is UNKNOWN on each of these: there is no citizen, her claims could not be
+    // read, or she holds nothing. Absent credit is the honest answer here — unlike the
+    // workspace failures further down, where the card IS known.
+    let Some(citizen) = conversation.stream_citizen() else {
+        return HeldCardTurn::unheld();
+    };
+    let Ok(held) = citizen.active_claims().await else {
+        return HeldCardTurn::unheld();
+    };
     if held.is_empty() {
-        return None;
+        return HeldCardTurn::unheld();
     }
     // ONE card per turn here too (`work_focus`): rooting on every held title
     // was ambiguous for a two-card holder, so her message turns kept her hands
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
-    let focus = crate::persona::work_focus::focus_card(held.iter())?;
-    let ws = crate::persona::staged_workspace::workspace_for_held_cards(
-        &peer_id,
-        std::iter::once(focus.title.as_str()),
-    )?;
+    let Some(focus) = crate::persona::work_focus::focus_card(held.iter()) else {
+        return HeldCardTurn::unheld();
+    };
+    // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
+    // Everything that can still fail below is a fact about the WORKSPACE — no checkout
+    // on this node, no acting body, a rooting error. NONE of them is a fact about which
+    // card she is working, so none of them may erase the credit.
+    //
+    // Captured AT SELECTION and carried out BESIDE the hands rather than on them
+    // (Astra/S6 on 799b8fe9). The first cut hung credit off `ActingHands`, so every
+    // workspace failure below silently produced `credit: None` — and the training
+    // producer reads `None` as "ordinary unlinked conversation" and SUBMITS IT
+    // IMMEDIATELY as positive SFT, skipping the evidence floor. That is a pre-existing
+    // rooting absence being reused as a different fact, which is the substrate defect
+    // shape: one value, two meanings. A turn whose card is known stays STAGED even when
+    // her hands never reached it.
+    //
+    // `from_selected_card` is PURE — it reads the card and invents nothing, so a
+    // claimless card yields a credit with no receipt rather than a fabricated one.
+    let credit = crate::persona::training_producer::CapturedCredit::from_selected_card(focus);
+    // Resolve through the SAME authority that staged the card at claim time
+    // (`card_staging::checkout_path_for`), which keys a generic repo card on its
+    // CARD ID via airc's per-card worktree.
+    //
+    // This used to ask `staged_workspace::workspace_for_held_cards` for a match on
+    // the card's DISPLAY TITLE — and every path in that module is rooted at
+    // `staging_root(peer)`, the SWE-BENCH staging area. Card work does not live
+    // there, so a generic repo card never matched, the resolver returned `None`,
+    // and the `?` here dropped the whole function: her hands silently stayed at the
+    // resident root while she believed she was working the card. Kimi's build.rs
+    // edit (eb5a2606, 2026-09-08) landed in the resident workspace that way. The
+    // title was the symptom; asking a benchmark-shaped resolver about an ordinary
+    // repo card was the defect.
+    let Some(ws) = crate::modules::card_staging::checkout_path_for(&peer_id, focus) else {
+        // NOT a silent `?`. The ambiguous case has always been probed; the
+        // not-found case was the one that said nothing, which is why this went
+        // unnoticed until a citizen's commit turned up in the wrong tree.
+        crate::probe!(
+            class = "persona.work.checkout_unresolved",
+            peer = %peer_id,
+            card = %focus.card_id.as_uuid(),
+            repo = %focus.repo,
+            "held card has no checkout on this node — her hands stay at the resident \
+             root for this turn, and anything she writes lands there, NOT in the card"
+        );
+        // Her hands stay home, but she is still working THIS card — the credit rides out.
+        return HeldCardTurn::unrooted(credit);
+    };
     // Never trust the registry over the engine: a failed restore could leave a
     // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
     // correct repo-relative edit answered "File not found … did you mean swe/…").
     // Rooting is idempotent; do it every turn she holds a card.
-    let hands = ActingHands::of(cycle)?;
+    // A pure-cognition persona has no hands at all. Still her card.
+    let Some(hands) = ActingHands::of(cycle) else {
+        return HeldCardTurn::unrooted(credit);
+    };
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
             note_acting_card(hands.persona_id, focus.card_id.as_uuid());
-            Some(hands)
+            HeldCardTurn {
+                credit: Some(credit),
+                hands: Some(hands),
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
-            None
+            // Rooting failed, so nothing may act on the card — but the turn is still
+            // hers and still card-linked, so it stages rather than submitting.
+            HeldCardTurn::unrooted(credit)
+        }
+    }
+}
+
+/// What a turn knows about the card being worked, kept SEPARATE from whether her hands
+/// reached it.
+///
+/// These are two different facts and collapsing them is what card 0d51573a's review
+/// caught: a missing checkout, an absent acting body, or a rooting error all left the
+/// credit `None`, and [`crate::persona::training_producer::produce`] reads `None` as
+/// ordinary unlinked conversation — submitting the turn immediately as positive SFT
+/// instead of staging it behind the evidence floor. A workspace failure must never be
+/// readable as "she was not working a card".
+pub(crate) struct HeldCardTurn {
+    /// The card the work store selected for this turn, present whenever one was
+    /// selected — regardless of what happened to the workspace afterwards.
+    pub(crate) credit: Option<crate::persona::training_producer::CapturedCredit>,
+    /// Her hands, rooted at that card's checkout. `None` means nothing may act on the
+    /// card this turn; it says nothing about which card it is.
+    pub(crate) hands: Option<ActingHands>,
+}
+
+impl HeldCardTurn {
+    /// No card was selected: no citizen, unreadable claims, or nothing held.
+    fn unheld() -> Self {
+        Self {
+            credit: None,
+            hands: None,
+        }
+    }
+
+    /// The card is known and her hands did not reach it.
+    fn unrooted(credit: crate::persona::training_producer::CapturedCredit) -> Self {
+        Self {
+            credit: Some(credit),
+            hands: None,
         }
     }
 }

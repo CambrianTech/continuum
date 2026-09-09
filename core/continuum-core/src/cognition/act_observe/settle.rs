@@ -140,6 +140,9 @@ async fn settle_to_outcome(
     // Fold each tick's deliberation cost in, so the settled outcome reports the
     // task's TOTAL speed/latency (a multi-act task pays for every generation).
     let mut metrics = TurnMetrics::default();
+    // Accumulated exactly like `metrics`, for the same reason: a turn is N
+    // deliberations and no single one is canonical (card 0d51573a).
+    let mut generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> = Vec::new();
 
     // Signature of a tick's tool batch for loop-detection: `name|args` per call, the random
     // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
@@ -302,6 +305,7 @@ async fn settle_to_outcome(
                         world_state: burst.rendered.clone(),
                         room_updates: Arc::clone(&burst.room_updates),
                         metrics,
+                        generation_receipts: generation_receipts.clone(),
                         inference_error: Some(error),
                         touched_paths: touched,
                     };
@@ -441,7 +445,7 @@ async fn settle_to_outcome(
         // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
         // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
         // retries; nothing stays silently becalmed again.
-        let (step, step_metrics) = match tokio::time::timeout_at(
+        let (step, step_metrics, step_receipts) = match tokio::time::timeout_at(
             tick_deadline,
             settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
         )
@@ -465,6 +469,10 @@ async fn settle_to_outcome(
                         ),
                     },
                     None,
+                    // The tick was killed by the watchdog before the Workspace
+                    // returned, so there is nothing to carry. Empty because none
+                    // existed — not because any were dropped.
+                    Vec::new(),
                 )
             }
         };
@@ -475,6 +483,8 @@ async fn settle_to_outcome(
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
+        // Order is dispatch order across the whole turn: each step appends its own.
+        generation_receipts.extend(step_receipts);
         // INLINE PACE VERDICT (Joel 2026-08-23: "know immediately if a model is
         // being slow as molasses, looping, thrashing, not even starting" — the
         // states were entering WITHOUT visibility and a human had to pester).
@@ -573,6 +583,7 @@ async fn settle_to_outcome(
                     world_state: burst.rendered.clone(),
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
+                    generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
                 };
@@ -668,6 +679,7 @@ async fn settle_to_outcome(
                     world_state: burst.rendered.clone(),
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
+                    generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
                 };
@@ -681,6 +693,7 @@ async fn settle_to_outcome(
                     world_state: burst.rendered.clone(),
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
+                    generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
                 };
@@ -720,6 +733,7 @@ async fn settle_to_outcome(
                     world_state: burst.rendered.clone(),
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
+                    generation_receipts: generation_receipts.clone(),
                     inference_error: Some(error),
                     touched_paths: touched,
                 };
@@ -755,7 +769,11 @@ pub async fn settle_step(
     framing: TurnFraming,
     situation: Situation,
     chain: &super::apply::ActChain,
-) -> (SettleStep, Option<TurnMetrics>) {
+) -> (
+    SettleStep,
+    Option<TurnMetrics>,
+    Vec<crate::cognition::provenance::GenerationReceipt>,
+) {
     let burst: Burst = burst.into();
     // The step's room comes FROM the burst (witnessed non-nil, #425). Raw-string
     // conversion is #[cfg(test)]-only, so production can only arrive here with a
@@ -796,6 +814,12 @@ pub async fn settle_step(
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    // Beside the metrics, from the SAME Workspace and for the same reason: the
+    // caller cannot re-derive these after `ws` is dropped. A turn is N
+    // deliberations; each tick contributes its dispatched generations, faults
+    // included, and the loop folds them together.
+    let step_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
+        ws.generation_receipts().cloned().collect();
     crate::probe!(
         class = "cognition.cycle.cost",
         room = %room_id,
@@ -836,6 +860,11 @@ pub async fn settle_step(
                 error: error.to_string(),
             },
             metrics,
+            // Carried on the FAILURE path too, and deliberately: this is the case
+            // the receipts exist for. A turn whose generation faulted still
+            // dispatched a generation, and dropping the receipt here would make a
+            // failed call indistinguishable from one that never happened.
+            step_receipts,
         );
     }
     let step = match ws.decision().cloned() {
@@ -1044,7 +1073,7 @@ pub async fn settle_step(
         Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
         None => SettleStep::Passed { reason: None },
     };
-    (step, metrics)
+    (step, metrics, step_receipts)
 }
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a

@@ -1142,6 +1142,17 @@ async fn serve_persona_loop_inner(
         // persona's own message never TRIGGERS a turn (the `msg.peer_id == own`
         // filter above), so including own posts purely as read-context is safe.
         let respond_started = std::time::Instant::now();
+        // The L2 producer's two provenance inputs are BORN inside the cycle arm —
+        // credit on her hands at the focus site, receipts on the settled outcome —
+        // and CONSUMED ~430 lines below, after the reply is published. The arm's
+        // value is `response_text` alone and most of its inner `match step` arms
+        // diverge with `continue`, so these ride out as bindings rather than by
+        // widening that match into a tuple every arm would have to carry and have
+        // nothing to say about. Assigned unconditionally on the one path that
+        // reaches `produce`; every other path `continue`s before it.
+        let mut turn_credit: Option<crate::persona::training_producer::CapturedCredit> = None;
+        let mut turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
+            Vec::new();
         let response_text = match crate::cognition::persona_workspace::global()
             .get(&ctx.identity.peer_id.as_uuid())
         {
@@ -1293,13 +1304,13 @@ async fn serve_persona_loop_inner(
                     Some(ctx.identity.peer_id.to_string()),
                 );
                 // A citizen holding a card lives at that repo — in a ROOM turn too.
-                let held_hands = crate::cognition::persona_workspace::root_at_held_card(
+                let held_card = crate::cognition::persona_workspace::root_at_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     conversation,
                 )
                 .await;
-                let (step, turn_metrics) = {
+                let (step, turn_metrics, settled_receipts) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
                         &cycle,
                         workspace_burst,
@@ -1316,10 +1327,20 @@ async fn serve_persona_loop_inner(
                     // The driver stays a driver: no learning policy at any call site.
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
+                // Captured HERE, where both facts still exist. The credit is read off
+                // her hands — NOT back out of `acting_card_of`, which is a mutable
+                // persona-global that a later focus rebind would re-attribute to the
+                // wrong card (card 0d51573a).
+                // From the CARD, not from her hands: a missing checkout or a failed
+                // rooting leaves `hands` None while the card stays known, and reading
+                // credit off the hands would turn that workspace failure into "ordinary
+                // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
+                turn_credit = held_card.credit.clone();
+                turn_generation_receipts = settled_receipts;
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
-                if let Some(hands) = &held_hands {
+                if let Some(hands) = &held_card.hands {
                     if let Err(e) =
                         crate::cognition::persona_workspace::restore_acting_workspace(hands).await
                     {
@@ -1570,6 +1591,10 @@ async fn serve_persona_loop_inner(
             ctx.profile.model_id.clone(),
             msg.text.clone(),
             response_text.clone(),
+            // Captured in the cycle arm above, at selection. `None` is an ordinary
+            // conversation and submits immediately, exactly as before.
+            turn_credit,
+            turn_generation_receipts,
         );
         tracing::info!(
             lamport = msg.lamport,
@@ -2758,7 +2783,7 @@ async fn run_self_cycle(
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
-    let (step, _turn_metrics) = {
+    let (step, _turn_metrics, _generation_receipts) = {
         let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
             &cycle,
             burst,

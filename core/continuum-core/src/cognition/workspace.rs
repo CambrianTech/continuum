@@ -289,6 +289,25 @@ pub struct Contribution {
     /// distinct `InferenceFailed` outcome instead of a lying `Passed`. `None` on
     /// every healthy contribution.
     pub fault: Option<String>,
+    /// Every generation THIS contribution dispatched, in dispatch order, faults
+    /// included (card 0d51573a).
+    ///
+    /// A `Vec`, not an `Option`: a faculty may retry, and a one-to-one field for a
+    /// one-to-many domain is a mistake I have already made once on this card. EMPTY
+    /// means the faculty generated nothing — a different fact from a faculty whose
+    /// generation FAILED, and the two must not collapse.
+    ///
+    /// **RELATIONSHIP TO [`fault`](Self::fault), which is NOT superseded.** `fault`
+    /// is the CONTRIBUTION's verdict-level failure: one message, read by
+    /// [`Workspace::deliberation_fault`], turned by the settle step into a distinct
+    /// `InferenceFailed` outcome instead of a lying `Passed`. These receipts are
+    /// PER-CALL provenance: which request id was submitted, what actually served it,
+    /// and which individual calls faulted. A contribution can have several receipts
+    /// and one `fault`, or receipts with no `fault` at all — a retry that failed then
+    /// succeeded produced a real fault receipt and no contribution-level failure.
+    /// Neither field can be derived from the other and neither should be removed for
+    /// the other's sake.
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     /// The model's **verbatim generation** for this verdict — the raw response text
     /// EXACTLY as the model emitted it, BEFORE the tool-call/PASS parser lifted a
     /// [`Decision`] from it. Set ONLY by the deliberation faculty on its verdict
@@ -377,6 +396,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -436,6 +456,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -465,6 +486,7 @@ impl Contribution {
             stable: false,
             standing_grounding: false,
             fault: Some(error),
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -999,6 +1021,24 @@ pub struct Workspace {
     /// [`TurnAttention::requires_priority`]. A human speaker alone does not mean
     /// the message names this persona.
     pub attention: TurnAttention,
+    /// Every generation this turn dispatched, faults included (card 0d51573a).
+    ///
+    /// **ORDER IS PHASE-THEN-FACULTY, NOT CHRONOLOGY.** `join_all` resolves in INPUT
+    /// order, so this is: phase 1 bids in faculty order, then phase 2, with each
+    /// faculty's own receipts in the order it produced them. A faculty that awaited a
+    /// slow prerequisite before generating still appears at its input position, so
+    /// this must NOT be read as wall-clock dispatch order. If true chronology is ever
+    /// needed, it needs a real submission ordinal rather than a re-reading of this
+    /// sequence (Astra, 2026-09-08).
+    ///
+    /// **PROVENANCE IS NOT SUBJECT TO ATTENTION.** Deliberately NOT derived from
+    /// [`broadcast`](Self::broadcast): broadcast is the FOCUSED set after
+    /// `SalienceArbiter` truncates to capacity, so a faculty that GENERATED but lost
+    /// attention would lose its receipt — and an invisible fault is exactly what this
+    /// card exists to prevent. What a turn generated is a fact about the turn; what
+    /// earned a place in the prompt is a judgement about relevance. Populated from
+    /// the same `all_bids` full-competition set the capture sink records.
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
     /// persona's own thread with no inbound message — versus a turn driven by an
     /// arriving message or an examiner's question? Drives the `[Your own time]`
@@ -1064,6 +1104,7 @@ impl Workspace {
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
             attention: TurnAttention::Ambient,
+            receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
             now_ms: burst_now,
@@ -1188,6 +1229,30 @@ impl Workspace {
     /// `Some` means the settle step MUST surface `InferenceFailed` — a failed model
     /// is never a silence. The settle step checks this BEFORE [`decision`], so a
     /// fault can never be read as a `Pass` ([[fallbacks-are-illegal-fail-loud]]).
+    /// Every generation THIS TURN dispatched, faults included, in phase-then-faculty
+    /// order — see [`Workspace::receipts`], which this returns (card 0d51573a).
+    ///
+    /// This is the collection credit is traced through. There is no canonical
+    /// singular request for a cycle — a turn may dispatch several calls and some may
+    /// fail — so a single request id could not represent it, and
+    /// [`Workspace::metrics`] aggregates across the cycle and cannot say which call
+    /// produced what.
+    ///
+    /// Faults are INCLUDED deliberately. Filtering to served-only would make a turn
+    /// that failed twice and succeeded once indistinguishable from a turn that
+    /// succeeded once, and the staged record would then claim cleaner provenance
+    /// than the turn actually had.
+    ///
+    /// Distinct from [`deliberation_fault`](Self::deliberation_fault), which is the
+    /// contribution-level verdict failure the settle step turns into
+    /// `InferenceFailed`. A turn can have fault RECEIPTS here and no deliberation
+    /// fault at all — a retry that failed and then succeeded is exactly that.
+    pub fn generation_receipts(
+        &self,
+    ) -> impl Iterator<Item = &crate::cognition::provenance::GenerationReceipt> {
+        self.receipts.iter()
+    }
+
     pub fn deliberation_fault(&self) -> Option<&str> {
         self.broadcast
             .iter()
@@ -2319,6 +2384,13 @@ impl WorkspaceCycle {
         // decider saw, the final broadcast, and the decision.
         let mut all_bids = context_bids;
         all_bids.extend(decision_bids);
+        // Provenance rides the FULL competition, not the focused broadcast — a
+        // faculty whose bid lost attention still dispatched its generation, and a
+        // fault that was truncated away is the one most worth keeping.
+        ws.receipts = all_bids
+            .iter()
+            .flat_map(|c| c.receipts.iter().cloned())
+            .collect();
         // WHERE THIS TICK'S LATENCY WENT, on the always-on probe stream.
         //
         // `timings` already holds per-faculty wall-clock for every faculty across
@@ -2419,6 +2491,56 @@ impl WorkspaceCycle {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
+    // `ws.broadcast` is the FOCUSED set — SalienceArbiter truncates to capacity — so
+    // deriving receipts from it silently drops the generations of any faculty that
+    // lost the attention competition. Astra found that in my first implementation,
+    // which flat_mapped broadcast; my previous test could not catch it because it
+    // hand-assembled `ws.broadcast` and never ran the arbiter at all.
+    //
+    // THIS TEST DRIVES THE REAL CYCLE so the truncation actually happens. A fault
+    // receipt from a losing faculty is precisely the record worth keeping — a failed
+    // call that got truncated away is invisible exactly when someone needs it.
+    #[tokio::test]
+    async fn a_losing_faculty_keeps_its_receipt_even_though_attention_dropped_its_bid() {
+        use crate::cognition::provenance::GenerationReceipt;
+
+        let mut loud = Contribution::context(FacultyId::Recall, "loud", 0.9, "wins attention");
+        loud.receipts = vec![GenerationReceipt::faulted("req-loud", "served after retry")];
+        let mut quiet = Contribution::context(FacultyId::WorldModel, "quiet", 0.1, "loses attention");
+        quiet.receipts = vec![GenerationReceipt::faulted("req-quiet", "lane refused the model")];
+
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(loud)),
+            Arc::new(FixedFaculty(quiet)),
+        ];
+        // capacity 1 — one of the two bids MUST be truncated.
+        let ws = cycle(faculties, 1).run("burst").await;
+
+        // POSITIVE CONTROL: the truncation really happened. Without this the receipt
+        // assertion below would pass just as well on a cycle that kept both bids,
+        // and would be asserting nothing about attention.
+        assert_eq!(
+            ws.broadcast.len(),
+            1,
+            "capacity 1 must drop one bid — otherwise this test never exercises truncation"
+        );
+
+        let ids: Vec<&str> = ws
+            .generation_receipts()
+            .map(|r| r.submitted_request_id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"req-quiet"),
+            "the TRUNCATED faculty's receipt must survive — provenance is not subject \
+             to attention; got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"req-loud"),
+            "the surviving faculty's receipt is kept too; got {ids:?}"
+        );
+    }
     use super::*;
 
     mod causality {
