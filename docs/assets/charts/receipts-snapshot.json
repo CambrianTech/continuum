@@ -14,13 +14,6 @@
     "graded_at": "2026-08-19T11:59:42+00:00"
   },
   {
-    "instance": "astropy__astropy-13236",
-    "resolved": true,
-    "served_model": "",
-    "harness_build": "",
-    "graded_at": "2026-08-26T20:26:56+00:00"
-  },
-  {
     "instance": "django__django-11292",
     "resolved": true,
     "served_model": "",
@@ -238,20 +231,6 @@
     "graded_at": "2026-08-31T13:07:34+00:00"
   },
   {
-    "instance": "django__django-16667",
-    "resolved": false,
-    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
-    "harness_build": "b9e231b2b",
-    "graded_at": "2026-08-31T16:49:23+00:00"
-  },
-  {
-    "instance": "scikit-learn__scikit-learn-10844",
-    "resolved": true,
-    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
-    "harness_build": "6599860f0",
-    "graded_at": "2026-09-01T01:27:54+00:00"
-  },
-  {
     "instance": "django__django-16527",
     "resolved": true,
     "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
@@ -411,5 +390,145 @@
     "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "harness_build": "485cde66d",
     "graded_at": "2026-09-05T08:41:15+00:00"
+  },
+  {
+    "instance": "django__django-14034",
+    "resolved": false,
+    "served_model": "ggml-org/Qwen3.8-27B-GGUF",
+    "harness_build": "33b17023f",
+    "graded_at": "2026-09-06T09:50:17+00:00"
+  },
+  {
+    "instance": "django__django-16899",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "33b17023f",
+    "graded_at": "2026-09-06T13:29:43+00:00"
+  },
+  {
+    "instance": "sympy__sympy-22714",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "f59c76806",
+    "graded_at": "2026-09-06T13:46:33+00:00"
+  },
+  {
+    "instance": "django__django-11211",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "4fc155326",
+    "graded_at": "2026-09-06T20:11:44+00:00"
+  },
+  {
+    "instance": "django__django-12663",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "b0c18d54c",
+    "graded_at": "2026-09-06T23:57:37+00:00"
+  },
+  {
+    "instance": "django__django-16255",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "6445bc371",
+    "graded_at": "2026-09-07T07:46:46+00:00"
+  },
+  {
+    "instance": "django__django-16667",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "6445bc371",
+    "graded_at": "2026-09-07T09:08:19+00:00"
+  },
+  {
+    "instance": "matplotlib__matplotlib-22719",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "6445bc371",
+    "graded_at": "2026-09-07T09:48:47+00:00"
+  },
+  {
+    "instance": "astropy__astropy-13236",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "0babe4c78",
+    "graded_at": "2026-09-07T15:50:12+00:00"
+  },
+  {
+    "instance": "django__django-11749",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "9808f085d",
+    "graded_at": "2026-09-07T17:10:03+00:00"
+  },
+  {
+    "instance": "django__django-11001",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "176911c98",
+    "graded_at": "2026-09-07T19:55:48+00:00"
+  },
+  {
+    "instance": "django__django-13346",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "176911c98",
+    "graded_at": "2026-09-07T19:56:06+00:00"
+  },
+  {
+    "instance": "django__django-15277",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "176911c98",
+    "graded_at": "2026-09-07T19:56:07+00:00"
+  },
+  {
+    "instance": "matplotlib__matplotlib-24627",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "176911c98",
+    "graded_at": "2026-09-07T20:16:55+00:00"
+  },
+  {
+    "instance": "scikit-learn__scikit-learn-10844",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "0ba47e22c",
+    "graded_at": "2026-09-08T04:19:39+00:00"
+  },
+  {
+    "instance": "sphinx-doc__sphinx-7590",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "0ba47e22c",
+    "graded_at": "2026-09-08T04:53:43+00:00"
+  },
+  {
+    "instance": "sympy__sympy-22456",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "0babe4c78",
+    "graded_at": "2026-09-08T08:39:40+00:00"
+  },
+  {
+    "instance": "sympy__sympy-15345",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "961f2e7f0",
+    "graded_at": "2026-09-08T10:16:25+00:00"
+  },
+  {
+    "instance": "django__django-15741",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "335cb25e4",
+    "graded_at": "2026-09-08T11:45:20+00:00"
+  },
+  {
+    "instance": "django__django-10973",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "335cb25e4",
+    "graded_at": "2026-09-08T15:23:57+00:00"
   }
 ]

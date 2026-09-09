@@ -28,8 +28,25 @@ FRAME = "#30363d"
 
 
 def load_rows():
+    """Every GRADED attempt, and only those.
+
+    An UNGRADEABLE instance is an absence, not a zero: the environment could not score a
+    known-correct patch, so nothing about a citizen's work was measured there. The
+    substrate already refuses to tally those as failures ("an errored verdict is an
+    ABSENCE, not a zero — must never be tallied as a failed attempt"), and this chart must
+    agree with it: `<instance>.ungradeable.json` refusal markers sit in the same directory
+    as real verdicts, and counting them as attempts understated the result by thirteen
+    (2026-09-09: 43/89 = 48% charted, against 43/76 = 57% actually graded).
+
+    The refusals are not hidden — `receipts-snapshot.json` carries their count, so the gap
+    between "attempted" and "gradeable on this box" stays readable.
+    """
     rows = []
+    ungradeable = 0
     for p in sorted(glob.glob(VERDICTS), key=os.path.getmtime):
+        if p.endswith(".ungradeable.json"):
+            ungradeable += 1
+            continue
         try:
             v = json.load(open(p))
         except Exception as e:  # a corrupt verdict is a loud skip, never silent
@@ -46,7 +63,21 @@ def load_rows():
                 ).isoformat(timespec="seconds"),
             }
         )
+    if ungradeable:
+        print(
+            f"note: {ungradeable} ungradeable instance(s) excluded — an environment that "
+            f"cannot score a known-correct patch measured nothing about the work",
+            file=sys.stderr,
+        )
+    globals()["UNGRADEABLE_COUNT"] = ungradeable
     return rows
+
+
+def _ungradeable_note() -> str:
+    """Refusals are stated on the chart itself, never quietly dropped: a reader deserves
+    to know how many instances this box could not score at all."""
+    n = globals().get("UNGRADEABLE_COUNT", 0)
+    return f" · {n} instance(s) ungradeable on this box (environment, not capability)" if n else ""
 
 
 def improvement_curve_svg(rows, w=720, h=360):
@@ -91,7 +122,7 @@ def improvement_curve_svg(rows, w=720, h=360):
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" font-family="ui-sans-serif, system-ui, sans-serif">
   <title>SWE-bench verdicts: cumulative attempts vs resolved (receipts-generated)</title>
   <text x="{pad_l}" y="24" font-size="16" font-weight="600" fill="{INK}">SWE-bench receipts — cumulative graded attempts vs resolved</text>
-  <text x="{pad_l}" y="{h - 10}" font-size="11" fill="{MUTED}">generated from verdict artifacts; every point cites a JSON on disk · resolved {cum_resolved[-1]}/{n} ({rate:.0%})</text>
+  <text x="{pad_l}" y="{h - 10}" font-size="11" fill="{MUTED}">generated from verdict artifacts; every point cites a JSON on disk · resolved {cum_resolved[-1]}/{n} ({rate:.0%}){_ungradeable_note()}</text>
   {''.join(gridlines)}
   {polyline(cum_attempts, MUTED, 2)}
   {polyline(cum_resolved, ACCENT, 3)}
