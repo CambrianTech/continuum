@@ -57,6 +57,34 @@ enum Step {
     Nothing,
 }
 
+/// Where a claimed card's checkout ALREADY IS, staging nothing.
+///
+/// The read-only counterpart to [`stage_for_card`], and the ONE place that answers
+/// "where does this card's work live" so a caller cannot answer it differently
+/// ([[the-compression-principle]]). A benchmark card resolves through its title
+/// recipe's staged instance; every other card is airc's per-card worktree, which
+/// [`airc_lib::work_worktree::worktree_path_for`] derives purely from the card id —
+/// its own doc calls this "the lookup `card_staging` needs to root a citizen's
+/// hands at a repo card".
+///
+/// **Why a read-only resolver has to exist separately:** `stage_for_card` is the
+/// CLAIM-time path and may clone a repo and cut a branch. `root_at_held_card` runs
+/// on EVERY turn a citizen holds a card, so it must re-derive what staging already
+/// produced rather than perform staging on a turn's hot path. Same answer, no work.
+///
+/// `None` means this node has no checkout for the card — not that the card is
+/// untethered. The caller decides what to say about that; it is never silently a
+/// reason to act somewhere else.
+pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathBuf> {
+    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+        return crate::persona::staged_workspace::workspace_for_held_cards(
+            peer,
+            std::iter::once(card.title.as_str()),
+        );
+    }
+    airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists())
+}
+
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
 /// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
 /// any other card of a repo this node has a checkout of gets airc's per-card
@@ -68,7 +96,9 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         return stage_for_claimer(home, claimer, &card.title).await;
     }
     let repo = card.repo.to_string();
-    if let Some(existing) = airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists()) {
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn
+    // time can never disagree about where her work lives.
+    if let Some(existing) = checkout_path_for(&claimer, card) {
         return Staging::Ready { path: existing };
     }
     let Some(clone) = crate::modules::repo_registry::path_for(&repo) else {
@@ -369,6 +399,84 @@ mod tests {
             staged,
             Staging::Failed { stage: "setup_shell", error: "boom".to_string() }
         );
+    }
+
+    fn generic_card(title: &str) -> airc_lib::WorkCard {
+        airc_lib::WorkCard {
+            card_id: airc_work::WorkCardId::new(),
+            repo: airc_work::RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: title.to_string(),
+            body: None,
+            priority: airc_work::Priority::P2,
+            lane_id: None,
+            state: airc_work::CardState::Claimed,
+            owner: None,
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        }
+    }
+
+    // what this catches: a GENERIC repo card answered with a BENCH checkout because its
+    // display title happened to name a staged instance — and, underneath that, the whole
+    // reason `root_at_held_card` could not find an ordinary card's work at all.
+    //
+    // That function asked `staged_workspace::workspace_for_held_cards` for a match on the
+    // card's TITLE, and every path in that module is rooted at `staging_root(peer)` =
+    // <home>/citizens/peers/<peer>/workspace/swe — the SWE-bench staging area. Card work
+    // lives in airc's per-card worktree, keyed by CARD ID, so an ordinary repo card never
+    // matched, the resolver returned None, and the caller's `?` silently left her hands at
+    // the resident root. Kimi's build.rs edit (eb5a2606, 2026-09-08) landed in the
+    // resident workspace exactly that way — committed, in the wrong tree, looking fine.
+    //
+    // The title is the symptom; asking a benchmark-shaped resolver about an ordinary card
+    // is the defect. A bench card must STILL resolve through its recipe (the positive
+    // control below), or this test would also pass if resolution were simply broken.
+    #[test]
+    fn a_generic_repo_card_is_never_answered_with_a_bench_checkout_that_its_title_names() {
+        let home = tempfile::tempdir().unwrap(); // test: temp dir creation
+        let restore = std::env::var("CONTINUUM_HOME").ok();
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let peer = Uuid::new_v4();
+        let instance = "astropy__astropy-13236";
+        // Stage a bench instance exactly where staged_workspace looks for one.
+        let swe = home
+            .path()
+            .join("citizens")
+            .join("peers")
+            .join(peer.to_string())
+            .join("workspace")
+            .join("swe")
+            .join(instance);
+        std::fs::create_dir_all(swe.join(".git")).unwrap(); // test: fixture checkout
+
+        // POSITIVE CONTROL: the recipe path is untouched — a bench card still resolves.
+        let bench = generic_card(&format!("[bench swe] {instance}: fix the thing"));
+        assert_eq!(
+            checkout_path_for(&peer, &bench).as_deref(),
+            Some(swe.as_path()),
+            "a bench card must still resolve through its title recipe"
+        );
+
+        // THE INVARIANT: the same title on an ORDINARY card must not borrow that checkout.
+        let generic = generic_card(instance);
+        assert_ne!(
+            checkout_path_for(&peer, &generic).as_deref(),
+            Some(swe.as_path()),
+            "a generic repo card was answered with a bench checkout its title merely named \
+             — it must resolve by CARD ID through airc's per-card worktree"
+        );
+
+        match restore {
+            Some(v) => std::env::set_var("CONTINUUM_HOME", v),
+            None => std::env::remove_var("CONTINUUM_HOME"),
+        }
     }
 
     // what this catches: a re-dispatched, already-settled instance staged onto the

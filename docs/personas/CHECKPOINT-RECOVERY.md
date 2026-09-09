@@ -12,6 +12,46 @@ was absent. They also lacked an acknowledged final checkpoint on some shutdown
 paths. A newer core cannot retroactively flush those older processes. Their
 periodic checkpoint is a recoverable snapshot, not proof of their final turn.
 
+## Preserve the persistent engram home separately
+
+Checkpoint adoption restores only volatile working memory and own-speech rings.
+It does not move, restore, or verify the persistent engram database. The native
+home correction did not change that database's resident path:
+
+```text
+<continuum-root>/citizens/personas/<name>/airc/engrams.sqlite
+```
+
+The resident root comes from `CONTINUUM_ROOT` when set, otherwise
+`dirs::home_dir()/.continuum`. The existing
+[`citizen_home_path`](../../core/continuum-core/src/context/citizen_path.rs)
+resolves the citizen's `airc` directory;
+[`PersonaInstanceInfo::from_runtime`](../../core/continuum-core/src/modules/persona_instance_manager.rs)
+carries that exact path as `identity.home`. The supervisor passes it through
+`PersonaHome::from_root`, and
+[`AdmissionState::for_persona`](../../core/continuum-core/src/persona/admission_state.rs)
+opens `PersonaHome::engrams_db()` beneath it. This is separate from the
+UUID-keyed `volatile.json` destination.
+
+Before stopping, read the registered resident through the public command:
+
+```text
+continuum persona/instances/get --persona_id <persona-uuid>
+```
+
+Record its returned `home`, stored name/peer binding, and existing engram
+database. Preserve the same
+`CONTINUUM_ROOT` override or native user root and identity binding for the new
+launch. After restart, verify that the resident opens that same database and
+that previously persisted engrams remain available. A file's presence alone is
+insufficient: a different, empty home can initialize a new database successfully.
+
+Persistent-memory bootstrap refuses a slot when opening or
+restoring its admission store fails, preserving an existing registered resident
+and allowing healthy siblings to start. It does not establish that a valid but
+unrelated database belongs to the intended prior life. A successful checkpoint
+adoption receipt is therefore not proof of engram continuity.
+
 ## Select one legacy snapshot explicitly
 
 The installed CLI exposes this recovery operation without needing a running

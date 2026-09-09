@@ -253,7 +253,11 @@ crate::action_command! {
         // CausedBy linking (frame N+1's act → frame N's) needs the chain to
         // live with the frame session — CAUSAL-MEMORY-GRAPH.md follow-on.
         let chain = crate::cognition::act_observe::ActChain::new();
-        let (step, metrics) = crate::cognition::act_observe::settle_step(
+        // `_generation_receipts`: this one-shot directed tick is not a card-linked
+        // turn, so nothing stages them here. Named rather than `_` so the next
+        // reader sees the receipts EXIST and are deliberately unused on this path,
+        // instead of wondering whether the seam forgot them (card 0d51573a).
+        let (step, metrics, _generation_receipts) = crate::cognition::act_observe::settle_step(
             &cycle,
             burst,
             true,

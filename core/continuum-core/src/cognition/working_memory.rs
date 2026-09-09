@@ -324,28 +324,24 @@ pub enum WmKind {
 /// used to destroy (working memory, freshest full result, act fingerprints,
 /// the receipt counter). Written to `~/.continuum/personas/<id>/volatile.json`
 /// at shutdown / on tick write-through, restored at spawn. Deliberately
-/// EXCLUDES engrams (already durable in sqlite) and dispatched handles (their
-/// processes died with the old core — restoring them would fabricate
-/// in-flight work).
+/// EXCLUDES engrams (already durable in sqlite) and dispatched handles (the
+/// checkpoint cannot establish whether their operations are still in flight).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
     pub entries: Vec<WmEntry>,
     pub last_action: Option<(u64, String)>,
     pub action_fps: Vec<String>,
     pub next_action_seq: u64,
-    /// Wall-clock when this snapshot was written — lets restore render the
-    /// interruption GAP ("~N minutes ago") as a perceivable fact instead of
-    /// an invisible discontinuity. `0` on snapshots from before this field
-    /// (serde default): restore then omits the gap, never guesses it.
+    /// Wall-clock when this snapshot was written — lets restore render its age,
+    /// not the time of an interruption. `0` on snapshots from before this field
+    /// (serde default): restore then reports the save time as unknown.
     #[serde(default)]
     pub saved_at_ms: u64,
     /// LABELS (never handles) of dispatched commands still `Running` at
-    /// save time. Their processes die with the old core, so the handles are
-    /// deliberately NOT restored (that would fabricate in-flight work) —
-    /// but the persona must KNOW what was cut off so she can repeat it in
-    /// one motion (Joel 2026-07-13: an interruption should be like closing
-    /// a laptop — reopen, see what didn't finish, redo it easily). Restore
-    /// renders these into a `[resumed]` fact marked safe-to-repeat.
+    /// save time. Labels alone establish neither completion nor side effects,
+    /// so restore reports those outcomes as unknown instead of restoring handles
+    /// or asserting that repeating the operation is safe. The field name stays
+    /// unchanged for compatibility with existing checkpoints.
     #[serde(default)]
     pub interrupted_dispatches: Vec<String>,
     /// Build the receipts in this snapshot were RECORDED against.
@@ -824,13 +820,10 @@ impl WorkingMemory {
     /// mid-thought instead of blank. Capacity re-clamps on the way in so a
     /// snapshot from a larger-capacity life never overflows this one.
     ///
-    /// The laptop-lid contract (Joel 2026-07-13): the interruption itself
-    /// becomes a PERCEIVABLE fact — how long the lid was closed, and exactly
-    /// which dispatched commands were cut off mid-flight (their processes
-    /// died with the old core; the work did NOT complete and is safe to
-    /// repeat). Without this, a killed dispatch is indistinguishable from a
-    /// finished one, and she either re-does completed work or trusts work
-    /// that never happened.
+    /// The checkpoint becomes a PERCEIVABLE fact: its save age and the dispatch
+    /// labels it recorded as pending. It does not establish when an interruption
+    /// happened, whether those operations completed, or what side effects they
+    /// produced. The persona decides what to do with that uncertainty.
     pub fn restore(&self, snap: VolatileSnapshot) {
         {
             let mut e = self.entries.lock();
@@ -877,10 +870,9 @@ impl WorkingMemory {
         self.next_action_seq
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
 
-        // Render the interruption as a fact AFTER the entries land, so it is
-        // the NEWEST thing in her window when she wakes. A fact, never an
-        // instruction — she decides whether the cut-off work still matters.
-        let gap = (snap.saved_at_ms > 0)
+        // Render the checkpoint evidence AFTER the entries land, so it is the
+        // NEWEST thing in her window when she wakes. A fact, never an instruction.
+        let checkpoint_age = (snap.saved_at_ms > 0)
             .then(|| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -896,23 +888,21 @@ impl WorkingMemory {
                     format!("~{mins} min")
                 }
             });
-        let fact = match (&gap, snap.interrupted_dispatches.is_empty()) {
-            (Some(g), false) => format!(
-                "[resumed] your session was interrupted {g} ago and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
-                snap.interrupted_dispatches.join("; ")
-            ),
-            (Some(g), true) => format!(
-                "[resumed] your session was interrupted {g} ago and your memory restored; nothing was in flight"
-            ),
-            (None, false) => format!(
-                "[resumed] your session was interrupted and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
-                snap.interrupted_dispatches.join("; ")
-            ),
-            (None, true) => {
-                "[resumed] your session was interrupted and your memory restored; nothing was in flight".to_string()
-            }
+        let saved = match checkpoint_age {
+            Some(age) => format!("saved {age} ago"),
+            None => "with an unknown save time".to_string(),
         };
-        self.record_fact(&fact);
+        let pending = if snap.interrupted_dispatches.is_empty() {
+            "No pending dispatches were recorded in that checkpoint.".to_string()
+        } else {
+            format!(
+                "Dispatches recorded as pending at that save: {}. Their completion and side effects are unknown.",
+                snap.interrupted_dispatches.join("; ")
+            )
+        };
+        self.record_fact(&format!(
+            "[resumed] your memory was restored from a checkpoint {saved}. {pending}"
+        ));
 
         // The OTHER discontinuity, and until 2026-08-07 an invisible one: the
         // substrate itself was rebuilt while she was away (#165).
@@ -1805,9 +1795,8 @@ mod tests {
     // round-trips through the JSON snapshot losslessly: typed entries (kinds
     // intact), the full last result, fingerprints, and the receipt counter
     // (so post-restore receipts keep ascending numbers instead of colliding
-    // with restored ones) — PLUS the laptop-lid contract (Joel 2026-07-13):
-    // the interruption itself lands as the NEWEST fact, naming the gap and
-    // any dispatched commands cut off mid-flight as safe to repeat.
+    // with restored ones). The NEWEST fact names the checkpoint's save age and
+    // recorded pending labels without inventing interruption time or outcomes.
     #[test]
     fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         let wm = WorkingMemory::new(8);
@@ -1816,8 +1805,8 @@ mod tests {
         wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
         wm.record_settlement("shared the plan");
         wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
-        // A dispatched compile still Running at snapshot time — the process
-        // dies with the old core; only its LABEL must survive.
+        // A dispatched compile still Running at snapshot time — only its LABEL
+        // survives, not evidence about later completion or side effects.
         let handle = Uuid::new_v4();
         wm.record_dispatch_event(
             handle,
@@ -1845,14 +1834,27 @@ mod tests {
             "window identical before the marker"
         );
         assert!(
-            resumed[0].contains("[resumed]"),
-            "interruption is perceivable: {resumed:?}"
+            resumed[0].starts_with("[resumed] your memory was restored from a checkpoint saved ")
+                && resumed[0].contains(" ago."),
+            "the age describes the checkpoint save: {resumed:?}"
         );
         assert!(
-            resumed[0].contains("cargo build (dispatched)")
-                && resumed[0].contains("safe to repeat"),
-            "cut-off work named + marked repeatable: {resumed:?}"
+            resumed[0].contains(
+                "Dispatches recorded as pending at that save: cargo build (dispatched)."
+            ) && resumed[0].contains("Their completion and side effects are unknown."),
+            "pending work is named without inventing its outcome: {resumed:?}"
         );
+        for unsupported in [
+            "was interrupted",
+            "NOT completed",
+            "safe to repeat",
+            "nothing was in flight",
+        ] {
+            assert!(
+                !resumed[0].contains(unsupported),
+                "unsupported claim {unsupported:?}: {resumed:?}"
+            );
+        }
         assert!(
             !restored.iter().any(|l| l.contains("[rebuilt]")),
             "SAME build across the restart — no rebuild fact, or we cry wolf on every \
@@ -1874,14 +1876,42 @@ mod tests {
             "counter resumed: {last:?}"
         );
 
-        // And the quiet path: nothing in flight → the fact says so plainly.
+        // Missing and zero save times remain unknown even with pending labels.
+        for missing_saved_at in [false, true] {
+            let mut legacy: serde_json::Value = serde_json::from_str(&json).expect("snapshot JSON");
+            if missing_saved_at {
+                let _ = legacy
+                    .as_object_mut()
+                    .expect("snapshot object")
+                    .remove("saved_at_ms");
+            } else {
+                legacy["saved_at_ms"] = serde_json::json!(0);
+            }
+            let legacy = serde_json::from_value(legacy).expect("legacy snapshot deserializes");
+            let restored_legacy = WorkingMemory::new(8);
+            restored_legacy.restore(legacy);
+            let recent = restored_legacy.recent();
+            let resumed = recent.last().expect("restored checkpoint fact");
+            assert!(
+                resumed.contains("checkpoint with an unknown save time."),
+                "{resumed}"
+            );
+            assert!(!resumed.contains("ago"), "no fabricated save age: {resumed}");
+            assert!(resumed.contains("cargo build (dispatched)"), "{resumed}");
+            assert!(
+                resumed.contains("Their completion and side effects are unknown."),
+                "{resumed}"
+            );
+        }
+
+        // An empty list describes this checkpoint, not everything that was running.
         let quiet = WorkingMemory::new(8);
         quiet.restore(VolatileSnapshot {
             entries: Vec::new(),
             last_action: None,
             action_fps: Vec::new(),
             next_action_seq: 1,
-            saved_at_ms: 0, // pre-field snapshot: no gap guessed
+            saved_at_ms: 0, // pre-field snapshot: no save time guessed
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
             receipt_heads: Vec::new(),
@@ -1890,10 +1920,15 @@ mod tests {
         });
         let q = quiet.recent();
         assert_eq!(q.len(), 1);
-        assert!(q[0].contains("nothing was in flight"), "{q:?}");
+        assert!(
+            q[0].contains("No pending dispatches were recorded in that checkpoint."),
+            "{q:?}"
+        );
+        assert!(!q[0].contains("nothing was in flight"), "{q:?}");
+        assert!(q[0].contains("checkpoint with an unknown save time."), "{q:?}");
         assert!(
             !q[0].contains("ago"),
-            "no fabricated gap on legacy snapshots: {q:?}"
+            "no fabricated save age on legacy snapshots: {q:?}"
         );
     }
 

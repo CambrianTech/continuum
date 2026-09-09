@@ -61,6 +61,35 @@ jobs:
     name: cargo test -p continuum-core --lib
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Postgres adapter's tests were `#[ignore]`d because nothing here served
+    # them a database, so the adapter's TRANSACTIONAL behaviour was verified by
+    # `cargo check` alone — which is how four transactional defects reached this
+    # branch (self.read re-acquiring a second connection mid-transaction, a raw
+    # BEGIN with no rollback guard, DDL inside an aborted transaction, and column
+    # caches published before commit). Compiling proves a transaction is spelled
+    # correctly; only a server proves it behaves. A skipped test is not proof.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: continuum_test
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+        ports:
+          - 5432:5432
+        # Without the health check the job races the server: the first test
+        # connects before Postgres finishes initialising and fails as though the
+        # adapter were broken.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The value the adapter's own fixture already defaults to — kept explicit
+      # so the job states the database it is testing against rather than relying
+      # on a default buried in a test module.
+      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
       # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
       # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
@@ -169,6 +198,36 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+      # The Postgres adapter, against an ACTUAL Postgres. These tests are
+      # `#[ignore]`d because they need a server, and until this job served one
+      # they had never executed — so `orm::postgres` was covered by compilation
+      # only. Four transactional defects reached this branch through that gap.
+      #
+      # SERIALISED deliberately. All 11 of these share the one `test_orm` schema,
+      # and `test_pg_clear_all` calls clear_all, which enumerates every collection
+      # and truncates each — so run in parallel it deletes the other tests' rows
+      # mid-flight and they fail as though the adapter were broken. Astra's
+      # review caught this before the first run; the alternative is a schema per
+      # test, which is the better fix and its own change.
+      #
+      # The `passed` count is load-bearing for the same reason the doctest step
+      # below asserts its own: `--ignored` with a filter that matches nothing
+      # exits 0, so a renamed module or a test that stops being marked would
+      # leave this step green while running NOTHING. That is precisely the
+      # failure mode the step exists to close, so it must not be able to happen
+      # silently.
+      - name: cargo test -p continuum-core --lib (Postgres, --ignored)
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        run: |
+          set -o pipefail
+          cargo test -p continuum-core --lib orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
+          passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
+          echo "postgres tests passed: ${passed:-0}"
+          if [ "${passed:-0}" -lt 1 ]; then
+            echo "::error::No Postgres tests ran. The service, the filter or the #[ignore] markers disagree — a green step here would be a lie about an unverified adapter."
+            exit 1
+          fi
 
       # Compile-fail guards (#3881). `--lib` above CANNOT run these: proving a
       # wrong construction does not compile requires a compile step, and the

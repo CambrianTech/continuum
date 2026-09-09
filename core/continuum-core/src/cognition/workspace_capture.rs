@@ -248,6 +248,7 @@ mod tests {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
             parts: Vec::new(),
@@ -266,6 +267,7 @@ mod tests {
             stable: false,
             standing_grounding: false,
             fault: None,
+            receipts: Vec::new(),
             // #210: the verbatim generation carries a leading-char fumble the parser
             // tolerated — the capture must preserve it so model-vs-harness is decidable.
             raw_generation: Some("<Let's roll back the migration.".to_string()),

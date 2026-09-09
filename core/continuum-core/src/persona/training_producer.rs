@@ -51,6 +51,10 @@ use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::{ClientError, Connection, Transport};
 
 use crate::commands::training_trigger::submit::SubmitOutcome;
+use crate::orm::types::{BatchOperation, BatchOperationType};
+// `COLLECTION` is an associated const on the OrmEntity trait; the derive puts it
+// there, so the trait must be in scope to name it.
+use crate::orm::OrmEntity;
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -83,7 +87,7 @@ const MIN_TRAINING_QUALITY: f32 = 0.45;
 /// bucket: writing the patch, judging someone else's patch, and naming the defect
 /// in the first place are different skills, and a curriculum that mixes them
 /// teaches none of them. The role is half the bucket key for exactly that reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CreditRole {
     /// Authored the submission — the submission's `publisher`.
     Owner,
@@ -123,6 +127,319 @@ pub struct OutcomeStamp {
     pub role: CreditRole,
     /// The card's settled verdict. `true` = the grade passed.
     pub outcome: bool,
+}
+
+/// WHAT ACTUALLY SERVED the generation — not what the profile asked for (card 0d51573a).
+///
+/// `TextGenerationResponse` carries `model`, `provider` and `request_id`; both
+/// producer call sites throw them away and pass `ctx.profile.model_id`, the
+/// CONFIGURED model. Those are two different facts and the bucket key
+/// `(persona_id, trait_kind, base_model)` wants the second one: any fallback,
+/// adapter route or lane substitution files the example under a base that did not
+/// generate it. **A curriculum bucketed by a base model that never produced its
+/// examples is worse than no bucket** — the genome loop pages a gene against a
+/// benchmark for weights it was not trained from. Same one-value-two-meanings
+/// shape as the rest of this class; the fix is to carry the served fact.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServedProvenance {
+    /// `TextGenerationResponse::model` — what answered, not what was configured.
+    pub model: String,
+    /// `TextGenerationResponse::provider` — which adapter served it.
+    pub provider: String,
+    /// `TextGenerationResponse::request_id` — the join back to the generation.
+    pub request_id: String,
+}
+
+/// Credit CAPTURED AT SELECTION, before any verdict exists (card 0d51573a).
+///
+/// Taken from the projected winning `WorkCard` at `act_question` selection, so
+/// ownership is READ from the accepted claim rather than inferred from a time
+/// window — no event-store rescan, no `persona_id == peer_id` invariant load-bearing
+/// (that equality is prose at this module's line ~444, not a type).
+///
+/// **THERE IS DELIBERATELY NO OUTCOME FIELD, AND NO PLACEHOLDER FOR ONE.** The link
+/// ("this turn belongs to card X") and the verdict ("card X worked") are two facts
+/// at two different times, and collapsing them is exactly the defect this card
+/// exists to prevent: an ungraded work-in-progress trace treated as outcome-verified
+/// credit. Observed live 2026-09-08 — a citizen accumulating toward a training
+/// threshold on a card still in `Claimed` with no settlement. Such a turn must stay
+/// an ordinary UNSTAMPED example in the bare-domain bucket; capturing the link is
+/// never license to stamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedCredit {
+    /// The card she was rooted at when this turn began. Its PRESENCE is what makes
+    /// the turn card-linked, and card-linked is what makes it STAGE.
+    pub card_id: Uuid,
+    /// The accepted claim, captured at the same instant as `card_id` — what makes
+    /// this attribution rather than a guess. `WorkCard::owner` and `claim_id` are
+    /// both `Option`, so a rooted turn on a claimless card yields `None` here.
+    ///
+    /// **A `None` NEVER falls through to an immediate unlinked submission, and is
+    /// NEVER filled in later from a global.** The turn is still card-linked (she
+    /// was rooted at that checkout; her edits landed there), so it stages — it
+    /// simply can never be stamped, and expires unsubmitted if nothing settles.
+    /// A later settlement cannot retroactively invent a selection receipt that was
+    /// not taken, and the type is shaped so it cannot try.
+    pub claim: Option<ClaimReceipt>,
+}
+
+/// The claim receipt captured AT SELECTION — the evidence that this citizen was
+/// accountable for this card at the moment the turn began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClaimReceipt {
+    /// `WorkCard::claim_id` as accepted.
+    pub claim_id: Uuid,
+    /// `WorkCard::owner` as the work store spells it: a typed peer, not a bare Uuid.
+    pub owner: airc_core::PeerId,
+    /// Which hand this citizen had in the card. A claim yields `Owner`; `Reviewer`
+    /// and `Finder` are NOT derivable from a claim alone and need their own seams.
+    pub role: CreditRole,
+}
+
+/// A REAL settlement verdict — the second fact, arriving later than [`CapturedCredit`].
+///
+/// **A TERMINAL CARD STATE IS NOT A VERDICT.** `is_terminal_card_state` accepts
+/// `closed | done | merged`; `merged` implies success but `closed` covers abandonment,
+/// so deriving the outcome from the state string would collapse "settled" into
+/// "succeeded" — the same conflation, one layer down. This type therefore carries a
+/// verdict a grader actually produced, and there is no constructor from a state name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettlementVerdict {
+    passed: bool,
+    /// The judge's normalized score, kept for the staged record.
+    score: f64,
+    /// WHY. `activity::Verdict` calls this "the receipt a citizen and a human both
+    /// read, and the text the curriculum keeps when the task failed" — so a
+    /// settlement that discards it throws away the only part a failure leaves behind.
+    reason: String,
+}
+
+impl SettlementVerdict {
+    /// The ONLY constructor, and it takes an activity's ACTUAL judgment.
+    ///
+    /// Deliberately not `from_graded(bool)`: a bool is something a caller asserts,
+    /// and "clean turn / Closed is not success proof" (Astra, 2026-09-08). A card
+    /// reaching a terminal state is not evidence that the work succeeded —
+    /// `is_terminal_card_state` accepts `closed | done | merged` and `closed` covers
+    /// abandonment. Requiring a [`crate::cognition::activity::Verdict`] means the
+    /// evidence is produced by an `ActivityAdapter::judge`, so "I settled it because
+    /// the board said Closed" is not expressible here.
+    pub fn from_activity(verdict: &crate::cognition::activity::Verdict) -> Self {
+        Self {
+            passed: verdict.passed,
+            score: verdict.score,
+            reason: verdict.reason.clone(),
+        }
+    }
+
+    pub fn passed(&self) -> bool {
+        self.passed
+    }
+
+    pub fn score(&self) -> f64 {
+        self.score
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+impl CapturedCredit {
+    /// The ONLY way to obtain an [`OutcomeStamp`]. Consuming a [`SettlementVerdict`]
+    /// is what makes "stamp a card that has not settled" not a bug you can write but
+    /// a value you cannot produce — the same move as making an illegal state
+    /// unrepresentable rather than guarding against it at every call site.
+    ///
+    /// A FAILED verdict still produces a stamp: the evidence floor in [`plan`] is
+    /// what refuses it for SFT, and failure experience persists through the ordinary
+    /// experience/engram path. Refusing to stamp a failure here would hide the
+    /// failure instead of merely declining to train on it.
+    ///
+    /// `None` when no [`ClaimReceipt`] was captured at selection. **This is the
+    /// only place that decision can be made, which is the point:** the receipt is
+    /// an input to construction, so no settlement — however well-verified — can
+    /// supply one after the fact. A staged turn with no receipt expires
+    /// unsubmitted rather than being credited on a later guess.
+    pub fn settle(self, verdict: SettlementVerdict) -> Option<OutcomeStamp> {
+        let claim = self.claim?;
+        Some(OutcomeStamp {
+            card_id: self.card_id,
+            role: claim.role,
+            outcome: verdict.passed(),
+        })
+    }
+
+    /// Derive the selection capture from the card a turn was rooted onto.
+    ///
+    /// **Pure, so it is testable with no cycle, no hands and no executor** — the same
+    /// judgment/effect split [`plan`] uses. The EFFECT (attaching this to the turn
+    /// before the rooting await in `root_at_held_card`) lands with the consumer that
+    /// reads it; this is the judgment half.
+    ///
+    /// `WorkCard::owner` and `claim_id` are both `Option` and travel together or not
+    /// at all: a card the work store never claimed yields `claim: None`, and NOTHING
+    /// may substitute a default — not the acting persona, not a nil claim. Such a
+    /// turn is still card-linked, so it stages; it simply can never be stamped, and
+    /// no later settlement may supply the receipt it never had.
+    pub fn from_selected_card(card: &airc_work::WorkCard) -> Self {
+        let claim = match (card.owner, card.claim_id) {
+            (Some(owner), Some(claim_id)) => Some(ClaimReceipt {
+                claim_id: claim_id.as_uuid(),
+                owner,
+                // A claim yields OWNER. Reviewer and Finder are different hands on
+                // the same card and are not derivable from a claim alone.
+                role: CreditRole::Owner,
+            }),
+            // Either half missing is no receipt. An owner without a claim is not an
+            // accepted claim, and a claim without an owner names nobody.
+            _ => None,
+        };
+        Self {
+            card_id: card.card_id.as_uuid(),
+            claim,
+        }
+    }
+
+    /// Card-linked turns STAGE; only truly unlinked conversation submits at
+    /// completion. Presence of the card — not of the claim — is the test, because
+    /// she was rooted at that checkout and her edits landed there regardless of
+    /// whether a claim receipt was recorded.
+    pub fn is_card_linked(&self) -> bool {
+        // Constructing this value at all means a card was captured at selection.
+        // Kept as a named predicate so the staging call site reads as a decision
+        // rather than as `Option::is_some` on something whose meaning is elsewhere.
+        !self.card_id.is_nil()
+    }
+}
+
+/// ONE dispatched generation, as a correlation ROW — the index that
+/// [`StagedCredit::receipts`] cannot carry (card 0d51573a).
+///
+/// The ORM's `FieldType` set has no collection type, so the parent's receipts are an
+/// opaque JSON column and nothing inside them is indexable. Playback's correlation
+/// runs FROM a generation TO the credit, so that direction needs a real index; these
+/// rows are it. They hold REFERENCES only — the response payload stays in the parent
+/// and is not duplicated here.
+///
+/// **`submitted_request_id` IS NOT ASSUMED GLOBALLY UNIQUE** (Astra, 2026-09-08).
+/// Nothing in the producer contract proves a request id is unique across every staged
+/// credit ever written, and a unique index on it alone would reject a legitimate write
+/// the first time that assumption failed — silently turning a provenance record into a
+/// dropped one. Uniqueness is asserted on the PAIR, which is the thing that genuinely
+/// cannot repeat: one turn does not dispatch the same request id twice.
+///
+/// The row is a child in the truest sense: `on_delete = "cascade"`, so it cannot
+/// outlive the credit it describes and there is no orphan class to reap.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "staged_credit_generation")]
+#[entity(index(
+    name = "idx_staged_credit_generation_pair",
+    fields = ["stagedCreditId", "submittedRequestId"],
+    unique = true
+))]
+pub struct StagedCreditGeneration {
+    #[entity(primary_key)]
+    pub id: Uuid,
+
+    /// The staged credit this generation belongs to.
+    #[entity(indexed)]
+    #[entity(foreign_key("staged_credit.id", on_delete = "cascade"))]
+    pub staged_credit_id: Uuid,
+
+    /// The SUBMITTED request id — the join key playback holds. Indexed on its own so
+    /// the generation-to-credit lookup is a real index hit, not a scan.
+    #[entity(indexed)]
+    pub submitted_request_id: String,
+}
+
+/// ONE card-linked turn, held until its card settles (card 0d51573a).
+///
+/// A card-linked turn must NOT submit at completion. An unstamped example is an
+/// immediate POSITIVE SFT target and submission is one-way — `TrainingExample` is
+/// `{prompt, completion}` with no preference schema anywhere in the tree — so a turn
+/// submitted before its card settles cannot be withdrawn when that card later fails.
+/// Observed live 2026-09-08: a citizen accumulating toward a training threshold on a
+/// card still in `Claimed` with no settlement.
+///
+/// Lives in the citizen's own [`crate::persona::home::PersonaHome`], alongside
+/// `engrams.sqlite` — persistence inside its existing owner, per-citizen, NOT a new
+/// global queue ([[source-drain-is-the-universal-pattern]]: the drain is settlement).
+///
+/// ## Two write-once halves, at two different times
+///
+/// **SELECTION IS IMMUTABLE.** `card_id`, `claim_id`, `owner`, `role` and
+/// `submitted_request_id` are written when the turn begins and never rewritten. A
+/// MISSING CLAIM REMAINS MISSING: `claim_id` is `None` for a turn rooted at a card
+/// whose `WorkCard::owner`/`claim_id` were absent, and no later settlement may fill
+/// it in. That turn still stages (it was card-linked) and can never be stamped.
+///
+/// **SERVED PROVENANCE IS ATTACHED LATER**, once the generation returns, and only
+/// ever added — never overwriting a selection field.
+///
+/// ## Why the id IS the submission id
+///
+/// Per the #278 contract the submit gains an optional `submissionId` minted ONCE and
+/// reused on every retry, so the destination can recognise a replay. Making it this
+/// row's primary key means there is no second identifier to keep in sync, and a retry
+/// necessarily reuses it because it is reading the same row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "staged_credit")]
+pub struct StagedCredit {
+    /// The `submissionId` carried to the training-trigger, minted once at stage time
+    /// and reused on every retry. Primary key, so the derive pulls in the BaseEntity
+    /// columns and a retry cannot mint a second one for the same batch.
+    #[entity(primary_key)]
+    pub id: Uuid,
+
+    /// The card this turn is credited to. Indexed: settlement arrives per-card and
+    /// asks "what did this citizen stage against it".
+    #[entity(indexed)]
+    pub card_id: Uuid,
+
+    /// The accepted claim captured at SELECTION. `None` means no receipt was taken
+    /// and none may ever be supplied — this row can stage but never stamp.
+    #[entity(indexed)]
+    pub claim_id: Option<Uuid>,
+
+    /// The claim's owner, as the work store spells it. `None` exactly when
+    /// `claim_id` is `None`; the two travel together or not at all.
+    pub owner: Option<Uuid>,
+
+    /// Which hand the citizen had in the card. JSON because it is a tagged enum.
+    #[entity(json)]
+    pub role: Option<CreditRole>,
+
+    /// EVERY generation this turn dispatched, in dispatch order, faults included.
+    ///
+    /// A cycle makes multiple calls and there is no canonical singular request, so
+    /// this replaces the single `submitted_request_id` that used to sit here — a
+    /// one-to-one field for a one-to-many domain. Stored as an opaque JSON payload
+    /// because the ORM has no collection `FieldType`, which is exactly why the
+    /// correlation index cannot live in here and gets its own child rows in
+    /// [`StagedCreditGeneration`].
+    ///
+    /// The FULL receipts stay here; the child rows are references, not copies.
+    #[entity(json)]
+    pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+
+    /// What ACTUALLY served the generation, attached once the response returns.
+    /// `None` until then. Never overwrites a selection field.
+    #[entity(json)]
+    pub served: Option<ServedProvenance>,
+
+    /// The stimulus, held verbatim so the staged example is the turn she was
+    /// actually handed rather than a re-derived approximation.
+    pub prompt: String,
+
+    /// Her reply, likewise verbatim.
+    pub completion: String,
+
+    /// When this turn was staged (epoch ms). Not a settlement clock — a staged row
+    /// whose card never settles is never submitted, and that is correct, not a leak.
+    pub staged_at_ms: u64,
 }
 
 /// A scored, gated, classified training example ready to submit. The pure product
@@ -253,6 +570,12 @@ pub fn produce(
     base_model: String,
     prompt: String,
     completion: String,
+    // The card this turn was rooted at, captured AT SELECTION on her hands.
+    // `Some` routes the turn to STAGING; `None` is ordinary conversation and keeps
+    // the pre-existing immediate-submit behaviour byte-identical.
+    credit: Option<CapturedCredit>,
+    // Every generation this turn dispatched, in order, faults included.
+    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 ) {
     let Some(executor) = EXECUTOR.cloned() else {
         // Expected during tests / before boot installs the executor. Named, not
@@ -266,6 +589,57 @@ pub fn produce(
     };
 
     tokio::spawn(async move {
+        // CARD-LINKED TURNS STAGE. The quality floor and the domain bucket are NOT
+        // decided here for them: `plan` applies the evidence floor and it needs a
+        // verdict, which does not exist until the card settles. Deciding now would
+        // bake in a judgment made without the evidence — the exact conflation this
+        // card exists to remove. Unlinked conversation still takes the immediate
+        // path below, byte-identical.
+        if let Some(credit) = credit.filter(|c| c.is_card_linked()) {
+            // The SAME identity-bearing connection `submit_plan` builds — not a bare
+            // `Connection::new(executor)`, which does not even satisfy `Transport`.
+            // The identity is load-bearing here and not merely for gating: the
+            // `@persona:{name}` handle these writes target resolves AS this persona,
+            // so a connection without her `LocalPersona` would stage her credit
+            // somewhere other than her own store.
+            let conn = Connection::new(InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona_id),
+                )),
+            ));
+            match stage_credit(
+                &conn,
+                &persona_name,
+                &credit,
+                generation_receipts,
+                prompt,
+                completion,
+            )
+            .await
+            {
+                Ok(submission_id) => crate::probe!(
+                    class = "training.credit.staged",
+                    persona = %persona_name,
+                    card = %credit.card_id,
+                    submission = %submission_id,
+                    stampable = credit.claim.is_some(),
+                    "card-linked turn staged — it submits only if this card settles PASS"
+                ),
+                // Best-effort like the submit path below: a staging failure must
+                // never touch the turn that already happened. NAMED, not swallowed
+                // — a turn that failed to stage is credit that silently vanished.
+                Err(e) => crate::probe!(
+                    class = "training.credit.stage_failed",
+                    persona = %persona_name,
+                    card = %credit.card_id,
+                    error = %e,
+                    "card-linked turn could NOT be staged — this turn's credit is lost"
+                ),
+            }
+            return;
+        }
+
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
         // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
         // is the pre-cc34ac0f path, byte-identical.
@@ -458,6 +832,27 @@ async fn submit_plan(
                 quality = plan.quality as f64,
                 provenance = provenance,
                 outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"),
+                // THE JOIN KEY, not a count. Without it this probe says an example
+                // was accepted but not WHICH submission it became, so a room turn
+                // cannot be joined to `training_trigger_submissions` or to dispatch
+                // state — and a count can never establish a causal link, only a
+                // correlation someone will read as one (Astra, 2026-09-08).
+                //
+                // Emitted as the destination's OWN id, never minted here: an id we
+                // invented would join to nothing and would look exactly like one
+                // that did.
+                // `Option` rather than a "none" String: an absent acceptance OMITS
+                // the field instead of emitting a sentinel that reads like a value.
+                // "none" in an id column is exactly the absence-as-data shape this
+                // card exists to remove — and it allocated per probe. (Astra
+                // verified tracing-core implements Value for Option<T>.)
+                submission = receipt
+                    .acceptance
+                    .as_ref()
+                    .map(|a| tracing::field::display(&a.submission_id)),
+                // A replay is an acceptance the destination has SEEN BEFORE. Without
+                // this, a retry and a first submission are the same row.
+                replayed = receipt.acceptance.as_ref().is_some_and(|a| a.replayed),
                 "training trigger accepted the example (L2)"
             );
         }
@@ -499,6 +894,150 @@ async fn submit_plan(
 /// Decode the command's outcome once at the typed boundary. Transport success is
 /// not acceptance: InconsistentBucket and DispatchFailed deliberately return Ok
 /// with success:false. All producers, including consolidation, inspect this receipt.
+/// Persist a card-linked turn as a STAGED credit — the parent row plus one child
+/// row per generation — instead of submitting it as training data now.
+///
+/// Card 0d51573a. A `TrainingExample` is `{prompt, completion}` with no preference
+/// schema anywhere in the tree, so submission is ONE-WAY: a turn submitted before
+/// its card settles cannot be withdrawn when that card later fails. Staging is what
+/// makes the evidence floor reachable — the example waits for a verdict that may
+/// never arrive, and never arriving is the correct outcome rather than a leak.
+///
+/// **Schemas are ensured through the registry, never inferred.** `data/ensure-schema`
+/// resolves a collection by NAME from the boot registry, which is why both are
+/// registered in `persona::register_substrate_orm_entities`. Skipping it would not
+/// fail loudly: sqlite would build both tables from the data's SHAPE and silently
+/// omit every declared index, including the unique one that stops a single
+/// generation being credited to a staged turn twice.
+///
+/// The whole write is ONE `data/batch`, which is atomic on both adapters — a parent
+/// surviving its rolled-back children would be a credit record asserting provenance
+/// it cannot produce.
+async fn stage_credit<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    credit: &CapturedCredit,
+    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    prompt: String,
+    completion: String,
+) -> Result<Uuid, ClientError> {
+    // Her OWN store, not the shared main DB: a citizen's staged credit is her
+    // record of her own turns.
+    let handle = format!("@persona:{persona_name}");
+    let submission_id = Uuid::new_v4();
+
+    for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
+        let result = conn
+            .commands()
+            .execute_value(
+                "data/ensure-schema",
+                // `dbPath`, NOT `handle`. `CommandRequest<P>` flattens the params into the
+                // SAME JSON object as its own `handle: Option<HandleRef>`, so a
+                // top-level "handle" is claimed by the ENVELOPE and never reaches the
+                // params' `handle: Option<String>` — the request fails to deserialize
+                // with `invalid type: string, expected struct HandleRef`. The params
+                // declare `#[serde(alias = "dbPath")]` precisely as the escape hatch
+                // from that collision. One word, two meanings, one object.
+                json!({ "collection": collection, "dbPath": handle }),
+            )
+            .await?;
+        storage_ok(&result, "data/ensure-schema", collection)?;
+    }
+
+    let parent = StagedCredit {
+        id: submission_id,
+        card_id: credit.card_id,
+        claim_id: credit.claim.as_ref().map(|c| c.claim_id),
+        owner: credit.claim.as_ref().map(|c| c.owner.as_uuid()),
+        role: credit.claim.as_ref().map(|c| c.role),
+        receipts: generation_receipts.clone(),
+        // Attached later from the response that actually served — never guessed at
+        // stage time.
+        served: None,
+        prompt,
+        completion,
+        // Same clock the rest of this file already uses. `now_unix_ms` exists as a
+        // PRIVATE helper in three other modules and none is importable — copying it
+        // a fourth time would be the duplication the compression principle forbids.
+        staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+    };
+
+    let mut operations = vec![BatchOperation {
+        operation_type: BatchOperationType::Create,
+        collection: StagedCredit::COLLECTION.to_string(),
+        id: Some(submission_id.to_string()),
+        data: Some(serde_json::to_value(&parent)?), // ORM batch boundary: BatchOperation.data is Value by contract
+    }];
+    // One correlation row per generation, faults included: the receipts themselves
+    // ride on the parent as an opaque JSON column (the ORM has no collection
+    // FieldType), so these child rows ARE the index that column cannot carry.
+    for receipt in &generation_receipts {
+        let child = StagedCreditGeneration {
+            id: Uuid::new_v4(),
+            staged_credit_id: submission_id,
+            submitted_request_id: receipt.submitted_request_id.clone(),
+        };
+        operations.push(BatchOperation {
+            operation_type: BatchOperationType::Create,
+            collection: StagedCreditGeneration::COLLECTION.to_string(),
+            id: Some(child.id.to_string()),
+            data: Some(serde_json::to_value(&child)?), // ORM batch boundary: BatchOperation.data is Value by contract
+        });
+    }
+
+    let result = conn
+        .commands()
+        .execute_value(
+            "data/batch",
+            // `dbPath` for the same reason as above: a top-level "handle" is eaten by
+            // the envelope's HandleRef field.
+            json!({ "operations": operations, "dbPath": handle }),
+        )
+        .await?;
+    storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
+    Ok(submission_id)
+}
+
+/// Fail on a command that SUCCEEDED AS A CALL and FAILED AS AN OPERATION.
+///
+/// `execute_value` returns `Ok` for anything that made the round trip, and the data
+/// commands report adapter failure INSIDE the payload as
+/// `StorageResult { success: false, error }` — which `InProcessTransport` forwards
+/// unchanged. So `.await?` catches a broken transport and nothing else: a child
+/// constraint violation rolls the whole batch back, the call still returns `Ok`, and
+/// without this the caller emitted `training.credit.staged` with a submission id for
+/// rows that do not exist (Astra/S6 on 799b8fe9). Transport success is not operation
+/// success, and a receipt that cannot report failure is not a receipt.
+fn storage_ok(
+    value: &serde_json::Value,
+    command: &str,
+    collection: &str,
+) -> Result<(), ClientError> {
+    // Decoded as the TYPED result the data layer actually returns, not by poking at a
+    // "success" key: a shape change should break the build here rather than silently
+    // read as false and start rejecting every staging attempt.
+    let decoded: crate::orm::types::StorageResult<serde_json::Value> =
+        serde_json::from_value(value.clone())?; // ORM boundary: decode the data layer's typed StorageResult
+    if decoded.success {
+        return Ok(());
+    }
+    // `Refused` is the variant whose own doc says "substrate accepted the command but
+    // returned an error" — which is precisely this: the call arrived, the operation
+    // did not happen.
+    Err(ClientError::Refused {
+        command: command.to_string(),
+        reason: format!(
+            "`{collection}`: {}",
+            decoded
+                .error
+                .as_deref()
+                // An unsuccessful result with no message is still a failure. Saying so
+                // beats inventing a reason or, worse, reading the silence as success.
+                .unwrap_or("reported success=false with no error message"),
+        ),
+    })
+}
+
 pub(crate) async fn submit_training<T: Transport>(
     conn: &Connection<T>,
     params: serde_json::Value,
@@ -564,6 +1103,230 @@ mod tests {
     // an UNSTAMPED turn must key exactly as before, and the gym lookup must keep
     // using the BARE domain (a widened key has no gym, so keying on it would
     // silently drop the eval set from every credited example).
+    //
+    // what this catches: capture-time credit being treated as outcome-verified, and
+    // `settle` ignoring the verdict it was handed. Card 0d51573a. Observed live
+    // 2026-09-08 — a citizen accumulating toward a training threshold on a card still
+    // in `Claimed` with no settlement, which must stay unstamped.
+    //
+    // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN (the cc34ac0f lesson below):
+    // a FAILED outcome scores `0.20 + 0.3*substance`, so only the ≥500-char substance
+    // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
+    // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
+    // failed-case assertion passes while proving nothing.
+    // what this catches: a FABRICATED claim receipt. `WorkCard::owner` and `claim_id`
+    // are both Option. A turn rooted at a card carrying neither is STILL card-linked
+    // — she stood in that checkout and her edits landed there — so it must stage. But
+    // it must never acquire a receipt it did not have, and no later settlement may
+    // supply one. If this ever defaulted the missing pair (to the acting persona, to
+    // a nil claim), that turn becomes stampable and a citizen is credited for
+    // accountability nobody recorded. Contract stated by Astra 2026-09-08.
+    #[test]
+    fn a_claimless_card_stages_as_card_linked_without_inventing_a_receipt() {
+        fn card(
+            owner: Option<airc_core::PeerId>,
+            claim: Option<airc_work::ClaimId>,
+        ) -> airc_work::WorkCard {
+            airc_work::WorkCard {
+                card_id: airc_work::WorkCardId::new(),
+                repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+                title: "t".to_string(),
+                body: None,
+                priority: airc_work::Priority::P2,
+                lane_id: None,
+                state: airc_work::CardState::Claimed,
+                owner,
+                claim_id: claim,
+                claim_expires_at_ms: None,
+                last_heartbeat_at_ms: None,
+                pull_request: None,
+                created_by: airc_core::PeerId::new(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                reviews: None,
+            }
+        }
+
+        let bare = card(None, None);
+        let captured = CapturedCredit::from_selected_card(&bare);
+        assert_eq!(captured.card_id, bare.card_id.as_uuid());
+        assert!(
+            captured.is_card_linked(),
+            "a claimless card is still card-linked — it stages, her edits landed there"
+        );
+        assert!(
+            captured.claim.is_none(),
+            "no receipt may be invented for a card the work store never claimed"
+        );
+
+        // POSITIVE CONTROL: a real owner+claim pair MUST produce a receipt. Without
+        // this the assertion above would pass identically if `from_selected_card`
+        // never populated a receipt at all.
+        let owner = airc_core::PeerId::new();
+        let claimed = card(
+            Some(owner),
+            Some(airc_work::ClaimId::from_uuid(Uuid::new_v4())),
+        );
+        let receipt = CapturedCredit::from_selected_card(&claimed)
+            .claim
+            .expect("a real owner+claim pair must produce a receipt");
+        assert_eq!(receipt.owner, owner, "the receipt carries the store's own owner");
+        assert_eq!(receipt.role, CreditRole::Owner, "a claim yields Owner");
+
+        // HALF A PAIR IS NOT A PAIR: an owner with no claim is not an accepted
+        // claim, and a claim with no owner names nobody.
+        assert!(
+            CapturedCredit::from_selected_card(&card(Some(owner), None)).claim.is_none(),
+            "an owner without a claim is not an accepted claim"
+        );
+        assert!(
+            CapturedCredit::from_selected_card(&card(None, Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))))
+                .claim
+                .is_none(),
+            "a claim without an owner names nobody"
+        );
+    }
+
+    // what this catches: a dropped `#[entity(indexed)]` on the staging keys. Field
+    // presence alone is not the claim — settlement arrives PER CARD and asks "what
+    // did this citizen stage against it", and playback joins on the SUBMITTED
+    // request id. Without those indexes both become table scans on a store that
+    // grows one row per card-linked turn, and nothing anywhere reports it: the
+    // queries still return the right answers, just slower forever. Card 0d51573a.
+    #[test]
+    fn staged_credit_indexes_the_three_keys_settlement_and_playback_join_on() {
+        use crate::orm::OrmEntity;
+        let schema = StagedCredit::collection_schema();
+        assert_eq!(schema.collection, "staged_credit");
+
+        let indexed: std::collections::BTreeSet<&str> = schema
+            .fields
+            .iter()
+            .filter(|f| f.indexed)
+            .map(|f| f.name.as_str())
+            .collect();
+
+        // The PARENT indexes what settlement looks up by. `submittedRequestId` is NOT
+        // here any more: a cycle dispatches many generations, the receipts are an
+        // opaque JSON column (the ORM has no collection FieldType), and nothing inside
+        // a JSON column is indexable — so the correlation index moved to the child
+        // rows. Asserting it on the parent would now assert a lie.
+        for key in ["cardId", "claimId"] {
+            assert!(
+                indexed.contains(key),
+                "staged_credit must INDEX {key:?} — settlement looks up by card; \
+                 indexed fields are {indexed:?}"
+            );
+        }
+        assert!(
+            !indexed.contains("submittedRequestId"),
+            "the correlation index belongs to staged_credit_generation now; leaving a \
+             stale one here would suggest a lookup the parent cannot actually serve"
+        );
+
+        // POSITIVE CONTROL: a field deliberately NOT indexed must not be, or this test
+        // would pass with `indexed` blanket-set and assert nothing about my attributes.
+        assert!(
+            !indexed.contains("prompt"),
+            "prompt must not be indexed — if it is, this test cannot distinguish my \
+             deliberate indexes from every field being indexed by default"
+        );
+    }
+
+    // what this catches: the staging collection colliding with an existing one.
+    // `OrmEntity::COLLECTION` must be unique across BOTH the Rust registry and
+    // entity_schemas.json, and a collision is a registration-time hard error — i.e.
+    // it fails at BOOT, on a citizen's machine, not here, unless this test exists.
+    #[test]
+    fn staged_credit_registers_without_colliding_with_an_existing_collection() {
+        use crate::orm::entity::OrmEntityRegistry;
+        let registry = OrmEntityRegistry::new();
+        registry
+            .register::<StagedCredit>()
+            .expect("StagedCredit must register cleanly");
+        let resolved = registry
+            .resolve("staged_credit")
+            .expect("staged_credit collection must resolve");
+        assert_eq!(resolved.collection, "staged_credit");
+    }
+
+    #[test]
+    fn a_verdict_is_required_to_stamp_and_settle_carries_the_verdict_it_was_given() {
+        let classifier = DomainClassifier::new();
+        let substantial = "Pool them behind one supervised task and hand out permits; a websocket \
+             per request will exhaust file descriptors long before it exhausts memory, and the \
+             reconnect storm is worse than the original load. Bound the pool and queue the \
+             overflow, then shed load at the queue rather than at accept() — a refused connection \
+             the caller can retry is cheaper than a half-open socket nobody owns. Size the permit \
+             count from the descriptor ceiling, not from a guess, and make the queue depth the \
+             knob you actually tune under pressure.";
+        assert!(
+            substantial.len() >= 500,
+            "fixture must clear the substance ladder's 500-char step, or the failed \
+             case returns None from the quality gate and the floor is never exercised"
+        );
+
+        let captured = CapturedCredit {
+            card_id: Uuid::from_u128(0x0d51573a),
+            claim: Some(ClaimReceipt {
+                claim_id: Uuid::from_u128(0x457b0d7d),
+                owner: airc_core::PeerId::from_u128(0xe2f0e022),
+                role: CreditRole::Owner,
+            }),
+        };
+
+        // A PASSING verdict stamps and buckets on domain x role.
+        let passed = captured
+            .clone()
+            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")))
+            .expect("test: a captured claim receipt can be stamped");
+        assert!(passed.outcome, "settle must carry a PASSING verdict through");
+        let planned = plan(&classifier, "How do I pool websockets?", substantial, Some(passed))
+            .expect("test: a passing stamped turn clears the gate and plans a bucket");
+        assert_eq!(
+            planned.bucket_key(),
+            format!("{}/owner", planned.trait_kind),
+            "a settled passing turn keys on domain x role"
+        );
+
+        // A FAILING verdict must still STAMP (hiding the failure is not the job) and
+        // must then be refused by the evidence floor. If `settle` hardcoded `true`,
+        // this plans a bucket and the assertion below fails — that is the mutation.
+        let failed = captured
+            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::fail("the patch did not apply")))
+            .expect("test: a receipt stamps regardless of which way the verdict went");
+        assert!(
+            !failed.outcome,
+            "settle must carry a FAILING verdict through rather than defaulting to success"
+        );
+        assert!(
+            plan(&classifier, "How do I pool websockets?", substantial, Some(failed)).is_none(),
+            "a turn credited to a FAILED card submits nothing — same text plans fine \
+             when the verdict passes, so this None can only come from the evidence floor"
+        );
+
+        // what this catches: a settlement inventing the selection receipt it never
+        // got. A turn rooted at a card whose `owner`/`claim_id` were absent is still
+        // CARD-LINKED (so it stages, and must never fall through to immediate
+        // unlinked SFT), but it can never be stamped — not by a passing verdict,
+        // not by any verdict. If `settle` ever defaulted the missing receipt to an
+        // Owner role, both assertions below flip.
+        let claimless = CapturedCredit {
+            card_id: Uuid::from_u128(0x0d51573a),
+            claim: None,
+        };
+        assert!(
+            claimless.is_card_linked(),
+            "a rooted turn on a claimless card is still card-linked — it stages, \
+             because her edits landed in that checkout either way"
+        );
+        assert!(
+            claimless.settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"))).is_none(),
+            "no receipt captured at selection means no stamp is constructible later — \
+             a settlement cannot retroactively invent accountability"
+        );
+    }
+
     #[test]
     fn a_stamped_turn_keys_on_domain_role_a_failed_one_submits_nothing_unstamped_is_unchanged() {
         let classifier = DomainClassifier::new();
@@ -818,4 +1581,127 @@ mod tests {
             "still classified into a bucket so it maps to a measuring gym"
         );
     }
+
+    /// HOME is process-global, so the override must be EXCLUSIVE and restored even on
+    /// panic. Same shape as the guards in commands/memory/mod.rs and
+    /// model_registry/artifacts.rs — this is the third copy in the tree, which is a
+    /// small argument for a shared test primitive, but not one this card widens to.
+    struct HomeGuard {
+        prior: Option<String>,
+        _lock: tokio::sync::OwnedMutexGuard<()>,
+    }
+    impl HomeGuard {
+        async fn set(home: &std::path::Path) -> Self {
+            use std::sync::OnceLock;
+            static ENV_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+            let lock = ENV_LOCK
+                .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+                .lock_owned()
+                .await;
+            let prior = std::env::var("HOME").ok();
+            std::env::set_var("HOME", home);
+            Self { prior, _lock: lock }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    /// A real `DataModule` over a real SQLite adapter, reached through the SAME
+    /// dispatch path production uses — `stage_credit` gets no special seam.
+    fn data_runtime() -> Arc<CommandExecutor> {
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        registry.register(Arc::new(crate::modules::data::DataModule::new()));
+        let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        registry.install_executor_on_all(executor.clone());
+        executor
+    }
+
+    fn conn_as(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+    ) -> Connection<InProcessTransport> {
+        Connection::new(InProcessTransport::new(
+            executor,
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
+        ))
+    }
+
+    fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {
+        crate::cognition::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
+    }
+
+    // what this catches: Astra/S6 on 799b8fe9 — `stage_credit` DISCARDED the results of
+    // data/ensure-schema and data/batch. Those commands report adapter failure INSIDE the
+    // payload as StorageResult{success:false}, and InProcessTransport forwards it
+    // unchanged, so `.await?` caught only transport breakage. A child constraint
+    // violation rolled the batch back and the caller still returned Ok(submission_id) and
+    // emitted `training.credit.staged` for rows that do not exist. THE TEST PASSED
+    // BECAUSE THE CHECK COULD NOT FAIL (card 36e8fdd6).
+    //
+    // The rollback is provoked the way production would hit it: TWO receipts sharing one
+    // submittedRequestId, violating the unique index on (stagedCreditId,
+    // submittedRequestId) that persona::register_substrate_orm_entities exists to keep.
+    #[tokio::test]
+    async fn a_rolled_back_batch_is_never_reported_as_staged_credit() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .expect("register staging entities");
+
+        let persona = Uuid::new_v4();
+        // Built directly rather than through a WorkCard fixture: what `stage_credit`
+        // consumes is the CREDIT, and a claimless card is the honest minimum — a card
+        // with no accepted claim still stages, it simply can never be stamped.
+        let credit = CapturedCredit {
+            card_id: Uuid::new_v4(),
+            claim: None,
+        };
+        let executor = data_runtime();
+
+        // POSITIVE CONTROL FIRST. Without it, a `stage_credit` that refused everything
+        // would satisfy the rollback assertion below for entirely the wrong reason.
+        let ok = stage_credit(
+            &conn_as(executor.clone(), persona),
+            "anwen",
+            &credit,
+            vec![receipt("req-a"), receipt("req-b")],
+            "prompt".to_string(),
+            "completion".to_string(),
+        )
+        .await;
+        let submission = ok.expect("two DISTINCT receipts stage cleanly");
+
+        // THE REGRESSION: one submittedRequestId used twice violates the unique index,
+        // the batch rolls back, and `stage_credit` must REPORT that rather than hand back
+        // a submission id for rows the database threw away.
+        let rolled_back = stage_credit(
+            &conn_as(executor, persona),
+            "anwen",
+            &credit,
+            vec![receipt("req-dup"), receipt("req-dup")],
+            "prompt".to_string(),
+            "completion".to_string(),
+        )
+        .await;
+        let err = rolled_back
+            .expect_err("a rolled-back batch must NOT be reported as staged credit");
+        assert_ne!(
+            format!("{err}"),
+            String::new(),
+            "the failure must name itself, not surface as an empty error"
+        );
+
+        // And the two runs are distinguishable: the control produced a real id.
+        assert!(!submission.is_nil(), "the clean stage returned a real submission id");
+    }
+
 }

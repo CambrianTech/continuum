@@ -206,6 +206,18 @@ pub fn register_substrate_orm_entities(
 ) -> Result<(), crate::orm::RegistrationError> {
     registry.register::<hw_tier_descriptor::HwTierDescriptor>()?;
     registry.register::<role_template::RoleTemplate>()?;
+    // Card 0d51573a. Registered HERE, at boot, not merely derived: `data/ensure-schema`
+    // resolves a collection by NAME through this registry, so an unregistered
+    // collection errors "Unknown collection …" — and the failure if you skip it is
+    // SILENT rather than loud, which is why it is worth a comment. sqlite's create
+    // path auto-creates a missing table from the DATA'S SHAPE, so staging would
+    // appear to succeed while producing tables carrying none of the declared
+    // indexes, including the unique one on (stagedCreditId, submittedRequestId)
+    // that stops one generation being credited to a staged turn twice. A dropped
+    // unique index is not a visible failure; it is a constraint that quietly stops
+    // being enforced.
+    registry.register::<training_producer::StagedCredit>()?;
+    registry.register::<training_producer::StagedCreditGeneration>()?;
     Ok(())
 }
 

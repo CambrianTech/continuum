@@ -815,6 +815,24 @@ impl LlmDeliberationFaculty {
     /// live served one.
     const COMPLETION_SHARE_DENOM: u32 = 2;
 
+    /// The share of the served window the REQUIRED room payload may occupy.
+    ///
+    /// Room updates are required input — a citizen must see what was said to her —
+    /// so `fit_messages` may not drop them the way it drops old history. Unbounded,
+    /// that makes a BUSY ROOM into a mute citizen: measured 2026-09-09 on BigMama,
+    /// `delib.turn.demand` reported `conversation_tokens=53522` against a 23,040
+    /// window (`over_window=3.14`). The required side then exceeded the whole
+    /// budget, `grounding_budget` saturated to 0, and `GroundingPlan::minimum`
+    /// refused 192 of 229 cognition cycles — 84% — with
+    /// "requires 810 tokens, but only 0 are available". Both live citizens were
+    /// mute for hours while `serving/status` read `ready: true`.
+    ///
+    /// The window is not the fault and raising it does not fix this: the room grows
+    /// without bound and any fixed window is eventually 3x under. What is bounded
+    /// here is what the turn REQUIRES; the rest of the room is still reachable
+    /// through history and recall.
+    const ROOM_UPDATE_SHARE_DENOM: u32 = 4;
+
     /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
     /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the
     /// 27B (the model thinks before it calls; 2026-09-07 acceptance rows), so
@@ -2425,6 +2443,12 @@ impl LlmDeliberationFaculty {
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([latest_result.is_some() as u8]);
+        // Demoted room updates ride in ordinary history: still shown when the window
+        // has room, trimmed by the existing front-drop only under pressure. They are
+        // chronologically newer than prior history, so they append to its end.
+        let (room_updates, demoted_updates) = self.split_room_updates(ws);
+        let mut messages = messages;
+        messages.extend(demoted_updates);
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
@@ -2432,15 +2456,66 @@ impl LlmDeliberationFaculty {
             grounding_at,
             stimulus,
             latest_result,
-            room_updates: ws
-                .room_updates
-                .iter()
-                .map(|message| {
-                    let body = message.render_room_update();
-                    ChatMessage::text("user", body)
-                })
-                .collect(),
+            room_updates,
         }
+    }
+
+    /// Split this turn's room updates into the part that is REQUIRED and the part
+    /// that merely wants to be there. Nothing is discarded.
+    ///
+    /// Room updates are required input — `required_tokens` counts them and
+    /// `fit_messages` never drops them — so an unbounded room is a citizen who can
+    /// no longer think. But simply CUTTING the excess would be worse than the bug:
+    /// a task, a correction, or an instruction that arrived earlier in the batch
+    /// would be deleted before she ever read it, and she would have no way to know
+    /// something was taken.
+    ///
+    /// So the overflow is DEMOTED, not dropped. The newest share stays required; the
+    /// older remainder is returned to be appended to ordinary history, where it is
+    /// still shown whenever the window has room and is trimmed by the existing
+    /// front-drop only under real pressure — the same treatment every other past
+    /// message gets. The information survives; only its claim on the required budget
+    /// does not.
+    ///
+    /// Returns `(required_newest, demoted_older)`, both chronological.
+    fn split_room_updates(&self, ws: &Workspace) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
+        let window = self.binding.load().context_window as usize;
+        let cap = window / Self::ROOM_UPDATE_SHARE_DENOM as usize;
+        let mut required: Vec<ChatMessage> = Vec::new();
+        let mut demoted: Vec<ChatMessage> = Vec::new();
+        let mut used = 0usize;
+        // Newest first so the REQUIRED half is the freshest room state.
+        for message in ws.room_updates.iter().rev() {
+            let rendered = ChatMessage::text("user", message.render_room_update());
+            let cost = Self::messages_cost(std::slice::from_ref(&rendered));
+            // The newest update is always required, even if it alone exceeds the
+            // share: one oversized message must not silently demote the very
+            // stimulus the turn exists to answer. If it genuinely cannot fit, the
+            // existing capacity fault says so honestly.
+            if required.is_empty() || used.saturating_add(cost) <= cap {
+                used += cost;
+                required.push(rendered);
+            } else {
+                demoted.push(rendered);
+            }
+        }
+        required.reverse();
+        demoted.reverse();
+        if !demoted.is_empty() {
+            let demoted_tokens = Self::messages_cost(&demoted);
+            crate::probe!(
+                class = "delib.room_updates.demoted",
+                persona = %self.persona_name,
+                window = window,
+                cap = cap,
+                required = required.len(),
+                required_tokens = used,
+                demoted = demoted.len(),
+                demoted_tokens = demoted_tokens,
+                "required room payload exceeded its share of the window — the newest                  stay REQUIRED and the older were demoted to ordinary history, which                  is still rendered when the window allows. Nothing was discarded: an                  unbounded required payload is what makes a busy room a mute citizen."
+            );
+        }
+        (required, demoted)
     }
 
     /// The per-message chat-template overhead every message pays, whether it is being
@@ -3895,6 +3970,87 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        // what this catches: an UNBOUNDED required room payload making a citizen mute.
+        // Room updates are required input — `required_tokens` counts them and
+        // `fit_messages` never drops them — so before this bound a busy room drove the
+        // required side past the whole window, `grounding_budget` saturated to 0, and
+        // every turn was refused. Measured live 2026-09-09: conversation_tokens=53522
+        // against a 23,040 window, 192 of 229 cognition cycles refused (84%), both
+        // citizens mute for hours while serving reported ready.
+        //
+        // Mutation check: delete the cap in `bounded_room_updates` (collect every
+        // update instead) and this goes RED with a capacity_error — which is exactly
+        // the production symptom.
+        #[tokio::test]
+        async fn a_busy_room_cannot_make_a_citizen_mute() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let window = 8192u32;
+            let mut ws = Workspace::new("what is the state of the board?");
+            // Forty updates of ~200 tokens each: far past the whole window, let alone
+            // its required share. This is a normal busy room, not a pathological one.
+            let updates: Vec<_> = (0..40)
+                .map(|i| {
+                    Arc::new(crate::persona::service_loop::IncomingMessage {
+                        event_id: Uuid::new_v4(),
+                        lamport: i as u64 + 1,
+                        peer_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        text: format!("update {i} ") + &"room chatter ".repeat(200),
+                    })
+                })
+                .collect();
+            ws.room_updates = Arc::new(updates);
+            ws.now_ms = Some(1);
+
+            let faculty = LlmDeliberationFaculty::new(
+                Uuid::new_v4(),
+                "Ivar",
+                "You are Ivar.",
+                adapter,
+            )
+            .with_context_window(window);
+
+            let view = faculty.prompt_view(&ws);
+            assert!(
+                view.capacity_error.is_none(),
+                "a busy room must not exhaust the required budget: {:?}",
+                view.capacity_error
+            );
+
+            // The NEWEST updates stay REQUIRED; the older ones are DEMOTED, not
+            // deleted. Joel, 2026-09-09: "maybe trim clipped or killed important
+            // information the persona needed to complete things" — a task or a
+            // correction that arrived earlier in the batch must not vanish before
+            // she reads it, so the overflow rides in ordinary history instead.
+            let (required, demoted) = faculty.split_room_updates(&ws);
+            assert!(!required.is_empty(), "the newest update is always required");
+            assert!(
+                !demoted.is_empty(),
+                "an over-share payload must actually be demoted"
+            );
+            assert_eq!(
+                required.len() + demoted.len(),
+                40,
+                "every update survives somewhere — demotion must not DELETE"
+            );
+            assert!(
+                required
+                    .last()
+                    .expect("required is non-empty")
+                    .content_text()
+                    .contains("update 39"),
+                "the NEWEST update must stay required"
+            );
+            assert!(
+                demoted
+                    .first()
+                    .expect("demoted is non-empty")
+                    .content_text()
+                    .contains("update 0"),
+                "the OLDEST update is the one demoted, and it is still present"
+            );
+        }
 
         fn history_with_stimulus(stimulus: &str) -> Workspace {
             use crate::cognition::workspace::Burst;

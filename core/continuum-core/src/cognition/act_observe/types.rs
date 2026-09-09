@@ -54,6 +54,23 @@ pub struct SettleOutcome {
     /// attribute a lived turn to the activity it happened in; before this, the
     /// room survived only as prose inside `world_state`'s header.
     pub room: uuid::Uuid,
+    /// EVERY generation this turn dispatched, in dispatch order, FAULTS INCLUDED
+    /// (card 0d51573a).
+    ///
+    /// **Named `generation_receipts`, never `receipts`.** This module already has
+    /// a different "receipt": [`WmKind::Receipt`] is a TOOL-EXECUTION record in
+    /// working memory, and `any_real_receipt` gates confabulation detection on it
+    /// a few hundred lines away in `settle.rs`. These are INFERENCE-CALL records.
+    /// One word, two meanings, one module is how a reader ends up reasoning about
+    /// the wrong thing — so the field says which it is.
+    ///
+    /// Accumulated exactly like [`Self::metrics`]: the settle loop folds each
+    /// step's contribution in as it goes, because a turn is N deliberations and
+    /// there is no canonical singular request among them. A fault is a VARIANT
+    /// here, not an absence — a generation that failed and a generation that never
+    /// happened must not collapse to the same value, or the turn's record claims
+    /// cleaner provenance than the turn had.
+    pub generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 }
 
 impl SettleOutcome {
@@ -73,6 +90,11 @@ impl SettleOutcome {
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
             touched_paths: Vec::new(),
+            // Empty, and truthfully so: this constructor is for a turn where the
+            // deliberation call failed or was killed by a watchdog BEFORE any
+            // Workspace existed to carry receipts. That is the one case where
+            // "no receipts" is the honest record rather than a dropped one.
+            generation_receipts: Vec::new(),
             room,
         }
     }
@@ -140,10 +162,28 @@ impl SettleStep {
     /// before returning, so those never surface here — an over-budget or un-carried
     /// act both land on `Acted`, which the live handler treats as "re-perceive next
     /// tick", the correct move either way.
-    pub fn from_settled(outcome: SettleOutcome) -> (SettleStep, Option<TurnMetrics>) {
+    pub fn from_settled(
+        outcome: SettleOutcome,
+    ) -> (
+        SettleStep,
+        Option<TurnMetrics>,
+        Vec<crate::cognition::provenance::GenerationReceipt>,
+    ) {
         let metrics = Some(outcome.metrics);
+        // Carried out beside the metrics rather than dropped with the rest of the
+        // outcome. This projection is where the live path narrows a SettleOutcome
+        // to a SettleStep, so anything not lifted here is GONE for the turn — and
+        // the receipts are the one thing the credit record cannot reconstruct
+        // afterwards (card 0d51573a).
+        let generation_receipts = outcome.generation_receipts;
         if let Some(error) = outcome.inference_error {
-            return (SettleStep::InferenceFailed { error }, metrics);
+            // The fault path keeps them too: a turn whose deliberation failed still
+            // dispatched generations, and that is precisely when provenance matters.
+            return (
+                SettleStep::InferenceFailed { error },
+                metrics,
+                generation_receipts,
+            );
         }
         let step = match outcome.decision {
             Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
@@ -152,7 +192,7 @@ impl SettleStep {
             Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
             Decision::Pass { reason } => SettleStep::Passed { reason },
         };
-        (step, metrics)
+        (step, metrics, generation_receipts)
     }
 }
 
@@ -180,13 +220,14 @@ mod tests {
             inference_error,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
+            generation_receipts: Vec::new(),
         }
     }
 
     #[test]
     fn from_settled_projects_every_terminal_outcome_onto_the_live_handler() {
         // Speak → Spoke (the prose reaches the room).
-        let (step, m) = SettleStep::from_settled(outcome_with(
+        let (step, m, _) = SettleStep::from_settled(outcome_with(
             Decision::Speak {
                 text: "hello".into(),
             },
@@ -196,7 +237,7 @@ mod tests {
         assert!(m.is_some(), "metrics always carry through");
 
         // RaiseUnprompted also speaks — initiative is still an utterance.
-        let (step, _) = SettleStep::from_settled(outcome_with(
+        let (step, _, _) = SettleStep::from_settled(outcome_with(
             Decision::RaiseUnprompted {
                 text: "idea".into(),
             },
@@ -206,7 +247,7 @@ mod tests {
 
         // Budget-spent Act → Acted (results already in memory; live handler
         // re-perceives next tick — the honest long-tail degrade).
-        let (step, _) = SettleStep::from_settled(outcome_with(
+        let (step, _, _) = SettleStep::from_settled(outcome_with(
             Decision::Act {
                 calls: vec![],
                 intent: "kept gathering".into(),
@@ -216,11 +257,11 @@ mod tests {
         assert!(matches!(step, SettleStep::Acted { .. }));
 
         // Pass → Passed (chosen silence, honored) — reason carried through.
-        let (step, _) = SettleStep::from_settled(outcome_with(Decision::pass(), None));
+        let (step, _, _) = SettleStep::from_settled(outcome_with(Decision::pass(), None));
         assert!(matches!(step, SettleStep::Passed { reason: None }));
 
         // A reasoned pass carries her words through the projection.
-        let (step, _) = SettleStep::from_settled(outcome_with(
+        let (step, _, _) = SettleStep::from_settled(outcome_with(
             Decision::Pass {
                 reason: Some("done — patch ready".into()),
             },
@@ -232,7 +273,7 @@ mod tests {
 
         // inference_error present → InferenceFailed, REGARDLESS of decision — a
         // failed model is never a chosen silence.
-        let (step, _) = SettleStep::from_settled(outcome_with(
+        let (step, _, _) = SettleStep::from_settled(outcome_with(
             Decision::pass(),
             Some("lane refused model".into()),
         ));

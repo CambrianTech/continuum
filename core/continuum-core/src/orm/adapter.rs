@@ -111,7 +111,16 @@ pub trait StorageAdapter: Send + Sync {
 
     // ─── Batch Operations ────────────────────────────────────────────────────
 
-    /// Execute batch operations
+    /// Execute batch operations ATOMICALLY — all of them commit, or none do.
+    ///
+    /// The first failing operation aborts the batch, rolls back every earlier
+    /// operation in it, and returns `StorageResult::err`. Implementations must
+    /// NOT report partial application as success: a caller writing a parent row
+    /// and its dependent rows in one batch relies on never observing the parent
+    /// without them.
+    ///
+    /// A failure is an ERROR, not a `{"success": false}` element in the returned
+    /// vector. The returned values describe operations that all committed.
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>>;
 
     // ─── Schema Operations ───────────────────────────────────────────────────

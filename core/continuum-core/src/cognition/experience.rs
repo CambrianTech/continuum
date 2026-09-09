@@ -719,6 +719,7 @@ mod tests {
             inference_error: None,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
+            generation_receipts: Vec::new(),
         }
     }
 
@@ -982,6 +983,7 @@ mod tests {
             inference_error: None,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
+            generation_receipts: Vec::new(),
         };
         let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
         assert!(
@@ -1194,6 +1196,7 @@ mod tests {
             inference_error: None,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
+            generation_receipts: Vec::new(),
         };
         let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(

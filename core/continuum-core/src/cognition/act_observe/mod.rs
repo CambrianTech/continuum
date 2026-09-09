@@ -957,7 +957,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) = settle_step(
+        let (deferred, _, _) = settle_step(
             &cycle,
             "go",
             false,
@@ -975,7 +975,7 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) = settle_step(
+        let (ran, _, _) = settle_step(
             &cycle,
             "go",
             true,
@@ -1891,7 +1891,7 @@ mod tests {
             8,
         )
         .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
-        let (step, _) = settle_step(
+        let (step, _, _) = settle_step(
             &cycle,
             "[eval]\npeer: can you check 2+2?",
             true,
@@ -1914,7 +1914,7 @@ mod tests {
             8,
         )
         .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
-        let (step2, _) = settle_step(
+        let (step2, _, _) = settle_step(
             &cycle2,
             "[eval]\npeer: can you check 2+2?",
             true,
@@ -1959,7 +1959,7 @@ mod tests {
             8,
         )
         .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
-        let (step, _) = settle_step(
+        let (step, _, _) = settle_step(
             &cycle,
             "[eval]\npeer: please provide the content of the test files",
             true,
@@ -1988,7 +1988,7 @@ mod tests {
             8,
         )
         .with_acting(body_with_wm(exec2, admission(), Arc::clone(&wm2)));
-        let (step2, _) = settle_step(
+        let (step2, _, _) = settle_step(
             &cycle2,
             "[eval]\npeer: could you draft example test data?",
             true,
