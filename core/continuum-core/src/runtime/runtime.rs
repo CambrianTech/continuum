@@ -686,6 +686,13 @@ impl Runtime {
     }
 
     /// Share the production phase bounds with deterministic timeout tests.
+    /// `shutdown`, with the per-phase bound passed IN.
+    ///
+    /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
+    /// reached: no test module takes two seconds, so `SaveTimedOut` and `JoinTimedOut`
+    /// were only ever constructed as literals and asserted on. Deleting the timeout
+    /// handling here would have left every one of those tests green — the outcomes were
+    /// described by the suite and never produced by it. Found by IntelMac.
     async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
         let modules = self.registry.list_modules();
         info!(
@@ -1974,8 +1981,29 @@ mod conditional_modules_tests {
         // cannot save inside the bound must produce `SaveTimedOut` and make the stop
         // non-durable — this is the outcome the CLI's exit code keys on, and until now no
         // test had ever caused one.
-        // Paused time makes the phase deadline fire before the longer inner sleep.
-        // A wall-clock scheduler stall can make both ready, producing a spurious failure.
+        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
+        //
+        // With a real clock, a 400ms sleep against a 50ms timeout can still return
+        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
+        // scheduler stalls long enough that the sleep has already completed by the time
+        // the timeout is polled, the inner future wins. Under CI contention that is not
+        // hypothetical.
+        //
+        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
+        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
+        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
+        // and it never certifies anything wrongly.
+        //
+        // Saying so precisely because the first version of this comment claimed the
+        // opposite ("fails open", certifying durability on a machine that cannot tell).
+        // That was wrong: it conflated the production path RETURNING Clean with the TEST
+        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
+        // the retraction of the stronger claim from IntelMac, who traced it rather than
+        // just accepting the correction.
+        //
+        // Paused, the clock advances only when every task is idle and only to the nearest
+        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
+        // machine, every time.
         #[tokio::test(start_paused = true)]
         async fn a_module_that_cannot_save_in_time_produces_save_timed_out() {
             let runtime = Runtime::new();
@@ -2001,8 +2029,29 @@ mod conditional_modules_tests {
         // that stopped bounding the join would report `Clean` — and with `shutdown`
         // contractually being "release resources, FLUSH BUFFERS", that would claim
         // durability over a flush that may not have happened.
-        // Paused time makes the phase deadline fire before the longer inner sleep.
-        // A wall-clock scheduler stall can make both ready, producing a spurious failure.
+        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
+        //
+        // With a real clock, a 400ms sleep against a 50ms timeout can still return
+        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
+        // scheduler stalls long enough that the sleep has already completed by the time
+        // the timeout is polled, the inner future wins. Under CI contention that is not
+        // hypothetical.
+        //
+        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
+        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
+        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
+        // and it never certifies anything wrongly.
+        //
+        // Saying so precisely because the first version of this comment claimed the
+        // opposite ("fails open", certifying durability on a machine that cannot tell).
+        // That was wrong: it conflated the production path RETURNING Clean with the TEST
+        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
+        // the retraction of the stronger claim from IntelMac, who traced it rather than
+        // just accepting the correction.
+        //
+        // Paused, the clock advances only when every task is idle and only to the nearest
+        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
+        // machine, every time.
         #[tokio::test(start_paused = true)]
         async fn a_module_that_cannot_join_in_time_produces_join_timed_out() {
             let runtime = Runtime::new();
