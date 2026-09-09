@@ -1282,7 +1282,7 @@ async fn serve_persona_loop_inner(
                     Some(ctx.identity.peer_id.to_string()),
                 );
                 // A citizen holding a card lives at that repo — in a ROOM turn too.
-                let held_hands = crate::cognition::persona_workspace::root_at_held_card(
+                let held_card = crate::cognition::persona_workspace::root_at_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     conversation,
@@ -1309,12 +1309,16 @@ async fn serve_persona_loop_inner(
                 // her hands — NOT back out of `acting_card_of`, which is a mutable
                 // persona-global that a later focus rebind would re-attribute to the
                 // wrong card (card 0d51573a).
-                turn_credit = held_hands.as_ref().and_then(|h| h.credit().cloned());
+                // From the CARD, not from her hands: a missing checkout or a failed
+                // rooting leaves `hands` None while the card stays known, and reading
+                // credit off the hands would turn that workspace failure into "ordinary
+                // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
+                turn_credit = held_card.credit.clone();
                 turn_generation_receipts = settled_receipts;
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
-                if let Some(hands) = &held_hands {
+                if let Some(hands) = &held_card.hands {
                     if let Err(e) =
                         crate::cognition::persona_workspace::restore_acting_workspace(hands).await
                     {

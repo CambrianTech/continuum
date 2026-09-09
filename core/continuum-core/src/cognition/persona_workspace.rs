@@ -708,16 +708,6 @@ pub(crate) struct ActingHands {
     executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
     /// Her working memory: the restore clears the receipt scope the rooting set.
     working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
-    /// The card this turn was rooted at, CAPTURED AT SELECTION (card 0d51573a).
-    ///
-    /// Taken here rather than read back at turn completion because `acting_card_of`
-    /// is a mutable persona-global: a later focus rebind would re-attribute a
-    /// finished turn to a card it was never worked under. The capture happens
-    /// before any await, so the credit describes the turn that actually ran.
-    ///
-    /// `None` for a handless cycle or a turn holding no card — ordinary
-    /// conversation, which keeps the immediate-submit path.
-    credit: Option<crate::persona::training_producer::CapturedCredit>,
 }
 
 impl ActingHands {
@@ -728,15 +718,7 @@ impl ActingHands {
             persona_name: a.persona_name.clone(),
             executor: a.executor.clone(),
             working_memory: a.working_memory.clone(),
-            // Absent by construction here: this is the plain constructor, and only
-            // `root_at_held_card` knows which card was selected.
-            credit: None,
         })
-    }
-
-    /// The card credit captured at selection, if this turn was rooted at one.
-    pub(crate) fn credit(&self) -> Option<&crate::persona::training_producer::CapturedCredit> {
-        self.credit.as_ref()
     }
 }
 
@@ -878,17 +860,43 @@ pub(crate) async fn root_at_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
     conversation: &dyn crate::persona::service_loop::PersonaConversation,
-) -> Option<ActingHands> {
-    let citizen = conversation.stream_citizen()?;
-    let held = citizen.active_claims().await.ok()?;
+) -> HeldCardTurn {
+    // The card is UNKNOWN on each of these: there is no citizen, her claims could not be
+    // read, or she holds nothing. Absent credit is the honest answer here — unlike the
+    // workspace failures further down, where the card IS known.
+    let Some(citizen) = conversation.stream_citizen() else {
+        return HeldCardTurn::unheld();
+    };
+    let Ok(held) = citizen.active_claims().await else {
+        return HeldCardTurn::unheld();
+    };
     if held.is_empty() {
-        return None;
+        return HeldCardTurn::unheld();
     }
     // ONE card per turn here too (`work_focus`): rooting on every held title
     // was ambiguous for a two-card holder, so her message turns kept her hands
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
-    let focus = crate::persona::work_focus::focus_card(held.iter())?;
+    let Some(focus) = crate::persona::work_focus::focus_card(held.iter()) else {
+        return HeldCardTurn::unheld();
+    };
+    // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
+    // Everything that can still fail below is a fact about the WORKSPACE — no checkout
+    // on this node, no acting body, a rooting error. NONE of them is a fact about which
+    // card she is working, so none of them may erase the credit.
+    //
+    // Captured AT SELECTION and carried out BESIDE the hands rather than on them
+    // (Astra/S6 on 799b8fe9). The first cut hung credit off `ActingHands`, so every
+    // workspace failure below silently produced `credit: None` — and the training
+    // producer reads `None` as "ordinary unlinked conversation" and SUBMITS IT
+    // IMMEDIATELY as positive SFT, skipping the evidence floor. That is a pre-existing
+    // rooting absence being reused as a different fact, which is the substrate defect
+    // shape: one value, two meanings. A turn whose card is known stays STAGED even when
+    // her hands never reached it.
+    //
+    // `from_selected_card` is PURE — it reads the card and invents nothing, so a
+    // claimless card yields a credit with no receipt rather than a fabricated one.
+    let credit = crate::persona::training_producer::CapturedCredit::from_selected_card(focus);
     // Resolve through the SAME authority that staged the card at claim time
     // (`card_staging::checkout_path_for`), which keys a generic repo card on its
     // CARD ID via airc's per-card worktree.
@@ -914,29 +922,66 @@ pub(crate) async fn root_at_held_card(
             "held card has no checkout on this node — her hands stay at the resident \
              root for this turn, and anything she writes lands there, NOT in the card"
         );
-        return None;
+        // Her hands stay home, but she is still working THIS card — the credit rides out.
+        return HeldCardTurn::unrooted(credit);
     };
     // Never trust the registry over the engine: a failed restore could leave a
     // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
     // correct repo-relative edit answered "File not found … did you mean swe/…").
     // Rooting is idempotent; do it every turn she holds a card.
-    let mut hands = ActingHands::of(cycle)?;
-    // CAPTURE AT SELECTION, before the await below. `focus` is the card the work
-    // store actually handed us, so the credit is true of THIS turn and cannot be
-    // re-attributed by a later focus rebind. `from_selected_card` is PURE — it
-    // reads the card and invents nothing, so a claimless card yields a credit with
-    // no receipt rather than a fabricated one.
-    hands.credit = Some(
-        crate::persona::training_producer::CapturedCredit::from_selected_card(focus),
-    );
+    // A pure-cognition persona has no hands at all. Still her card.
+    let Some(hands) = ActingHands::of(cycle) else {
+        return HeldCardTurn::unrooted(credit);
+    };
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
             note_acting_card(hands.persona_id, focus.card_id.as_uuid());
-            Some(hands)
+            HeldCardTurn {
+                credit: Some(credit),
+                hands: Some(hands),
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
-            None
+            // Rooting failed, so nothing may act on the card — but the turn is still
+            // hers and still card-linked, so it stages rather than submitting.
+            HeldCardTurn::unrooted(credit)
+        }
+    }
+}
+
+/// What a turn knows about the card being worked, kept SEPARATE from whether her hands
+/// reached it.
+///
+/// These are two different facts and collapsing them is what card 0d51573a's review
+/// caught: a missing checkout, an absent acting body, or a rooting error all left the
+/// credit `None`, and [`crate::persona::training_producer::produce`] reads `None` as
+/// ordinary unlinked conversation — submitting the turn immediately as positive SFT
+/// instead of staging it behind the evidence floor. A workspace failure must never be
+/// readable as "she was not working a card".
+pub(crate) struct HeldCardTurn {
+    /// The card the work store selected for this turn, present whenever one was
+    /// selected — regardless of what happened to the workspace afterwards.
+    pub(crate) credit: Option<crate::persona::training_producer::CapturedCredit>,
+    /// Her hands, rooted at that card's checkout. `None` means nothing may act on the
+    /// card this turn; it says nothing about which card it is.
+    pub(crate) hands: Option<ActingHands>,
+}
+
+impl HeldCardTurn {
+    /// No card was selected: no citizen, unreadable claims, or nothing held.
+    fn unheld() -> Self {
+        Self {
+            credit: None,
+            hands: None,
+        }
+    }
+
+    /// The card is known and her hands did not reach it.
+    fn unrooted(credit: crate::persona::training_producer::CapturedCredit) -> Self {
+        Self {
+            credit: Some(credit),
+            hands: None,
         }
     }
 }
@@ -2600,10 +2645,6 @@ mod tests {
                 persona_name: "Anwen".to_string(),
                 executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
                 working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
-                // This fixture builds hands directly rather than through the focus
-                // site, so there is no selected card to capture credit from. `None`
-                // is the honest value, and it matches `ActingHands::of`.
-                credit: None,
             }
         }
 

@@ -927,12 +927,21 @@ async fn stage_credit<T: Transport>(
     let submission_id = Uuid::new_v4();
 
     for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
-        conn.commands()
+        let result = conn
+            .commands()
             .execute_value(
                 "data/ensure-schema",
-                json!({ "collection": collection, "handle": handle }),
+                // `dbPath`, NOT `handle`. `CommandRequest<P>` flattens the params into the
+                // SAME JSON object as its own `handle: Option<HandleRef>`, so a
+                // top-level "handle" is claimed by the ENVELOPE and never reaches the
+                // params' `handle: Option<String>` — the request fails to deserialize
+                // with `invalid type: string, expected struct HandleRef`. The params
+                // declare `#[serde(alias = "dbPath")]` precisely as the escape hatch
+                // from that collision. One word, two meanings, one object.
+                json!({ "collection": collection, "dbPath": handle }),
             )
             .await?;
+        storage_ok(&result, "data/ensure-schema", collection)?;
     }
 
     let parent = StagedCredit {
@@ -976,13 +985,57 @@ async fn stage_credit<T: Transport>(
         });
     }
 
-    conn.commands()
+    let result = conn
+        .commands()
         .execute_value(
             "data/batch",
-            json!({ "operations": operations, "handle": handle }),
+            // `dbPath` for the same reason as above: a top-level "handle" is eaten by
+            // the envelope's HandleRef field.
+            json!({ "operations": operations, "dbPath": handle }),
         )
         .await?;
+    storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
     Ok(submission_id)
+}
+
+/// Fail on a command that SUCCEEDED AS A CALL and FAILED AS AN OPERATION.
+///
+/// `execute_value` returns `Ok` for anything that made the round trip, and the data
+/// commands report adapter failure INSIDE the payload as
+/// `StorageResult { success: false, error }` — which `InProcessTransport` forwards
+/// unchanged. So `.await?` catches a broken transport and nothing else: a child
+/// constraint violation rolls the whole batch back, the call still returns `Ok`, and
+/// without this the caller emitted `training.credit.staged` with a submission id for
+/// rows that do not exist (Astra/S6 on 799b8fe9). Transport success is not operation
+/// success, and a receipt that cannot report failure is not a receipt.
+fn storage_ok(
+    value: &serde_json::Value,
+    command: &str,
+    collection: &str,
+) -> Result<(), ClientError> {
+    // Decoded as the TYPED result the data layer actually returns, not by poking at a
+    // "success" key: a shape change should break the build here rather than silently
+    // read as false and start rejecting every staging attempt.
+    let decoded: crate::orm::types::StorageResult<serde_json::Value> =
+        serde_json::from_value(value.clone())?;
+    if decoded.success {
+        return Ok(());
+    }
+    // `Refused` is the variant whose own doc says "substrate accepted the command but
+    // returned an error" — which is precisely this: the call arrived, the operation
+    // did not happen.
+    Err(ClientError::Refused {
+        command: command.to_string(),
+        reason: format!(
+            "`{collection}`: {}",
+            decoded
+                .error
+                .as_deref()
+                // An unsuccessful result with no message is still a failure. Saying so
+                // beats inventing a reason or, worse, reading the silence as success.
+                .unwrap_or("reported success=false with no error message"),
+        ),
+    })
 }
 
 pub(crate) async fn submit_training<T: Transport>(
@@ -1528,4 +1581,127 @@ mod tests {
             "still classified into a bucket so it maps to a measuring gym"
         );
     }
+
+    /// HOME is process-global, so the override must be EXCLUSIVE and restored even on
+    /// panic. Same shape as the guards in commands/memory/mod.rs and
+    /// model_registry/artifacts.rs — this is the third copy in the tree, which is a
+    /// small argument for a shared test primitive, but not one this card widens to.
+    struct HomeGuard {
+        prior: Option<String>,
+        _lock: tokio::sync::OwnedMutexGuard<()>,
+    }
+    impl HomeGuard {
+        async fn set(home: &std::path::Path) -> Self {
+            use std::sync::OnceLock;
+            static ENV_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+            let lock = ENV_LOCK
+                .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+                .lock_owned()
+                .await;
+            let prior = std::env::var("HOME").ok();
+            std::env::set_var("HOME", home);
+            Self { prior, _lock: lock }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    /// A real `DataModule` over a real SQLite adapter, reached through the SAME
+    /// dispatch path production uses — `stage_credit` gets no special seam.
+    fn data_runtime() -> Arc<CommandExecutor> {
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        registry.register(Arc::new(crate::modules::data::DataModule::new()));
+        let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        registry.install_executor_on_all(executor.clone());
+        executor
+    }
+
+    fn conn_as(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+    ) -> Connection<InProcessTransport> {
+        Connection::new(InProcessTransport::new(
+            executor,
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
+        ))
+    }
+
+    fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {
+        crate::cognition::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
+    }
+
+    // what this catches: Astra/S6 on 799b8fe9 — `stage_credit` DISCARDED the results of
+    // data/ensure-schema and data/batch. Those commands report adapter failure INSIDE the
+    // payload as StorageResult{success:false}, and InProcessTransport forwards it
+    // unchanged, so `.await?` caught only transport breakage. A child constraint
+    // violation rolled the batch back and the caller still returned Ok(submission_id) and
+    // emitted `training.credit.staged` for rows that do not exist. THE TEST PASSED
+    // BECAUSE THE CHECK COULD NOT FAIL (card 36e8fdd6).
+    //
+    // The rollback is provoked the way production would hit it: TWO receipts sharing one
+    // submittedRequestId, violating the unique index on (stagedCreditId,
+    // submittedRequestId) that persona::register_substrate_orm_entities exists to keep.
+    #[tokio::test]
+    async fn a_rolled_back_batch_is_never_reported_as_staged_credit() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .expect("register staging entities");
+
+        let persona = Uuid::new_v4();
+        // Built directly rather than through a WorkCard fixture: what `stage_credit`
+        // consumes is the CREDIT, and a claimless card is the honest minimum — a card
+        // with no accepted claim still stages, it simply can never be stamped.
+        let credit = CapturedCredit {
+            card_id: Uuid::new_v4(),
+            claim: None,
+        };
+        let executor = data_runtime();
+
+        // POSITIVE CONTROL FIRST. Without it, a `stage_credit` that refused everything
+        // would satisfy the rollback assertion below for entirely the wrong reason.
+        let ok = stage_credit(
+            &conn_as(executor.clone(), persona),
+            "anwen",
+            &credit,
+            vec![receipt("req-a"), receipt("req-b")],
+            "prompt".to_string(),
+            "completion".to_string(),
+        )
+        .await;
+        let submission = ok.expect("two DISTINCT receipts stage cleanly");
+
+        // THE REGRESSION: one submittedRequestId used twice violates the unique index,
+        // the batch rolls back, and `stage_credit` must REPORT that rather than hand back
+        // a submission id for rows the database threw away.
+        let rolled_back = stage_credit(
+            &conn_as(executor, persona),
+            "anwen",
+            &credit,
+            vec![receipt("req-dup"), receipt("req-dup")],
+            "prompt".to_string(),
+            "completion".to_string(),
+        )
+        .await;
+        let err = rolled_back
+            .expect_err("a rolled-back batch must NOT be reported as staged credit");
+        assert_ne!(
+            format!("{err}"),
+            String::new(),
+            "the failure must name itself, not surface as an empty error"
+        );
+
+        // And the two runs are distinguishable: the control produced a real id.
+        assert!(!submission.is_nil(), "the clean stage returned a real submission id");
+    }
+
 }
