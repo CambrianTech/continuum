@@ -62,5 +62,42 @@ fn main() {
     let empty = [' '; 9];
     assert_eq!(ttt_winner(&empty), ' ');
 
+    // Exhaustive sweep: every one of the 3^9 = 19,683 possible boards, checked
+    // against an independent reference computed a different way (per-mark line
+    // scan with `all` over triples). Also tallies full-board outcomes and checks
+    // the X<->O symmetry invariant on them.
+    const LINES: [[usize; 3]; 8] = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6],
+    ];
+    let mut x_win = 0u32;
+    let mut o_win = 0u32;
+    let mut draw = 0u32;
+    for mask in 0..(1usize << 27) {
+        let mut b = [' '; 9];
+        for i in 0..9usize {
+            let v = (mask >> (i * 3)) & 3;
+            b[i] = if v == 0 { 'X' } else if v == 1 { 'O' } else { ' ' };
+        }
+        // Independent reference: a mark wins iff some line is all that mark.
+        let mut ref_w = ' ';
+        for m in ['X', 'O'] {
+            if LINES.iter().any(|l| b[l[0]] == m && b[l[1]] == m && b[l[2]] == m) {
+                ref_w = m;
+                break;
+            }
+        }
+        assert_eq!(ttt_winner(&b), ref_w, "mismatch on {:?}", b);
+        if b.iter().all(|c| *c != ' ') {
+            match ref_w {
+                'X' => x_win += 1,
+                'O' => o_win += 1,
+                _ => draw += 1,
+            }
+        }
+    }
+    // X<->O swap is a bijection on the board space, so full-board win counts match.
+    assert_eq!(x_win, o_win);
+
     println!("all ttt_winner checks passed");
+    println!("exhaustive 3^9=19683 boards agree with reference; X-wins={} O-wins={} draws={}", x_win, o_win, draw);
 }
