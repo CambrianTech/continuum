@@ -81,9 +81,10 @@ impl InferenceError {
     ///
     /// `body` is the raw response body. llama-server sends
     /// `{"error":{"code":400,"message":"…","type":"exceed_context_size"}}`;
-    /// we key on the machine-readable `type` first and fall back to the two
-    /// numbers in `message` only when the tag is absent (older builds), so a
-    /// backend that labels its errors is never re-parsed out of prose.
+    /// Current structured errors carry `n_prompt_tokens` and `n_ctx`. Their
+    /// values are authoritative even when the diagnostic prose disagrees.
+    /// Legacy responses without a machine-readable type retain their old
+    /// compatibility decoder; a tagged response never falls back to prose.
     /// Cost note: an overflow is only ever a 400, so the JSON parse is gated on
     /// that status — every other failure classifies without touching the body.
     /// Nothing here runs on the success path.
@@ -103,13 +104,37 @@ impl InferenceError {
     fn parse_context_exceeded(body: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(body).ok()?;
         let error = value.get("error")?;
-        let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
-
-        let tagged = error.get("type").and_then(|t| t.as_str()) == Some("exceed_context_size");
-        let (requested, available) = Self::two_numbers(message)?;
-        if !tagged && !message.contains("context size") {
+        if let Some(tag) = error.get("type") {
+            if !matches!(
+                tag.as_str(),
+                Some("exceed_context_size" | "exceed_context_size_error")
+            ) {
+                return None;
+            }
+            let count = |field: &str| {
+                error
+                    .get(field)?
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0)
+            };
+            return Some(match (count("n_prompt_tokens"), count("n_ctx")) {
+                (Some(requested), Some(available)) => Self::ContextExceeded {
+                    requested,
+                    available,
+                },
+                _ => Self::Protocol(
+                    "tagged context overflow lacks valid positive n_prompt_tokens/n_ctx".into(),
+                ),
+            });
+        }
+        // Older, untyped gateways provide no structured authority. Keep this
+        // compatibility path isolated from every tagged provider response.
+        let message = error.get("message")?.as_str()?;
+        if !message.contains("context size") {
             return None;
         }
+        let (requested, available) = Self::two_numbers(message)?;
         Some(Self::ContextExceeded {
             requested,
             available,
@@ -177,14 +202,39 @@ mod tests {
     // so the settle loop can re-render instead of resending forever.
     #[test]
     fn tagged_llama_server_overflow_classifies_with_both_numbers() {
-        let body = r#"{"error":{"code":400,"message":"request (16751 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"exceed_context_size"}}"#;
+        let body = r#"{"error":{"code":400,"message":"diagnostic text is not the authority: 1, 2","type":"exceed_context_size_error","n_prompt_tokens":29722,"n_ctx":29440}}"#;
         assert_eq!(
             InferenceError::from_http(400, body),
             InferenceError::ContextExceeded {
-                requested: 16751,
-                available: 16384
+                requested: 29722,
+                available: 29440
             }
         );
+    }
+
+    // what this catches: aa5888a9 — malformed structured evidence must not
+    // obtain plausible capacity from the message, nor from another error tag.
+    #[test]
+    fn tagged_overflow_never_recovers_counts_from_diagnostic_prose() {
+        for counts in [
+            "",
+            r#","n_prompt_tokens":"29722","n_ctx":29440"#,
+            r#","n_prompt_tokens":29722,"n_ctx":0"#,
+            r#","n_prompt_tokens":4294967296,"n_ctx":29440"#,
+        ] {
+            let body = format!(
+                r#"{{"error":{{"type":"exceed_context_size_error","message":"request (29722 tokens) exceeds the available context size (29440 tokens)"{counts}}}}}"#
+            );
+            assert!(matches!(
+                InferenceError::from_http(400, &body),
+                InferenceError::Protocol(_)
+            ));
+        }
+        let foreign = r#"{"error":{"type":"invalid_request_error","message":"request (29722 tokens) exceeds the available context size (29440 tokens)","n_prompt_tokens":29722,"n_ctx":29440}}"#;
+        assert!(matches!(
+            InferenceError::from_http(400, foreign),
+            InferenceError::Transient(_)
+        ));
     }
 
     // what this catches: the reason this type exists at all — a context

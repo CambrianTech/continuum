@@ -137,6 +137,8 @@ function detailView(detail: Detail): TemplateResult {
   const request = object(submitted?.request) ?? (detail.header.status === 'legacy' ? submitted : undefined);
   const terminal = object(detail.terminal);
   const response = object(terminal?.response) ?? object(submitted?.response);
+  const reasoning = typeof response?.reasoning === 'string' && response.reasoning.trim()
+    ? response.reasoning : undefined;
   const messages = Array.isArray(request?.messages) ? request.messages : [];
   const header = detail.header;
   const pending = header.status === 'submitted';
@@ -167,9 +169,11 @@ function detailView(detail: Detail): TemplateResult {
     <h4>Recorded output</h4>
     ${response ? html`${response.error ? html`<p class="mp-issue">${pretty(response.error)}</p>` : nothing}
       <p class="mp-muted">Finish: ${text(response.finishReason ?? 'not recorded')}</p><pre class="mp-output">${text(response.text)}</pre>
+      ${reasoning ? html`<details class="mp-message"><summary>Recorded reasoning</summary><pre>${reasoning}</pre></details>` : nothing}
       ${response.toolCalls ? html`<details class="mp-message" open><summary>Proposed tool calls · recorded only</summary><pre>${pretty(response.toolCalls)}</pre></details>` : nothing}
       <p class="mp-muted">Tool observations appear in subsequent recorded inputs. A proposed tool call alone does not prove execution.</p>
       ${response.timing || response.usage ? html`<details class="mp-message"><summary>Serving timing and usage</summary><pre>${pretty({ timing: response.timing, usage: response.usage })}</pre></details>` : nothing}
+      <details class="mp-message"><summary>Exact response</summary><pre>${pretty(response)}</pre></details>
       ` : html`<p class=${pending ? 'mp-muted' : 'mp-issue'}>${pending
         ? 'Submitted · no terminal receipt yet. The call may be queued, running, or interrupted by process exit.'
         : text(terminal?.error ?? submitted?.error ?? 'No response recorded.')}</p>`}

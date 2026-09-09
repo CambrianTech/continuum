@@ -5,8 +5,7 @@
 
 use std::time::Instant;
 
-use serde_json::Value;
-
+use crate::ai::inference_error::InferenceError;
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
 /// Bound on the wait for response HEADERS after POSTing a generation — the
@@ -32,19 +31,22 @@ pub(crate) const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
 const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Send `body` through `request_builder` (headers already set, bodyless so it clones per
-/// attempt). `Ok(response)` is a 2xx response ready to stream; every failure is the
-/// turn-facing error text, already probed.
+/// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
+/// typed turn-facing failure, already probed. `body` owns one prepared encoding;
+/// transport retries share its allocation rather than serializing again.
 pub(crate) async fn send_with_lane_retry(
     cfg: &OpenAICompatibleConfig,
     request_builder: reqwest::RequestBuilder,
-    body: &Value,
-) -> Result<reqwest::Response, String> {
+    body: Vec<u8>,
+) -> Result<reqwest::Response, InferenceError> {
+    // reqwest moves this Vec into its shared byte body. Cloning the prepared
+    // builder below shares that allocation, including across transport retries.
+    let request_builder = request_builder.body(body);
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
     // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
     // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
-    // bounded linear backoff, then fail loud. `request_builder` carries no body yet
-    // (`.json` is applied per attempt below), so `try_clone` always succeeds.
+    // bounded linear backoff, then fail loud.
+    // The prepared byte body is cloneable; no stream or serializer is replayed.
     // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
     // listening yet; 503 = listening but still loading). One counter, so the total
     // time this call can spend waiting on a relaunching lane stays bounded.
@@ -53,7 +55,8 @@ pub(crate) async fn send_with_lane_retry(
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()
-            .expect("bodyless request builder is always cloneable");
+            .expect("prepared byte request is cloneable"); // JUSTIFIED: body is owned bytes, never a stream
+
         // BOUNDED pre-first-byte wait: a poisoned lane can accept the request
         // and never return headers (hung prefill) — with no bound here, the
         // caller's ServingLanePermit is held FOREVER and one wedged call
@@ -64,7 +67,7 @@ pub(crate) async fn send_with_lane_retry(
         // but FINITE — RTOS rule: every hold is bounded.
         let sent = tokio::time::timeout(
             std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
-            attempt_builder.json(body).send(),
+            attempt_builder.send(),
         )
         .await
         .map_err(|_| {
@@ -142,7 +145,7 @@ pub(crate) async fn send_with_lane_retry(
                     chain.push(src.to_string());
                     cur = src;
                 }
-                return Err(format!(
+                return Err(InferenceError::Unavailable(format!(
                     "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
                     cfg.name,
                     send_start.elapsed().as_millis(),
@@ -158,7 +161,7 @@ pub(crate) async fn send_with_lane_retry(
                     e.is_connect(),
                     e.is_request(),
                     e.is_body()
-                ));
+                )));
             }
         }
     };
@@ -167,21 +170,9 @@ pub(crate) async fn send_with_lane_retry(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         // Classify ONCE, here, where the status code and the raw body still
-        // exist. Downstream this is still carried as a String (the trait's
-        // error type has not moved yet — that is the threading commit), so
-        // the CLASSIFICATION is emitted as a probe rather than lost: an
-        // operator reading the receipt now sees WHICH kind of failure this
-        // was, and for an overflow, both token counts.
-        //
-        // Why that matters: settle.rs retries every fault blind, which is
-        // right for a transient wedge (#386, ~2/3 recover) and useless for
-        // ContextExceeded — same prompt, same slot, same 400, forever.
-        // Until the type reaches settle, this probe is the only place the
-        // difference is visible at all.
-        let classified = crate::ai::inference_error::InferenceError::from_http(
-            status.as_u16(),
-            &body,
-        );
+        // exist. Preserve the same classification for the caller's admission
+        // decision; prose is only an operator-facing representation.
+        let classified = InferenceError::from_http(status.as_u16(), &body);
         let (requested, available) = match &classified {
             crate::ai::inference_error::InferenceError::ContextExceeded {
                 requested,
@@ -198,7 +189,7 @@ pub(crate) async fn send_with_lane_retry(
             available_tokens = available,
             "backend rejected the request — classified at the seam"
         );
-        return Err(format!("{} returned {}: {}", cfg.name, status, body));
+        return Err(classified);
     }
 
     Ok(response)

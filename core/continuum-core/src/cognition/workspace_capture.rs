@@ -246,6 +246,7 @@ mod tests {
             decision: None,
             metrics: None,
             stable: false,
+            standing_grounding: false,
             fault: None,
             raw_generation: None,
             trailing: false,
@@ -263,6 +264,7 @@ mod tests {
             }),
             metrics: None,
             stable: false,
+            standing_grounding: false,
             fault: None,
             // #210: the verbatim generation carries a leading-char fumble the parser
             // tolerated — the capture must preserve it so model-vs-harness is decidable.

@@ -154,8 +154,8 @@ impl PerceptionFact for InboundRestates {
     }
 }
 
-/// How much history is actually visible (#152): "as discussed earlier"
-/// claims become checkable against her own senses instead of assumed.
+/// Input available before prompt fitting. These are source turns, including
+/// perception, rather than a count of conversation messages actually submitted.
 struct ContextBounds;
 
 impl PerceptionFact for ContextBounds {
@@ -164,10 +164,10 @@ impl PerceptionFact for ContextBounds {
     }
 
     fn render(&self, cx: &FactContext) -> Option<String> {
-        let visible = cx.turns.len();
+        let available = cx.turns.len();
         Some(format!(
-            "[context] you can currently see the last {visible} message{} of this conversation — anything earlier is not in view unless you recall it from memory",
-            if visible == 1 { "" } else { "s" }
+            "[context] {available} input turn{} available before prompt fitting; this request may retain only part of that history",
+            if available == 1 { " was" } else { "s were" }
         ))
     }
 }
@@ -216,8 +216,8 @@ impl PerceptionFact for StepsLedger {
         let mut used = 0usize;
         for (head_room, line) in archive.iter().rev() {
             let in_scope = match (cx.room_id, head_room) {
-                (None, _) => true,          // no scope to partition by — render all
-                (Some(_), None) => true,    // unscoped head — never hidden
+                (None, _) => true,       // no scope to partition by — render all
+                (Some(_), None) => true, // unscoped head — never hidden
                 (Some(r), Some(h)) => *h == r,
             };
             if !in_scope {
@@ -393,6 +393,7 @@ mod tests {
                 false,
             ),
             turn("Asha", "sounds good, starting now", true),
+            BurstTurn::perception("The current room is available."),
         ];
         let own = vec!["sounds good, starting now".to_string()];
         let cx = FactContext {
@@ -405,7 +406,7 @@ mod tests {
         };
         let facts = render_facts(&cx, &FactPolicy::default());
         assert_eq!(facts.len(), 1, "quiet room: only the bounds fact renders");
-        assert!(facts[0].starts_with("[context] you can currently see the last 2 messages"));
+        assert_eq!(facts[0], "[context] 3 input turns were available before prompt fitting; this request may retain only part of that history");
     }
 
     // what this catches: FactPolicy::disable actually silences a fact — the

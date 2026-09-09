@@ -102,7 +102,12 @@ pub fn record_focus(persona: Uuid) {
 
 /// Level for a faculty pulse: full while fresh, fading linearly to 0 over the
 /// window; `None` when nothing fired within it (an honest "awaiting").
-fn faculty_level(persona: Uuid, axis: &'static str, window: Duration, full_scale: u64) -> Option<u8> {
+fn faculty_level(
+    persona: Uuid,
+    axis: &'static str,
+    window: Duration,
+    full_scale: u64,
+) -> Option<u8> {
     let pulse = FACULTY_PULSE.lock().unwrap_or_else(|e| e.into_inner());
     let (n, at) = pulse.get(&(persona, axis))?;
     let age = at.elapsed();
@@ -244,8 +249,7 @@ pub(crate) fn sample_vitals(
         let mut vitals = BTreeMap::new();
         vitals.insert(
             "activity".to_string(),
-            pct_u64(delta, ACT_FULL_SCALE_TICKS)
-                .max(pct_u64(act_pulse, ACT_PULSE_FULL_SCALE)),
+            pct_u64(delta, ACT_FULL_SCALE_TICKS).max(pct_u64(act_pulse, ACT_PULSE_FULL_SCALE)),
         );
         vitals.insert(
             "queue".to_string(),
@@ -433,12 +437,21 @@ mod tests {
         let p = Uuid::from_u128(0x77);
         assert!(faculty_level(p, "reason", Duration::from_secs(60), 1).is_none());
         record_reasoning(p);
-        assert_eq!(faculty_level(p, "reason", Duration::from_secs(60), 1), Some(100));
+        assert_eq!(
+            faculty_level(p, "reason", Duration::from_secs(60), 1),
+            Some(100)
+        );
         record_recall(p, 3);
-        assert_eq!(faculty_level(p, "recall", Duration::from_secs(60), 6), Some(50));
+        assert_eq!(
+            faculty_level(p, "recall", Duration::from_secs(60), 6),
+            Some(50)
+        );
         assert!(faculty_level(p, "recall", Duration::from_millis(0), 6).is_none());
         record_focus(p);
-        assert_eq!(faculty_level(p, "focus", Duration::from_secs(60), 1), Some(100));
+        assert_eq!(
+            faculty_level(p, "focus", Duration::from_secs(60), 1),
+            Some(100)
+        );
     }
 
     use super::*;
@@ -452,23 +465,25 @@ mod tests {
     /// from `identity.peer_id.as_uuid()`.
     fn registry_with(peer_id: Uuid) -> std::sync::Arc<PersonaWorkspaceRegistry> {
         let registry = std::sync::Arc::new(PersonaWorkspaceRegistry::new());
-        registry.get_or_build(PersonaBrainConfig {
-            persona_id: peer_id,
-            persona_name: "Asha".to_string(),
-            system_prompt: "You are Asha.".to_string(),
-            admission: std::sync::Arc::new(AdmissionState::new(std::sync::Arc::new(
-                RecallMetadataRegistry::new(),
-            ))),
-            adapter: std::sync::Arc::new(HeuristicInferenceAdapter::new()),
-            capacity: None,
-            grounding_sources: Vec::new(),
-            embedder: None,
-            tool_executor: None,
-            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
-            defer_recall: false,
-            defer_grounding: false,
-            suppress_recall: false,
-        });
+        registry
+            .get_or_build(PersonaBrainConfig {
+                persona_id: peer_id,
+                persona_name: "Asha".to_string(),
+                system_prompt: "You are Asha.".to_string(),
+                admission: std::sync::Arc::new(AdmissionState::new(std::sync::Arc::new(
+                    RecallMetadataRegistry::new(),
+                ))),
+                adapter: std::sync::Arc::new(HeuristicInferenceAdapter::new()),
+                capacity: None,
+                grounding_sources: Vec::new(),
+                embedder: None,
+                tool_executor: None,
+                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                defer_recall: false,
+                defer_grounding: false,
+                suppress_recall: false,
+            })
+            .expect("test: resident checkpoint is readable");
         registry
     }
 

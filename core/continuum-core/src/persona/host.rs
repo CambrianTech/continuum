@@ -397,8 +397,9 @@ impl PersonaSpawnSupervisor {
     /// is edge-triggered, keyed by `until_ms` so a renewed hold announces
     /// itself afresh.
     fn probe_held_out_once(agent: &str, hold: &crate::persona::roster_hold::RosterHold) {
-        static PROBED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, u64)>>> =
-            std::sync::OnceLock::new();
+        static PROBED: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashSet<(String, u64)>>,
+        > = std::sync::OnceLock::new();
         let set = PROBED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
         let Ok(mut guard) = set.lock() else {
             return; // poisoned = a prior panic mid-insert; skip the probe, never the filter
@@ -511,12 +512,16 @@ impl PersonaSpawnSupervisor {
         let plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan> = unattended
             .iter()
             .zip(profiles)
-            .map(|(rt, profile)| crate::persona::spawner_module::MaterializedPersonaPlan {
-                role: desired.role,
-                instance:
-                    crate::modules::persona_instance_manager::PersonaInstanceInfo::from_runtime(rt),
-                profile,
-            })
+            .map(
+                |(rt, profile)| crate::persona::spawner_module::MaterializedPersonaPlan {
+                    role: desired.role,
+                    instance:
+                        crate::modules::persona_instance_manager::PersonaInstanceInfo::from_runtime(
+                            rt,
+                        ),
+                    profile,
+                },
+            )
             .collect();
 
         // The reconciler's other entrance passes the SAME operator-intent
@@ -705,6 +710,9 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
         | SupervisorError::AdapterWarmup {
             slot_index, role, ..
         }
+        | SupervisorError::WorkspaceRegistration {
+            slot_index, role, ..
+        }
         | SupervisorError::RuntimeMissing {
             slot_index, role, ..
         } => (Some(*slot_index), *role),
@@ -775,7 +783,9 @@ mod tests {
                 &self,
                 _profile: &crate::persona::inference_profile::PersonaInferenceProfile,
             ) -> Result<Arc<dyn crate::ai::adapter::AIProviderAdapter>, String> {
-                panic!("factory must not be consulted when the registry has no unattended citizens");
+                panic!(
+                    "factory must not be consulted when the registry has no unattended citizens"
+                );
             }
         }
 

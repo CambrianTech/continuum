@@ -204,6 +204,7 @@ mod tests {
             decision: None,
             metrics: None,
             stable: false,
+            standing_grounding: false,
             fault: None,
             raw_generation: None,
             trailing: false,
@@ -225,6 +226,7 @@ mod tests {
                 ..Default::default()
             }),
             stable: false,
+            standing_grounding: false,
             fault: None,
             raw_generation: None,
             trailing: false,

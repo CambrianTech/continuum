@@ -94,10 +94,11 @@ impl ServiceModule for ShouldRespondModule {
                 // Run the persona's continuous mind over the burst. The decision
                 // is the OUTPUT of cognition; `None` (nothing won attention
                 // strongly enough to externalize) is effective silence = Pass.
-                let room = crate::identity::ActivityRoom::from_uuid(p.room_id)
-                    .map_err(|_| {
-                        format!("{SHOULD_RESPOND_COMMAND}: room_id must be a real (non-nil) room (#425)")
-                    })?;
+                let room = crate::identity::ActivityRoom::from_uuid(p.room_id).map_err(|_| {
+                    format!(
+                        "{SHOULD_RESPOND_COMMAND}: room_id must be a real (non-nil) room (#425)"
+                    )
+                })?;
                 let workspace = cycle
                     .run_framed(
                         crate::cognition::workspace::Burst::raw_in(room, p.burst),
@@ -163,22 +164,24 @@ mod tests {
 
     fn registry_with_ivar(persona: Uuid) -> Arc<PersonaWorkspaceRegistry> {
         let registry = Arc::new(PersonaWorkspaceRegistry::new());
-        registry.get_or_build(PersonaBrainConfig {
-            persona_id: persona,
-            persona_name: "Ivar".to_string(),
-            system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
-            admission: seed_admission(1_000_000_000),
-            adapter: Arc::new(HeuristicInferenceAdapter::new()),
-            capacity: None,
-            grounding_sources: Vec::new(),
-            embedder: None,
-            tool_executor: None,
-            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
-            // Harness: synchronous perception (deferral is a live-path concern).
-            defer_recall: false,
-            defer_grounding: false,
-            suppress_recall: false,
-        });
+        registry
+            .get_or_build(PersonaBrainConfig {
+                persona_id: persona,
+                persona_name: "Ivar".to_string(),
+                system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
+                admission: seed_admission(1_000_000_000),
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                capacity: None,
+                grounding_sources: Vec::new(),
+                embedder: None,
+                tool_executor: None,
+                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                // Harness: synchronous perception (deferral is a live-path concern).
+                defer_recall: false,
+                defer_grounding: false,
+                suppress_recall: false,
+            })
+            .expect("test: resident checkpoint is readable");
         registry
     }
 

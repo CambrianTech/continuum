@@ -27,6 +27,12 @@ Continuum personas are **citizens**, not query handlers. The README has the full
 
 **Per-persona means each AI has its own mind.** The cycle runs per-persona. Shared optimizations (the `analyze` single-flight cache) sit underneath, not above.
 
+Resident checkpoint loading must preserve that continuity: an unreadable or
+invalid checkpoint refuses registration rather than waking a blank mind. See
+[checkpoint recovery](../personas/CHECKPOINT-RECOVERY.md) for the explicit,
+digest-bound adoption path when upgrading a legacy core that wrote to a different
+data root. A selected legacy snapshot is not an acknowledged final-turn flush.
+
 ---
 
 ## 2. The Brain Pipeline — the verbs that exist

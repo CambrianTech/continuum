@@ -519,6 +519,19 @@ pub trait AIProviderAdapter: Send + Sync {
 
     // ─── Text Generation ────────────────────────────────────────────────────
 
+    /// Generate with typed transport/admission failures. Backends can migrate
+    /// their existing streaming implementation without changing legacy callers
+    /// or fabricating a classification for an untyped provider error.
+    async fn generate_stream_checked(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.generate_stream(request, sink)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Generate text (convenience drain over [`generate_stream`])
     /// Handles both plain text generation AND tool calling
     async fn generate_text(
@@ -550,6 +563,9 @@ pub trait AIProviderAdapter: Send + Sync {
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
         let response = self.generate_text(request).await?;
+        if sink.is_closed() {
+            return Ok(response); // No observer: keep the result without cloning discarded chunks.
+        }
         if let Some(reasoning) = response.reasoning.as_ref() {
             if !reasoning.is_empty() {
                 let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));

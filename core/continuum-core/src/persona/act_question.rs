@@ -475,7 +475,14 @@ pub(crate) async fn ask_the_act_question(
                             // is the A.6 arrival room already resolved
                             // for this turn, so the report lands in the
                             // room whose work it reports on.
-                            if let Err(e) = conversation.say_in(turn_room, &text).await {
+                            if let Err(e) = crate::persona::service_loop::publish_own_speech(
+                                conversation,
+                                ctx.identity.peer_id,
+                                turn_room,
+                                &text,
+                            )
+                            .await
+                            {
                                 tracing::warn!(
                                     error = %e,
                                     "work-turn report failed to send"
