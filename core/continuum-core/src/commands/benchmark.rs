@@ -3572,6 +3572,28 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     } else {
         swe_bench::grade(&instance, candidate.as_deref()).await
     };
+    // STAMP the adapter and the citizen at the ONE place this arm produces a verdict. The
+    // verdict store is SHARED across adapters (benchmarks are adapters, not runners), so a
+    // reader must be able to ask which benchmark scored a row and whose hands it scored —
+    // as FIELDS. Recovering either by parsing the shape of `instance_id` or by guessing at
+    // a workspace path is the string-shape inference this repo forbids, and it is why a
+    // resolved row could never say who resolved it.
+    let verdict = {
+        let mut verdict = verdict;
+        verdict.benchmark = p.dataset.clone().unwrap_or_default();
+        // The staged checkout's own path names its owner; `citizen_peer_dir_of` is the
+        // inverse of the layout `resolve_solver_dir` builds, so writer and reader cannot
+        // drift. An operator grade of a bare patch has no citizen dir and stays empty —
+        // honestly absent, never a guessed name.
+        verdict.solver = p
+            .workspace
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(citizen_peer_dir_of)
+            .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        verdict
+    };
 
     // PERSIST THE VERDICT before anything else consumes it. Until 2026-08-18 this arm
     // computed a score, taught from it, and returned it — writing nothing durable. Two real
@@ -5245,7 +5267,13 @@ fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
                 instance: Some(instance),
                 attempt: None,
                 max_attempts: None,
-                solver: None,
+                // WHO was graded. The verdict has carried this since gym grades became
+                // durable; rendering None here would have thrown it away again one layer
+                // later, and a capability row that cannot name the citizen it scored is
+                // not a capability row. Empty (an operator grade of a bare patch) stays
+                // None rather than becoming an empty-string solver the roster then fails
+                // to resolve.
+                solver: Some(v.solver.clone()).filter(|s| !s.is_empty()),
                 // The verdict IS the phase. `record_verdict` refuses gold and errored
                 // verdicts, so every row here is a real capability result — never a control
                 // and never an env fault dressed as a score.

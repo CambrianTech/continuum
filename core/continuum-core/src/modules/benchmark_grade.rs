@@ -420,6 +420,51 @@ fn normalized_gym_task(
     Ok(task)
 }
 
+/// The gym arm's verdict, as a pure value — so what gets BANKED is testable without a
+/// room, a citizen, or a compiler run. Extracted the day gym grades became durable: the
+/// interesting half of that change is the record's CONTENT (a fraction the board can
+/// render, a failing test it can name, the adapter and the citizen it belongs to), and
+/// content built inline inside an async grader is content nothing ever asserts on.
+fn gym_verdict(
+    task_id: &str,
+    bench: &str,
+    owner: &str,
+    passed: bool,
+    detail: &str,
+) -> crate::cognition::swe_bench::SweVerdict {
+    crate::cognition::swe_bench::SweVerdict {
+        instance_id: task_id.to_string(),
+        resolved: passed,
+        // A gym task is ONE held-out suite: it passed or it did not. 1/1 vs 0/1 keeps the
+        // board's fraction meaningful instead of rendering 0/0 on every row.
+        f2p_passed: usize::from(passed),
+        f2p_total: 1,
+        // No regression suite exists for a gym task — 0/0, honestly empty, never a
+        // fabricated pass count.
+        p2p_passed: 0,
+        p2p_total: 0,
+        // No pristine-tree gate to fail: the task ships with no solution, so a pass always
+        // distinguishes real work from a no-op.
+        gate_ok: true,
+        // A verdict must TEACH, not just score: name the suite that failed and carry the
+        // compiler/assertion output a reviewer would paste, capped so a page of rustc
+        // cannot bloat the store.
+        failed_tests: if passed {
+            Vec::new()
+        } else {
+            vec![task_id.to_string()]
+        },
+        failure_excerpt: if passed {
+            None
+        } else {
+            Some(detail.chars().take(2000).collect())
+        },
+        benchmark: bench.to_string(),
+        solver: owner.to_string(),
+        ..Default::default()
+    }
+}
+
 /// Grade a GYM bench card (`[bench frontier-rs] calc_pow: …`) from the file the owner's
 /// hands wrote. The task resolves from the SAME embedded gym `benchmark/dispatch` loaded,
 /// normalized by the SAME `require_hands_for_code` rule — so the path graded here is
@@ -457,36 +502,69 @@ async fn grade_gym_card(
         .join(&owner)
         .join("workspace")
         .join(&solution_file);
-    let msg = match std::fs::read_to_string(&path) {
+    // The graded OUTCOME is carried as a value, and the room line is rendered FROM it.
+    // It used to be the other way round: the only typed thing was the prose, and the
+    // probe recovered the score by reading its own emoji back out of the message. A fact
+    // that exists only inside a sentence cannot be recorded, projected, or learned from —
+    // which is exactly how four real gym passes on this box left no trace anywhere but
+    // chat ([[stdout-is-never-a-transport]]).
+    //
+    // `None` is an ABSENCE, not a zero: an unwritten or empty artifact means nobody was
+    // measured, and it must never be banked as a failed attempt — the same rule
+    // `record_verdict` already enforces for errored SWE verdicts.
+    let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
         Ok(code) if !code.trim().is_empty() => {
-            let (passed, detail) =
-                crate::cognition::gym_grader::test_grade(&code, &lang, &test).await;
-            if passed {
-                format!(
-                    "✅ [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
-                     passed the held-out tests. Nice work."
-                )
-            } else {
-                // rustc output can run pages; the room gets the head, enough to act on.
-                let head: String = detail.chars().take(600).collect();
-                format!("❌ [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
-            }
+            Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
         }
-        Ok(_) => format!(
-            "🧪 [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
+        Ok(_) | Err(_) => None,
+    };
+    let msg = match &outcome {
+        Some((true, _)) => format!(
+            "\u{2705} [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
+             passed the held-out tests. Nice work."
+        ),
+        Some((false, detail)) => {
+            // rustc output can run pages; the room gets the head, enough to act on.
+            let head: String = detail.chars().take(600).collect();
+            format!("\u{274c} [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
+        }
+        None if path.exists() => format!(
+            "\u{1f9ea} [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
              nothing to grade."
         ),
-        Err(_) => format!(
-            "🧪 [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
+        None => format!(
+            "\u{1f9ea} [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
              The card is graded on the file her hands write (code/write); it was never written."
         ),
     };
+
+    // DURABLE, through the ONE seam every other verdict passes: `record_verdict` stamps
+    // harness build, served model and grade time, refuses to let a later failure erase a
+    // recorded resolve, and — the reason this call IS the fix — puts the row exactly where
+    // `scan_verdict_cards` already looks. Every consumer downstream (`benchmark/runs`, the
+    // positron bench board, the run-room scoreboard) projects the verdict store and never
+    // this module, so until the gym arm wrote here a graded gym round was invisible to all
+    // of them: rounds reached `done`, cards genuinely RESOLVED, and the board honestly
+    // reported `attempted=0 resolved=0` because nothing gym-shaped had ever been recorded
+    // ([[silently-unwired-capability]] — two correct halves, no join key).
+    if let Some((passed, detail)) = &outcome {
+        let verdict = gym_verdict(task_id, bench, &owner, *passed, detail);
+        // A record that cannot be written is LOUD. Dropping it quietly would restore the
+        // exact invisibility this call exists to end.
+        crate::cognition::swe_bench::record_verdict(&verdict, false)
+            .map_err(|e| format!("record gym verdict for {task_id}: {e}"))?;
+    }
+
     crate::probe!(
         class = "benchmark_grade.verdict",
         card_id = %task_id,
         room_id = %room_id,
-        resolved = msg.starts_with('✅'),
-        "gym grade complete — posting verdict into the card's room"
+        benchmark = %bench,
+        solver = %owner,
+        // TYPED, off the grade — never recovered from the message text.
+        resolved = matches!(outcome, Some((true, _))),
+        recorded = outcome.is_some(),
+        "gym grade complete — verdict recorded, posting into the card's room"
     );
     crate::persona::airc_citizen::publish_text_in_room(airc, room_id, &msg)
         .await
@@ -816,5 +894,52 @@ mod tests {
             task.prompt.contains(file),
             "the normalized prompt must ASK for the file the grade reads"
         );
+    }
+
+    /// The half of grade-on-done that had no assertions until gym grades became durable:
+    /// what actually gets BANKED. Nested per the one-mod rule.
+    mod durable_gym_grades {
+        use super::*;
+
+        // what this catches: a gym PASS must bank a row the board can render as a score —
+        // resolved, a real 1/1 fraction, and the two identity fields (which adapter, whose
+        // hands). Regression for the three months of rounds that reached `done` with cards
+        // genuinely resolved while `benchmark/runs` reported 0: the grade existed only as
+        // an emoji in a chat line, so every projection over the verdict store saw nothing.
+        #[test]
+        fn a_gym_pass_banks_a_row_the_board_can_score() {
+            let v = gym_verdict("conway_step", "games-rs", "7711fe60-dead-beef-cafe-000000000001", true, "");
+            assert!(v.resolved, "a pass is banked as resolved");
+            assert_eq!(
+                (v.f2p_passed, v.f2p_total),
+                (1, 1),
+                "a gym task is one held-out suite — 1/1, never 0/0, or the board renders \
+                 a scored row as an empty fraction"
+            );
+            assert!(v.gate_ok, "no pristine gate exists to fail for a gym task");
+            assert!(v.failed_tests.is_empty(), "a pass names no failing test");
+            assert!(v.failure_excerpt.is_none(), "a pass carries no failure output");
+            assert_eq!(v.benchmark, "games-rs", "the ADAPTER is a field, not an inference from the id's shape");
+            assert_eq!(
+                v.solver, "7711fe60-dead-beef-cafe-000000000001",
+                "a capability row that cannot name the citizen it scored is not a capability row"
+            );
+        }
+
+        // what this catches: a FAIL must teach, not just score zero. The failing suite is
+        // named and the compiler/assertion output rides along capped — a bare `resolved:
+        // false` is indistinguishable downstream from an absence, which is the ambiguity
+        // SweVerdict::error exists to prevent.
+        #[test]
+        fn a_gym_failure_names_the_suite_and_carries_its_output() {
+            let detail = "e".repeat(5_000);
+            let v = gym_verdict("sum_evens", "hard-rs", "peer-1", false, &detail);
+            assert!(!v.resolved);
+            assert_eq!((v.f2p_passed, v.f2p_total), (0, 1), "a failure is 0 of 1, not 0 of 0");
+            assert_eq!(v.failed_tests, vec!["sum_evens".to_string()], "the verdict names what failed");
+            let excerpt = v.failure_excerpt.expect("a failure carries its output");
+            assert_eq!(excerpt.chars().count(), 2_000, "capped — a page of rustc never bloats the store");
+            assert!(excerpt.starts_with("eee"), "the cap takes the HEAD, where the first error is");
+        }
     }
 }

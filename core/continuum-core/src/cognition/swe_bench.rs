@@ -245,6 +245,24 @@ pub struct SweVerdict {
     /// verdicts read empty = "written before model provenance existed".
     #[serde(default)]
     pub served_model: String,
+    /// WHICH ADAPTER produced this verdict — `"swe-bench-lite"`, `"games-rs"`,
+    /// `"hard-rs"`. Benchmarks are adapters into one activity
+    /// (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md), so the verdict
+    /// store is shared and a reader must be able to ASK which adapter scored a row
+    /// rather than infer it from the SHAPE of `instance_id` — inferring a category
+    /// from a string's shape is exactly the mixing this repo forbids.
+    ///
+    /// `#[serde(default)]`: verdicts written before gym grades were durable read
+    /// empty, which honestly means "recorded when SWE was the only producer".
+    #[serde(default)]
+    pub benchmark: String,
+    /// WHO was graded — the owner's peer uuid, as a string because that is what the
+    /// board's roster lookup keys on. Empty when the grade had no owner (an operator
+    /// grade of a bare patch). Without it a verdict row can say a task resolved and
+    /// not say who resolved it, which is unusable as a capability record for a
+    /// citizen and unpublishable as a claim about a model.
+    #[serde(default)]
+    pub solver: String,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -4513,6 +4531,35 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             recorded_verdicts().len(),
             1,
             "neither the control nor the fault reached the durable record"
+        );
+
+        // THE STORE IS SHARED ACROSS ADAPTERS. A gym grade banks here through the same
+        // writer (`modules::benchmark_grade::gym_verdict` -> `record_verdict`), and the
+        // two identity fields must survive the trip: without them a reader has to infer
+        // which benchmark scored a row from the SHAPE of `instance_id`, and can never
+        // learn whose hands it scored at all. Regression for the gym rounds that resolved
+        // on this box while every projection over this store reported zero.
+        let gym = SweVerdict {
+            instance_id: "conway_step".into(),
+            resolved: true,
+            f2p_passed: 1,
+            f2p_total: 1,
+            gate_ok: true,
+            benchmark: "games-rs".into(),
+            solver: "7711fe60-0000-0000-0000-00000000abcd".into(),
+            ..Default::default()
+        };
+        assert!(record_verdict(&gym, false).unwrap().is_some(), "a gym pass is durable too");
+        let back = read_verdict("conway_step").expect("the gym verdict reads back");
+        assert_eq!(back.benchmark, "games-rs", "which ADAPTER scored it survives");
+        assert_eq!(
+            back.solver, "7711fe60-0000-0000-0000-00000000abcd",
+            "whose hands were scored survives"
+        );
+        assert_eq!(
+            recorded_verdicts().len(),
+            2,
+            "the board's enumerator sees SWE and gym rows in one store — one projection,              not a parallel gym board"
         );
 
         match prev {
