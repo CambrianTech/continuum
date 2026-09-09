@@ -2,12 +2,12 @@
 //! Compiles the ACTUAL workspace artifact (`sol_sum_evens.rs`) via include! —
 //! not a re-typed copy — and runs it against edge cases.
 
-mod sol {
-    include!("../sol_sum_evens.rs");
-}
+// The artifact declares `fn sum_evens` (not `pub fn`) — the EXACT signature is
+// part of the deliverable, so we must not add visibility. Including it at crate
+// root lands the function in this file's own scope; main calls it directly.
+include!("../sol_sum_evens.rs");
 
 fn main() {
-    use sol::sum_evens;
     let mut ok = true;
     macro_rules! chk { ($e:expr, $want:expr) => {{
         let got: i32 = sum_evens(&$e);
