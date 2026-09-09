@@ -112,6 +112,33 @@ pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borro
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
 const MAX_DISPATCHED: usize = 16;
 
+/// Borrowed provenance already carried by the result ring. Displaying a result
+/// in another activity must not erase where it came from or which operation ran.
+struct ResultAttribution<'a> {
+    seq: u64,
+    room: Option<Uuid>,
+    operation: Option<&'a str>,
+    spill_handle: Option<&'a str>,
+}
+
+impl std::fmt::Display for ResultAttribution<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}; room ", self.seq)?;
+        match self.room {
+            Some(room) => write!(f, "{room}")?,
+            None => f.write_str("unrecorded")?,
+        }
+        match self.operation {
+            Some(operation) => write!(f, "; operation {operation}")?,
+            None => f.write_str("; operation unrecorded")?,
+        }
+        if let Some(handle) = self.spill_handle {
+            write!(f, "; output handle: tool/output {handle}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Lifecycle of a dispatched (background) command the persona sent away — a sentinel,
 /// a compile, a debugger. Streams continuously: `Running` updates arrive in place, then a
 /// terminal `Done`/`Failed`. The handle (a UUID) is reusable — the mind can pass it to
@@ -541,11 +568,21 @@ impl WorkingMemory {
                 let start = chars.len().saturating_sub(per_entry);
                 chars[start..].iter().collect()
             };
-            let label = acts
-                .first()
-                .map(|o| o.call.name.clone())
-                .unwrap_or_else(|| "act".to_string());
-            let handle = acts.iter().find_map(|o| o.output.result.spill_handle.clone());
+            // A receipt can contain several operations. Retain their typed names
+            // in order instead of attributing the whole batch to its first call.
+            let mut label = String::new();
+            for act in &acts {
+                if !label.is_empty() {
+                    label.push_str(", ");
+                }
+                label.push_str(&act.call.name);
+            }
+            if label.is_empty() {
+                label.push_str("unrecorded");
+            }
+            let handle = acts
+                .iter()
+                .find_map(|o| o.output.result.spill_handle.clone());
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
             // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
@@ -691,7 +728,11 @@ impl WorkingMemory {
             slot.text = t.to_string();
             slot.turns_left = turns;
         } else {
-            p.push(TurnPinnedFact { key: key.to_string(), text: t.to_string(), turns_left: turns });
+            p.push(TurnPinnedFact {
+                key: key.to_string(),
+                text: t.to_string(),
+                turns_left: turns,
+            });
         }
     }
 
@@ -960,6 +1001,21 @@ impl WorkingMemory {
         (action.0 >= active_from).then_some(action)
     }
 
+    /// Render the complete active payload with its recorded provenance. The
+    /// caller retains the same raw bytes for request identity; this introduces
+    /// no second payload clone, serialization, or inferred current-room label.
+    pub(crate) fn full_result_message(&self, seq: u64, full: &str) -> String {
+        let results = self.recent_results.lock();
+        let recorded = results.iter().rev().find(|(id, _, _, _, _)| *id == seq);
+        let attribution = ResultAttribution {
+            seq,
+            room: recorded.and_then(|(_, room, _, _, _)| *room),
+            operation: recorded.map(|(_, _, _, operation, _)| operation.as_str()),
+            spill_handle: recorded.and_then(|(_, _, _, _, handle)| handle.as_deref()),
+        };
+        format!("Full result of your most recent action ({attribution}):\n{full}")
+    }
+
     /// The FULL result of the just-executed act, ready to render as a **pinned**
     /// trailing prompt block — the run-18057-f1 fix.
     ///
@@ -983,10 +1039,7 @@ impl WorkingMemory {
         if full.chars().count() <= budget.trail_head_chars() {
             return None;
         }
-        Some(format!(
-            "Full result of your most recent action (#{seq}):\n{}",
-            clip_action_full(&full, &budget)
-        ))
+        Some(self.full_result_message(seq, &clip_action_full(&full, &budget)))
     }
 
     /// The RECENT-RESULTS feedback block: the last few acts' result tails, kept
@@ -1020,7 +1073,15 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(),
         );
-        out.extend(rr.iter().map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}")));
+        out.extend(rr.iter().map(|(seq, room, tail, operation, handle)| {
+            let attribution = ResultAttribution {
+                seq: *seq,
+                room: *room,
+                operation: Some(operation),
+                spill_handle: handle.as_deref(),
+            };
+            format!("[result {attribution}] {tail}")
+        }));
         // Collapsed-results index LAST — it CHANGES on every eviction, and
         // message order is MONOTONE IN STABILITY (the KV law this same night
         // established): the banner + surviving entries ahead of it stay a
@@ -1044,7 +1105,15 @@ impl WorkingMemory {
         }
         let lines: Vec<String> = rr
             .iter()
-            .map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}"))
+            .map(|(seq, room, tail, operation, handle)| {
+                let attribution = ResultAttribution {
+                    seq: *seq,
+                    room: *room,
+                    operation: Some(operation),
+                    spill_handle: handle.as_deref(),
+                };
+                format!("[result {attribution}] {tail}")
+            })
             .collect();
         Some(format!(
             "Recent results of your own actions (oldest first; #n matches the \
@@ -1141,18 +1210,22 @@ impl WorkingMemory {
         let mut rr = self.recent_results.lock();
         let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
         while total > cap && rr.len() > 1 {
-            if let Some((eseq, _, evicted, elabel, ehandle)) = rr.pop_front() {
+            if let Some((eseq, room, evicted, elabel, ehandle)) = rr.pop_front() {
                 total -= evicted.chars().count() + 1;
                 // COLLAPSE, never delete: the evicted result leaves a queryable
                 // one-line pointer so she can expand or re-run deliberately
                 // instead of forgetting it ever happened.
                 let mut ptrs = self.evicted_pointers.lock();
+                let attribution = ResultAttribution {
+                    seq: eseq,
+                    room,
+                    operation: Some(&elabel),
+                    spill_handle: ehandle.as_deref(),
+                };
                 ptrs.push_back(match &ehandle {
-                    Some(h) => format!(
-                        "[result #{eseq} ({elabel}) — collapsed; full output: tool/output {h}]"
-                    ),
+                    Some(_) => format!("[result {attribution} — collapsed]"),
                     None => format!(
-                        "[result #{eseq} ({elabel}, {} chars) — collapsed from view; re-run if needed]",
+                        "[result {attribution}, {} chars — collapsed from view; re-run if needed]",
                         evicted.chars().count()
                     ),
                 });
@@ -1220,37 +1293,18 @@ impl WorkingMemory {
     }
 }
 
-/// Render the rolling trail, collapsing near-duplicate ANSWERED receipts
-/// (glass-boxed 2026-07-31, #264): a looping persona's trail rendered N full
-/// verbatim copies of her own repeated answer at the prompt TAIL — the
-/// maximum-recency position — an N-shot demonstration of the exact behavior
-/// the repetition facts (which render EARLIER in the prompt) told her to stop.
-/// Recency won; she complied with the demonstration, not the fact. Each
-/// receipt is compared against EARLIER receipts only, so a line's rendering
-/// never changes after it first appears (append-only KV property preserved);
-/// same near-identical geometry as the detectors — one definition of "repeat".
+/// Render the already-budgeted trail in order. A later settlement may correct
+/// or repeat an earlier report; similarity cannot replace that event's content.
 fn render_trail(recent: &[String]) -> String {
-    let mut prior_answers: Vec<&str> = Vec::new();
-    recent
-        .iter()
-        .map(|r| {
-            if let Some(ans) = r.strip_prefix(WM_SETTLEMENT_PREFIX) {
-                let ans = ans.trim();
-                if prior_answers
-                    .iter()
-                    .any(|p| super::deliberation_budget::near_identical_substantial(p, ans))
-                {
-                    return format!(
-                        "- {WM_SETTLEMENT_PREFIX} (a near-identical repeat of your answer \
-                         above — not re-shown)"
-                    );
-                }
-                prior_answers.push(ans);
-            }
-            format!("- {r}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    for entry in recent {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("- ");
+        out.push_str(entry);
+    }
+    out
 }
 
 /// Perception-tier faculty that bids the persona's recent reasoning into the
@@ -1317,8 +1371,11 @@ impl Faculty for WorkingMemoryFaculty {
                 .map(|(i, _)| i)
                 .collect();
             if non_fact.len() > WORK_TURN_RECENT_KEEP {
-                let drop: std::collections::HashSet<usize> =
-                    non_fact[..non_fact.len() - WORK_TURN_RECENT_KEEP].iter().copied().collect();
+                let drop: std::collections::HashSet<usize> = non_fact
+                    [..non_fact.len() - WORK_TURN_RECENT_KEEP]
+                    .iter()
+                    .copied()
+                    .collect();
                 collapsed_older = drop.len();
                 entries = entries
                     .into_iter()
@@ -1340,7 +1397,10 @@ impl Faculty for WorkingMemoryFaculty {
                 t.to_string()
             } else {
                 let kept: String = t.chars().take(head).collect();
-                format!("{kept} …[{} more chars — my full thought, collapsed]", t.chars().count() - head)
+                format!(
+                    "{kept} …[{} more chars — my full thought, collapsed]",
+                    t.chars().count() - head
+                )
             }
         };
         let recent: Vec<String> = entries
@@ -1398,7 +1458,8 @@ impl Faculty for WorkingMemoryFaculty {
         // of THIS 0.5-salience bid it rode `arbiter.focus()` top-k and was silently evicted
         // under capacity pressure (the run-18057-f1 0-byte patch). It is now PINNED by the
         // message builder as its own durable trailing turn — see
-        // [`WorkingMemory::pinned_active_result_block`] — so no attention pass can drop it.
+        // [`WorkingMemory::active_action_full`] and [`WorkingMemory::full_result_message`]
+        // — so no attention pass can drop it.
         // This contribution keeps only the append-only trail + notices + dispatched status,
         // which are proprioceptive summary, not the just-fetched result.
         // Substrate notices AFTER the trail: nearest generation (the [resumed]
@@ -1546,10 +1607,16 @@ mod tests {
         wm.record_receipt("[action #2] cat django/db/models/sql/compiler.py");
         let seen: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
         assert!(seen.iter().any(|t| t.contains("compiler.py")), "{seen:?}");
-        assert!(!seen.iter().any(|t| t.contains("tests/ordering")), "{seen:?}");
+        assert!(
+            !seen.iter().any(|t| t.contains("tests/ordering")),
+            "{seen:?}"
+        );
         wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
         let back: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
-        assert!(back.iter().any(|t| t.contains("tests/ordering")), "{back:?}");
+        assert!(
+            back.iter().any(|t| t.contains("tests/ordering")),
+            "{back:?}"
+        );
     }
 
     // what this catches: the Anwen regression (2026-08-16). Act results used to
@@ -1580,18 +1647,26 @@ mod tests {
             wm.record_receipt(&"x".repeat(cap));
         }
         assert!(
-            wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            wm.recent_results_block()
+                .unwrap_or_default()
+                .contains("E0601"),
             "mid-settle the ring is append-only — no head rotation before settlement"
         );
         // …and SETTLEMENT collapses over-cap tails to pointers, restoring the bound.
         wm.record_settlement("done");
-        let total: usize = wm.recent_results_block().unwrap_or_default().chars().count();
+        let total: usize = wm
+            .recent_results_block()
+            .unwrap_or_default()
+            .chars()
+            .count();
         assert!(
             total <= cap + 256,
             "settlement must restore the window-derived bound: {total} > {cap}"
         );
         assert!(
-            !wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            !wm.recent_results_block()
+                .unwrap_or_default()
+                .contains("E0601"),
             "oldest tails collapse to pointers at settlement — bounded, not immortal"
         );
     }
@@ -1637,52 +1712,53 @@ mod tests {
         );
     }
 
-    // what this catches: the WM loop re-teacher (#264, glass-boxed 2026-07-31 —
-    // Anwen's prompt TAIL carried two full verbatim copies of her looped
-    // template as receipts, out-shouting the repetition facts rendered earlier).
-    // A near-dup ANSWERED receipt renders as a stub, never full text; the FIRST
-    // copy stays full (append-only — its rendering must not change when the dup
-    // lands later); distinct answers and non-receipt traces render untouched.
-    #[test]
-    fn render_trail_collapses_near_dup_answered_receipts() {
-        let template = "It seems like we've been exploring various areas without making \
-                        much progress. Let's try a different approach by focusing on a \
-                        specific aspect of the Continuum system that could benefit from \
-                        our attention. Maintenance Protocols: investigate how maintenance \
-                        tasks are performed within the Continuum system.";
-        let trail = vec![
-            format!("{WM_SETTLEMENT_PREFIX} {template}"),
-            "[action #4] I ran code/read(...) Result: ok".to_string(),
-            format!("{WM_SETTLEMENT_PREFIX} {template}"),
-        ];
-        let out = render_trail(&trail);
+    // what this catches: e731576c — actual settlement records must reach the
+    // memory contribution even when a one-word correction resembles an older
+    // answer, or a later answer repeats the original state.
+    #[tokio::test]
+    async fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
+        let passed = "I verified the candidate build and all regression tests passed \
+                      after checking the shared workspace changes against the review requirements.";
+        let failed = "I verified the candidate build and all regression tests failed \
+                      after checking the shared workspace changes against the review requirements.";
+        assert!(super::super::deliberation_budget::near_identical_substantial(passed, failed));
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.set_served_window(32_768);
+        wm.record_settlement(passed);
+        wm.record_receipt("code/read found the regression");
+        wm.record_settlement(failed);
+        wm.record_settlement(passed);
+        let entries = wm.recent_entries();
         assert_eq!(
-            out.matches("exploring various areas").count(),
-            1,
-            "the repeat must not re-show the full answer:\n{out}"
+            entries.iter().map(|entry| &entry.kind).collect::<Vec<_>>(),
+            vec![
+                &WmKind::Settlement,
+                &WmKind::Receipt { n: 1 },
+                &WmKind::Settlement,
+                &WmKind::Settlement
+            ]
         );
-        assert!(
-            out.contains("not re-shown"),
-            "stub names the collapse:\n{out}"
+        assert!(entries
+            .iter()
+            .all(|entry| entry.text.chars().count() <= wm.budget().trail_head_chars()));
+        let expected: Vec<_> = entries
+            .iter()
+            .map(|entry| format!("- {}", entry.text))
+            .collect();
+        let contribution = WorkingMemoryFaculty::new(wm)
+            .contribute(&Workspace::new("What changed in the latest review?"))
+            .await
+            .expect("test: recorded working memory contributes");
+        let actual: Vec<_> = contribution
+            .content
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "the rendered trail must preserve every recorded entry in order"
         );
-        assert!(
-            out.contains("[action #4]"),
-            "non-receipt traces are untouched:\n{out}"
-        );
-        // Distinct answers both render in full — collapse is repetition-only.
-        let varied = vec![
-            format!(
-                "{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
-                     abc123, computed with the standard tool over the exact bytes"
-            ),
-            format!(
-                "{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
-                     passing cases and no failures across the entire suite tonight"
-            ),
-        ];
-        let out = render_trail(&varied);
-        assert!(out.contains("sha256") && out.contains("benchmark run finished green"));
-        assert!(!out.contains("not re-shown"));
+        assert!(!contribution.content.contains("not re-shown"));
     }
 
     // what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
@@ -1878,7 +1954,7 @@ mod tests {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
                     is_error: None,
-                spill_handle: None,
+                    spill_handle: None,
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
@@ -1916,6 +1992,115 @@ mod tests {
         assert!(
             legacy.active_act().is_none(),
             "a legacy string receipt carries no typed act — the two channels are distinct"
+        );
+    }
+
+    // e731: identical result text from different activities must retain its
+    // actual room and every operation in its batch, including after restart.
+    #[test]
+    fn result_provenance_survives_cross_activity_render_and_checkpoint() {
+        use crate::ai::types::{ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+
+        let observation = |id: &str, name: &str, handle: Option<&str>| Observation {
+            call: ToolCall {
+                id: id.into(),
+                name: name.into(),
+                input: serde_json::json!({}),
+            },
+            output: ToolOutput {
+                result: ToolResult {
+                    tool_use_id: id.into(),
+                    content: "same result".into(),
+                    is_error: None,
+                    spill_handle: handle.map(str::to_owned),
+                },
+                verb: ToolVerb::classify(name),
+                paths: Vec::new(),
+            },
+            status: ActStatus::Executed,
+        };
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let room_a = Uuid::new_v4();
+        let room_b = Uuid::new_v4();
+        wm.record_receipt_typed(
+            &[
+                observation("a1", "code/search", Some("search-output")),
+                observation("a2", "code/read", None),
+            ],
+            "same result",
+            Some(room_a),
+        );
+        wm.record_receipt_typed(
+            &[observation("b1", "code/run", None)],
+            "same result",
+            Some(room_b),
+        );
+        let expected = vec![
+            format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output] same result"),
+            format!("[result #2; room {room_b}; operation code/run] same result"),
+        ];
+        let messages = wm.recent_results_messages();
+        assert_eq!(
+            messages.len(),
+            3,
+            "banner plus two separately attributed results"
+        );
+        assert_eq!(&messages[1..], expected.as_slice());
+        let (seq, full) = wm
+            .active_action_full()
+            .expect("test: latest receipt is active");
+        assert_eq!(
+            wm.full_result_message(seq, &full),
+            format!("Full result of your most recent action (#2; room {room_b}; operation code/run):\nsame result")
+        );
+
+        let encoded = serde_json::to_value(wm.snapshot()).expect("test: snapshot serializes");
+        assert_eq!(
+            encoded["recent_results"][0]
+                .as_array()
+                .expect("test: persisted result tuple")
+                .len(),
+            5,
+            "the existing checkpoint tuple format must remain compatible"
+        );
+        let restored = WorkingMemory::new(8);
+        restored.set_served_window(16_384);
+        restored.restore(serde_json::from_value(encoded).expect("test: recorded snapshot decodes"));
+        assert_eq!(restored.recent_results_messages(), messages);
+        assert_eq!(
+            restored.full_result_message(seq, &full),
+            wm.full_result_message(seq, &full)
+        );
+
+        // Actual settlement collapses old tails; its pointers must still tell
+        // the mind which activity and operation the retained handle belongs to.
+        for _ in 0..4 {
+            restored.record_receipt(&"x".repeat(restored.budget().recent_results_chars()));
+        }
+        restored.record_settlement("reported");
+        assert!(restored.recent_results_messages().join("\n").contains(
+            &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
+        ));
+    }
+
+    // e731: pre-result-ring snapshots have a full body but no room/operation
+    // attribution. Rendering must expose that absence instead of inventing it.
+    #[test]
+    fn legacy_full_result_without_metadata_stays_explicitly_unattributed() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("legacy body");
+        let mut snapshot = wm.snapshot();
+        snapshot.recent_results.clear();
+        let restored = WorkingMemory::new(8);
+        restored.restore(snapshot);
+        let (seq, full) = restored
+            .active_action_full()
+            .expect("test: legacy body restored");
+        assert_eq!(
+            restored.full_result_message(seq, &full),
+            "Full result of your most recent action (#1; room unrecorded; operation unrecorded):\nlegacy body"
         );
     }
 
@@ -2112,7 +2297,7 @@ mod tests {
             .pinned_active_result_block()
             .expect("the whole result is pinned for the mind");
         assert!(
-            pinned.contains("Full result of your most recent action (#1):"),
+            pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
             "the whole result reaches the mind"
         );
         assert!(
@@ -2177,7 +2362,7 @@ mod tests {
             .pinned_active_result_block()
             .expect("the oversized result still surfaces, clipped");
         assert!(
-            pinned.contains("Full result of your most recent action (#1):"),
+            pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
             "the block still surfaces"
         );
         assert!(
@@ -2244,7 +2429,7 @@ mod tests {
         assert!(
             wm.pinned_active_result_block()
                 .expect("the fresh act's result is pinned")
-                .contains("Full result of your most recent action (#2):"),
+                .contains("Full result of your most recent action (#2; room unrecorded; operation unrecorded):"),
             "the new act's result is surfaced whole for its own what-next decision"
         );
     }
@@ -2508,13 +2693,24 @@ mod tests {
         for i in 0..12 {
             wm.record_fact(&format!("chatty fact {i}"));
         }
-        assert_eq!(wm.entries.lock().len(), 3, "the FIFO still ages out at capacity");
+        assert_eq!(
+            wm.entries.lock().len(),
+            3,
+            "the FIFO still ages out at capacity"
+        );
         assert_eq!(
             wm.pinned_facts(),
-            vec!["[hands] rooted at /a".to_string(), "[env] python at /a/env/bin/python".to_string()]
+            vec![
+                "[hands] rooted at /a".to_string(),
+                "[env] python at /a/env/bin/python".to_string()
+            ]
         );
         wm.pin_fact("hands", "[hands] rooted at /b");
-        assert_eq!(wm.pinned_facts()[0], "[hands] rooted at /b", "replaced by key, never duplicated");
+        assert_eq!(
+            wm.pinned_facts()[0],
+            "[hands] rooted at /b",
+            "replaced by key, never duplicated"
+        );
         assert_eq!(wm.pinned_facts().len(), 2);
         wm.unpin_fact("hands");
         wm.unpin_fact("env");
@@ -2523,7 +2719,11 @@ mod tests {
         wm.pin_fact("hands", "[hands] rooted at /c");
         wm.pin_fact_for_turns("released", "[released] card x", 2);
         wm.end_of_work_turn();
-        assert_eq!(wm.pinned_facts(), vec!["[released] card x".to_string()], "the release reaches the next turn");
+        assert_eq!(
+            wm.pinned_facts(),
+            vec!["[released] card x".to_string()],
+            "the release reaches the next turn"
+        );
         wm.end_of_work_turn();
         assert!(wm.pinned_facts().is_empty(), "and leaves after it");
     }

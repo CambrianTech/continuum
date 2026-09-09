@@ -173,6 +173,21 @@ pub trait PersonaConversation: Send + Sync {
     }
 }
 
+/// Publish an utterance and record it before subsequent work can begin.
+/// All resident speech paths share this boundary; refused publications never
+/// enter the own-speech repetition-observation ring. Assistant history still
+/// comes from the attributed room timeline. The conversation owns transport.
+pub(crate) async fn publish_own_speech(
+    conversation: &dyn PersonaConversation,
+    peer: crate::identity::PeerId,
+    room: Uuid,
+    text: &str,
+) -> Result<(), String> {
+    conversation.say_in(room, text).await?;
+    crate::cognition::deliberation_budget::record_own_speech(peer, room, text);
+    Ok(())
+}
+
 /// Behavioral knobs for the service loop. Keep small — substrate-
 /// resolved defaults handle the common case so callers don't need to
 /// thread state through.
@@ -1438,7 +1453,13 @@ async fn serve_persona_loop_inner(
         // Into the room the trigger arrived in (A.6 `turn_room`), which is the
         // same room whose context this turn reasoned over — never her ambient
         // default, or she answers one room's question to a different audience.
-        let say_result = conversation.say_in(turn_room, &response_text).await;
+        let say_result = publish_own_speech(
+            conversation,
+            ctx.identity.peer_id,
+            turn_room,
+            &response_text,
+        )
+        .await;
         phase_timings.say_ms = say_started.elapsed().as_millis() as u64;
         if let Err(e) = say_result {
             tracing::warn!(
@@ -1482,17 +1503,6 @@ async fn serve_persona_loop_inner(
 
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
-
-        // #148: record the utterance into her own-speech ring AFTER the publish
-        // succeeded (only REAL utterances are self-history). This is what keeps
-        // the repetition detector sighted when the burst window is too small to
-        // carry her own turns — her knowledge of what she said must never
-        // depend on the room's context budget.
-        crate::cognition::deliberation_budget::record_own_speech(
-            ctx.identity.peer_id,
-            turn_room,
-            &response_text,
-        );
 
         // RTOS-debugger breakpoint: turn completed successfully.
         // The phase fields below are the per-phase decomposition
@@ -1716,53 +1726,6 @@ pub(crate) fn project_room_roster(
         room_roster,
         other_persona_names,
     }
-}
-
-/// Collapse near-identical substantial turns by SUPPRESSING later copies —
-/// the OLDEST copy stays, byte-untouched, at its original position. Same-
-/// `is_self` only (role attribution stays intact), authorless opaque turns
-/// pass through untouched, and the geometry is [`near_identical_substantial`]'s
-/// — one definition of "nearly identical" shared with the perception facts.
-/// See the call site in [`build_workspace_turns`] for the why (repetition ≈
-/// bad RAG).
-///
-/// ## Why oldest-survivor, unannotated (2026-09-01, the KV-prefix churn)
-///
-/// The first cut kept the NEWEST copy and stamped the survivor's author with
-/// "(×N near-identical)". Both choices rewrite EARLY bytes of the rendered
-/// conversation whenever a fresh duplicate arrives — the representative
-/// relocates and the count increments — and a mutation at 1% depth of an 80k
-/// prompt invalidates the entire KV tail behind it (measured live: Benchy's
-/// consecutive prompts diverging at char ~660 on exactly this annotation,
-/// hit_rate 0.0 while his peers cached 0.38–0.50). Suppression is prefix-
-/// stable by construction: a new duplicate simply never renders, so the bytes
-/// already prefilled stay bytes. The repetition EVIDENCE still reaches her —
-/// the `[pattern]`/`[repetition]` perception facts detect on the RAW turns
-/// and render in the volatile facts phase, where flicker belongs.
-///
-/// The LAST turn is never suppressed: it is the burst's trigger/ask, and the
-/// reply anchor must always see it even when it near-duplicates history.
-pub(crate) fn collapse_near_duplicate_turns(
-    turns: Vec<crate::cognition::workspace::BurstTurn>,
-) -> Vec<crate::cognition::workspace::BurstTurn> {
-    use crate::cognition::deliberation_budget::near_identical_substantial;
-    let last_idx = turns.len().saturating_sub(1);
-    let mut kept: Vec<crate::cognition::workspace::BurstTurn> = Vec::with_capacity(turns.len());
-    for (i, t) in turns.into_iter().enumerate() {
-        if t.author.trim().is_empty() || i == last_idx {
-            kept.push(t);
-            continue;
-        }
-        let already_represented = kept.iter().any(|k| {
-            !k.author.trim().is_empty()
-                && k.is_self == t.is_self
-                && near_identical_substantial(&k.content, &t.content)
-        });
-        if !already_represented {
-            kept.push(t);
-        }
-    }
-    kept
 }
 
 /// How many CONSECUTIVE repetition-detector fires (without the pattern
@@ -2160,16 +2123,9 @@ pub(crate) fn build_workspace_turns(
         }
     }
 
-    // NEAR-DUP COLLAPSE (Joel 2026-07-12: "repetition almost always bad RAG").
-    // The 4-way mirror-halls fed each mind 4-8 copies of one message — her
-    // context WAS the loop, and continuation-completion reproduced it no matter
-    // what perception flagged. Compress at the source: near-identical
-    // substantial turns collapse to their NEWEST copy, author annotated
-    // "(×N near-identical)" so the repetition stays perceptible as a FACT
-    // while the copies stop being reading material. Runs AFTER the [pattern]
-    // detectors (they need the raw evidence) and never touches opaque
-    // (authorless) observation turns.
-    turns = collapse_near_duplicate_turns(turns);
+    // Content similarity does not identify a duplicate event. Preserve each
+    // speaker's updates and later repetitions in order; the perception facts
+    // above report repetition without deleting the history they describe.
 
     // WAKE BRIEFING (#147): when a wake carries NO conversation at all — fresh
     // spawn, post-restart, a quiet room — her first perception is ORIENTATION
@@ -2804,20 +2760,12 @@ async fn run_self_cycle(
             // A self-cycle answers no one — the audience is the room the tick
             // ran IN (her claim's focus room when working, else her default) —
             // the same room the cycle framed its context against.
-            if let Err(e) = conversation.say_in(tick_room, &text).await {
+            if let Err(e) =
+                publish_own_speech(conversation, ctx.identity.peer_id, tick_room, &text).await
+            {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return false;
             }
-            // #148: self-tick utterances are self-history too — the live
-            // repeat loops are mostly idle-tick re-announcements, and the
-            // first ring deploy missed THIS say path entirely (4 verbatim
-            // repeats, no [repetition], caught live 2026-07-12 10:20).
-            // Every successful say records, whichever path spoke.
-            crate::cognition::deliberation_budget::record_own_speech(
-                ctx.identity.peer_id,
-                ctx.identity.default_room,
-                &text,
-            );
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
@@ -2882,6 +2830,55 @@ async fn next_event(
 mod tests {
     use super::*;
     use airc_core::PeerId;
+
+    // What this catches (e731576c): publication, not a later work-turn return,
+    // owns the speech ring; failures and other rooms cannot become its history.
+    #[tokio::test]
+    async fn successful_publication_records_speech_once_in_the_actual_room() {
+        use crate::cognition::deliberation_budget::recent_own_speech;
+        use crate::persona::scripted_conversation::ScriptedConversation;
+
+        let peer = crate::identity::PeerId::from_uuid(Uuid::new_v4());
+        let room = Uuid::new_v4();
+        let other_room = Uuid::new_v4();
+        let conversation = ScriptedConversation::new();
+        publish_own_speech(&conversation, peer, room, "The tests passed.")
+            .await
+            .expect("scripted publication succeeds");
+        assert_eq!(recent_own_speech(peer, room), ["The tests passed."]);
+        assert!(recent_own_speech(peer, other_room).is_empty());
+
+        let refused = ScriptedConversation::new().with_say_failure("room unavailable");
+        assert_eq!(
+            publish_own_speech(&refused, peer, room, "This was never delivered.").await,
+            Err("room unavailable".to_string())
+        );
+        assert!(refused.said_in().is_empty());
+        assert_eq!(recent_own_speech(peer, room), ["The tests passed."]);
+
+        publish_own_speech(&conversation, peer, other_room, "Other activity report.")
+            .await
+            .expect("scripted publication succeeds");
+        publish_own_speech(&conversation, peer, room, "The tests failed.")
+            .await
+            .expect("scripted correction succeeds");
+        assert_eq!(
+            recent_own_speech(peer, room),
+            ["The tests passed.", "The tests failed."]
+        );
+        assert_eq!(
+            recent_own_speech(peer, other_room),
+            ["Other activity report."]
+        );
+        assert_eq!(
+            conversation.said_in(),
+            vec![
+                (room, "The tests passed.".to_string()),
+                (other_room, "Other activity report.".to_string()),
+                (room, "The tests failed.".to_string()),
+            ]
+        );
+    }
 
     // what this catches: the resume block carries HER newest thoughts only, oldest
     // first, clipped — never another citizen's line, never a receipt.
@@ -3218,68 +3215,6 @@ mod tests {
         );
     }
 
-    // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
-    // "repetition almost always bad RAG") in its KV-STABLE form (2026-09-01):
-    // near-identical substantial turns are SUPPRESSED — the OLDEST copy stays
-    // at its position, byte-untouched (no relocating representative, no
-    // mutating "(×N)" author annotation; both rewrote early prompt bytes and
-    // killed the whole KV tail — Benchy's consecutive prompts diverged at
-    // char ~660 on exactly the annotation). The LAST turn (the trigger/ask)
-    // is never suppressed even when it near-duplicates history. Distinct
-    // turns, short acks (token floor), and opaque observation turns pass
-    // through untouched.
-    #[test]
-    fn near_dup_turns_suppress_later_copies_and_never_the_trigger() {
-        use crate::cognition::workspace::BurstTurn;
-        let loop_msg = "I see that we're all trying to find Rust files in the workspace. \
-                        Let me use file_tree with a deeper recursion limit to explore the \
-                        layout before drilling deeper: file_tree(max_depth=5)";
-        let turns = vec![
-            BurstTurn::attributed(false, "Anwen", loop_msg, Some(1)),
-            BurstTurn::attributed(false, "Asha", loop_msg, Some(2)),
-            BurstTurn::attributed(false, "Atlas", "thanks!", Some(3)),
-            BurstTurn::attributed(false, "Casper", "thanks!", Some(4)),
-            BurstTurn::opaque("[pattern] the room is cycling"),
-            BurstTurn::attributed(
-                false,
-                "Atlas",
-                &format!("{loop_msg} — and honestly the results aren't being returned"),
-                Some(5),
-            ),
-        ];
-        let out = collapse_near_duplicate_turns(turns);
-        // Asha's mid-window copy suppressed; Anwen's OLDEST copy survives
-        // untouched; Atlas's trigger variant survives because the LAST turn is
-        // sacred; acks + opaque pass through.
-        assert_eq!(
-            out.len(),
-            5,
-            "{:?}",
-            out.iter().map(|t| &t.author).collect::<Vec<_>>()
-        );
-        let survivor = out
-            .iter()
-            .find(|t| t.content.contains("find Rust files"))
-            .expect("the oldest representative survives");
-        assert_eq!(
-            survivor.author, "Anwen",
-            "oldest copy survives with its author BYTE-UNTOUCHED (no ×N annotation)"
-        );
-        assert!(
-            !out.iter().any(|t| t.author.contains("Asha")),
-            "the interior duplicate is suppressed entirely"
-        );
-        assert!(
-            out.last()
-                .unwrap()
-                .content
-                .contains("aren't being returned"),
-            "the trigger (last turn) is never suppressed, near-dup or not"
-        );
-        assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
-        assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
-    }
-
     // what this catches: #147 — a wake with NO conversation must carry the
     // orientation briefing, not a void (the void gets filled with imagined
     // history / generic-assistant masks, observed all morning 2026-07-12).
@@ -3493,6 +3428,69 @@ mod tests {
                 metadata: json!({ "peer_id": peer_id, "display_name": name }),
             }
         }
+
+        // what this catches: e731576c — source-side similarity suppression
+        // erased corrections, identical later reports, and even another peer's
+        // contribution before the inference fitter could see them.
+        #[test]
+        fn workspace_history_preserves_authors_corrections_and_repeated_events() {
+            use crate::cognition::workspace::TurnVoice;
+            let passed = "I verified the candidate build and all regression tests passed \
+                          after checking the shared workspace changes against the review requirements.";
+            let failed = "I verified the candidate build and all regression tests failed \
+                          after checking the shared workspace changes against the review requirements.";
+            assert!(
+                crate::cognition::deliberation_budget::near_identical_substantial(passed, failed),
+                "the fixture must exercise the former destructive similarity threshold"
+            );
+            let reports = [
+                ("peer-a", "Anwen", passed),
+                ("peer-b", "Benchy", failed),
+                ("peer-a", "Anwen", passed),
+                ("me", "Asha", failed),
+                ("me", "Asha", passed),
+                ("me", "Asha", failed),
+                ("peer-b", "Benchy", "The next review can begin now."),
+            ];
+            let items = reports
+                .iter()
+                .enumerate()
+                .map(|(index, (peer, _, text))| {
+                    let mut item = chat(peer, text);
+                    item.metadata["occurred_at_ms"] = json!((index + 1) as u64);
+                    item
+                })
+                .collect();
+            let deliveries = [
+                delivery("airc", items),
+                delivery(
+                    "room-roster",
+                    vec![roster("peer-a", "Anwen"), roster("peer-b", "Benchy")],
+                ),
+            ];
+            let turns = build_workspace_turns(&deliveries, "me", "Asha", None);
+            let speech: Vec<_> = turns
+                .iter()
+                .filter(|turn| turn.voice == TurnVoice::Speech)
+                .map(|turn| {
+                    (
+                        turn.is_self,
+                        turn.author.as_str(),
+                        turn.content.as_str(),
+                        turn.occurred_at_ms,
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = reports
+                .iter()
+                .enumerate()
+                .map(|(index, (peer, author, text))| {
+                    (*peer == "me", *author, *text, Some((index + 1) as u64))
+                })
+                .collect();
+            assert_eq!(speech, expected, "every source event must retain its author, body, timestamp and chronological position");
+        }
+
         /// A `room-kanban` delivery item exactly as `RoomBoardSource::render`
         /// ships it (content line + card_id/state/owner metadata) — the stub
         /// board read the anchor escalation is built from.
@@ -5105,6 +5103,84 @@ mod tests {
             CardState::Closed,
             "a reasoned 'PASS: done' concludes the card (Closed)"
         );
+    }
+
+    // e731: the actual held-card path must use the same successful-publication
+    // boundary as replies/self-ticks. A refused send is not an observed utterance.
+    #[tokio::test(flavor = "current_thread")]
+    async fn held_work_reports_record_own_speech_only_after_publication() {
+        let native = tempfile::tempdir().expect("test: isolated cognition storage");
+        let _native_home = crate::paths::NativeHomeOverride::install(native.path());
+        for refuse_publication in [false, true] {
+            let peer = Uuid::new_v4();
+            let hosted = hosted_with_heuristic(peer);
+            let room = Uuid::new_v4();
+            assert_ne!(room, hosted.identity.default_room);
+            let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+                persona_id: peer,
+                persona_name: "Paige".into(),
+                system_prompt: "You are Paige.".into(),
+                admission: Arc::new(crate::persona::admission_state::AdmissionState::new(
+                    Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new()),
+                )),
+                adapter: Arc::new(
+                    HeuristicInferenceAdapter::new()
+                        .with_canned_response("The tests failed after the latest change."),
+                ),
+                capacity: None,
+                grounding_sources: Vec::new(),
+                embedder: None,
+                tool_executor: None,
+                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                defer_recall: false,
+                defer_grounding: false,
+                suppress_recall: false,
+            };
+            crate::cognition::persona_workspace::global().register_from_cfg(cfg);
+            let stub = StubAircCitizen::new(peer).with_claims(vec![held_card(peer)]);
+            let mut conversation = ScriptedConversation::new().with_citizen(Arc::new(stub));
+            if refuse_publication {
+                conversation = conversation.with_say_failure("room unavailable");
+            }
+            assert!(
+                crate::persona::act_question::ask_the_act_question(
+                    &hosted,
+                    &mut conversation,
+                    1,
+                    room,
+                    false,
+                )
+                .await
+            );
+            let speech = crate::cognition::deliberation_budget::recent_own_speech(
+                crate::identity::PeerId::from_uuid(peer),
+                room,
+            );
+            if refuse_publication {
+                assert!(conversation.said_in().is_empty());
+                assert!(
+                    speech.is_empty(),
+                    "failed publication must not enter the ring"
+                );
+            } else {
+                assert_eq!(
+                    conversation.said_in(),
+                    vec![(room, "The tests failed after the latest change.".into())]
+                );
+                assert_eq!(
+                    speech,
+                    vec!["The tests failed after the latest change.".to_string()]
+                );
+            }
+            assert!(
+                crate::cognition::deliberation_budget::recent_own_speech(
+                    crate::identity::PeerId::from_uuid(peer),
+                    hosted.identity.default_room,
+                )
+                .is_empty(),
+                "the hosted default room must not receive another activity's report"
+            );
+        }
     }
 
     // what this catches: kanban PULL — an idle team member grabs the next Open
