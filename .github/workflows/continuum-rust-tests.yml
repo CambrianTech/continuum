@@ -49,11 +49,11 @@ on:
   push:
     branches: [canary, main]
 
-# Concurrency: one run per PR head. A fresh push cancels the prior run since
-# its result is moot — the cancellation is faster than letting a full 5-10
-# min cargo build finish on stale source.
+# Superseded PR and branch heads cancel their old runs. Event/ref separation
+# keeps PR checks independent from canary/main push checks; a unique run_id
+# would instead let every obsolete branch push consume a complete build.
 concurrency:
-  group: continuum-rust-tests-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: continuum-rust-tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -61,6 +61,35 @@ jobs:
     name: cargo test -p continuum-core --lib
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Postgres adapter's tests were `#[ignore]`d because nothing here served
+    # them a database, so the adapter's TRANSACTIONAL behaviour was verified by
+    # `cargo check` alone — which is how four transactional defects reached this
+    # branch (self.read re-acquiring a second connection mid-transaction, a raw
+    # BEGIN with no rollback guard, DDL inside an aborted transaction, and column
+    # caches published before commit). Compiling proves a transaction is spelled
+    # correctly; only a server proves it behaves. A skipped test is not proof.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: continuum_test
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+        ports:
+          - 5432:5432
+        # Without the health check the job races the server: the first test
+        # connects before Postgres finishes initialising and fails as though the
+        # adapter were broken.
+        options: >-
+          --health-cmd "pg_isready -U continuum -d continuum_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The value the adapter's own fixture already defaults to — kept explicit
+      # so the job states the database it is testing against rather than relying
+      # on a default buried in a test module.
+      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
       # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
       # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
@@ -80,8 +109,11 @@ jobs:
             --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
           echo "$files"
           count=$(echo "$files" | grep -c . || true)
+          # gym.rs embeds this subtree's JSONL into Rust. Keep all of it
+          # relevant, including future datasets with different suffixes.
           if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
-             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+             grep -q '^docs/genome/' <<< "$files" || \
+             grep -qvE '(^docs/|\.md$)' <<< "$files"; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -161,14 +193,31 @@ jobs:
       # continuum-core lib surface (≈4000 tests) and unblocks
       # forward velocity on substrate code that DOES run on Linux.
       # Each skip pattern is a follow-up card.
+      - name: Exercise the Cargo runner's success and failure boundaries
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/ci/test_rust_lib_runner.py
+
+      # Cargo owns selection of the executable and its complete runtime
+      # environment (native loader paths and crate cwd included). Its runner
+      # hook executes that SAME binary first with these existing skips, then
+      # with the ignored Postgres filter. No second Cargo invocation/relink.
+      # Both suites run even when one fails; either failure fails this step.
       - name: cargo test -p continuum-core --lib
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
-          cargo test -p continuum-core --lib -- \
+          runner_config=$(python3 -c 'import json, os; print("target.x86_64-unknown-linux-gnu.runner = " + json.dumps(["python3", os.path.join(os.environ["GITHUB_WORKSPACE"], "scripts/ci/rust_lib_runner.py"), "--output-dir", os.path.join(os.environ["RUNNER_TEMP"], "continuum-rust-tests")]))')
+          cargo --config "$runner_config" test -p continuum-core --lib -- \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+      # The runner keeps Postgres SERIAL: all eleven share test_orm, and
+      # clear_all would erase another case's rows if run concurrently. It
+      # requires at least eleven passes, zero failures and zero ignored tests;
+      # a zero-match filter can never publish a successful receipt.
 
       # Compile-fail guards (#3881). `--lib` above CANNOT run these: proving a
       # wrong construction does not compile requires a compile step, and the
@@ -214,7 +263,11 @@ jobs:
       - name: Verify protocol/typescript/ in sync with Rust source
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
-          if ! git diff --exit-code protocol/typescript/; then
+          # git diff alone misses newly exported, untracked types.
+          drift=$(git status --porcelain --untracked-files=all -- protocol/typescript/)
+          if [ -n "$drift" ]; then
+            printf '%s\n' "$drift"
+            git diff -- protocol/typescript/
             echo "::error::ts-rs binding drift detected. Some Rust types"
             echo "were modified but their regenerated TypeScript bindings"
             echo "(in protocol/typescript/) were not committed."
@@ -228,6 +281,17 @@ jobs:
             exit 1
           fi
           echo "✓ protocol/typescript/ is in sync with Rust source"
+
+      - name: Preserve test logs and the exact executable receipt
+        if: always() && (github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/continuum-rust-tests/
+            doc-guard.log
+          if-no-files-found: warn
+          retention-days: 7
 
   # Publishes the REQUIRED status context `ts-rs binding drift detector`.
   #
@@ -298,8 +362,10 @@ jobs:
             --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
           echo "$files"
           count=$(echo "$files" | grep -c . || true)
+          # Same compiled-input exception as the Linux job.
           if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
-             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+             grep -q '^docs/genome/' <<< "$files" || \
+             grep -qvE '(^docs/|\.md$)' <<< "$files"; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
