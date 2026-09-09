@@ -966,7 +966,7 @@ async fn stage_credit<T: Transport>(
         operation_type: BatchOperationType::Create,
         collection: StagedCredit::COLLECTION.to_string(),
         id: Some(submission_id.to_string()),
-        data: Some(serde_json::to_value(&parent)?),
+        data: Some(serde_json::to_value(&parent)?), // ORM batch boundary: BatchOperation.data is Value by contract
     }];
     // One correlation row per generation, faults included: the receipts themselves
     // ride on the parent as an opaque JSON column (the ORM has no collection
@@ -981,7 +981,7 @@ async fn stage_credit<T: Transport>(
             operation_type: BatchOperationType::Create,
             collection: StagedCreditGeneration::COLLECTION.to_string(),
             id: Some(child.id.to_string()),
-            data: Some(serde_json::to_value(&child)?),
+            data: Some(serde_json::to_value(&child)?), // ORM batch boundary: BatchOperation.data is Value by contract
         });
     }
 
@@ -1017,7 +1017,7 @@ fn storage_ok(
     // "success" key: a shape change should break the build here rather than silently
     // read as false and start rejecting every staging attempt.
     let decoded: crate::orm::types::StorageResult<serde_json::Value> =
-        serde_json::from_value(value.clone())?;
+        serde_json::from_value(value.clone())?; // ORM boundary: decode the data layer's typed StorageResult
     if decoded.success {
         return Ok(());
     }
