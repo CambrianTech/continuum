@@ -685,7 +685,6 @@ impl Runtime {
             .await
     }
 
-    /// Share the production phase bounds with deterministic timeout tests.
     /// `shutdown`, with the per-phase bound passed IN.
     ///
     /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
@@ -1596,8 +1595,18 @@ impl ShutdownReceipt {
     }
 }
 
-/// Owns an idempotent shutdown independently of requesting client lifetimes.
-/// Each instance retains its terminal receipt for late or reconnecting observers.
+/// ONE shutdown, owned.
+///
+/// This was a bare `OnceLock` plus a free function, and the tests for it had to build
+/// their own `watch` channel — so they asserted a property of `tokio::sync::watch` and
+/// would have stayed green if the production publisher regressed from `send_replace` back
+/// to `send`. Established by Astra reading the source, NOT by an executed mutation run —
+/// nobody has yet watched that test go red, and the weaker claim is the true one.
+///
+/// As an instance, a test can construct the SAME owner over a real `Runtime` and drive the
+/// real `begin` / publisher, instead of a look-alike. Same reason `AdmissionGate` is a
+/// type: an invariant that can only be reached through a global is an invariant whose
+/// tests drift into testing something adjacent.
 struct ShutdownOperation {
     result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
     started: std::sync::atomic::AtomicBool,
