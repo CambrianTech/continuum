@@ -266,9 +266,17 @@ impl ServiceModule for VoiceModule {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .insert(session_id.to_string(), room_id.to_string());
-                    crate::log_warn!(
-                        "module",
-                        "voice_register_session",
+                    // clog_warn! auto-routes by module_path to the module's log file (live.log) —
+                    // the SAME sink the orchestrator's register logs land in — so the divergence is
+                    // observable next to the registration it describes. (log_warn!/tracing::warn!
+                    // routed elsewhere and were invisible; #194 also masked this by shipping stale.)
+                    //
+                    // MERGE NOTE (canary ← #1957): both sides changed this block and both are
+                    // wanted. canary added the alias RECORDING above (new behaviour, #193 slice A);
+                    // #1957 changed only where this warn LANDS. Keeping canary's message — it
+                    // describes the aliasing that now actually happens — routed through the PR's
+                    // sink. Picking either side alone would have dropped real work.
+                    crate::clog_warn!(
                         "#193: legacy divergent session_id {} aliased to room_id {} — call keyed by \
                          the airc room; client cutover pending (#193 slice B, this warn going \
                          silent is the done-signal).",
