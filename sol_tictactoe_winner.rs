@@ -62,10 +62,10 @@ fn main() {
     let empty = [' '; 9];
     assert_eq!(ttt_winner(&empty), ' ');
 
-    // Exhaustive sweep: every one of the 3^9 = 19,683 possible boards, checked
-    // against an independent reference computed a different way (per-mark line
-    // scan with `all` over triples). Also tallies full-board outcomes and checks
-    // the X<->O symmetry invariant on them.
+    // Exhaustive sweep: every one of the 3^9 = 19,683 possible boards (each
+    // board appears exactly once as a mask in 0..2^18 — 2 bits per cell),
+    // checked against an independent reference. Also tallies full-board
+    // outcomes and checks the X<->O symmetry invariant on them.
     const LINES: [[usize; 3]; 8] = [
         [0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6],
     ];
