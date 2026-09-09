@@ -467,9 +467,9 @@ pub fn adopt(
     fs::rename(&staged, &destination)?;
     sync_parent(&destination)?;
     let published = optional_selection(&destination)?;
-    if !published
+    if published
         .as_ref()
-        .is_some_and(|value| value.sha256 == plan.source.sha256)
+        .is_none_or(|value| value.sha256 != plan.source.sha256)
     {
         return Err(AdoptionError::EvidenceConflict(
             "destination changed after publication".into(),
