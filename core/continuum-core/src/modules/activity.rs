@@ -199,7 +199,10 @@ fn benchmark_dispatch_params(
     })?;
     let mut dispatch = serde_json::Map::new();
     dispatch.insert("name".into(), serde_json::Value::String(suite));
-    dispatch.insert("recipe".into(), serde_json::Value::String(recipe.to_string()));
+    dispatch.insert(
+        "recipe".into(),
+        serde_json::Value::String(recipe.to_string()),
+    );
     for (key, out) in [("instances", "instances"), ("team", "teammates")] {
         if let Some(list) = params.get(key).and_then(|v| v.as_array()) {
             let list: Vec<String> = list
@@ -214,53 +217,61 @@ fn benchmark_dispatch_params(
             dispatch.insert(out.into(), serde_json::Value::String(v));
         }
     }
-    if let Some(v) = params.get("review_gate").and_then(serde_json::Value::as_bool) {
+    if let Some(v) = params
+        .get("review_gate")
+        .and_then(serde_json::Value::as_bool)
+    {
         dispatch.insert("review_gate".into(), serde_json::Value::Bool(v));
     }
     Ok(dispatch)
 }
 
-impl ActivitySpawn {
-    /// Root a BENCHMARK activity by running its dispatch — the one verb that owns a round.
-    ///
-    /// Params are read from the recipe's own vocabulary (`suite`, `instances`, `team`,
-    /// `driver`, `doctrine`, `review_gate`) and passed on RICH, so nothing the caller set
-    /// is silently dropped on the way. `suite` is REQUIRED and its absence is a loud error
-    /// naming it: a benchmark activity with no suite has nothing to import, and the whole
-    /// reason this route exists is that the quiet version of that produced an empty board.
-    async fn dispatch_benchmark_activity(
-        &self,
-        p: ActivitySpawnParams,
-    ) -> Result<ActivitySpawnResult, CommandError> {
-        let exec = self.executor_slot.get().cloned().ok_or_else(|| {
-            CommandError::Internal(
-                "command executor not installed on activity/spawn — boot wiring gap".into(),
-            )
-        })?;
-        let dispatch = benchmark_dispatch_params(&p.recipe, &p.params)?;
-        let out = exec
-            .execute("benchmark/dispatch", serde_json::Value::Object(dispatch))
-            .await
-            .map_err(|e| CommandError::Internal(format!("benchmark/dispatch failed: {e}")))?;
-        let crate::runtime::CommandResult::Json(v) = out else {
-            return Err(CommandError::Internal(
-                "benchmark/dispatch returned a non-JSON result".into(),
-            ));
-        };
-        // The room dispatch ROOTED is the activity this call spawned — reported back in
-        // this verb's own shape so a caller never has to know which door ran.
-        let result: BenchmarkDispatchRoom = serde_json::from_value(v).map_err(|e| {
-            CommandError::Internal(format!(
-                "benchmark/dispatch result did not name the room it rooted: {e}"
-            ))
-        })?;
-        Ok(ActivitySpawnResult {
-            room_id: result.room_id,
-            name: result.room,
-            recipe: p.recipe,
-            binding_post_id: result.binding_post_id,
-        })
-    }
+/// Root a BENCHMARK activity by running its dispatch — the one verb that owns a round.
+///
+/// Params are read from the recipe's own vocabulary (`suite`, `instances`, `team`,
+/// `driver`, `doctrine`, `review_gate`) and passed on RICH, so nothing the caller set
+/// is silently dropped on the way. `suite` is REQUIRED and its absence is a loud error
+/// naming it: a benchmark activity with no suite has nothing to import, and the whole
+/// reason this route exists is that the quiet version of that produced an empty board.
+///
+/// A FREE function, not an inherent method, and deliberately so: an `impl ActivitySpawn`
+/// would make the command struct read as "machinery" to
+/// `source_hygiene::production_reachability` — a pub type with an inherent impl and a
+/// constructor — and a command is only ever constructed by its own module's `commands()`,
+/// so it would count as unwired forever. The guard is right about the shape it checks;
+/// this code has no need of the shape.
+async fn dispatch_benchmark_activity(
+    executor_slot: &crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    p: ActivitySpawnParams,
+) -> Result<ActivitySpawnResult, CommandError> {
+    let exec = executor_slot.get().cloned().ok_or_else(|| {
+        CommandError::Internal(
+            "command executor not installed on activity/spawn — boot wiring gap".into(),
+        )
+    })?;
+    let dispatch = benchmark_dispatch_params(&p.recipe, &p.params)?;
+    let out = exec
+        .execute("benchmark/dispatch", serde_json::Value::Object(dispatch))
+        .await
+        .map_err(|e| CommandError::Internal(format!("benchmark/dispatch failed: {e}")))?;
+    let crate::runtime::CommandResult::Json(v) = out else {
+        return Err(CommandError::Internal(
+            "benchmark/dispatch returned a non-JSON result".into(),
+        ));
+    };
+    // The room dispatch ROOTED is the activity this call spawned — reported back in
+    // this verb's own shape so a caller never has to know which door ran.
+    let result: BenchmarkDispatchRoom = serde_json::from_value(v).map_err(|e| {
+        CommandError::Internal(format!(
+            "benchmark/dispatch result did not name the room it rooted: {e}"
+        ))
+    })?;
+    Ok(ActivitySpawnResult {
+        room_id: result.room_id,
+        name: result.room,
+        recipe: p.recipe,
+        binding_post_id: result.binding_post_id,
+    })
 }
 
 /// The half of `BenchmarkDispatchResult` this verb needs: WHICH ROOM the run rooted.
@@ -342,7 +353,7 @@ impl ActionCommand for ActivitySpawn {
         // making the caller know which of two doors to use. One door; the recipe decides
         // what walking through it means.
         if p.recipe.starts_with("benchmark/") {
-            return self.dispatch_benchmark_activity(p).await;
+            return dispatch_benchmark_activity(&self.executor_slot, p).await;
         }
         spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
     }
@@ -634,8 +645,14 @@ pub async fn spawn_activity_room(
     )?;
     let resolved_params = resolve_params(&recipe_def, params)?;
     // Read before `resolved_params` moves into the binding below.
-    let child_driver = resolved_params.get("driver").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let child_suite = resolved_params.get("suite").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let child_driver = resolved_params
+        .get("driver")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let child_suite = resolved_params
+        .get("suite")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     // WHERE IT ROOTS: an explicit parent wins (a sub-activity nests under the activity
     // that spawned it); else the recipe's declared BASE (a benchmark round is learning →
     // `academy`, by what it is); else nowhere in particular (the spawner's context). The
@@ -706,9 +723,8 @@ pub async fn spawn_activity_room(
             parent,
             params: resolved_params,
         };
-        let body = serde_json::to_string(&binding).map_err(|source| {
-            CommandError::Internal(format!("encode recipe binding: {source}"))
-        })?;
+        let body = serde_json::to_string(&binding)
+            .map_err(|source| CommandError::Internal(format!("encode recipe binding: {source}")))?;
         let post_id = airc
             .publish_wall_post(RECIPE_WALL_CATEGORY.to_string(), body, None)
             .await
@@ -728,11 +744,11 @@ pub async fn spawn_activity_room(
         if let Some(parent_id) = parent {
             let parent_room = match parent_room.take() {
                 Some(r) => Some(r),
-                None => airc
-                    .subscription_set()
-                    .await
-                    .ok()
-                    .and_then(|set| set.all().map(|sub| sub.as_room()).find(|r| r.channel == parent_id)),
+                None => airc.subscription_set().await.ok().and_then(|set| {
+                    set.all()
+                        .map(|sub| sub.as_room())
+                        .find(|r| r.channel == parent_id)
+                }),
             };
             match parent_room {
                 Some(parent_room) => {
@@ -772,7 +788,9 @@ pub async fn spawn_activity_room(
                                 "the room exists but its parent never heard of it — remote nodes cannot seat into it until a re-spawn"
                             ),
                         },
-                        Err(source) => tracing::warn!(%source, room = %name, "child record could not be encoded"),
+                        Err(source) => {
+                            tracing::warn!(%source, room = %name, "child record could not be encoded")
+                        }
                     }
                 }
                 None => crate::probe!(
@@ -794,7 +812,6 @@ pub async fn spawn_activity_room(
 }
 
 // ─────────────────────────── standing ───────────────────────────
-
 
 /// The standing of ONE room the caller named — never "whatever room the
 /// scope's pointer happens to be on".
@@ -836,7 +853,6 @@ async fn publish_standing_in(
             ))
         })
 }
-
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct StandingResult {
@@ -1215,10 +1231,10 @@ mod tests {
         // stood. Losing this line would drop every round to a flat top-level room again.
         #[test]
         fn the_benchmark_recipe_roots_in_the_academy() {
-            let recipe = crate::experience::recipe::ExperienceRecipe::from_json(
-                include_str!("../experience/recipes/benchmark.json"),
-            )
-            .expect("shipped recipe parses");  // test: the embedded recipe is authored JSON
+            let recipe = crate::experience::recipe::ExperienceRecipe::from_json(include_str!(
+                "../experience/recipes/benchmark.json"
+            ))
+            .expect("shipped recipe parses"); // test: the embedded recipe is authored JSON
             assert_eq!(recipe.base.as_deref(), Some("academy"));
         }
 
@@ -1258,8 +1274,7 @@ mod tests {
         #[test]
         fn an_override_merges_over_the_remaining_defaults() {
             let given = BTreeMap::from([("instances".to_string(), serde_json::json!(5))]);
-            let resolved =
-                resolve_params(&recipe_with_params(), &given).expect("valid override");
+            let resolved = resolve_params(&recipe_with_params(), &given).expect("valid override");
             assert_eq!(resolved["instances"], serde_json::json!(5));
             assert_eq!(resolved["suite"], serde_json::json!("swe-lite"));
         }
@@ -1306,11 +1321,9 @@ mod tests {
                 r#"{ "purpose": "bench/bare", "regions": [], "affordances": [] }"#,
             )
             .expect("bare recipe parses");
-            assert!(
-                resolve_params(&bare, &BTreeMap::new())
-                    .expect("no params, no overrides — fine")
-                    .is_empty()
-            );
+            assert!(resolve_params(&bare, &BTreeMap::new())
+                .expect("no params, no overrides — fine")
+                .is_empty());
             let err = resolve_params(
                 &bare,
                 &BTreeMap::from([("anything".to_string(), serde_json::json!(1))]),
@@ -1339,8 +1352,8 @@ mod tests {
                 }"#,
             )
             .expect("write overlay chat");
-            let resolved = resolve_recipe("chat", overlay.path())
-                .expect("shipped purpose still resolves");
+            let resolved =
+                resolve_recipe("chat", overlay.path()).expect("shipped purpose still resolves");
             assert!(
                 resolved.params.contains_key("topic"),
                 "the OVERLAY copy (with its param decls) must win, got params: {:?}",
@@ -1393,7 +1406,10 @@ mod tests {
         use std::collections::BTreeMap;
 
         fn params(pairs: &[(&str, serde_json::Value)]) -> BTreeMap<String, serde_json::Value> {
-            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect()
         }
 
         // what this catches: every knob the benchmark recipe declares must reach dispatch
@@ -1414,12 +1430,34 @@ mod tests {
                 ]),
             )
             .expect("a suite is present, so the translation succeeds");
-            assert_eq!(out["name"], serde_json::json!("coder-write-eval"), "suite names the run");
-            assert_eq!(out["recipe"], serde_json::json!("benchmark/hard-rs"), "the recipe rides along");
-            assert_eq!(out["instances"], serde_json::json!(["sum_evens", "conway_step"]));
-            assert_eq!(out["teammates"], serde_json::json!(["Sahar", "Kimi"]), "`team` is dispatch's `teammates`");
-            assert_eq!(out["drive"], serde_json::json!("citizen"), "`driver` is dispatch's `drive`");
-            assert_eq!(out["doctrine"], serde_json::json!("work it with your own hands"));
+            assert_eq!(
+                out["name"],
+                serde_json::json!("coder-write-eval"),
+                "suite names the run"
+            );
+            assert_eq!(
+                out["recipe"],
+                serde_json::json!("benchmark/hard-rs"),
+                "the recipe rides along"
+            );
+            assert_eq!(
+                out["instances"],
+                serde_json::json!(["sum_evens", "conway_step"])
+            );
+            assert_eq!(
+                out["teammates"],
+                serde_json::json!(["Sahar", "Kimi"]),
+                "`team` is dispatch's `teammates`"
+            );
+            assert_eq!(
+                out["drive"],
+                serde_json::json!("citizen"),
+                "`driver` is dispatch's `drive`"
+            );
+            assert_eq!(
+                out["doctrine"],
+                serde_json::json!("work it with your own hands")
+            );
             assert_eq!(out["review_gate"], serde_json::json!(true));
         }
 
@@ -1454,7 +1492,10 @@ mod tests {
             )
             .expect_err("no suite — there is nothing to import");
             let msg = format!("{err:?}");
-            assert!(msg.contains("suite"), "the error names the missing param: {msg}");
+            assert!(
+                msg.contains("suite"),
+                "the error names the missing param: {msg}"
+            );
             // A blank string is the same absence, not a suite named "".
             let blank = benchmark_dispatch_params(
                 "benchmark/hard-rs",
