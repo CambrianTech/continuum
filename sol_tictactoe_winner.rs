@@ -78,11 +78,11 @@ fn main() {
             let v = (mask >> (i * 3)) & 3;
             b[i] = if v == 0 { 'X' } else if v == 1 { 'O' } else { ' ' };
         }
-        // Independent reference: a mark wins iff some line is all that mark.
+        // Independent reference: first uniform non-blank line in LINES order wins.
         let mut ref_w = ' ';
-        for m in ['X', 'O'] {
-            if LINES.iter().any(|l| b[l[0]] == m && b[l[1]] == m && b[l[2]] == m) {
-                ref_w = m;
+        for l in LINES.iter() {
+            if b[l[0]] != ' ' && b[l[1]] == b[l[0]] && b[l[2]] == b[l[0]] {
+                ref_w = b[l[0]];
                 break;
             }
         }
