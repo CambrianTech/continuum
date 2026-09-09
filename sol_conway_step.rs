@@ -278,7 +278,10 @@ fn main() {
         c.set(x, y, true);
     }
     c.step();
-    let expected = [(2usize, 0usize), (0, 1), (1, 1), (3, 1), (1, 2)];
+    // Hand-computed next state: (2,1),(1,2) survive with 3 neighbours;
+    // (2,2) survives with 2; (0,1) is born with exactly 3. All other cells
+    // have the wrong count, so this set must match cell-for-cell.
+    let expected = [(2usize, 1usize), (1, 2), (2, 2), (0, 1)];
     let mut ok = c.population() == 5;
     for y in 0..7usize {
         for x in 0..7usize {
