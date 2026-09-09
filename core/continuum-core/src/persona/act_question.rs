@@ -458,7 +458,11 @@ pub(crate) async fn ask_the_act_question(
                             body.working_memory.end_of_work_turn();
                         }
                     }
-                    let (work_step, _) =
+                    // `work_generation_receipts`: this is the held-work turn, the
+                    // OTHER produce call site. Bound rather than dropped so the
+                    // card-linked staging path can carry the same provenance the
+                    // directed path does (card 0d51573a).
+                    let (work_step, _, work_generation_receipts) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
                     match work_step {
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
@@ -514,6 +518,21 @@ pub(crate) async fn ask_the_act_question(
                                 ctx.profile.model_id.clone(),
                                 work_context.clone(),
                                 text.clone(),
+                                // The HELD-WORK turn: she is working a card by
+                                // definition here, so this is the path the staging
+                                // exists for. Credit comes from the CARD, not from
+                                // `work_hands` — hands exist only when the card
+                                // resolved to a staged checkout, and a generic repo
+                                // card has none, so sourcing credit there would drop
+                                // it on exactly the cards #3924's rooting fix just
+                                // taught her to work. `held` is already
+                                // `work_focus::focus_card`'d, so this is the same
+                                // focused card the service_loop path captures at
+                                // selection, through the same pure constructor.
+                                held.first().map(|card| {
+                                    crate::persona::training_producer::CapturedCredit::from_selected_card(card)
+                                }),
+                                work_generation_receipts.clone(),
                             );
                         }
                         crate::cognition::act_observe::SettleStep::Passed { reason } => {

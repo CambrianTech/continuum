@@ -708,6 +708,16 @@ pub(crate) struct ActingHands {
     executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
     /// Her working memory: the restore clears the receipt scope the rooting set.
     working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
+    /// The card this turn was rooted at, CAPTURED AT SELECTION (card 0d51573a).
+    ///
+    /// Taken here rather than read back at turn completion because `acting_card_of`
+    /// is a mutable persona-global: a later focus rebind would re-attribute a
+    /// finished turn to a card it was never worked under. The capture happens
+    /// before any await, so the credit describes the turn that actually ran.
+    ///
+    /// `None` for a handless cycle or a turn holding no card — ordinary
+    /// conversation, which keeps the immediate-submit path.
+    credit: Option<crate::persona::training_producer::CapturedCredit>,
 }
 
 impl ActingHands {
@@ -718,7 +728,15 @@ impl ActingHands {
             persona_name: a.persona_name.clone(),
             executor: a.executor.clone(),
             working_memory: a.working_memory.clone(),
+            // Absent by construction here: this is the plain constructor, and only
+            // `root_at_held_card` knows which card was selected.
+            credit: None,
         })
+    }
+
+    /// The card credit captured at selection, if this turn was rooted at one.
+    pub(crate) fn credit(&self) -> Option<&crate::persona::training_producer::CapturedCredit> {
+        self.credit.as_ref()
     }
 }
 
@@ -902,7 +920,15 @@ pub(crate) async fn root_at_held_card(
     // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
     // correct repo-relative edit answered "File not found … did you mean swe/…").
     // Rooting is idempotent; do it every turn she holds a card.
-    let hands = ActingHands::of(cycle)?;
+    let mut hands = ActingHands::of(cycle)?;
+    // CAPTURE AT SELECTION, before the await below. `focus` is the card the work
+    // store actually handed us, so the credit is true of THIS turn and cannot be
+    // re-attributed by a later focus rebind. `from_selected_card` is PURE — it
+    // reads the card and invents nothing, so a claimless card yields a credit with
+    // no receipt rather than a fabricated one.
+    hands.credit = Some(
+        crate::persona::training_producer::CapturedCredit::from_selected_card(focus),
+    );
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
             note_acting_card(hands.persona_id, focus.card_id.as_uuid());
@@ -2574,6 +2600,10 @@ mod tests {
                 persona_name: "Anwen".to_string(),
                 executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
                 working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
+                // This fixture builds hands directly rather than through the focus
+                // site, so there is no selected card to capture credit from. `None`
+                // is the honest value, and it matches `ActingHands::of`.
+                credit: None,
             }
         }
 

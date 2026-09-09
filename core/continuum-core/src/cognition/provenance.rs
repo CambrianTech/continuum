@@ -121,19 +121,13 @@ impl GenerationReceipt {
         }
     }
 
-    /// Did this call produce usable output? Named rather than matched inline so a
-    /// call site reads as a decision about provenance, not a pattern match.
-    pub fn served(&self) -> bool {
-        matches!(self.outcome, GenerationOutcome::Served { .. })
-    }
-
-    /// What actually answered, when something did.
-    pub fn served_model(&self) -> Option<&str> {
-        match &self.outcome {
-            GenerationOutcome::Served { model, .. } => Some(model),
-            GenerationOutcome::Faulted { .. } => None,
-        }
-    }
+    // NO `served()` / `served_model()` ACCESSORS. They existed here, read well, and
+    // had ZERO production callers — the only call sites were the tests in this file,
+    // which is a test asserting against a convenience it also justifies. Their doc
+    // comments pointed at call sites that do not exist and at the `served` column
+    // `stage_credit` fills in later, which is a FUTURE justification. Consumers match
+    // on `outcome` directly; when a real reader needs a named accessor it arrives
+    // with that reader, not ahead of it.
 }
 
 #[cfg(test)]
@@ -175,21 +169,19 @@ mod tests {
     #[test]
     fn a_finish_reason_error_is_a_fault_receipt_not_a_served_generation() {
         let errored = GenerationReceipt::from_response("req-submitted", &response(FinishReason::Error, "req-submitted"));
-        assert!(
-            !errored.served(),
-            "finish_reason=Error must not be recorded as served, even though text came back"
-        );
-        assert_eq!(
-            errored.served_model(),
-            None,
-            "a faulted call served no model — reporting one would credit a lane that failed"
-        );
+        // Matched on `outcome` directly. This used to assert through `served()` /
+        // `served_model()`, which had no production readers — the `Served` arm below
+        // IS the "must not be recorded as served" assertion, and it fails just as
+        // loudly without a public accessor kept alive to phrase it.
         match &errored.outcome {
             GenerationOutcome::Faulted { model, provider, .. } => {
                 assert_eq!(model.as_deref(), Some("qwen3.8-27b"), "a fault still names its lane when known");
                 assert_eq!(provider.as_deref(), Some("local"));
             }
-            GenerationOutcome::Served { .. } => panic!("classified a finish_reason=Error as Served"),
+            GenerationOutcome::Served { .. } => panic!(
+                "finish_reason=Error classified as Served — text came back, but a failed \
+                 call must not enter provenance as a normal generation"
+            ),
         }
 
         // THE SECOND FAULT SIGNAL: an adapter can report failure by populating
@@ -199,23 +191,28 @@ mod tests {
             "req-submitted",
             &errored_via_field("req-submitted", "upstream refused: context length exceeded"),
         );
-        assert!(
-            !via_field.served(),
-            "error=Some is a fault even when finish_reason reads Stop"
-        );
         match &via_field.outcome {
             GenerationOutcome::Faulted { detail, .. } => assert_eq!(
                 detail, "upstream refused: context length exceeded",
                 "the adapter's own words are kept, not replaced by a generic description"
             ),
-            GenerationOutcome::Served { .. } => panic!("error=Some classified as Served"),
+            GenerationOutcome::Served { .. } => panic!(
+                "error=Some classified as Served, even though finish_reason read Stop"
+            ),
         }
 
         // POSITIVE CONTROL: an ordinary Stop MUST be served. Without this the assertions
         // above would pass identically if `from_response` faulted everything.
         let ok = GenerationReceipt::from_response("req-submitted", &response(FinishReason::Stop, "req-submitted"));
-        assert!(ok.served(), "an ordinary completion is a served generation");
-        assert_eq!(ok.served_model(), Some("qwen3.8-27b"));
+        match &ok.outcome {
+            GenerationOutcome::Served { model, .. } => assert_eq!(
+                model, "qwen3.8-27b",
+                "the served model is what ANSWERED, taken from the response"
+            ),
+            GenerationOutcome::Faulted { .. } => {
+                panic!("an ordinary completion must be a served generation")
+            }
+        }
     }
 
     // what this catches: the provider's id replacing the submitted one. The submitted id

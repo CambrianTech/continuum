@@ -51,6 +51,10 @@ use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::{ClientError, Connection, Transport};
 
 use crate::commands::training_trigger::submit::SubmitOutcome;
+use crate::orm::types::{BatchOperation, BatchOperationType};
+// `COLLECTION` is an associated const on the OrmEntity trait; the derive puts it
+// there, so the trait must be in scope to name it.
+use crate::orm::OrmEntity;
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -566,6 +570,12 @@ pub fn produce(
     base_model: String,
     prompt: String,
     completion: String,
+    // The card this turn was rooted at, captured AT SELECTION on her hands.
+    // `Some` routes the turn to STAGING; `None` is ordinary conversation and keeps
+    // the pre-existing immediate-submit behaviour byte-identical.
+    credit: Option<CapturedCredit>,
+    // Every generation this turn dispatched, in order, faults included.
+    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 ) {
     let Some(executor) = EXECUTOR.cloned() else {
         // Expected during tests / before boot installs the executor. Named, not
@@ -579,6 +589,57 @@ pub fn produce(
     };
 
     tokio::spawn(async move {
+        // CARD-LINKED TURNS STAGE. The quality floor and the domain bucket are NOT
+        // decided here for them: `plan` applies the evidence floor and it needs a
+        // verdict, which does not exist until the card settles. Deciding now would
+        // bake in a judgment made without the evidence — the exact conflation this
+        // card exists to remove. Unlinked conversation still takes the immediate
+        // path below, byte-identical.
+        if let Some(credit) = credit.filter(|c| c.is_card_linked()) {
+            // The SAME identity-bearing connection `submit_plan` builds — not a bare
+            // `Connection::new(executor)`, which does not even satisfy `Transport`.
+            // The identity is load-bearing here and not merely for gating: the
+            // `@persona:{name}` handle these writes target resolves AS this persona,
+            // so a connection without her `LocalPersona` would stage her credit
+            // somewhere other than her own store.
+            let conn = Connection::new(InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona_id),
+                )),
+            ));
+            match stage_credit(
+                &conn,
+                &persona_name,
+                &credit,
+                generation_receipts,
+                prompt,
+                completion,
+            )
+            .await
+            {
+                Ok(submission_id) => crate::probe!(
+                    class = "training.credit.staged",
+                    persona = %persona_name,
+                    card = %credit.card_id,
+                    submission = %submission_id,
+                    stampable = credit.claim.is_some(),
+                    "card-linked turn staged — it submits only if this card settles PASS"
+                ),
+                // Best-effort like the submit path below: a staging failure must
+                // never touch the turn that already happened. NAMED, not swallowed
+                // — a turn that failed to stage is credit that silently vanished.
+                Err(e) => crate::probe!(
+                    class = "training.credit.stage_failed",
+                    persona = %persona_name,
+                    card = %credit.card_id,
+                    error = %e,
+                    "card-linked turn could NOT be staged — this turn's credit is lost"
+                ),
+            }
+            return;
+        }
+
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
         // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
         // is the pre-cc34ac0f path, byte-identical.
@@ -780,11 +841,15 @@ async fn submit_plan(
                 // Emitted as the destination's OWN id, never minted here: an id we
                 // invented would join to nothing and would look exactly like one
                 // that did.
-                submission = %receipt
+                // `Option` rather than a "none" String: an absent acceptance OMITS
+                // the field instead of emitting a sentinel that reads like a value.
+                // "none" in an id column is exactly the absence-as-data shape this
+                // card exists to remove — and it allocated per probe. (Astra
+                // verified tracing-core implements Value for Option<T>.)
+                submission = receipt
                     .acceptance
                     .as_ref()
-                    .map(|a| a.submission_id.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
+                    .map(|a| tracing::field::display(&a.submission_id)),
                 // A replay is an acceptance the destination has SEEN BEFORE. Without
                 // this, a retry and a first submission are the same row.
                 replayed = receipt.acceptance.as_ref().is_some_and(|a| a.replayed),
@@ -829,6 +894,97 @@ async fn submit_plan(
 /// Decode the command's outcome once at the typed boundary. Transport success is
 /// not acceptance: InconsistentBucket and DispatchFailed deliberately return Ok
 /// with success:false. All producers, including consolidation, inspect this receipt.
+/// Persist a card-linked turn as a STAGED credit — the parent row plus one child
+/// row per generation — instead of submitting it as training data now.
+///
+/// Card 0d51573a. A `TrainingExample` is `{prompt, completion}` with no preference
+/// schema anywhere in the tree, so submission is ONE-WAY: a turn submitted before
+/// its card settles cannot be withdrawn when that card later fails. Staging is what
+/// makes the evidence floor reachable — the example waits for a verdict that may
+/// never arrive, and never arriving is the correct outcome rather than a leak.
+///
+/// **Schemas are ensured through the registry, never inferred.** `data/ensure-schema`
+/// resolves a collection by NAME from the boot registry, which is why both are
+/// registered in `persona::register_substrate_orm_entities`. Skipping it would not
+/// fail loudly: sqlite would build both tables from the data's SHAPE and silently
+/// omit every declared index, including the unique one that stops a single
+/// generation being credited to a staged turn twice.
+///
+/// The whole write is ONE `data/batch`, which is atomic on both adapters — a parent
+/// surviving its rolled-back children would be a credit record asserting provenance
+/// it cannot produce.
+async fn stage_credit<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    credit: &CapturedCredit,
+    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    prompt: String,
+    completion: String,
+) -> Result<Uuid, ClientError> {
+    // Her OWN store, not the shared main DB: a citizen's staged credit is her
+    // record of her own turns.
+    let handle = format!("@persona:{persona_name}");
+    let submission_id = Uuid::new_v4();
+
+    for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
+        conn.commands()
+            .execute_value(
+                "data/ensure-schema",
+                json!({ "collection": collection, "handle": handle }),
+            )
+            .await?;
+    }
+
+    let parent = StagedCredit {
+        id: submission_id,
+        card_id: credit.card_id,
+        claim_id: credit.claim.as_ref().map(|c| c.claim_id),
+        owner: credit.claim.as_ref().map(|c| c.owner.as_uuid()),
+        role: credit.claim.as_ref().map(|c| c.role),
+        receipts: generation_receipts.clone(),
+        // Attached later from the response that actually served — never guessed at
+        // stage time.
+        served: None,
+        prompt,
+        completion,
+        // Same clock the rest of this file already uses. `now_unix_ms` exists as a
+        // PRIVATE helper in three other modules and none is importable — copying it
+        // a fourth time would be the duplication the compression principle forbids.
+        staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+    };
+
+    let mut operations = vec![BatchOperation {
+        operation_type: BatchOperationType::Create,
+        collection: StagedCredit::COLLECTION.to_string(),
+        id: Some(submission_id.to_string()),
+        data: Some(serde_json::to_value(&parent)?),
+    }];
+    // One correlation row per generation, faults included: the receipts themselves
+    // ride on the parent as an opaque JSON column (the ORM has no collection
+    // FieldType), so these child rows ARE the index that column cannot carry.
+    for receipt in &generation_receipts {
+        let child = StagedCreditGeneration {
+            id: Uuid::new_v4(),
+            staged_credit_id: submission_id,
+            submitted_request_id: receipt.submitted_request_id.clone(),
+        };
+        operations.push(BatchOperation {
+            operation_type: BatchOperationType::Create,
+            collection: StagedCreditGeneration::COLLECTION.to_string(),
+            id: Some(child.id.to_string()),
+            data: Some(serde_json::to_value(&child)?),
+        });
+    }
+
+    conn.commands()
+        .execute_value(
+            "data/batch",
+            json!({ "operations": operations, "handle": handle }),
+        )
+        .await?;
+    Ok(submission_id)
+}
+
 pub(crate) async fn submit_training<T: Transport>(
     conn: &Connection<T>,
     params: serde_json::Value,
