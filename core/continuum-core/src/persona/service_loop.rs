@@ -5136,7 +5136,9 @@ mod tests {
                 defer_grounding: false,
                 suppress_recall: false,
             };
-            crate::cognition::persona_workspace::global().register_from_cfg(cfg);
+            crate::cognition::persona_workspace::global()
+                .register_from_cfg(cfg)
+                .expect("test: register the held-work publication fixture");
             let stub = StubAircCitizen::new(peer).with_claims(vec![held_card(peer)]);
             let mut conversation = ScriptedConversation::new().with_citizen(Arc::new(stub));
             if refuse_publication {
