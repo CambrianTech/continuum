@@ -263,18 +263,12 @@ impl GroundingSource {
 /// routes decisions through the Workspace — without them, that grounding (#1650 /
 /// #1651) silently falls out of the live path.
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
-    assemble_workspace_cycle(cfg, WorkspaceLifetime::Ephemeral).0
-}
-
-#[derive(Clone, Copy)]
-enum WorkspaceLifetime {
-    Resident,
-    Ephemeral,
+    assemble_workspace_cycle(cfg, None).0
 }
 
 fn assemble_workspace_cycle(
     cfg: PersonaBrainConfig,
-    lifetime: WorkspaceLifetime,
+    restored: Option<PersistedVolatile>,
 ) -> (WorkspaceCycle, Arc<WorkingMemory>) {
     let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
 
@@ -316,40 +310,38 @@ fn assemble_workspace_cycle(
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
-    if matches!(lifetime, WorkspaceLifetime::Resident) {
-        if let Some(persisted) = load_volatile(cfg.persona_id) {
-            let n = persisted.wm.entries.len();
-            working_memory.restore(persisted.wm);
-            let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
-            match &persisted.own_speech {
-                OwnSpeechPersisted::ByRoom(by_room) => {
-                    for (room, utterances) in by_room {
-                        for utterance in utterances {
-                            super::deliberation_budget::record_own_speech(peer, *room, utterance);
-                        }
+    if let Some(persisted) = restored {
+        let n = persisted.wm.entries.len();
+        working_memory.restore(persisted.wm);
+        let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
+        match &persisted.own_speech {
+            OwnSpeechPersisted::ByRoom(by_room) => {
+                for (room, utterances) in by_room {
+                    for utterance in utterances {
+                        super::deliberation_budget::record_own_speech(peer, *room, utterance);
                     }
                 }
-                // Pre-room-scoping file: unattributable, so dropped rather than
-                // mis-filed into a room she may never have spoken in. See
-                // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
-                OwnSpeechPersisted::Legacy(flat) => {
-                    crate::probe!(
-                        class = "persona.volatile.own_speech_legacy_dropped",
-                        persona = %cfg.persona_name,
-                        dropped = flat.len(),
-                        "pre-room-scoping own-speech ring carried no room — dropped, \
-                         durable-transcript hydration re-seeds it"
-                    );
-                }
             }
-            crate::probe!(
-                class = "persona.volatile.restored",
-                persona = %cfg.persona_name,
-                entries = n,
-                ring = persisted.own_speech.len(),
-                "volatile tier restored — waking mid-work, not blank"
-            );
+            // Pre-room-scoping file: unattributable, so dropped rather than
+            // mis-filed into a room she may never have spoken in. See
+            // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
+            OwnSpeechPersisted::Legacy(flat) => {
+                crate::probe!(
+                    class = "persona.volatile.own_speech_legacy_dropped",
+                    persona = %cfg.persona_name,
+                    dropped = flat.len(),
+                    "pre-room-scoping own-speech ring carried no room — dropped, \
+                     durable-transcript hydration re-seeds it"
+                );
+            }
         }
+        crate::probe!(
+            class = "persona.volatile.restored",
+            persona = %cfg.persona_name,
+            entries = n,
+            ring = persisted.own_speech.len(),
+            "volatile tier restored — waking mid-work, not blank"
+        );
     }
     // Async-dispatch listener (LIVE personas only): fold completions of THIS persona's
     // background dispatches back into working memory by handle, so a compile/train/sentinel
@@ -1208,12 +1200,18 @@ impl PersonaWorkspaceRegistry {
     /// cycle + template: a persona can respawn in the same process (node
     /// resilience), and the fresh admission + adapter must replace the prior
     /// lifetime's. This is the production spawn path (see `supervisor.rs`).
-    pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
+    /// Checkpoint lock/read/schema failures refuse this registration and leave
+    /// an existing resident unchanged. Call from a blocking worker during boot.
+    pub fn register_from_cfg(
+        &self,
+        cfg: PersonaBrainConfig,
+    ) -> std::io::Result<Arc<WorkspaceCycle>> {
         let _assembly = self.assembly.lock();
         let persona_id = cfg.persona_id;
         let template = cfg.clone();
         // Assembly restores disk state; do it outside the lookup lock.
-        let (cycle, working_memory) = assemble_workspace_cycle(cfg, WorkspaceLifetime::Resident);
+        let restored = load_volatile(persona_id)?;
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored);
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
@@ -1225,24 +1223,25 @@ impl PersonaWorkspaceRegistry {
                 working_memory,
             },
         );
-        cycle
+        Ok(cycle)
     }
 
     /// Get the persona's mind, building + caching it from `cfg` on first access.
     /// Lazy-init so a persona's cycle is assembled once and reused across every
     /// room it services (the "one soul" invariant). Also retains the fork-template
     /// (same as [`register_from_cfg`](Self::register_from_cfg)).
-    pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
+    pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> std::io::Result<Arc<WorkspaceCycle>> {
         let persona_id = cfg.persona_id;
         if let Some(existing) = self.get(&persona_id) {
-            return existing;
+            return Ok(existing);
         }
         let _assembly = self.assembly.lock();
         if let Some(existing) = self.get(&persona_id) {
-            return existing;
+            return Ok(existing);
         }
         let template = cfg.clone();
-        let (cycle, working_memory) = assemble_workspace_cycle(cfg, WorkspaceLifetime::Resident);
+        let restored = load_volatile(persona_id)?;
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored);
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
@@ -1254,7 +1253,7 @@ impl PersonaWorkspaceRegistry {
                 working_memory,
             },
         );
-        cycle
+        Ok(cycle)
     }
 
     /// Periodic crash checkpoint. A busy writer coalesces this tick; no queue
@@ -1562,6 +1561,10 @@ struct PersistedVolatile {
     own_speech: OwnSpeechPersisted,
 }
 
+/// Explicit offline adoption of a selected legacy checkpoint; shares this
+/// owner's schema, native path, and cross-process checkpoint exclusion.
+pub mod checkpoint_adoption;
+
 /// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
 /// without its room would re-create the cross-room repetition fact the keying
 /// fix exists to kill.
@@ -1609,40 +1612,41 @@ fn save_volatile(
     persona_id: Uuid,
     wm: &super::working_memory::WorkingMemory,
 ) -> std::io::Result<()> {
+    let path = volatile_path(persona_id)?;
+    let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
     let persisted = PersistedVolatile {
         wm: wm.snapshot(),
         own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
         )),
     };
-    let path = volatile_path(persona_id)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
-    std::fs::rename(&tmp, &path)
+    use std::io::Write;
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(&serde_json::to_vec(&persisted)?)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, &path)?;
+    checkpoint_adoption::sync_parent(&path)
 }
 
-/// Load the previous life's volatile tier, if any. Unreadable/corrupt files
-/// return None LOUDLY (a mind-file that fails to parse must never be silently
-/// ignored twice — the warn is the operator's cue to look).
-fn load_volatile(persona_id: Uuid) -> Option<PersistedVolatile> {
-    let path = match volatile_path(persona_id) {
-        Ok(path) => path,
-        Err(error) => {
-            tracing::warn!(%persona_id, %error, "volatile-tier root unavailable — previous memory could not be loaded");
-            return None;
-        }
+/// Load the previous life's volatile tier under the same owner lock as saves
+/// and adoption. Only an absent checkpoint permits a fresh resident; inability
+/// to read or decode an existing one must reach the registration caller.
+fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
+    let path = volatile_path(persona_id)?;
+    let _lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     };
-    let bytes = std::fs::read(&path).ok()?;
-    match serde_json::from_slice(&bytes) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            tracing::warn!(persona_id = %persona_id, error = %e, path = %path.display(), "volatile-tier file unreadable — waking blank this once");
-            None
-        }
-    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 #[cfg(test)]
@@ -1653,6 +1657,269 @@ mod tests {
 
     use tokio::sync::{watch, Notify};
     use tokio::time::timeout;
+
+    // Uses the real persisted schema and WorkingMemory writer, not a second
+    // checkpoint model. Explicit legacy root belongs to each temporary fixture.
+    fn adoption_source(
+        root: &std::path::Path,
+        persona: Uuid,
+        text: &str,
+    ) -> (std::path::PathBuf, Vec<u8>) {
+        let memory = WorkingMemory::new(8);
+        memory.record_receipt(text);
+        let snapshot = PersistedVolatile {
+            wm: memory.snapshot(),
+            own_speech: OwnSpeechPersisted::ByRoom(vec![(Uuid::new_v4(), vec![text.into()])]),
+        };
+        let bytes = serde_json::to_vec(&snapshot).expect("test: actual snapshot serializes");
+        let path = root.join(persona.to_string()).join("volatile.json");
+        std::fs::create_dir_all(path.parent().expect("test: fixture parent"))
+            .expect("test: fixture directory");
+        std::fs::write(&path, &bytes).expect("test: legacy checkpoint");
+        (path, bytes)
+    }
+
+    // 9f160b78: explicit selection preserves WHOLE bytes plus both origins,
+    // even when the caller chooses an older sequence than the destination.
+    #[test]
+    fn legacy_adoption_preserves_selected_bytes_and_is_bound_on_replay() {
+        use checkpoint_adoption::{adopt, inspect, AdoptionError};
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let memory = WorkingMemory::new(8);
+        memory.record_receipt("different previous lifetime");
+        memory.record_receipt("higher sequence is not a selection policy");
+        save_volatile(persona, &memory).unwrap();
+        let destination = volatile_path(persona).unwrap();
+        let original = std::fs::read(&destination).unwrap();
+        let (source, selected) =
+            adoption_source(&dir.path().join("legacy"), persona, "selected work");
+        let plan = inspect(&source, persona).unwrap();
+        assert!(
+            plan.source.summary.next_action_seq
+                < plan
+                    .prior_destination
+                    .as_ref()
+                    .unwrap()
+                    .summary
+                    .next_action_seq
+        );
+        let receipt = adopt(&plan, || Ok(())).unwrap();
+        assert!(!receipt.already_applied);
+        assert!(!receipt.legacy_final_flush_acknowledged);
+        assert_eq!(std::fs::read(&source).unwrap(), selected);
+        assert_eq!(std::fs::read(&destination).unwrap(), selected);
+        assert_eq!(std::fs::read(&receipt.source_archive).unwrap(), selected);
+        assert_eq!(
+            std::fs::read(receipt.prior_destination_archive.as_ref().unwrap()).unwrap(),
+            original
+        );
+        assert!(adopt(&plan, || Ok(())).unwrap().already_applied);
+        // The source archive is a distinct inode: an in-place future write to
+        // the destination cannot alter the preserved selection.
+        std::fs::write(&destination, &original).unwrap();
+        assert_eq!(std::fs::read(&receipt.source_archive).unwrap(), selected);
+        assert!(matches!(
+            adopt(&plan, || Ok(())),
+            Err(AdoptionError::DestinationChanged)
+        ));
+        std::fs::write(&receipt.source_archive, b"conflicting evidence").unwrap();
+        assert!(matches!(
+            adopt(&plan, || Ok(())),
+            Err(AdoptionError::EvidenceConflict(_))
+        ));
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+    }
+
+    // 9f160b78: both guards are rechecked at the actual publication boundary;
+    // late writes are preserved, not silently replaced by the inspected plan.
+    #[test]
+    fn legacy_adoption_refuses_changed_source_destination_and_offline_state() {
+        use checkpoint_adoption::{adopt, inspect, AdoptionError};
+        for changed_source in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+            let persona = Uuid::new_v4();
+            let (source, selected) =
+                adoption_source(&dir.path().join("legacy"), persona, "selected work");
+            let plan = inspect(&source, persona).unwrap();
+            assert!(plan.prior_destination.is_none());
+            let (other, changed) =
+                adoption_source(&dir.path().join("other"), persona, "concurrent work");
+            let mut checks = 0;
+            let outcome = adopt(&plan, || {
+                checks += 1;
+                if checks == 3 {
+                    std::fs::copy(
+                        &other,
+                        if changed_source {
+                            &source
+                        } else {
+                            &plan.destination_path
+                        },
+                    )?;
+                }
+                Ok(())
+            });
+            assert_eq!(
+                checks, 3,
+                "test: mutation reached the pre-publication check"
+            );
+            if changed_source {
+                assert!(matches!(outcome, Err(AdoptionError::SourceChanged)));
+                assert_eq!(std::fs::read(&source).unwrap(), changed);
+                assert!(!plan.destination_path.exists());
+            } else {
+                assert!(matches!(outcome, Err(AdoptionError::DestinationChanged)));
+                assert_eq!(std::fs::read(&plan.destination_path).unwrap(), changed);
+                assert_eq!(std::fs::read(&source).unwrap(), selected);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
+        let plan = inspect(&source, persona).unwrap();
+        let mut checks = 0;
+        let outcome = adopt(&plan, || {
+            checks += 1;
+            if checks == 2 {
+                Err(std::io::Error::other(
+                    "core appeared before lock acquisition",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(outcome, Err(AdoptionError::Io(_))));
+        assert_eq!(checks, 2);
+        assert!(!plan.destination_path.exists());
+    }
+
+    // 9f160b78: inject a real receipt-publication IO failure after the actual
+    // checkpoint rename. Retry joins preserved intent, never guesses from a
+    // coincidentally matching destination, and never rewrites source bytes.
+    #[test]
+    fn legacy_adoption_recovers_committed_file_without_receipt() {
+        use checkpoint_adoption::{adopt, inspect};
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let (source, selected) =
+            adoption_source(&dir.path().join("legacy"), persona, "selected work");
+        let plan = inspect(&source, persona).unwrap();
+        for _ in 0..2 {
+            let mut checks = 0;
+            assert!(adopt(&plan, || {
+                checks += 1;
+                if checks == 3 {
+                    Err(std::io::Error::other("core appeared before publication"))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+            assert!(!plan.destination_path.exists());
+            let evidence_root = plan
+                .destination_path
+                .parent()
+                .unwrap()
+                .join(".checkpoint-adoptions");
+            let evidence = std::fs::read_dir(evidence_root)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let files = std::fs::read_dir(evidence).unwrap().count();
+            assert_eq!(
+                files, 3,
+                "source, plan and one staged inode; retry must not accumulate payload copies"
+            );
+        }
+        let mut checks = 0;
+        let mut blocked_receipt = None;
+        let outcome = adopt(&plan, || {
+            checks += 1;
+            if checks == 3 {
+                let archive_root = plan
+                    .destination_path
+                    .parent()
+                    .unwrap()
+                    .join(".checkpoint-adoptions");
+                let evidence = std::fs::read_dir(archive_root)?.next().unwrap()?.path();
+                let path = evidence.join("receipt.json");
+                std::fs::create_dir(&path)?;
+                blocked_receipt = Some(path);
+            }
+            Ok(())
+        });
+        assert!(outcome.is_err());
+        assert_eq!(std::fs::read(&plan.destination_path).unwrap(), selected);
+        std::fs::remove_dir(blocked_receipt.unwrap()).unwrap();
+        let recovered = adopt(&plan, || Ok(())).unwrap();
+        assert!(recovered.already_applied);
+        assert!(recovered.receipt_path.is_file());
+        assert_eq!(std::fs::read(&recovered.source_archive).unwrap(), selected);
+        assert!(adopt(&plan, || Ok(())).unwrap().already_applied);
+    }
+
+    // 9f160b78: an explicit UUID is a declaration checked against the path,
+    // not a replacement identity inserted into arbitrary JSON.
+    #[test]
+    fn legacy_adoption_inspection_rejects_identity_and_schema_mismatch() {
+        use checkpoint_adoption::{inspect, AdoptionError};
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
+        assert!(matches!(
+            inspect(&source, Uuid::new_v4()),
+            Err(AdoptionError::Invalid(_))
+        ));
+        std::fs::write(&source, b"{}").unwrap();
+        assert!(matches!(
+            inspect(&source, persona),
+            Err(AdoptionError::Invalid(_))
+        ));
+        assert!(
+            !dir.path().join("native").exists(),
+            "inspection is read-only"
+        );
+        let (source, selected) =
+            adoption_source(&dir.path().join("legacy"), persona, "valid selected work");
+        let destination = volatile_path(persona).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&destination, b"corrupt native checkpoint").unwrap();
+        assert!(matches!(
+            inspect(&source, persona),
+            Err(AdoptionError::Invalid(_))
+        ));
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"corrupt native checkpoint"
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), selected);
+    }
+
+    // 9f160b78: actual cross-process lock primitive, not a simulated busy flag.
+    #[test]
+    fn legacy_adoption_refuses_a_checkpoint_owner_already_holding_the_lock() {
+        use checkpoint_adoption::{adopt, inspect, lock_checkpoint, AdoptionError};
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
+        let plan = inspect(&source, persona).unwrap();
+        let owner = lock_checkpoint(&plan.destination_path, true).unwrap();
+        assert!(
+            matches!(adopt(&plan, || Ok(())), Err(AdoptionError::Io(error)) if error.kind() == fs2::lock_contended_error().kind())
+        );
+        assert!(!plan.destination_path.exists());
+        drop(owner);
+        assert!(!adopt(&plan, || Ok(())).unwrap().already_applied);
+    }
 
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::workspace::Decision;
@@ -1677,7 +1944,9 @@ mod tests {
                 .join(persona.to_string())
                 .join("volatile.json")
         );
-        let saved = load_volatile(persona).expect("read the native checkpoint");
+        let saved = load_volatile(persona)
+            .expect("read the native checkpoint")
+            .expect("checkpoint exists");
         assert!(
             saved.wm.last_action.is_some(),
             "the fixture must carry real work"
@@ -1700,7 +1969,9 @@ mod tests {
         let _native = crate::paths::NativeHomeOverride::install(home.path());
         let registry = PersonaWorkspaceRegistry::new();
         let persona = Uuid::new_v4();
-        let old_cycle = registry.register_from_cfg(cfg_for(persona));
+        let old_cycle = registry
+            .register_from_cfg(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
         let old_memory = Arc::clone(&registry.cycles.lock()[&persona].working_memory);
         old_memory.record_receipt("previous resident action");
         assert!(registry.checkpoint_volatile_all().remove(0).1.is_ok());
@@ -1708,11 +1979,13 @@ mod tests {
         old_memory.record_receipt("work after an ordinary explicit save");
         assert!(registry.checkpoint_volatile_all().remove(0).1.is_ok());
         assert_eq!(
-            load_volatile(persona).unwrap().wm.last_action,
+            load_volatile(persona).unwrap().unwrap().wm.last_action,
             old_memory.snapshot().last_action
         );
 
-        let current = registry.register_from_cfg(cfg_for(persona));
+        let current = registry
+            .register_from_cfg(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
         let current_memory = Arc::clone(&registry.cycles.lock()[&persona].working_memory);
         // cfg_for uses synchronous recall: restore authority must not depend on
         // that scheduling flag, or these residents still wake blank.
@@ -1746,7 +2019,10 @@ mod tests {
         old_memory.record_receipt("obsolete cycle must not publish this");
         tokio::task::yield_now().await; // the former saver's immediate first tick
         assert!(registry.stop_volatile_checkpoints().remove(0).1.is_ok());
-        assert_eq!(load_volatile(persona).unwrap().wm.last_action, expected);
+        assert_eq!(
+            load_volatile(persona).unwrap().unwrap().wm.last_action,
+            expected
+        );
         let checkpoint = std::fs::read(volatile_path(persona).unwrap()).unwrap();
         current_memory.record_receipt("late mutation after shutdown boundary");
         assert!(registry.checkpoint_volatile_all().is_empty());
@@ -1796,7 +2072,9 @@ mod tests {
         let failed = Uuid::new_v4();
         let healthy = Uuid::new_v4();
         for id in [failed, healthy] {
-            registry.register_from_cfg(cfg_for(id));
+            registry
+                .register_from_cfg(cfg_for(id))
+                .expect("test: resident checkpoint is readable");
             registry.cycles.lock()[&id]
                 .working_memory
                 .record_receipt("completed real work");
@@ -1820,7 +2098,12 @@ mod tests {
             .unwrap()
             .1
             .is_ok());
-        assert!(load_volatile(healthy).unwrap().wm.last_action.is_some());
+        assert!(load_volatile(healthy)
+            .unwrap()
+            .unwrap()
+            .wm
+            .last_action
+            .is_some());
     }
 
     #[cfg(feature = "stress-tests")]
@@ -1836,7 +2119,9 @@ mod tests {
             let _native = crate::paths::NativeHomeOverride::install(home.path());
             let registry = Arc::new(PersonaWorkspaceRegistry::new());
             let persona = Uuid::new_v4();
-            registry.register_from_cfg(cfg_for(persona));
+            registry
+                .register_from_cfg(cfg_for(persona))
+                .expect("test: resident checkpoint is readable");
             registry.cycles.lock()[&persona]
                 .working_memory
                 .record_receipt("old resident action");
@@ -1857,7 +2142,9 @@ mod tests {
             let root = Arc::clone(&home);
             let replacement = tokio::task::spawn_blocking(move || {
                 let _native = crate::paths::NativeHomeOverride::install(root.path());
-                let current = owner.register_from_cfg(cfg_for(persona));
+                let current = owner
+                    .register_from_cfg(cfg_for(persona))
+                    .expect("test: resident checkpoint is readable");
                 assert!(Arc::ptr_eq(&current, &owner.get(&persona).unwrap()));
                 let memory = Arc::clone(&owner.cycles.lock()[&persona].working_memory);
                 memory.record_receipt("replacement completed the review");
@@ -1897,7 +2184,10 @@ mod tests {
                 .await??
                 .remove(0)
                 .1?;
-            assert_eq!(load_volatile(persona).unwrap().wm.last_action, expected);
+            assert_eq!(
+                load_volatile(persona).unwrap().unwrap().wm.last_action,
+                expected
+            );
             let checkpoint = std::fs::read(volatile_path(persona).unwrap()).unwrap();
             current.record_receipt("late action after final ACK");
             assert!(registry.checkpoint_volatile_all().is_empty());
@@ -1996,8 +2286,12 @@ mod tests {
         asha_cfg.persona_name = "Asha".to_string();
         let mut atlas_cfg = cfg_for(atlas);
         atlas_cfg.persona_name = "Atlas".to_string();
-        registry.register_from_cfg(asha_cfg);
-        registry.register_from_cfg(atlas_cfg);
+        registry
+            .register_from_cfg(asha_cfg)
+            .expect("test: resident checkpoint is readable");
+        registry
+            .register_from_cfg(atlas_cfg)
+            .expect("test: resident checkpoint is readable");
 
         // full UUID
         assert_eq!(
@@ -2044,15 +2338,21 @@ mod tests {
     async fn registry_keeps_one_mind_per_persona() {
         let registry = PersonaWorkspaceRegistry::new();
         let persona = Uuid::new_v4();
-        let first = registry.get_or_build(cfg_for(persona));
-        let second = registry.get_or_build(cfg_for(persona));
+        let first = registry
+            .get_or_build(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
+        let second = registry
+            .get_or_build(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
         assert!(
             Arc::ptr_eq(&first, &second),
             "same persona must resolve to the SAME mind across rooms — not severed per-room"
         );
         assert_eq!(registry.len(), 1);
         // A different persona is a different mind.
-        let _ = registry.get_or_build(cfg_for(Uuid::new_v4()));
+        let _ = registry
+            .get_or_build(cfg_for(Uuid::new_v4()))
+            .expect("test: resident checkpoint is readable");
         assert_eq!(registry.len(), 2);
     }
 
@@ -2067,8 +2367,12 @@ mod tests {
         let persona = Uuid::new_v4();
         // register_from_cfg IS the production overwrite path (supervisor.rs spawn);
         // it builds + caches and returns the fresh Arc.
-        let first = registry.register_from_cfg(cfg_for(persona));
-        let second = registry.register_from_cfg(cfg_for(persona));
+        let first = registry
+            .register_from_cfg(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
+        let second = registry
+            .register_from_cfg(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
         let got = registry.get(&persona).expect("registered");
         assert!(
             Arc::ptr_eq(&got, &second),
@@ -2079,6 +2383,66 @@ mod tests {
             "the prior lifetime's mind is replaced"
         );
         assert_eq!(registry.len(), 1);
+    }
+
+    // 9f160b78: unreadable existing memory is not permission to register a blank
+    // replacement. Both the live cycle and its fork template survive refusal.
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_checkpoint_load_preserves_the_registered_resident() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        assert!(load_volatile(persona).unwrap().is_none());
+        let current = registry.register_from_cfg(cfg_for(persona)).unwrap();
+        let path = volatile_path(persona).unwrap();
+        std::fs::write(&path, br#"{"wm":{},"own_speech":[]}"#).unwrap();
+        let mut replacement = cfg_for(persona);
+        replacement.persona_name = "must not replace the resident".into();
+        let error = match registry.register_from_cfg(replacement) {
+            Err(error) => error,
+            Ok(_) => panic!("test: malformed checkpoint must refuse registration"),
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(Arc::ptr_eq(&current, &registry.get(&persona).unwrap()));
+        assert_eq!(registry.templates.lock()[&persona].persona_name, "Ivar");
+        assert!(Arc::ptr_eq(
+            &current,
+            &registry.get_or_build(cfg_for(persona)).unwrap()
+        ));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            br#"{"wm":{},"own_speech":[]}"#
+        );
+    }
+
+    // 9f160b78: cold lazy registration must preserve lock/read/schema errors;
+    // none may insert a cycle or fork template as if no file had existed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn resident_registration_refuses_checkpoint_and_lock_errors() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        for fault in ["schema", "read", "lock"] {
+            let persona = Uuid::new_v4();
+            let path = volatile_path(persona).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            match fault {
+                "schema" => std::fs::write(&path, b"not a checkpoint").unwrap(),
+                "read" => std::fs::create_dir(&path).unwrap(),
+                "lock" => {
+                    std::fs::create_dir(path.parent().unwrap().join(".volatile.lock")).unwrap()
+                }
+                _ => unreachable!("test: fixed fault cases"),
+            }
+            assert!(
+                registry.get_or_build(cfg_for(persona)).is_err(),
+                "{fault} must refuse registration"
+            );
+            assert!(registry.get(&persona).is_none());
+            assert!(!registry.templates.lock().contains_key(&persona));
+        }
+        assert_eq!(registry.len(), 0);
     }
 
     // THE LIVE BRING-UP: a persona's mind thinks with the REAL local model.
@@ -2361,7 +2725,9 @@ mod tests {
             // Its gate starts open, so it delivers straight through here.
             GroundingSource::framing(Arc::new(GatedGrounding::new())),
         ];
-        registry.register_from_cfg(cfg);
+        registry
+            .register_from_cfg(cfg)
+            .expect("test: resident checkpoint is readable");
 
         // Spoken exam (no hands): the workspace-map must not reach her mind.
         let spoken = registry
@@ -2402,7 +2768,9 @@ mod tests {
         use crate::cognition::workspace::FacultyId;
         let registry = PersonaWorkspaceRegistry::new();
         let persona = Uuid::new_v4();
-        registry.register_from_cfg(cfg_for(persona));
+        registry
+            .register_from_cfg(cfg_for(persona))
+            .expect("test: resident checkpoint is readable");
 
         let with_recall = registry
             .fork_eval_cycle(&persona, false, None, false)

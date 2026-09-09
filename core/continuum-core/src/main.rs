@@ -140,9 +140,20 @@ fn install_shutdown_handlers() {
                 _ = close_fut => {}
                 _ = shutdown_fut => {}
             }
-            eprintln!("[continuum-core] shutdown signal — killing sentinel process groups");
+            eprintln!("[continuum-core] shutdown signal — save-and-join broadcast, then exit");
+            // THE SAME BROADCAST THE UNIX ARMS RUN. This arm killed sentinels, slept a
+            // flat 2 seconds, and `_exit`ed — which is precisely the behaviour the SIGTERM
+            // arm's own comment says was replaced on 2026-09-02 ("a flat 2s sleep during
+            // which NOTHING saved"). The unix half was fixed and this half was not, so on
+            // Windows no module has ever saved on a signal stop: not the citizens'
+            // workspaces, not the log queue, nothing. The node that runs the citizens is a
+            // Windows node.
+            //
+            // Ordering matches unix deliberately: modules drain and save FIRST, sentinels
+            // are killed after (they are children, not modules), then the fast `_exit`
+            // that skips llama.cpp's double-free-prone static destructors.
+            continuum_core::runtime::run_signal_shutdown().await;
             continuum_core::modules::sentinel::shutdown_all_sentinels();
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             unsafe { libc::_exit(0) };
         });
     }

@@ -28,6 +28,10 @@ pub mod memory_gate;
 pub mod pressure;
 pub mod pressure_broker_state;
 pub mod resources;
+// `system/shutdown` holds no deps, so `action_command!`'s stateless arm registers it
+// onto the one registry by itself — it is deliberately NOT in `command_objects` below,
+// which is only for commands that need construction with a service.
+pub mod shutdown;
 
 /// Shared params for the no-argument `system/*` reads (cpu, memory, pressure,
 /// memory-gate, memory-budget, docker-tier-stats). One empty contract reused across
