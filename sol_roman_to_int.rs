@@ -55,7 +55,8 @@ fn main() {
         ("III", 3),         // repeated ones
         ("MMCDXLIX", 2_449),
         ("CXC", 190),       // XC embedded in C _ XC
-        ("CMXCVII", 1_957),
+        ("MCMLVII", 1_957), // canonical 1957: M + CM + L + VII
+        ("CMXCVII", 997),   // canonical 997: CM + XC + VII (not 1957 — C before M is additive here)
         ("" , 0),           // empty input: nothing to add
     ];
 
