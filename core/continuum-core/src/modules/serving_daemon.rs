@@ -652,17 +652,57 @@ impl ServingDaemonModule {
         // The operator's pin is durable intent: seed the channel from the store so the
         // FIRST plan is computed under it (cards 3160b3d0 / 9552a01e — every reboot
         // used to lose the pin and the boot planner served whatever fit).
+        // A RESTORED PIN IS VERIFIED BEFORE IT IS HONOURED.
+        //
+        // `serving/pin` fit-gates at set time, so a pin to an undownloaded model cannot
+        // be created through the command. A pin RESTORED from disk has had no such
+        // check — the world moved since it was written (weights evicted, a drive
+        // unmounted, the file edited, a downgrade that wrote a row this build reads
+        // differently), and the planner honours it absolutely: every downloaded
+        // candidate is refused as "another model is pinned" and NOTHING loads.
+        //
+        // Measured twice on this host (2026-09-09/10, #3955): a pin to
+        // `AtomicChat/Qwen3.8-Flash-Next-GGUF`, `availability: not_downloaded`, took the
+        // node to zero lanes and zero citizens with NOTHING red — the planner correctly
+        // honoured the pin, correctly refused non-pinned candidates, correctly declined
+        // to load absent weights, and the machine was useless. Every component behaved
+        // as designed. Only `serving/unpin` by hand recovered it.
+        //
+        // The pin FILE is deliberately left alone: it is durable operator intent, and
+        // the model may be pulled later. It is simply not honoured this boot. So the
+        // node self-heals to autonomic serving, says loudly why, and re-honours the pin
+        // on the first boot after the weights arrive.
         let stored_pin = crate::modules::serving_pin_store::load();
-        match &stored_pin {
-            Some(pin) => crate::probe!(
-                class = "serving.pin.restored",
-                model_id = %pin.model_id,
-                set_at_ms = pin.set_at_ms,
-                "serving pin restored from the state dir before the first plan"
-            ),
-            None => crate::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses"),
-        }
-        let (pinned, _prx) = watch::channel(stored_pin.map(|p| p.model_id));
+        let honoured = match stored_pin {
+            None => {
+                crate::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses");
+                None
+            }
+            Some(pin) => {
+                let snapshot = catalog.snapshot();
+                let servable = snapshot
+                    .get(&pin.model_id)
+                    .is_some_and(|entry| entry.status.availability == Availability::Ready);
+                if servable {
+                    crate::probe!(
+                        class = "serving.pin.restored",
+                        model_id = %pin.model_id,
+                        set_at_ms = pin.set_at_ms,
+                        "serving pin restored from the state dir before the first plan"
+                    );
+                    Some(pin.model_id)
+                } else {
+                    crate::probe!(
+                        class = "serving.pin.unservable_ignored",
+                        model_id = %pin.model_id,
+                        set_at_ms = pin.set_at_ms,
+                        "the stored serving pin names a model this host cannot serve (absent                          from the catalog, or catalogued but not downloaded) — IGNORING it for                          this boot so the planner can serve something real. The pin file is                          kept: pull the weights and it is honoured again on the next boot, or                          run serving/unpin to drop the intent."
+                    );
+                    None
+                }
+            }
+        };
+        let (pinned, _prx) = watch::channel(honoured);
         Self {
             idle_pending: AtomicBool::new(false),
             gpu,
@@ -3996,6 +4036,13 @@ fn servable_candidates(
                 class = "serving.plan.candidate_refused",
                 model_id = %r.model_id,
                 reason = r.reason,
+                // NAME THE CONSTRAINT, not just its category. `REFUSED_NOT_PINNED` says
+                // "another model is pinned" and never says WHICH — so a node dark behind
+                // a bad pin emitted three refusals a second, none of which identified the
+                // thing doing the refusing, and finding it took a separate grep of a
+                // different log for `serving.pin.restored` (#3955). A rejection reason
+                // that cannot name what blocked you turns a read into archaeology.
+                pinned = pinned.as_deref().unwrap_or("(none)"), // unwrap_or: no pin is a real state, and "(none)" says so rather than eliding the field
                 "a model on disk was refused as a base for citizens — this is why the node has no candidate"
             );
         }
@@ -6738,6 +6785,75 @@ mod tests {
     }
 
 
+    /// This file's PRODUCTION half — everything before `#[cfg(test)]`.
+    ///
+    /// A source assertion must never be able to satisfy itself. `include_str!` pulls in
+    /// the whole file, tests included, so `src.contains("install_lane_admission(")`
+    /// matched the assertion's OWN string literal and stayed green with the production
+    /// call deleted — a check that cannot fail, which is the exact class this repo keeps
+    /// getting bitten by ([[success-signal-that-cannot-report-failure]]). Caught here by
+    /// a sibling assertion tripping over the same self-reference.
+    fn production_source() -> &'static str {
+        let src = include_str!("serving_daemon.rs");
+        let cut = src
+            .find("
+#[cfg(test)]")
+            .expect("this file has a test mod, so the marker must exist");
+        &src[..cut]
+    }
+
+    /// A stored pin must never be able to take the node dark. Nested per the one-mod rule.
+    mod a_bad_pin_cannot_brick_the_node {
+        use super::*;
+
+        // what this catches: the #3955 outage, twice on this host. A stored pin naming
+        // `AtomicChat/Qwen3.8-Flash-Next-GGUF` (`availability: not_downloaded`) was
+        // honoured absolutely at boot: every downloaded candidate refused as "another
+        // model is pinned", the pinned one unloadable, so zero lanes and zero citizens —
+        // with NOTHING red. `serving/pin` fit-gates at SET time, so this shape can only
+        // arrive via RESTORE, which had no check at all.
+        //
+        // The daemon's constructor needs a GPU, a monitor and a resource daemon, so the
+        // decision is asserted where it is made: honour a restored pin only when the
+        // catalog says the model is actually servable.
+        #[test]
+        fn a_restored_pin_is_honoured_only_when_the_model_is_servable() {
+            let src = production_source();
+            assert!(
+                src.contains("serving.pin.unservable_ignored"),
+                "an unservable restored pin must be IGNORED with a loud probe — honouring                  it refuses every real candidate and takes the node to zero lanes"
+            );
+            assert!(
+                src.contains("entry.status.availability == Availability::Ready"),
+                "and the test for servable must be the catalog's own availability, not a                  guess about the file"
+            );
+            // Intent is durable: the file is kept so the pin is honoured again once the
+            // weights land. A fix that silently discarded the operator's choice would be
+            // its own bug.
+            assert!(
+                !src.contains("serving_pin_store::clear()"),
+                "the pin FILE must survive being ignored — pull the weights and the next                  boot honours it; only serving/unpin drops the intent"
+            );
+        }
+
+        // what this catches: the refusal that named every loser and never the winner.
+        // Three refusals a second, none identifying the pin doing the refusing, so
+        // diagnosing it needed a grep of a different log for `serving.pin.restored`.
+        #[test]
+        fn a_refusal_names_the_pin_that_caused_it() {
+            let src = production_source();
+            let probe = src
+                .split("class = \"serving.plan.candidate_refused\"")
+                .nth(1)
+                .expect("the refusal probe exists");
+            let body = &probe[..probe.find(");").expect("probe ends")];
+            assert!(
+                body.contains("pinned ="),
+                "the refusal must carry the pin that blocked the candidate — a reason that                  states its category but not its cause cannot be acted on: {body}"
+            );
+        }
+    }
+
     /// The gate that replaced #56's unbuilt `ResourceGovernor`. Nested per the one-mod rule.
     mod engine_admission {
         use super::*;
@@ -6839,7 +6955,7 @@ mod tests {
         // and it fails the moment someone deletes the call.
         #[test]
         fn the_serving_daemon_installs_the_admission_authority() {
-            let src = include_str!("serving_daemon.rs");
+            let src = production_source();
             assert!(
                 src.contains("install_lane_admission("),
                 "serving_daemon must INSTALL the device-budget authority — without it                  EphemeralServingLane::spawn admits every engine on a free-port check,                  which is how three sidecars once shared one GPU"
