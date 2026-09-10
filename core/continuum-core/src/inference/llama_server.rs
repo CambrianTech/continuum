@@ -2415,6 +2415,114 @@ impl Drop for LlamaServerProcess {
 /// budget check is one machine's free VRAM (the `ResourceGovernor`'s job, #56);
 /// tomorrow the host is a peer and the budget spans the interlinked grid. One
 /// abstraction, misfit toys.
+// ---------------------------------------------------------------------------
+// Ephemeral-lane admission — the invariant that used to be #56's unbuilt governor
+// ---------------------------------------------------------------------------
+
+/// Serializes ephemeral cold-spawns process-wide: only one `llama-server` cold-loads
+/// at a time, so two lanes cannot thrash the device against each other and same-target
+/// racers collapse onto the first spawn's result.
+///
+/// This lived in `cognition::eval` as `EVAL_LANE_SPAWN_GATE` — correct behaviour, at
+/// ONE caller. The vision sidecar spawns through the same primitive and inherited none
+/// of it, which is how three sidecars ended up co-resident. A discipline that only one
+/// caller opts into is not a discipline; it lives at the primitive now.
+///
+/// `cognition::eval::EVAL_LANE_SPAWN_GATE` still exists and is NOT a duplicate: it
+/// guards eval's warm-lane map so same-key racers share one lane. LOCK ORDER is that
+/// gate, then this one — the only nesting in the tree, so it cannot invert.
+static EPHEMERAL_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// What an admission authority answers. `Refuse` carries the operator-readable WHY,
+/// because a refusal nobody can explain gets deleted by the next person who hits it.
+#[derive(Debug, Clone)]
+pub enum LaneAdmission {
+    Admit,
+    Refuse(String),
+}
+
+/// The authority that decides whether another engine may be placed on this device.
+///
+/// Late-bound because the budget belongs to the serving daemon (it owns the GPU
+/// manager and the live memory monitor) while the decision is needed down here at the
+/// spawn. Same shape as [`install_serving_state`]: the daemon is a singleton, so this
+/// is set-once.
+///
+/// `resident` is the verified-live ephemeral census at decision time — the authority
+/// never has to re-derive it, and cannot disagree with the caller about what is
+/// already running.
+pub type LaneAdmissionAuthority =
+    Arc<dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
+        + Send
+        + Sync>;
+
+static LANE_ADMISSION: OnceLock<LaneAdmissionAuthority> = OnceLock::new();
+
+/// Install the device-budget authority. Returns `true` iff this call installed it.
+pub fn install_lane_admission(authority: LaneAdmissionAuthority) -> bool {
+    LANE_ADMISSION.set(authority).is_ok()
+}
+
+/// True once an authority is installed — so a wiring test can assert production
+/// actually installs one rather than trusting the permissive default below.
+pub fn lane_admission_installed() -> bool {
+    LANE_ADMISSION.get().is_some()
+}
+
+/// Reconcile the lane registry against reality and return the EPHEMERAL lanes that are
+/// genuinely alive.
+///
+/// Bookkeeping first, decision second: a record whose pid is dead (or whose number the
+/// OS recycled onto something else) is removed, never signalled and never counted.
+/// `is_llama_server` is the same never-blind-kill identity check `lane_pidfile` and
+/// `lane_registry` already share — one decision, one place.
+///
+/// Doing this INSIDE the spawn is the point. `sweep_orphans` runs once at daemon init
+/// and `sweep_all` only on `stop` (which `reboot` skips by design, keeping the live
+/// lane up for adoption). Neither can see a sibling that appeared five seconds ago.
+fn reconcile_ephemeral_census() -> Vec<crate::inference::lane_registry::LaneRecord> {
+    use crate::inference::{lane_process, lane_registry};
+    lane_registry::records()
+        .into_iter()
+        .filter(|rec| rec.role == lane_registry::LaneRole::Ephemeral)
+        .filter(|rec| {
+            if lane_process::is_llama_server(rec.pid) {
+                return true;
+            }
+            // Dead, or the pid was recycled onto an unrelated process. Either way it
+            // holds no VRAM of ours and must not weigh on the decision.
+            lane_registry::remove(rec.pid);
+            false
+        })
+        .collect()
+}
+
+/// `Some(reason)` when this spawn must be refused. Consults the installed authority;
+/// with none installed the census is still reconciled and the spawn is admitted, but
+/// LOUDLY — an unwired budget must be visible, not silently permissive
+/// ([[silently-unwired-capability]]). Production wiring is asserted by
+/// `the_serving_daemon_installs_the_admission_authority`.
+fn ephemeral_admission_refusal(
+    target: &ServingTarget,
+    resident: &[crate::inference::lane_registry::LaneRecord],
+) -> Option<String> {
+    let Some(authority) = LANE_ADMISSION.get() else {
+        crate::probe!(
+            class = "serving.lane.admission_unwired",
+            model = target.model_id(),
+            resident_ephemeral = resident.len(),
+            "no device-budget authority is installed — admitting this engine WITHOUT a \
+             budget check; in a live core the serving daemon installs one at wiring time"
+        );
+        return None;
+    };
+    match authority(target, resident) {
+        LaneAdmission::Admit => None,
+        LaneAdmission::Refuse(reason) => Some(reason),
+    }
+}
+
 pub struct EphemeralServingLane {
     proc: LlamaServerProcess,
     port: u16,
@@ -2425,9 +2533,54 @@ impl EphemeralServingLane {
     /// `base_port` (distinct from the live lane). Fails loud
     /// ([[fallbacks-are-illegal-fail-loud]]) if no port binds, the model GGUF is
     /// missing, or any `--lora` gene file is absent — never serves a substitute.
-    /// Budget-gating ("does this fit alongside the live lane?") is the
-    /// `ResourceGovernor`'s concern (#56); this primitive only stands the lane up.
+    ///
+    /// # Admission is an INVARIANT here, not an event somewhere else
+    ///
+    /// This doc used to say: *"Budget-gating (does this fit alongside the live lane?)
+    /// is the `ResourceGovernor`'s concern (#56); this primitive only stands the lane
+    /// up."* **`ResourceGovernor` does not exist.** Every one of its eight mentions in
+    /// the tree is a doc comment promising a future owner, so the only question ever
+    /// asked before putting another engine on the device was `first_free_port` — *is a
+    /// port free?* A port is cheap and genuinely per-lane; the GPU is one shared thing.
+    /// Using port-freeness as a proxy for device capacity is what let three vision
+    /// sidecars co-exist on one GPU (ports 58091/58092/58093 — and `first_free_port`
+    /// means N+1 exists ONLY because N was occupied, so the filenames themselves prove
+    /// the concurrency). Each ran at 3.1-8.6 tok/s against 60-80 normal for that box:
+    /// not a slow model, three engines time-slicing one device.
+    ///
+    /// The reclaim machinery was never the problem — `lane_registry` records every lane
+    /// and `lane_pidfile` adopts-or-reaps the live one, both with proper Windows arms.
+    /// The problem was that every reclaim fired on an EDGE (`sweep_orphans` at daemon
+    /// init, `sweep_all` at `stop`, `Drop` on graceful exit) and `reboot` deliberately
+    /// skips the stop-side sweep, so nothing bounded engines WITHIN one core's life.
+    ///
+    /// So the question moves here, where the decision actually is:
+    ///
+    /// 1. **Serialize.** One ephemeral cold-spawn at a time, process-wide. This gate
+    ///    already existed as `EVAL_LANE_SPAWN_GATE` in `cognition::eval` — at ONE
+    ///    caller, so the vision sidecar inherited nothing from it. Moved down so every
+    ///    ephemeral lane gets it by construction.
+    /// 2. **Census.** Reconcile the registry against reality first, so the admission
+    ///    decision is taken against lanes that are actually alive.
+    /// 3. **Admit or refuse.** Ask the installed authority (the serving daemon owns the
+    ///    device budget). Refusal is LOUD and returns an error — never a quiet second
+    ///    engine.
     pub async fn spawn(target: &ServingTarget, base_port: u16) -> Result<Self, LlamaServerError> {
+        // Held across the spawn await, so a second ephemeral spawn cannot interleave and
+        // land on `first_free_port + 1`. A tokio mutex because it spans `.await` — never
+        // a std lock across await (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+        let _permit = EPHEMERAL_SPAWN_GATE.lock().await;
+        let resident = reconcile_ephemeral_census();
+        if let Some(reason) = ephemeral_admission_refusal(target, &resident) {
+            crate::probe!(
+                class = "serving.lane.admission_refused",
+                model = target.model_id(),
+                resident_ephemeral = resident.len(),
+                reason = reason.as_str(),
+                "refused another engine on this device — admission is decided by the                  device budget, never by port availability"
+            );
+            return Err(LlamaServerError::NotReady(DEFAULT_SERVING_WAIT, reason));
+        }
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
         let proc = LlamaServerProcess::with_root(root);

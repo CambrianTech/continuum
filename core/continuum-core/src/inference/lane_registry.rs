@@ -280,6 +280,36 @@ fn remove_in(dir: &Path, pid: u32) {
     let _ = std::fs::remove_file(record_path(dir, pid));
 }
 
+/// Every lane record on disk, in no particular order.
+///
+/// The census an admission decision reads: `llama_server`'s ephemeral spawn gate needs
+/// to know what is ALREADY running before it stands another engine up, and it needs
+/// that mid-life — not at the boot/stop edges the sweeps fire on. Read-only and
+/// non-destructive on purpose: reconciling records against liveness is the CALLER's
+/// job (it owns the never-blind-kill identity check), so this stays a plain read.
+pub fn records() -> Vec<LaneRecord> {
+    lanes_dir().map(|d| records_in(&d)).unwrap_or_default() // unwrap_or_default: no home dir ⇒ no registry ⇒ an empty census is the honest answer
+}
+
+/// The pure enumeration against an explicit `dir`, so tests read a temp registry and
+/// never the live core's `~/.continuum/run/lanes/`.
+fn records_in(dir: &Path) -> Vec<LaneRecord> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Missing directory is the normal first-run state — nothing recorded, not a
+        // failure to look.
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("lane"))
+        .filter_map(|e| {
+            std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|raw| serde_json::from_str::<LaneRecord>(&raw).ok())
+        })
+        .collect()
+}
+
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
     let mut outcomes = Vec::new();
@@ -569,5 +599,88 @@ mod tests {
         let dir = temp_dir("absent");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(sweep_in(&dir, SweepMode::Boot).is_empty());
+    }
+
+    /// The census an admission decision reads. Nested per the one-mod rule.
+    mod census_for_admission {
+        use super::*;
+
+        // what this catches: `records_in` must return EVERY recorded lane, both roles,
+        // and must not be confused by junk in the directory. The admission gate decides
+        // by this list, so a census that silently drops a live sibling admits a second
+        // engine onto a device that is already full — the 58091/58092/58093 shape.
+        #[test]
+        fn the_census_returns_every_recorded_lane_of_both_roles() {
+            let dir = std::env::temp_dir().join(format!("lanes-census-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp registry");
+
+            for (pid, port, role) in [
+                (4001u32, 58057u16, LaneRole::Live),
+                (4002, 58091, LaneRole::Ephemeral),
+                (4003, 58092, LaneRole::Ephemeral),
+            ] {
+                record_in(
+                    &dir,
+                    &LaneRecord {
+                        pid,
+                        port,
+                        role,
+                        model: "some/model".into(),
+                        context_window: 8192,
+                        lanes: 1,
+                    },
+                )
+                .expect("record");
+            }
+            // Junk beside the records must be ignored, never counted or panicked on.
+            std::fs::write(dir.join("notes.txt"), "not a lane").expect("junk");
+            std::fs::write(dir.join("9999.lane"), "{ not json").expect("garbage record");
+
+            let mut got = records_in(&dir);
+            got.sort_by_key(|r| r.pid);
+            assert_eq!(
+                got.iter().map(|r| r.pid).collect::<Vec<_>>(),
+                vec![4001, 4002, 4003],
+                "every well-formed record is in the census, and nothing else is"
+            );
+            assert_eq!(
+                got.iter().filter(|r| r.role == LaneRole::Ephemeral).count(),
+                2,
+                "the ephemeral siblings are the ones an admission decision weighs"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // what this catches: the census must be a READ. Reconciling records against
+        // liveness belongs to the caller, which owns the never-blind-kill identity
+        // check — if this deleted records it would be signalling on pids it never
+        // verified, the exact rule `lane_pidfile` and `sweep_in` both obey.
+        #[test]
+        fn the_census_never_deletes_what_it_reads() {
+            let dir = std::env::temp_dir().join(format!("lanes-nondestr-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp registry");
+            record_in(
+                &dir,
+                &LaneRecord {
+                    pid: 4242,
+                    port: 58091,
+                    role: LaneRole::Ephemeral,
+                    model: "some/model".into(),
+                    context_window: 8192,
+                    lanes: 1,
+                },
+            )
+            .expect("record");
+
+            assert_eq!(records_in(&dir).len(), 1);
+            assert_eq!(records_in(&dir).len(), 1, "reading twice changes nothing");
+            assert!(
+                dir.join("4242.lane").exists(),
+                "the record survives being read — reaping is the caller's decision"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
