@@ -217,11 +217,20 @@ static WARM_EVAL_LANES: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Serializes eval-lane COLD-SPAWNS process-wide: only one llama-server cold-loads at a
-/// time, so two different bases can't thrash the GPU against each other and same-base
-/// racers collapse onto the first spawn's result. A `tokio` mutex because it is held
+/// Guards the WARM-LANE map across a cold spawn: a racer for the same key must find
+/// the winner's lane instead of building a second one, which needs the lookup, the
+/// build and the insert to be one critical section. A `tokio` mutex because it is held
 /// across the spawn `.await` — never a `std` lock across await
 /// (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+///
+/// It ALSO used to be the only thing serializing cold-spawns against the GPU, and that
+/// half has moved down to `EphemeralServingLane::spawn`'s `EPHEMERAL_SPAWN_GATE` where
+/// every ephemeral lane inherits it — the vision sidecar spawns through the same
+/// primitive and inherited nothing from this one, which is how three sidecars ended up
+/// co-resident. What remains here is the same-key racer concern, which is eval's alone.
+///
+/// LOCK ORDER: this gate, then the primitive's. That is the only nesting in the tree
+/// (the sidecar takes the primitive's alone), so the order cannot invert.
 static EVAL_LANE_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
