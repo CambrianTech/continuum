@@ -86,13 +86,6 @@ seed?: number,
  * `O(claims × citizens)`, so the more work a citizen held, the less capacity
  * it had to do any of it.
  *
- * A fresh room per run makes the run's board its OWN denominator, lets the
- * round END, and puts the assignees somewhere they can hear each other. Pass
- * an explicit name to join an existing run (it must already exist — dispatch
- * spawns a room it names, and never silently adopts a stranger's).
- */
-room?: string, 
-/**
  * Also CLOSE this benchmark's redundant duplicate cards, converging the board
  * to one live card per task. Off by default — a dispatch that silently closed
  * cards would be a surprising verb.
