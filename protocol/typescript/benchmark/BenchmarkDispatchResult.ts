@@ -12,6 +12,16 @@ room: string,
  */
 room_id: string, 
 /**
+ * The wall post binding that room to the benchmark recipe — passed straight through
+ * from the `spawn_activity_room` this dispatch performed.
+ *
+ * A run ROOTS AN ACTIVITY; this is the receipt that says so, and returning it is what
+ * lets `activity/spawn` route a benchmark recipe here and still answer in its own
+ * shape. Without it the two verbs could not report the same spawn, which is the seam
+ * where "benchmarks are a parallel runner" creeps back in.
+ */
+binding_post_id: string, 
+/**
  * Cards actually posted to the board.
  */
 dispatched: number, 

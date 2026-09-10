@@ -777,13 +777,6 @@ pub struct BenchmarkDispatchParams {
     /// `O(claims × citizens)`, so the more work a citizen held, the less capacity
     /// it had to do any of it.
     ///
-    /// A fresh room per run makes the run's board its OWN denominator, lets the
-    /// round END, and puts the assignees somewhere they can hear each other. Pass
-    /// an explicit name to join an existing run (it must already exist — dispatch
-    /// spawns a room it names, and never silently adopts a stranger's).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub room: Option<String>,
     /// Also CLOSE this benchmark's redundant duplicate cards, converging the board
     /// to one live card per task. Off by default — a dispatch that silently closed
     /// cards would be a surprising verb.
@@ -846,6 +839,15 @@ pub struct BenchmarkDispatchResult {
     /// `ActivitySpawnResult::room_id`; this field is that value passed through.
     #[ts(type = "string")]
     pub room_id: airc_core::RoomId,
+    /// The wall post binding that room to the benchmark recipe — passed straight through
+    /// from the `spawn_activity_room` this dispatch performed.
+    ///
+    /// A run ROOTS AN ACTIVITY; this is the receipt that says so, and returning it is what
+    /// lets `activity/spawn` route a benchmark recipe here and still answer in its own
+    /// shape. Without it the two verbs could not report the same spawn, which is the seam
+    /// where "benchmarks are a parallel runner" creeps back in.
+    #[ts(type = "string")]
+    pub binding_post_id: uuid::Uuid,
     /// Cards actually posted to the board.
     #[ts(type = "number")]
     pub dispatched: u32,
@@ -1870,10 +1872,27 @@ impl ActionCommand for BenchmarkDispatch {
         // `create_work_card`, and every kickoff `say` are all current-room operations. That
         // pointer move is a documented gap for other callers (activity.rs) and the mechanism
         // for this one.
-        let room_name = match &p.room {
-            Some(r) => r.trim().to_string(),
-            None => default_run_room_name(spec.name, epoch_secs()),
-        };
+        // WE WORK ACTIVITIES. A dispatch ROOTS its own benchmark activity — always.
+        //
+        // This used to accept a room NAME, and that one optional string was enough to
+        // throw away the entire outcome: `--room continuum` put the cards on a plain
+        // CHAT room's board, where they carry no benchmark binding, so `review_gate`
+        // ("only the reviewer's done closes the card and fires its grade") has nothing
+        // to hang off and nothing ever grades them. Measured 2026-09-09: three correct,
+        // compiling citizen solutions produced exactly that way, `benchmark/runs` = 0,
+        // scoreboard `attempted=0 resolved=0`, and the round reported `settled=1` beside
+        // `graded_at_ms=None` without complaint.
+        //
+        // The knob is gone rather than validated. A verb that CAN post benchmark cards
+        // onto a non-benchmark board will eventually be used to do it — it is locally
+        // the shortest path to "a number" every single time, which is the parallel
+        // runner `BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md` exists to forbid. Removing
+        // the option makes the wrong thing unreachable instead of merely discouraged.
+        //
+        // To add work to a run that already exists, dispatch again: the round tracker
+        // converges duplicates (`skipped_already_on_board`, `pruned_duplicates`) rather
+        // than needing a caller to aim at a board by hand.
+        let room_name = default_run_room_name(spec.name, epoch_secs());
         // The room binds to the SHIPPED benchmark recipe's declared purpose,
         // resolved from its constant — never a re-typed string. The old literal
         // here was "benchmark" while the recipe declares "benchmark/hard-rs",
@@ -2611,6 +2630,7 @@ impl ActionCommand for BenchmarkDispatch {
             benchmark: spec.name.to_string(),
             room: room.name,
             room_id: room.room_id,
+            binding_post_id: room.binding_post_id,
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
