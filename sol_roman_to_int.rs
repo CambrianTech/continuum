@@ -40,7 +40,26 @@ pub fn roman_to_int(s: &str) -> i32 {
 }
 
 fn main() {
-    let cases: [(&str, i32); 16] = [
+    // Canonical builder — the mirror image of `roman_to_int`, used below to
+    // round-trip every value in the representable range.
+    fn to_roman(n: u32) -> String {
+        let pairs: [(u32, &str); 13] = [
+            (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
+            (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"),
+            (5, "V"), (4, "IV"), (1, "I"),
+        ];
+        let mut out = String::new();
+        let mut n = n;
+        for (v, sym) in pairs {
+            while n >= v {
+                out.push_str(sym);
+                n -= v;
+            }
+        }
+        out
+    }
+
+    let cases: [(&str, i32); 17] = [
         ("MCMXCIV", 1_994), // classic example: M + CM + XC + IV
         ("MMXXIV", 2_024),  // the year, in Roman numerals
         ("LVIII", 58),      // plain additive
