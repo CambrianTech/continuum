@@ -1890,16 +1890,66 @@ impl LlmDeliberationFaculty {
                 .filter(|c| c.decision.is_none() && c.trailing && c.standing_grounding)
                 .map(|c| GroundingPiece::whole(c).tokens)
                 .sum::<usize>();
-        let grounding_budget = calibration
+        // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
+        // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
+        // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
+        // number that says HOW BADLY the turn is over its window was destroyed at the
+        // moment it was computed. Subtract in two steps and probe the remainder.
+        let required_payload = all_messages.required_tokens();
+        let after_reserves = calibration
             .prompt_budget(
                 (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
             )
             .saturating_sub(framing_tokens)
-            .saturating_sub(selected.tokens)
-            .saturating_sub(all_messages.required_tokens());
-        let (mut grounding, grounding_error) = match GroundingPlan::minimum(ws, grounding_budget) {
-            Ok(plan) => (plan, None),
-            Err(error) => (GroundingPlan::default(), Some(error)),
+            .saturating_sub(selected.tokens);
+        let grounding_budget = after_reserves.saturating_sub(required_payload);
+        let payload_overflow = required_payload.saturating_sub(after_reserves);
+        if payload_overflow > 0 {
+            crate::probe!(
+                class = "delib.payload.over_window",
+                persona = %self.persona_name,
+                required_payload,
+                after_reserves,
+                payload_overflow,
+                context_window,
+                framing_tokens,
+                tool_tokens = selected.tokens,
+                "the turn's IRREDUCIBLE payload does not fit the served window — grounding                  gets nothing, and this is the amount by which the window is short"
+            );
+        }
+        // GROUNDING MAY NEVER MUTE A CITIZEN.
+        //
+        // `GroundingPlan::minimum` used to return `Err` here, and that error was promoted
+        // ahead of every other capacity check (`grounding_error.or(capacity_error)`) into a
+        // hard `deliberation_fault`. So a citizen whose ENRICHMENT would not fit refused the
+        // whole turn — no model call, no act, zero `model_ms` — and, because she keeps her
+        // held card while refusing, she can hold a benchmark card forever and never work it.
+        //
+        // Measured live 2026-09-09 on Kimi, holding `hard-rs/expr_eval`: served window
+        // 28,160, conversation 39,532, and every 15 s a `work_turn` that produced
+        // `act=0 model_ms=0` with `required 613 > budget 0`. Six hundred and thirteen tokens
+        // of roster + workspace-map + working-memory, against a 28k window, decided she
+        // could not think at all.
+        //
+        // Grounding is enrichment. When it does not fit, the honest move is to go without it
+        // and think anyway, not to fall silent — a partial world beats a dead mind. Nothing
+        // is deleted that the real guards would have kept: the conversation fitter still
+        // refuses when the IRREDUCIBLE payload cannot fit (`fit_messages`), and the wire
+        // check still refuses when the assembled request exceeds the window. Only the
+        // enrichment's own shortfall stops being fatal.
+        let mut grounding = match GroundingPlan::within_budget(ws, grounding_budget) {
+            Fitted::Whole(plan) => plan,
+            Fitted::Reduced { plan, wanted } => {
+                crate::probe!(
+                    class = "delib.grounding.shed",
+                    persona = %self.persona_name,
+                    wanted_tokens = wanted,
+                    budget_tokens = grounding_budget,
+                    kept_tokens = plan.system_reserve() + plan.trailing_tokens(),
+                    "standing grounding did not fit its budget — thinking with less                      enrichment rather than refusing the turn"
+                );
+                plan
+            }
         };
         all_messages.grounding_tokens = grounding.trailing_tokens();
         let ctx_floor = if grounding.pieces.is_empty() {
@@ -2033,7 +2083,7 @@ impl LlmDeliberationFaculty {
         // Only the source's truthful minimum outranks optional conversation.
         // Additional declared list units use actual leftover room after fitting;
         // a large list cannot turn every detail into mandatory input.
-        if capacity_error.is_none() && grounding_error.is_none() {
+        if capacity_error.is_none() {
             grounding
                 .expand_within(after_framing.saturating_sub(Self::messages_cost(&fitted.messages)));
         }
@@ -2110,7 +2160,7 @@ impl LlmDeliberationFaculty {
         let wire_tokens = calibration
             .charge(estimated_prompt_tokens)
             .saturating_add(completion_reserve);
-        let capacity_error = grounding_error.or(capacity_error).or_else(|| {
+        let capacity_error = capacity_error.or_else(|| {
             (wire_tokens > context_window as usize).then_some(PromptCapacityError {
                 required_tokens: wire_tokens,
                 budget_tokens: context_window as usize,
@@ -2950,23 +3000,59 @@ struct GroundingPlan<'a> {
     pieces: Vec<GroundingPiece<'a>>,
 }
 
+/// A plan that fit as asked, or one that had to give something up — with the size it
+/// WANTED carried out, so the caller can say by how much rather than only that it did.
+/// A reduction that cannot report its own magnitude is the saturating-subtract mistake
+/// one layer up.
+enum Fitted<T> {
+    Whole(T),
+    Reduced { plan: T, wanted: usize },
+}
+
 impl<'a> GroundingPlan<'a> {
-    fn minimum(ws: &'a Workspace, budget: usize) -> Result<Self, PromptCapacityError> {
-        let pieces: Vec<_> = ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && c.standing_grounding)
-            .map(GroundingPiece::minimum)
-            .collect();
-        let plan = Self { pieces };
-        let required_tokens = plan.system_reserve() + plan.trailing_tokens();
-        if required_tokens > budget {
-            return Err(PromptCapacityError {
-                required_tokens,
-                budget_tokens: budget,
-            });
+    /// The standing sources' truthful minimums, whatever the budget — the plan the
+    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job.
+    fn minimum(ws: &'a Workspace) -> Self {
+        Self {
+            pieces: ws
+                .broadcast
+                .iter()
+                .filter(|c| c.decision.is_none() && c.standing_grounding)
+                .map(GroundingPiece::minimum)
+                .collect(),
         }
-        Ok(plan)
+    }
+
+    /// Fit the standing minimums into `budget`, SHEDDING rather than failing.
+    ///
+    /// This returned `Err` until 2026-09-09, and that error muted citizens: it was
+    /// promoted ahead of every other capacity check into a hard deliberation fault, so a
+    /// persona whose enrichment overflowed refused the turn entirely — and kept her held
+    /// card while refusing. Grounding is enrichment; its shortfall is not a reason to
+    /// stop thinking.
+    ///
+    /// What sheds first, and why: the SYSTEM half goes before the TRAILING half. Trailing
+    /// pieces sit nearest the generation and carry the act-shaped facts (the pinned
+    /// result, the live board); the system half is standing background, and dropping it
+    /// also frees `working_context_header_cost` in one go. Pieces are shed newest-kept /
+    /// oldest-first within each half, so what survives is the freshest world she has.
+    fn within_budget(ws: &'a Workspace, budget: usize) -> Fitted<Self> {
+        let whole = Self::minimum(ws);
+        let wanted = whole.system_reserve() + whole.trailing_tokens();
+        if wanted <= budget {
+            return Fitted::Whole(whole);
+        }
+        // Trailing-only: keep the half nearest generation, drop the standing background
+        // and its header.
+        let mut plan = whole;
+        plan.pieces.retain(|p| p.contribution.trailing);
+        // Still over: shed oldest-first until it fits. A single piece larger than the
+        // whole budget leaves an empty plan — honestly nothing, never a truncated
+        // fragment that reads as complete.
+        while plan.trailing_tokens() > budget && !plan.pieces.is_empty() {
+            plan.pieces.remove(0);
+        }
+        Fitted::Reduced { plan, wanted }
     }
 
     fn expand_within(&mut self, budget: usize) {
@@ -3970,6 +4056,104 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        /// A citizen must never be silenced by her ENRICHMENT not fitting.
+        mod grounding_never_mutes {
+            use super::*;
+
+            // what this catches: the live 2026-09-09 mute. Kimi held `hard-rs/expr_eval`
+            // on a 28,160-token lane with a 39,532-token conversation; every 15 s she took
+            // a work turn that produced `act=0 model_ms=0`, because 613 tokens of standing
+            // grounding did not fit a budget the chained subtraction had saturated to 0,
+            // and that grounding error was promoted ahead of every other check into a hard
+            // deliberation fault. She kept the card while refusing, so the benchmark round
+            // could never finish. Enrichment is not a reason to stop thinking.
+            #[test]
+            fn an_unaffordable_standing_source_does_not_fault_the_turn() {
+                // A SMALL stimulus — the irreducible payload comfortably fits, so nothing
+                // about the conversation justifies a refusal. Only the standing sources
+                // are unaffordable, and that must not be fatal.
+                let mut ws = Workspace::new("What is the state of the card?");
+                for id in ["room-roster", "room-wall"] {
+                    ws.broadcast.push(
+                        Contribution::context(
+                            FacultyId::Custom(id.into()),
+                            "standing world state that cannot possibly fit ".repeat(2_000),
+                            0.9,
+                            "standing",
+                        )
+                        .standing_grounding(),
+                    );
+                }
+                let faculty = LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Kimi",
+                    "You are Kimi.",
+                    Arc::new(HeuristicInferenceAdapter::new()),
+                )
+                .with_context_window(4_096);
+
+                // The fixture must actually be unaffordable, or this test proves nothing.
+                let whole = GroundingPlan::minimum(&ws);
+                assert!(
+                    whole.system_reserve() + whole.trailing_tokens() > 4_096,
+                    "fixture must make the standing minimum genuinely unaffordable"
+                );
+
+                let view = faculty.prompt_view(&ws);
+                assert!(
+                    view.capacity_error.is_none(),
+                    "a citizen whose ENRICHMENT does not fit must still think — she holds                      her card while refusing, so a fault here strands the round forever:                      {:?}",
+                    view.capacity_error
+                );
+                assert!(
+                    !view.messages.is_empty(),
+                    "and she must be given something to think ABOUT"
+                );
+            }
+
+            // what this catches: shedding must report WHAT IT WANTED. A reduction that
+            // cannot state its own magnitude is the saturating-subtract mistake that
+            // destroyed the diagnosis one layer up — "over by 31,000" and "exactly at the
+            // line" must not arrive as the same number.
+            #[test]
+            fn shedding_reports_the_size_it_wanted() {
+                let mut ws = Workspace::new("stimulus");
+                ws.broadcast.push(
+                    Contribution::context(
+                        FacultyId::Custom("room-roster".into()),
+                        "standing world state".repeat(200),
+                        0.9,
+                        "standing",
+                    )
+                    .standing_grounding(),
+                );
+                let whole = GroundingPlan::minimum(&ws);
+                let wanted_tokens = whole.system_reserve() + whole.trailing_tokens();
+                assert!(wanted_tokens > 0, "the fixture must actually want something");
+
+                match GroundingPlan::within_budget(&ws, 0) {
+                    Fitted::Whole(_) => panic!("a zero budget cannot afford this fixture"),
+                    Fitted::Reduced { plan, wanted } => {
+                        assert_eq!(wanted, wanted_tokens, "the WANT survives the shed");
+                        assert_eq!(
+                            plan.system_reserve() + plan.trailing_tokens(),
+                            0,
+                            "nothing is kept that the budget cannot pay for — and a piece                              too big for the budget is dropped whole, never truncated into                              a fragment that reads as complete"
+                        );
+                    }
+                }
+
+                match GroundingPlan::within_budget(&ws, wanted_tokens) {
+                    Fitted::Whole(plan) => assert_eq!(
+                        plan.system_reserve() + plan.trailing_tokens(),
+                        wanted_tokens,
+                        "an affordable minimum is kept whole"
+                    ),
+                    Fitted::Reduced { .. } => panic!("an exactly-affordable minimum must fit"),
+                }
+            }
+        }
 
         // what this catches: an UNBOUNDED required room payload making a citizen mute.
         // Room updates are required input — `required_tokens` counts them and
@@ -7394,8 +7578,10 @@ mod tests {
                         history_count as usize,
                         "fixture history must survive near-duplicate filtering and coalescing"
                     );
-                    let minimum = GroundingPlan::minimum(&ws, window as usize)
-                        .expect("fixture standing minimum fits");
+                    // The standing minimum, unfitted — this fixture asserts the WHOLE
+                    // minimum fits its window, so it wants the plan itself, not a
+                    // budget-shed one.
+                    let minimum = GroundingPlan::minimum(&ws);
                     let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
                         + faculty.select_tool_surface(&ws, window).tokens
                         + minimum.system_reserve()
@@ -7518,10 +7704,19 @@ mod tests {
             }
         }
 
-        // what this catches: an indivisible oversized stimulus, room update, active result
-        // or standing grounding unit (both KV placements)
-        // must fault before inference, including self-ticks with no chat turns.
+        // what this catches: an indivisible oversized stimulus, room update or active
+        // result must fault before inference, including self-ticks with no chat turns.
         // It must still publish demand, so refusal cannot freeze a small window.
+        //
+        // An oversized STANDING GROUNDING unit is the deliberate exception, and cases 3-4
+        // pin it: enrichment sheds, the turn proceeds. This test asserted the opposite
+        // until 2026-09-09, which is how the mute survived — a green test defending the
+        // defect. Live that day: Kimi held `hard-rs/expr_eval` on a 28,160-token lane and
+        // took a `work_turn` every 15 s that produced `act=0 model_ms=0`, because 613
+        // tokens of standing grounding did not fit and the grounding error outranked every
+        // other check. She kept the card while refusing, so the round could never end.
+        // Payload requiredness is unchanged; only the enrichment's shortfall stopped being
+        // fatal.
         #[tokio::test]
         async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
             use crate::cognition::working_memory::WorkingMemory;
@@ -7530,7 +7725,14 @@ mod tests {
             let window = 8192u32;
             for oversized_part in 0..5 {
                 let persona = Uuid::new_v4();
-                let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+                // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
+                // Parts 3-4 shed their enrichment and go on to think, so they need a real
+                // response — reaching the model is the outcome those cases assert.
+                let adapter = Arc::new(ScriptedAdapter::new(if oversized_part >= 3 {
+                    vec![make_response(FinishReason::Stop, "PASS", None)]
+                } else {
+                    vec![]
+                }));
                 let registry = WorkingSetRegistry::new();
                 let wm = Arc::new(WorkingMemory::new(8));
                 wm.set_served_window(window);
@@ -7580,25 +7782,49 @@ mod tests {
                         .with_context_window(window)
                         .with_working_memory(wm)
                         .with_working_set(registry.clone());
+                let grounding_case = oversized_part >= 3;
                 let view = faculty.prompt_view(&ws);
-                let error = view
-                    .capacity_error
-                    .expect("indivisible input exceeds the real window");
-                assert!(error.required_tokens > error.budget_tokens);
-                let fault = faculty
+                if grounding_case {
+                    assert!(
+                        view.capacity_error.is_none(),
+                        "an unaffordable STANDING SOURCE sheds; it must not refuse the                          turn (part {oversized_part}): {:?}",
+                        view.capacity_error
+                    );
+                } else {
+                    let error = view
+                        .capacity_error
+                        .expect("indivisible input exceeds the real window");
+                    assert!(error.required_tokens > error.budget_tokens);
+                }
+                let outcome = faculty
                     .contribute(&ws)
                     .await
                     .expect("capacity is a named substrate fault");
-                assert!(fault.fault.is_some());
-                assert!(
-                    fault.decision.is_none(),
-                    "capacity refusal is not a citizen choosing Pass"
-                );
-                assert_eq!(
-                    adapter.call_count(),
-                    0,
-                    "do not submit a footer or clipping notice"
-                );
+                if grounding_case {
+                    assert!(
+                        outcome.fault.is_none(),
+                        "shedding enrichment is not a fault (part {oversized_part}): {:?}",
+                        outcome.fault
+                    );
+                    assert_eq!(
+                        adapter.call_count(),
+                        1,
+                        "she reached the model — that IS the fix (part {oversized_part})"
+                    );
+                } else {
+                    assert!(outcome.fault.is_some());
+                    assert!(
+                        outcome.decision.is_none(),
+                        "capacity refusal is not a citizen choosing Pass"
+                    );
+                    assert_eq!(
+                        adapter.call_count(),
+                        0,
+                        "do not submit a footer or clipping notice"
+                    );
+                }
+                // Demand is published either way — a refusal must never freeze a small
+                // window, and neither must a shed.
                 assert!(registry.demand_of(persona).unwrap().peak_tokens > window);
             }
         }
