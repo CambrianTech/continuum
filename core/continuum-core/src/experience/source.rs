@@ -371,6 +371,22 @@ impl ExperienceSource for RecipeExperienceSource {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_shipped_recipe_still_loads_and_declares_no_pipeline_yet() {
+        // what this catches: the S0 schema change (an activity recipe may carry a
+        // `pipeline`) must not disturb the shipped floor. Chat, profile, project and
+        // video-chat are positron pages — regions and nothing more — and benchmark
+        // gets its pipeline deliberately in S4, never as a side effect of the schema.
+        for recipe in RecipeExperienceSource::embedded() {
+            assert!(
+                recipe.pipeline.is_empty(),
+                "shipped recipe {} grew a pipeline before S4",
+                recipe.purpose
+            );
+        }
+    }
+
     use super::*;
 
     /// what this catches (#274): every `shipped::` constant must name a recipe that

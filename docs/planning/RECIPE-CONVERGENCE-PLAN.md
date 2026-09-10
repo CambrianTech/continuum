@@ -65,14 +65,21 @@ the `bench_round` card mirror.
 Merge `recipe::types::Recipe` (the pipeline shape) into `experience::Recipe` as an **optional**
 `pipeline` field. One struct, one serde shape, one validator. Nothing executes it yet.
 
-Fix the defaults lie in the same slice: a recipe's declared `params.*.default` becomes the
-value a caller gets when they pass nothing. Delete `unwrap_or_default()` on CLI arg types
-where a recipe default exists (`benchmark.rs:1906` and siblings) — one source of truth.
+- *What this catches:* an authored activity that DOES something must round-trip through the
+  authoring path (`ExperienceRecipe::from_json`); a page recipe with no pipeline must stay a
+  page.
+- **Acceptance:** all five shipped recipes load unchanged and declare no pipeline; a recipe
+  carrying a pipeline round-trips; the ts-rs bindings regenerate without hand-editing.
 
-- *What this catches:* an author reads `driver.default: "citizen"` and gets `citizen`, not the
-  Rust `Default` that agrees with it by coincidence.
-- **Acceptance:** all five shipped recipes load unchanged; a recipe carrying a `pipeline`
-  parses and round-trips; a param with only a recipe-declared default resolves to it.
+**Moved to S4 — the defaults lie.** `benchmark.json` declares `driver.default: "citizen"` while
+`benchmark.rs:1906` uses `p.drive.unwrap_or_default()` (the Rust `Default` of the CLI arg
+type). Fixing it means dispatch must resolve params *through* the recipe, which is exactly what
+S4 does — doing it here would build that resolution twice. The defect is real and stays owned;
+it is repaired where the recipe becomes dispatch's source of truth, not before.
+
+**Landed 2026-09-10:** `pipeline: Vec<RecipeStep>` on `ExperienceRecipe`, reusing
+`recipe::types::RecipeStep` (one step shape for both entry points, now ts-rs exported).
+58 experience tests, 134 recipe tests, 19 activity tests green.
 
 ### S1 — Affordances select the tool surface *(card c2ec4b96 — the load-bearing slice)*
 `hands_surface()` becomes room-aware. The room's Experience manifest supplies the surface:

@@ -3,6 +3,7 @@ import type { AffordanceRecipe } from "./AffordanceRecipe";
 import type { CitizenRecipe } from "./CitizenRecipe";
 import type { Layout } from "./Layout";
 import type { RecipeId } from "./RecipeId";
+import type { RecipeStep } from "./RecipeStep";
 import type { Region } from "./Region";
 
 /**
@@ -68,6 +69,22 @@ params: Record<string, ParamDecl>,
  * the ordinary state; membership is live roster state, not authorship.
  */
 citizens: Array<CitizenRecipe>, 
+/**
+ * What this activity DOES — a pipeline of command invocations, walked by
+ * [`crate::recipe::PipelineExecutor`], the executor that already exists.
+ *
+ * Before this field an activity recipe could describe a room and nothing
+ * else, so every activity with real behaviour (benchmarks, the forge, a
+ * training cycle) had to be Rust, with its own store and its own loader —
+ * three systems called "recipe", none of them complete. See
+ * docs/architecture/RECIPES-ARE-THREE-SYSTEMS-THAT-NEVER-MEET.md.
+ *
+ * Empty (the default) is the ordinary state: a chat room, a profile page, a
+ * theme pane are regions and nothing more. Steps are ordinary discoverable
+ * commands — the extension surface is the command system itself, never a new
+ * field here.
+ */
+pipeline: Array<RecipeStep>, 
 /**
  * Optional explicit composition (level-3 layout). Omitted → organic placement.
  */
