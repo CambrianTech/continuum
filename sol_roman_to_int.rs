@@ -98,8 +98,17 @@ fn main() {
     // Property: MCMXCIV must decompose as 1000 + 900 + 90 + 4.
     assert_eq!(roman_to_int("MCMXCIV"), roman_to_int("M") + roman_to_int("CM") + roman_to_int("XC") + roman_to_int("IV"));
 
+    // Property: exhaustive round-trip over the entire representable range —
+    // every canonical numeral must decode back to its own value.
+    let mut round_trips = 0;
+    for n in 1u32..=3999 {
+        let r = to_roman(n);
+        assert_eq!(roman_to_int(&r), n as i32, "round-trip failed at {n} -> {r}");
+        round_trips += 1;
+    }
+
     if failed == 0 {
-        println!("\nall {} cases passed", cases.len());
+        println!("\nall {} cases + {} round-trips passed", cases.len(), round_trips);
     } else {
         println!("\n{} case(s) FAILED", failed);
         std::process::exit(1);
