@@ -1212,6 +1212,72 @@ impl ServingDaemonModule {
         })
     }
 
+    /// The device-budget authority the ephemeral spawn adapter consults before placing
+    /// ANOTHER engine on this host.
+    ///
+    /// This is #56's `ResourceGovernor` for the one decision that was actually going
+    /// unmade. That type never existed — its eight mentions in the tree are all doc
+    /// comments promising a future owner — so `EphemeralServingLane::spawn` decided by
+    /// `first_free_port` alone and three vision sidecars once shared one GPU at
+    /// 3.1-8.6 tok/s apiece.
+    ///
+    /// Built over the SAME `live_host_budget` + `footprint_for` pair `pin_fit_checker`
+    /// uses, so the gate and the planner cannot disagree about what fits. It models
+    /// CO-RESIDENCE, not a swap: an ephemeral lane joins the live lane rather than
+    /// replacing it, so the incumbent's footprint is spent, never credited back — the
+    /// one real difference from a pin's arithmetic, and the reason this is a sibling
+    /// function instead of a flag on that one.
+    pub fn lane_admission_authority(&self) -> crate::inference::llama_server::LaneAdmissionAuthority {
+        let system = self.system.clone();
+        let resource_daemon = self.resource_daemon.clone();
+        let serving_tx = self.serving_tx.clone();
+        let model_resolver = self.model_resolver.clone();
+        Arc::new(move |target: &crate::inference::llama_server::ServingTarget,
+                       resident: &[crate::inference::lane_registry::LaneRecord]| {
+            use crate::inference::llama_server::LaneAdmission;
+            let budget = live_host_budget(&system, &resource_daemon).usable_bytes;
+            let Some(model) = (model_resolver)(target.model_id()) else {
+                // We cannot price a model we cannot resolve. Refusing is the honest
+                // answer: admitting would be deciding by absence of information, which
+                // is how the port check behaved and exactly what this replaces.
+                return LaneAdmission::Refuse(format!(
+                    "cannot admit an engine for '{}': the model does not resolve in the                      catalog, so its device footprint is unknown",
+                    target.model_id()
+                ));
+            };
+            // WEIGHTS as the cost, not weights+KV. The same choice `pin_fit_decision`
+            // makes when it credits an incumbent back: weights dominate (measured on
+            // this host, 18.97 GB of weights against a 24.63 GB budget) and they are the
+            // term nothing can shrink, while KV is exactly what the planner sizes down
+            // under pressure. A weights floor therefore under-states the true cost, so
+            // this gate errs toward ADMITTING — it is a guard against a second ENGINE,
+            // not a precise accountant.
+            let Some(want) = footprint_for(&model).map(|f| f.weights_bytes) else {
+                return LaneAdmission::Refuse(format!(
+                    "cannot admit an engine for '{}': no on-disk footprint, so its device                      cost is unknown",
+                    target.model_id()
+                ));
+            };
+            // Everything already on the device: the live lane it joins, plus every
+            // verified-live ephemeral sibling the caller's census found.
+            let live_bytes = serving_tx
+                .borrow()
+                .active_model
+                .clone()
+                .and_then(|id| (model_resolver)(&id))
+                .and_then(|m| footprint_for(&m))
+                .map(|f| f.weights_bytes)
+                .unwrap_or(0); // unwrap_or: nothing serving ⇒ the live lane costs nothing, which is the truth here
+            let sibling_bytes: u64 = resident
+                .iter()
+                .filter_map(|rec| (model_resolver)(&rec.model))
+                .filter_map(|m| footprint_for(&m))
+                .map(|f| f.weights_bytes)
+                .sum();
+            lane_admission_decision(budget, want, live_bytes, sibling_bytes, resident.len())
+        })
+    }
+
     /// Compute the current serving plan from the live host snapshot + on-disk
     /// models, WITHOUT relying on a tick having run. The boot path calls this
     /// to drive the spawner before the tick loop starts — single source of
@@ -3098,6 +3164,44 @@ pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
 /// only (deterministic): the incumbent's variable KV is freed too, so this stays
 /// conservative — a `fits_on_gpu` verdict here always holds in the real
 /// post-eviction budget. `candidate = None` ⇒ no GGUF on disk ⇒ not servable.
+/// Does another engine fit beside what is already on the device? Pure so the
+/// arithmetic is assertable without a GPU, a daemon, or a live budget — the same
+/// split `pin_fit_decision` makes one screen below.
+///
+/// CO-RESIDENCE, not a swap: an ephemeral lane joins the live lane rather than
+/// replacing it, so the incumbent is SPENT, never credited back. That single sign flip
+/// is the whole difference from a pin's fit check, and getting it backwards would
+/// admit exactly the second engine this exists to refuse.
+///
+/// A refusal states every term. An operator who cannot see which number blocked them
+/// deletes the check ([[stdout-is-never-a-transport]] — the fact belongs in the
+/// message that carries the decision).
+fn lane_admission_decision(
+    budget_bytes: u64,
+    want_bytes: u64,
+    live_bytes: u64,
+    sibling_bytes: u64,
+    sibling_count: usize,
+) -> crate::inference::llama_server::LaneAdmission {
+    use crate::inference::llama_server::LaneAdmission;
+    let committed = live_bytes.saturating_add(sibling_bytes);
+    let headroom = budget_bytes.saturating_sub(committed);
+    if want_bytes <= headroom {
+        return LaneAdmission::Admit;
+    }
+    let gb = |b: u64| b as f64 / 1e9;
+    LaneAdmission::Refuse(format!(
+        "another {:.1} GB engine does not fit: budget {:.1} GB, already committed {:.1} GB          (live lane {:.1} GB + {} ephemeral sibling(s) {:.1} GB), headroom {:.1} GB.          Co-residence would time-slice one device, not add capacity.",
+        gb(want_bytes),
+        gb(budget_bytes),
+        gb(committed),
+        gb(live_bytes),
+        sibling_count,
+        gb(sibling_bytes),
+        gb(headroom),
+    ))
+}
+
 fn pin_fit_decision(
     mut base: HostBudget,
     candidate: Option<ModelFootprint>,
@@ -4140,6 +4244,14 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        // THE DEVICE-BUDGET AUTHORITY, wired here rather than promised in a doc comment.
+        // Without it `EphemeralServingLane::spawn` admits every engine with only a
+        // free-port check — which is how three sidecars once shared one GPU. Set-once
+        // (singleton daemon); `the_serving_daemon_installs_the_admission_authority`
+        // pins that this call exists.
+        let _ = crate::inference::llama_server::install_lane_admission(
+            self.lane_admission_authority(),
+        );
         // NOTE: the VRAM prior is seeded and serving is registered as a ResourceConsumer at
         // WIRING time ([`declare_to_memory_authority`], called from `ipc/mod.rs` before
         // `register_planner_on_authority_tick`) — NOT here. `initialize` runs after the module
@@ -6625,4 +6737,136 @@ mod tests {
         assert!(kept.iter().any(|c| c.model_id == model_id));
     }
 
+
+    /// The gate that replaced #56's unbuilt `ResourceGovernor`. Nested per the one-mod rule.
+    mod engine_admission {
+        use super::*;
+        use crate::inference::llama_server::LaneAdmission;
+
+        fn refusal(a: LaneAdmission) -> String {
+            match a {
+                LaneAdmission::Refuse(r) => r,
+                LaneAdmission::Admit => panic!("expected a refusal"),
+            }
+        }
+        fn is_admit(a: &LaneAdmission) -> bool {
+            matches!(a, LaneAdmission::Admit)
+        }
+
+        // what this catches: THE bug. Three vision sidecars co-existed on one GPU because
+        // the only question asked before spawning was `first_free_port` — is a port free.
+        // A second engine that does not fit beside the live lane must be refused. If this
+        // ever admits, ports are deciding device capacity again and the box goes back to
+        // 3.1-8.6 tok/s per engine.
+        #[test]
+        fn a_second_engine_that_does_not_fit_is_refused() {
+            // 24 GB budget, a 19 GB live lane already up, another 19 GB engine asked for.
+            let d = lane_admission_decision(24_000_000_000, 19_000_000_000, 19_000_000_000, 0, 0);
+            let why = refusal(d);
+            for term in ["19.0 GB", "24.0 GB", "5.0 GB"] {
+                assert!(why.contains(term), "the refusal must state its terms: {why}");
+            }
+            assert!(
+                why.contains("time-slice"),
+                "and must say WHY co-residence is not extra capacity: {why}"
+            );
+        }
+
+        // what this catches: the sign of the incumbent. A pin SWAPS, so `pin_fit_decision`
+        // credits the incumbent back into the budget; an ephemeral lane JOINS, so it must
+        // be spent. Flip this and a full device reads as empty — which is precisely the
+        // second-engine admission this gate exists to stop.
+        #[test]
+        fn the_live_lane_is_spent_not_credited() {
+            let budget = 24_000_000_000;
+            let want = 19_000_000_000;
+            // Nothing resident: the same engine fits.
+            assert!(
+                is_admit(&lane_admission_decision(budget, want, 0, 0, 0)),
+                "with an empty device this engine fits"
+            );
+            // Same engine, same budget, live lane up: it must NOT fit. If the incumbent
+            // were credited back (the pin arithmetic) this would admit.
+            assert!(
+                !is_admit(&lane_admission_decision(budget, want, 19_000_000_000, 0, 0)),
+                "co-residence spends the incumbent — crediting it back is the pin's rule, \
+                 not this one"
+            );
+        }
+
+        // what this catches: siblings must weigh. The measured failure was the THIRD
+        // sidecar — each one individually small enough to look affordable, the set of
+        // them not. An admission that ignores existing ephemeral lanes admits N engines
+        // one at a time.
+        #[test]
+        fn ephemeral_siblings_weigh_on_the_decision() {
+            let budget = 24_000_000_000;
+            let want = 6_000_000_000;
+            assert!(
+                is_admit(&lane_admission_decision(budget, want, 6_000_000_000, 0, 0)),
+                "one sibling's worth of room is there"
+            );
+            // Two 6 GB siblings already up beside a 6 GB live lane: 18 committed, 6 free —
+            // still exactly affordable.
+            assert!(
+                is_admit(&lane_admission_decision(budget, want, 6_000_000_000, 12_000_000_000, 2)),
+                "exactly-affordable must admit — this gate refuses overflow, not company"
+            );
+            // A third sibling tips it over.
+            let why = refusal(lane_admission_decision(
+                budget,
+                want,
+                6_000_000_000,
+                18_000_000_000,
+                3,
+            ));
+            assert!(
+                why.contains("3 ephemeral sibling(s)"),
+                "the refusal names how many were already there: {why}"
+            );
+        }
+
+        // what this catches: the authority going UNWIRED — which is not hypothetical, it
+        // is the whole reason this gate had to be written. `EphemeralServingLane::spawn`
+        // carried a doc comment for months saying budget-gating "is the ResourceGovernor's
+        // concern (#56)", and `ResourceGovernor` was never built: all eight of its mentions
+        // in the tree are doc comments promising a future owner. So the decision was
+        // delegated to nobody and made by `first_free_port`.
+        //
+        // A source assertion because installation happens inside the daemon's async
+        // `initialize`, and the seam it writes to is a process-wide `OnceLock` a unit test
+        // cannot un-set between runs. Same shape as the `source_hygiene` ratchets: cheap,
+        // and it fails the moment someone deletes the call.
+        #[test]
+        fn the_serving_daemon_installs_the_admission_authority() {
+            let src = include_str!("serving_daemon.rs");
+            assert!(
+                src.contains("install_lane_admission("),
+                "serving_daemon must INSTALL the device-budget authority — without it                  EphemeralServingLane::spawn admits every engine on a free-port check,                  which is how three sidecars once shared one GPU"
+            );
+            assert!(
+                src.contains("fn lane_admission_authority("),
+                "and must build it from the same live budget the planner uses, so the gate                  and the planner cannot disagree about what fits"
+            );
+        }
+
+        // what this catches: an over-committed device must not wrap. `saturating_sub` on
+        // headroom is what keeps a device already past its budget from reporting a huge
+        // free number and admitting everything — the arithmetic failure mode that turns a
+        // guard into an accelerator.
+        #[test]
+        fn an_already_overcommitted_device_refuses_rather_than_wrapping() {
+            let why = refusal(lane_admission_decision(
+                8_000_000_000,
+                1_000_000_000,
+                20_000_000_000,
+                0,
+                0,
+            ));
+            assert!(
+                why.contains("headroom 0.0 GB"),
+                "past the budget, headroom floors at zero: {why}"
+            );
+        }
+    }
 }
