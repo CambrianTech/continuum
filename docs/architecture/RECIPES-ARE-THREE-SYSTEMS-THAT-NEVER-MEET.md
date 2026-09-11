@@ -127,15 +127,18 @@ surface for citizens in that room.
     { "verb": "observe", "command": "cognition/observe" }
   ],
 
-  // NEW: behaviour as data. Every step is an existing discoverable command.
+  // NEW: behaviour as data. Every step is an existing discoverable command, in the
+  // step shape the executor already reads (`params`, `outputTo`, `condition`,
+  // `approval`). `each` (fan-out per item) and `on` (an event edge such as
+  // card.settled) are NOT in the shape yet — they are S3b in the plan.
   "pipeline": [
-    { "command": "benchmark/import",  "args": { "suite": "$suite", "instances": "$instances" },
-      "bind": "tasks" },
-    { "command": "work/create",       "each": "$tasks", "args": { "room": "$room",
-      "title": "${item.instance_id}", "body": "${item.problem_statement}" } },
-    { "command": "activity/invite",   "args": { "room": "$room", "members": "$team" } },
-    { "command": "work/grade",        "on": "card.settled",
-      "args": { "card": "$event.card", "oracle": "${item.oracle}" } }
+    { "command": "benchmark/import",  "params": { "suite": "$args.suite", "instances": "$args.instances" },
+      "outputTo": "tasks" },
+    { "command": "work/create",       "each": "$tasks",   // S3b
+      "params": { "room": "$room.id", "title": "${item.instance_id}", "body": "${item.problem_statement}" } },
+    { "command": "activity/invite",   "params": { "room": "$room.id", "members": "$args.team" } },
+    { "command": "work/grade",        "on": "card.settled",   // S3b
+      "params": { "card": "$event.card", "oracle": "${item.oracle}" } }
   ],
 
   "params": {
@@ -204,26 +207,26 @@ Here is that same ask as data. Note that **no field below is job-specific**; it 
     { "command": "mail/send",   "approval": "human" }
   ],
 
+  // Real step shape: `params` / `outputTo` / `condition` / `approval` run today (S3);
+  // `each` and `on` are S3b. `approval: "human"` already HOLDS a run at that step.
   "pipeline": [
-    { "command": "web/search",       "args": { "q": "$targets" },       "bind": "found" },
-    { "command": "work/create",      "each": "$found", "args": { "room": "$room",
-      "title": "${item.employer} · ${item.role}", "body": "${item.url}" } },
+    { "command": "web/search",       "params": { "q": "$args.targets" },  "outputTo": "found" },
+    { "command": "work/create",      "each": "$found",                                      // S3b
+      "params": { "room": "$room.id", "title": "${item.employer} · ${item.role}", "body": "${item.url}" } },
 
-    { "command": "web/fetch",        "on": "card.claimed", "args": { "url": "$card.url" },
-      "bind": "posting" },
-    { "command": "cognition/verify", "each": "$dossier.claims", "bind": "sourced",
-      "doc": "no claim ships without a source — this is the step that catches the four" },
-    { "command": "document/render",  "args": { "from": "$dossier", "for": "$posting" },
-      "bind": "artifact" },
+    { "command": "web/fetch",        "on": "card.claimed",                                  // S3b
+      "params": { "url": "$card.url" }, "outputTo": "posting" },
+    { "command": "cognition/verify", "each": "$dossier.claims", "outputTo": "sourced" },    // S3b — the step that catches the four
+    { "command": "document/render",  "params": { "from": "$dossier", "for": "$posting" },
+      "outputTo": "artifact" },
 
-    { "command": "browser/act",      "args": { "url": "$card.url", "fill": "$dossier",
-      "attach": "$artifact" }, "approval": "human",
-      "doc": "fills the form, stops at submit — a human presses send, always" },
+    { "command": "browser/act",      "params": { "url": "$card.url", "fill": "$dossier", "attach": "$artifact" },
+      "approval": "human" },                       // fills the form, HOLDS at submit — a human presses send, always
 
-    { "command": "work/state",       "args": { "card": "$card", "state": "submitted" } },
-    { "command": "work/due",         "args": { "card": "$card", "in": "$cadence" } },
-    { "command": "chat/send",        "on": "card.due", "args": { "room": "$card.room",
-      "text": "no reply in $cadence — draft a follow-up" } }
+    { "command": "work/state",       "params": { "card": "$card", "state": "submitted" } },
+    { "command": "work/due",         "params": { "card": "$card", "in": "$args.cadence" } },
+    { "command": "chat/send",        "on": "card.due",                                      // S3b
+      "params": { "room": "$card.room", "text": "no reply in $args.cadence — draft a follow-up" } }
   ],
 
   "params": {

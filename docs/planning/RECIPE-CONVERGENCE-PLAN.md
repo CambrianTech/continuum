@@ -148,6 +148,21 @@ step pauses and asks. Irreversible outward actions are the reason this exists.
 - **Acceptance:** an authored recipe with a pipeline of existing verbs spawns a room **and does
   work**, with no Rust committed. A step marked `approval: human` does not run unattended.
 
+**Landed 2026-09-11 (S3, the first half).** The ONE birth path — `spawn_activity_room`, all five
+callers — runs the recipe's pipeline after the room is bound, with `$room.{id,name,recipe}`
+seeded and the resolved params as `$args`; the spawn result carries the receipt
+(`pipeline.{steps_run,steps_skipped,held_at,trace}`). `approval: "human"` on a step HOLDS the
+run there — not dispatched, receipt names it, nothing after it runs; proven over an empty
+registry where any dispatch would have failed loudly. Callers without an executor at hand
+(three of the five today) probe `activity.pipeline.unrun` for a recipe that declares one —
+a wiring fact, never a silent no-op. `recipe/run` reports `held_at` too.
+
+**S3b — still owed:** the event edges (`on: card.claimed | card.settled | card.due`) and
+fan-out (`each`). Both need a subscriber per spawned room that re-enters the pipeline at the
+edge with `$event` bound; the board already emits `work.card.state_changed`. S4's benchmark
+pipeline needs `each` (one card per task) and `on: card.settled` (grade), so S3b lands
+inside S4 rather than as a framework built ahead of its one consumer.
+
 ## Phase B — benchmarks onto it
 
 ### S4 — Benchmark becomes an authored recipe *(card fa447bfe)*

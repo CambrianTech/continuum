@@ -51,6 +51,9 @@ pub struct RecipeRunResult {
     /// the recipe itself.
     #[ts(type = "unknown")]
     pub bindings: serde_json::Value,
+    /// The step the run HELD at for a human's approval, if any (S3).
+    #[ts(optional)]
+    pub held_at: Option<u32>,
 }
 
 pub struct RecipeRun {
@@ -104,6 +107,7 @@ impl ActionCommand for RecipeRun {
             steps_skipped: receipt.steps_skipped,
             trace: receipt.trace,
             bindings: serde_json::Value::Object(receipt.bindings),
+            held_at: receipt.held_at,
         })
     }
 }

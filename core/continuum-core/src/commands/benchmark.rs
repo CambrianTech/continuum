@@ -1939,6 +1939,7 @@ impl ActionCommand for BenchmarkDispatch {
             &bench_recipe,
             None,
             &run_params,
+            self.executor().ok(),
         )
         .await?;
         // The round's standing rules, published as the run room's operating doctrine

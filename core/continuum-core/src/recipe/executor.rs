@@ -27,6 +27,10 @@ pub struct RecipeRunReceipt {
     /// Every `outputTo` binding's final value (args excluded) — the run's
     /// RESULT, shaped by the recipe itself.
     pub bindings: serde_json::Map<String, Value>,
+    /// The step index the run HELD at for approval (`approval: "human"`), if it
+    /// did. That step and everything after it did not run; the receipt is how a
+    /// human learns what is waiting on them. `None` = the run reached its end.
+    pub held_at: Option<u32>,
 }
 
 pub struct PipelineExecutor {
@@ -48,7 +52,21 @@ impl PipelineExecutor {
         pipeline: &[RecipeStep],
         args: Value,
     ) -> Result<RecipeRunReceipt, String> {
-        let mut state = ExecutionState::with_args(args);
+        self.run_with(name, pipeline, args, Vec::new()).await
+    }
+
+    /// As [`Self::run`], with bindings readable before the first step — the ROOM an
+    /// activity's pipeline runs in (`$room`, S3). `activity/spawn` seeds it; a bare
+    /// `recipe/run` seeds nothing.
+    pub async fn run_with(
+        &self,
+        name: &str,
+        pipeline: &[RecipeStep],
+        args: Value,
+        seed: Vec<(String, Value)>,
+    ) -> Result<RecipeRunReceipt, String> {
+        let mut state = ExecutionState::seeded(args, seed);
+        let mut held_at: Option<u32> = None;
         let mut trace = Vec::new();
         let mut steps_run = 0u32;
         let mut steps_skipped = 0u32;
@@ -69,6 +87,23 @@ impl PipelineExecutor {
                     steps_skipped += 1;
                     continue;
                 }
+            }
+            // THE APPROVAL BOUNDARY (S3). A step that needs a human does not run
+            // unattended — not "runs and asks", not "runs if confident": it HOLDS,
+            // the receipt names it, and the run ends here. Checked before
+            // interpolation so a held step never even resolves its arguments.
+            if let Some(who) = step.approval.as_deref() {
+                crate::probe!(
+                    class = "recipe.step.held",
+                    recipe = %name,
+                    step = idx as u64,
+                    command = %step.command,
+                    approval = %who,
+                    "step needs approval — the run holds here; nothing after it runs"
+                );
+                trace.push(format!("[{idx}] {} HELD (approval: {who})", step.command));
+                held_at = Some(idx as u32);
+                break;
             }
             let params = interpolate(&step.params, &state)
                 .map_err(|e| format!("step {idx} ({}): {e}", step.command))?;
@@ -166,6 +201,7 @@ impl PipelineExecutor {
             recipe = %name,
             steps_run = steps_run as u64,
             steps_skipped = steps_skipped as u64,
+            held_at = held_at.map(|i| i as i64).unwrap_or(-1),
             "pipeline complete"
         );
         Ok(RecipeRunReceipt {
@@ -174,6 +210,46 @@ impl PipelineExecutor {
             steps_skipped,
             trace,
             bindings,
+            held_at,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::registry::ModuleRegistry;
+
+    fn step(command: &str, approval: Option<&str>) -> RecipeStep {
+        RecipeStep {
+            command: command.to_string(),
+            params: Value::Null,
+            output_to: None,
+            condition: None,
+            on_error: None,
+            retry_count: 0,
+            timeout_ms: None,
+            approval: approval.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_step_that_needs_a_human_holds_the_run_before_it_dispatches_anything() {
+        // what this catches: the approval boundary. A held step must never reach the
+        // executor — over an EMPTY registry any dispatch would fail loudly, so a
+        // clean Ok receipt with held_at = 0 proves nothing was attempted — and the
+        // step after it must not run either. If this regresses, an authored
+        // campaign submits applications in the human's name unattended.
+        let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
+            ModuleRegistry::new(),
+        )));
+        let pipeline = vec![step("browser/act", Some("human")), step("mail/send", None)];
+        let receipt = PipelineExecutor::new(exec)
+            .run("campaign/applications", &pipeline, Value::Null)
+            .await
+            .expect("a held run is a clean receipt, not an error");
+        assert_eq!(receipt.held_at, Some(0));
+        assert_eq!(receipt.steps_run, 0);
+        assert_eq!(receipt.trace, vec!["[0] browser/act HELD (approval: human)"]);
     }
 }

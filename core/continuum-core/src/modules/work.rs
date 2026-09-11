@@ -1258,6 +1258,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 &recipe,
                 Some(room),
                 &std::collections::BTreeMap::new(),
+                None,
             )
             .await
             {

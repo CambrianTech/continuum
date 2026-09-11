@@ -1695,6 +1695,7 @@ impl AgentSolve {
                                 &recipe,
                                 None,
                                 &std::collections::BTreeMap::new(),
+                                None,
                             )
                             .await
                             .ok()

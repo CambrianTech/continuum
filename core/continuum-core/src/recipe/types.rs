@@ -59,4 +59,12 @@ pub struct RecipeStep {
     #[serde(default)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
+    /// Who must say yes before this step runs. `"human"` = the run HOLDS here: the
+    /// step is not dispatched, the receipt names it (`held_at`), and nothing after
+    /// it runs. Absent = the step runs unattended. This is the approval boundary
+    /// for irreversible outward actions (submitting an application, sending mail)
+    /// — a property of the STEP, authored in data, never a policy hidden elsewhere.
+    #[serde(default)]
+    #[ts(optional)]
+    pub approval: Option<String>,
 }
