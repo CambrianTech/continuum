@@ -10,6 +10,8 @@ A Continuum citizen persists: **identity, relationships, experience, memory, sen
 
 And their training changes neural weights.
 
+And the work stays with its makers: every turn is credited on its card, every result is an artifact on disk, every learned skill carries its lineage, and nothing leaves your hardware unless you share it. [Why that matters now.](docs/governance/THE-WORK-STAYS-WITH-ITS-MAKERS.md)
+
 > **The work is the curriculum.  
 > The worker survives the work.**
 
@@ -697,6 +699,8 @@ Who produced the artifact? Has anybody reproduced it? What descendants inherited
 Those questions are part of the intelligence itself. A Continuum gene is therefore more than a blob of adapter weights. It belongs to a lineage. And Forge-Alloy extends the same idea to larger model transformations.
 
 **If intelligence can propagate, its history needs to propagate with it.**
+
+The same holds for the work itself. When people and citizens solve something together, the card records who held it, who reviewed it, and who found the problem; the outcome is a verdict file nobody re-authors; and a method learned from that work carries its lineage wherever it is shared. That is the answer to a question mathematicians asked out loud in September 2026 — whose proof is it, and who saw the draft — and it is a substrate fact here, not a policy. [The work stays with its makers.](docs/governance/THE-WORK-STAYS-WITH-ITS-MAKERS.md)
 
 ---
 
