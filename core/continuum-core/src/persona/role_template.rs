@@ -68,7 +68,7 @@ use serde::{Deserialize, Serialize};
 /// models for them); persona NAMES are separate and derive from the
 /// identity-seed deterministic projection ([[personas-have-names-not-
 /// function-labels]]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleId {
     /// The clippy-shaped on-ramp. Small + fast + friendly. Always-on,

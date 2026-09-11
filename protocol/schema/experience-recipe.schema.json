@@ -1,0 +1,575 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Continuum activity recipe",
+  "description": "An authored activity: what a room IS (regions, affordances, citizens, params) and what it DOES (pipeline). Drop the file in <continuum_root>/recipes/ — it is live on a running core, no deploy.",
+  "type": "object",
+  "required": [
+    "id",
+    "purpose",
+    "regions"
+  ],
+  "properties": {
+    "affordances": {
+      "description": "The verbs available, authored as intent (`{verb, command, proves?}`); each gains its computed `who_may` at projection.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AffordanceRecipe"
+      }
+    },
+    "base": {
+      "description": "The default top-level BASE this recipe's activities root under, by what the activity IS (Joel 2026-09-03: \"The academy. Think of what the word means. It's for learning. Now for other stuff: not inside academy.\"). The shipped bases are `academy` (learning by purpose: benchmark rounds, training, exams, curricula), `projects`, `commons`, `personal`; any room may technically root from any base path — the defaults are the ship, not a rule in code. `None` = the activity roots wherever it was spawned from. A SUB-activity's parent is always the activity that spawned it, never the base.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "citizens": {
+      "description": "The resident citizens this experience wants HOSTED — the roster as authored DATA (#430). The DEFAULT experience's citizens are the node's resident population: what the persona spawner plans at boot, replacing the hardcoded `plan_for_tier` role vec. Empty (the default) means this experience declares no residents — for most activity recipes that is the ordinary state; membership is live roster state, not authorship.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CitizenRecipe"
+      }
+    },
+    "id": {
+      "description": "Stable identity. Task #274.\n\nRecipes are open — shipped in the binary, authored on disk, installed at runtime, GENERATED on the fly — so identity cannot be a Rust enum and must not be a name. `purpose` used to carry identity AND taxonomy at once, which is why `benchmark` (a family) and `benchmark/hard-rs` (an instance) were indistinguishable and why a room could bind to a purpose that resolves to nothing and silently render as plain chat.\n\nDeliberately NOT a content hash: a shipped recipe is prod-critical and long-lived, so a bugfix to `chat.json` must not orphan every chat room in existence. Identity survives content edits. Reproducibility lives in the RUN RECEIPT instead — `(recipe_id, version, content_hash)` — which is what pins the exact bytes an exam was administered under without making identity brittle. Same split forge-alloy uses for models.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "layout": {
+      "description": "Optional explicit composition (level-3 layout). Omitted → organic placement.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Layout"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "params": {
+      "description": "The parameters this recipe accepts (#433) — typed knobs with EASY DEFAULTS, so a zero-arg `activity/spawn` always works while callers can target anything dynamic (suite, instances, team, budget…). Declared as DATA in the recipe JSON: authoring a parameterized activity is a file, zero code. Empty (the default) means the recipe takes no parameters.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/ParamDecl"
+      }
+    },
+    "pipeline": {
+      "description": "What this activity DOES — a pipeline of command invocations, walked by [`crate::recipe::PipelineExecutor`], the executor that already exists.\n\nBefore this field an activity recipe could describe a room and nothing else, so every activity with real behaviour (benchmarks, the forge, a training cycle) had to be Rust, with its own store and its own loader — three systems called \"recipe\", none of them complete. See docs/architecture/RECIPES-ARE-THREE-SYSTEMS-THAT-NEVER-MEET.md.\n\nEmpty (the default) is the ordinary state: a chat room, a profile page, a theme pane are regions and nothing more. Steps are ordinary discoverable commands — the extension surface is the command system itself, never a new field here.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RecipeStep"
+      }
+    },
+    "purpose": {
+      "description": "The activity nature — the content-dispatch key and this recipe's table key.\n\nAs of #274 this is a hierarchical LABEL (`benchmark/hard-rs`, `academy/bench/swe-lite`), not identity: it groups for discovery and drives UI sectioning, while [`Self::id`] is what anything resolves by.",
+      "type": "string"
+    },
+    "regions": {
+      "description": "The regions this room surfaces (authored verbatim — regions carry no computed fields).",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Region"
+      }
+    },
+    "version": {
+      "description": "Which revision of this recipe. Bumped on install when the id already exists, so a room's receipt can name the revision it ran under.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "AffordanceRecipe": {
+      "description": "The authored shape of an [`Affordance`] — the verb and its command plus the proof its result yields. `who_may` is intentionally ABSENT: it is computed from the ACL at projection so authorization can never be forged in a recipe.",
+      "type": "object",
+      "required": [
+        "command",
+        "verb"
+      ],
+      "properties": {
+        "command": {
+          "description": "The command URI this affordance fires.",
+          "type": "string"
+        },
+        "proves": {
+          "description": "What proof the result yields. Defaults to [`ProofSpec::None`].",
+          "default": "none",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProofSpec"
+            }
+          ]
+        },
+        "verb": {
+          "description": "The user-facing verb.",
+          "type": "string"
+        }
+      }
+    },
+    "Approval": {
+      "description": "Who must say yes before a step runs. Only humans today; the enum is the extension point (a named role, a quorum) so a future value is a variant with meaning, never a string the executor has to guess at.",
+      "oneOf": [
+        {
+          "description": "A human presses the button. The run HOLDS here.",
+          "type": "string",
+          "enum": [
+            "human"
+          ]
+        }
+      ]
+    },
+    "CitizenRecipe": {
+      "description": "One resident citizen an experience declares (#430) — a ROLE, not an identity. Identity (peer_id, name) is minted or resumed by the identity provider at hosting time; the MODEL is the serving daemon's per-host decision. A recipe authoring a device-specific model id would make the recipe non-portable across the grid, so the role is all it declares.",
+      "type": "object",
+      "required": [
+        "role"
+      ],
+      "properties": {
+        "role": {
+          "description": "Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) — `persona/role_template::RoleId`'s own serde form.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RoleId"
+            }
+          ]
+        }
+      }
+    },
+    "Layout": {
+      "description": "An optional, renderer-agnostic composition tree over a room's regions — the level-3 layout escape hatch. Containers nest freely; a leaf names a [`Region`]. Sizing is by relative `weight` (flex-like), **never pixels**, so a phone, a wide desktop, and an AR panel each realize the same intent at their own scale. HTML/React/SwiftUI/TUI are compile targets a renderer maps this onto — never embedded here (that would couple the contract to one surface).",
+      "oneOf": [
+        {
+          "description": "Leaf: the region with this `name`.",
+          "type": "object",
+          "required": [
+            "container",
+            "name"
+          ],
+          "properties": {
+            "container": {
+              "type": "string",
+              "enum": [
+                "region"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "Children arranged left-to-right.",
+          "type": "object",
+          "required": [
+            "children",
+            "container"
+          ],
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LayoutChild"
+              }
+            },
+            "container": {
+              "type": "string",
+              "enum": [
+                "row"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Children arranged top-to-bottom.",
+          "type": "object",
+          "required": [
+            "children",
+            "container"
+          ],
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LayoutChild"
+              }
+            },
+            "container": {
+              "type": "string",
+              "enum": [
+                "col"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Children z-stacked / overlaid (last on top).",
+          "type": "object",
+          "required": [
+            "children",
+            "container"
+          ],
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LayoutChild"
+              }
+            },
+            "container": {
+              "type": "string",
+              "enum": [
+                "stack"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Children flowed into `cols` columns.",
+          "type": "object",
+          "required": [
+            "children",
+            "cols",
+            "container"
+          ],
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LayoutChild"
+              }
+            },
+            "cols": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0.0
+            },
+            "container": {
+              "type": "string",
+              "enum": [
+                "grid"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Children as tabs — one visible at a time.",
+          "type": "object",
+          "required": [
+            "children",
+            "container"
+          ],
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LayoutChild"
+              }
+            },
+            "container": {
+              "type": "string",
+              "enum": [
+                "tabs"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "LayoutChild": {
+      "description": "A child in a [`Layout`] with its relative sizing weight (flex-like share of the parent, never pixels). `weight: None` = an equal share.",
+      "type": "object",
+      "required": [
+        "node"
+      ],
+      "properties": {
+        "node": {
+          "description": "The nested container or region leaf.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Layout"
+            }
+          ]
+        },
+        "weight": {
+          "description": "Relative sizing share among siblings. `None` = equal.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "OnError": {
+      "description": "What a failed step does to the run.",
+      "oneOf": [
+        {
+          "description": "The run stops at the step, loudly, naming it. The default.",
+          "type": "string",
+          "enum": [
+            "fail"
+          ]
+        },
+        {
+          "description": "The error is probed, the step binds nothing, the run continues.",
+          "type": "string",
+          "enum": [
+            "skip"
+          ]
+        }
+      ]
+    },
+    "ParamDecl": {
+      "description": "One declared recipe parameter (#433). The DEFAULT is also the TYPE declaration: a supplied value must carry the same JSON type as the default, and a parameter cannot be authored WITHOUT a default — so \"a zero-arg spawn always works\" holds by construction, not by review. Richer shapes (member lists, durations) arrive as conventions over these JSON types when the activities that need them land; the schema stays this small on purpose.",
+      "type": "object",
+      "required": [
+        "default"
+      ],
+      "properties": {
+        "default": {
+          "description": "The default value — applied when the caller omits the param, and the authority on the param's TYPE (a supplied value of a different JSON type is refused at spawn)."
+        },
+        "doc": {
+          "description": "What this knob does, for the refusal message and the catalog.",
+          "type": "string"
+        }
+      }
+    },
+    "ProofSpec": {
+      "description": "What proof an affordance's *result* yields — the forge-alloy plane's foothold in the contract. Minimal today; the concrete carriers already exist in tree (`QuiesceLease`/`cleanLane` for [`ProofSpec::CleanLane`]; forge-alloy's `IntegrityAttestation`/`AlloyReceipt` for [`ProofSpec::Attestation`]) and get bound in a follow-up slice. Settlement/invoice remain forge-alloy aspiration.",
+      "oneOf": [
+        {
+          "description": "No attestation — an ordinary action.",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "The result is measured on a quiesced (clean) lane — the `cleanLane` honesty stamp (`[[benchmark-numbers-carry-gpu-provenance]]`).",
+          "type": "string",
+          "enum": [
+            "cleanLane"
+          ]
+        },
+        {
+          "description": "The result carries a signed forge-alloy `IntegrityAttestation`.",
+          "type": "string",
+          "enum": [
+            "attestation"
+          ]
+        }
+      ]
+    },
+    "RecipeStep": {
+      "description": "One pipeline step: a command invocation with interpolated params.\n\nExported to TypeScript because an ACTIVITY recipe carries these too — the pipeline is how an authored activity expresses behaviour, and the same step shape serves both entry points (`recipe/run` and `activity/spawn`). One schema, one executor; see docs/planning/RECIPE-CONVERGENCE-PLAN.md S0.",
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "approval": {
+          "description": "Who must say yes before this step runs. `\"human\"` = the run HOLDS here: the step is not dispatched, the receipt names it (`held_at`), and nothing after it runs. Absent = the step runs unattended. This is the approval boundary for irreversible outward actions (submitting an application, sending mail) — a property of the STEP, authored in data, never a policy hidden elsewhere.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Approval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "description": "The command to dispatch — any discoverable command is legal (`commands/list`). THIS is the extension surface: new behavior is a new command or a new composition, never a new field here.",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Skip-condition, evaluated against state BEFORE the step runs. Absent = always run. See [`crate::recipe::condition`] for the tiny grammar.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "each": {
+          "description": "Fan out: a `$binding` (or `${path}`) that resolves to an ARRAY; the step runs once per element with `$item` (and `$index`) bound, and `outputTo` binds the array of per-element results in order. A step with no `each` runs once. This is how one `work/create` step posts a whole imported suite.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "onError": {
+          "description": "What a step error does to the run. Typed: a misspelled policy is refused at load, never silently treated as the default. No third option, per [[fallbacks-are-illegal-fail-loud]].",
+          "default": "fail",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OnError"
+            }
+          ]
+        },
+        "outputTo": {
+          "description": "Bind this step's JSON result into state under this name, readable by later steps' params/conditions.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "description": "Params for the command. String values may reference execution state: `\"$name\"` (whole bound value) or embedded `\"${name.path}\"` (rendered into the string). `$args.*` reads the caller's invocation params.",
+          "default": null
+        },
+        "retryCount": {
+          "description": "Retries before `on_error` applies (default 0 — a benchmarked command owns its own retry policy; this is for known-flaky externals).",
+          "default": 0,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "timeoutMs": {
+          "description": "Per-attempt wall-clock bound. Absent = the command's own timeout discipline governs.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Region": {
+      "description": "A view-intent: one surface of the room bound to a live payload `kind`. Carries *where it belongs* and *how central it is* — never how it looks.",
+      "type": "object",
+      "required": [
+        "kind",
+        "live",
+        "name",
+        "role",
+        "scope"
+      ],
+      "properties": {
+        "kind": {
+          "description": "The live payload `kind` this region binds to — the same string an `ObserverSpec` subscribes to and a `StateEnvelope` carries (e.g. a `ChatViewState`'s `KIND`). The renderer resolves the payload by this kind.",
+          "type": "string"
+        },
+        "live": {
+          "description": "Whether the region streams (subscribe + re-render on revision) or is static.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Stable region name within the room (`\"scoreboard\"`, `\"messages\"`, `\"roster\"`).",
+          "type": "string"
+        },
+        "role": {
+          "description": "How much emphasis this region gets.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RegionRole"
+            }
+          ]
+        },
+        "scope": {
+          "description": "Where this region sits in the app hierarchy (app-wide vs this activity).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RegionScope"
+            }
+          ]
+        },
+        "slot": {
+          "description": "Open semantic hint for what this region is FOR (`\"content\"`, `\"context\"`, `\"nav\"`, `\"composer\"`, `\"status\"`) — a renderer maps it to its own idiom (our desktop shell routes `\"context\"` to the right inspector, `\"content\"` to the center tab). Open string, never an enum (`[[room-purpose-is-per-recipe-not-an-enum]]`); `None` = let `scope`/`role` decide placement.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RegionRole": {
+      "description": "How central a region is within its zone — drives emphasis, not size.",
+      "oneOf": [
+        {
+          "description": "The thing the room is *for* (the message stream; the score + its provenance).",
+          "type": "string",
+          "enum": [
+            "primary"
+          ]
+        },
+        {
+          "description": "Supporting context (roster; recent-run feed).",
+          "type": "string",
+          "enum": [
+            "peripheral"
+          ]
+        }
+      ]
+    },
+    "RegionScope": {
+      "description": "Where a region sits in the app hierarchy — the only paradigm-INDEPENDENT structural axis (the who/where split, `docs/architecture/LAYOUT-PHILOSOPHY.md`). Deliberately NOT a pane count: a *renderer* maps these to its own zones. Our desktop (VS Code-style) shell maps `Global` → the left rail and `Activity` → the current tab, then uses `role`/`slot` to place activity regions (`\"content\"` → center, `\"context\"`/peripheral → the right inspector). Mobile maps `Global` → drawer + bottom tabs and `Activity` → the full screen; a dashboard renderer may ignore scope and drive purely off [`Experience::layout`]. The 3-pane form is one renderer's choice, never the contract's.",
+      "oneOf": [
+        {
+          "description": "App-wide, the same across every room (rooms list, live activities, identity).",
+          "type": "string",
+          "enum": [
+            "global"
+          ]
+        },
+        {
+          "description": "This activity's own surface — its content and its context.",
+          "type": "string",
+          "enum": [
+            "activity"
+          ]
+        }
+      ]
+    },
+    "RoleId": {
+      "description": "The role a persona instance plays in the substrate. Roles are substrate-typed (the spawner reasons about them, the resolver picks models for them); persona NAMES are separate and derive from the identity-seed deterministic projection ([[personas-have-names-not- function-labels]]).",
+      "oneOf": [
+        {
+          "description": "The clippy-shaped on-ramp. Small + fast + friendly. Always-on, always-spawned at every hardware tier. The day-one face of the substrate.",
+          "type": "string",
+          "enum": [
+            "helper"
+          ]
+        },
+        {
+          "description": "The Swiss-Army programmer. Bash-competent, multi-language, code-review-capable. Second-priority spawn at every tier because coders are typical first adopters.",
+          "type": "string",
+          "enum": [
+            "coder"
+          ]
+        },
+        {
+          "description": "Code-review specialist. Spawned on-demand when a card enters Review state and needs an adversarial reviewer.",
+          "type": "string",
+          "enum": [
+            "sentinel"
+          ]
+        },
+        {
+          "description": "Design/UX specialist — CSS, themes, typography, interface comprehension. Works eyes-first: renders, screenshots, and iterates against what the pixels actually show (Joel 2026-07-11: \"iterating on graphic design and user experience as if they have eyes and ears\"). First resident of the design-LoRA flywheel; dogfoods positron themes.",
+          "type": "string",
+          "enum": [
+            "designer"
+          ]
+        },
+        {
+          "description": "Custom user-defined role. The user supplies the template; the substrate doesn't have a built-in default.",
+          "type": "string",
+          "enum": [
+            "custom"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -30,7 +30,7 @@ use super::{Affordance, Experience, Layout, Member, ProofSpec, Region};
 /// room id, peer id, or card id is expected — the same discipline #396 is applying
 /// to airc identities. Serializes as a plain UUID string, so authored JSON stays
 /// readable and hand-editable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/RecipeId.ts"
@@ -78,7 +78,7 @@ fn default_version() -> u32 {
 
 /// The authored, data-only shape of an [`Experience`] — everything a recipe owns,
 /// nothing the system computes. Projected to a full manifest by [`Self::project`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/ExperienceRecipe.ts"
@@ -175,7 +175,7 @@ pub struct ExperienceRecipe {
 /// always works" holds by construction, not by review. Richer shapes (member
 /// lists, durations) arrive as conventions over these JSON types when the
 /// activities that need them land; the schema stays this small on purpose.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/ParamDecl.ts"
@@ -197,7 +197,7 @@ pub struct ParamDecl {
 /// provider at hosting time; the MODEL is the serving daemon's per-host
 /// decision. A recipe authoring a device-specific model id would make the
 /// recipe non-portable across the grid, so the role is all it declares.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/CitizenRecipe.ts"
@@ -213,7 +213,7 @@ pub struct CitizenRecipe {
 /// The authored shape of an [`Affordance`] — the verb and its command plus the
 /// proof its result yields. `who_may` is intentionally ABSENT: it is computed from
 /// the ACL at projection so authorization can never be forged in a recipe.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/AffordanceRecipe.ts"
@@ -309,6 +309,27 @@ mod tests {
         assert_eq!(recipe.pipeline[0].command, "web/search");
         assert_eq!(recipe.pipeline[0].output_to.as_deref(), Some("found"));
         assert_eq!(recipe.pipeline[1].condition.as_deref(), Some("$found.total != 0"));
+    }
+
+    // what this catches: the recipe file has a PUBLISHED schema — an author's editor
+    // validates and completes an authored recipe against it (`"$schema"`), and CI
+    // diffs it, so a schema change is a reviewed change. Written on every test run,
+    // exactly as the ts-rs bindings are; the drift job refuses an unreviewed one.
+    #[test]
+    fn the_recipe_schema_is_published_beside_the_bindings() {
+        let mut schema = schemars::schema_for!(ExperienceRecipe);
+        schema.schema.metadata().title = Some("Continuum activity recipe".to_string());
+        schema.schema.metadata().description = Some(
+            "An authored activity: what a room IS (regions, affordances, citizens, params) and \
+             what it DOES (pipeline). Drop the file in <continuum_root>/recipes/ — it is live \
+             on a running core, no deploy."
+                .to_string(),
+        );
+        let json = serde_json::to_string_pretty(&schema).expect("schema serializes") + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../protocol/schema/experience-recipe.schema.json");
+        std::fs::create_dir_all(path.parent().expect("schema dir")).expect("mkdir schema");
+        std::fs::write(&path, json).expect("write the published schema");
     }
 
     #[test]

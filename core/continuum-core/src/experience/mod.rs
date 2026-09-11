@@ -132,7 +132,7 @@ impl Experience {
 /// desktop, and an AR panel each realize the same intent at their own scale.
 /// HTML/React/SwiftUI/TUI are compile targets a renderer maps this onto — never
 /// embedded here (that would couple the contract to one surface).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/Layout.ts"
@@ -158,7 +158,7 @@ pub enum Layout {
 
 /// A child in a [`Layout`] with its relative sizing weight (flex-like share of the
 /// parent, never pixels). `weight: None` = an equal share.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/LayoutChild.ts"
@@ -187,7 +187,7 @@ impl LayoutChild {
 
 /// A view-intent: one surface of the room bound to a live payload `kind`. Carries
 /// *where it belongs* and *how central it is* — never how it looks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/Region.ts"
@@ -226,7 +226,7 @@ pub struct Region {
 /// drawer + bottom tabs and `Activity` → the full screen; a dashboard renderer may
 /// ignore scope and drive purely off [`Experience::layout`]. The 3-pane form is one
 /// renderer's choice, never the contract's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/RegionScope.ts"
@@ -240,7 +240,7 @@ pub enum RegionScope {
 }
 
 /// How central a region is within its zone — drives emphasis, not size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/RegionRole.ts"
@@ -302,7 +302,7 @@ impl Affordance {
 /// (`QuiesceLease`/`cleanLane` for [`ProofSpec::CleanLane`]; forge-alloy's
 /// `IntegrityAttestation`/`AlloyReceipt` for [`ProofSpec::Attestation`]) and get
 /// bound in a follow-up slice. Settlement/invoice remain forge-alloy aspiration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/ProofSpec.ts"

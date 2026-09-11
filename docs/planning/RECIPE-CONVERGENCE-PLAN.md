@@ -163,6 +163,33 @@ edge with `$event` bound; the board already emits `work.card.state_changed`. S4'
 pipeline needs `each` (one card per task) and `on: card.settled` (grade), so S3b lands
 inside S4 rather than as a framework built ahead of its one consumer.
 
+### S3c — The schema slice: recipes as an API, typed and validated *(Joel: "I love API schemas… UUIDs and structures… strict Rust")*
+Landed 2026-09-11. Three things, all off every hot path (once per spawn, once per catalogue
+read; the registry lookup is built once per process):
+
+- **Typed step vocabulary.** `on_error: OnError {Fail (default), Skip}` and `approval:
+  Option<Approval {Human}>` are enums, not `Option<String>`: a misspelled policy is refused at
+  load and named, never silently the default. Unknown FIELDS stay tolerated (a newer file loads
+  on an older executor); unknown VALUES are refused. Both exported to TS and JSON Schema.
+- **A published recipe schema.** `protocol/schema/experience-recipe.schema.json`, generated from
+  `ExperienceRecipe` (schemars) on every test run exactly as the ts-rs bindings are, and gated
+  by the same drift job (now diffs `protocol/schema/` too). An authored file carries
+  `"$schema"` and an editor validates and completes it. This is what makes **complete
+  customization without repo changes** safe: the overlay directory is the store, the schema is
+  the contract, and the gate below names what is wrong instead of asking for a compiler.
+- **Definitive pipeline validation** (`recipe/validate.rs`, `pipeline_issues`): every step
+  checked against the COMMAND REGISTRY'S OWN param schemas — command exists; literal values
+  typed by `type`/`enum` through `$ref` definitions; every `$reference` RESOLVED (`$args.x` a
+  declared param, typed by its default; `$room.*` a seeded field, asserted against the seeding
+  site; `$item`/`$index` only inside `each`; anything else an earlier step's `outputTo`).
+  `activity/recipes` lists issues per recipe (typed `PipelineIssue`, ts-rs); `activity/spawn`
+  refuses a recipe with any. First run against the live registry caught a real hole in my own
+  `benchmark/round-track` (skipped schema fields) — the gate paid for itself immediately.
+
+**Not yet definitive:** the SHAPE of a prior step's output (`$imported.cards` is known to
+exist, not what it holds). Command outputs carry a TS type, not a JSON Schema; the next step is
+`Output: JsonSchema` on `ActionCommand` so `$item.title` is typed too.
+
 ## Phase B — benchmarks onto it
 
 ### S4 — Benchmark becomes an authored recipe *(card fa447bfe)*

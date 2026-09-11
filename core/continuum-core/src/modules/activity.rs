@@ -488,6 +488,10 @@ pub struct RecipeCatalogEntry {
     /// The recipe's declared parameter knobs, each as `name (type: doc)` —
     /// render-ready, the same wording the param refusal uses.
     pub params: Vec<String>,
+    /// Everything wrong with the recipe's pipeline against THIS node's command
+    /// schemas — empty means spawnable. A recipe with issues is listed (an author
+    /// must be able to see it) and refused at spawn (it must never half-run).
+    pub issues: Vec<crate::recipe::PipelineIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -542,6 +546,9 @@ impl ActionCommand for ActivityRecipes {
                     .iter()
                     .map(|(k, d)| format!("{k} ({})", d.doc))
                     .collect(),
+                issues: crate::recipe::pipeline_issues(r, |name| {
+                    crate::recipe::registry_lookup().get(name).cloned()
+                }),
             })
             .collect();
         Ok(ActivityRecipesResult {
@@ -683,6 +690,20 @@ pub async fn spawn_activity_room(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
         ),
     )?;
+    // THE SCHEMA GATE: a pipeline is checked against the command registry's own
+    // schemas BEFORE a room is born, like a request against an API spec. A recipe
+    // with an issue never half-runs; the refusal names every step. Cheap and off
+    // every hot path: once per spawn, over a lookup built once per process.
+    let issues = crate::recipe::pipeline_issues(&recipe_def, |name| {
+        crate::recipe::registry_lookup().get(name).cloned()
+    });
+    if !issues.is_empty() {
+        let lines: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        return Err(CommandError::Invalid(format!(
+            "recipe {recipe:?} has a pipeline this node cannot run — fix the file, then retry:\n  {}",
+            lines.join("\n  ")
+        )));
+    }
     let resolved_params = resolve_params(&recipe_def, params)?;
     // The pipeline reads the SAME resolved params the binding records (`$args.*`).
     let pipeline_args = serde_json::Value::Object(

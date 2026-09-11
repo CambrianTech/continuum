@@ -10,7 +10,7 @@
 use super::condition;
 use super::interpolate::interpolate;
 use super::state::ExecutionState;
-use super::types::RecipeStep;
+use super::types::{OnError, RecipeStep};
 use crate::runtime::command_executor::CommandExecutor;
 use serde_json::Value;
 use std::sync::Arc;
@@ -92,7 +92,7 @@ impl PipelineExecutor {
             // unattended — not "runs and asks", not "runs if confident": it HOLDS,
             // the receipt names it, and the run ends here. Checked before
             // interpolation so a held step never even resolves its arguments.
-            if let Some(who) = step.approval.as_deref() {
+            if let Some(who) = step.approval {
                 crate::probe!(
                     class = "recipe.step.held",
                     recipe = %name,
@@ -136,8 +136,8 @@ impl PipelineExecutor {
                             results.push(v);
                             ran += 1;
                         }
-                        Err(e) => match step.on_error.as_deref() {
-                            Some("skip") => {
+                        Err(e) => match step.on_error {
+                            OnError::Skip => {
                                 crate::probe!(
                                     class = "recipe.step.item_skipped",
                                     recipe = %name,
@@ -149,7 +149,7 @@ impl PipelineExecutor {
                                 );
                                 skipped += 1;
                             }
-                            _ => {
+                            OnError::Fail => {
                                 return Err(format!(
                                     "recipe `{}` failed at step {idx} ({}) item {i}: {e}",
                                     name, step.command
@@ -197,15 +197,15 @@ impl PipelineExecutor {
                         recipe = %name,
                         step = idx as u64,
                         command = %step.command,
-                        on_error = %step.on_error.as_deref().unwrap_or("fail"),
+                        on_error = %step.on_error,
                         error = %e,
                         "step failed"
                     );
                     trace.push(format!("[{idx}] {} ERR {e}", step.command));
-                    match step.on_error.as_deref() {
-                        Some("skip") => steps_skipped += 1,
-                        // Default and "fail": the run stops, loudly, at the step.
-                        _ => {
+                    match step.on_error {
+                        OnError::Skip => steps_skipped += 1,
+                        // The run stops, loudly, at the step.
+                        OnError::Fail => {
                             return Err(format!(
                                 "recipe `{}` failed at step {idx} ({}): {e}",
                                 name, step.command
@@ -290,16 +290,16 @@ mod tests {
     use super::*;
     use crate::runtime::registry::ModuleRegistry;
 
-    fn step(command: &str, approval: Option<&str>) -> RecipeStep {
+    fn step(command: &str, approval: Option<super::super::types::Approval>) -> RecipeStep {
         RecipeStep {
             command: command.to_string(),
             params: Value::Null,
             output_to: None,
             condition: None,
-            on_error: None,
+            on_error: OnError::Fail,
             retry_count: 0,
             timeout_ms: None,
-            approval: approval.map(str::to_string),
+            approval,
             each: None,
         }
     }
@@ -316,7 +316,7 @@ mod tests {
         let mut post = step("work/create", None);
         post.each = Some("$args.rows".to_string());
         post.params = serde_json::json!({ "title": "$item.title" });
-        post.on_error = Some("skip".to_string());
+        post.on_error = OnError::Skip;
         post.output_to = Some("cards".to_string());
         let args = serde_json::json!({ "rows": [ {"title": "a"}, {"title": "b"}, {"title": "c"} ] });
         let receipt = PipelineExecutor::new(exec)
@@ -338,7 +338,7 @@ mod tests {
         let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
             ModuleRegistry::new(),
         )));
-        let pipeline = vec![step("browser/act", Some("human")), step("mail/send", None)];
+        let pipeline = vec![step("browser/act", Some(super::super::types::Approval::Human)), step("mail/send", None)];
         let receipt = PipelineExecutor::new(exec)
             .run("campaign/applications", &pipeline, Value::Null)
             .await

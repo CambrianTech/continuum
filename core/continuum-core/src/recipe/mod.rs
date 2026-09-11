@@ -17,6 +17,7 @@
 //! - [`state`] — `ExecutionState`, the append-only binding map steps read/write
 //! - [`interpolate`] — pure `$var` / `${var.path}` substitution over params
 //! - [`condition`] — the minimal skip-condition evaluator
+//! - [`validate`] — steps checked against the command registry's own schemas
 //! - [`executor`] — `PipelineExecutor`, the kernel loop that walks steps
 
 pub mod condition;
@@ -24,7 +25,9 @@ pub mod executor;
 pub mod interpolate;
 pub mod state;
 pub mod types;
+pub mod validate;
 
 pub use executor::PipelineExecutor;
 pub use state::ExecutionState;
-pub use types::RecipeStep;
+pub use types::{Approval, OnError, RecipeStep};
+pub use validate::{pipeline_issues, registry_lookup, IssueKind, PipelineIssue};

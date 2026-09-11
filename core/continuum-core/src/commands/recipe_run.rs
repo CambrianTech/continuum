@@ -34,7 +34,6 @@ pub struct RecipeRunParams {
     /// loudly, naming itself.
     #[serde(default)]
     #[ts(optional, type = "unknown")]
-    #[schemars(skip)]
     pub args: Option<serde_json::Value>,
 }
 

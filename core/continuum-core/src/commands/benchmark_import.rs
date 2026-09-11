@@ -189,11 +189,9 @@ pub struct BenchmarkRoundTrackParams {
     pub room_id: String,
     /// The `work/create` results, in the order the cards were imported (`$cards`).
     #[ts(type = "unknown")]
-    #[schemars(skip)]
     pub cards: serde_json::Value,
     /// The imported rows, same order (`$imported.cards`) — zipped by index.
     #[ts(type = "unknown")]
-    #[schemars(skip)]
     pub tasks: serde_json::Value,
 }
 
