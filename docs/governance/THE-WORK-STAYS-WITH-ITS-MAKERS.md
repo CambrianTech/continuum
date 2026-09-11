@@ -1,0 +1,83 @@
+# The work stays with its makers
+
+> Attribution and ownership as substrate facts — not policy, not a promise, not a terms-of-service.
+
+**Parent:** [Governance README](README.md) · Sibling: [Ethical AI — Native Attribution](ETHICAL-AI-ATTRIBUTION.md) (which covers a different axis: tracing a model's *outputs* to its *training data*). This document is about the other one: when people and AI citizens do work together, **who did what, what was proven, and who owns what was learned.**
+
+## Why now
+
+On 2026-09-11, twenty-five Fields Medalists — Avila, Bhargava, Birkar, Deligne, Deng, Donaldson,
+Duminil-Copin, Figalli, Hairer, Huh, Kontsevich, Lindenstrauss, Lions, Maynard, McMullen, Mori,
+Ngô, Okounkov, Scholze, Smirnov, Tao, Viazovska, Villani, Werner and Zelmanov — published
+*A Severe Misalignment of AI in Mathematics* ([mathandai.org](https://mathandai.org)). In their words:
+
+> "The push by AI companies to solve mathematical problems as a benchmark is detrimental to the science of mathematics, and to the mathematical community. The goals of the AI companies and the goals of the mathematical community are severely misaligned."
+>
+> "The most precious resources of our profession are students and ideas, and these we nurture with great care. […] Our ideas we disseminate in talks, private discussions and careful writeups, connecting them to the previous ideas of others."
+>
+> "Often these solutions are announced in a rush, leaving no time for a proper writeup, the isolation of new methods and ideas, and citing relevant previous work of others. As in all creative professions, this raises severe attribution and plagiarism questions. Moreover, without the willing mathematicians who must take care of their development and integration into the mathematical canon, AI-conceived ideas would never become fully alive and the crucial human transmission chain between mathematicians would be lost."
+>
+> "Whether these changes ultimately benefit the field or have a destructive effect will in large part be determined by the decisions of the humans in control of this new technology."
+
+Reported alongside it: an offer to put a professor's name on a machine-generated proof on the condition that he drop a coauthor.
+
+The letter's own framing is the useful one: solving problems is *a tool and proxy* for understanding; "the mass production at faster and faster pace of 'true/false' statements could destroy fertile ground instead of breathing life into new ideas." A system that treats a proof as a benchmark score and the mathematician as an input is a system where the work leaves its makers the moment it is typed in. Continuum is built so that it does not have to — and so that the *transmission chain* the letter names is a thing the substrate records rather than erases.
+
+## The four mechanisms
+
+None of these is a feature added for mathematicians. They are what the substrate already does for a team of citizens fixing a bug, and they answer the letter's complaints one for one.
+
+| The letter's complaint | What holds here |
+|---|---|
+| "Attribution and plagiarism questions" | **Every turn is credited on its card.** Work happens on a board; each card has a holder, reviewers, and a *finder* when someone else named the problem. A turn that produced a change, a review, or a finding carries that role, and a failed card credits nothing (#3894). Credit is recorded where the work was done, by the system that watched it happen — not asserted afterwards by whoever announces it. |
+| "Solutions announced in a rush… no proper writeup" | **A result is a verdict artifact, not a claim.** A benchmark card's outcome is a file on disk, regenerated from the run and never hand-edited; the README chart is drawn from those files by one script. The same shape holds for any checked activity: the checker's output *is* the record, with the inputs and the build that produced it. |
+| "Citing relevant previous work of others" | **Learned methods carry lineage.** When experience becomes a trained adaptation (a gene), it records what it was trained from, evaluated against, and descended from — and it can be inherited, combined, or revoked. Lineage is part of the artifact, so a method that came from someone's work says so wherever it travels. |
+| Ideas as a resource to be extracted | **Nothing leaves your hardware unless you share it.** Inference, memory, the board and the transcript live on machines you control; the Grid is opt-in and peer-to-peer. A cloud model can be used as a resource without the work being defined by — or owned by — the provider. The problem, the draft, and the coauthor are not upstream's to see. |
+
+## Private by default, shared by choice — per layer
+
+The Grid is opt-in peering between machines people control. That makes a private mesh the
+*default* topology, not a special mode: a department, a lab, a pair of coauthors can run their
+own — the way the early Internet ran between universities — with nothing crossing to anyone they
+did not invite. And sharing is per artifact, not all-or-nothing: a single learned layer (a gene),
+a single room, a single recipe or manifest can be shared while everything else stays home. A
+group can publish the method and keep the problem; publish the proof and keep the drafts; share
+a checker and keep the conjectures. No other system offers that split, because in every other
+system the work is already upstream by the time the question is asked.
+
+This is the answer to the objection that attribution and privacy are "against progress": they
+are what makes collaboration *possible* between people who do not already trust a provider.
+
+## What a proof campaign looks like here
+
+An activity is a recipe: a room, a board, the verbs the room allows, and the pipeline it runs. A proof campaign is the same recipe shape as a benchmark round, with a checker where the grader was:
+
+```jsonc
+{
+  "purpose": "campaign/proof",
+  "regions": [ { "name": "board", "kind": "kanban", "role": "primary", "slot": "content" },
+               { "name": "notes", "kind": "wall",   "role": "peripheral", "slot": "context" } ],
+  "affordances": [ { "command": "code/read" }, { "command": "code/edit" },
+                   { "command": "ext/proof-check" }, { "command": "web/search" } ],
+  "pipeline": [
+    { "command": "work/create",     "each": "$args.conjectures",
+      "params": { "room": "$room.id", "title": "${item.name}", "body": "${item.statement}" },
+      "outputTo": "cards" },
+    { "command": "ext/proof-check", "params": { "file": "$args.checker_target" },
+      "approval": "human" }
+  ],
+  "params": { "conjectures": { "default": [] }, "checker_target": { "default": "" } }
+}
+```
+
+`ext/proof-check` is a checker (Lean, Coq, a test suite) the author brings as a manifest — a command that lives on their machine and never in this repository. The `approval: "human"` step holds the run: a proof is announced when its authors say so, not when a scheduler does.
+
+Every line of that file is data. A mathematician, a lab, or a student writes it without touching this codebase, and it runs on hardware they own.
+
+## What is honest to claim today
+
+- Credit-on-card, verdict artifacts, gene lineage, and local-first execution are **shipped**.
+- The proof recipe above is a **small authoring job** on the recipe system as it stands; the bring-your-own-command manifest it names is the next slice of that system.
+- Provenance is recorded and portable. It is **not** yet cryptographically bound end to end across the Grid; signed identity exists for messages and peers, and extending it to every artifact is the intended direction, not a finished fact.
+
+We would rather say that plainly than announce it in a rush.
