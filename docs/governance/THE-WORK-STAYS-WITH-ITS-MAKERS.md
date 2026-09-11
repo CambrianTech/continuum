@@ -6,7 +6,15 @@
 
 ## Why now
 
-On 2026-09-11, Terence Tao and two dozen other Fields Medalists published *A Severe Misalignment of AI in Mathematics*: AI companies treating open problems as a benchmark to brute-force; "solutions announced in a rush, leaving no time for a proper writeup and citing relevant previous work of others"; "severe attribution and plagiarism questions"; and a reported offer to put a professor's name on a machine-generated proof on the condition that he drop a coauthor. Their summary: *the most precious resources of our profession are students and ideas; for the labs, the most precious resource is GPUs.*
+On 2026-09-11, Terence Tao and two dozen other Fields Medalists published the [Math and AI declaration](https://mathandai.org) — *A Severe Misalignment of AI in Mathematics*. In their words:
+
+> "The push by AI companies to solve mathematical problems as a benchmark is detrimental to the science of mathematics, and to the mathematical community. The goals of the AI companies and the goals of the mathematical community are severely misaligned."
+>
+> "Often these solutions are announced in a rush, leaving no time for a proper writeup, the isolation of new methods and ideas, and citing relevant previous work of others. As in all creative professions, this raises severe attribution and plagiarism questions."
+>
+> "The most precious resources of our profession are students and ideas, and these we nurture with great care."
+
+Reported alongside it: an offer to put a professor's name on a machine-generated proof on the condition that he drop a coauthor.
 
 That is a description of a system where the work leaves its makers the moment it is typed in. Continuum is built so that it does not have to.
 
