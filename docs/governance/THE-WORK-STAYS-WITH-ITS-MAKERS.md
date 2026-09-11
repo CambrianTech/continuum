@@ -34,6 +34,20 @@ None of these is a feature added for mathematicians. They are what the substrate
 | "Citing relevant previous work of others" | **Learned methods carry lineage.** When experience becomes a trained adaptation (a gene), it records what it was trained from, evaluated against, and descended from — and it can be inherited, combined, or revoked. Lineage is part of the artifact, so a method that came from someone's work says so wherever it travels. |
 | Ideas as a resource to be extracted | **Nothing leaves your hardware unless you share it.** Inference, memory, the board and the transcript live on machines you control; the Grid is opt-in and peer-to-peer. A cloud model can be used as a resource without the work being defined by — or owned by — the provider. The problem, the draft, and the coauthor are not upstream's to see. |
 
+## Private by default, shared by choice — per layer
+
+The Grid is opt-in peering between machines people control. That makes a private mesh the
+*default* topology, not a special mode: a department, a lab, a pair of coauthors can run their
+own — the way the early Internet ran between universities — with nothing crossing to anyone they
+did not invite. And sharing is per artifact, not all-or-nothing: a single learned layer (a gene),
+a single room, a single recipe or manifest can be shared while everything else stays home. A
+group can publish the method and keep the problem; publish the proof and keep the drafts; share
+a checker and keep the conjectures. No other system offers that split, because in every other
+system the work is already upstream by the time the question is asked.
+
+This is the answer to the objection that attribution and privacy are "against progress": they
+are what makes collaboration *possible* between people who do not already trust a provider.
+
 ## What a proof campaign looks like here
 
 An activity is a recipe: a room, a board, the verbs the room allows, and the pipeline it runs. A proof campaign is the same recipe shape as a benchmark round, with a checker where the grader was:
