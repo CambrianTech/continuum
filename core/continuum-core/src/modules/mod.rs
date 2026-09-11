@@ -24,6 +24,7 @@ pub mod airc_bridge_dispatch;
 // #[cfg(test)]
 // mod airc_runtime_e2e_tests;
 pub mod activity;
+pub mod ext_commands;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark_grade;

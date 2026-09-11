@@ -258,6 +258,50 @@ means teaching it a shape we are about to change.
 
 ---
 
+## Phase C — non-repo extensibility: bring your own commands *(Joel, 2026-09-11)*
+
+> *"Streamline this and the recipe system for non-repo owned extensibility while allowing for
+> patterns as sophisticated as our benchmarks to run, which of course work from commands.
+> Perhaps they'll link their own commands, share them or call other processes. Maybe it's
+> just scriptable, while offering performance."*
+
+The recipe layer is data (S0–S4a) and gated by schemas (S3c), but a pipeline could only name
+verbs that are **Rust in this repo**. The escape hatch existed — `code/shell` / `code/run`
+execute any process — but a user's script was not a *verb*: no name, no schema, not listable,
+not affordance-able, invisible to the gate. So: **a command is a manifest.**
+
+### S7 — Process commands from a manifest directory
+- **Manifest** (`<continuum_root>/commands/<name>.json`, the same overlay law as recipes;
+  published schema `protocol/schema/command-manifest.schema.json`): `name`, `description`,
+  `access` (`ai_safe` | `privileged`), `native`, `params` (JSON Schema), `exec` (argv), `cwd`,
+  `wire` (`json_stdio` now; `socket` declared, refused until built), `timeout_ms`.
+- **Runtime:** `sdk_codegen::ext::ProcessCommand: DynCommand` — spawn `exec`, params as JSON on
+  stdin, JSON on stdout is the result, non-zero exit is a named error, `timeout_ms` is the bound
+  (probes `ext.command.{spawned,finished,failed,timed_out}`). `modules/ext_commands.rs` loads
+  the directory at boot and hands the objects to the kernel through `ServiceModule::commands()`
+  — no parallel router.
+- **Catalogue:** `command_registry_live()` = the compile-time inventory ∪ the manifests'
+  descriptors; a manifest that shadows a built-in is refused by name. `commands/list`,
+  `commands/help`, `native_tool_specs`, `tool_dialect`, the ACL's command sets and the recipe
+  gate's `registry_lookup` all read it — an authored verb is indistinguishable from a shipped
+  one to a recipe, a citizen, and the validator. Codegen alone keeps the static list: a
+  manifest is content, not source.
+- **Sharing:** a manifest is a file and travels as a recipe does; a relative `exec` resolves
+  beside the manifest so a shared directory carries its scripts. A recipe naming a verb this
+  node lacks is refused at the door with the verb named (S3c) — capability is checked where the
+  work would run.
+- **Performance:** one bounded spawn per call, never on a turn's hot path unless a room's
+  recipe offers the verb as an affordance — then it is one act, priced like any other.
+- **Acceptance:** drop a manifest, reboot → `commands/list` shows it with its schema → a recipe
+  step naming it validates → `activity/spawn` runs it → a citizen in a room whose recipe offers
+  it can call it; a colliding or malformed manifest is refused by file and reason, never
+  silently.
+
+### S8 — Benchmarks as a shipped *example* of Phase C
+`benchmark/import` and the gym adapters become manifests + recipes a user could have written;
+the repo ships them as the worked example, not the only way. The test that Phase C is real:
+the most sophisticated pattern we run must be expressible without this repository.
+
 ## Order, and why
 
 ```

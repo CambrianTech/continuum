@@ -1095,6 +1095,13 @@ pub fn start_server(
     // on the airc bus (nav slice 3). Command in, Event out; the write half of the
     // dual-consumer atom — one (user, room) cursor, read by the human unread badge AND
     // the persona's RAG grounding. Captures the bus in initialize (like vision).
+    // Phase C (S7): authored commands — a verb is a manifest in <continuum_root>/commands.
+    // Loaded FIRST so the live catalogue carries them before any reader memoizes
+    // (the ACL's command sets, the tool dialect index). A refused manifest is probed by
+    // file and reason; the boot never refuses over one bad file.
+    runtime.register(Arc::new(crate::modules::ext_commands::ExtCommandsModule::new(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+    )));
     runtime.register(Arc::new(crate::modules::nav::NavModule::new()));
 
     // ai/should-respond — the kernel command that runs a persona's WorkspaceCycle

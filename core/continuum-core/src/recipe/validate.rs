@@ -116,7 +116,7 @@ pub fn registry_lookup() -> &'static BTreeMap<String, Value> {
     static LOOKUP: std::sync::OnceLock<BTreeMap<String, Value>> = std::sync::OnceLock::new();
     LOOKUP.get_or_init(|| {
         let mut m = BTreeMap::new();
-        for d in crate::sdk_codegen::command_registry() {
+        for d in crate::sdk_codegen::ext::command_registry_live() {
             m.insert(d.name.to_string(), d.params_schema.clone());
             for alias in d.aliases {
                 m.entry(alias.to_string()).or_insert_with(|| d.params_schema.clone());

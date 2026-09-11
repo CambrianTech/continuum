@@ -31,6 +31,7 @@ use std::sync::OnceLock;
 use crate::ai::types::NativeToolSpec;
 use crate::cognition::tool_usage::{record, Outcome};
 use crate::sdk_codegen::command_registry;
+use crate::sdk_codegen::ext::command_registry_live;
 
 /// alias → canonical command name. Built ONCE from every command's declared
 /// `ALIASES`. A name claimed by two commands panics at init (fail-loud, like the
@@ -40,7 +41,7 @@ fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
     static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
         let mut m: HashMap<&'static str, &'static str> = HashMap::new();
-        for d in command_registry() {
+        for d in command_registry_live() {
             for &alias in d.aliases {
                 if let Some(prev) = m.insert(alias, d.name) {
                     panic!(
@@ -61,7 +62,7 @@ fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
 fn command_to_primary_alias() -> &'static HashMap<&'static str, &'static str> {
     static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
-        command_registry()
+        command_registry_live()
             .iter()
             .filter_map(|d| d.aliases.first().map(|&alias| (d.name, alias)))
             .collect()
@@ -142,7 +143,7 @@ pub fn to_wire_spec(spec: NativeToolSpec) -> NativeToolSpec {
 /// (a real command) vs a MISS. Built once from the live registry.
 fn command_names() -> &'static HashSet<&'static str> {
     static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    NAMES.get_or_init(|| command_registry().iter().map(|d| d.name).collect())
+    NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
 /// Every declared alias whose command is AiSafe — the trained-reflex vocabulary a
@@ -153,7 +154,7 @@ fn command_names() -> &'static HashSet<&'static str> {
 pub fn ai_safe_aliases() -> &'static [&'static str] {
     static IDX: OnceLock<Vec<&'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
-        command_registry()
+        command_registry_live()
             .iter()
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::AiSafe)
             .flat_map(|d| d.aliases.iter().copied())
