@@ -325,7 +325,28 @@ mod tests {
              on a running core, no deploy."
                 .to_string(),
         );
-        let json = serde_json::to_string_pretty(&schema).expect("schema serializes") + "\n";
+        // The loader derives a missing `id` from `purpose` (RFC 4122 v5) — "author a
+        // file, zero code" includes zero uuidgen — so the PUBLISHED schema must not
+        // demand one. The Rust type keeps `id` required (a loaded recipe always has
+        // one); the file-level contract is the loader's, and it says optional.
+        let mut json_schema = serde_json::to_value(&schema).expect("schema serializes");
+        if let Some(required) = json_schema.get_mut("required").and_then(serde_json::Value::as_array_mut) {
+            required.retain(|v| v.as_str() != Some("id"));
+        }
+        if let Some(id) = json_schema.pointer_mut("/properties/id") {
+            if let Some(obj) = id.as_object_mut() {
+                obj.insert(
+                    "description".into(),
+                    serde_json::Value::String(
+                        "Stable identity (UUID). Omit it: the loader derives one from `purpose` \
+                         deterministically, so the same file resolves to the same id on every \
+                         node. Shipped recipes pin theirs so identity survives a purpose rename."
+                            .into(),
+                    ),
+                );
+            }
+        }
+        let json = serde_json::to_string_pretty(&json_schema).expect("schema serializes") + "\n";
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../protocol/schema/experience-recipe.schema.json");
         std::fs::create_dir_all(path.parent().expect("schema dir")).expect("mkdir schema");
