@@ -128,6 +128,15 @@ migration, then the collection path is deleted.
   read path no longer exists; `activity/recipes` and `activity/spawn` list and accept the same
   set as before plus any pipeline recipes migrated.
 
+**Landed 2026-09-11.** No migration was needed: the `recipes` data collection held ZERO rows on
+this node — the second store never had a tenant. `ExperienceSource` gains `recipe_for_purpose`;
+`recipe/run` resolves its name as a purpose through the node's one source (the same catalogue
+`activity/recipes` lists and `activity/spawn` accepts); `PipelineExecutor::run` takes
+`(name, &[RecipeStep], args)`; `recipe::types::Recipe` is deleted, its tolerant-parse
+invariant folded into the S0 test. Net: one type, one loader and one store path removed.
+RECIPE-EXECUTION-RUNTIME.md's "Violation 5" (collection vs files overlap) is closed by it.
+recipe 75, experience 59, recipe_run 2, generate_recipe 46 green.
+
 ### S3 — A pipeline runs in a room *(card 360143a1)*
 `PipelineExecutor` gains room scope: `$room`, `$card`, `$args.*`, and the event edges the work
 board already emits (`on: card.claimed`, `on: card.settled`, `on: card.due`). `activity/spawn`

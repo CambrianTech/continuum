@@ -10,7 +10,7 @@
 use super::condition;
 use super::interpolate::interpolate;
 use super::state::ExecutionState;
-use super::types::Recipe;
+use super::types::RecipeStep;
 use crate::runtime::command_executor::CommandExecutor;
 use serde_json::Value;
 use std::sync::Arc;
@@ -38,19 +38,28 @@ impl PipelineExecutor {
         Self { executor }
     }
 
-    pub async fn run(&self, recipe: &Recipe, args: Value) -> Result<RecipeRunReceipt, String> {
+    /// Walk `pipeline` under `name` (the recipe's purpose, for receipts and probes).
+    /// Takes the steps rather than a recipe struct so the ONE activity recipe
+    /// (`ExperienceRecipe.pipeline`, S0) drives it directly — there is no second
+    /// "pipeline recipe" type any more (S2).
+    pub async fn run(
+        &self,
+        name: &str,
+        pipeline: &[RecipeStep],
+        args: Value,
+    ) -> Result<RecipeRunReceipt, String> {
         let mut state = ExecutionState::with_args(args);
         let mut trace = Vec::new();
         let mut steps_run = 0u32;
         let mut steps_skipped = 0u32;
         let mut bound: Vec<String> = Vec::new();
 
-        for (idx, step) in recipe.pipeline.iter().enumerate() {
+        for (idx, step) in pipeline.iter().enumerate() {
             if let Some(cond) = &step.condition {
                 if !condition::evaluate(cond, &state)? {
                     crate::probe!(
                         class = "recipe.step.skipped",
-                        recipe = %recipe.name,
+                        recipe = %name,
                         step = idx as u64,
                         command = %step.command,
                         condition = %cond,
@@ -90,7 +99,7 @@ impl PipelineExecutor {
                         if attempt < step.retry_count {
                             crate::probe!(
                                 class = "recipe.step.retry",
-                                recipe = %recipe.name,
+                                recipe = %name,
                                 step = idx as u64,
                                 command = %step.command,
                                 attempt = (attempt + 1) as u64,
@@ -107,7 +116,7 @@ impl PipelineExecutor {
                 Ok(value) => {
                     crate::probe!(
                         class = "recipe.step.ok",
-                        recipe = %recipe.name,
+                        recipe = %name,
                         step = idx as u64,
                         command = %step.command,
                         "step completed"
@@ -124,7 +133,7 @@ impl PipelineExecutor {
                 Err(e) => {
                     crate::probe!(
                         class = "recipe.step.failed",
-                        recipe = %recipe.name,
+                        recipe = %name,
                         step = idx as u64,
                         command = %step.command,
                         on_error = %step.on_error.as_deref().unwrap_or("fail"),
@@ -138,7 +147,7 @@ impl PipelineExecutor {
                         _ => {
                             return Err(format!(
                                 "recipe `{}` failed at step {idx} ({}): {e}",
-                                recipe.name, step.command
+                                name, step.command
                             ))
                         }
                     }
@@ -154,13 +163,13 @@ impl PipelineExecutor {
         }
         crate::probe!(
             class = "recipe.run.done",
-            recipe = %recipe.name,
+            recipe = %name,
             steps_run = steps_run as u64,
             steps_skipped = steps_skipped as u64,
             "pipeline complete"
         );
         Ok(RecipeRunReceipt {
-            recipe: recipe.name.clone(),
+            recipe: name.to_string(),
             steps_run,
             steps_skipped,
             trace,

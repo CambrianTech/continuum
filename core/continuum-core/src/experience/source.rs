@@ -22,6 +22,12 @@ pub trait ExperienceSource: Send + Sync {
     /// room's purpose (the caller may fall back to another source or a default —
     /// never a silent stand-in, `[[fallbacks-are-illegal-fail-loud]]`).
     fn experience_for(&self, room_id: Uuid) -> Option<Experience>;
+
+    /// The authored recipe for a PURPOSE (`benchmark/swe`, `campaign/applications`),
+    /// or `None` when this source knows no such purpose. `recipe/run` resolves its
+    /// name through this (S2): one registry for what a room IS and what an activity
+    /// DOES, instead of a second store of pipeline rows beside the recipe files.
+    fn recipe_for_purpose(&self, purpose: &str) -> Option<ExperienceRecipe>;
 }
 
 /// Shared handle to an [`ExperienceSource`].
@@ -400,10 +406,27 @@ impl ExperienceSource for RecipeExperienceSource {
             .get(&purpose)
             .map(|recipe| recipe.clone().project(Vec::new()))
     }
+
+    fn recipe_for_purpose(&self, purpose: &str) -> Option<ExperienceRecipe> {
+        self.by_purpose.get(purpose).cloned()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn recipe_run_resolves_a_purpose_through_the_same_registry_rooms_do() {
+        // what this catches: S2 — `recipe/run` used to read a SECOND store (rows in the
+        // `recipes` data collection, zero of which ever existed on a node) while rooms
+        // resolved from the recipe files. One registry, two readers: a purpose that
+        // spawns a room is the same purpose that runs a pipeline, and an unknown
+        // purpose is `None`, never a fabricated recipe.
+        let source = RecipeExperienceSource::builtins(crate::ipc::room_purpose::default_source());
+        let chat = source.recipe_for_purpose("chat").expect("chat ships");
+        assert_eq!(chat.purpose, "chat");
+        assert!(source.recipe_for_purpose("campaign/never-authored").is_none());
+    }
 
     #[test]
     fn every_shipped_recipe_still_loads_and_declares_no_pipeline_yet() {

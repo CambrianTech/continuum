@@ -288,14 +288,18 @@ mod tests {
         // nothing else, so every activity with real behaviour had to be Rust with its
         // own store and its own loader. A pipeline of DISCOVERABLE COMMANDS is the
         // whole extension surface — if this stops round-tripping through the authoring
-        // path, authored activities are back to being compiled ones.
+        // path, authored activities are back to being compiled ones. Unknown fields at
+        // both levels are TOLERATED (a file authored for a newer executor loads on this
+        // one; capability grows in data first) — the invariant the deleted pipeline
+        // `Recipe` type used to carry.
         let recipe = ExperienceRecipe::from_json(
             r#"{
                 "purpose": "campaign/applications",
                 "regions": [],
+                "futureConcept": { "nested": true },
                 "pipeline": [
                     { "command": "web/search", "params": { "q": "$targets" }, "outputTo": "found" },
-                    { "command": "work/create", "condition": "$found.total != 0" }
+                    { "command": "work/create", "condition": "$found.total != 0", "someFutureKnob": 3 }
                 ]
             }"#,
         )

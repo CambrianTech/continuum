@@ -1,27 +1,14 @@
-//! Recipe wire types — the data a pipeline row deserializes into.
+//! The pipeline STEP — the one unit of authored behaviour.
+//!
+//! There is no `Recipe` here any more (S2): the activity recipe
+//! (`experience::ExperienceRecipe`) carries `pipeline: Vec<RecipeStep>`, and
+//! `PipelineExecutor::run` takes the steps. One schema, one store, one executor.
 //!
 //! Serde-TOLERANT by policy: unknown fields are ignored, every field beyond
-//! `name`/`pipeline` (and `command` per step) defaults. Rows authored for a
-//! future executor still load on an old one; capability grows in DATA first.
+//! `command` defaults. A step authored for a future executor still loads on an
+//! old one; capability grows in DATA first.
 
 use serde::{Deserialize, Serialize};
-
-/// One stored recipe — a named pipeline of command invocations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Recipe {
-    /// The name `recipe/run --name` selects.
-    pub name: String,
-    /// One line of intent, shown when listing/erroring.
-    #[serde(default)]
-    pub description: String,
-    /// The steps, walked in order. Empty = a legal no-op recipe.
-    #[serde(default)]
-    pub pipeline: Vec<RecipeStep>,
-    /// Author-managed row version (data-layer convention).
-    #[serde(default)]
-    pub version: u32,
-}
 
 /// One pipeline step: a command invocation with interpolated params.
 ///
@@ -72,28 +59,4 @@ pub struct RecipeStep {
     #[serde(default)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recipe_rows_parse_tolerantly_with_unknown_fields() {
-        // what this catches: a row authored for a NEWER executor (extra
-        // fields, absent optionals) must load on this one — data-first growth.
-        let row: Recipe = serde_json::from_value(serde_json::json!({ // boundary: test row crossing the data-layer shape into a typed Recipe
-            "name": "x",
-            "futureConcept": {"nested": true},
-            "pipeline": [
-                {"command": "data/list", "params": {"collection": "users"}, "outputTo": "rows"},
-                {"command": "chat/send", "condition": "$rows.total != 0", "someFutureKnob": 3}
-            ]
-        }))
-        .expect("tolerant parse");
-        assert_eq!(row.pipeline.len(), 2);
-        assert_eq!(row.pipeline[0].output_to.as_deref(), Some("rows"));
-        assert_eq!(row.pipeline[1].condition.as_deref(), Some("$rows.total != 0"));
-        assert_eq!(row.pipeline[1].retry_count, 0);
-    }
 }
