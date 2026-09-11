@@ -134,7 +134,8 @@ impl ActionCommand for BenchmarkImport {
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkRoundOpenParams {
     /// The run room's id — the round IS the room (`$room.id` in a pipeline).
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: uuid::Uuid,
     pub room_name: String,
     pub suite: String,
     /// Who works the cards. Absent = `citizen` — resolved by the RECIPE's declared
@@ -151,7 +152,8 @@ pub struct BenchmarkRoundOpenParams {
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundOpenResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkRoundOpenResult {
-    pub round_id: String,
+    #[ts(type = "string")]
+    pub round_id: uuid::Uuid,
     pub driver: WorkDriver,
 }
 
@@ -168,15 +170,14 @@ impl ActionCommand for BenchmarkRoundOpen {
     type Output = BenchmarkRoundOpenResult;
 
     async fn run(&self, _ctx: &Ctx, p: BenchmarkRoundOpenParams) -> Result<Self::Output, CommandError> {
-        let room = uuid::Uuid::parse_str(&p.room_id)
-            .map_err(|e| CommandError::Invalid(format!("room_id is not a uuid: {e}")))?;
+        let room = p.room_id;
         let driver = p.driver.unwrap_or(WorkDriver::Citizen); // unwrap_or: the recipe's declared default is `citizen`; the authored path always passes it
         crate::cognition::bench_round::open_round(room, &p.suite, driver);
         crate::cognition::bench_round::set_run_room_name(room, &p.room_name);
         if p.review_gate.unwrap_or(false) { // unwrap_or: gate not named = off, the control arm
             crate::cognition::bench_round::set_review_gate(room, true);
         }
-        Ok(BenchmarkRoundOpenResult { round_id: room.to_string(), driver })
+        Ok(BenchmarkRoundOpenResult { round_id: room, driver })
     }
 }
 
@@ -186,7 +187,8 @@ impl ActionCommand for BenchmarkRoundOpen {
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundTrackParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkRoundTrackParams {
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: uuid::Uuid,
     /// The `work/create` results, in the order the cards were imported (`$cards`).
     #[ts(type = "unknown")]
     pub cards: serde_json::Value,
@@ -215,8 +217,7 @@ impl ActionCommand for BenchmarkRoundTrack {
     type Output = BenchmarkRoundTrackResult;
 
     async fn run(&self, _ctx: &Ctx, p: BenchmarkRoundTrackParams) -> Result<Self::Output, CommandError> {
-        let room = uuid::Uuid::parse_str(&p.room_id)
-            .map_err(|e| CommandError::Invalid(format!("room_id is not a uuid: {e}")))?;
+        let room = p.room_id;
         let cards = p.cards.as_array().ok_or_else(|| {
             CommandError::Invalid("cards must be the array of work/create results".into())
         })?;
