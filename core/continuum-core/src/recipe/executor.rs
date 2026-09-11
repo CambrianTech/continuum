@@ -105,48 +105,74 @@ impl PipelineExecutor {
                 held_at = Some(idx as u32);
                 break;
             }
+            // FAN-OUT (S4): once per element of the named array, `$item` bound.
+            if let Some(each) = &step.each {
+                let items = match interpolate(&Value::String(each.clone()), &state)? {
+                    Value::Array(items) => items,
+                    other => {
+                        return Err(format!(
+                            "step {idx} ({}): `each` must name an array, got {}",
+                            step.command,
+                            match other { Value::Null => "null", Value::Object(_) => "an object", _ => "a scalar" }
+                        ))
+                    }
+                };
+                let mut results = Vec::with_capacity(items.len());
+                let mut ran = 0u32;
+                let mut skipped = 0u32;
+                for (i, item) in items.into_iter().enumerate() {
+                    state.bind("item", item);
+                    state.bind("index", Value::from(i as u64));
+                    if let Some(cond) = &step.condition {
+                        if !condition::evaluate(cond, &state)? {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                    let params = interpolate(&step.params, &state)
+                        .map_err(|e| format!("step {idx} ({}) item {i}: {e}", step.command))?;
+                    match self.dispatch_step(name, idx, step, params).await {
+                        Ok(v) => {
+                            results.push(v);
+                            ran += 1;
+                        }
+                        Err(e) => match step.on_error.as_deref() {
+                            Some("skip") => {
+                                crate::probe!(
+                                    class = "recipe.step.item_skipped",
+                                    recipe = %name,
+                                    step = idx as u64,
+                                    item = i as u64,
+                                    command = %step.command,
+                                    error = %e,
+                                    "item failed — skipped per on_error"
+                                );
+                                skipped += 1;
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "recipe `{}` failed at step {idx} ({}) item {i}: {e}",
+                                    name, step.command
+                                ))
+                            }
+                        },
+                    }
+                }
+                trace.push(format!("[{idx}] {} OK×{ran} SKIP×{skipped} (each)", step.command));
+                steps_run += ran;
+                steps_skipped += skipped;
+                if let Some(out) = &step.output_to {
+                    state.bind(out.clone(), Value::Array(results));
+                    if !bound.contains(out) {
+                        bound.push(out.clone());
+                    }
+                }
+                continue;
+            }
             let params = interpolate(&step.params, &state)
                 .map_err(|e| format!("step {idx} ({}): {e}", step.command))?;
 
-            let mut outcome: Result<Value, String> = Err("unattempted".into());
-            for attempt in 0..=step.retry_count {
-                let dispatch = self.executor.execute(step.command.as_str(), params.clone());
-                let result = match step.timeout_ms {
-                    Some(ms) => {
-                        match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch)
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => Err(format!("timed out after {ms}ms")),
-                        }
-                    }
-                    None => dispatch.await,
-                };
-                match result {
-                    Ok(r) => match r.to_json_value() {
-                        Ok(v) => {
-                            outcome = Ok(v);
-                            break;
-                        }
-                        Err(e) => outcome = Err(e),
-                    },
-                    Err(e) => {
-                        if attempt < step.retry_count {
-                            crate::probe!(
-                                class = "recipe.step.retry",
-                                recipe = %name,
-                                step = idx as u64,
-                                command = %step.command,
-                                attempt = (attempt + 1) as u64,
-                                error = %e,
-                                "step failed — retrying per its declared retry_count"
-                            );
-                        }
-                        outcome = Err(e);
-                    }
-                }
-            }
-
+            let outcome = self.dispatch_step(name, idx, step, params).await;
             match outcome {
                 Ok(value) => {
                     crate::probe!(
@@ -213,6 +239,50 @@ impl PipelineExecutor {
             held_at,
         })
     }
+
+    /// One dispatch of `step` with its declared retries and per-attempt bound —
+    /// shared by the single-run and `each` paths so the retry policy has one home.
+    async fn dispatch_step(&self, name: &str, idx: usize, step: &RecipeStep, params: Value) -> Result<Value, String> {
+        let mut outcome: Result<Value, String> = Err("unattempted".into());
+        for attempt in 0..=step.retry_count {
+            let dispatch = self.executor.execute(step.command.as_str(), params.clone());
+            let result = match step.timeout_ms {
+                Some(ms) => {
+                    match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => Err(format!("timed out after {ms}ms")),
+                    }
+                }
+                None => dispatch.await,
+            };
+            match result {
+                Ok(r) => match r.to_json_value() {
+                    Ok(v) => {
+                        outcome = Ok(v);
+                        break;
+                    }
+                    Err(e) => outcome = Err(e),
+                },
+                Err(e) => {
+                    if attempt < step.retry_count {
+                        crate::probe!(
+                            class = "recipe.step.retry",
+                            recipe = %name,
+                            step = idx as u64,
+                            command = %step.command,
+                            attempt = (attempt + 1) as u64,
+                            error = %e,
+                            "step failed — retrying per its declared retry_count"
+                        );
+                    }
+                    outcome = Err(e);
+                }
+            }
+        }
+        outcome
+    }
 }
 
 #[cfg(test)]
@@ -230,7 +300,32 @@ mod tests {
             retry_count: 0,
             timeout_ms: None,
             approval: approval.map(str::to_string),
+            each: None,
         }
+    }
+
+    #[tokio::test]
+    async fn each_fans_out_one_dispatch_per_item_never_once_with_the_whole_array() {
+        // what this catches: fan-out is how one `work/create` step posts a whole
+        // imported suite. Over an EMPTY registry every dispatch fails, so with
+        // on_error: skip the skip count IS the dispatch count: three items, three
+        // skips. A step that ran once with the array would report one.
+        let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
+            ModuleRegistry::new(),
+        )));
+        let mut post = step("work/create", None);
+        post.each = Some("$args.rows".to_string());
+        post.params = serde_json::json!({ "title": "$item.title" });
+        post.on_error = Some("skip".to_string());
+        post.output_to = Some("cards".to_string());
+        let args = serde_json::json!({ "rows": [ {"title": "a"}, {"title": "b"}, {"title": "c"} ] });
+        let receipt = PipelineExecutor::new(exec)
+            .run("bench/fan-out", &[post], args)
+            .await
+            .expect("skips are not failures");
+        assert_eq!(receipt.steps_skipped, 3, "one dispatch per item: {:?}", receipt.trace);
+        assert_eq!(receipt.steps_run, 0);
+        assert_eq!(receipt.bindings.get("cards"), Some(&Value::Array(vec![])));
     }
 
     #[tokio::test]

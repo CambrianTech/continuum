@@ -371,7 +371,19 @@ impl ActionCommand for ActivitySpawn {
         // this path RUNS it, through the universal primitive, instead of refusing and
         // making the caller know which of two doors to use. One door; the recipe decides
         // what walking through it means.
-        if p.recipe.starts_with("benchmark/") {
+        // S4: a recipe that DECLARES ITS BEHAVIOUR drives itself through the one birth
+        // path — the pipeline is the round. Only a benchmark recipe with NO pipeline
+        // (the Rust-driven `benchmark/hard-rs` door, still beside it during S4) is
+        // routed to dispatch. When dispatch is deleted, so is this branch.
+        let declares_pipeline = resolve_recipe(
+            &p.recipe,
+            &crate::experience::source::RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            ),
+        )
+        .map(|def| !def.pipeline.is_empty())
+        .unwrap_or(false); // unwrap_or: an unresolvable recipe is refused by spawn_activity_room below, by name
+        if p.recipe.starts_with("benchmark/") && !declares_pipeline {
             return dispatch_benchmark_activity(&self.executor_slot, p).await;
         }
         spawn_activity_room(

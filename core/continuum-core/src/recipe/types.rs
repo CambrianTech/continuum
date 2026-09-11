@@ -67,4 +67,11 @@ pub struct RecipeStep {
     #[serde(default)]
     #[ts(optional)]
     pub approval: Option<String>,
+    /// Fan out: a `$binding` (or `${path}`) that resolves to an ARRAY; the step runs
+    /// once per element with `$item` (and `$index`) bound, and `outputTo` binds the
+    /// array of per-element results in order. A step with no `each` runs once.
+    /// This is how one `work/create` step posts a whole imported suite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub each: Option<String>,
 }

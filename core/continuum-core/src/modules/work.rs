@@ -2555,6 +2555,12 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::recipe_run::RecipeRun {
                 executor_slot: self.executor_slot.clone(),
             }),
+            // The recipe-facing benchmark verbs (S4): import is pure, the two round-*
+            // verbs are the temporary tracker seam. Registered here beside dispatch so
+            // they are routable from the same module that owns the board.
+            Arc::new(crate::commands::benchmark_import::BenchmarkImport),
+            Arc::new(crate::commands::benchmark_import::BenchmarkRoundOpen),
+            Arc::new(crate::commands::benchmark_import::BenchmarkRoundTrack),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
             // live-roster verb; the observability side of "dispatch targets the live roster").

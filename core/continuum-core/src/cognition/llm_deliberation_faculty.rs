@@ -4249,22 +4249,22 @@ mod tests {
     // authored here, this names it.
     #[test]
     fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
-        let recipe = crate::experience::recipe::ExperienceRecipe::from_json(include_str!(
-            "../experience/recipes/benchmark.json"
-        ))
-        .expect("shipped benchmark recipe parses");
-        let authorized: std::collections::HashSet<&str> =
-            recipe.affordances.iter().map(|a| a.command.as_str()).collect();
         let raw = persona_tools::native_tool_specs();
-        let missing: Vec<String> = hands_surface(&raw)
-            .into_iter()
-            .map(|s| s.name)
-            .filter(|n| !authorized.contains(n.as_str()))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "benchmark.json must authorize every hand; missing: {missing:?}"
-        );
+        for (file, json) in [
+            ("benchmark.json", include_str!("../experience/recipes/benchmark.json")),
+            ("benchmark-swe.json", include_str!("../experience/recipes/benchmark-swe.json")),
+        ] {
+            let recipe = crate::experience::recipe::ExperienceRecipe::from_json(json)
+                .expect("shipped benchmark recipe parses");
+            let authorized: std::collections::HashSet<&str> =
+                recipe.affordances.iter().map(|a| a.command.as_str()).collect();
+            let missing: Vec<String> = hands_surface(&raw)
+                .iter()
+                .map(|s| s.name.clone())
+                .filter(|n| !authorized.contains(n.as_str()))
+                .collect();
+            assert!(missing.is_empty(), "{file} must authorize every hand; missing: {missing:?}");
+        }
     }
 
     // what this catches: the hands surface chosen on WIRE names — `code/` prefixes

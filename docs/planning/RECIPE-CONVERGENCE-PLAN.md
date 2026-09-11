@@ -179,6 +179,37 @@ interpolation, the hand-built `run_params`, and the `bench_round` card mirror.
 - **Note:** this subsumes the card-state-is-the-board work already planned — the board is the
   only card store once the mirror is gone.
 
+**Landed 2026-09-11 (S4a — the round is authored; dispatch stands beside it).**
+- `prepare_cards(spec, selection)` is extracted from dispatch as THE ONE WRITER of benchmark
+  cards (task + oracle only, no side effects; the env pre-warm stays a dispatch side effect
+  in `prewarm_swe_envs`). `CardWork`/`PreparedCard` lifted to module scope. Dispatch calls it;
+  so does the new verb. Identical cards by construction, not by comparison.
+- Three recipe-facing verbs (`commands/benchmark_import.rs`): `benchmark/import` (pure, rows
+  carry the writer's title/body + the parser's task id), and two DELIBERATELY TEMPORARY tracker
+  adapters `benchmark/round-open` and `benchmark/round-track` — they exist because the tracker
+  still holds a second copy of card state; when the board-projection work deletes the tracker,
+  both verbs go and the pipeline gets two steps shorter.
+- `each` fan-out in the executor (`$item`/`$index` per element, results bound as an array;
+  proven over an empty registry: three items → three dispatches, never one with the array).
+- `benchmark-swe.json` (`benchmark/swe`, base academy, the same affordances as the Rust door):
+  import → round-open → `work/create` ×each → round-track → invite → doctrine. Params resolve
+  through the recipe's DECLARED defaults (`driver: citizen` is now real — the S0-deferred lie
+  is closed on this path). `activity/spawn` routes a benchmark purpose to dispatch ONLY when the
+  recipe declares no pipeline; a recipe that declares its behaviour drives itself.
+- Floor tests: every page recipe declares no pipeline; the authored round is made only of a
+  known verb set (a new step = a new verb, on purpose); both benchmark recipes authorize every
+  hand a work turn offers.
+
+**Still owed for S4 (S4b):** the side-by-side run itself — `activity/spawn --recipe
+benchmark/swe` and `benchmark/dispatch` on the same `(suite, seed, sample)` after a deploy,
+asserting the same board, card rooms and verdicts (a live acceptance, not a unit test); kickoff
+parity (dispatch's addressed per-card kickoff vs the recipe's one doctrine line — decide which
+is the design, the one-deck-kickoff rule says the recipe's); detached-solve pre-claim +
+staging as a step; then delete `benchmark/dispatch`, `benchmark_recipes`, `load_recipe`, the
+hand-built `run_params`, and — with the board as the card store — the tracker and its two
+adapter verbs. The `on:` event edge is not needed for the round: grading already fires from
+`work.card.state_changed` in `modules::benchmark_grade`, keyed on the card title.
+
 ### S5 — An ask becomes a recipe *(cards c6648d08, dbdd6bcf, 7d8f8fa8)*
 Register `cognition/generate-recipe` (its prompt, parser, validator and orchestrator are
 already written and unreachable), give it a write path to the overlay dir, and let a citizen

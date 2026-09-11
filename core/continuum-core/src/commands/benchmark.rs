@@ -1270,6 +1270,223 @@ fn resolve_dispatch_roster(
     Ok(resolved)
 }
 
+    pub(crate) enum CardWork {
+        /// Gym: write a solution file; DoD is a compile/test shell.
+        Gym { solution_file: String },
+        /// SWE: the pulled instance. The CLAIM stages it into the claimer's
+        /// workspace/swe/<instance> (`card_staging`); a detached-solve round stages
+        /// its directed assignee at dispatch through the same function and fires
+        /// her solve (#346) — the loop closes with nobody in it.
+        Swe {
+            instance: Box<crate::cognition::swe_bench::SweInstance>,
+        },
+    }
+    pub(crate) struct PreparedCard {
+        pub(crate) title: String,
+        pub(crate) body: String,
+        pub(crate) work: CardWork,
+        /// Gym-only: a task needing a workspace re-break the card can't orchestrate yet.
+        pub(crate) needs_setup: bool,
+        /// The gym task's workspace-preparation shell, staged into the ASSIGNEE's
+        /// workspace at dispatch (same contract as SWE checkout staging below) --
+        /// idempotent by adapter convention (mkdir -p + overwrite-decode).
+        pub(crate) setup_shell: Option<String>,
+    }
+
+/// What one dispatch SELECTS from a suite. Pure data, so the same selection can be
+/// replayed: `(suite, seed, sample)` is the replication contract the score is
+/// published with, and `instances` is the explicit alternative to it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CardSelection {
+    pub(crate) instances: Option<Vec<String>>,
+    pub(crate) sample: Option<u32>,
+    pub(crate) seed: Option<u64>,
+}
+
+/// THE ONE WRITER of benchmark cards: task + oracle only, projected into the
+/// title/body a citizen sees and the grader keys on (`[bench <suite>] <task>: …`).
+/// No side effects — no room, no board, no env pre-warm — so `benchmark/import`
+/// (the recipe path, S4) and `benchmark/dispatch` (the Rust path) post IDENTICAL
+/// cards for the same selection by construction, not by a test that compares them.
+pub(crate) async fn prepare_cards(
+    spec: &BenchmarkSpec,
+    selection: &CardSelection,
+) -> Result<Vec<PreparedCard>, CommandError> {
+    let prepared: Vec<PreparedCard> = if let Some(dataset) = spec.swe_dataset() {
+        // Real-project tier: pull instances on demand (cached on first use), one
+        // full-project card each. Reuses the SAME loader agent/solve grades against —
+        // no second source of truth. THIS is what killed the "no runnable eval_set"
+        // refusal that had blocked every SWE dispatch (Joel: "fix the goddamn thing").
+        let mut instances = crate::cognition::swe_bench::load_dataset(dataset)
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
+            })?;
+        // Deterministic sample: (dataset, seed, n) → the same list on every
+        // machine. Fisher-Yates over the dataset order with the shared LCG —
+        // the command IS the replication recipe (no operator-side scripts).
+        if let Some(n) = selection.sample.filter(|n| *n > 0) {
+            if selection.instances.as_ref().is_some_and(|w| !w.is_empty()) {
+                return Err(CommandError::Invalid(
+                    "pass either `sample` (seeded random) or `instances` (explicit list),                          not both — they are competing selection recipes"
+                        .into(),
+                ));
+            }
+            let n = (n as usize).min(instances.len());
+            let mut rng = crate::cognition::gym_rng::Lcg::new(selection.seed.unwrap_or(0)); // documented default seed: 0 is part of the replication contract, not a guess
+            for i in 0..n {
+                let j = i + rng.next(instances.len() - i);
+                instances.swap(i, j);
+            }
+            instances.truncate(n);
+            let list: Vec<&str> =
+                instances.iter().map(|i| i.instance_id.as_str()).collect();
+            tracing::info!(
+                probe_class = "benchmark.dispatch.sample",
+                dataset,
+                n,
+                seed = selection.seed.unwrap_or(0), // same documented default as the draw above
+                instances = ?list,
+                "seeded sample selected — publish (dataset, seed, n) with the score"
+            );
+        }
+        // Caller-targeted instances win over dataset order — select by substring (so a
+        // short id resolves) and preserve the CALLER's ordering, fail loud on a miss so a
+        // typo never silently dispatches the wrong (or whole) set.
+        if let Some(wanted) = selection.instances.as_ref().filter(|w| !w.is_empty()) {
+            let mut picked: Vec<crate::cognition::swe_bench::SweInstance> = Vec::new();
+            for want in wanted {
+                match instances
+                    .iter()
+                    .position(|i| i.instance_id.contains(want.as_str()))
+                {
+                    Some(idx) => picked.push(instances.remove(idx)),
+                    None => {
+                        return Err(CommandError::Invalid(format!(
+                            "no instance in '{dataset}' matches '{want}' — check the id (e.g. sympy__sympy-24152)"
+                        )));
+                    }
+                }
+            }
+            instances = picked;
+        }
+        // ENV PRE-WARM (background): a cold native build (scikit's cython,
+        // matplotlib's freetype) mid-round burns a solve attempt on an ENV
+        // failure and reads as a model miss. Build every instance's env
+        // AHEAD of the driver, in REVERSE card order so the warmer and the
+        // solver approach from opposite ends (ensure_env itself holds the
+        // per-instance lock, so even a meeting in the middle is safe).
+        // Fire-and-forget: a prewarm failure is probed — the SAME failure
+        // the solve would hit, surfaced hours earlier and attributable.
+        instances
+            .into_iter()
+            .map(|i| PreparedCard {
+                title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
+                body: dispatch_swe_card_body(spec.name, &i),
+                needs_setup: false,
+                setup_shell: None,
+                work: CardWork::Swe {
+                    instance: Box::new(i),
+                },
+            })
+            .collect()
+    } else {
+        let reference = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
+                 task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
+                spec.name
+            ))
+        })?;
+        // Same fail-loud task loading as cognition/eval: the committed gym resolves
+        // from the embedded registry, a malformed line names itself.
+        let (origin, text) =
+            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+        text.lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.trim()))
+            .filter(|(_, l)| !l.is_empty())
+            .map(|(n, l)| {
+                let mut t: crate::cognition::eval::EvalTask = serde_json::from_str(l).map_err(|e| {
+                    CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+                })?;
+                // Title gist comes from the AUTHORED prompt: require_hands_for_code
+                // prepends the same write-and-verify preamble to every code task, and a
+                // board of 12 cards all titled "Implement the following, and VERIFY…"
+                // is unscannable for the citizen AND breaks dispatch_card_key parsing.
+                let headline = t.prompt.clone();
+                // THE artifact rule — the same normalization cognition/eval applies at
+                // load. Before this, the card body named NO file (the gym rows carry no
+                // solution_file) while the grade read the derived one: the citizen was
+                // graded against a path she was never told. One derivation, both readers.
+                t.require_hands_for_code();
+                let solution_file = t
+                    .solution_file
+                    .clone()
+                    .unwrap_or_else(|| format!("{}.rs", t.id));
+                Ok(PreparedCard {
+                    title: dispatch_card_title(spec.name, &t.id, &headline),
+                    body: dispatch_card_body(spec.name, &t),
+                    needs_setup: t.setup_shell.is_some(),
+                    setup_shell: t.setup_shell.clone(),
+                    work: CardWork::Gym { solution_file },
+                })
+            })
+            .collect::<Result<_, CommandError>>()?
+    };
+    Ok(prepared)
+}
+
+/// Warm the SWE envs a dispatch is about to hand out — dispatch's side effect, kept
+/// out of [`prepare_cards`] so the import verb stays pure. Best-effort by design.
+fn prewarm_swe_envs(prepared: &[PreparedCard]) {
+    let warm: Vec<crate::cognition::swe_bench::SweInstance> = prepared
+        .iter()
+        .filter_map(|pc| match &pc.work {
+            CardWork::Swe { instance } => Some((**instance).clone()),
+            CardWork::Gym { .. } => None,
+        })
+        .collect();
+    if warm.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for inst in warm.into_iter().rev() {
+                let checkout =
+                    match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
+                        Ok(dir) => dir,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "benchmark.env.prewarm_failed",
+                                instance = %inst.instance_id,
+                                stage = "checkout",
+                                error = %e,
+                                "env pre-warm could not stage a checkout — the solve \
+                                 will hit this same wall; this is an ENV failure, not \
+                                 a model result"
+                            );
+                            continue;
+                        }
+                    };
+                match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
+                    Ok(_) => crate::probe!(
+                        class = "benchmark.env.prewarmed",
+                        instance = %inst.instance_id,
+                        "env ready ahead of the driver"
+                    ),
+                    Err(e) => crate::probe!(
+                        class = "benchmark.env.prewarm_failed",
+                        instance = %inst.instance_id,
+                        stage = "env",
+                        error = %e,
+                        "env pre-warm FAILED — the solve will hit this same wall; \
+                         an ENV failure, never a model result"
+                    ),
+                }
+        }
+    });
+}
+
 impl BenchmarkDispatch {
     /// The substrate executor, or a loud error naming the wiring gap — never a
     /// silent no-op (the slot is installed by `install_executor_on_all` at boot).
@@ -1576,190 +1793,16 @@ impl ActionCommand for BenchmarkDispatch {
         //  • SWE-bench-INSTANCE collections pull real GitHub-issue PROJECTS via the proven
         //    `swe_bench` loader — the real-project tier "the frontier models fight over"
         //    (Joel, 2026-08-10). Each instance becomes a clone-and-fix card.
-        enum CardWork {
-            /// Gym: write a solution file; DoD is a compile/test shell.
-            Gym { solution_file: String },
-            /// SWE: the pulled instance. The CLAIM stages it into the claimer's
-            /// workspace/swe/<instance> (`card_staging`); a detached-solve round stages
-            /// its directed assignee at dispatch through the same function and fires
-            /// her solve (#346) — the loop closes with nobody in it.
-            Swe {
-                instance: Box<crate::cognition::swe_bench::SweInstance>,
+        let prepared = prepare_cards(
+            spec,
+            &CardSelection {
+                instances: p.instances.clone(),
+                sample: p.sample,
+                seed: p.seed,
             },
-        }
-        struct PreparedCard {
-            title: String,
-            body: String,
-            work: CardWork,
-            /// Gym-only: a task needing a workspace re-break the card can't orchestrate yet.
-            needs_setup: bool,
-            /// The gym task's workspace-preparation shell, staged into the ASSIGNEE's
-            /// workspace at dispatch (same contract as SWE checkout staging below) --
-            /// idempotent by adapter convention (mkdir -p + overwrite-decode).
-            setup_shell: Option<String>,
-        }
-
-        let prepared: Vec<PreparedCard> = if let Some(dataset) = spec.swe_dataset() {
-            // Real-project tier: pull instances on demand (cached on first use), one
-            // full-project card each. Reuses the SAME loader agent/solve grades against —
-            // no second source of truth. THIS is what killed the "no runnable eval_set"
-            // refusal that had blocked every SWE dispatch (Joel: "fix the goddamn thing").
-            let mut instances = crate::cognition::swe_bench::load_dataset(dataset)
-                .await
-                .map_err(|e| {
-                    CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
-                })?;
-            // Deterministic sample: (dataset, seed, n) → the same list on every
-            // machine. Fisher-Yates over the dataset order with the shared LCG —
-            // the command IS the replication recipe (no operator-side scripts).
-            if let Some(n) = p.sample.filter(|n| *n > 0) {
-                if p.instances.as_ref().is_some_and(|w| !w.is_empty()) {
-                    return Err(CommandError::Invalid(
-                        "pass either `sample` (seeded random) or `instances` (explicit list),                          not both — they are competing selection recipes"
-                            .into(),
-                    ));
-                }
-                let n = (n as usize).min(instances.len());
-                let mut rng = crate::cognition::gym_rng::Lcg::new(p.seed.unwrap_or(0)); // documented default seed: 0 is part of the replication contract, not a guess
-                for i in 0..n {
-                    let j = i + rng.next(instances.len() - i);
-                    instances.swap(i, j);
-                }
-                instances.truncate(n);
-                let list: Vec<&str> =
-                    instances.iter().map(|i| i.instance_id.as_str()).collect();
-                tracing::info!(
-                    probe_class = "benchmark.dispatch.sample",
-                    dataset,
-                    n,
-                    seed = p.seed.unwrap_or(0), // same documented default as the draw above
-                    instances = ?list,
-                    "seeded sample selected — publish (dataset, seed, n) with the score"
-                );
-            }
-            // Caller-targeted instances win over dataset order — select by substring (so a
-            // short id resolves) and preserve the CALLER's ordering, fail loud on a miss so a
-            // typo never silently dispatches the wrong (or whole) set.
-            if let Some(wanted) = p.instances.as_ref().filter(|w| !w.is_empty()) {
-                let mut picked: Vec<crate::cognition::swe_bench::SweInstance> = Vec::new();
-                for want in wanted {
-                    match instances
-                        .iter()
-                        .position(|i| i.instance_id.contains(want.as_str()))
-                    {
-                        Some(idx) => picked.push(instances.remove(idx)),
-                        None => {
-                            return Err(CommandError::Invalid(format!(
-                                "no instance in '{dataset}' matches '{want}' — check the id (e.g. sympy__sympy-24152)"
-                            )));
-                        }
-                    }
-                }
-                instances = picked;
-            }
-            // ENV PRE-WARM (background): a cold native build (scikit's cython,
-            // matplotlib's freetype) mid-round burns a solve attempt on an ENV
-            // failure and reads as a model miss. Build every instance's env
-            // AHEAD of the driver, in REVERSE card order so the warmer and the
-            // solver approach from opposite ends (ensure_env itself holds the
-            // per-instance lock, so even a meeting in the middle is safe).
-            // Fire-and-forget: a prewarm failure is probed — the SAME failure
-            // the solve would hit, surfaced hours earlier and attributable.
-            {
-                let mut warm = instances.clone();
-                warm.reverse();
-                tokio::spawn(async move {
-                    for inst in warm {
-                        let checkout =
-                            match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
-                                Ok(dir) => dir,
-                                Err(e) => {
-                                    crate::probe!(
-                                        class = "benchmark.env.prewarm_failed",
-                                        instance = %inst.instance_id,
-                                        stage = "checkout",
-                                        error = %e,
-                                        "env pre-warm could not stage a checkout — the solve \
-                                         will hit this same wall; this is an ENV failure, not \
-                                         a model result"
-                                    );
-                                    continue;
-                                }
-                            };
-                        match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
-                            Ok(_) => crate::probe!(
-                                class = "benchmark.env.prewarmed",
-                                instance = %inst.instance_id,
-                                "env ready ahead of the driver"
-                            ),
-                            Err(e) => crate::probe!(
-                                class = "benchmark.env.prewarm_failed",
-                                instance = %inst.instance_id,
-                                stage = "env",
-                                error = %e,
-                                "env pre-warm FAILED — the solve will hit this same wall; \
-                                 an ENV failure, never a model result"
-                            ),
-                        }
-                    }
-                });
-            }
-            instances
-                .into_iter()
-                .map(|i| PreparedCard {
-                    title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
-                    body: dispatch_swe_card_body(spec.name, &i),
-                    needs_setup: false,
-                    setup_shell: None,
-                    work: CardWork::Swe {
-                        instance: Box::new(i),
-                    },
-                })
-                .collect()
-        } else {
-            let reference = spec.eval_set.ok_or_else(|| {
-                CommandError::Invalid(format!(
-                    "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
-                     task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
-                    name
-                ))
-            })?;
-            // Same fail-loud task loading as cognition/eval: the committed gym resolves
-            // from the embedded registry, a malformed line names itself.
-            let (origin, text) =
-                crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
-            text.lines()
-                .enumerate()
-                .map(|(i, l)| (i + 1, l.trim()))
-                .filter(|(_, l)| !l.is_empty())
-                .map(|(n, l)| {
-                    let mut t: EvalTask = serde_json::from_str(l).map_err(|e| {
-                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
-                    })?;
-                    // Title gist comes from the AUTHORED prompt: require_hands_for_code
-                    // prepends the same write-and-verify preamble to every code task, and a
-                    // board of 12 cards all titled "Implement the following, and VERIFY…"
-                    // is unscannable for the citizen AND breaks dispatch_card_key parsing.
-                    let headline = t.prompt.clone();
-                    // THE artifact rule — the same normalization cognition/eval applies at
-                    // load. Before this, the card body named NO file (the gym rows carry no
-                    // solution_file) while the grade read the derived one: the citizen was
-                    // graded against a path she was never told. One derivation, both readers.
-                    t.require_hands_for_code();
-                    let solution_file = t
-                        .solution_file
-                        .clone()
-                        .unwrap_or_else(|| format!("{}.rs", t.id));
-                    Ok(PreparedCard {
-                        title: dispatch_card_title(spec.name, &t.id, &headline),
-                        body: dispatch_card_body(spec.name, &t),
-                        needs_setup: t.setup_shell.is_some(),
-                        setup_shell: t.setup_shell.clone(),
-                        work: CardWork::Gym { solution_file },
-                    })
-                })
-                .collect::<Result<_, CommandError>>()?
-        };
+        )
+        .await?;
+        prewarm_swe_envs(&prepared);
 
         let requested = p.assignees.clone().unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         if requested.iter().any(|a| a.trim().is_empty()) {

@@ -55,4 +55,11 @@ timeoutMs?: number,
  * for irreversible outward actions (submitting an application, sending mail)
  * — a property of the STEP, authored in data, never a policy hidden elsewhere.
  */
-approval?: string, };
+approval?: string, 
+/**
+ * Fan out: a `$binding` (or `${path}`) that resolves to an ARRAY; the step runs
+ * once per element with `$item` (and `$index`) bound, and `outputTo` binds the
+ * array of per-element results in order. A step with no `each` runs once.
+ * This is how one `work/create` step posts a whole imported suite.
+ */
+each?: string, };

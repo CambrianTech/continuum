@@ -1,0 +1,255 @@
+{
+  "id": "c0a1554f-f2c1-4942-8de5-de9c13ce6783",
+  "version": 1,
+  "purpose": "benchmark/swe",
+  "base": "academy",
+  "regions": [
+    {
+      "name": "scoreboard",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "context",
+      "live": true
+    },
+    {
+      "name": "central",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "feed",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "content",
+      "live": true
+    }
+  ],
+  "affordances": [
+    {
+      "verb": "list",
+      "command": "commands/list"
+    },
+    {
+      "verb": "help",
+      "command": "commands/help"
+    },
+    {
+      "verb": "search",
+      "command": "code/search"
+    },
+    {
+      "verb": "tree",
+      "command": "code/tree"
+    },
+    {
+      "verb": "list-files",
+      "command": "code/list"
+    },
+    {
+      "verb": "read",
+      "command": "code/read"
+    },
+    {
+      "verb": "edit",
+      "command": "code/edit"
+    },
+    {
+      "verb": "write",
+      "command": "code/write"
+    },
+    {
+      "verb": "run",
+      "command": "code/run"
+    },
+    {
+      "verb": "shell",
+      "command": "code/shell"
+    },
+    {
+      "verb": "git-status",
+      "command": "code/git/status"
+    },
+    {
+      "verb": "git-diff",
+      "command": "code/git/diff"
+    },
+    {
+      "verb": "git-commit",
+      "command": "code/git/commit"
+    },
+    {
+      "verb": "claim",
+      "command": "work/claim"
+    },
+    {
+      "verb": "state",
+      "command": "work/state"
+    },
+    {
+      "verb": "release",
+      "command": "work/release"
+    },
+    {
+      "verb": "get",
+      "command": "work/get"
+    },
+    {
+      "verb": "list-work",
+      "command": "work/list"
+    },
+    {
+      "verb": "heartbeat",
+      "command": "work/heartbeat"
+    },
+    {
+      "verb": "fetch",
+      "command": "web/fetch"
+    },
+    {
+      "verb": "web-search",
+      "command": "web/search"
+    },
+    {
+      "verb": "members",
+      "command": "room/members"
+    },
+    {
+      "verb": "observe",
+      "command": "cognition/observe"
+    }
+  ],
+  "citizens": [],
+  "params": {
+    "suite": {
+      "default": "swe-bench-verified",
+      "doc": "which SWE-bench collection to import (task + oracle only; see benchmark/list)"
+    },
+    "repo": {
+      "default": "",
+      "doc": "the board key the cards land under (owner/name) \u2014 required; dispatch inferred it from the curator's room, a recipe says it"
+    },
+    "instances": {
+      "default": [],
+      "doc": "explicit instance ids (substring match); empty = the seeded sample or the suite head"
+    },
+    "sample": {
+      "default": 0,
+      "doc": "seeded random sample size; 0 = no sampling. (suite, seed, sample) is the replication contract"
+    },
+    "seed": {
+      "default": 0,
+      "doc": "the sample's seed"
+    },
+    "team": {
+      "default": [],
+      "doc": "citizen names to invite into the run room; empty = the resume pass seats the live roster"
+    },
+    "driver": {
+      "default": "citizen",
+      "doc": "citizen (her own held-work turns in the room) or detached_solve"
+    },
+    "review_gate": {
+      "default": false,
+      "doc": "an owner's done becomes review + a sibling review card a non-owner pulls"
+    },
+    "doctrine": {
+      "default": "",
+      "doc": "the round's standing rules, posted into the run room after the cards; empty = none (the control arm)"
+    }
+  },
+  "pipeline": [
+    {
+      "command": "benchmark/import",
+      "params": {
+        "suite": "$args.suite",
+        "instances": "$args.instances",
+        "sample": "$args.sample",
+        "seed": "$args.seed"
+      },
+      "outputTo": "imported"
+    },
+    {
+      "command": "benchmark/round-open",
+      "params": {
+        "roomId": "$room.id",
+        "roomName": "$room.name",
+        "suite": "$args.suite",
+        "driver": "$args.driver",
+        "reviewGate": "$args.review_gate"
+      }
+    },
+    {
+      "command": "work/create",
+      "each": "$imported.cards",
+      "params": {
+        "repo": "$args.repo",
+        "room": "$room.id",
+        "title": "$item.title",
+        "body": "$item.body"
+      },
+      "outputTo": "cards"
+    },
+    {
+      "command": "benchmark/round-track",
+      "params": {
+        "roomId": "$room.id",
+        "cards": "$cards",
+        "tasks": "$imported.cards"
+      }
+    },
+    {
+      "command": "activity/invite",
+      "params": {
+        "room": "$room.name",
+        "members": "$args.team"
+      }
+    },
+    {
+      "command": "chat/send",
+      "params": {
+        "roomId": "$room.id",
+        "text": "$args.doctrine"
+      },
+      "condition": "$args.doctrine != \"\""
+    }
+  ],
+  "layout": {
+    "container": "row",
+    "children": [
+      {
+        "node": {
+          "container": "col",
+          "children": [
+            {
+              "node": {
+                "container": "region",
+                "name": "central"
+              },
+              "weight": 2.0
+            },
+            {
+              "node": {
+                "container": "region",
+                "name": "feed"
+              },
+              "weight": 3.0
+            }
+          ]
+        },
+        "weight": 3.0
+      },
+      {
+        "node": {
+          "container": "region",
+          "name": "scoreboard"
+        },
+        "weight": 1.0
+      }
+    ]
+  }
+}

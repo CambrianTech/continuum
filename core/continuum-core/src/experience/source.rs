@@ -154,9 +154,13 @@ pub mod shipped {
     /// A project — one repo's work: a board, a room per card under it (`project`) —
     /// `2f6b1c0e-4c7a-4d0b-9a7e-5a1c3e9f7b21`.
     pub const PROJECT: RecipeId = RecipeId::from_u128(0x2f6b1c0e_4c7a_4d0b_9a7e_5a1c3e9f7b21);
+    /// The AUTHORED round (S4a): `benchmark/swe` — its steps are verbs, its behaviour is
+    /// data. Pinned like every shipped recipe so the id survives a purpose rename.
+    pub const BENCHMARK_SWE: RecipeId =
+        RecipeId::from_u128(0xc0a1554f_f2c1_4942_8de5_de9c13ce6783);
 
     /// Every shipped id, for tests and for enumerating the prod-critical floor.
-    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, CHAT, PROFILE, VIDEO_CHAT];
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_SWE, CHAT, PROFILE, VIDEO_CHAT];
 }
 
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
@@ -312,6 +316,7 @@ impl RecipeExperienceSource {
     fn embedded() -> impl Iterator<Item = ExperienceRecipe> {
         [
             include_str!("recipes/benchmark.json"),
+            include_str!("recipes/benchmark-swe.json"),
             include_str!("recipes/chat.json"),
             include_str!("recipes/video-chat.json"),
             include_str!("recipes/profile.json"),
@@ -429,15 +434,33 @@ mod tests {
     }
 
     #[test]
-    fn every_shipped_recipe_still_loads_and_declares_no_pipeline_yet() {
-        // what this catches: the S0 schema change (an activity recipe may carry a
-        // `pipeline`) must not disturb the shipped floor. Chat, profile, project and
-        // video-chat are positron pages — regions and nothing more — and benchmark
-        // gets its pipeline deliberately in S4, never as a side effect of the schema.
+    fn every_shipped_page_declares_no_pipeline_and_the_authored_round_uses_known_verbs() {
+        // what this catches: the shipped floor's shape. Chat, profile, project and
+        // video-chat are positron pages — regions and nothing more — so they must never
+        // grow a pipeline by accident; and the ONE authored round (`benchmark/swe`, S4)
+        // must be made only of verbs, so a recipe can be re-authored without a compiler.
+        // The verbs an authored benchmark round is allowed to be made of. A new step
+        // means a new verb, added here on purpose — never a Rust call the recipe cannot
+        // make. (S4a: the round is authored; dispatch remains the Rust door beside it.)
+        const ROUND_VERBS: &[&str] = &[
+            "benchmark/import", "benchmark/round-open", "work/create",
+            "benchmark/round-track", "activity/invite", "chat/send",
+        ];
         for recipe in RecipeExperienceSource::embedded() {
+            if recipe.purpose == "benchmark/swe" {
+                assert!(!recipe.pipeline.is_empty(), "the authored round declares its steps");
+                for step in &recipe.pipeline {
+                    assert!(
+                        ROUND_VERBS.contains(&step.command.as_str()),
+                        "benchmark/swe step `{}` is not a known round verb",
+                        step.command
+                    );
+                }
+                continue;
+            }
             assert!(
                 recipe.pipeline.is_empty(),
-                "shipped recipe {} grew a pipeline before S4",
+                "shipped recipe {} grew a pipeline it was not given deliberately",
                 recipe.purpose
             );
         }
@@ -459,7 +482,7 @@ mod tests {
                 "shipped::{id} has no recipe — constant and authored JSON id have drifted"
             );
         }
-        assert_eq!(shipped::ALL.len(), 4, "all four shipped recipes are named");
+        assert_eq!(shipped::ALL.len(), 5, "every named shipped recipe is listed");
     }
 
     /// what this catches (#274): ids must be UNIQUE. Two recipes sharing an id would
@@ -469,7 +492,11 @@ mod tests {
     fn shipped_ids_are_unique_and_match_their_purposes() {
         let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
         let ids: std::collections::HashSet<_> = source.ids().collect();
-        assert_eq!(ids.len(), 5, "five distinct ids, none colliding");
+        assert_eq!(
+            ids.len(),
+            RecipeExperienceSource::embedded().count(),
+            "every shipped id is distinct — one per embedded recipe, none colliding"
+        );
 
         // The id→purpose pairing is the contract core code relies on when it says
         // `shipped::BENCHMARK_HARD_RS` and means the Rust gym.
