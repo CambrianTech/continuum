@@ -61,6 +61,17 @@ impl ServiceModule for ExtCommandsModule {
         }
     }
 
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Nothing routes here by prefix: every authored verb is a typed object in the
+    /// kernel's command map (via `commands()` below), so a call reaching this arm
+    /// names a verb no manifest declares.
+    async fn handle_command(&self, command: &str, _params: serde_json::Value) -> Result<crate::runtime::CommandResult, String> {
+        Err(format!("`{command}` is not an authored command on this node (see commands/list)"))
+    }
+
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         self.commands.clone()
     }
