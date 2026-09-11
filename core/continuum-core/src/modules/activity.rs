@@ -170,6 +170,24 @@ pub struct ActivitySpawnResult {
     /// a choice.
     #[ts(type = "string")]
     pub binding_post_id: uuid::Uuid,
+    /// What the recipe's PIPELINE did when this room was born (S3), or `None` when
+    /// the recipe declares none — the ordinary page. A held run (`held_at`) is a
+    /// human's turn, not a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pipeline: Option<ActivityPipelineReceipt>,
+}
+
+/// The birth-time pipeline receipt, in the spawn result's own shape.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityPipelineReceipt {
+    pub steps_run: u32,
+    pub steps_skipped: u32,
+    #[ts(optional)]
+    pub held_at: Option<u32>,
+    /// Step-indexed one-line outcomes — what a human reads to see what happened.
+    pub trace: Vec<String>,
 }
 
 /// Translate a benchmark activity's OWN params into the `benchmark/dispatch` call that
@@ -271,6 +289,7 @@ async fn dispatch_benchmark_activity(
         name: result.room,
         recipe: p.recipe,
         binding_post_id: result.binding_post_id,
+        pipeline: None,
     })
 }
 
@@ -352,10 +371,30 @@ impl ActionCommand for ActivitySpawn {
         // this path RUNS it, through the universal primitive, instead of refusing and
         // making the caller know which of two doors to use. One door; the recipe decides
         // what walking through it means.
-        if p.recipe.starts_with("benchmark/") {
+        // S4: a recipe that DECLARES ITS BEHAVIOUR drives itself through the one birth
+        // path — the pipeline is the round. Only a benchmark recipe with NO pipeline
+        // (the Rust-driven `benchmark/hard-rs` door, still beside it during S4) is
+        // routed to dispatch. When dispatch is deleted, so is this branch.
+        let declares_pipeline = resolve_recipe(
+            &p.recipe,
+            &crate::experience::source::RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            ),
+        )
+        .map(|def| !def.pipeline.is_empty())
+        .unwrap_or(false); // unwrap_or: an unresolvable recipe is refused by spawn_activity_room below, by name
+        if p.recipe.starts_with("benchmark/") && !declares_pipeline {
             return dispatch_benchmark_activity(&self.executor_slot, p).await;
         }
-        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
+        spawn_activity_room(
+            &airc,
+            &p.name,
+            &p.recipe,
+            p.parent,
+            &p.params,
+            self.executor_slot.get().cloned(),
+        )
+        .await
     }
 }
 
@@ -449,6 +488,10 @@ pub struct RecipeCatalogEntry {
     /// The recipe's declared parameter knobs, each as `name (type: doc)` —
     /// render-ready, the same wording the param refusal uses.
     pub params: Vec<String>,
+    /// Everything wrong with the recipe's pipeline against THIS node's command
+    /// schemas — empty means spawnable. A recipe with issues is listed (an author
+    /// must be able to see it) and refused at spawn (it must never half-run).
+    pub issues: Vec<crate::recipe::PipelineIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -503,6 +546,9 @@ impl ActionCommand for ActivityRecipes {
                     .iter()
                     .map(|(k, d)| format!("{k} ({})", d.doc))
                     .collect(),
+                issues: crate::recipe::pipeline_issues(r, |name| {
+                    crate::recipe::registry_lookup().get(name).cloned()
+                }),
             })
             .collect();
         Ok(ActivityRecipesResult {
@@ -636,6 +682,7 @@ pub async fn spawn_activity_room(
     recipe: &str,
     parent: Option<RoomId>,
     params: &std::collections::BTreeMap<String, serde_json::Value>,
+    executor: Option<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>>,
 ) -> Result<ActivitySpawnResult, CommandError> {
     let recipe_def = resolve_recipe(
         recipe,
@@ -643,7 +690,25 @@ pub async fn spawn_activity_room(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
         ),
     )?;
+    // THE SCHEMA GATE: a pipeline is checked against the command registry's own
+    // schemas BEFORE a room is born, like a request against an API spec. A recipe
+    // with an issue never half-runs; the refusal names every step. Cheap and off
+    // every hot path: once per spawn, over a lookup built once per process.
+    let issues = crate::recipe::pipeline_issues(&recipe_def, |name| {
+        crate::recipe::registry_lookup().get(name).cloned()
+    });
+    if !issues.is_empty() {
+        let lines: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        return Err(CommandError::Invalid(format!(
+            "recipe {recipe:?} has a pipeline this node cannot run — fix the file, then retry:\n  {}",
+            lines.join("\n  ")
+        )));
+    }
     let resolved_params = resolve_params(&recipe_def, params)?;
+    // The pipeline reads the SAME resolved params the binding records (`$args.*`).
+    let pipeline_args = serde_json::Value::Object(
+        resolved_params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    );
     // Read before `resolved_params` moves into the binding below.
     let child_driver = resolved_params
         .get("driver")
@@ -802,11 +867,61 @@ pub async fn spawn_activity_room(
                 ),
             }
         }
+        // THE ACTIVITY DOES WHAT ITS RECIPE SAYS (S3). Until now a recipe could
+        // describe a room and nothing else; every activity with behaviour was Rust.
+        // The pipeline runs here, in the one birth path, so every caller gets it —
+        // with the room seeded (`$room.id`, `$room.name`) and the resolved params as
+        // `$args`. A caller with no executor at hand and a recipe that declares a
+        // pipeline is a WIRING fact, probed by name, never a silent no-op.
+        let pipeline = if recipe_def.pipeline.is_empty() {
+            None
+        } else {
+            match executor {
+                Some(exec) => {
+                    let seed = vec![(
+                        "room".to_string(),
+                        serde_json::json!({
+                            "id": room.channel.as_uuid().to_string(),
+                            "name": name,
+                            "recipe": recipe,
+                        }),
+                    )];
+                    let receipt = crate::recipe::PipelineExecutor::new(exec)
+                        .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
+                        .await
+                        .map_err(|e| {
+                            CommandError::Internal(format!(
+                                "room {} was created and bound, but its recipe's pipeline \
+                                 failed: {e}",
+                                room.channel
+                            ))
+                        })?;
+                    Some(ActivityPipelineReceipt {
+                        steps_run: receipt.steps_run,
+                        steps_skipped: receipt.steps_skipped,
+                        held_at: receipt.held_at,
+                        trace: receipt.trace,
+                    })
+                }
+                None => {
+                    crate::probe!(
+                        class = "activity.pipeline.unrun",
+                        room = %name,
+                        recipe = %recipe,
+                        steps = recipe_def.pipeline.len() as u64,
+                        "the recipe declares a pipeline but this spawn seam has no command \
+                         executor — the room exists, its behaviour did not run"
+                    );
+                    None
+                }
+            }
+        };
         Ok(ActivitySpawnResult {
             room_id: room.channel,
             name: room.name,
             recipe: recipe.to_string(),
             binding_post_id: post_id,
+            pipeline,
         })
     }
 }

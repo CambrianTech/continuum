@@ -273,7 +273,7 @@ jobs:
       - name: Verify protocol/typescript/ in sync with Rust source
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
-          if ! git diff --exit-code protocol/typescript/; then
+          if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
             echo "::error::ts-rs binding drift detected. Some Rust types"
             echo "were modified but their regenerated TypeScript bindings"
             echo "(in protocol/typescript/) were not committed."

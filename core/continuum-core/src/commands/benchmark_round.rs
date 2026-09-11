@@ -387,6 +387,7 @@ impl ActionCommand for BenchmarkRound {
                     &recipe,
                     None,
                     &std::collections::BTreeMap::new(),
+                    None,
                 )
                 .await
                 {

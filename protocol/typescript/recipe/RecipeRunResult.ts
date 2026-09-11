@@ -9,4 +9,8 @@ trace: Array<string>,
  * Every `outputTo` binding's final value — the run's result, shaped by
  * the recipe itself.
  */
-bindings: unknown, };
+bindings: unknown, 
+/**
+ * The step the run HELD at for a human's approval, if any (S3).
+ */
+heldAt?: number, };

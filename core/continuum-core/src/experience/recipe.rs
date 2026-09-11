@@ -30,7 +30,7 @@ use super::{Affordance, Experience, Layout, Member, ProofSpec, Region};
 /// room id, peer id, or card id is expected — the same discipline #396 is applying
 /// to airc identities. Serializes as a plain UUID string, so authored JSON stays
 /// readable and hand-editable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/RecipeId.ts"
@@ -78,7 +78,7 @@ fn default_version() -> u32 {
 
 /// The authored, data-only shape of an [`Experience`] — everything a recipe owns,
 /// nothing the system computes. Projected to a full manifest by [`Self::project`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/ExperienceRecipe.ts"
@@ -136,6 +136,22 @@ pub struct ExperienceRecipe {
     /// the ordinary state; membership is live roster state, not authorship.
     #[serde(default)]
     pub citizens: Vec<CitizenRecipe>,
+    /// What this activity DOES — a pipeline of command invocations, walked by
+    /// [`crate::recipe::PipelineExecutor`], the executor that already exists.
+    ///
+    /// Before this field an activity recipe could describe a room and nothing
+    /// else, so every activity with real behaviour (benchmarks, the forge, a
+    /// training cycle) had to be Rust, with its own store and its own loader —
+    /// three systems called "recipe", none of them complete. See
+    /// docs/architecture/RECIPES-ARE-THREE-SYSTEMS-THAT-NEVER-MEET.md.
+    ///
+    /// Empty (the default) is the ordinary state: a chat room, a profile page, a
+    /// theme pane are regions and nothing more. Steps are ordinary discoverable
+    /// commands — the extension surface is the command system itself, never a new
+    /// field here.
+    #[serde(default)]
+    pub pipeline: Vec<crate::recipe::types::RecipeStep>,
+
     /// Optional explicit composition (level-3 layout). Omitted → organic placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -159,7 +175,7 @@ pub struct ExperienceRecipe {
 /// always works" holds by construction, not by review. Richer shapes (member
 /// lists, durations) arrive as conventions over these JSON types when the
 /// activities that need them land; the schema stays this small on purpose.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/ParamDecl.ts"
@@ -181,7 +197,7 @@ pub struct ParamDecl {
 /// provider at hosting time; the MODEL is the serving daemon's per-host
 /// decision. A recipe authoring a device-specific model id would make the
 /// recipe non-portable across the grid, so the role is all it declares.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/CitizenRecipe.ts"
@@ -197,7 +213,7 @@ pub struct CitizenRecipe {
 /// The authored shape of an [`Affordance`] — the verb and its command plus the
 /// proof its result yields. `who_may` is intentionally ABSENT: it is computed from
 /// the ACL at projection so authorization can never be forged in a recipe.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/experience/AffordanceRecipe.ts"
@@ -259,5 +275,95 @@ impl ExperienceRecipe {
             membership,
             layout: self.layout,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_activity_recipe_carries_a_pipeline_of_ordinary_commands() {
+        // what this catches: before S0 an activity recipe could describe a room and
+        // nothing else, so every activity with real behaviour had to be Rust with its
+        // own store and its own loader. A pipeline of DISCOVERABLE COMMANDS is the
+        // whole extension surface — if this stops round-tripping through the authoring
+        // path, authored activities are back to being compiled ones. Unknown fields at
+        // both levels are TOLERATED (a file authored for a newer executor loads on this
+        // one; capability grows in data first) — the invariant the deleted pipeline
+        // `Recipe` type used to carry.
+        let recipe = ExperienceRecipe::from_json(
+            r#"{
+                "purpose": "campaign/applications",
+                "regions": [],
+                "futureConcept": { "nested": true },
+                "pipeline": [
+                    { "command": "web/search", "params": { "q": "$targets" }, "outputTo": "found" },
+                    { "command": "work/create", "condition": "$found.total != 0", "someFutureKnob": 3 }
+                ]
+            }"#,
+        )
+        .expect("a recipe with a pipeline parses");
+
+        assert_eq!(recipe.pipeline.len(), 2);
+        assert_eq!(recipe.pipeline[0].command, "web/search");
+        assert_eq!(recipe.pipeline[0].output_to.as_deref(), Some("found"));
+        assert_eq!(recipe.pipeline[1].condition.as_deref(), Some("$found.total != 0"));
+    }
+
+    // what this catches: the recipe file has a PUBLISHED schema — an author's editor
+    // validates and completes an authored recipe against it (`"$schema"`), and CI
+    // diffs it, so a schema change is a reviewed change. Written on every test run,
+    // exactly as the ts-rs bindings are; the drift job refuses an unreviewed one.
+    #[test]
+    fn the_recipe_schema_is_published_beside_the_bindings() {
+        let mut schema = schemars::schema_for!(ExperienceRecipe);
+        schema.schema.metadata().title = Some("Continuum activity recipe".to_string());
+        schema.schema.metadata().description = Some(
+            "An authored activity: what a room IS (regions, affordances, citizens, params) and \
+             what it DOES (pipeline). Drop the file in <continuum_root>/recipes/ — it is live \
+             on a running core, no deploy."
+                .to_string(),
+        );
+        // The loader derives a missing `id` from `purpose` (RFC 4122 v5) — "author a
+        // file, zero code" includes zero uuidgen — so the PUBLISHED schema must not
+        // demand one. The Rust type keeps `id` required (a loaded recipe always has
+        // one); the file-level contract is the loader's, and it says optional.
+        let mut json_schema = serde_json::to_value(&schema).expect("schema serializes");
+        if let Some(required) = json_schema.get_mut("required").and_then(serde_json::Value::as_array_mut) {
+            required.retain(|v| v.as_str() != Some("id"));
+        }
+        if let Some(id) = json_schema.pointer_mut("/properties/id") {
+            if let Some(obj) = id.as_object_mut() {
+                obj.insert(
+                    "description".into(),
+                    serde_json::Value::String(
+                        "Stable identity (UUID). Omit it: the loader derives one from `purpose` \
+                         deterministically, so the same file resolves to the same id on every \
+                         node. Shipped recipes pin theirs so identity survives a purpose rename."
+                            .into(),
+                    ),
+                );
+            }
+        }
+        let json = serde_json::to_string_pretty(&json_schema).expect("schema serializes") + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../protocol/schema/experience-recipe.schema.json");
+        std::fs::create_dir_all(path.parent().expect("schema dir")).expect("mkdir schema");
+        std::fs::write(&path, json).expect("write the published schema");
+    }
+
+    #[test]
+    fn a_recipe_without_a_pipeline_stays_the_ordinary_case() {
+        // what this catches: chat, profile, theme/universe and settings are positron
+        // pages — regions and nothing more. Adding `pipeline` must never make them
+        // author a step, so it defaults to empty and their existing files are unchanged.
+        let recipe = ExperienceRecipe::from_json(r#"{ "purpose": "chat", "regions": [] }"#)
+            .expect("a page recipe still parses with no pipeline");
+
+        assert!(
+            recipe.pipeline.is_empty(),
+            "an absent pipeline means no behaviour, never a parse error"
+        );
     }
 }

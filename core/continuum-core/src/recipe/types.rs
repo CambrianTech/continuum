@@ -1,30 +1,26 @@
-//! Recipe wire types — the data a pipeline row deserializes into.
+//! The pipeline STEP — the one unit of authored behaviour.
+//!
+//! There is no `Recipe` here any more (S2): the activity recipe
+//! (`experience::ExperienceRecipe`) carries `pipeline: Vec<RecipeStep>`, and
+//! `PipelineExecutor::run` takes the steps. One schema, one store, one executor.
 //!
 //! Serde-TOLERANT by policy: unknown fields are ignored, every field beyond
-//! `name`/`pipeline` (and `command` per step) defaults. Rows authored for a
-//! future executor still load on an old one; capability grows in DATA first.
+//! `command` defaults. A step authored for a future executor still loads on an
+//! old one; capability grows in DATA first.
 
 use serde::{Deserialize, Serialize};
 
-/// One stored recipe — a named pipeline of command invocations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Recipe {
-    /// The name `recipe/run --name` selects.
-    pub name: String,
-    /// One line of intent, shown when listing/erroring.
-    #[serde(default)]
-    pub description: String,
-    /// The steps, walked in order. Empty = a legal no-op recipe.
-    #[serde(default)]
-    pub pipeline: Vec<RecipeStep>,
-    /// Author-managed row version (data-layer convention).
-    #[serde(default)]
-    pub version: u32,
-}
-
 /// One pipeline step: a command invocation with interpolated params.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Exported to TypeScript because an ACTIVITY recipe carries these too — the
+/// pipeline is how an authored activity expresses behaviour, and the same step
+/// shape serves both entry points (`recipe/run` and `activity/spawn`). One
+/// schema, one executor; see docs/planning/RECIPE-CONVERGENCE-PLAN.md S0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/RecipeStep.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeStep {
     /// The command to dispatch — any discoverable command is legal
@@ -35,21 +31,23 @@ pub struct RecipeStep {
     /// `"$name"` (whole bound value) or embedded `"${name.path}"` (rendered
     /// into the string). `$args.*` reads the caller's invocation params.
     #[serde(default)]
+    #[ts(type = "unknown")]
     pub params: serde_json::Value,
     /// Bind this step's JSON result into state under this name, readable by
     /// later steps' params/conditions.
     #[serde(default)]
+    #[ts(optional)]
     pub output_to: Option<String>,
     /// Skip-condition, evaluated against state BEFORE the step runs. Absent =
     /// always run. See [`crate::recipe::condition`] for the tiny grammar.
     #[serde(default)]
+    #[ts(optional)]
     pub condition: Option<String>,
-    /// What a step error does to the run: `"fail"` (default — the run stops,
-    /// loudly) or `"skip"` (the error is probed, the step binds nothing, the
-    /// run continues). No silent third option, per
+    /// What a step error does to the run. Typed: a misspelled policy is refused at
+    /// load, never silently treated as the default. No third option, per
     /// [[fallbacks-are-illegal-fail-loud]].
     #[serde(default)]
-    pub on_error: Option<String>,
+    pub on_error: OnError,
     /// Retries before `on_error` applies (default 0 — a benchmarked command
     /// owns its own retry policy; this is for known-flaky externals).
     #[serde(default)]
@@ -57,29 +55,61 @@ pub struct RecipeStep {
     /// Per-attempt wall-clock bound. Absent = the command's own timeout
     /// discipline governs.
     #[serde(default)]
+    #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
+    /// Who must say yes before this step runs. `"human"` = the run HOLDS here: the
+    /// step is not dispatched, the receipt names it (`held_at`), and nothing after
+    /// it runs. Absent = the step runs unattended. This is the approval boundary
+    /// for irreversible outward actions (submitting an application, sending mail)
+    /// — a property of the STEP, authored in data, never a policy hidden elsewhere.
+    #[serde(default)]
+    #[ts(optional)]
+    pub approval: Option<Approval>,
+    /// Fan out: a `$binding` (or `${path}`) that resolves to an ARRAY; the step runs
+    /// once per element with `$item` (and `$index`) bound, and `outputTo` binds the
+    /// array of per-element results in order. A step with no `each` runs once.
+    /// This is how one `work/create` step posts a whole imported suite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub each: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// What a failed step does to the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/OnError.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum OnError {
+    /// The run stops at the step, loudly, naming it. The default.
+    #[default]
+    Fail,
+    /// The error is probed, the step binds nothing, the run continues.
+    Skip,
+}
 
-    #[test]
-    fn recipe_rows_parse_tolerantly_with_unknown_fields() {
-        // what this catches: a row authored for a NEWER executor (extra
-        // fields, absent optionals) must load on this one — data-first growth.
-        let row: Recipe = serde_json::from_value(serde_json::json!({ // boundary: test row crossing the data-layer shape into a typed Recipe
-            "name": "x",
-            "futureConcept": {"nested": true},
-            "pipeline": [
-                {"command": "data/list", "params": {"collection": "users"}, "outputTo": "rows"},
-                {"command": "chat/send", "condition": "$rows.total != 0", "someFutureKnob": 3}
-            ]
-        }))
-        .expect("tolerant parse");
-        assert_eq!(row.pipeline.len(), 2);
-        assert_eq!(row.pipeline[0].output_to.as_deref(), Some("rows"));
-        assert_eq!(row.pipeline[1].condition.as_deref(), Some("$rows.total != 0"));
-        assert_eq!(row.pipeline[1].retry_count, 0);
+impl std::fmt::Display for OnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            OnError::Fail => "fail",
+            OnError::Skip => "skip",
+        })
+    }
+}
+
+/// Who must say yes before a step runs. Only humans today; the enum is the
+/// extension point (a named role, a quorum) so a future value is a variant with
+/// meaning, never a string the executor has to guess at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/Approval.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum Approval {
+    /// A human presses the button. The run HOLDS here.
+    Human,
+}
+
+impl std::fmt::Display for Approval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Approval::Human => "human",
+        })
     }
 }

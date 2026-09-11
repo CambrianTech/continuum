@@ -22,10 +22,49 @@ pub trait ExperienceSource: Send + Sync {
     /// room's purpose (the caller may fall back to another source or a default —
     /// never a silent stand-in, `[[fallbacks-are-illegal-fail-loud]]`).
     fn experience_for(&self, room_id: Uuid) -> Option<Experience>;
+
+    /// The authored recipe for a PURPOSE (`benchmark/swe`, `campaign/applications`),
+    /// or `None` when this source knows no such purpose. `recipe/run` resolves its
+    /// name through this (S2): one registry for what a room IS and what an activity
+    /// DOES, instead of a second store of pipeline rows beside the recipe files.
+    fn recipe_for_purpose(&self, purpose: &str) -> Option<ExperienceRecipe>;
 }
 
 /// Shared handle to an [`ExperienceSource`].
 pub type SharedExperienceSource = Arc<dyn ExperienceSource>;
+
+/// The node's ONE experience source, installed by the boot path that builds the
+/// room→purpose index (ipc) and read by the persona spawn path. Same seam shape as
+/// [`crate::cognition::persona_workspace::global`]: the path that builds minds and
+/// the path that resolves rooms share a handle instead of each loading recipes.
+///
+/// Why a persona needs this at all (S1, docs/planning/RECIPE-CONVERGENCE-PLAN.md):
+/// until now `experience_for` had exactly one production caller — the positron
+/// projection — so a room's authored `affordances` reached every RENDERER and never
+/// the citizen standing in the room. Her tool surface was a global list filtered by
+/// hardcoded prefixes; the recipe could not add a verb or withhold one. The cycle
+/// reads this on every tick to stamp the room's affordances onto the turn.
+///
+/// `None` before install (tests, a headless boot with no purpose index): the cycle
+/// then stamps no affordances and the surface is exactly what it was before S1.
+pub fn node_experience_source() -> Option<SharedExperienceSource> {
+    NODE_EXPERIENCE.get().cloned()
+}
+
+/// Install the node's experience source. First caller wins; a second install is a
+/// boot-order bug and is reported, never silently replaced — two sources would mean
+/// two answers to "what may a citizen do in this room".
+pub fn install_node_experience_source(source: SharedExperienceSource) {
+    if NODE_EXPERIENCE.set(source).is_err() {
+        tracing::error!(
+            target: "experience",
+            "node experience source installed twice — the first install stands; \
+             a second means two boot paths each built a recipe registry"
+        );
+    }
+}
+
+static NODE_EXPERIENCE: std::sync::OnceLock<SharedExperienceSource> = std::sync::OnceLock::new();
 
 /// What can go wrong loading authored recipes off disk. Every variant names the
 /// FILE, because the person debugging is the person who just wrote that file and
@@ -115,9 +154,13 @@ pub mod shipped {
     /// A project — one repo's work: a board, a room per card under it (`project`) —
     /// `2f6b1c0e-4c7a-4d0b-9a7e-5a1c3e9f7b21`.
     pub const PROJECT: RecipeId = RecipeId::from_u128(0x2f6b1c0e_4c7a_4d0b_9a7e_5a1c3e9f7b21);
+    /// The AUTHORED round (S4a): `benchmark/swe` — its steps are verbs, its behaviour is
+    /// data. Pinned like every shipped recipe so the id survives a purpose rename.
+    pub const BENCHMARK_SWE: RecipeId =
+        RecipeId::from_u128(0xc0a1554f_f2c1_4942_8de5_de9c13ce6783);
 
     /// Every shipped id, for tests and for enumerating the prod-critical floor.
-    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, CHAT, PROFILE, VIDEO_CHAT];
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_SWE, CHAT, PROFILE, VIDEO_CHAT];
 }
 
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
@@ -273,6 +316,7 @@ impl RecipeExperienceSource {
     fn embedded() -> impl Iterator<Item = ExperienceRecipe> {
         [
             include_str!("recipes/benchmark.json"),
+            include_str!("recipes/benchmark-swe.json"),
             include_str!("recipes/chat.json"),
             include_str!("recipes/video-chat.json"),
             include_str!("recipes/profile.json"),
@@ -367,10 +411,61 @@ impl ExperienceSource for RecipeExperienceSource {
             .get(&purpose)
             .map(|recipe| recipe.clone().project(Vec::new()))
     }
+
+    fn recipe_for_purpose(&self, purpose: &str) -> Option<ExperienceRecipe> {
+        self.by_purpose.get(purpose).cloned()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn recipe_run_resolves_a_purpose_through_the_same_registry_rooms_do() {
+        // what this catches: S2 — `recipe/run` used to read a SECOND store (rows in the
+        // `recipes` data collection, zero of which ever existed on a node) while rooms
+        // resolved from the recipe files. One registry, two readers: a purpose that
+        // spawns a room is the same purpose that runs a pipeline, and an unknown
+        // purpose is `None`, never a fabricated recipe.
+        let source = RecipeExperienceSource::builtins(crate::ipc::room_purpose::default_source());
+        let chat = source.recipe_for_purpose("chat").expect("chat ships");
+        assert_eq!(chat.purpose, "chat");
+        assert!(source.recipe_for_purpose("campaign/never-authored").is_none());
+    }
+
+    #[test]
+    fn every_shipped_page_declares_no_pipeline_and_the_authored_round_uses_known_verbs() {
+        // what this catches: the shipped floor's shape. Chat, profile, project and
+        // video-chat are positron pages — regions and nothing more — so they must never
+        // grow a pipeline by accident; and the ONE authored round (`benchmark/swe`, S4)
+        // must be made only of verbs, so a recipe can be re-authored without a compiler.
+        // The verbs an authored benchmark round is allowed to be made of. A new step
+        // means a new verb, added here on purpose — never a Rust call the recipe cannot
+        // make. (S4a: the round is authored; dispatch remains the Rust door beside it.)
+        const ROUND_VERBS: &[&str] = &[
+            "benchmark/import", "benchmark/round-open", "work/create",
+            "benchmark/round-track", "activity/invite", "chat/send",
+        ];
+        for recipe in RecipeExperienceSource::embedded() {
+            if recipe.purpose == "benchmark/swe" {
+                assert!(!recipe.pipeline.is_empty(), "the authored round declares its steps");
+                for step in &recipe.pipeline {
+                    assert!(
+                        ROUND_VERBS.contains(&step.command.as_str()),
+                        "benchmark/swe step `{}` is not a known round verb",
+                        step.command
+                    );
+                }
+                continue;
+            }
+            assert!(
+                recipe.pipeline.is_empty(),
+                "shipped recipe {} grew a pipeline it was not given deliberately",
+                recipe.purpose
+            );
+        }
+    }
+
     use super::*;
 
     /// what this catches (#274): every `shipped::` constant must name a recipe that
@@ -387,7 +482,7 @@ mod tests {
                 "shipped::{id} has no recipe — constant and authored JSON id have drifted"
             );
         }
-        assert_eq!(shipped::ALL.len(), 4, "all four shipped recipes are named");
+        assert_eq!(shipped::ALL.len(), 5, "every named shipped recipe is listed");
     }
 
     /// what this catches (#274): ids must be UNIQUE. Two recipes sharing an id would
@@ -397,7 +492,11 @@ mod tests {
     fn shipped_ids_are_unique_and_match_their_purposes() {
         let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
         let ids: std::collections::HashSet<_> = source.ids().collect();
-        assert_eq!(ids.len(), 5, "five distinct ids, none colliding");
+        assert_eq!(
+            ids.len(),
+            RecipeExperienceSource::embedded().count(),
+            "every shipped id is distinct — one per embedded recipe, none colliding"
+        );
 
         // The id→purpose pairing is the contract core code relies on when it says
         // `shipped::BENCHMARK_HARD_RS` and means the Rust gym.

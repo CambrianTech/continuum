@@ -1,10 +1,11 @@
-//! `recipe/run` — execute a stored recipe pipeline by name.
+//! `recipe/run` — execute an authored recipe's pipeline by purpose.
 //!
-//! The recipe is a ROW in the `recipes` collection (authored via
-//! `data/create`, listed via `data/list`); its `pipeline[]` steps are command
-//! invocations walked by [`crate::recipe::PipelineExecutor`]. Loading goes
-//! through `data/list` AS A COMMAND (the universal primitive, same as the
-//! benchmark recipe path) — never a private store read.
+//! The recipe is the SAME activity recipe a room spawns from (embedded floor +
+//! `<continuum_root>/recipes` overlay), resolved through the node's one
+//! [`ExperienceSource`](crate::experience::source::ExperienceSource) by purpose;
+//! its `pipeline[]` steps are command invocations walked by
+//! [`crate::recipe::PipelineExecutor`]. Until S2 this read a second store — rows in
+//! a `recipes` data collection — of which zero ever existed on any node.
 //!
 //! Access is Privileged: a pipeline dispatches arbitrary commands with the
 //! substrate's own trust. Per-caller identity threading (so a persona-invoked
@@ -25,14 +26,14 @@ use ts_rs::TS;
 #[ts(export, export_to = "../../../protocol/typescript/recipe/RecipeRunParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeRunParams {
-    /// The recipe row's `name` in the `recipes` collection.
+    /// The recipe's PURPOSE (`activity/recipes` lists them) — the same string
+    /// `activity/spawn --recipe` accepts.
     pub name: String,
     /// Invocation arguments, readable by steps as `$args.*`. The recipe's own
     /// pipeline decides which are required — an unresolved reference fails
     /// loudly, naming itself.
     #[serde(default)]
     #[ts(optional, type = "unknown")]
-    #[schemars(skip)]
     pub args: Option<serde_json::Value>,
 }
 
@@ -49,6 +50,9 @@ pub struct RecipeRunResult {
     /// the recipe itself.
     #[ts(type = "unknown")]
     pub bindings: serde_json::Value,
+    /// The step the run HELD at for a human's approval, if any (S3).
+    #[ts(optional)]
+    pub held_at: Option<u32>,
 }
 
 pub struct RecipeRun {
@@ -62,9 +66,9 @@ impl ActionCommand for RecipeRun {
     const NAME: &'static str = "recipe/run";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Run a stored recipe: a pipeline of command invocations authored as data \
-         (rows in the `recipes` collection). Pass `args` for the recipe's `$args.*` \
-         references.";
+        "Run an authored recipe's pipeline by purpose (the same catalogue \
+         `activity/recipes` lists and `activity/spawn` accepts). Pass `args` for the \
+         recipe's `$args.*` references.";
     type Params = RecipeRunParams;
     type Output = RecipeRunResult;
 
@@ -74,39 +78,25 @@ impl ActionCommand for RecipeRun {
             .get()
             .ok_or_else(|| CommandError::Internal("recipe/run: substrate executor not yet bound".into()))?;
 
-        // Load the row through the data layer — the same envelope discipline
-        // the benchmark recipe loader established.
-        let listed = executor
-            .execute(
-                "data/list",
-                serde_json::json!({
-                    "collection": "recipes",
-                    "filter": {"name": p.name},
-                    "limit": 1
-                }),
+        // One registry for what a room IS and what an activity DOES (S2). Absence
+        // of the source is a boot-order fact, not a recipe fact — say which.
+        let source = crate::experience::source::node_experience_source().ok_or_else(|| {
+            CommandError::Internal(
+                "recipe/run: the node's experience source is not installed — the boot path \
+                 that builds the room-purpose index has not run"
+                    .into(),
             )
-            .await
-            .map_err(CommandError::Internal)?
-            .to_json_value()
-            .map_err(CommandError::Internal)?;
-        let row = listed
-            .get("items")
-            .and_then(|v| v.as_array())
-            .and_then(|items| items.first())
-            .and_then(|item| item.get("data"))
-            .cloned()
-            .ok_or_else(|| {
-                CommandError::Invalid(format!(
-                    "recipe `{}` not found — author it with data/create --collection=recipes \
-                     (see docs/architecture/RECIPE-EXECUTION-RUNTIME.md for the pipeline shape)",
-                    p.name
-                ))
-            })?;
-        let recipe: crate::recipe::Recipe = serde_json::from_value(row) // boundary: a data-layer row crossing into a typed Recipe
-            .map_err(|e| CommandError::Invalid(format!("recipe `{}` row malformed: {e}", p.name)))?;
+        })?;
+        let recipe = source.recipe_for_purpose(&p.name).ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "no recipe with purpose `{}` — `activity/recipes` lists the catalogue; author \
+                 one as a JSON file in the recipes overlay directory (no code, no deploy)",
+                p.name
+            ))
+        })?;
 
         let receipt = crate::recipe::PipelineExecutor::new(executor.clone())
-            .run(&recipe, p.args.unwrap_or(serde_json::Value::Null)) // unwrap_or: no args = null, steps referencing $args.* then fail loud by name
+            .run(&recipe.purpose, &recipe.pipeline, p.args.unwrap_or(serde_json::Value::Null)) // unwrap_or: no args = null, steps referencing $args.* then fail loud by name
             .await
             .map_err(CommandError::Internal)?;
 
@@ -116,6 +106,7 @@ impl ActionCommand for RecipeRun {
             steps_skipped: receipt.steps_skipped,
             trace: receipt.trace,
             bindings: serde_json::Value::Object(receipt.bindings),
+            held_at: receipt.held_at,
         })
     }
 }
