@@ -266,7 +266,7 @@ impl ProcessCommand {
             "authored command process started"
         );
         if let Some(mut stdin) = child.stdin.take() {
-            let body = serde_json::to_vec(&params).map_err(|e| e.to_string())?;
+            let body = serde_json::to_vec(&params).map_err(|e| e.to_string())?; // boundary: params leave this process on the child's stdin
             // A program that never reads stdin must not wedge the call: write, then drop.
             let _ = stdin.write_all(&body).await;
             let _ = stdin.shutdown().await;
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn manifests_load_or_are_refused_by_file_and_reason() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let w = |f: &str, m: &CommandManifest| std::fs::write(dir.path().join(f), serde_json::to_string(m).unwrap()).unwrap();
+        let w = |f: &str, m: &CommandManifest| std::fs::write(dir.path().join(f), serde_json::to_string(m).unwrap()).unwrap(); // boundary: the test writes a manifest FILE the loader reads from disk
         w("a.json", &manifest("ext/good", &["cat"]));
         w("b.json", &manifest("ping", &["cat"]));                 // collides with a shipped verb
         w("c.json", &manifest("ext/good", &["cat"]));            // duplicate of a.json
@@ -464,7 +464,7 @@ mod tests {
              <continuum_root>/commands/ — it is live on the next boot, no deploy, no repo change."
                 .to_string(),
         );
-        let json = serde_json::to_string_pretty(&schema).expect("schema serializes") + "\n";
+        let json = serde_json::to_string_pretty(&schema).expect("schema serializes") + "\n"; // boundary: the published schema file on disk
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol/schema/command-manifest.schema.json");
         std::fs::create_dir_all(path.parent().expect("schema dir")).expect("mkdir");
         std::fs::write(&path, json).expect("write the published schema");
