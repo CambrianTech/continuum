@@ -6,17 +6,22 @@
 
 ## Why now
 
-On 2026-09-11, Terence Tao and two dozen other Fields Medalists published the [Math and AI declaration](https://mathandai.org) — *A Severe Misalignment of AI in Mathematics*. In their words:
+On 2026-09-11, twenty-five Fields Medalists — Avila, Bhargava, Birkar, Deligne, Deng, Donaldson,
+Duminil-Copin, Figalli, Hairer, Huh, Kontsevich, Lindenstrauss, Lions, Maynard, McMullen, Mori,
+Ngô, Okounkov, Scholze, Smirnov, Tao, Viazovska, Villani, Werner and Zelmanov — published
+*A Severe Misalignment of AI in Mathematics* ([mathandai.org](https://mathandai.org)). In their words:
 
 > "The push by AI companies to solve mathematical problems as a benchmark is detrimental to the science of mathematics, and to the mathematical community. The goals of the AI companies and the goals of the mathematical community are severely misaligned."
 >
-> "Often these solutions are announced in a rush, leaving no time for a proper writeup, the isolation of new methods and ideas, and citing relevant previous work of others. As in all creative professions, this raises severe attribution and plagiarism questions."
+> "The most precious resources of our profession are students and ideas, and these we nurture with great care. […] Our ideas we disseminate in talks, private discussions and careful writeups, connecting them to the previous ideas of others."
 >
-> "The most precious resources of our profession are students and ideas, and these we nurture with great care."
+> "Often these solutions are announced in a rush, leaving no time for a proper writeup, the isolation of new methods and ideas, and citing relevant previous work of others. As in all creative professions, this raises severe attribution and plagiarism questions. Moreover, without the willing mathematicians who must take care of their development and integration into the mathematical canon, AI-conceived ideas would never become fully alive and the crucial human transmission chain between mathematicians would be lost."
+>
+> "Whether these changes ultimately benefit the field or have a destructive effect will in large part be determined by the decisions of the humans in control of this new technology."
 
 Reported alongside it: an offer to put a professor's name on a machine-generated proof on the condition that he drop a coauthor.
 
-That is a description of a system where the work leaves its makers the moment it is typed in. Continuum is built so that it does not have to.
+The letter's own framing is the useful one: solving problems is *a tool and proxy* for understanding; "the mass production at faster and faster pace of 'true/false' statements could destroy fertile ground instead of breathing life into new ideas." A system that treats a proof as a benchmark score and the mathematician as an input is a system where the work leaves its makers the moment it is typed in. Continuum is built so that it does not have to — and so that the *transmission chain* the letter names is a thing the substrate records rather than erases.
 
 ## The four mechanisms
 
