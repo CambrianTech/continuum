@@ -27,6 +27,39 @@ pub trait ExperienceSource: Send + Sync {
 /// Shared handle to an [`ExperienceSource`].
 pub type SharedExperienceSource = Arc<dyn ExperienceSource>;
 
+/// The node's ONE experience source, installed by the boot path that builds the
+/// room→purpose index (ipc) and read by the persona spawn path. Same seam shape as
+/// [`crate::cognition::persona_workspace::global`]: the path that builds minds and
+/// the path that resolves rooms share a handle instead of each loading recipes.
+///
+/// Why a persona needs this at all (S1, docs/planning/RECIPE-CONVERGENCE-PLAN.md):
+/// until now `experience_for` had exactly one production caller — the positron
+/// projection — so a room's authored `affordances` reached every RENDERER and never
+/// the citizen standing in the room. Her tool surface was a global list filtered by
+/// hardcoded prefixes; the recipe could not add a verb or withhold one. The cycle
+/// reads this on every tick to stamp the room's affordances onto the turn.
+///
+/// `None` before install (tests, a headless boot with no purpose index): the cycle
+/// then stamps no affordances and the surface is exactly what it was before S1.
+pub fn node_experience_source() -> Option<SharedExperienceSource> {
+    NODE_EXPERIENCE.get().cloned()
+}
+
+/// Install the node's experience source. First caller wins; a second install is a
+/// boot-order bug and is reported, never silently replaced — two sources would mean
+/// two answers to "what may a citizen do in this room".
+pub fn install_node_experience_source(source: SharedExperienceSource) {
+    if NODE_EXPERIENCE.set(source).is_err() {
+        tracing::error!(
+            target: "experience",
+            "node experience source installed twice — the first install stands; \
+             a second means two boot paths each built a recipe registry"
+        );
+    }
+}
+
+static NODE_EXPERIENCE: std::sync::OnceLock<SharedExperienceSource> = std::sync::OnceLock::new();
+
 /// What can go wrong loading authored recipes off disk. Every variant names the
 /// FILE, because the person debugging is the person who just wrote that file and
 /// the only useful answer is which one and why.

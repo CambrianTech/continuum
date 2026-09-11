@@ -31,6 +31,94 @@
   ],
   "affordances": [
     {
+      "verb": "list",
+      "command": "commands/list"
+    },
+    {
+      "verb": "help",
+      "command": "commands/help"
+    },
+    {
+      "verb": "search",
+      "command": "code/search"
+    },
+    {
+      "verb": "tree",
+      "command": "code/tree"
+    },
+    {
+      "verb": "list-files",
+      "command": "code/list"
+    },
+    {
+      "verb": "read",
+      "command": "code/read"
+    },
+    {
+      "verb": "edit",
+      "command": "code/edit"
+    },
+    {
+      "verb": "write",
+      "command": "code/write"
+    },
+    {
+      "verb": "run",
+      "command": "code/run"
+    },
+    {
+      "verb": "shell",
+      "command": "code/shell"
+    },
+    {
+      "verb": "git-status",
+      "command": "code/git/status"
+    },
+    {
+      "verb": "git-diff",
+      "command": "code/git/diff"
+    },
+    {
+      "verb": "git-commit",
+      "command": "code/git/commit"
+    },
+    {
+      "verb": "claim",
+      "command": "work/claim"
+    },
+    {
+      "verb": "state",
+      "command": "work/state"
+    },
+    {
+      "verb": "release",
+      "command": "work/release"
+    },
+    {
+      "verb": "get",
+      "command": "work/get"
+    },
+    {
+      "verb": "list-work",
+      "command": "work/list"
+    },
+    {
+      "verb": "heartbeat",
+      "command": "work/heartbeat"
+    },
+    {
+      "verb": "fetch",
+      "command": "web/fetch"
+    },
+    {
+      "verb": "web-search",
+      "command": "web/search"
+    },
+    {
+      "verb": "members",
+      "command": "room/members"
+    },
+    {
       "verb": "observe",
       "command": "cognition/observe"
     }

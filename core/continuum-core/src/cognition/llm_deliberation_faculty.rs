@@ -268,6 +268,11 @@ pub struct LlmDeliberationFaculty {
     /// filtering the wire names by `code/` prefixes matched nothing and every
     /// work turn went out with ZERO tools (2026-09-04, 13 turns, all passed).
     hands_specs: Vec<NativeToolSpec>,
+    /// The RAW command name of each entry in `native_specs`, same order. The specs
+    /// are cached in the model's wire dialect (`edit_file`), so any selection keyed
+    /// on canonical names (`code/edit`) — the room's affordances — must key here.
+    /// The 2026-09-04 muting was exactly a name-space mismatch at this seam.
+    native_command_names: Vec<String>,
     /// Token cost of serializing `native_specs` into the request — memoized at
     /// [`Self::rebuild_tool_surface`] time because the specs are static between
     /// rebuilds while [`Self::describe_tool_tokens`] is consulted on EVERY
@@ -345,6 +350,7 @@ impl LlmDeliberationFaculty {
             tools: Vec::new(),
             native_specs: Vec::new(),
             hands_specs: Vec::new(),
+            native_command_names: Vec::new(),
             tool_surface_tokens: 0,
             hands_surface_tokens: 0,
             working_memory: None,
@@ -455,6 +461,7 @@ impl LlmDeliberationFaculty {
         if self.tools.is_empty() {
             self.native_specs.clear();
             self.hands_specs.clear();
+            self.native_command_names.clear();
             self.tool_surface_tokens = 0;
             self.hands_surface_tokens = 0;
             return;
@@ -490,6 +497,7 @@ impl LlmDeliberationFaculty {
         // [[filter-once-centrally-multiple-adhoc-filters-are-clamps-that-tank-benchmarks]]
         // [[budget-at-assembly-never-clamp-the-prompt]]
         let raw = persona_tools::native_tool_specs();
+        self.native_command_names = raw.iter().map(|s| s.name.clone()).collect();
         self.hands_specs = hands_surface(&raw)
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
@@ -540,6 +548,19 @@ impl LlmDeliberationFaculty {
                 reason: SurfaceReason::NoTools,
             };
         }
+        // S1: the ROOM's recipe decides first. When its affordances name any of her
+        // native verbs, that set (plus the discovery pair) is the surface — a rule,
+        // authored as data, reaching her hands. It outranks focus and budget because
+        // both of those narrow a surface the room has already bounded. Empty (the
+        // ordinary room today) or matching nothing native falls through to the
+        // pre-S1 arms unchanged.
+        if let Some((specs, tokens)) = self.room_surface(ws) {
+            return SelectedSurface {
+                specs: Some(std::borrow::Cow::Owned(specs)),
+                tokens,
+                reason: SurfaceReason::RoomAffordances,
+            };
+        }
         // A work turn takes her HANDS for FOCUS, not for size — that choice predates
         // the window budget and is independent of it.
         let is_work_turn = self.is_work_turn(ws);
@@ -558,7 +579,7 @@ impl LlmDeliberationFaculty {
         };
         match reason {
             SurfaceReason::Full => SelectedSurface {
-                specs: Some(&self.native_specs),
+                specs: Some(std::borrow::Cow::Borrowed(&self.native_specs)),
                 tokens: self.tool_surface_tokens,
                 reason,
             },
@@ -567,11 +588,58 @@ impl LlmDeliberationFaculty {
             // `commands/list` away. Amputating the surface is the #206 cliff
             // (14/14 SWE acts spent on `commands/help`, 0 edits).
             _ => SelectedSurface {
-                specs: Some(&self.hands_specs),
+                specs: Some(std::borrow::Cow::Borrowed(&self.hands_specs)),
                 tokens: self.hands_surface_tokens,
                 reason,
             },
         }
+    }
+
+    /// The surface the ROOM selects, or `None` when the room does not select one.
+    ///
+    /// `None` on two honest grounds: the recipe declares no affordances (the ordinary
+    /// room, pre-S1 behaviour), or it declares some and NONE is a native verb of hers
+    /// — a recipe naming `mail/send` on a node with no such tool. The second case is
+    /// probed by name, because an author who wrote a rule that binds nothing should
+    /// learn that from the ledger, not from a citizen who never acted. In neither
+    /// case is the surface ever empty: the fallback is the pre-S1 selection.
+    fn room_surface(&self, ws: &Workspace) -> Option<(Vec<NativeToolSpec>, usize)> {
+        if ws.room_affordances.is_empty() {
+            return None;
+        }
+        let allowed: std::collections::HashSet<&str> =
+            ws.room_affordances.iter().map(String::as_str).collect();
+        let mut granted = 0usize;
+        let specs: Vec<NativeToolSpec> = self
+            .native_command_names
+            .iter()
+            .zip(self.native_specs.iter())
+            .filter(|(name, _)| {
+                let name = name.as_str();
+                if allowed.contains(name) {
+                    granted += 1;
+                    true
+                } else {
+                    // The discovery pair always rides: a withheld verb stays one
+                    // `commands/list` away (the #206 cliff guard, unchanged).
+                    name.starts_with("commands/")
+                }
+            })
+            .map(|(_, spec)| spec.clone())
+            .collect();
+        if granted == 0 {
+            crate::probe!(
+                class = "delib.surface.room_affordances_unmatched",
+                persona = %self.persona_name,
+                room = %ws.room_id,
+                declared = ws.room_affordances.len(),
+                "the room's recipe declares affordances and none names a native verb — \
+                 the rule binds nothing here; offering the pre-S1 surface instead"
+            );
+            return None;
+        }
+        let tokens = Self::tool_surface_tokens_of(&specs);
+        Some((specs, tokens))
     }
 
     /// Serde-and-count the tool surface ONCE per rebuild — the only place the
@@ -2879,6 +2947,11 @@ pub(crate) enum SurfaceReason {
     /// The full surface did NOT fit its share of the served window. She wanted it
     /// and the window refused it — this arm is a truncation, the others are not.
     HandsForBudget,
+    /// The ROOM's recipe declares affordances, and they selected the surface (S1).
+    /// Not a truncation: the recipe is the rule, and a rule is never a loss —
+    /// `demand_tokens` prices what was sent. The discovery pair rides along so a
+    /// withheld verb stays one `commands/list` away.
+    RoomAffordances,
 }
 
 /// The tool surface a turn actually sends, its cost, and why it is that surface.
@@ -2887,7 +2960,9 @@ pub(crate) enum SurfaceReason {
 /// two can no longer disagree about what is on the wire (card dec1a7ff).
 pub(crate) struct SelectedSurface<'a> {
     /// Exactly what goes into the request. `None` only when there are no tools.
-    specs: Option<&'a [NativeToolSpec]>,
+    /// Borrowed from the faculty's cache on every pre-S1 arm; owned only when the
+    /// room's affordances selected it (a per-turn subset, S1).
+    specs: Option<std::borrow::Cow<'a, [NativeToolSpec]>>,
     /// Cost of what is actually SENT — the number the message budget must use.
     tokens: usize,
     reason: SurfaceReason,
@@ -3504,7 +3579,7 @@ impl Faculty for LlmDeliberationFaculty {
             }
             // Selection and budget accounting borrow the cached schemas. Only the
             // owned inference request needs a copy of the selected surface.
-            let tools = selected.specs.map(<[NativeToolSpec]>::to_vec);
+            let tools = selected.specs.map(std::borrow::Cow::into_owned);
 
             let request = self.build_request_within(
                 &binding,
@@ -4073,6 +4148,124 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: S1's whole point. A room whose recipe declares affordances
+    // gets EXACTLY those native verbs plus the discovery pair — the recipe is the
+    // rule and the rule reaches her hands. Before this, `affordances` rode into the
+    // manifest and every room offered the same prefix-filtered global list.
+    #[test]
+    fn a_room_that_declares_affordances_selects_exactly_those_plus_the_discovery_pair() {
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(),
+            "Asha",
+            "You are Asha.",
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        )
+        .with_context_window(65_536)
+        .with_tools(persona_tools::native_tool_specs());
+        let mut ws = Workspace::new("find the docs for this API");
+        ws.room_affordances = vec!["web/fetch".to_string(), "web/search".to_string()];
+
+        let selected = faculty.select_tool_surface(&ws, 65_536);
+        assert_eq!(selected.reason, SurfaceReason::RoomAffordances);
+        let offered = selected.specs.as_deref().expect("a surface was offered");
+        let names: Vec<&str> = faculty
+            .native_command_names
+            .iter()
+            .zip(faculty.native_specs.iter())
+            .filter(|(_, spec)| offered.iter().any(|o| o.name == spec.name))
+            .map(|(raw, _)| raw.as_str())
+            .collect();
+        for must in ["web/fetch", "web/search", "commands/list", "commands/help"] {
+            assert!(names.contains(&must), "room-selected surface must carry {must}: {names:?}");
+        }
+        assert!(
+            !names.iter().any(|n| n.starts_with("code/")),
+            "a room that did not grant code/* must not offer it: {names:?}"
+        );
+        assert_eq!(
+            selected.tokens,
+            LlmDeliberationFaculty::tool_surface_tokens_of(offered),
+            "the price is the price of what was sent"
+        );
+    }
+
+    // what this catches: the regression S1 must not cause. A room whose recipe
+    // declares NO affordances — every chat, profile, theme and settings page today —
+    // must get a surface byte-identical to the pre-S1 one on every arm, or the slice
+    // has amputated hands nobody asked it to touch.
+    #[test]
+    fn a_room_that_declares_nothing_is_byte_identical_to_the_pre_s1_surface() {
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(),
+            "Asha",
+            "You are Asha.",
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        )
+        .with_context_window(65_536)
+        .with_tools(persona_tools::native_tool_specs());
+        let mut work = Workspace::new("fix the failing test");
+        work.workspace_deliverable = true;
+        for (ws, want) in [
+            (Workspace::new("anything open?"), SurfaceReason::Full),
+            (work, SurfaceReason::HandsForWork),
+        ] {
+            assert!(ws.room_affordances.is_empty(), "the ordinary room declares none");
+            let selected = faculty.select_tool_surface(&ws, 65_536);
+            assert_eq!(selected.reason, want);
+            let expected: &[NativeToolSpec] = match want {
+                SurfaceReason::Full => &faculty.native_specs,
+                _ => &faculty.hands_specs,
+            };
+            assert_eq!(selected.specs.as_deref(), Some(expected));
+        }
+    }
+
+    // what this catches: a rule that binds nothing must never bind to NOTHING. A
+    // recipe naming only verbs this node has no native tool for (`mail/send` before
+    // mail exists) falls back to the pre-S1 surface and says so in the ledger —
+    // never an empty offer (the #206 cliff: 14/14 acts on commands/help, 0 edits).
+    #[test]
+    fn a_room_whose_affordances_match_no_native_verb_falls_back_never_to_nothing() {
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(),
+            "Asha",
+            "You are Asha.",
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        )
+        .with_context_window(65_536)
+        .with_tools(persona_tools::native_tool_specs());
+        let mut ws = Workspace::new("chase the recruiter");
+        ws.room_affordances = vec!["mail/send".to_string()];
+        let selected = faculty.select_tool_surface(&ws, 65_536);
+        assert_eq!(selected.reason, SurfaceReason::Full, "fell through to the pre-S1 arm");
+        assert_eq!(selected.specs.as_deref(), Some(faculty.native_specs.as_slice()));
+    }
+
+    // what this catches: the shipped benchmark recipe is now the RULE for every
+    // benchmark room, so it must authorize at least her hands — every verb the
+    // pre-S1 work turn offered — or S1 would take tools away from the citizens
+    // solving cards right now. If a new native hand is added without being
+    // authored here, this names it.
+    #[test]
+    fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
+        let recipe = crate::experience::recipe::ExperienceRecipe::from_json(include_str!(
+            "../experience/recipes/benchmark.json"
+        ))
+        .expect("shipped benchmark recipe parses");
+        let authorized: std::collections::HashSet<&str> =
+            recipe.affordances.iter().map(|a| a.command.as_str()).collect();
+        let raw = persona_tools::native_tool_specs();
+        let missing: Vec<String> = hands_surface(&raw)
+            .into_iter()
+            .map(|s| s.name)
+            .filter(|n| !authorized.contains(n.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "benchmark.json must authorize every hand; missing: {missing:?}"
+        );
+    }
 
     // what this catches: the hands surface chosen on WIRE names — `code/` prefixes
     // matched nothing after the dialect renamed them and every work turn went out
@@ -5503,7 +5696,7 @@ mod tests {
                 ] {
                     let faculty = faculty_with_the_real_registry(window);
                     let selected = faculty.select_tool_surface(&ws, window);
-                    let specs = selected.specs.as_ref().expect("a tool surface was offered");
+                    let specs = selected.specs.as_deref().expect("a tool surface was offered");
                     assert_eq!(
                         selected.tokens,
                         LlmDeliberationFaculty::tool_surface_tokens_of(specs),

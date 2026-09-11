@@ -3858,6 +3858,36 @@ pub fn start_server(
                         None => crate::ipc::room_purpose::default_source(),
                     };
 
+                // S1: the SAME recipe registry the projection resolves from, handed
+                // to the persona spawn path — so a room's authored affordances select
+                // the citizen's tool surface, not only what the renderer draws. One
+                // registry, two readers. The overlay refusal arm mirrors
+                // positron_source::spawn: a malformed authored recipe is named, and
+                // the embedded floor keeps every room resolvable.
+                {
+                    use crate::experience::source::RecipeExperienceSource;
+                    let overlay_dir = RecipeExperienceSource::overlay_dir(
+                        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    );
+                    let source = match RecipeExperienceSource::builtins_with_overlay(
+                        room_purpose.clone(),
+                        &overlay_dir,
+                    ) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                dir = %overlay_dir.display(),
+                                "recipe overlay REFUSED for the persona experience source — \
+                                 citizens see EMBEDDED recipes' affordances only until the \
+                                 named file is fixed or removed (#432)"
+                            );
+                            RecipeExperienceSource::builtins(room_purpose.clone())
+                        }
+                    };
+                    crate::experience::source::install_node_experience_source(Arc::new(source));
+                }
+
                 positron_source::spawn(
                     &state.rt_handle,
                     projection_bus.clone(),

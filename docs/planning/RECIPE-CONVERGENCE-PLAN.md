@@ -98,6 +98,27 @@ input. No second clamp anywhere (`[[filter-once-centrally...]]`).
 - **Risk:** this is the slice that can silently amputate a citizen's hands. The empty-set
   fallback is the guard, and the test asserts it explicitly.
 
+**Landed 2026-09-11.** The room's manifest now reaches the mind: ipc installs the node's one
+`RecipeExperienceSource` (`experience::source::install_node_experience_source`, the same
+registry the positron projection resolves from), the persona spawn passes it into
+`PersonaBrainConfig.experience`, the cycle stamps `Workspace.room_affordances` on every tick,
+and `select_tool_surface` takes the room's set first — before focus and budget, because both
+narrow a surface the room has already bounded. Keyed on RAW command names cached beside the
+wire-dialect specs (the 2026-09-04 muting was a name-space mismatch at exactly this seam).
+Three guards, each a test: a room declaring nothing is byte-identical to pre-S1 on every arm;
+a room whose affordances match no native verb falls back to the pre-S1 surface and probes
+`delib.surface.room_affordances_unmatched` — never an empty offer; and the shipped benchmark
+recipe must authorize every hand a work turn offered, which is how `code/list` and
+`code/tree` got into `benchmark.json` (the test named them; I had not known they were native).
+
+**The one deliberate behaviour change:** `benchmark.json` now authors its affordances — her
+hands, `web/fetch` + `web/search` (native as a direct task-score lever), `room/members`, and
+`cognition/observe`. Work turns in a benchmark room are unchanged. MESSAGE turns there no
+longer offer `activity/spawn|invite|recipes`, `interface/screenshot`, `perception/look`,
+`vision/look`: a solver's room withholds what a solver does not need. That is the rule doing
+its job, and it is fewer tokens per turn; watch `delib.surface` reasons after the deploy.
+Faculty 70/70, workspace 27, experience 55, persona_workspace 21, activity 19 green.
+
 ### S2 — One store, one loader
 `recipe/run` resolves through `RecipeExperienceSource` (embedded + overlay) instead of the
 `recipes` data collection. Any existing rows are dumped to overlay files by a one-shot

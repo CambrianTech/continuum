@@ -121,7 +121,7 @@ pub struct VideoInput {
 /// - `input_schema` NOT `inputSchema`
 ///   This must NOT use rename_all = "camelCase" because the wire format
 ///   from TypeScript AND the Anthropic API both use snake_case for this struct.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/NativeToolSpec.ts"
@@ -134,7 +134,7 @@ pub struct NativeToolSpec {
 
 /// JSON Schema for tool input parameters.
 /// Matches Anthropic API wire format (snake_case field names).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ToolInputSchema.ts"

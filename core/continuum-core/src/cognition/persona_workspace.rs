@@ -90,6 +90,12 @@ pub struct PersonaBrainConfig {
     ///
     /// [`authorized_tool_specs`]: super::persona_tools::authorized_tool_specs
     pub tool_executor: Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
+    /// Where a room's authored manifest comes from, so each turn can be stamped with
+    /// the affordances the room's RECIPE declares and the deliberation faculty can
+    /// select her tool surface from them (S1). The live spawn passes
+    /// [`crate::experience::source::node_experience_source`]; `None` (harnesses,
+    /// a headless boot) stamps nothing and the surface is the pre-S1 one.
+    pub experience: Option<crate::experience::source::SharedExperienceSource>,
     /// The effective served context window in tokens — `profile.context_length`
     /// (task #50: single-sourced; for a Local persona that is the planner's
     /// `ServingPlan.served_context_window`).
@@ -462,6 +468,7 @@ fn assemble_workspace_cycle(
     // frequent and on grid demand. `model: None` → the adapter's own default model,
     // matching the boot binding; the re-home sets it explicitly. Initial window is
     // `cfg.context_window` (task #50 — the served window for a Local persona).
+    let experience = cfg.experience.clone();
     let adapter = cfg.adapter;
     let model_binding = super::llm_deliberation_faculty::model_binding(
         Arc::clone(&adapter),
@@ -537,7 +544,10 @@ fn assemble_workspace_cycle(
     )
     .with_genome(genome)
     .with_decoding(decoding)
-    .with_model_binding(model_binding);
+    .with_model_binding(model_binding)
+    // S1: the room's recipe reaches the mind. Without this the cycle stamps no
+    // affordances and every room offers the same global surface.
+    .with_experience_source(experience);
 
     // Give the mind its BODY when it has hands. The act→observe driver reads this
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the
@@ -2245,6 +2255,7 @@ mod tests {
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
+            experience: None,
             context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             // Synchronous recall in the harness: these tests assert recall bids in
             // phase 1 on the same tick, which a deferred (cold-start) worker can't

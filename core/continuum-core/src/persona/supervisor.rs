@@ -995,6 +995,9 @@ pub async fn materialize_adapters(
             admission: cognition.admission.clone(),
             adapter: adapter.clone(),
             capacity: None,
+            // S1: the node's recipe registry, so this citizen's tool surface follows
+            // the room she acts in (its recipe's affordances), not a global list.
+            experience: crate::experience::source::node_experience_source(),
             // Neural recall when the embed model serves, lexical otherwise
             // — decided once here (process-stable; query + stored vectors
             // must share one embedding space). Already cached by the
