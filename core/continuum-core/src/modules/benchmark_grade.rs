@@ -601,14 +601,59 @@ fn resident_owner_still_working(lapsed_for_ms: u64) -> bool {
 /// a real artifact behind. A LIVE claim is never preempted; an unclaimed card was never
 /// worked; no artifact means there is nothing to grade — dispatch re-offer (#419) is
 /// that card's path, not a grade.
-fn sweep_ready(
+/// Whether the card's owner is a citizen this node hosts right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerPresence {
+    /// A resident citizen owns it — her pump renews and reclaims her own holds.
+    Resident,
+    /// The owner is not hosted here (despawned, another node, gone).
+    Absent,
+    /// The card names no owner at all.
+    Nobody,
+}
+
+/// What the sweep does with one bench card. ONE decision, typed, so the truth
+/// table below is the whole safety envelope and a new arm is a new variant with
+/// a name — never a second boolean beside the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepVerdict {
+    /// Not the sweeper's business: a live claim, a terminal card, a resident
+    /// owner's lapsed hold (her pump reclaims it), or an unclaimed Open card.
+    Leave,
+    /// A lapsed claim with a written artifact and no `done` — close it so the
+    /// grade can run (the 2026-08 rule).
+    Close,
+    /// A hold NOBODY holds: `owner: None` in Claimed/InProgress, or a lapsed claim
+    /// whose owner is not resident and who left no artifact. Nothing else can
+    /// return it to the deck — `claimable_now` takes an unclaimed card only when
+    /// it is Open, and the pull reads that — so the sweep reopens it. This is
+    /// the hole that starved a five-citizen round on 2026-09-11: three cards
+    /// sat in_progress with no owner for days after the roster went 12→5.
+    Reopen,
+}
+
+fn sweep_verdict(
     state: &CardState,
     hold: crate::persona::card_holder::Hold,
+    owner: OwnerPresence,
     artifact_present: bool,
-) -> bool {
-    matches!(state, CardState::Claimed | CardState::InProgress)
-        && matches!(hold, crate::persona::card_holder::Hold::Lapsed)
-        && artifact_present
+) -> SweepVerdict {
+    use crate::persona::card_holder::Hold;
+    if !matches!(state, CardState::Claimed | CardState::InProgress) {
+        return SweepVerdict::Leave;
+    }
+    match (hold, owner, artifact_present) {
+        // A live claim is NEVER preempted, whoever holds it.
+        (Hold::Held, _, _) => SweepVerdict::Leave,
+        // Claimed/InProgress with no owner: held by nobody. Reopen.
+        (Hold::Unclaimed, _, _) | (_, OwnerPresence::Nobody, _) => SweepVerdict::Reopen,
+        // Lapsed with an artifact: grade it (the resident grace is applied by the caller).
+        (Hold::Lapsed, _, true) => SweepVerdict::Close,
+        // Lapsed, no artifact, owner gone: the deck gets it back.
+        (Hold::Lapsed, OwnerPresence::Absent, false) => SweepVerdict::Reopen,
+        // Lapsed, no artifact, owner resident: hers to reclaim (the pump does).
+        (Hold::Lapsed, OwnerPresence::Resident, false) => SweepVerdict::Leave,
+    }
 }
 
 /// Did the owner's hands leave something gradeable? Mirrors the grade arms' own path
@@ -697,37 +742,70 @@ async fn sweep_lapsed_bench_cards(
             let Some((bench, instance)) = parse_bench_title(&card.title) else {
                 continue; // normal work cards are NEVER the sweeper's business
             };
-            let Some(owner) = card.owner else { continue };
             let hold = crate::persona::card_holder::hold_of(card, now_ms);
-            if !sweep_ready(
-                &card.state,
-                hold,
-                bench_artifact_present(&bench, &instance, &owner.to_string()),
-            ) {
+            let presence = match card.owner {
+                None => OwnerPresence::Nobody,
+                Some(o) if registry.get(o.as_uuid()).is_some() => OwnerPresence::Resident,
+                Some(_) => OwnerPresence::Absent,
+            };
+            let artifact = card
+                .owner
+                .is_some_and(|o| bench_artifact_present(&bench, &instance, &o.to_string()));
+            let verdict = sweep_verdict(&card.state, hold, presence, artifact);
+            if verdict == SweepVerdict::Reopen {
+                let room_id = room.channel.as_uuid();
+                crate::probe!(
+                    class = "benchmark_grade.sweep_reopened",
+                    card_id = %card.card_id.as_uuid(),
+                    room_id = %room_id,
+                    bench = %bench,
+                    instance = %instance,
+                    state = ?card.state,
+                    owner = %card.owner.map(|o| o.as_uuid().to_string()).unwrap_or_default(),
+                    "a hold nobody holds — reopened so the deck offers it again"
+                );
+                match airc
+                    .change_work_card_state_in(
+                        &room,
+                        airc_lib::ChangeWorkCardState { card_id: card.card_id, state: CardState::Open },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        closed += 1; // the per-tick bound covers reopens too
+                        let note = format!(
+                            "♻️ [bench {bench}] {instance} — its holder is gone and left no \
+                             artifact; reopened so a resident can take it."
+                        );
+                        if let Err(e) =
+                            crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note).await
+                        {
+                            crate::probe!(
+                                class = "benchmark_grade.sweep_note_failed",
+                                card_id = %card.card_id.as_uuid(),
+                                error = %e,
+                                "card reopened but the provenance note did not post"
+                            );
+                        }
+                    }
+                    Err(e) => crate::probe!(
+                        class = "benchmark_grade.sweep_reopen_failed",
+                        card_id = %card.card_id.as_uuid(),
+                        error = %e,
+                        "reopen refused — the card stays where it is, said out loud"
+                    ),
+                }
                 continue;
             }
-            // A RESIDENT owner is not a dead session — but only for a BOUNDED
-            // window after the claim lapses. A reboot lapses every lease while the
-            // resume machinery brings the owner back, and confiscating her
-            // half-done work in that window grades a MISS she was still earning
-            // (measured 2026-08-31: both of the day's misses were exactly this —
-            // reboot → lease lapsed → swept mid-resume, "a few attempts" never
-            // happened). BUT deferring FOREVER strands done-but-unclosed work: a
-            // resident owner who wrote the patch and let the claim lapse without
-            // saying `done` never returns to it, so the card rots and the round
-            // never finishes (measured 2026-09-02: rounds stalled ~20h with
-            // artifacts present, owner resident, ungraded — the pileup of
-            // unstarted standing rounds traced straight here). An actively-worked
-            // card keeps its claim `Held` via the TTL/3 renewal cadence, so a
-            // LAPSED claim past the resume window means she is NOT working it.
-            // Within the grace: hers to finish. Past it: grade her artifact.
+            if verdict != SweepVerdict::Close {
+                continue;
+            }
+            let Some(owner) = card.owner else { continue }; // Close always has an owner (artifact needs one)
             let lapsed_for_ms = card
                 .claim_expires_at_ms
                 .map(|e| now_ms.saturating_sub(e))
                 .unwrap_or(u64::MAX); // no expiry recorded = not renewing = gradeable
-            if registry.get(owner.as_uuid()).is_some()
-                && resident_owner_still_working(lapsed_for_ms)
-            {
+            if presence == OwnerPresence::Resident && resident_owner_still_working(lapsed_for_ms) {
                 crate::probe!(
                     class = "benchmark_grade.sweep_deferred_owner_online",
                     card_id = %card.card_id.as_uuid(),
@@ -823,22 +901,34 @@ mod tests {
     // what this catches: the sweep's whole safety envelope in one truth table — a LIVE
     // claim is never preempted, an unclaimed/terminal card is never touched, a lapsed
     // claim without an artifact is dispatch's re-offer problem (#419) not a grade, and
-    // ONLY lapsed+claimed+artifact auto-closes. Drift here either preempts working
-    // citizens or resurrects the manual operator flip.
+    // ONLY lapsed+claimed+artifact auto-closes, and a hold NOBODY holds (owner None, or a
+    // gone owner who left nothing) is REOPENED — regression for 2026-09-11, when three
+    // in_progress cards with owner None starved a five-citizen round for days. Drift here
+    // either preempts working citizens or lets the deck starve silently again.
     #[test]
-    fn sweep_ready_truth_table() {
+    fn sweep_verdict_truth_table() {
         use crate::persona::card_holder::Hold;
-        // the one auto-close case (and its InProgress sibling)
-        assert!(sweep_ready(&CardState::Claimed, Hold::Lapsed, true));
-        assert!(sweep_ready(&CardState::InProgress, Hold::Lapsed, true));
+        use OwnerPresence::*;
+        use SweepVerdict::*;
+        let v = sweep_verdict;
+        // the auto-close case (and its InProgress sibling), owner present or not
+        assert_eq!(v(&CardState::Claimed, Hold::Lapsed, Resident, true), Close);
+        assert_eq!(v(&CardState::InProgress, Hold::Lapsed, Absent, true), Close);
         // a live claim is NEVER preempted
-        assert!(!sweep_ready(&CardState::Claimed, Hold::Held, true));
-        // no artifact → nothing to grade → not the sweeper's business
-        assert!(!sweep_ready(&CardState::Claimed, Hold::Lapsed, false));
-        // never-claimed and terminal cards are untouchable regardless
-        assert!(!sweep_ready(&CardState::Open, Hold::Unclaimed, true));
-        assert!(!sweep_ready(&CardState::Closed, Hold::Lapsed, true));
-        assert!(!sweep_ready(&CardState::Merged, Hold::Lapsed, true));
+        assert_eq!(v(&CardState::Claimed, Hold::Held, Resident, true), Leave);
+        assert_eq!(v(&CardState::InProgress, Hold::Held, Absent, false), Leave);
+        // lapsed, no artifact, owner RESIDENT: hers to reclaim (her pump does)
+        assert_eq!(v(&CardState::Claimed, Hold::Lapsed, Resident, false), Leave);
+        // THE 2026-09-11 HOLE: held by nobody → reopened, artifact or not
+        assert_eq!(v(&CardState::InProgress, Hold::Unclaimed, Nobody, false), Reopen);
+        assert_eq!(v(&CardState::Claimed, Hold::Unclaimed, Nobody, true), Reopen);
+        // lapsed, no artifact, owner GONE: the deck gets it back
+        assert_eq!(v(&CardState::InProgress, Hold::Lapsed, Absent, false), Reopen);
+        // never-claimed Open and terminal cards are untouchable regardless
+        assert_eq!(v(&CardState::Open, Hold::Unclaimed, Nobody, true), Leave);
+        assert_eq!(v(&CardState::Closed, Hold::Lapsed, Absent, true), Leave);
+        assert_eq!(v(&CardState::Merged, Hold::Lapsed, Absent, true), Leave);
+        assert_eq!(v(&CardState::Review, Hold::Lapsed, Absent, false), Leave);
     }
 
     // what this catches: the resident-owner defer is BOUNDED to the resume
