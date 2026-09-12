@@ -239,6 +239,18 @@ impl PersonaCommandInboundPump {
 /// Delay before the n-th consecutive re-open attempt: 1 s doubling to a
 /// 30 s cap. A daemon that is down stays down for a while; a stream that
 /// ended on a membership change is back in one hop.
+/// The channel set a subscribe would open on right now — the daemon's subscription
+/// set, as room ids. `None` when the daemon could not be asked (then a bump re-opens,
+/// the safe side).
+async fn subscribed_set(airc: &Airc) -> Option<std::collections::BTreeSet<Uuid>> {
+    let set = airc.subscription_set().await.ok()?;
+    Some(
+        set.all()
+            .map(|sub| sub.as_room().channel.as_uuid())
+            .collect(),
+    )
+}
+
 fn reopen_delay(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << attempt.min(5)).min(Duration::from_secs(30))
 }
@@ -327,6 +339,11 @@ async fn run(
     // hours with nothing on any probe. The pump now re-opens on end AND on a
     // membership move, with a bounded backoff, and says so each time.
     let mut attempt: u32 = 0;
+    // The room set the live stream was opened on. A membership epoch bump whose set is
+    // unchanged (an idempotent join, a part of a room she never held) is NOT a reason
+    // to re-open: every re-open costs a daemon connection per channel, and the
+    // 2026-09-12 reseat storm turned 1,961 no-op bumps into 19,589 open sockets.
+    let mut opened_with = subscribed_set(&airc).await;
     loop {
         let reason = loop {
             tokio::select! {
@@ -378,6 +395,18 @@ async fn run(
                 },
             }
         };
+        if reason == Reopen::MembershipChanged {
+            let now = subscribed_set(&airc).await;
+            if now.is_some() && now == opened_with {
+                crate::probe!(
+                    class = "persona.command_pump.membership_unchanged",
+                    persona_id = %persona_id,
+                    rooms = opened_with.as_ref().map_or(0, |s| s.len()),
+                    "membership epoch moved but the room set did not — the stream stays open"
+                );
+                continue;
+            }
+        }
         crate::probe!(
             class = "persona.command_pump.ended",
             persona_id = %persona_id,
@@ -393,6 +422,7 @@ async fn run(
             match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
                 Ok(next) => {
                     stream = next;
+                    opened_with = subscribed_set(&airc).await;
                     crate::probe!(
                         class = "persona.command_pump.reopened",
                         persona_id = %persona_id,

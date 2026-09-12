@@ -19,6 +19,7 @@ pub mod bounded_command;
 pub mod concurrency;
 pub mod disk_eviction;
 pub mod disk_pressure;
+pub mod fd_gauge;
 pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;

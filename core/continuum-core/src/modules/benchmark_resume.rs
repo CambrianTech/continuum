@@ -425,21 +425,19 @@ async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
             return;
         }
     };
+    use crate::persona::airc_citizen::AircCitizen as _;
     for child in project_children(&posts) {
         if !child.is_citizen_benchmark() || local.contains(&child.name) {
             continue;
         }
-        let mut joined = 0u64;
-        let mut already = 0u64;
-        let mut failed = 0u64;
-        for rt in registry.iter() {
-            // join is idempotent on the daemon: an already-seated resident costs one call.
-            match rt.join_room(&child.name).await {
-                Ok(()) => joined += 1,
-                Err(_) => failed += 1,
-            }
-        }
-        // Standing lives on the child's own wall; read it now that we are inside.
+        // Standing FIRST, membership SECOND, and a join or a part only on a real change.
+        // Measured 2026-09-12 00:57–01:13Z on 48fbbfd44: this pass joined every resident
+        // into every announced child and parted the finished ones again, every 10 s. A
+        // join is idempotent on the daemon but NOT free for the citizen: each one bumps
+        // her membership epoch, every bump re-opens her command pump's daemon stream,
+        // and the old stream's per-channel sockets stayed open — 1,961 re-opens, 19,589
+        // sockets, the fd table full, every spawn EBADF: no serving lane, no web/fetch,
+        // no `--list-devices`. The board was "busy" and the node was dead.
         let standing = match reader
             .airc()
             .subscription_set()
@@ -461,28 +459,50 @@ async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
             .as_ref()
             .map(|s| s.archived)
             .unwrap_or(false); // unwrap_or: no standing yet = a fresh round, seat it
-        if finished {
-            for rt in registry.iter() {
-                if rt.airc().part_channel(Some(child.name.as_str())).await.is_ok() {
-                    already += 1;
+        let (mut joined, mut already, mut left, mut failed) = (0u64, 0u64, 0u64, 0u64);
+        for rt in registry.iter() {
+            let member = rt
+                .subscribed_rooms()
+                .await
+                .map(|rooms| rooms.contains(&child.room_id))
+                .unwrap_or(false); // unwrap_or: an unreadable room list reads as "not seated"; the join is idempotent on the daemon
+            if finished {
+                if member && rt.leave_room(Some(child.name.as_str())).await.is_ok() {
+                    left += 1;
                 }
+                continue;
             }
-            crate::probe!(
-                class = "bench.round.announced_finished",
-                room = %child.name,
-                left = already,
-                "an announced round is paused or done on its own wall — residents left again"
-            );
+            if member {
+                already += 1;
+                continue;
+            }
+            match rt.join_room(&child.name).await {
+                Ok(()) => joined += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        if finished {
+            if left > 0 {
+                crate::probe!(
+                    class = "bench.round.announced_finished",
+                    room = %child.name,
+                    left,
+                    "an announced round is paused or done on its own wall — residents left again"
+                );
+            }
             continue;
         }
-        crate::probe!(
-            class = "bench.round.seated_remote",
-            room = %child.name,
-            suite = %child.suite.clone().unwrap_or_default(), // unwrap_or: is_citizen_benchmark guarantees a suite
-            joined,
-            failed,
-            "residents seated into a round another node spawned — the board is shared, now the room is too"
-        );
+        if joined > 0 || failed > 0 {
+            crate::probe!(
+                class = "bench.round.seated_remote",
+                room = %child.name,
+                suite = %child.suite.clone().unwrap_or_default(), // unwrap_or: is_citizen_benchmark guarantees a suite
+                joined,
+                already,
+                failed,
+                "residents seated into a round another node spawned — the board is shared, now the room is too"
+            );
+        }
     }
 }
 

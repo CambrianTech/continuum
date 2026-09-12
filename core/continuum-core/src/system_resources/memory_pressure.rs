@@ -1151,6 +1151,24 @@ impl Daemon for MemoryPressureMonitor {
     }
 
     async fn tick(&self) {
+        if let Some(fds) = crate::system_resources::fd_gauge::FdReading::take() {
+            if fds.is_high() {
+                crate::probe!(
+                    class = "process.open_fds.high",
+                    open = fds.open,
+                    soft_limit = fds.soft_limit.unwrap_or(0), // unwrap_or: is_high needs a limit; 0 never reaches here
+                    pct = fds.pct().unwrap_or(0), // unwrap_or: same — the gauge has a limit when it is high
+                    "the core's descriptor table is past half its limit — the next pipe or socket fails with EBADF; find the leak before the node goes dark"
+                );
+            } else {
+                crate::probe!(
+                    class = "process.open_fds",
+                    open = fds.open,
+                    soft_limit = fds.soft_limit.unwrap_or(0), // unwrap_or: 0 = unlimited or unreadable
+                    "open descriptors this tick"
+                );
+            }
+        }
         self.poll().await;
     }
 }
