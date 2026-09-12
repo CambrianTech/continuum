@@ -68,7 +68,7 @@ const AIRC_DISABLE_AUTOINSTALL: &str = "CONTINUUM_DISABLE_AIRC_AUTOINSTALL";
 /// Explicit socket-path override. Honored unconditionally — when set,
 /// no discovery, no install, no PATH probe. For tests pointing at
 /// ephemeral daemons, and for operators with non-standard airc deploys.
-const AIRC_DAEMON_SOCKET_ENV: &str = "AIRC_DAEMON_SOCKET";
+pub(crate) const AIRC_DAEMON_SOCKET_ENV: &str = "AIRC_DAEMON_SOCKET";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {

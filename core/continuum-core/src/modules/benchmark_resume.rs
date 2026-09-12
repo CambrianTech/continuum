@@ -210,6 +210,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             reseat_working_rounds(&registry).await;
             seat_announced_rounds(&registry).await;
             unseat_finished_rounds(&registry).await;
+            release_surplus_holds(&registry).await;
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
             }
@@ -529,6 +530,78 @@ async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
     }
 }
 
+/// THE ONE-CARD RULE, repaired by the reconciler (2026-09-12). A citizen holds at most
+/// ONE work card; review cards ride beside it and never count. `try_pull_next_card`
+/// enforces it at the pull, but holds also arrive by other doors — a lapsed hold
+/// recovered at boot, a re-dispatched instance she claimed on a new round while an old
+/// round still named her — and nothing ever took the surplus back. Measured 09:31Z:
+/// one coder owned four cards across four rounds, the roster's in-flight count read
+/// above the lane cap with two cards Open on the deck, and every pull deferred for an
+/// hour while four coders ran tests on old cards and wrote nothing.
+///
+/// The card she keeps is the one her hands are on (`acting_card_of`); with no acting
+/// root, the most recently touched. Every other work card goes back on the deck
+/// through `work/release` AS HER — the governor's door, the verb her own tool call
+/// would use — with a receipt on the card and a probe here. Idempotent: a citizen at
+/// one card is left alone.
+async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::persona::active_work_source::AircWorkReader as _;
+    use crate::persona::airc_citizen::AircCitizen as _;
+    for persona_id in registry.live_personas() {
+        let Some(runtime) = registry.get(persona_id) else { continue };
+        let Ok(held) = runtime.active_claims().await else { continue };
+        let work: Vec<(uuid::Uuid, u64)> = held
+            .iter()
+            .filter(|c| crate::commands::benchmark::parse_review_title(&c.title).is_none())
+            .map(|c| (c.card_id.as_uuid(), c.updated_at_ms))
+            .collect();
+        let acting = crate::cognition::persona_workspace::acting_card_of(persona_id);
+        let Some((keep, release)) = surplus_holds(&work, acting) else { continue };
+        for card in release {
+            let Some(c) = held.iter().find(|c| c.card_id.as_uuid() == card) else { continue };
+            let Some(claim_id) = c.claim_id.clone() else { continue };
+            let id8: String = card.to_string().chars().take(8).collect();
+            let kept8: String = keep.to_string().chars().take(8).collect();
+            let reason = format!(
+                "released by the reconciler: one card per citizen — she keeps {kept8}"
+            );
+            match runtime.release_card(c.card_id, claim_id, &reason).await {
+                Ok(()) => crate::probe!(
+                    class = "persona.work.surplus_hold_released",
+                    persona_id = %persona_id,
+                    card = %id8,
+                    kept = %kept8,
+                    "a citizen held more than one work card — the surplus went back on the deck"
+                ),
+                Err(error) => crate::probe!(
+                    class = "persona.work.surplus_hold_release_failed",
+                    persona_id = %persona_id,
+                    card = %id8,
+                    error = %error,
+                    "the surplus hold could not be released this pass"
+                ),
+            }
+        }
+    }
+}
+
+/// The pure half of the one-card rule: given her work cards `(card, updated_at_ms)`
+/// and the card her hands are on, the card she keeps and the cards she releases —
+/// or `None` when there is nothing to release.
+pub(crate) fn surplus_holds(
+    work: &[(uuid::Uuid, u64)],
+    acting: Option<uuid::Uuid>,
+) -> Option<(uuid::Uuid, Vec<uuid::Uuid>)> {
+    if work.len() <= 1 {
+        return None;
+    }
+    let keep = acting
+        .filter(|a| work.iter().any(|(c, _)| c == a))
+        .or_else(|| work.iter().max_by_key(|(_, at)| *at).map(|(c, _)| *c))?;
+    let release: Vec<uuid::Uuid> = work.iter().map(|(c, _)| *c).filter(|c| *c != keep).collect();
+    Some((keep, release))
+}
+
 async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
     let (mut rounds_considered, mut pass_left, mut pass_failed, mut pass_unknown) = (0u64, 0u64, 0u64, 0u64);
@@ -642,5 +715,30 @@ async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
                 "live citizens seated into a working round's run room (the standing repair)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the reconciler taking the card she is working on instead of
+    // the surplus, or "fixing" a citizen who is already at one card (2026-09-12: one
+    // coder on four cards, the pull deferred for an hour behind the lane cap).
+    #[test]
+    fn a_citizen_keeps_the_card_in_her_hands_and_releases_the_rest() {
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+        let c = uuid::Uuid::from_u128(3);
+        assert_eq!(surplus_holds(&[], None), None);
+        assert_eq!(surplus_holds(&[(a, 10)], None), None, "one card is the rule, not a surplus");
+        let (keep, release) = surplus_holds(&[(a, 10), (b, 30), (c, 20)], Some(c)).unwrap();
+        assert_eq!(keep, c, "her hands decide");
+        assert_eq!(release, vec![a, b]);
+        let (keep, release) = surplus_holds(&[(a, 10), (b, 30), (c, 20)], None).unwrap();
+        assert_eq!(keep, b, "no hands: the most recently touched card stays");
+        assert_eq!(release, vec![a, c]);
+        let (keep, _) = surplus_holds(&[(a, 10), (b, 30)], Some(c)).unwrap();
+        assert_eq!(keep, b, "an acting card she does not hold cannot be kept");
     }
 }

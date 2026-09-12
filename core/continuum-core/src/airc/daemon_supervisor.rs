@@ -11,6 +11,7 @@
 //! outcome, not a silent no-op.
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// The pid of the daemon THIS process spawned; 0 = none (adopted or absent).
@@ -24,12 +25,53 @@ pub fn scope_home() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".airc"))
 }
 
-/// Is a daemon accepting connections on the scope's socket? In-process, no fork:
-/// the path comes from [`crate::airc::daemon_endpoint::default_socket_path_in`] and
-/// the answer from a connect. `false` when the scope is unresolvable.
+/// Where the machine daemon binds, as airc itself resolves it. `airc ipc-endpoint` is
+/// resolve-only (no daemon required, starts nothing) and is the contract continuum's
+/// discovery already depends on. Resolved once and cached; a failed resolution is not
+/// cached, so a box where airc lands later resolves on the next tick.
+///
+/// 2026-09-12: this probe used `daemon_endpoint::default_socket_path_in`, a derivation
+/// deprecated for DRIFTING from airc's resolver (`/tmp/airc-ipc-v5-<hash>.sock` vs the
+/// real `~/.airc/runtime/airc-machine-<hash>-v5.sock`). It never saw any daemon: the boot
+/// step reported "spawned but never answered" at every boot, the fd owner restarted a
+/// daemon it could not see, and the liveness owner spawned a second daemon every
+/// back-off while the first one answered fine.
+pub fn socket_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(crate::airc::discovery::AIRC_DAEMON_SOCKET_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    static RESOLVED: Mutex<Option<PathBuf>> = Mutex::new(None);
+    if let Ok(guard) = RESOLVED.lock() {
+        if let Some(path) = guard.as_ref() {
+            return Some(path.clone());
+        }
+    }
+    let probed = crate::system_resources::bounded_command::probe(
+        "airc",
+        &["ipc-endpoint"],
+        ENDPOINT_RESOLVE_BOUND,
+    );
+    let path = resolved_endpoint(probed.stdout_if_ok())?;
+    if let Ok(mut guard) = RESOLVED.lock() {
+        *guard = Some(path.clone());
+    }
+    Some(path)
+}
+
+/// Bound on `airc ipc-endpoint` (a pure print; anything slower is a wedged binary).
+pub const ENDPOINT_RESOLVE_BOUND: Duration = Duration::from_secs(5);
+
+/// The pure half of the resolution: the resolver's stdout → a path, or nothing when
+/// the resolver said nothing usable (an empty line is not a socket).
+pub fn resolved_endpoint(stdout: Option<&str>) -> Option<PathBuf> {
+    let line = stdout?.lines().last()?.trim();
+    (!line.is_empty()).then(|| PathBuf::from(line))
+}
+
+/// Does a daemon answer on the machine socket right now? `false` covers "no socket
+/// path could be resolved" — the spawn path names that case.
 pub fn answering() -> bool {
-    let Some(scope) = scope_home() else { return false };
-    let path = crate::airc::daemon_endpoint::default_socket_path_in(&scope);
+    let Some(path) = socket_path() else { return false };
     #[cfg(unix)]
     {
         std::os::unix::net::UnixStream::connect(&path).is_ok()
@@ -67,6 +109,13 @@ pub fn spawn() -> Spawned {
     }
     let Some(scope) = scope_home() else { return Spawned::NoHome };
     let Some(home) = scope.parent().map(|p| p.to_path_buf()) else { return Spawned::NoHome };
+    if socket_path().is_none() {
+        return Spawned::Failed(
+            "the machine socket path is unresolvable (`airc ipc-endpoint` answered nothing usable) — \
+             a daemon could be spawned but never observed"
+                .into(),
+        );
+    }
     let child = std::process::Command::new("airc")
         .arg("daemon")
         .current_dir(&home)
@@ -128,6 +177,19 @@ mod tests {
     // what this catches: a restart killing a daemon we did not spawn (the adopted
     // case must be a named NotOurs), and the scope resolving to something other
     // than the CLI's machine-account home.
+    // what this catches: the probe reading a resolver's silence as a socket (an empty
+    // line became `PathBuf::from("")`, which never answers — the 2026-09-12 shape).
+    #[test]
+    fn the_endpoint_is_the_resolvers_last_nonempty_line_or_nothing() {
+        assert_eq!(
+            resolved_endpoint(Some("/Users/x/.airc/runtime/airc-machine-ab-v5.sock\n")),
+            Some(PathBuf::from("/Users/x/.airc/runtime/airc-machine-ab-v5.sock"))
+        );
+        assert_eq!(resolved_endpoint(Some("\n")), None);
+        assert_eq!(resolved_endpoint(Some("")), None);
+        assert_eq!(resolved_endpoint(None), None);
+    }
+
     #[test]
     fn a_daemon_we_did_not_spawn_is_never_restarted() {
         OWNED_PID.store(0, Ordering::SeqCst);
