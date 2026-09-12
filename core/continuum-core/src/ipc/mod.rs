@@ -1414,9 +1414,14 @@ pub fn start_server(
     // construction sites. Observer-only in PR-1: no commands routed
     // here yet. PR-2 of #1299 adds `system/pressure-broker-state` IPC;
     // PR-3 wires the chat-substrate alert sink.
-    runtime.register(Arc::new(
-        crate::modules::pressure_broker_module::PressureBrokerModule::new(),
+    let pressure_broker = Arc::new(crate::modules::pressure_broker_module::PressureBrokerModule::new());
+    // The descriptor table has an owner: the `process-fds` tier restarts the daemon
+    // this core spawned when the broker turns to it (2026-09-12: the gauge fired,
+    // nothing followed, a human ran lsof).
+    pressure_broker.broker().register(Arc::new(
+        crate::system_resources::fd_pressure::FdPressurePool::with_daemon_relief(),
     ));
+    runtime.register(pressure_broker);
     // InferenceCoordinatorModule — stands up the multi-persona-one-model
     // lane coordinator. Registered before the broker block below so its
     // CoordinatorResourcePool can be attached to the broker in the same
