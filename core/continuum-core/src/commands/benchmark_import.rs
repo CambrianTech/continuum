@@ -59,6 +59,12 @@ pub struct BenchmarkImportParams {
     #[serde(default)]
     #[ts(optional)]
     pub limit: Option<u32>,
+    /// Keep only instances whose harness speaks this language (`rust`, `go`, `php`,
+    /// `ruby`, `javascript`, `java`, `c`; `python` for the SWE-bench family). The
+    /// Multilingual suite mixes nine; a round is one language's board. Empty = all.
+    #[serde(default)]
+    #[ts(optional)]
+    pub language: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -139,6 +145,7 @@ impl ActionCommand for BenchmarkImport {
                 instances: p.instances.filter(|w| !w.is_empty()),
                 sample: p.sample.filter(|n| *n > 0),
                 seed: p.seed,
+                language: p.language.clone(),
             },
         )
         .await?;
@@ -317,6 +324,8 @@ mod tests {
             created_at: "2023-01-01".into(),
             fail_to_pass: "[\"tests/test_widget.py::test_single_frob\"]".into(),
             pass_to_pass: "[]".into(),
+            eval_script: None,
+            log_parser: None,
         };
         let pc = PreparedCard {
             title: dispatch_card_title("swe-bench-verified", &inst.instance_id, &inst.problem_statement),

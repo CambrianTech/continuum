@@ -165,6 +165,10 @@
     "limit": {
       "default": 0,
       "doc": "cap on cards offered after the already-resolved gate; 0 = all. The gym suites do not sample, so this is how a round takes the first N of hard-rs"
+    },
+    "language": {
+      "default": "",
+      "doc": "keep only instances whose harness speaks this language (rust, go, php, ruby, javascript, java, c; python for the SWE-bench family) \u2014 the Multilingual suite mixes nine; empty = all"
     }
   },
   "pipeline": [
@@ -176,7 +180,8 @@
         "sample": "$args.sample",
         "seed": "$args.seed",
         "limit": "$args.limit",
-        "skipAlreadyResolved": true
+        "skipAlreadyResolved": true,
+        "language": "$args.language"
       },
       "outputTo": "imported"
     },
