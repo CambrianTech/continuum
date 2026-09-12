@@ -3115,8 +3115,8 @@ pub fn start_server(
                             tracing::warn!(
                                 persona_id = ?failure.persona_id,
                                 reason = %failure.reason,
-                                "hosting reconciler: slot failed — will retry on the \
-                                 next serving-plan edge"
+                                "hosting reconciler: slot failed — retried after its backoff \
+                                 (persona.host.slot_backoff names the wait)"
                             );
                         }
                     }

@@ -145,10 +145,12 @@ pub fn is_room_state_publish(kind: &airc_core::TranscriptKind) -> bool {
 /// reconnection; a terminal end is a real fault the pump already logs loud
 /// — this listener just stops, the caches go permanently dirty-capable-less
 /// but the personas' pumps have bigger problems at that point).
+/// Returns the task's handle: the caller OWNS it (a runtime aborts it in Drop). An
+/// orphaned invalidator held 24 daemon streams per failed seat on 2026-09-12.
 pub fn spawn_publish_invalidator(
     mut stream: airc_lib::FilteredEventStream,
     handles: Vec<WeakDirtyHandle>,
-) {
+) -> tokio::task::JoinHandle<()> {
     use futures::stream::StreamExt;
     tokio::spawn(async move {
         let mut handles = handles;
@@ -174,7 +176,7 @@ pub fn spawn_publish_invalidator(
                 return; // every wrapped source dropped — stop listening
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

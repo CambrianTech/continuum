@@ -211,6 +211,8 @@ pub struct PersonaSpawnSupervisor {
     tier_id: String,
     model_registry: &'static crate::model_registry::Registry,
     rt_handle: tokio::runtime::Handle,
+    /// Seats that failed, by persona: attempts and the instant they may be tried again.
+    slot_backoff: std::sync::Mutex<std::collections::HashMap<Uuid, SlotBackoff>>,
 }
 
 impl PersonaSpawnSupervisor {
@@ -237,6 +239,7 @@ impl PersonaSpawnSupervisor {
             tier_id: tier_id.into(),
             model_registry,
             rt_handle,
+            slot_backoff: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -330,6 +333,7 @@ impl PersonaSpawnSupervisor {
         // the citizens, then the next serving edge hosted them through
         // host_unattended with zero held_out probes.
         let plans = Self::filter_by_hold(plans);
+        let plans = self.filter_by_backoff(plans);
 
         let mut summary = BootSummary::default();
         self.host_plans(plans, tool_command_executor, &mut summary)
@@ -360,6 +364,42 @@ impl PersonaSpawnSupervisor {
     /// in spawn_all, so bootstrap registered citizens and the next
     /// serving edge hosted all of them via host_unattended — a valid
     /// hold, four adoptions, zero held_out probes.
+    /// Skip seats whose last attempts failed until their backoff expires. Before
+    /// 2026-09-12 a seat refused at admission was re-attempted on EVERY reconciler
+    /// pass (34 a minute), each attempt building and abandoning daemon streams; the
+    /// log said "will retry on the next serving-plan edge" and did not mean it.
+    fn filter_by_backoff(
+        &self,
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+    ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+        let now = now_ms();
+        let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        filter_by_backoff_with(now, &map, plans)
+    }
+
+    fn note_slot_failure(&self, persona_id: Uuid, reason: &str) {
+        let now = now_ms();
+        let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.entry(persona_id).or_insert(SlotBackoff { attempts: 0, until_ms: 0 });
+        entry.attempts = entry.attempts.saturating_add(1);
+        let delay = backoff_delay(entry.attempts);
+        entry.until_ms = now.saturating_add(delay.as_millis() as u64);
+        crate::probe!(
+            class = "persona.host.slot_backoff",
+            persona_id = %persona_id,
+            attempts = entry.attempts,
+            retry_in_s = delay.as_secs(),
+            reason = %reason,
+            "a seat failed; it is not tried again until its backoff expires — the reason names the repair"
+        );
+    }
+
+    fn clear_slot_failure(&self, persona_id: Uuid) {
+        if let Ok(mut map) = self.slot_backoff.lock() {
+            map.remove(&persona_id);
+        }
+    }
+
     fn filter_by_hold(
         plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
@@ -528,6 +568,7 @@ impl PersonaSpawnSupervisor {
         // gate as boot — see [`Self::filter_by_hold`] for the bypass this
         // closed.
         let plans = Self::filter_by_hold(plans);
+        let plans = self.filter_by_backoff(plans);
 
         self.host_plans(plans, tool_command_executor, &mut summary)
             .await;
@@ -577,13 +618,20 @@ impl PersonaSpawnSupervisor {
 
         for (slot_idx, result) in hosted_results.into_iter().enumerate() {
             match result {
-                Ok(ctx) => self.spawn_and_attach(slot_idx, ctx, summary).await,
+                Ok(ctx) => {
+                    self.clear_slot_failure(ctx.identity.peer_id.as_uuid());
+                    self.spawn_and_attach(slot_idx, ctx, summary).await
+                }
                 Err(err) => {
                     let (slot_index, role) = supervisor_error_facts(&err);
+                    let persona_id = supervisor_error_persona(&err);
+                    if let Some(pid) = persona_id {
+                        self.note_slot_failure(pid, &format!("{err}"));
+                    }
                     summary.failures.push(BootSlotFailure {
                         slot_index: slot_index.unwrap_or(slot_idx),
                         role: Some(role),
-                        persona_id: None,
+                        persona_id,
                         reason: format!("{err}"),
                     });
                     tracing::warn!(
@@ -699,6 +747,51 @@ impl PersonaSpawnSupervisor {
 /// place — the error enum's variants both carry these fields but
 /// behind different names. Centralizing the extraction keeps the
 /// summary-construction site clean.
+/// A failed seat's attempts and the instant it may be tried again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SlotBackoff {
+    pub attempts: u32,
+    pub until_ms: u64,
+}
+
+/// Doubling from 2 s, capped at 10 min: a refused seat is tried again soon in case the
+/// cause was transient (a daemon mid-restart), then rarely, and never at pass rate.
+pub(crate) fn backoff_delay(attempts: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((2u64 << attempts.saturating_sub(1).min(9)).min(600))
+}
+
+/// Pure half of the backoff filter. Plans whose persona is inside its backoff are dropped.
+pub(crate) fn filter_by_backoff_with(
+    now_ms: u64,
+    map: &std::collections::HashMap<Uuid, SlotBackoff>,
+    plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+    plans
+        .into_iter()
+        .filter(|p| {
+            map.get(&p.instance.peer_id.as_uuid())
+                .map_or(true, |b| now_ms >= b.until_ms)
+        })
+        .collect()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0) // unwrap_or: a pre-epoch clock reads every backoff as expired — a retry, never a stuck seat
+}
+
+/// The persona a failure names, when the error carries one.
+fn supervisor_error_persona(err: &SupervisorError) -> Option<Uuid> {
+    match err {
+        SupervisorError::WorkspaceRegistration { persona_id, .. }
+        | SupervisorError::AdmissionRestore { persona_id, .. }
+        | SupervisorError::RuntimeMissing { persona_id, .. } => Some(*persona_id),
+        _ => None,
+    }
+}
+
 fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
     match err {
         SupervisorError::Profile {
@@ -725,6 +818,26 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a refused seat re-attempted at pass rate (the 2026-09-12
+    // storm: 34 attempts/min, 24 leaked daemon streams each), a backoff that never
+    // expires, or one that does not double and cap.
+    #[test]
+    fn a_failed_seat_backs_off_doubling_and_capped_and_is_tried_again_after() {
+        assert_eq!(backoff_delay(1).as_secs(), 2);
+        assert_eq!(backoff_delay(2).as_secs(), 4);
+        assert_eq!(backoff_delay(5).as_secs(), 32);
+        assert_eq!(backoff_delay(40).as_secs(), 600, "capped at ten minutes");
+        let plan = plan_named("Atlas");
+        let pid = plan.instance.peer_id.as_uuid();
+        let mut map = std::collections::HashMap::new();
+        map.insert(pid, SlotBackoff { attempts: 3, until_ms: 10_000 });
+        assert!(filter_by_backoff_with(9_999, &map, vec![plan]).is_empty(), "inside the backoff: skipped");
+        let plan = plan_named("Atlas");
+        map.insert(plan.instance.peer_id.as_uuid(), SlotBackoff { attempts: 3, until_ms: 10_000 });
+        assert_eq!(filter_by_backoff_with(10_000, &map, vec![plan]).len(), 1, "at expiry: tried again");
+        assert_eq!(filter_by_backoff_with(0, &map, vec![plan_named("Demetri")]).len(), 1, "another persona is untouched");
+    }
 
     fn plan_named(name: &str) -> crate::persona::spawner_module::MaterializedPersonaPlan {
         crate::persona::spawner_module::MaterializedPersonaPlan {
