@@ -398,6 +398,19 @@ async fn board_state_of(
 /// child not tracked here, join every local resident by name (idempotent on the daemon),
 /// then read the child's OWN standing — a paused or done round is left again at once, so
 /// a stale announcement never seats anyone into finished work.
+/// Announced children this process has already seen ARCHIVED. Standing is read
+/// through a member's subscription, so once every resident has left a finished
+/// round nobody can read that it is finished: on 749d91ce6 the pass joined all five
+/// to find out, read "archived", parted all five, and the next pass began again —
+/// 733 seats and 256 departures of the same room in sixteen minutes, each one a
+/// membership epoch bump and a stream re-open. A finished child stays finished for
+/// the life of the process; a reboot re-learns it once.
+fn finished_children() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
+    static FINISHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+        std::sync::OnceLock::new();
+    FINISHED.get_or_init(Default::default)
+}
+
 async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::experience::children::{project_children, CHILD_WALL_CATEGORY};
     let local: std::collections::HashSet<String> = crate::cognition::bench_round::live_rounds()
@@ -428,6 +441,13 @@ async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
     use crate::persona::airc_citizen::AircCitizen as _;
     for child in project_children(&posts) {
         if !child.is_citizen_benchmark() || local.contains(&child.name) {
+            continue;
+        }
+        if finished_children()
+            .lock()
+            .map(|set| set.contains(&child.room_id))
+            .unwrap_or(false) // unwrap_or: a poisoned set forgets, which costs one join+part, never a loop
+        {
             continue;
         }
         // Standing FIRST, membership SECOND, and a join or a part only on a real change.
@@ -482,6 +502,9 @@ async fn seat_announced_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
             }
         }
         if finished {
+            if let Ok(mut set) = finished_children().lock() {
+                set.insert(child.room_id);
+            }
             if left > 0 {
                 crate::probe!(
                     class = "bench.round.announced_finished",
