@@ -346,7 +346,7 @@ mod tests {
                 );
             }
         }
-        let json = serde_json::to_string_pretty(&json_schema).expect("schema serializes") + "\n";
+        let json = serde_json::to_string_pretty(&json_schema).expect("schema serializes") + "\n"; // boundary: the published schema file on disk
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../protocol/schema/experience-recipe.schema.json");
         std::fs::create_dir_all(path.parent().expect("schema dir")).expect("mkdir schema");

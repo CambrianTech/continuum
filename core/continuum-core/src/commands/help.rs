@@ -3,7 +3,7 @@
 //!
 //! Symmetry with the CLI: `continuum <command> --help` renders the SAME single schema as
 //! bash flags ("the manual matches the paradigm"); this renders it as the canonical
-//! tool-call envelope a persona emits. One source (`command_registry()` + the
+//! tool-call envelope a persona emits. One source (`command_registry_live()` + the
 //! command's `params_schema`), two paradigms. So when a persona is unsure HOW to
 //! call a tool, it asks `commands/help` and gets back a fill-in-the-blanks example —
 //! and because that example IS the canonical format, it teaches the model toward the
@@ -24,6 +24,7 @@ use ts_rs::TS;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::routing::grid_trust_policy::caller_trust;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
+use crate::sdk_codegen::ext::command_registry_live;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
@@ -514,7 +515,7 @@ impl ActionCommand for CommandsHelp {
         let trust = caller_trust(ctx.caller.as_ref());
         // Everything THIS caller could actually run — the universe for both the index
         // and did-you-mean (never leak commands above the caller's access).
-        let authorized: Vec<_> = command_registry()
+        let authorized: Vec<_> = command_registry_live()
             .into_iter()
             .filter(|d| is_command_authorized(d.name, trust))
             .collect();

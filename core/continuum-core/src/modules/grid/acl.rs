@@ -191,7 +191,7 @@ pub fn required_trust(command: &str) -> Option<TrustLevel> {
 fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
     static AI_SAFE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     AI_SAFE.get_or_init(|| {
-        crate::sdk_codegen::command_registry()
+        crate::sdk_codegen::ext::command_registry_live()
             .iter()
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::AiSafe)
             // ALIASES AUTHORIZE TOO: the gate checks the raw invoked path, and
@@ -216,7 +216,7 @@ fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
 fn privileged_commands() -> &'static std::collections::HashSet<String> {
     static PRIVILEGED: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     PRIVILEGED.get_or_init(|| {
-        crate::sdk_codegen::command_registry()
+        crate::sdk_codegen::ext::command_registry_live()
             .iter()
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::Privileged)
             // Same alias rule as ai_safe_commands: one command, every name.
@@ -270,7 +270,7 @@ mod tests {
     // read-only roster. regression for the 2026-08-30 who-panel outage.
     #[test]
     fn an_alias_authorizes_at_its_canonical_commands_tier() {
-        let registry = crate::sdk_codegen::command_registry();
+        let registry = crate::sdk_codegen::ext::command_registry_live();
         let canonical_ai_safe = registry
             .iter()
             .find(|d| {
