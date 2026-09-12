@@ -154,14 +154,31 @@ impl AircRosterReader for airc_lib::Airc {
         airc_lib::Airc::peer_id(self)
     }
 
+    // Both reads below are ONE liveness query plus cached identity cards. airc-lib's
+    // `room_roster_in` / `room_roster_cards_in` round-trip the daemon per live member
+    // on every call; rendered every 2 s for every room, that was ~250 requests a
+    // second with citizens seated (2026-09-12) and it filled both descriptor tables.
     async fn room_roster(
         &self,
         within: Duration,
         window: usize,
         room: Option<uuid::Uuid>,
     ) -> Result<Vec<RoomMember>, AircError> {
-        airc_lib::Airc::room_roster_in(self, room.map(airc_core::RoomId::from_uuid), within, window)
-            .await
+        let live = airc_lib::Airc::active_agents_in(self, room.map(airc_core::RoomId::from_uuid), within, window).await?;
+        let mut members = Vec::with_capacity(live.len());
+        for liveness in live {
+            let identity = crate::persona::identity_card_cache::identity_for(self, liveness.peer).await?;
+            // an empty published name is an honest "unknown", not an empty display string
+            let display_name = identity.map(|i| i.name).filter(|n| !n.trim().is_empty());
+            members.push(RoomMember {
+                peer_id: liveness.peer,
+                display_name,
+                runtime: liveness.runtime,
+                availability: liveness.coordination.availability,
+                last_seen_ms: liveness.last_seen_ms,
+            });
+        }
+        Ok(members)
     }
 
     async fn room_roster_cards(
@@ -170,13 +187,19 @@ impl AircRosterReader for airc_lib::Airc {
         window: usize,
         room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
-        airc_lib::Airc::room_roster_cards_in(
-            self,
-            room.map(airc_core::RoomId::from_uuid),
-            within,
-            window,
-        )
-        .await
+        let live = airc_lib::Airc::active_agents_in(self, room.map(airc_core::RoomId::from_uuid), within, window).await?;
+        let mut members = Vec::with_capacity(live.len());
+        for liveness in live {
+            let identity = crate::persona::identity_card_cache::identity_for(self, liveness.peer).await?;
+            members.push(airc_lib::RoomMemberCard {
+                peer_id: liveness.peer,
+                runtime: liveness.runtime,
+                availability: liveness.coordination.availability,
+                last_seen_ms: liveness.last_seen_ms,
+                identity,
+            });
+        }
+        Ok(members)
     }
 }
 

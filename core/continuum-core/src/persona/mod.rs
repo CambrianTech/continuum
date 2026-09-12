@@ -91,6 +91,7 @@ pub mod roster_hold;
 pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
+pub mod identity_card_cache;
 pub mod room_roster_source;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod scripted_adapter_factory;
