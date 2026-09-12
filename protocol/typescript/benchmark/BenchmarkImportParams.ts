@@ -27,4 +27,10 @@ skipAlreadyResolved: boolean,
  * drew. The gym suites do not sample (a suite IS its task list), so this is how a
  * round takes the first N of `hard-rs` — dispatch's `limit`, kept.
  */
-limit?: number, };
+limit?: number, 
+/**
+ * Keep only instances whose harness speaks this language (`rust`, `go`, `php`,
+ * `ruby`, `javascript`, `java`, `c`; `python` for the SWE-bench family). The
+ * Multilingual suite mixes nine; a round is one language's board. Empty = all.
+ */
+language?: string, };

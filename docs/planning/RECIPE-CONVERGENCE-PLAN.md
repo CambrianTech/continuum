@@ -237,6 +237,23 @@ and `limit` (the gym suites do not sample; dispatch's cap, kept). Then `suite: h
 same recipe → room 70fab522, 8 gym cards — every suite, one recipe. The recipe is renamed
 **`benchmark/round`** (`suite` is a param; `benchmark/swe` was never the right name).
 
+**S5 — every language through the same round (2026-09-12, Joel: "a series of benchmarks of
+various languages must work through this collaborative recipe").** Sweep receipt: 15 of the 34
+catalogued suites import through the recipe's first step (every Rust gym, mirrorcode, ds-1000,
+terminal-bench, the three SWE variants); super-masked/algotune want a local eval set; 16 catalogue
+rows have no adapter — including both multi-language suites. SWE-bench Multilingual ships its
+harness AS DATA per instance (`eval_script`, `log_parser`, `image`, `eval_type`; 300 instances,
+41 repos, 19 parser names, 43 Rust rows across ruff/tokio/axum/bat/nushell/coreutils/ripgrep), so
+the adapter is one generic path, not per-repo knowledge: `Harness::Script { command, parser }` is
+chosen from the instance's own columns (the marked test command between the script's
+`>>>>> Start/End Test Output` markers; everything else the script does, `grade()` already does),
+`ensure_env` answers with the language toolchain or an honest `TOOLCHAIN ABSENT`, and
+`parse_log_cargo` + `parse_log_gotest` read the Rust and Go slices (85/300); the other 17 parsers
+refuse BY NAME. `benchmark/import` and the `benchmark/round` recipe take `language` (derived from
+the parser; `python` for the SWE-bench family). Owed: the remaining parsers as their toolchains
+arrive on nodes; aider-polyglot (Exercism, 6 languages) as a gym-shaped adapter; the docker
+`image` path for nodes that lack a toolchain.
+
 **Still owed for S4 (S4b, remaining):** the side-by-side run itself — `activity/spawn --recipe
 benchmark/swe` and `benchmark/dispatch` on the same `(suite, seed, sample)` after a deploy,
 asserting the same board, card rooms and verdicts (a live acceptance, not a unit test); kickoff
