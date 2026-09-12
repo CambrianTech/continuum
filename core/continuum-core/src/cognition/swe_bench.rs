@@ -2626,7 +2626,7 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
 /// Rust and Go slices (85 of 300 instances) — the rest refuse BY NAME until their
 /// parser lands, never by a silent zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogParser {
+pub(crate) enum LogParser {
     Cargo,
     GoTest,
 }
@@ -2704,7 +2704,7 @@ pub fn test_command_from_eval_script(script: &str) -> Option<String> {
 
 /// How an instance's tests run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Harness {
+pub(crate) enum Harness {
     /// Our venv + the repo era's runner (the Python SWE-bench family).
     Native { venv_py: PathBuf, runner: TestRunner },
     /// The instance's own marked command and named parser (SWE-bench Multilingual).
