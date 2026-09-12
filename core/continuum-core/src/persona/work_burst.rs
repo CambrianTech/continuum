@@ -41,7 +41,11 @@ pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::Roo
             // the acceptance verb reads `persona.act.observed wrote=true`. If the
             // receipt shape moves, this counter reads zero and the gate silently
             // stops — read the act probe stream here when it is queryable per card.
-            if is_write_verb(verb) {
+            // A claim or a release is a HOLD BOUNDARY and resets the count too
+            // (measured 2026-09-11 23:55Z: 7 pulls / 6 governor releases in 25 min —
+            // a citizen released at 12 write-less acts pulled a fresh card and was
+            // released again at once, because the count spanned her previous hold).
+            if is_write_verb(verb) || is_hold_boundary(verb) {
                 n = 0;
             } else {
                 n += 1;
@@ -162,6 +166,13 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
 /// The one list of write-capable hands, shared by the write-or-release count and
 /// the progress note (review on #3790: `code/write` finished the only card
 /// completion that night and was not on the list).
+/// A claim or a release starts or ends a hold; the write-or-release count is a
+/// per-hold number, so either verb restarts it. The pull rides `work/claim` (one
+/// claim path), so a governor release followed by a pull reads as a fresh hold.
+fn is_hold_boundary(verb: &str) -> bool {
+    verb.starts_with("work/claim") || verb.starts_with("work/release")
+}
+
 fn is_write_verb(verb: &str) -> bool {
     verb.starts_with("code/edit")
         || verb.starts_with("code/write")
