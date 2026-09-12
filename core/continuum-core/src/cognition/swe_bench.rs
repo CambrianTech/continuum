@@ -3560,6 +3560,35 @@ fn compose_failure_excerpt(
     }
 }
 
+/// The compiler's account of a build that failed, from a harness report — or `None` when
+/// the report is a test run. Cargo: from the first `error[E…]` / `error: could not compile`
+/// line, the block up to its next blank line (the diagnostic with its `-->` location and
+/// `help:`), capped. Go: the `# package` header and the `undefined:` / `cannot use` lines
+/// that follow it. Pure so the shape is pinned by a test against the real rustc text.
+fn build_failure_excerpt(report: &str) -> Option<String> {
+    const MAX_LINES: usize = 14;
+    let lines: Vec<&str> = report.lines().collect();
+    let go_build_failed = report.contains("undefined:") || report.contains("cannot use");
+    let start = lines.iter().position(|l| {
+        let l = l.trim_start();
+        l.starts_with("error[E")
+            || l.starts_with("error: could not compile")
+            || (go_build_failed && l.starts_with("# "))
+    })?;
+    let mut block: Vec<&str> = Vec::new();
+    for l in &lines[start..] {
+        if block.len() >= MAX_LINES {
+            block.push("…");
+            break;
+        }
+        if l.trim().is_empty() && !block.is_empty() {
+            break;
+        }
+        block.push(l);
+    }
+    Some(block.join("\n"))
+}
+
 /// THE GOLD GATE: grade the instance's OWN gold patch and require it to resolve.
 ///
 /// This is the spine check [`SweInstance::patch`]'s own doc has promised since that field
@@ -3848,12 +3877,26 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         .map(|(id, _)| id.clone())
         .collect();
     p2p_broken.sort();
-    verdict.failure_excerpt = compose_failure_excerpt(
-        &p2p_broken,
-        &p2p_report,
-        verdict.f2p_passed < verdict.f2p_total,
-        &f2p_report,
-    );
+    // A TREE THAT DOES NOT COMPILE IS TOLD SO. Every test "fails" when the test binary never
+    // built, and the old composition read that as "REGRESSION — you broke N tests that passed
+    // before" with the one actionable compiler line buried three thousand characters into a
+    // tail of unrelated warnings, twice (2026-09-12, astral-sh__ruff-15309: `.args` for
+    // `.arguments.args`; the holder re-read her diff for a regression that did not exist).
+    // The compiler's own first error leads; the regression story is not told about a build.
+    verdict.failure_excerpt = match build_failure_excerpt(&p2p_report)
+        .or_else(|| build_failure_excerpt(&f2p_report))
+    {
+        Some(compile) => Some(format!(
+            "DOES NOT COMPILE — the test build failed, so no test ran; nothing here is a \
+             regression or a wrong answer yet. Fix the build first. Compiler:\n{compile}"
+        )),
+        None => compose_failure_excerpt(
+            &p2p_broken,
+            &p2p_report,
+            verdict.f2p_passed < verdict.f2p_total,
+            &f2p_report,
+        ),
+    };
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;
@@ -4482,6 +4525,18 @@ diff --git a/odd name.py b/odd name.py
     // alone, so she resubmitted the identical broken patch twice. The REGRESSION
     // section must lead the excerpt whenever p2p broke, name the broken tests, and
     // still carry the f2p tail after it; no-breakage keeps the old f2p-only shape.
+    // what this catches (2026-09-12, ruff-15309): a test build that never ran reported as
+    // "REGRESSION — you broke 4 tests", the compiler's line buried in a warning tail.
+    #[test]
+    fn a_tree_that_does_not_compile_is_told_so_with_the_compilers_first_error_leading() {
+        let report = "warning: hiding a lifetime that's elided elsewhere is confusing\n  --> crates/x.rs:60:23\n\n   Compiling ruff_linter v0.8.6\nerror[E0609]: no field `args` on type `&ruff_python_ast::ExprCall`\n  --> crates/ruff_linter/src/rules/pyflakes/fixes.rs:99:10\n   |\n99 |         .args\n   |          ^^^^ unknown field\nhelp: one of the expressions' fields has a field of the same name\n\nerror: could not compile `ruff_linter` (lib test) due to 2 previous errors\n";
+        let excerpt = build_failure_excerpt(report).expect("a build failure is named");
+        assert!(excerpt.starts_with("error[E0609]: no field `args`"), "{excerpt}");
+        assert!(excerpt.contains("fixes.rs:99:10"), "the location rides along: {excerpt}");
+        assert!(!excerpt.contains("hiding a lifetime"), "warnings before the error are not the story");
+        assert_eq!(build_failure_excerpt("test a::b ... ok\ntest a::c ... FAILED\n"), None, "a test run is not a build failure");
+    }
+
     #[test]
     fn regression_breakage_leads_the_failure_excerpt() {
         let broken: Vec<String> = (0..12).map(|i| format!("test_p2p_{i}")).collect();
