@@ -13,4 +13,18 @@ instances?: Array<string>,
 /**
  * Seeded random sample size. `(suite, seed, sample)` is the replication contract.
  */
-sample?: number, seed?: number, };
+sample?: number, seed?: number, 
+/**
+ * Do not OFFER an instance a citizen already resolved on this node (its verdict
+ * file says `resolved`). The instance stays in the sample and its score — it is
+ * simply not work again. Dispatch has done this since 2026-09-07 (re-offering
+ * re-staged an August checkout and overwrote a first citizen's outcome); the
+ * authored round must offer exactly what dispatch offers. Default true.
+ */
+skipAlreadyResolved: boolean, 
+/**
+ * Cap on cards offered, applied AFTER the gate. `None`/0 = every card the selection
+ * drew. The gym suites do not sample (a suite IS its task list), so this is how a
+ * round takes the first N of `hard-rs` — dispatch's `limit`, kept.
+ */
+limit?: number, };

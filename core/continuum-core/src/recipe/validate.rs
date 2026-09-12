@@ -452,10 +452,10 @@ mod tests {
     // fields on its first run.)
     #[test]
     fn the_shipped_authored_round_is_well_formed_against_the_real_registry() {
-        let r = recipe(include_str!("../experience/recipes/benchmark-swe.json"));
+        let r = recipe(include_str!("../experience/recipes/benchmark-round.json"));
         let issues = pipeline_issues(&r, |name| registry_lookup().get(name).cloned());
         let rendered: Vec<String> = issues.iter().map(ToString::to_string).collect();
-        assert!(issues.is_empty(), "benchmark/swe has pipeline issues: {rendered:#?}");
+        assert!(issues.is_empty(), "benchmark/round has pipeline issues: {rendered:#?}");
     }
 
     // what this catches: ROOM_FIELDS is asserted against the seeding site — if the

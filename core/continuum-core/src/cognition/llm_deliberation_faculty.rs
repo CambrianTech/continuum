@@ -4252,7 +4252,7 @@ mod tests {
         let raw = persona_tools::native_tool_specs();
         for (file, json) in [
             ("benchmark.json", include_str!("../experience/recipes/benchmark.json")),
-            ("benchmark-swe.json", include_str!("../experience/recipes/benchmark-swe.json")),
+            ("benchmark-round.json", include_str!("../experience/recipes/benchmark-round.json")),
         ] {
             let recipe = crate::experience::recipe::ExperienceRecipe::from_json(json)
                 .expect("shipped benchmark recipe parses");

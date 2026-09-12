@@ -2,7 +2,7 @@
   "$schema": "../../../../../protocol/schema/experience-recipe.schema.json",
   "id": "c0a1554f-f2c1-4942-8de5-de9c13ce6783",
   "version": 1,
-  "purpose": "benchmark/swe",
+  "purpose": "benchmark/round",
   "base": "academy",
   "regions": [
     {
@@ -128,7 +128,7 @@
   "params": {
     "suite": {
       "default": "swe-bench-verified",
-      "doc": "which SWE-bench collection to import (task + oracle only; see benchmark/list)"
+      "doc": "which suite to import (benchmark/list names them: swe-bench-verified/-lite/-mini, hard-rs, frontier-rs, games-rs, webdev-rs, vision-qa, coder-write-eval); task + oracle only"
     },
     "repo": {
       "default": "",
@@ -161,6 +161,10 @@
     "doctrine": {
       "default": "",
       "doc": "the round's standing rules, posted into the run room after the cards; empty = none (the control arm)"
+    },
+    "limit": {
+      "default": 0,
+      "doc": "cap on cards offered after the already-resolved gate; 0 = all. The gym suites do not sample, so this is how a round takes the first N of hard-rs"
     }
   },
   "pipeline": [
@@ -170,7 +174,9 @@
         "suite": "$args.suite",
         "instances": "$args.instances",
         "sample": "$args.sample",
-        "seed": "$args.seed"
+        "seed": "$args.seed",
+        "limit": "$args.limit",
+        "skipAlreadyResolved": true
       },
       "outputTo": "imported"
     },
