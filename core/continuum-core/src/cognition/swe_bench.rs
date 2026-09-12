@@ -2694,11 +2694,11 @@ pub fn test_command_from_eval_script(script: &str) -> Option<String> {
         .skip(1)
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with(':'))?;
-    let line = line.strip_suffix("| cat").map(str::trim).unwrap_or(line);
+    let line = line.strip_suffix("| cat").map(str::trim).unwrap_or(line); // unwrap_or: no `| cat` wrapper means the line IS the command
     let line = line
         .strip_prefix('(')
         .and_then(|l| l.strip_suffix(')'))
-        .unwrap_or(line);
+        .unwrap_or(line); // unwrap_or: an unparenthesised command is already bare
     Some(line.trim().to_string())
 }
 
@@ -2722,7 +2722,7 @@ impl Harness {
         let Some(script) = instance.eval_script.as_deref() else {
             return Ok(Self::Native { venv_py, runner });
         };
-        let name = instance.log_parser.as_deref().unwrap_or("");
+        let name = instance.log_parser.as_deref().unwrap_or(""); // unwrap_or: a script with no parser name refuses below as unsupported
         let parser = LogParser::from_name(name).ok_or_else(|| unsupported_harness(instance, name))?;
         let command = test_command_from_eval_script(script).ok_or_else(|| {
             format!(
@@ -2774,7 +2774,7 @@ pub async fn run_harness(
             let seen = parser.parse(&report);
             (
                 ids.iter()
-                    .map(|i| (i.clone(), seen.get(i).copied().unwrap_or(false)))
+                    .map(|i| (i.clone(), seen.get(i).copied().unwrap_or(false))) // unwrap_or: an id the log never names did not pass
                     .collect(),
                 report,
             )
@@ -2793,7 +2793,7 @@ pub fn parse_log_cargo(log: &str) -> HashMap<String, bool> {
         let Some((name, status)) = rest.rsplit_once(" ... ") else {
             continue;
         };
-        let name = name.split(" - ").next().unwrap_or(name).trim();
+        let name = name.split(" - ").next().unwrap_or(name).trim(); // unwrap_or: split always yields a head; the name itself
         let status = status.trim();
         let passed = status.starts_with("ok");
         if passed || status.starts_with("FAILED") {
