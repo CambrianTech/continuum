@@ -47,7 +47,7 @@ pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[
     ("airc", 6),
     ("continuum", 0),
     ("gh", 1),
-    ("curl", 0),
+    ("curl", 1),
     ("wget", 0),
     ("ps", 7),
     ("which", 3),
