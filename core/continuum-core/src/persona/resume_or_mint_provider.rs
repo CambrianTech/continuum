@@ -122,6 +122,17 @@ impl ResumeOrMintProvider {
     pub fn identities_available(&self) -> usize {
         self.resumed.len().max(self.min_personas)
     }
+
+    /// Start the draw over. The provider is built ONCE at boot and every hosting
+    /// attempt draws from it; an attempt that walks the whole list and then fails
+    /// (2026-09-12 02:42Z: the daemon was mid-restart, five spawns failed after the
+    /// draw) left the cursor at the end, and the next 700 attempts read "identity
+    /// provider exhausted at slot 0" from a directory holding twelve citizens. A retry
+    /// that cannot succeed is not a retry. Nothing was hosted, so nothing is double-drawn.
+    pub fn rewind(&mut self) {
+        self.resumed_cursor = 0;
+        self.minted_count = 0;
+    }
 }
 
 #[async_trait]
@@ -262,6 +273,36 @@ async fn scan_personas_dir(
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a hosting retry drawing from a cursor a failed attempt left
+    // at the end — the 2026-09-12 boot that read "exhausted at slot 0" 700 times with
+    // twelve citizens on disk. After a rewind the provider yields the same identities
+    // again, resumed first, then the mint floor.
+    #[tokio::test]
+    async fn a_rewound_provider_yields_its_identities_again() {
+        let mut p = ResumeOrMintProvider {
+            resumed: vec![mint_fresh_intent(), mint_fresh_intent()],
+            resumed_cursor: 0,
+            min_personas: 3,
+            minted_count: 0,
+        };
+        let mut first = Vec::new();
+        while let Some(i) = p.next_persona().await.expect("draw") {
+            first.push(i.agent_name.clone());
+        }
+        assert_eq!(first.len(), 3, "two resumed + one minted to the floor");
+        assert!(p.next_persona().await.expect("draw").is_none(), "exhausted after a full draw");
+        p.rewind();
+        let again: Vec<String> = {
+            let mut v = Vec::new();
+            while let Some(i) = p.next_persona().await.expect("draw") {
+                v.push(i.agent_name.clone());
+            }
+            v
+        };
+        assert_eq!(again.len(), 3);
+        assert_eq!(&again[..2], &first[..2], "resumed identities come back in order");
+    }
+
     use super::*;
     use tempfile::TempDir;
 
