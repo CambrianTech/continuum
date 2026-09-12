@@ -65,6 +65,22 @@ impl HasCard for crate::cognition::bench_round::NextCard {
     }
 }
 
+
+/// One row per citizen per minute on a no-pull exit: enough to name the reason
+/// every time it changes, never a storm from a 3 s self-tick.
+fn pull_probe_due(peer: Uuid) -> bool {
+    static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<Uuid, u64>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    const EVERY_MS: u64 = 60_000;
+    let now = crate::modules::chat::now_ms();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned throttle map still throttles — a probe cadence is never worth a panic
+    let due = last.get(&peer).map_or(true, |t| now.saturating_sub(*t) >= EVERY_MS);
+    if due {
+        last.insert(peer, now);
+    }
+    due
+}
+
 pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> PullOutcome {
     let Some(citizen) = conversation.stream_citizen() else {
         return PullOutcome::Nothing;
@@ -139,14 +155,15 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             in_flight += round.dispatched.saturating_sub(round.settled).saturating_sub(open);
         }
         if lanes > 0 && in_flight >= lanes {
-            static DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            if DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
+            // Once a minute per citizen, never sampled: a 1/50 sample on a four-coder
+            // node hid every deferral for an hour (2026-09-12).
+            if pull_probe_due(ctx.identity.peer_id.as_uuid()) {
                 crate::probe!(
                     class = "bench.round.pull_deferred_wip",
                     persona = %ctx.identity.agent_name,
                     in_flight = in_flight as u64,
                     lanes = lanes as u64,
-                    "no pull: the roster already holds as many cards as there are lanes (sampled 1/50)"
+                    "no pull: the roster already holds as many cards as there are lanes"
                 );
             }
             return PullOutcome::DeferredWip;
@@ -160,8 +177,18 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         candidates
     };
     if candidates.is_empty() {
+        if pull_probe_due(ctx.identity.peer_id.as_uuid()) {
+            crate::probe!(
+                class = "bench.round.pull_none",
+                persona = %ctx.identity.agent_name,
+                reason = if reviews_only { "no_review_cards" } else { "no_candidates" },
+                resident_rooms = resident.len() as u64,
+                "no pull: the decks in the rooms she stands in offer nothing"
+            );
+        }
         return PullOutcome::Nothing;
     }
+    let candidate_count = candidates.len();
     // BOARD TRUTH decides what is takeable: the round tracker knows the deck, the
     // board knows who holds what. One board read per run room per self-tick.
     let now_ms = crate::persona::trace::now_ms();
@@ -191,6 +218,20 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         }
     }
     let Some(next) = next else {
+        if pull_probe_due(ctx.identity.peer_id.as_uuid()) {
+            let rooms: Vec<String> = claimable_by_room
+                .iter()
+                .map(|(room, open)| format!("{}:{}", &room.to_string()[..8], open.len()))
+                .collect();
+            crate::probe!(
+                class = "bench.round.pull_none",
+                persona = %ctx.identity.agent_name,
+                reason = "none_claimable",
+                candidates = candidate_count as u64,
+                rooms = rooms.join(","),
+                "no pull: every candidate reads unclaimable on its room's board"
+            );
+        }
         return PullOutcome::Nothing;
     };
     let card_id = airc_work::WorkCardId::from_uuid(next.card);
