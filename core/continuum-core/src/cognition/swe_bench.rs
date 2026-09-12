@@ -1717,9 +1717,18 @@ fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
         // clean, 2026-08-27).
         return &["numpy==1.21.6", "cython<3"];
     }
+    if repo == "scikit-learn/scikit-learn" && year >= 2022 {
+        // scikit-learn 1.x: SWE-bench's own spec installs pandas and matplotlib beside
+        // numpy/scipy/cython — the set_output tests and many others `importorskip("pandas")`.
+        // 2026-09-12: 26323's only FAIL_TO_PASS test skipped on a pandas-less env and the
+        // verdict voided a correct fix. Pins have py3.11 arm64 wheels; cython<3 for the
+        // era's .pyx.
+        return &["numpy==1.24.4", "cython==0.29.36", "scipy==1.10.1", "pandas==2.0.3", "matplotlib==3.7.3"];
+    }
     if repo == "scikit-learn/scikit-learn" && year >= 2020 {
-        // Modern eras resolve their own numpy/cython fine — no reality pins.
-        return &["numpy", "cython"];
+        // Modern eras resolve their own numpy/cython fine — no reality pins; pandas rides
+        // along because the suite skips without it.
+        return &["numpy", "cython", "pandas"];
     }
     match repo {
         // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
@@ -2888,6 +2897,7 @@ class _ContinuumResult(unittest.TextTestResult):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.continuum_rows = {}
+        self.continuum_skipped = set()
     def _record(self, test, ok):
         # shortDescription() is the docstring's first line — the SAME string unittest
         # renders on its own output line, and therefore the id SWE-bench's own log parser
@@ -2905,7 +2915,7 @@ class _ContinuumResult(unittest.TextTestResult):
     def addFailure(self, test, err):
         super().addFailure(test, err); self._record(test, False)
     def addSkip(self, test, reason):
-        super().addSkip(test, reason); self._record(test, True)
+        super().addSkip(test, reason); self._record(test, True); self.continuum_skipped.add(test.id())
     def addExpectedFailure(self, test, err):
         super().addExpectedFailure(test, err); self._record(test, True)
     def addUnexpectedSuccess(self, test):
@@ -2918,6 +2928,8 @@ class JsonRunner(DiscoverRunner):
         result = super().run_suite(suite, **kwargs)
         for tid, (ok, desc) in getattr(result, "continuum_rows", {}).items():
             row = {"id": tid, "ok": ok}
+            if tid in getattr(result, "continuum_skipped", set()):
+                row["skipped"] = True
             if desc:
                 row["desc"] = desc
             sys.stderr.write("CONTINUUM_TEST " + json.dumps(row) + "\n")
@@ -3681,6 +3693,52 @@ pub enum PristineGate {
     Holds { pristine_green: Vec<String> },
 }
 
+/// The tests a harness report says were SKIPPED — pytest's `SKIPPED` verdict lines and the
+/// Django runner's `"skipped": true` rows. A skipped FAIL_TO_PASS test is neither a pass nor a
+/// fail: the environment could not run it (`pytest.importorskip("pandas")` on a box without
+/// pandas), so any score from that run is an ENV fault. 2026-09-12: scikit-learn-26323's only
+/// f2p test skipped on the pristine tree, the parser counted the skip as green, the gate said
+/// "already passes", and a correct fix was voided. Pure; pinned by a test on both shapes.
+pub fn skipped_in_report(report: &str) -> Vec<String> {
+    let clean = strip_ansi(report);
+    let mut out = Vec::new();
+    for line in clean.lines() {
+        let line = line.trim();
+        if let Some(payload) = line.strip_prefix("CONTINUUM_TEST ") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+                if v.get("skipped").and_then(|x| x.as_bool()) == Some(true) {
+                    if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                        out.push(id.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some((node, verdict)) = split_node_outcome(line) {
+            if node.contains("::") && verdict.starts_with("SKIPPED") {
+                out.push(node.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Which of `wanted` (FAIL_TO_PASS ids, in any id shape the parsers accept) were skipped —
+/// the ids a verdict names in its env fault.
+pub fn skipped_of<'a>(wanted: &'a [String], skipped: &[String]) -> Vec<&'a String> {
+    wanted
+        .iter()
+        .filter(|w| {
+            skipped.iter().any(|s| {
+                s == *w
+                    || s.ends_with(w.as_str())
+                    || w.ends_with(s.as_str())
+                    || s.rsplit("::").next() == w.rsplit("::").next().filter(|f| !f.is_empty())
+            })
+        })
+        .collect()
+}
+
 /// THE GATE, decided. Voids only when NOTHING is left to fix.
 ///
 /// Before 2026-09-07 one pristine-green FAIL_TO_PASS test voided the whole instance: ten of
@@ -3743,7 +3801,20 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         verdict.error = Some(e);
         return verdict;
     }
-    let (pre, _) = run_harness(repo_dir, &harness, &f2p, &test_files).await;
+    let (pre, pre_report) = run_harness(repo_dir, &harness, &f2p, &test_files).await;
+    // A SKIPPED FAIL_TO_PASS test is an ENV fault, decided before the gate can read the skip
+    // as green (2026-09-12, scikit-learn-26323 on a pandas-less env).
+    let skipped_pre = skipped_of(&f2p, &skipped_in_report(&pre_report));
+    if !skipped_pre.is_empty() {
+        verdict.gate_ok = false;
+        verdict.error = Some(format!(
+            "UNGRADEABLE — FAIL_TO_PASS test(s) SKIPPED on the pristine tree ({skipped_pre:?}): \
+             the environment cannot run them (an import the suite skips on, a missing fixture), \
+             so no score from this tree measures the fix. Fix the environment spec for this \
+             instance's version, then re-grade."
+        ));
+        return verdict;
+    }
     // Sorted so the receipt names tests in one order run after run.
     let pre_sorted: Vec<(String, bool)> = {
         let mut v: Vec<(String, bool)> = pre.iter().map(|(id, ok)| (id.clone(), *ok)).collect();
@@ -3813,6 +3884,14 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
     }
 
     let (f2p_res, f2p_report) = run_harness(repo_dir, &harness, &f2p, &test_files).await;
+    let skipped_after = skipped_of(&f2p, &skipped_in_report(&f2p_report));
+    if !skipped_after.is_empty() {
+        verdict.error = Some(format!(
+            "UNGRADEABLE — FAIL_TO_PASS test(s) SKIPPED after the patch ({skipped_after:?}): the \
+             environment cannot run them; this is an env fault, not a failed fix."
+        ));
+        return verdict;
+    }
     let (p2p_res, p2p_report) = run_harness(repo_dir, &harness, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
@@ -4531,6 +4610,18 @@ diff --git a/odd name.py b/odd name.py
     // still carry the f2p tail after it; no-breakage keeps the old f2p-only shape.
     // what this catches (2026-09-12, ruff-15309): a test build that never ran reported as
     // "REGRESSION — you broke 4 tests", the compiler's line buried in a warning tail.
+    // what this catches (2026-09-12, sklearn-26323): a skipped FAIL_TO_PASS test read as green
+    // (pytest `SKIPPED`) or as a pass (Django's row), voiding or failing a correct fix.
+    #[test]
+    fn a_skipped_test_is_named_in_both_report_shapes() {
+        let pytest = "sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output SKIPPED (could not import 'pandas')\nsklearn/compose/tests/test_a.py::test_ok PASSED\n";
+        assert_eq!(skipped_in_report(pytest), vec!["sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output".to_string()]);
+        let django = "CONTINUUM_TEST {\"id\": \"a.B.test_x\", \"ok\": true, \"skipped\": true}\nCONTINUUM_TEST {\"id\": \"a.B.test_y\", \"ok\": true}\n";
+        assert_eq!(skipped_in_report(django), vec!["a.B.test_x".to_string()]);
+        let wanted = vec!["sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output".to_string(), "a.B.test_y".to_string()];
+        assert_eq!(skipped_of(&wanted, &skipped_in_report(pytest)).len(), 1);
+    }
+
     #[test]
     fn a_tree_that_does_not_compile_is_told_so_with_the_compilers_first_error_leading() {
         let report = "warning: hiding a lifetime that's elided elsewhere is confusing\n  --> crates/x.rs:60:23\n\n   Compiling ruff_linter v0.8.6\nerror[E0609]: no field `args` on type `&ruff_python_ast::ExprCall`\n  --> crates/ruff_linter/src/rules/pyflakes/fixes.rs:99:10\n   |\n99 |         .args\n   |          ^^^^ unknown field\nhelp: one of the expressions' fields has a field of the same name\n\nerror: could not compile `ruff_linter` (lib test) due to 2 previous errors\n";
