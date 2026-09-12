@@ -64,7 +64,10 @@ impl BenchmarkSpec {
     pub fn swe_dataset(&self) -> Option<&'static str> {
         if !matches!(
             self.name,
-            "swe-bench-lite" | "swe-bench-verified" | "swe-bench-verified-mini"
+            "swe-bench-lite"
+                | "swe-bench-verified"
+                | "swe-bench-verified-mini"
+                | "swe-bench-multilingual"
         ) {
             return None;
         }
@@ -1297,6 +1300,11 @@ pub(crate) struct CardSelection {
     pub(crate) instances: Option<Vec<String>>,
     pub(crate) sample: Option<u32>,
     pub(crate) seed: Option<u64>,
+    /// Keep only instances whose harness speaks this language (`rust`, `go`, `php`,
+    /// `ruby`, `javascript`, `java`, `c`; `python` for the SWE-bench family) — the
+    /// Multilingual dataset mixes nine, and a round is one language's board.
+    /// `None`/empty = every language.
+    pub(crate) language: Option<String>,
 }
 
 /// THE ONE WRITER of benchmark cards: task + oracle only, projected into the
@@ -1318,6 +1326,17 @@ pub(crate) async fn prepare_cards(
             .map_err(|e| {
                 CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
             })?;
+        if let Some(lang) = selection.language.as_deref().filter(|l| !l.is_empty()) {
+            let before = instances.len();
+            instances.retain(|i| i.language() == lang);
+            if instances.is_empty() {
+                return Err(CommandError::Invalid(format!(
+                    "no instance in '{dataset}' is `{lang}` (of {before}) — a language is \
+                     what an instance's harness speaks: rust, go, php, ruby, javascript, \
+                     java, c; python for the SWE-bench family"
+                )));
+            }
+        }
         // Deterministic sample: (dataset, seed, n) → the same list on every
         // machine. Fisher-Yates over the dataset order with the shared LCG —
         // the command IS the replication recipe (no operator-side scripts).
@@ -1794,6 +1813,7 @@ impl ActionCommand for BenchmarkDispatch {
                 instances: p.instances.clone(),
                 sample: p.sample,
                 seed: p.seed,
+                language: None,
             },
         )
         .await?;
@@ -4182,6 +4202,8 @@ mod swe_setup_tests {
             created_at: "2023-01-01".into(),
             fail_to_pass: "[\"tests/test_widget.py::test_single_frob\"]".into(),
             pass_to_pass: "[]".into(),
+            eval_script: None,
+            log_parser: None,
         };
         // Mirror the run() format string's data flow: only these fields enter.
         let body = format!(
