@@ -480,10 +480,14 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// caller, reused across `code/shell` calls so `cd`/env persist like a real
 /// terminal.
 fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
+    // The ENGINE decides the root and evicts a shell whose root moved (a held card
+    // claimed after the shell was opened) — so it runs first; a shell that survives
+    // it is current. Checking the shell first let a pre-claim `code/shell` pin the
+    // hands at the core's cwd for the session's whole life (2026-09-12, live).
+    ensure_engine(state, who)?;
     if state.shell_sessions.contains_key(who) {
         return Ok(());
     }
-    ensure_engine(state, who)?;
     let root = state
         .file_engines
         .get(&who.to_string())
