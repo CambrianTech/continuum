@@ -227,7 +227,17 @@ interpolation, the hand-built `run_params`, and the `bench_round` card mirror.
   known verb set (a new step = a new verb, on purpose); both benchmark recipes authorize every
   hand a work turn offers.
 
-**Still owed for S4 (S4b):** the side-by-side run itself — `activity/spawn --recipe
+**S4b, first live run (2026-09-11 23:4xZ, M5 on c5b566a58):** `activity/spawn --recipe
+benchmark/swe` (seed 2, sample 3) → room 5e1754ec, the six-step pipeline ran with no Rust in the
+path (import → round-open → `work/create` ×3 → round-track → invite; doctrine skipped by its
+condition); `benchmark/dispatch` on the same seed drew the SAME three instances (deterministic) but
+its already-resolved gate skipped two → the gate lived inside dispatch's `run()`, not in import.
+Ported: `benchmark/import` gains `skipAlreadyResolved` (default true, receipt names the skipped)
+and `limit` (the gym suites do not sample; dispatch's cap, kept). Then `suite: hard-rs` through the
+same recipe → room 70fab522, 8 gym cards — every suite, one recipe. The recipe is renamed
+**`benchmark/round`** (`suite` is a param; `benchmark/swe` was never the right name).
+
+**Still owed for S4 (S4b, remaining):** the side-by-side run itself — `activity/spawn --recipe
 benchmark/swe` and `benchmark/dispatch` on the same `(suite, seed, sample)` after a deploy,
 asserting the same board, card rooms and verdicts (a live acceptance, not a unit test); kickoff
 parity (dispatch's addressed per-card kickoff vs the recipe's one doctrine line — decide which

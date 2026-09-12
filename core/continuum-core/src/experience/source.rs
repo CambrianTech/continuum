@@ -23,7 +23,7 @@ pub trait ExperienceSource: Send + Sync {
     /// never a silent stand-in, `[[fallbacks-are-illegal-fail-loud]]`).
     fn experience_for(&self, room_id: Uuid) -> Option<Experience>;
 
-    /// The authored recipe for a PURPOSE (`benchmark/swe`, `campaign/applications`),
+    /// The authored recipe for a PURPOSE (`benchmark/round`, `campaign/applications`),
     /// or `None` when this source knows no such purpose. `recipe/run` resolves its
     /// name through this (S2): one registry for what a room IS and what an activity
     /// DOES, instead of a second store of pipeline rows beside the recipe files.
@@ -154,13 +154,13 @@ pub mod shipped {
     /// A project — one repo's work: a board, a room per card under it (`project`) —
     /// `2f6b1c0e-4c7a-4d0b-9a7e-5a1c3e9f7b21`.
     pub const PROJECT: RecipeId = RecipeId::from_u128(0x2f6b1c0e_4c7a_4d0b_9a7e_5a1c3e9f7b21);
-    /// The AUTHORED round (S4a): `benchmark/swe` — its steps are verbs, its behaviour is
+    /// The AUTHORED round (S4a): `benchmark/round`, every suite — its steps are verbs, its behaviour is
     /// data. Pinned like every shipped recipe so the id survives a purpose rename.
-    pub const BENCHMARK_SWE: RecipeId =
+    pub const BENCHMARK_ROUND: RecipeId =
         RecipeId::from_u128(0xc0a1554f_f2c1_4942_8de5_de9c13ce6783);
 
     /// Every shipped id, for tests and for enumerating the prod-critical floor.
-    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_SWE, CHAT, PROFILE, VIDEO_CHAT];
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_ROUND, CHAT, PROFILE, VIDEO_CHAT];
 }
 
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
@@ -316,7 +316,7 @@ impl RecipeExperienceSource {
     fn embedded() -> impl Iterator<Item = ExperienceRecipe> {
         [
             include_str!("recipes/benchmark.json"),
-            include_str!("recipes/benchmark-swe.json"),
+            include_str!("recipes/benchmark-round.json"),
             include_str!("recipes/chat.json"),
             include_str!("recipes/video-chat.json"),
             include_str!("recipes/profile.json"),
@@ -437,7 +437,7 @@ mod tests {
     fn every_shipped_page_declares_no_pipeline_and_the_authored_round_uses_known_verbs() {
         // what this catches: the shipped floor's shape. Chat, profile, project and
         // video-chat are positron pages — regions and nothing more — so they must never
-        // grow a pipeline by accident; and the ONE authored round (`benchmark/swe`, S4)
+        // grow a pipeline by accident; and the ONE authored round (`benchmark/round`, S4)
         // must be made only of verbs, so a recipe can be re-authored without a compiler.
         // The verbs an authored benchmark round is allowed to be made of. A new step
         // means a new verb, added here on purpose — never a Rust call the recipe cannot
@@ -447,12 +447,12 @@ mod tests {
             "benchmark/round-track", "activity/invite", "chat/send",
         ];
         for recipe in RecipeExperienceSource::embedded() {
-            if recipe.purpose == "benchmark/swe" {
+            if recipe.purpose == "benchmark/round" {
                 assert!(!recipe.pipeline.is_empty(), "the authored round declares its steps");
                 for step in &recipe.pipeline {
                     assert!(
                         ROUND_VERBS.contains(&step.command.as_str()),
-                        "benchmark/swe step `{}` is not a known round verb",
+                        "benchmark/round step `{}` is not a known round verb",
                         step.command
                     );
                 }

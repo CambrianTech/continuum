@@ -46,6 +46,23 @@ pub struct BenchmarkImportParams {
     #[serde(default)]
     #[ts(optional, type = "number")]
     pub seed: Option<u64>,
+    /// Do not OFFER an instance a citizen already resolved on this node (its verdict
+    /// file says `resolved`). The instance stays in the sample and its score — it is
+    /// simply not work again. Dispatch has done this since 2026-09-07 (re-offering
+    /// re-staged an August checkout and overwrote a first citizen's outcome); the
+    /// authored round must offer exactly what dispatch offers. Default true.
+    #[serde(default = "default_true")]
+    pub skip_already_resolved: bool,
+    /// Cap on cards offered, applied AFTER the gate. `None`/0 = every card the selection
+    /// drew. The gym suites do not sample (a suite IS its task list), so this is how a
+    /// round takes the first N of `hard-rs` — dispatch's `limit`, kept.
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One card, ready to post — title and body exactly as dispatch writes them, so the
@@ -70,6 +87,9 @@ pub struct ImportedCard {
 pub struct BenchmarkImportResult {
     pub suite: String,
     pub cards: Vec<ImportedCard>,
+    /// Instances drawn by the selection but NOT offered because a citizen already
+    /// resolved them here — named, so the round's receipt can say why 3 drew and 1 posted.
+    pub skipped_already_resolved: Vec<String>,
 }
 
 pub struct BenchmarkImport;
@@ -122,8 +142,28 @@ impl ActionCommand for BenchmarkImport {
             },
         )
         .await?;
-        let cards = prepared.iter().map(imported_from).collect::<Result<Vec<_>, _>>()?;
-        Ok(BenchmarkImportResult { suite: p.suite, cards })
+        let mut cards = Vec::with_capacity(prepared.len());
+        let mut skipped_already_resolved = Vec::new();
+        for pc in &prepared {
+            let row = imported_from(pc)?;
+            if p.skip_already_resolved
+                && row.kind == "swe"
+                && crate::cognition::swe_bench::read_verdict(&row.task_id).is_some_and(|v| v.resolved)
+            {
+                crate::probe!(
+                    class = "bench.round.already_resolved",
+                    instance = %row.task_id,
+                    "a citizen's card already resolved this instance — it stays in the sample and its score, and is not offered as work again"
+                );
+                skipped_already_resolved.push(row.task_id);
+                continue;
+            }
+            cards.push(row);
+        }
+        if let Some(n) = p.limit.filter(|n| *n > 0) {
+            cards.truncate(n as usize);
+        }
+        Ok(BenchmarkImportResult { suite: p.suite, cards, skipped_already_resolved })
     }
 }
 
