@@ -291,14 +291,14 @@ impl ProcessCommand {
             crate::probe!(
                 class = "ext.command.failed",
                 command = %self.name,
-                code = out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that // unwrap_or: killed by a signal has no exit code; -1 names that
+                code = out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
                 elapsed_ms,
                 "authored command exited non-zero"
             );
             return Err(format!(
                 "{}: exit {} — {}",
                 self.name,
-                out.status.code().unwrap_or(-1),
+                out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
                 stderr.trim().chars().take(600).collect::<String>()
             ));
         }
