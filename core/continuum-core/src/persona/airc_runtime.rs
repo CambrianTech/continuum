@@ -810,19 +810,29 @@ impl PersonaAircRuntime {
                                 c.owner == Some(me)
                                     && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
                             });
-                            for card in snapshot.cards.iter().filter(|c| {
-                                !holds_live
-                                    && c.owner == Some(me)
-                                    && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
-                                    && crate::cognition::bench_round::card_round_is_working(
-                                        c.card_id.as_uuid(),
-                                    )
-                                    && matches!(
-                                        c.state,
-                                        airc_work::model::CardState::Claimed
-                                            | airc_work::model::CardState::InProgress
-                                    )
-                            }) {
+                            // ONE card per citizen holds through the recovery too: of
+                            // several lapsed holds, only the most recently touched comes
+                            // back; the rest stay on the deck for anyone (2026-09-12: a
+                            // coder recovered four at one boot and pulled nothing for an
+                            // hour behind the lane cap).
+                            let recoverable = snapshot
+                                .cards
+                                .iter()
+                                .filter(|c| {
+                                    !holds_live
+                                        && c.owner == Some(me)
+                                        && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
+                                        && crate::cognition::bench_round::card_round_is_working(
+                                            c.card_id.as_uuid(),
+                                        )
+                                        && matches!(
+                                            c.state,
+                                            airc_work::model::CardState::Claimed
+                                                | airc_work::model::CardState::InProgress
+                                        )
+                                })
+                                .max_by_key(|c| c.updated_at_ms);
+                            for card in recoverable {
                                 match hb_airc
                                     .claim_work_card(airc_lib::ClaimWorkCard {
                                         card_id: card.card_id,
