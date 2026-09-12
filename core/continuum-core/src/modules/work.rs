@@ -202,29 +202,12 @@ pub(crate) const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;
 pub(crate) fn persona_runtime(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
-    // What the CALLER actually invoked. Was hardcoded to "work commands", which
-    // #358 caught live the moment room/members reused this helper: a citizen asking
-    // who is here was told "work commands act as ..." and pointed at `airc work`.
-    // A refusal that misnames the thing you called teaches the wrong lesson.
+    // What the CALLER actually invoked, for the refusal text (#358).
     family: &str,
 ) -> Result<Arc<PersonaAircRuntime>, CommandError> {
-    // A persona acting through her toolbelt acts as HERSELF; the caller-less
-    // operator acts as the OPERATOR SELF-PEER (#27, closed 2026-08-30) — the
-    // human's in-core identity, booted beside the citizens. The deny below
-    // survives only for the boot window before the self-peer is online.
-    let Some(peer) = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()) else {
-        return crate::persona::operator_peer::operator_runtime().ok_or_else(|| {
-            CommandError::Denied(format!(
-                "{family} acts as the caller's own airc identity, and the operator \
-                 self-peer is not online yet this boot (it starts beside the \
-                 citizens — retry shortly, or check the operator.peer.boot_failed \
-                 probe)."
-            ))
-        });
-    };
-    registry
-        .get(peer)
-        .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for persona {peer}")))
+    // ONE resolver (`operator_peer::acting_runtime`): a persona acts as herself, an
+    // agent session as the agent self-peer, a caller-less session as the operator.
+    crate::persona::operator_peer::acting_runtime(registry, ctx, family).map(|(rt, _)| rt)
 }
 
 /// Read/write the caller's own airc handle. Membership mutations use
@@ -235,47 +218,6 @@ pub(crate) fn persona_airc(
     family: &str,
 ) -> Result<Arc<Airc>, CommandError> {
     Ok(persona_runtime(registry, ctx, family)?.airc().clone())
-}
-
-/// Resolve an airc handle for an OPERATOR/curator board write — e.g.
-/// `benchmark/dispatch` seeding a benchmark's tasks as claimable cards. Unlike
-/// [`persona_airc`], this does NOT dead-end when the caller has no self-identity.
-///
-/// A persona calling through her own toolbelt still authors as HERSELF (same as
-/// `persona_airc`). But the substrate-local operator has no self-peer in-core yet
-/// (#27), and seeding the board is a *curator* action, not a personal one — so when
-/// there is no caller identity, the seed is authored through a LIVE citizen's airc
-/// runtime. That is honest, not a fiction: benchmarks ARE the citizens' work, so a
-/// citizen posting the tasks is the right author (a live citizen chosen
-/// deterministically — never a hardcoded name like our "Benchy", which does not exist
-/// on a fresh clone's grid; see [`PersonaAircRuntimeRegistry::any_live_citizen`]). This
-/// fails loud only when NO citizen is online to author through — because then there is
-/// genuinely no board to seed for, and the fix is to spawn a persona, not to invent an
-/// identity.
-pub(crate) fn curator_airc(
-    registry: &PersonaAircRuntimeRegistry,
-    ctx: &Ctx,
-    family: &str,
-) -> Result<Arc<Airc>, CommandError> {
-    // An authenticated caller (a persona acting through her toolbelt) wins: the card
-    // is authored as her, exactly like `persona_airc`.
-    if let Some(rt) = ctx
-        .caller
-        .as_ref()
-        .and_then(|c| registry.get(c.peer_id.as_uuid()))
-    {
-        return Ok(rt.airc().clone());
-    }
-    // Operator seeding with no self-peer (#27): author through a live citizen —
-    // whoever this machine has online, chosen deterministically, never our name.
-    let rt = registry.any_live_citizen().ok_or_else(|| {
-        CommandError::Denied(format!(
-            "{family} seeds the shared board and must author as a citizen, but none \
-                 are online to author through — spawn a persona first (persona/spawn), \
-                 then retry."
-        ))
-    })?;
-    Ok(rt.airc().clone())
 }
 
 fn parse_priority(s: &str) -> Priority {
@@ -723,7 +665,14 @@ impl ActionCommand for WorkClaim {
         // room whose board holds it). Best-effort past the claim: the claim is hers
         // either way, and the probes say what happened. A card we cannot place gets NO
         // detached fallback — inventing invisible work is the failure #425 removed.
-        if let Some(caller) = ctx.caller.as_ref() {
+        // THE CLAIMER IS THE IDENTITY THE CLAIM WAS MADE AS — `airc.peer_id()`, never
+        // `ctx.caller`. The uu operator carries no caller identity: her claim rode the
+        // operator self-peer's airc and landed on the board as hers, then this block
+        // skipped her (no caller) — no staging, no hands, a card she could not work.
+        // 2026-09-12: the first agent to take a benchmark card through the verbs alone
+        // found it. A persona's airc peer IS her caller peer, so nothing changes for her.
+        let claimer_peer = airc.peer_id();
+        {
             match card_in_subscribed_rooms(&airc, card_id).await {
                 Some((room, card)) => {
                     use crate::cognition::bench_round::WorkDriver;
@@ -732,7 +681,7 @@ impl ActionCommand for WorkClaim {
                         Ok(home) => {
                             crate::modules::card_staging::stage_for_card(
                                 &home,
-                                caller.peer_id.as_uuid(),
+                                claimer_peer.as_uuid(),
                                 &card,
                             )
                             .await
@@ -742,12 +691,19 @@ impl ActionCommand for WorkClaim {
                             error: e.to_string(),
                         },
                     };
+                    if let Staging::Ready { path, .. } = &staging {
+                        crate::cognition::persona_workspace::root_peer_hands_at_card(
+                            claimer_peer.as_uuid(),
+                            path.clone(),
+                            card_id.as_uuid(),
+                        );
+                    }
                     let driver = crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
                     match (driver, &staging) {
                         (WorkDriver::Citizen, _) => crate::probe!(
                             class = "work.claim.held",
                             card_id = %short8(card_id.as_uuid()),
-                            claimer = %short8(caller.peer_id.as_uuid()),
+                            claimer = %short8(claimer_peer.as_uuid()),
                             staging = ?staging,
                             "citizen-driven round — the card is hers to work in her own \
                              loop; nothing detached fires"
@@ -756,7 +712,7 @@ impl ActionCommand for WorkClaim {
                             crate::probe!(
                                 class = "work.claim.solve_withheld",
                                 card_id = %short8(card_id.as_uuid()),
-                                claimer = %short8(caller.peer_id.as_uuid()),
+                                claimer = %short8(claimer_peer.as_uuid()),
                                 stage = stage,
                                 error = %error,
                                 "detached solve NOT fired on an unstaged workspace — the \
@@ -769,7 +725,7 @@ impl ActionCommand for WorkClaim {
                                 ctx,
                                 &airc,
                                 StagedSolveDispatch {
-                                    claimer: caller.peer_id,
+                                    claimer: claimer_peer,
                                     card: card_id,
                                     room: room.channel,
                                     // An organic claim REJOINS the card's recorded team
@@ -793,7 +749,7 @@ impl ActionCommand for WorkClaim {
                 None => crate::probe!(
                     class = "work.claim.unplaceable_card",
                     card_id = %short8(card_id.as_uuid()),
-                    claimer = %short8(caller.peer_id.as_uuid()),
+                    claimer = %short8(claimer_peer.as_uuid()),
                     "claimed a card no subscribed room's board holds — the claim STANDS, \
                      but nothing is staged and no solve fires: work whose activity we \
                      cannot name is work no room can see (#425)"
@@ -1643,6 +1599,7 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::cognition::persona_workspace::release_peer_hands(airc.peer_id().as_uuid(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
 }

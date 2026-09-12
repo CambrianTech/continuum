@@ -1691,7 +1691,7 @@ impl ActionCommand for BenchmarkDispatch {
         ctx: &Ctx,
         p: BenchmarkDispatchParams,
     ) -> Result<BenchmarkDispatchResult, CommandError> {
-        use crate::modules::work::curator_airc;
+        use crate::modules::work::persona_airc;
         use airc_lib::{CreateWorkCard, Priority, RepoId};
 
         // ── RECIPE PATH: the whole experiment by name ──────────────────────
@@ -1863,7 +1863,7 @@ impl ActionCommand for BenchmarkDispatch {
         // window refused instantly with "none are online" while the 180s wait that
         // exists precisely for that window sat unreachable 30 lines below
         // (measured live 2026-08-26). Order: wait for a citizen, then author.
-        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
+        let airc = persona_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
         // Resolve the dispatch roster against THIS machine's live citizens (never our
         // names): empty request → the whole live roster; explicit names → validated or

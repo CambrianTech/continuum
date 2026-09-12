@@ -54,15 +54,14 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynComma
 /// substrate-local owner. This is the single point that maps the gated identity
 /// to the per-caller workspace; nothing trusts caller-supplied identity.
 pub(crate) fn caller_id(ctx: &Ctx) -> String {
-    ctx.caller
-        .as_ref()
-        .map(|c| c.peer_id.to_string())
-        .unwrap_or_else(|| LOCAL_OWNER.to_string())
+    // ONE resolver (`operator_peer::acting_peer_id`): the same peer the work verbs
+    // claim as. `LOCAL_OWNER` survives only for the boot window before the
+    // self-peers are online.
+    crate::persona::operator_peer::acting_peer_id(ctx)
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| LOCAL_OWNER.to_string()) // unwrap_or_else: boot window, no self-peer yet — the core's cwd, named below
 }
 
-/// The caller id assigned when a command arrives with NO peer identity — the
-/// substrate-local operator (uu CLI, boot plumbing). The ONE caller whose
-/// workspace is the core's own cwd; every identified peer gets a layer.
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
 
 /// Resolve (and provision on first use) the citizen LAYER for an identified peer
@@ -392,12 +391,43 @@ fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
 /// defers to an engine a prior call already created (so an explicit
 /// `create-workspace` with a specific root still wins).
 pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
+    let local = is_local_who(who);
+    if local {
+        // A LOCAL identity's hands follow her held card (2026-09-12): the operator or
+        // the agent self-peer claims on the board, the claim stages a checkout, her
+        // `code/*` verbs root THERE — the rule a persona's held-work turn applies — and
+        // return to the core's cwd when the card is released. Only a CHANGE of card
+        // rooting evicts the cached engine (and its shell); an engine a caller pinned
+        // with `create-workspace` is otherwise left alone.
+        let card_root = card_root_of(who);
+        let mut last = LAST_CARD_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
+        if last.get(who).cloned().flatten() != card_root {
+            state.file_engines.remove(&who.to_string());
+            state.shell_sessions.remove(&who.to_string());
+            crate::probe!(
+                class = "code.hands.rerooted",
+                who = who,
+                root = %card_root
+                    .as_ref()
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_else(|| "cwd".to_string()), // unwrap_or_else: no card = the core's cwd, named
+                "a local identity's hands moved with her held card"
+            );
+            last.insert(who.to_string(), card_root);
+        }
+    }
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    let root = if who == LOCAL_OWNER {
-        std::env::current_dir()
-            .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?
+    let root = if local {
+        match card_root_of(who) {
+            Some(root) => root,
+            None => std::env::current_dir().map_err(|e| {
+                CommandError::Internal(format!("workspace root unavailable: {e}"))
+            })?,
+        }
     } else {
         let citizen_root = ensure_citizen_layer(who)?;
         // Every citizen workspace is git-backed from birth
@@ -419,6 +449,27 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
         .or_insert_with(|| FileEngine::new(who, security));
     Ok(())
 }
+
+/// Is `who` a LOCAL identity — the boot-window `LOCAL_OWNER`, or the operator / agent
+/// self-peer? Local identities work in the core's own checkout; everyone else in a layer.
+fn is_local_who(who: &str) -> bool {
+    who == LOCAL_OWNER
+        || uuid::Uuid::parse_str(who)
+            .map(crate::persona::operator_peer::is_local_identity)
+            .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
+}
+
+/// The held-card checkout a local identity's claim staged, when one is rooted.
+fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
+    let peer = uuid::Uuid::parse_str(who).ok()?;
+    crate::cognition::persona_workspace::acting_root_of(peer)
+}
+
+/// The card rooting each local identity's engine was last built for — a change here
+/// is the only thing that evicts a cached engine.
+static LAST_CARD_ROOT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Lazily ensure a persistent shell session exists for `who`, rooted at the
 /// caller's ENGINE root — the one workspace authority per caller (the operator's

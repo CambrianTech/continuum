@@ -51,45 +51,21 @@ crate::action_command! {
     params: WhoamiParams,
     output: WhoamiResult,
     run(_this, ctx, _p) => {
-        // A persona toolbelt caller is herself.
-        // A signed caller is who it says it is. An anonymous socket (the web
-        // desktop's WS, stamped nil by the transport) carries NO identity and
-        // resolves like a caller-less session: the claimed actor or the operator.
-        if let Some(caller) = ctx.caller.as_ref().filter(|c| !c.is_anonymous_socket()) {
-            let id = caller.peer_id.as_uuid();
-            let name = crate::persona::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|r| r.get(id))
-                .map(|rt| rt.agent_name().to_string())
-                .unwrap_or_else(|| id.to_string()); // JUSTIFIED unwrap_or_else: an unregistered caller renders as its uuid — honest identity, never an invented name
-            return Ok(WhoamiResult { id: id.to_string(), name, kind: "persona".into() });
-        }
-        // An AGENT-driven session (actorKind claim) is the AGENT self-peer.
-        if ctx.claimed_actor_kind.as_deref() == Some("agent") {
-            let rt = crate::persona::operator_peer::agent_runtime().ok_or_else(|| {
-                CommandError::Internal(
-                    "the agent self-peer is not online yet this boot — retry shortly;                      an agent session never resolves to the human's identity".into(),
-                )
-            })?;
-            return Ok(WhoamiResult {
-                id: rt.airc().peer_id().as_uuid().to_string(),
-                name: rt.agent_name().to_string(),
-                kind: "agent".into(),
-            });
-        }
-        // A caller-less local session is the node's OPERATOR (the durable human
-        // identity, #27). Not online yet this boot = a loud retryable error —
-        // never a minted stand-in.
-        let rt = crate::persona::operator_peer::operator_runtime().ok_or_else(|| {
-            CommandError::Internal(
-                "the operator self-peer is not online yet this boot — retry shortly \
-                 (it starts beside the citizens); never mint a local identity instead"
-                    .into(),
-            )
-        })?;
+        // ONE resolver for who is acting (`operator_peer::acting_runtime`): a persona
+        // toolbelt caller is herself, an agent session is the agent self-peer, a
+        // caller-less or anonymous-socket session is the operator. The same answer
+        // every other verb acts on.
+        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .unwrap_or_default(); // unwrap_or_default: no registry yet = no personas to name; the self-peers still resolve
+        let me = crate::persona::operator_peer::acting(&registry, ctx, "identity/whoami")?;
         Ok(WhoamiResult {
-            id: rt.airc().peer_id().as_uuid().to_string(),
-            name: rt.agent_name().to_string(),
-            kind: "human".into(),
+            id: me.peer.to_string(),
+            name: me
+                .runtime
+                .as_ref()
+                .map(|rt| rt.agent_name().to_string())
+                .unwrap_or_else(|| me.peer.to_string()), // JUSTIFIED unwrap_or_else: an unhosted signed caller renders as its uuid — honest identity, never an invented name
+            kind: me.kind.as_str().into(),
         })
     }
 }

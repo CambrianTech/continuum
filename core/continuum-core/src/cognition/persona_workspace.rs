@@ -813,6 +813,24 @@ pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
         .and_then(|p| p.card) // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
+/// Root a PEER's hands at a card's checkout — the claim edge for any identity, the
+/// operator self-peer included (2026-09-12: an agent's claim staged nothing and her
+/// `code/*` hands stayed at the core's cwd). Same registry, same truth the persona
+/// turn uses; a later persona rooting overwrites it, a release clears it.
+pub fn root_peer_hands_at_card(peer: uuid::Uuid, root: std::path::PathBuf, card: uuid::Uuid) {
+    let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    map.insert(peer, ActingPlace { root, card: Some(card) });
+}
+
+/// The release edge: a peer whose hands were rooted at `card` stands in her own
+/// workspace again. A different card's rooting is left alone.
+pub fn release_peer_hands(peer: uuid::Uuid, card: uuid::Uuid) {
+    let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    if map.get(&peer).and_then(|p| p.card) == Some(card) {
+        map.remove(&peer);
+    }
+}
+
 fn note_acting_card(persona_id: uuid::Uuid, card: uuid::Uuid) {
     if let Some(place) = ACTING_ROOTS
         .lock()
@@ -1661,6 +1679,22 @@ fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>>
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the claim edge rooting a peer's hands and the release edge
+    // clearing them (a stale rooting after release sent every later edit into a card
+    // she no longer held); and a release of a DIFFERENT card leaving the rooting alone.
+    #[test]
+    fn a_peers_hands_root_at_the_claimed_card_until_that_card_is_released() {
+        let peer = uuid::Uuid::from_u128(0x5eed);
+        let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+        super::root_peer_hands_at_card(peer, std::path::PathBuf::from("/w/swe/a"), a);
+        assert_eq!(super::acting_root_of(peer), Some(std::path::PathBuf::from("/w/swe/a")));
+        assert_eq!(super::acting_card_of(peer), Some(a));
+        super::release_peer_hands(peer, b);
+        assert_eq!(super::acting_card_of(peer), Some(a), "another card's release is not hers");
+        super::release_peer_hands(peer, a);
+        assert_eq!(super::acting_root_of(peer), None);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;
