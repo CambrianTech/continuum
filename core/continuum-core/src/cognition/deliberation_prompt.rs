@@ -81,6 +81,30 @@ pub(super) struct SystemPromptParts<'a> {
 /// invalidate the whole prefix. Before the split every act re-prefilled ~6k tokens because
 /// the presence block flipped at ~char 7.6k of the system prompt (0% KV reuse — the ~13min
 /// SWE solves). See [`compose`] for the byte-identical concatenation.
+/// HOW WIDELY A PROMPT BLOCK IS SHARED — the one rule that orders the prefix. Widest first,
+/// so the bytes most personas and most turns have in common lead, and a change in a narrow
+/// block never invalidates a wider one's cache:
+///
+/// - `Substrate`: identical for every persona on this base model (the tool catalogue).
+/// - `Persona`: stable across HER turns (identity, her turn contract).
+/// - `Activity`: changes only when the room's standing ground changes (roster, doctrine,
+///   workspace map; a card's ledger once it rides here).
+/// - `Turn`: changes every turn (clock, presence, recall, working memory) — never in the
+///   cacheable prefix; the message builder renders it as the newest trailing turn.
+///
+/// Before 2026-09-12 the prefix was ordered by hand — identity first, so nothing was shared
+/// across personas — and three separate fixes (#205, #266, plan B4) each moved one block
+/// after a measured cache break. One ordering, declared per block, replaces them. A KV pager
+/// or a speculator reads the same scopes to know which pages N personas share and which a
+/// context switch swaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PromptScope {
+    Substrate,
+    Persona,
+    Activity,
+    Turn,
+}
+
 pub(super) struct ComposedSystemPrompt {
     /// Persona-invariant prefix — safe to place in the cacheable system message.
     pub stable: String,
@@ -93,7 +117,10 @@ pub(super) struct ComposedSystemPrompt {
 /// place the block set + order + gating lives, now partitioned by cache-stability.
 pub(super) fn compose_split(p: &SystemPromptParts<'_>) -> ComposedSystemPrompt {
     let mut stable = String::with_capacity(p.system_prompt.len() + 768);
-    for block in stable_blocks(p) {
+    // Widest scope first; a stable sort keeps each scope's own block order.
+    let mut blocks: Vec<(PromptScope, Cow<'_, str>)> = stable_blocks(p).collect();
+    blocks.sort_by_key(|(scope, _)| *scope);
+    for (_, block) in blocks {
         stable.push_str(&block);
     }
     ComposedSystemPrompt {
@@ -139,23 +166,25 @@ fn compose(p: &SystemPromptParts<'_>) -> String {
 /// The BYTE-STABLE prefix blocks: identity + `[Taking your turn]` + tools/`[Acting]`.
 /// A pure function of the persona (system prompt, name, authorized tool set) — invariant
 /// across her turns, so it is the cacheable KV prefix. NOTHING situational belongs here.
-fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
+fn stable_blocks<'a>(
+    p: &'a SystemPromptParts<'a>,
+) -> impl Iterator<Item = (PromptScope, Cow<'a, str>)> {
     [
-        // Identity — always; the byte-stable head of the cacheable prefix.
-        Some(Cow::Borrowed(p.system_prompt)),
-        // Take a TURN in this activity — always; pure function of her name.
-        Some(Cow::Owned(taking_your_turn_block(p.persona_name))),
-        // Tools + acting — only when the persona has tools.
-        tools_block(p.tools, p.expanded).map(Cow::Owned),
-        // Assembled context — the standing grounding (roster/doctrine/workspace-map)
-        // FIRST (stable-sorted inside the block), then whatever volatile tail survived the
-        // fit. It stays in the cacheable system prefix by design: its stable head IS the
-        // reusable KV, and the truly per-turn material (recall / working-memory traces) is
-        // already separated out as its own `.trailing()` conversation turns upstream
-        // (#205), so it never lands here. Keeping context in `stable` preserves the
-        // "standing framing reaches the system message" contract
+        // Identity — a pure function of the persona: her own cacheable pages.
+        Some((PromptScope::Persona, Cow::Borrowed(p.system_prompt))),
+        // Take a TURN in this activity — pure function of her name.
+        Some((PromptScope::Persona, Cow::Owned(taking_your_turn_block(p.persona_name)))),
+        // Tools + acting — the SUBSTRATE's block: byte-identical for every persona with
+        // the same authorized set, so it leads and is the prefix N personas share.
+        tools_block(p.tools, p.expanded).map(|b| (PromptScope::Substrate, Cow::Owned(b))),
+        // Assembled context — the standing grounding (roster/doctrine/workspace-map),
+        // stable-sorted inside the block. The ACTIVITY's pages: it changes when the
+        // room's ground changes, not per turn; the truly per-turn material (recall /
+        // working-memory traces) is separated out as `.trailing()` turns upstream (#205)
+        // and never lands here. Keeping context in the prefix preserves the "standing
+        // framing reaches the system message" contract
         // (`trailing_proprioception_renders_in_the_tail_not_the_system_prefix`).
-        working_context_block(p.context).map(Cow::Owned),
+        working_context_block(p.context).map(|b| (PromptScope::Activity, Cow::Owned(b))),
     ]
     .into_iter()
     .flatten()
@@ -626,6 +655,43 @@ mod tests {
     // forbid that false refusal (and tell her to ignore a prior line that claims the
     // tools can't be used), so a contaminated thread can't lock her into refusing. A
     // regression that softened the header back to a bare "you can act" would trip here.
+    // what this catches: the prefix drifting back to hand order (identity first, shared
+    // tools buried behind per-persona bytes), which is what made the KV prefix unshareable
+    // across personas; and a Turn block leaking into the cacheable prefix.
+    #[test]
+    fn the_prefix_orders_blocks_by_sharing_scope_widest_first() {
+        let tools = vec![NativeToolSpec {
+            name: "code/read".into(),
+            description: "read".into(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        }];
+        let expanded = BTreeSet::new();
+        let c = compose_split(&SystemPromptParts {
+            system_prompt: "IDENTITY: I am Kira.",
+            persona_name: "Kira",
+            tools: &tools,
+            expanded: &expanded,
+            context: "roster: Kira, Mathis",
+            directed: false,
+            now_ms: Some(1_700_000_000_000),
+            self_initiated: false,
+            holds_live_work: false,
+        });
+        let tools_at = c.stable.find("code/read").expect("tools block present");
+        let id_at = c.stable.find("IDENTITY").expect("identity present");
+        let ctx_at = c.stable.find("roster: Kira").expect("context present");
+        assert!(tools_at < id_at, "substrate before persona: {}", &c.stable[..80]);
+        assert!(id_at < ctx_at, "persona before activity");
+        assert!(!c.stable.contains("[now "), "the clock is a Turn block, never in the prefix");
+        assert!(c.trailing.contains("[now "));
+        assert!(PromptScope::Substrate < PromptScope::Persona && PromptScope::Activity < PromptScope::Turn);
+    }
+
     #[test]
     fn tools_block_inoculates_against_the_false_refusal() {
         use crate::ai::types::{NativeToolSpec, ToolInputSchema};
