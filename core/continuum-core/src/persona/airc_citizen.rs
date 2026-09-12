@@ -82,6 +82,13 @@ pub trait AircCitizen:
     + crate::persona::wall_source::WallReader
     + crate::persona::room_board_source::RoomBoardReader
 {
+    /// Take ownership of a task whose life must end with this citizen's (an
+    /// invalidator holding daemon streams, a watcher). The default ABORTS it at
+    /// once — a citizen that cannot own tasks must not leave them running.
+    fn own_task(&self, handle: tokio::task::JoinHandle<()>) {
+        handle.abort();
+    }
+
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
     /// it as part of the persona's tracing span.

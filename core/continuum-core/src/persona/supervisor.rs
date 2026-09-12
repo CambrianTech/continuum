@@ -562,6 +562,32 @@ pub async fn materialize_adapters(
             }
         };
         let identity = plan.instance;
+        // ADMISSION FIRST. This restore opens the persona's engram store; when it fails
+        // the seat is refused (6d17695c: never host a blank admission store). Until
+        // 2026-09-12 it ran AFTER every daemon-facing adapter had been built — a
+        // subscription to every room, the doctrine/wall invalidator task, the pumps —
+        // and a refused seat abandoned them all, un-aborted. One citizen whose store
+        // would not decode was re-attempted every reconciler pass: 24 daemon streams
+        // leaked per attempt, ~150 sockets/s, both descriptor tables full, the host at
+        // ENFILE. A seat that will be refused must build nothing first.
+        let persisted_admission = {
+            let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+            let recall_meta =
+                std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
+            {
+                Ok(persisted) => persisted,
+                Err(source) => {
+                    out.push(Err(SupervisorError::AdmissionRestore {
+                        slot_index,
+                        role: plan.role,
+                        persona_id: identity.peer_id.as_uuid(),
+                        source,
+                    }));
+                    continue;
+                }
+            }
+        };
         let runtime = match runtime_lookup(identity.peer_id.as_uuid()) {
             Some(r) => r,
             None => {
@@ -869,10 +895,12 @@ pub async fn materialize_adapters(
                     crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
                 let (wall_cached, wall_dirty) =
                     crate::persona::cached_source::CachedRagSource::new(raw_wall);
-                crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                // The invalidator owns a subscription to every room; it lives and dies with
+                // the runtime (aborted in the runtime's Drop), never as an orphan task.
+                runtime.own_task(crate::persona::grounding_invalidation::spawn_publish_invalidator(
                     stream,
                     vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
-                );
+                ));
                 (doctrine_cached, wall_cached)
             }
             Err(e) => {
@@ -946,28 +974,10 @@ pub async fn materialize_adapters(
         // would hide prior engrams and lose future admissions across restart.
         // A new home succeeds with an empty persistent store. MUST run before
         // WorkspaceCycle assembly so RecallFaculty binds persisted admission.
-        let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
-        let recall_meta =
-            std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
-        match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
-        {
-            Ok(persisted) => {
-                cognition.attach_persistent_admission(
-                    identity.peer_id.as_uuid(),
-                    std::sync::Arc::new(persisted),
-                );
-            }
-            Err(source) => {
-                out.push(Err(SupervisorError::AdmissionRestore {
-                    slot_index,
-                    role: plan.role,
-                    persona_id: identity.peer_id.as_uuid(),
-                    source,
-                }));
-                continue;
-            }
-        }
-
+        cognition.attach_persistent_admission(
+            identity.peer_id.as_uuid(),
+            std::sync::Arc::new(persisted_admission),
+        );
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
 
         // Assemble this persona's continuous mind into the process-global

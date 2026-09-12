@@ -229,6 +229,8 @@ pub struct PersonaAircRuntime {
     /// heartbeat window. `None` on `from_attached` (tests/demo). Held for the
     /// persona's lifetime; aborted on drop, like the heartbeat pump.
     identity_republish: Option<JoinHandle<()>>,
+    /// Tasks whose life ends with this runtime (see `AircCitizen::own_task`).
+    owned_tasks: std::sync::Mutex<Vec<JoinHandle<()>>>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -1036,6 +1038,7 @@ impl PersonaAircRuntime {
             executor: Some(executor_for_acts),
             heartbeat,
             identity_republish,
+            owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         })
     }
@@ -1138,6 +1141,7 @@ impl PersonaAircRuntime {
             // from_attached is sync; the periodic card re-publisher (async spawn)
             // is a bootstrap-path concern. Test/demo callers don't need it.
             identity_republish: None,
+            owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         }
     }
@@ -1364,6 +1368,13 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
 
 #[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
+    fn own_task(&self, handle: JoinHandle<()>) {
+        match self.owned_tasks.lock() {
+            Ok(mut owned) => owned.push(handle),
+            Err(_) => handle.abort(), // a poisoned list cannot own; never leave the task running
+        }
+    }
+
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()
     }
@@ -1510,6 +1521,11 @@ impl Drop for PersonaAircRuntime {
         if let Some(handle) = self.identity_republish.take() {
             // Stop re-emitting the identity card once the persona leaves the grid.
             handle.abort();
+        }
+        if let Ok(mut owned) = self.owned_tasks.lock() {
+            for handle in owned.drain(..) {
+                handle.abort();
+            }
         }
         // Arc<Airc> drops alongside the runtime; airc-lib handles
         // its own cleanup (daemon connection close, identity state
