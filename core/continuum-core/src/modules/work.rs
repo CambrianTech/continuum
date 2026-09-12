@@ -2540,6 +2540,7 @@ crate::register_command!(WorkCreate);
 crate::register_command!(WorkRelease);
 crate::register_command!(WorkState);
 crate::register_command!(WorkHeartbeat);
+crate::register_command!(WorkNote);
 
 /// The kanban module — holds the persona airc-runtime registry so each work tool
 /// can resolve the CALLER's own airc handle and act as that persona.
