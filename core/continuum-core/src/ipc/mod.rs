@@ -3044,6 +3044,18 @@ pub fn start_server(
                         );
                     } else if !booted {
                         attempt += 1;
+                        if attempt > 1 {
+                            // Every attempt draws from the ONE provider built at boot; a
+                            // failed attempt leaves its cursor at the end. Nothing was hosted
+                            // (booted is false), so start the draw over.
+                            provider.rewind();
+                            crate::probe!(
+                                class = "persona.host.provider_rewound",
+                                attempt,
+                                population = provider.identities_available(),
+                                "hosting retry: the identity draw starts over — nothing was hosted last time"
+                            );
+                        }
                         let summary = supervisor
                             .spawn_all(&mut provider, Some(tool_executor.clone()))
                             .await;
