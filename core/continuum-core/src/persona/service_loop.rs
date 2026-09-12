@@ -3146,6 +3146,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let burst = held_work_burst(&[&card], &[]);
@@ -5110,6 +5112,8 @@ mod tests {
 
         // One held (Claimed) card in her hands. A NON-bench title so the
         // act-question resolves no staged checkout (no hands re-root needed).
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         let card = airc_lib::WorkCard {
             card_id: WorkCardId::new(),
             repo: RepoId::new("acme/continuum").expect("valid repo id"), // test: a literal valid repo id
@@ -5271,6 +5275,8 @@ mod tests {
             updated_at_ms: 1_000_000,
             reviews: None,
         }
+        submissions: Vec::new(),
+        last_submission_rejection: None,
     }
 
     #[tokio::test]

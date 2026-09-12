@@ -1144,6 +1144,8 @@ mod tests {
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 reviews: None,
+                submissions: Vec::new(),
+                last_submission_rejection: None,
             }
         }
 

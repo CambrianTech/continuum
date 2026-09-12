@@ -2769,6 +2769,8 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         // A realistic epoch-ms clock: the 134h subtraction below is a real
         // observed lease age, and a toy `now` would underflow it.
