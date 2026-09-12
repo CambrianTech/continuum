@@ -1968,6 +1968,14 @@ async fn raw_advance(
             .await;
     }
     attempt.map_err(|e| e.to_string())?;
+    // A REOPEN MEANS NOBODY HOLDS IT. The column moved to Open but the claim ledger
+    // kept the holder's lease alive: her roster row still listed the card, her
+    // work turns kept acting on it, and the deck offered a card with a live claim
+    // to everyone else (2026-09-12, three coders on a paused round for 2.5 h).
+    // The reopen releases the claim through the same verb the holder would use.
+    if state == CardState::Open {
+        release_live_claim_on_reopen(airc, card_id, via).await;
+    }
     // The CARD's room, never `current_room()` — boards are per-room and the grade
     // subscriber refuses an event with no room.
     let room_id = room_holding_card(airc, card_id)
@@ -1984,6 +1992,43 @@ async fn raw_advance(
     )
     .await;
     Ok(())
+}
+
+
+/// The claim half of a reopen: a card returned to Open carries no hold. Best effort
+/// with a named outcome — a release the ledger refuses (a claim already gone) is a
+/// row, never an error on the verb, and `active_claims` no longer counts a claim
+/// the board does not honour either way.
+async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: WorkCardId, via: &'static str) {
+    let Ok(board) = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+        .map(|b| b.snapshot())
+    else {
+        return;
+    };
+    let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else { return };
+    let (Some(owner), Some(claim_id)) = (card.owner, card.claim_id) else { return };
+    let reason = Some(format!("reopened via {via}: a card returned to Open carries no hold"));
+    match airc
+        .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason })
+        .await
+    {
+        Ok(_) => crate::probe!(
+            class = "work.reopen.claim_released",
+            card = %card_id.as_uuid(),
+            owner = %owner.as_uuid(),
+            "reopen released the holder's live claim — the card is nobody's"
+        ),
+        Err(error) => crate::probe!(
+            class = "work.reopen.claim_release_refused",
+            card = %card_id.as_uuid(),
+            owner = %owner.as_uuid(),
+            error = %error.to_string(),
+            "reopen could not release the holder's claim — the board-true read in \
+             active_claims stops her counting it as held"
+        ),
+    }
 }
 
 // ─────────────────────────── work/heartbeat ──────────────────────
