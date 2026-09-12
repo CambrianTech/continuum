@@ -1996,7 +1996,7 @@ pub struct WorkNoteParams {
     pub known: Vec<String>,
     /// Competing explanations, each with the observation that would settle it.
     #[serde(default)]
-    pub hypotheses: Vec<crate::experience::ledger::LedgerHypothesis>,
+    pub hypotheses: Vec<HypothesisParam>,
     /// The one unknown the answer turns on.
     #[serde(default)]
     pub unknown: String,
@@ -2006,6 +2006,34 @@ pub struct WorkNoteParams {
     /// Once decided: `file:line` and the intended edit.
     #[serde(default)]
     pub decided_fix: Option<String>,
+}
+
+/// A hypothesis as the VERB takes it — snake_case like every other work/* parameter.
+/// The stored record ([`crate::experience::ledger::LedgerHypothesis`]) is a wire type in
+/// camelCase; this is the adapter between the verb surface and the record, so a caller
+/// never has to know the storage casing (2026-09-12: my own call sent `nextTest` and the
+/// field was silently dropped).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct HypothesisParam {
+    pub claim: String,
+    #[serde(default)]
+    pub evidence_for: Vec<String>,
+    #[serde(default)]
+    pub evidence_against: Vec<String>,
+    /// The cheapest observation that would confirm or kill this claim.
+    #[serde(default)]
+    pub test: String,
+}
+
+impl From<HypothesisParam> for crate::experience::ledger::LedgerHypothesis {
+    fn from(h: HypothesisParam) -> Self {
+        Self {
+            claim: h.claim,
+            evidence_for: h.evidence_for,
+            evidence_against: h.evidence_against,
+            test: h.test,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -2043,7 +2071,7 @@ impl ActionCommand for WorkNote {
         let ledger = crate::experience::ledger::CardLedger {
             card_id: card_id.as_uuid(),
             known: p.known,
-            hypotheses: p.hypotheses,
+            hypotheses: p.hypotheses.into_iter().map(Into::into).collect(),
             unknown: p.unknown,
             next_test: p.next_test,
             decided_fix: p.decided_fix.filter(|f| !f.trim().is_empty()),

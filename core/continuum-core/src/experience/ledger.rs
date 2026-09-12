@@ -16,14 +16,13 @@
 //! records, durable and airc-replicated, visible to the human on the card. Never a
 //! process-local note (a note dies with the process; the claim lives on the board).
 //! Design: docs/planning/UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL.md, build order 2.
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub const LEDGER_WALL_CATEGORY: &str = "card-ledger";
 
 /// One competing explanation and the observation that would settle it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/experience/LedgerHypothesis.ts")]
 pub struct LedgerHypothesis {
