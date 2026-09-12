@@ -95,6 +95,8 @@
 
 ## 📋 **IMPLEMENTATION ROADMAP**
 
+- **[UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL](UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL.md)** — the one scalar the substrate never reads: how likely a mind's current belief is wrong. Where it comes from (act surprise, the world's disagreement, the card's evidence ledger), who reads it (act budget, per-turn tier borrow over the grid, governor, pager, review gate, dreams, curriculum), and a five-step build order with a receipt each. 2026-09-12.
+
 ### **Phase 1: Foundation (COMPLETE)** ✅
 - [x] PersonaUser with JTAGClient
 - [x] Constructor injection pattern
