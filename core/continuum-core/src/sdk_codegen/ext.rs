@@ -203,7 +203,7 @@ fn load_one(path: &Path, shipped: &[&str]) -> Result<ProcessCommand, ManifestErr
     if manifest.wire == ManifestWire::Socket {
         return Err(ManifestError::WireNotBuilt { path: path.to_path_buf() });
     }
-    Ok(ProcessCommand::new(manifest, path.parent().map(Path::to_path_buf).unwrap_or_default()))
+    Ok(ProcessCommand::new(manifest, path.parent().map(Path::to_path_buf).unwrap_or_default())) // unwrap_or_default: a manifest read from a bare filename runs in the process cwd
 }
 
 /// A verb backed by a process. `name`/`description` are leaked ONCE at load — the
@@ -291,7 +291,7 @@ impl ProcessCommand {
             crate::probe!(
                 class = "ext.command.failed",
                 command = %self.name,
-                code = out.status.code().unwrap_or(-1),
+                code = out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that // unwrap_or: killed by a signal has no exit code; -1 names that
                 elapsed_ms,
                 "authored command exited non-zero"
             );
