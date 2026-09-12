@@ -66,6 +66,17 @@ impl HasCard for crate::cognition::bench_round::NextCard {
 }
 
 
+/// When this peer last pulled a card (ms), 0 if never this boot — the governor's hold
+/// boundary.
+pub(crate) fn last_pull_ms(peer: Uuid) -> u64 {
+    LAST_PULL_MS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned clock still answers — the boundary must exist
+        .get(&peer)
+        .copied()
+        .unwrap_or(0) // unwrap_or: never pulled this boot = 0 (every row counts, the old rule)
+}
+
 /// One row per citizen per minute on a no-pull exit: enough to name the reason
 /// every time it changes, never a storm from a 3 s self-tick.
 fn pull_probe_due(peer: Uuid) -> bool {
