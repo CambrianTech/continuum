@@ -42,7 +42,7 @@ crate::action_command! {
     params: GitAddParams,
     output: GitAddResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let output = blocking_git(move || {
             let refs: Vec<&str> = p.paths.iter().map(String::as_str).collect();
             git_bridge::git_add(&root, &refs)

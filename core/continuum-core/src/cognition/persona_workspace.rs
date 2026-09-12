@@ -1661,6 +1661,7 @@ fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>>
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;

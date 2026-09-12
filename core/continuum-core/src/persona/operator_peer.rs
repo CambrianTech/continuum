@@ -278,6 +278,121 @@ pub async fn ensure_agent_peer(
     }
 }
 
+/// WHO IS ACTING — the one answer for every verb. A persona through her toolbelt is
+/// herself; an agent-driven session (the CLI's `actorKind` claim) is the AGENT
+/// self-peer; a caller-less local session is the OPERATOR self-peer (the durable human
+/// identity, #27). An anonymous socket (the desktop's WS, stamped nil) carries no
+/// identity and resolves like a caller-less session.
+///
+/// Before 2026-09-12 three verbs answered this three ways: the work verbs fell back to
+/// the operator, board seeding authored through a random live citizen, and the code
+/// verbs invented an anonymous "local-owner" — so one `uu` session claimed a card as
+/// one identity, could not stage it, and edited files as another. One resolver, one
+/// identity per session, every verb.
+pub fn acting(
+    registry: &crate::persona::PersonaAircRuntimeRegistry,
+    ctx: &crate::sdk_codegen::Ctx,
+    family: &str,
+) -> Result<Acting, crate::sdk_codegen::CommandError> {
+    use crate::sdk_codegen::CommandError;
+    if let Some(caller) = ctx.caller.as_ref().filter(|c| !c.is_anonymous_socket()) {
+        // A signed caller IS who it says it is — an identity even with no live runtime
+        // here (a remote peer, a persona not hosted on this node).
+        let peer = caller.peer_id.as_uuid();
+        return Ok(Acting { peer, kind: ActorKind::Persona, runtime: registry.get(peer) });
+    }
+    if ctx.claimed_actor_kind.as_deref() == Some("agent") {
+        let rt = agent_runtime().ok_or_else(|| {
+            CommandError::Internal(format!(
+                "{family} acts as the agent self-peer, which is not online yet this boot — \
+                 retry shortly; an agent session never resolves to the human's identity"
+            ))
+        })?;
+        return Ok(Acting { peer: rt.airc().peer_id().as_uuid(), kind: ActorKind::Agent, runtime: Some(rt) });
+    }
+    let rt = operator_runtime().ok_or_else(|| {
+        CommandError::Denied(format!(
+            "{family} acts as the caller's own airc identity, and the operator self-peer \
+             is not online yet this boot (it starts beside the citizens — retry shortly, \
+             or check the operator.peer.boot_failed probe)."
+        ))
+    })?;
+    Ok(Acting { peer: rt.airc().peer_id().as_uuid(), kind: ActorKind::Human, runtime: Some(rt) })
+}
+
+/// The runtime a verb ACTS THROUGH — [`acting`] with a live runtime demanded: a signed
+/// caller this node does not host cannot claim, release, or speak from here.
+pub fn acting_runtime(
+    registry: &crate::persona::PersonaAircRuntimeRegistry,
+    ctx: &crate::sdk_codegen::Ctx,
+    family: &str,
+) -> Result<(Arc<PersonaAircRuntime>, ActorKind), crate::sdk_codegen::CommandError> {
+    let a = acting(registry, ctx, family)?;
+    let peer = a.peer;
+    a.runtime.map(|rt| (rt, a.kind)).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
+    })
+}
+
+/// Who a request acts as: the peer, its kind, and the live runtime when this node
+/// hosts it.
+pub struct Acting {
+    pub peer: uuid::Uuid,
+    pub kind: ActorKind,
+    pub runtime: Option<Arc<PersonaAircRuntime>>,
+}
+
+/// The peer a request acts AS, without a registry and without failing: a persona
+/// caller's peer, else the agent or operator self-peer when online. `None` only in
+/// the boot window before the self-peers exist.
+pub fn acting_peer_id(ctx: &crate::sdk_codegen::Ctx) -> Option<uuid::Uuid> {
+    if let Some(caller) = ctx.caller.as_ref().filter(|c| !c.is_anonymous_socket()) {
+        return Some(caller.peer_id.as_uuid());
+    }
+    let rt = if ctx.claimed_actor_kind.as_deref() == Some("agent") {
+        agent_runtime()
+    } else {
+        operator_runtime()
+    }?;
+    Some(rt.airc().peer_id().as_uuid())
+}
+
+/// The self-peer runtime (agent or operator) whose peer is `peer`, when online.
+pub fn local_runtime_of(peer: uuid::Uuid) -> Option<Arc<PersonaAircRuntime>> {
+    [agent_runtime(), operator_runtime()]
+        .into_iter()
+        .flatten()
+        .find(|rt| rt.airc().peer_id().as_uuid() == peer)
+}
+
+/// Is this peer one of the node's LOCAL identities (the operator or the agent
+/// self-peer)? Their hands live in the core's own checkout — a held card roots them
+/// at its staged checkout — while every other peer works in her citizen layer.
+pub fn is_local_identity(peer: uuid::Uuid) -> bool {
+    [agent_runtime(), operator_runtime()]
+        .into_iter()
+        .flatten()
+        .any(|rt| rt.airc().peer_id().as_uuid() == peer)
+}
+
+/// What kind of actor a session resolved to — the word `identity/whoami` prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorKind {
+    Persona,
+    Agent,
+    Human,
+}
+
+impl ActorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActorKind::Persona => "persona",
+            ActorKind::Agent => "agent",
+            ActorKind::Human => "human",
+        }
+    }
+}
+
 /// The agent self-peer's runtime, when online.
 pub fn agent_runtime() -> Option<Arc<PersonaAircRuntime>> {
     AGENT.get().cloned()

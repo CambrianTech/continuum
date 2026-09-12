@@ -78,7 +78,7 @@ crate::action_command! {
     params: CargoCheckParams,
     output: CargoCheckResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let timeout = Duration::from_secs(
             p.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
         );

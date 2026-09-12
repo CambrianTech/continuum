@@ -68,7 +68,7 @@ crate::action_command! {
                 .into(),
             ));
         }
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let check = p.check;
         let message = blocking_git(move || git_bridge::git_apply(&root, &p.patch, check))
             .await?

@@ -44,7 +44,7 @@ crate::action_command! {
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/issue-create: 'title' is required".into()));
         }
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let mut args = vec![
             "issue".to_string(), "create".to_string(),
             "--title".to_string(), p.title,
