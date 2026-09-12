@@ -357,6 +357,14 @@ pub fn acting_peer_id(ctx: &crate::sdk_codegen::Ctx) -> Option<uuid::Uuid> {
     Some(rt.airc().peer_id().as_uuid())
 }
 
+/// The self-peer runtime (agent or operator) whose peer is `peer`, when online.
+pub fn local_runtime_of(peer: uuid::Uuid) -> Option<Arc<PersonaAircRuntime>> {
+    [agent_runtime(), operator_runtime()]
+        .into_iter()
+        .flatten()
+        .find(|rt| rt.airc().peer_id().as_uuid() == peer)
+}
+
 /// Is this peer one of the node's LOCAL identities (the operator or the agent
 /// self-peer)? Their hands live in the core's own checkout — a held card roots them
 /// at its staged checkout — while every other peer works in her citizen layer.

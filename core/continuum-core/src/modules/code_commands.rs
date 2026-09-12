@@ -390,7 +390,7 @@ fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
 /// the shared checkout is never writable through a peer's hands. Idempotent and
 /// defers to an engine a prior call already created (so an explicit
 /// `create-workspace` with a specific root still wins).
-pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
+pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
     let local = is_local_who(who);
     if local {
         // A LOCAL identity's hands follow her held card (2026-09-12): the operator or
@@ -399,7 +399,7 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
         // return to the core's cwd when the card is released. Only a CHANGE of card
         // rooting evicts the cached engine (and its shell); an engine a caller pinned
         // with `create-workspace` is otherwise left alone.
-        let card_root = card_root_of(who);
+        let card_root = card_root_of(who).await;
         let mut last = LAST_CARD_ROOT
             .lock()
             .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
@@ -422,7 +422,7 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
         return Ok(());
     }
     let root = if local {
-        match card_root_of(who) {
+        match card_root_of(who).await {
             Some(root) => root,
             None => std::env::current_dir().map_err(|e| {
                 CommandError::Internal(format!("workspace root unavailable: {e}"))
@@ -459,10 +459,16 @@ fn is_local_who(who: &str) -> bool {
             .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
 }
 
-/// The held-card checkout a local identity's claim staged, when one is rooted.
-fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
+/// The held-card checkout a local identity's hands stand in — BOARD-TRUE, read from her
+/// live claims on every provisioning (the same read a persona's held-work turn makes),
+/// never a note taken at claim time: a note dies with the process while the claim lives
+/// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
+async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
+    use crate::persona::active_work_source::AircWorkReader as _;
     let peer = uuid::Uuid::parse_str(who).ok()?;
-    crate::cognition::persona_workspace::acting_root_of(peer)
+    let rt = crate::persona::operator_peer::local_runtime_of(peer)?;
+    let held = rt.active_claims().await.ok()?;
+    held.iter().find_map(|card| crate::modules::card_staging::checkout_path_for(&peer, card))
 }
 
 /// The card rooting each local identity's engine was last built for — a change here
@@ -479,12 +485,12 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// commands landed in the shared checkout. Idempotent; one bash session per
 /// caller, reused across `code/shell` calls so `cd`/env persist like a real
 /// terminal.
-fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
+async fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
     // The ENGINE decides the root and evicts a shell whose root moved (a held card
     // claimed after the shell was opened) — so it runs first; a shell that survives
     // it is current. Checking the shell first let a pre-claim `code/shell` pin the
     // hands at the core's cwd for the session's whole life (2026-09-12, live).
-    ensure_engine(state, who)?;
+    ensure_engine(state, who).await?;
     if state.shell_sessions.contains_key(who) {
         return Ok(());
     }
@@ -512,7 +518,7 @@ const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 macro_rules! engine {
     ($self:ident, $ctx:ident) => {{
         let who = caller_id($ctx);
-        ensure_engine(&$self.state, &who)?;
+        ensure_engine(&$self.state, &who).await?;
         $self
             .state
             .file_engines
@@ -1338,7 +1344,7 @@ impl ActionCommand for CodeShell {
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
-        ensure_shell(&self.state, &who)?;
+        ensure_shell(&self.state, &who).await?;
 
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
@@ -1740,7 +1746,7 @@ impl ActionCommand for CodeCreateWorkspace {
         // the two halves of her hands pointing at different workspaces.
         self.state.shell_sessions.remove(&who);
         if !p.path_prepend.is_empty() {
-            ensure_shell(&self.state, &who)?;
+            ensure_shell(&self.state, &who).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
                 let prepend = p.path_prepend.join(":");
                 // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a

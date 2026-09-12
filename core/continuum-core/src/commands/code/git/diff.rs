@@ -43,7 +43,7 @@ crate::action_command! {
     params: GitDiffParams,
     output: GitDiffResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let diff = blocking_git(move || git_bridge::git_diff(&root, p.staged))
             .await?
             .map_err(CommandError::Internal)?;

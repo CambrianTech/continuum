@@ -691,13 +691,6 @@ impl ActionCommand for WorkClaim {
                             error: e.to_string(),
                         },
                     };
-                    if let Staging::Ready { path, .. } = &staging {
-                        crate::cognition::persona_workspace::root_peer_hands_at_card(
-                            claimer_peer.as_uuid(),
-                            path.clone(),
-                            card_id.as_uuid(),
-                        );
-                    }
                     let driver = crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
                     match (driver, &staging) {
                         (WorkDriver::Citizen, _) => crate::probe!(
@@ -1599,7 +1592,6 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::cognition::persona_workspace::release_peer_hands(airc.peer_id().as_uuid(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
 }
