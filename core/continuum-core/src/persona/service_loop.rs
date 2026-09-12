@@ -5112,8 +5112,6 @@ mod tests {
 
         // One held (Claimed) card in her hands. A NON-bench title so the
         // act-question resolves no staged checkout (no hands re-root needed).
-            submissions: Vec::new(),
-            last_submission_rejection: None,
         let card = airc_lib::WorkCard {
             card_id: WorkCardId::new(),
             repo: RepoId::new("acme/continuum").expect("valid repo id"), // test: a literal valid repo id
@@ -5131,6 +5129,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let card_id = card.card_id;
         let stub = StubAircCitizen::new(persona_peer).with_claims(vec![card]);
@@ -5274,9 +5274,9 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         }
-        submissions: Vec::new(),
-        last_submission_rejection: None,
     }
 
     #[tokio::test]
