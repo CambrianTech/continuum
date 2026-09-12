@@ -27,8 +27,22 @@ pub(crate) fn governor_releases(acts_without_write: usize) -> bool {
 /// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
 /// the count; a card with no edit ever counts every act. Pure.
 pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> usize {
-    let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
-        rows.iter().filter(|r| r.sender == me).collect();
+    acts_since_last_write_since(rows, me, 0)
+}
+
+/// [`acts_since_last_write`] counting only rows at or after `since_ms` — THIS hold's acts.
+/// 2026-09-12 21:30Z: a citizen re-pulled a card after a reboot and was released 28 s later
+/// at "22 acts without a write" — every one of them from her previous hold, whose pull
+/// left no ⚙ receipt to reset the count. The pull's own clock is the boundary.
+pub(crate) fn acts_since_last_write_since(
+    rows: &[crate::persona::durable_history::RoomRow],
+    me: Uuid,
+    since_ms: u64,
+) -> usize {
+    let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
+        .iter()
+        .filter(|r| r.sender == me && r.occurred_at_ms >= since_ms)
+        .collect();
     mine.sort_by_key(|r| r.occurred_at_ms);
     let mut n = 0usize;
     for r in mine {
@@ -174,7 +188,9 @@ fn is_hold_boundary(verb: &str) -> bool {
 }
 
 fn is_write_verb(verb: &str) -> bool {
-    verb.starts_with("code/edit")
+    // The ledger is the mind's deliverable: writing it is progress, not orientation.
+    verb.starts_with("work/note")
+        || verb.starts_with("code/edit")
         || verb.starts_with("code/write")
         || verb.starts_with("code/create-workspace")
         || verb.starts_with("git_apply")

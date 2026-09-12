@@ -221,9 +221,12 @@ pub(crate) async fn ask_the_act_question(
                     let acts_without_write = page
                         .as_ref()
                         .map(|rows| {
-                            crate::persona::work_burst::acts_since_last_write(
+                            crate::persona::work_burst::acts_since_last_write_since(
                                 rows,
                                 ctx.identity.peer_id.as_uuid(),
+                                crate::persona::work_pull::last_pull_ms(
+                                    ctx.identity.peer_id.as_uuid(),
+                                ),
                             )
                         })
                         .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence

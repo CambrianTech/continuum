@@ -174,8 +174,12 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();  // unwrap_or: an unreadable status reads as "no work" — the same as before, never a guessed diff
-        let has_work = !porcelain.is_empty();
-        let work_mtime_ms = newest_work_mtime_ms(&path, &porcelain);
+        // Committed work above the staged base counts — see `work_mtime_of`.
+        let work_mtime_ms = newest_evidence_ms(
+            newest_work_mtime_ms(&path, &porcelain),
+            newest_commit_above_base_ms(&path),
+        );
+        let has_work = work_mtime_ms.is_some();
         out.push(StagedCopy {
             peer,
             path,
@@ -226,9 +230,13 @@ pub fn grade_target(copies: &[StagedCopy]) -> GradeTarget {
     }
 }
 
-/// The newest work mtime (ms) of a checkout on disk, or None when it is clean or
-/// unreadable. The porcelain read plus [`newest_work_mtime_ms`], for callers that
-/// hold a path rather than a `StagedCopy` (claim-time staging).
+/// The newest work mtime (ms) of a checkout on disk, or None when it carries no work.
+/// WORK is any difference from the commit the staging checked out: uncommitted changes
+/// (`git status --porcelain`) OR commits above that base. 2026-09-12 21:30Z: a holder
+/// committed his fix (ledger: "commit d71b8d4f29 … working tree clean"), the porcelain read
+/// empty, `restages_pristine(Some(verdict), None)` re-cloned his tree on the next claim,
+/// and the sweep reopened the card as "left no artifact" — the substrate erased a resolve
+/// it had never graded. A clean tree above the base is the MOST finished shape of work.
 pub(crate) fn work_mtime_of(root: &std::path::Path) -> Option<u64> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -237,7 +245,61 @@ pub(crate) fn work_mtime_of(root: &std::path::Path) -> Option<u64> {
         .output()
         .ok()?;
     let porcelain = String::from_utf8_lossy(&out.stdout);
-    newest_work_mtime_ms(root, &porcelain)
+    newest_evidence_ms(
+        newest_work_mtime_ms(root, &porcelain),
+        newest_commit_above_base_ms(root),
+    )
+}
+
+/// The later of the two kinds of evidence, or `None` when neither exists — pure.
+pub(crate) fn newest_evidence_ms(uncommitted: Option<u64>, committed: Option<u64>) -> Option<u64> {
+    match (uncommitted, committed) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0).max(b.unwrap_or(0))), // unwrap_or: the absent side contributes nothing to the max
+    }
+}
+
+/// The commit the staging checked out — recorded by `clone_at` in `.git/continuum-base`;
+/// for a checkout that predates the record, the reflog's first `checkout:` target (the
+/// clone lands on the default branch, then staging moves HEAD to the base).
+pub(crate) fn staged_base_of(root: &std::path::Path) -> Option<String> {
+    if let Ok(s) = std::fs::read_to_string(root.join(".git").join("continuum-base")) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["reflog", "show", "--format=%H %gs"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .find(|l| l.contains(" checkout: moving from "))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string)
+}
+
+/// The committer time (ms) of the newest commit above the staged base, `None` when HEAD
+/// is the base (or the base is unknown, which reads as no committed work — the old rule).
+fn newest_commit_above_base_ms(root: &std::path::Path) -> Option<u64> {
+    let base = staged_base_of(root)?;
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "-1", "--format=%ct", &format!("{base}..HEAD")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|s| s * 1000)
 }
 
 /// The newest mtime (ms) among the paths `git status --porcelain` lists.
@@ -317,6 +379,33 @@ where
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-12): a committed fix on a clean tree reading as "no work" —
+    // the staging re-cloned over it and the sweep reopened the card as "left no artifact".
+    #[test]
+    fn a_commit_above_the_staged_base_is_work_even_when_the_tree_is_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(root).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        let base = String::from_utf8(std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        std::fs::write(root.join(".git").join("continuum-base"), &base).unwrap();
+        assert_eq!(super::work_mtime_of(root), None, "a clean tree AT the base is no work");
+        std::fs::write(root.join("a.txt"), "fix\n").unwrap();
+        git(&["commit", "-q", "-am", "the fix"]);
+        assert!(super::work_mtime_of(root).is_some(), "a clean tree ABOVE the base is work");
+        assert_eq!(super::newest_evidence_ms(None, None), None);
+        assert_eq!(super::newest_evidence_ms(Some(5), Some(9)), Some(9));
+        assert_eq!(super::newest_evidence_ms(Some(5), None), Some(5));
+    }
+
     use super::*;
 
     fn staged(names: &[&str]) -> Vec<String> {

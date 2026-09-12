@@ -1240,6 +1240,10 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     }
     shield_workspace_excludes(repo_dir);
     era_checkout_fixups(instance, repo_dir);
+    // Record the staged base so "work" can be measured against it later — a committed fix on
+    // a clean tree is work (staged_workspace::work_mtime_of). Best effort: an unwritable
+    // record falls back to the reflog read.
+    let _ = std::fs::write(repo_dir.join(".git").join("continuum-base"), &instance.base_commit);
     Ok(())
 }
 
