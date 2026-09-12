@@ -1064,7 +1064,10 @@ pub(crate) fn dispatch_swe_card_body(
          card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
          and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
          your tools, then run the tests. Definition of done: these tests pass — {}. Your DIFF is \
-         graded against the repo's held-out test suite; do not edit the tests.",
+         graded against the repo's held-out test suite; do not edit the tests. END EVERY WORK TURN \
+         with work/note (the card's ledger: what you established, the competing hypotheses with \
+         the test that settles each, the one unknown, the next test) — your next turn opens from \
+         it instead of re-orienting.",
         i.instance_id,
         i.repo,
         i.base_commit,

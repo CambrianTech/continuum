@@ -1980,6 +1980,119 @@ async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: WorkCardId, via
     }
 }
 
+// ─────────────────────────── work/note ──────────────────────────
+
+/// Write the held card's evidence ledger — the saved state of the thought.
+pub struct WorkNote {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkNoteParams {
+    /// Card id (8-char short id accepted).
+    pub card_id: String,
+    /// Established facts: `file:range → what it showed`, `test → assertion`.
+    #[serde(default)]
+    pub known: Vec<String>,
+    /// Competing explanations, each with its settling test.
+    #[serde(default)]
+    pub hypotheses: Vec<HypothesisParam>,
+    /// The one unknown the answer turns on.
+    #[serde(default)]
+    pub unknown: String,
+    /// The next test to run.
+    #[serde(default)]
+    pub next_test: String,
+    /// Decided fix: `file:line` + intent.
+    #[serde(default)]
+    pub decided_fix: Option<String>,
+}
+
+/// A hypothesis as the VERB takes it — snake_case like every other work/* parameter.
+/// The stored record ([`crate::experience::ledger::LedgerHypothesis`]) is a wire type in
+/// camelCase; this is the adapter between the verb surface and the record, so a caller
+/// never has to know the storage casing (2026-09-12: my own call sent `nextTest` and the
+/// field was silently dropped).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct HypothesisParam {
+    pub claim: String,
+    #[serde(default)]
+    pub evidence_for: Vec<String>,
+    #[serde(default)]
+    pub evidence_against: Vec<String>,
+    /// The test that settles it.
+    #[serde(default)]
+    pub test: String,
+}
+
+impl From<HypothesisParam> for crate::experience::ledger::LedgerHypothesis {
+    fn from(h: HypothesisParam) -> Self {
+        Self {
+            claim: h.claim,
+            evidence_for: h.evidence_for,
+            evidence_against: h.evidence_against,
+            test: h.test,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkNoteResult {
+    pub recorded: bool,
+    pub room: String,
+}
+
+#[async_trait]
+impl ActionCommand for WorkNote {
+
+    const NAME: &'static str = "work/note";
+    const ALIASES: &'static [&'static str] = &["ledger", "note_task"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "End every work turn with this: your card's ledger — known facts (file:range → what it \
+         showed), hypotheses each with the test that settles it, the one unknown, the next test. \
+         The next turn opens from it.";
+    type Params = WorkNoteParams;
+    type Output = WorkNoteResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkNoteParams) -> Result<WorkNoteResult, CommandError> {
+        use crate::experience::ledger::LedgerStore as _;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
+        let Some((room, _card)) = card_in_subscribed_rooms(&airc, card_id).await else {
+            return Err(CommandError::NotFound(format!(
+                "card {} is on no board of a room you stand in — the ledger lives in the card's room",
+                short8(card_id.as_uuid())
+            )));
+        };
+        let ledger = crate::experience::ledger::CardLedger {
+            card_id: card_id.as_uuid(),
+            known: p.known,
+            hypotheses: p.hypotheses.into_iter().map(Into::into).collect(),
+            unknown: p.unknown,
+            next_test: p.next_test,
+            decided_fix: p.decided_fix.filter(|f| !f.trim().is_empty()),
+            at_ms: crate::modules::chat::now_ms(),
+            by: airc.peer_id().as_uuid(),
+        };
+        crate::experience::ledger::WallLedgerStore::new(airc.clone())
+            .write(&room, &ledger)
+            .await
+            .map_err(|e| CommandError::Internal(format!("ledger could not be recorded: {e}")))?;
+        crate::probe!(
+            class = "work.ledger.noted",
+            card = %short8(card_id.as_uuid()),
+            by = %short8(airc.peer_id().as_uuid()),
+            known = ledger.known.len() as u64,
+            hypotheses = ledger.hypotheses.len() as u64,
+            has_next = !ledger.next_test.trim().is_empty(),
+            "the card's ledger was written — the next turn opens from it"
+        );
+        Ok(WorkNoteResult { recorded: true, room: room.name.clone() })
+    }
+}
+
 // ─────────────────────────── work/heartbeat ──────────────────────
 
 /// Extend this persona's claim lease on a card during long work.
@@ -2396,6 +2509,11 @@ pub struct WorkGetResult {
     pub state: String,
     pub owner: Option<String>,
     pub claim_id: Option<String>,
+    /// The card's ledger — the saved state of the thought (`work/note`) — so a reviewer,
+    /// a peer taking the card over, or the human reads what is known before the diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ledger: Option<crate::experience::ledger::CardLedger>,
 }
 
 impl WorkGet {
@@ -2406,14 +2524,21 @@ impl WorkGet {
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
         let card_id = resolve_card_id_in_boards(&boards, requested)?;
-        let card = boards
+        let (room, card) = boards
             .iter()
-            .find_map(|(_, board)| board.card(card_id))
+            .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
             .ok_or_else(|| {
                 CommandError::NotFound(format!(
                     "card {requested} is not on any subscribed room's board"
                 ))
             })?;
+        use crate::experience::ledger::LedgerStore as _;
+        // Best effort: an unreadable ledger is an absence on the card, never a refusal of
+        // the card itself.
+        let ledger = crate::experience::ledger::WallLedgerStore::new(airc.clone())
+            .read(room, card_id.as_uuid())
+            .await
+            .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
         Ok(WorkGetResult {
             id: short8(card.card_id.as_uuid()),
             title: card.title.clone(),
@@ -2421,6 +2546,7 @@ impl WorkGet {
             state: state_str(&card.state).to_string(),
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
+            ledger,
         })
     }
 }
@@ -2453,6 +2579,7 @@ crate::register_command!(WorkCreate);
 crate::register_command!(WorkRelease);
 crate::register_command!(WorkState);
 crate::register_command!(WorkHeartbeat);
+crate::register_command!(WorkNote);
 
 /// The kanban module — holds the persona airc-runtime registry so each work tool
 /// can resolve the CALLER's own airc handle and act as that persona.
@@ -2526,6 +2653,9 @@ impl ServiceModule for WorkModule {
                 registry: self.registry.clone(),
             }),
             Arc::new(WorkHeartbeat {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkNote {
                 registry: self.registry.clone(),
             }),
             // benchmark/dispatch lives in commands/benchmark.rs (benchmark
