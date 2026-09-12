@@ -72,6 +72,7 @@ pub mod spawned_rooms;
 pub mod membership;
 pub mod recipe;
 pub mod source;
+pub mod ledger;
 pub mod standing;
 
 pub use membership::project_membership;

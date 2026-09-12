@@ -1980,6 +1980,93 @@ async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: WorkCardId, via
     }
 }
 
+// ─────────────────────────── work/note ──────────────────────────
+
+/// Write the held card's evidence ledger — the saved state of the thought.
+pub struct WorkNote {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkNoteParams {
+    /// The card (short 8-char id from the board accepted).
+    pub card_id: String,
+    /// Facts you ESTABLISHED by observation: `file:range → what it showed`, `test → failing assertion`, `command → outcome`.
+    #[serde(default)]
+    pub known: Vec<String>,
+    /// Competing explanations, each with the observation that would settle it.
+    #[serde(default)]
+    pub hypotheses: Vec<crate::experience::ledger::LedgerHypothesis>,
+    /// The one unknown the answer turns on.
+    #[serde(default)]
+    pub unknown: String,
+    /// The next observation to run — the first act of the next turn.
+    #[serde(default)]
+    pub next_test: String,
+    /// Once decided: `file:line` and the intended edit.
+    #[serde(default)]
+    pub decided_fix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkNoteResult {
+    pub recorded: bool,
+    pub room: String,
+}
+
+#[async_trait]
+impl ActionCommand for WorkNote {
+
+    const NAME: &'static str = "work/note";
+    const ALIASES: &'static [&'static str] = &["ledger", "note_task"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Write your held card's ledger — the saved state of your thinking: what you ESTABLISHED \
+         (file:range → what it showed; test → the failing assertion), the competing hypotheses each \
+         with the observation that would settle it, the ONE unknown the answer turns on, and the \
+         next test to run. End every work turn with it. Your next turn — or a peer's, or the \
+         reviewer's — opens from this ledger instead of re-orienting.";
+    type Params = WorkNoteParams;
+    type Output = WorkNoteResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkNoteParams) -> Result<WorkNoteResult, CommandError> {
+        use crate::experience::ledger::LedgerStore as _;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
+        let Some((room, _card)) = card_in_subscribed_rooms(&airc, card_id).await else {
+            return Err(CommandError::NotFound(format!(
+                "card {} is on no board of a room you stand in — the ledger lives in the card's room",
+                short8(card_id.as_uuid())
+            )));
+        };
+        let ledger = crate::experience::ledger::CardLedger {
+            card_id: card_id.as_uuid(),
+            known: p.known,
+            hypotheses: p.hypotheses,
+            unknown: p.unknown,
+            next_test: p.next_test,
+            decided_fix: p.decided_fix.filter(|f| !f.trim().is_empty()),
+            at_ms: crate::modules::chat::now_ms(),
+            by: airc.peer_id().as_uuid(),
+        };
+        crate::experience::ledger::WallLedgerStore::new(airc.clone())
+            .write(&room, &ledger)
+            .await
+            .map_err(|e| CommandError::Internal(format!("ledger could not be recorded: {e}")))?;
+        crate::probe!(
+            class = "work.ledger.noted",
+            card = %short8(card_id.as_uuid()),
+            by = %short8(airc.peer_id().as_uuid()),
+            known = ledger.known.len() as u64,
+            hypotheses = ledger.hypotheses.len() as u64,
+            has_next = !ledger.next_test.trim().is_empty(),
+            "the card's ledger was written — the next turn opens from it"
+        );
+        Ok(WorkNoteResult { recorded: true, room: room.name.clone() })
+    }
+}
+
 // ─────────────────────────── work/heartbeat ──────────────────────
 
 /// Extend this persona's claim lease on a card during long work.
@@ -2526,6 +2613,9 @@ impl ServiceModule for WorkModule {
                 registry: self.registry.clone(),
             }),
             Arc::new(WorkHeartbeat {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkNote {
                 registry: self.registry.clone(),
             }),
             // benchmark/dispatch lives in commands/benchmark.rs (benchmark

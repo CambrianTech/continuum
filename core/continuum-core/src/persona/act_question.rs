@@ -392,6 +392,19 @@ pub(crate) async fn ask_the_act_question(
                                                 &ws,
                                             ),
                                         );
+                                        // THE LEDGER, as the fact her turn opens with: the
+                                        // saved state of the thought — hers from the last
+                                        // turn, the previous holder's, or the owner's for a
+                                        // review card. Absence is named with the instruction
+                                        // (2026-09-12: 78 acts of re-orientation on worked cards).
+                                        body.working_memory.pin_fact(
+                                            "ledger",
+                                            &crate::persona::card_ledger_fact::ledger_fact_for(
+                                                ctx.identity.peer_id.as_uuid(),
+                                                &held,
+                                            )
+                                            .await,
+                                        );
                                     }
                                     crate::probe!(
                                         class = "persona.work.hands_rooted",
