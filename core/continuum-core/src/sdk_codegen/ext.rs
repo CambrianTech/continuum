@@ -209,7 +209,7 @@ fn load_one(path: &Path, shipped: &[&str]) -> Result<ProcessCommand, ManifestErr
 /// A verb backed by a process. `name`/`description` are leaked ONCE at load — the
 /// registry keys on `&'static str`, and a manifest set is bounded and loaded once
 /// per process, so this is a boot-time allocation, not a leak per call.
-pub struct ProcessCommand {
+pub(crate) struct ProcessCommand {
     manifest: CommandManifest,
     name: &'static str,
     description: &'static str,
