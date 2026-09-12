@@ -107,6 +107,10 @@
       "command": "work/heartbeat"
     },
     {
+      "verb": "note",
+      "command": "work/note"
+    },
+    {
       "verb": "fetch",
       "command": "web/fetch"
     },

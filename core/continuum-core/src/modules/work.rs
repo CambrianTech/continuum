@@ -1989,21 +1989,21 @@ pub struct WorkNote {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkNoteParams {
-    /// The card (short 8-char id from the board accepted).
+    /// Card id (8-char short id accepted).
     pub card_id: String,
-    /// Facts you ESTABLISHED by observation: `file:range → what it showed`, `test → failing assertion`, `command → outcome`.
+    /// Established facts: `file:range → what it showed`, `test → assertion`.
     #[serde(default)]
     pub known: Vec<String>,
-    /// Competing explanations, each with the observation that would settle it.
+    /// Competing explanations, each with its settling test.
     #[serde(default)]
     pub hypotheses: Vec<HypothesisParam>,
     /// The one unknown the answer turns on.
     #[serde(default)]
     pub unknown: String,
-    /// The next observation to run — the first act of the next turn.
+    /// The next test to run.
     #[serde(default)]
     pub next_test: String,
-    /// Once decided: `file:line` and the intended edit.
+    /// Decided fix: `file:line` + intent.
     #[serde(default)]
     pub decided_fix: Option<String>,
 }
@@ -2020,7 +2020,7 @@ pub struct HypothesisParam {
     pub evidence_for: Vec<String>,
     #[serde(default)]
     pub evidence_against: Vec<String>,
-    /// The cheapest observation that would confirm or kill this claim.
+    /// The test that settles it.
     #[serde(default)]
     pub test: String,
 }
@@ -2050,11 +2050,9 @@ impl ActionCommand for WorkNote {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Write your held card's ledger — the saved state of your thinking: what you ESTABLISHED \
-         (file:range → what it showed; test → the failing assertion), the competing hypotheses each \
-         with the observation that would settle it, the ONE unknown the answer turns on, and the \
-         next test to run. End every work turn with it. Your next turn — or a peer's, or the \
-         reviewer's — opens from this ledger instead of re-orienting.";
+        "End every work turn with this: your card's ledger — known facts (file:range → what it \
+         showed), hypotheses each with the test that settles it, the one unknown, the next test. \
+         The next turn opens from it.";
     type Params = WorkNoteParams;
     type Output = WorkNoteResult;
 
