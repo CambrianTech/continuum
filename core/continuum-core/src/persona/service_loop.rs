@@ -2999,6 +2999,16 @@ mod tests {
             1,
             "an edit resets the count"
         );
+        // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
+        // governor release starts a fresh count, so the new hold is not released at once.
+        let mut reclaimed = looping.clone();
+        reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
+        reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
+        assert_eq!(
+            acts_since_last_write(&reclaimed, me),
+            1,
+            "a claim is a hold boundary: only the act after it counts"
+        );
         let text = held_work_burst_gated(
             &[],
             &[],
