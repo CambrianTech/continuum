@@ -2511,6 +2511,11 @@ pub struct WorkGetResult {
     pub state: String,
     pub owner: Option<String>,
     pub claim_id: Option<String>,
+    /// The card's ledger — the saved state of the thought (`work/note`) — so a reviewer,
+    /// a peer taking the card over, or the human reads what is known before the diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ledger: Option<crate::experience::ledger::CardLedger>,
 }
 
 impl WorkGet {
@@ -2521,14 +2526,21 @@ impl WorkGet {
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
         let card_id = resolve_card_id_in_boards(&boards, requested)?;
-        let card = boards
+        let (room, card) = boards
             .iter()
-            .find_map(|(_, board)| board.card(card_id))
+            .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
             .ok_or_else(|| {
                 CommandError::NotFound(format!(
                     "card {requested} is not on any subscribed room's board"
                 ))
             })?;
+        use crate::experience::ledger::LedgerStore as _;
+        // Best effort: an unreadable ledger is an absence on the card, never a refusal of
+        // the card itself.
+        let ledger = crate::experience::ledger::WallLedgerStore::new(airc.clone())
+            .read(room, card_id.as_uuid())
+            .await
+            .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
         Ok(WorkGetResult {
             id: short8(card.card_id.as_uuid()),
             title: card.title.clone(),
@@ -2536,6 +2548,7 @@ impl WorkGet {
             state: state_str(&card.state).to_string(),
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
+            ledger,
         })
     }
 }
