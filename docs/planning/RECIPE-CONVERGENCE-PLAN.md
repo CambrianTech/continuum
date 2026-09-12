@@ -251,8 +251,13 @@ chosen from the instance's own columns (the marked test command between the scri
 `parse_log_cargo` + `parse_log_gotest` read the Rust and Go slices (85/300); the other 17 parsers
 refuse BY NAME. `benchmark/import` and the `benchmark/round` recipe take `language` (derived from
 the parser; `python` for the SWE-bench family). Owed: the remaining parsers as their toolchains
-arrive on nodes; aider-polyglot (Exercism, 6 languages) as a gym-shaped adapter; the docker
-`image` path for nodes that lack a toolchain.
+arrive on nodes; aider-polyglot as a gym-shaped adapter — read 2026-09-12: `<lang>/exercises/practice/<name>/`
+for cpp/go/java/javascript/python/rust (rust 30, go 39, python 34 …), each with
+`.docs/instructions.md` (the task), `.meta/config.json` (solution/test file lists),
+`.meta/example.<ext>` (the oracle) and the language's own tests (`cargo test`, `go test`,
+`pytest`, …) — i.e. an eval-set importer that materializes each exercise as a task + oracle,
+graded by the per-language `LogParser` this slice introduced; the docker `image` path for nodes
+that lack a toolchain.
 
 **Still owed for S4 (S4b, remaining):** the side-by-side run itself — `activity/spawn --recipe
 benchmark/swe` and `benchmark/dispatch` on the same `(suite, seed, sample)` after a deploy,
