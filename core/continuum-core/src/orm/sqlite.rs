@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
-    BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
+    BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord, FieldType,
     RecordMetadata, StorageResult, METADATA_KEYS, UUID,
 };
 
@@ -120,6 +120,12 @@ pub struct SqliteAdapter {
     reader_index: AtomicUsize,
     /// Timestamp of last memory pressure check (unix seconds)
     last_pressure_check: Arc<AtomicU64>,
+    /// Column → declared field type, per collection, as `ensure_schema` was told
+    /// (every `OrmStore` registers its schema before its first read). A TEXT column is
+    /// decoded BY THIS, never by sniffing its bytes: a String field whose text happens
+    /// to look like JSON stays the string it is. Collections nobody declared (the
+    /// TS-style dynamic tables) keep the legacy sniff.
+    declared: Arc<std::sync::RwLock<HashMap<String, Arc<HashMap<String, FieldType>>>>>,
 }
 
 impl SqliteAdapter {
@@ -129,7 +135,13 @@ impl SqliteAdapter {
             readers: Vec::new(),
             reader_index: AtomicUsize::new(0),
             last_pressure_check: Arc::new(AtomicU64::new(0)),
+            declared: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The declared column types of `collection`, when a store registered them.
+    fn declared_types(&self, collection: &str) -> Option<Arc<HashMap<String, FieldType>>> {
+        self.declared.read().ok()?.get(collection).cloned()
     }
 
     /// Get writer connection for mutations
@@ -350,7 +362,12 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
     }
 }
 
-fn do_read(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
+fn do_read(
+    conn: &Connection,
+    collection: &str,
+    id: &UUID,
+    types: Option<&HashMap<String, FieldType>>,
+) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(collection);
     let sql = format!("SELECT * FROM {} WHERE id = ? LIMIT 1", table);
 
@@ -367,7 +384,7 @@ fn do_read(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<Data
 
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
-    match stmt.query_row(params![id], |row| row_to_record(row, collection, &columns)) {
+    match stmt.query_row(params![id], |row| row_to_record(row, collection, &columns, types)) {
         Ok(record) => StorageResult::ok(record),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             StorageResult::err(format!("Record not found: {}", id))
@@ -376,7 +393,11 @@ fn do_read(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<Data
     }
 }
 
-fn do_query(conn: &Connection, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+fn do_query(
+    conn: &Connection,
+    query: StorageQuery,
+    types: Option<&HashMap<String, FieldType>>,
+) -> StorageResult<Vec<DataRecord>> {
     let table = naming::to_table_name(&query.collection);
     let (where_clause, where_params) = build_where_clause(&query.filter);
     let order_clause = build_order_clause(&query.sort);
@@ -415,7 +436,7 @@ fn do_query(conn: &Connection, query: StorageQuery) -> StorageResult<Vec<DataRec
     let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
 
     let rows = match stmt.query_map(params_ref.as_slice(), |row| {
-        row_to_record(row, &query.collection, &columns)
+        row_to_record(row, &query.collection, &columns, types)
     }) {
         Ok(r) => r,
         Err(e) => return StorageResult::err(format!("Query failed: {}", e)),
@@ -460,6 +481,7 @@ fn do_update(
     id: &UUID,
     data: Value,
     increment_version: bool,
+    types: Option<&HashMap<String, FieldType>>,
 ) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(collection);
     let now = chrono::Utc::now().to_rfc3339();
@@ -487,7 +509,7 @@ fn do_update(
     let params_ref: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params_ref.as_slice()) {
-        Ok(rows) if rows > 0 => do_read(conn, collection, id),
+        Ok(rows) if rows > 0 => do_read(conn, collection, id, types),
         Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
         Err(e) => {
             let err_msg = e.to_string();
@@ -495,7 +517,7 @@ fn do_update(
                 let table = naming::to_table_name(collection);
                 if evolve_table_schema(conn, &table, &data) {
                     match conn.execute(&sql, params_ref.as_slice()) {
-                        Ok(rows) if rows > 0 => return do_read(conn, collection, id),
+                        Ok(rows) if rows > 0 => return do_read(conn, collection, id, types),
                         Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
                         Err(e2) => {
                             return StorageResult::err(format!(
@@ -527,7 +549,11 @@ fn do_delete(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<bo
 /// The pre-transaction version of this logic folded failures into a
 /// `{"success": false}` JSON element and kept going, which is what let a batch
 /// half-apply while reporting success.
-fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> {
+fn do_batch_one(
+    conn: &Connection,
+    op: BatchOperation,
+    declared: &HashMap<String, Arc<HashMap<String, FieldType>>>,
+) -> Result<Value, String> {
     match op.operation_type {
         BatchOperationType::Create => {
             let (Some(id), Some(data)) = (op.id, op.data) else {
@@ -550,7 +576,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             let Some(id) = op.id else {
                 return Err("read requires an id".to_string());
             };
-            let r = do_read(conn, &op.collection, &id);
+            let r = do_read(conn, &op.collection, &id, declared.get(&op.collection).map(|t| t.as_ref()));
             if r.success {
                 Ok(json!({"success": true, "data": r.data}))
             } else {
@@ -561,7 +587,7 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
             let (Some(id), Some(data)) = (op.id, op.data) else {
                 return Err("update requires both id and data".to_string());
             };
-            let r = do_update(conn, &op.collection, &id, data, true);
+            let r = do_update(conn, &op.collection, &id, data, true, declared.get(&op.collection).map(|t| t.as_ref()));
             if r.success {
                 Ok(json!({"success": true}))
             } else {
@@ -595,14 +621,18 @@ fn do_batch_one(conn: &Connection, op: BatchOperation) -> Result<Value, String> 
 /// per-operation JSON, and `supports_transactions: true` was declared by this
 /// adapter while nothing here ever opened a transaction. A parent row that
 /// survives its failed children is a record claiming more than actually happened.
-fn do_batch(conn: &Connection, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
+fn do_batch(
+    conn: &Connection,
+    operations: Vec<BatchOperation>,
+    declared: &HashMap<String, Arc<HashMap<String, FieldType>>>,
+) -> StorageResult<Vec<Value>> {
     if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
         return StorageResult::err(format!("Failed to open batch transaction: {}", e));
     }
 
     let mut results = Vec::with_capacity(operations.len());
     for (index, op) in operations.into_iter().enumerate() {
-        match do_batch_one(conn, op) {
+        match do_batch_one(conn, op, declared) {
             Ok(value) => results.push(value),
             Err(e) => {
                 // Roll back FIRST, then report. The rollback failing does not
@@ -841,6 +871,8 @@ fn row_to_record(
     row: &rusqlite::Row,
     collection: &str,
     columns: &[String],
+    // The collection's declared column types, when a store registered them.
+    types: Option<&HashMap<String, FieldType>>,
 ) -> Result<DataRecord, rusqlite::Error> {
     let mut data = serde_json::Map::new();
     let mut id: Option<String> = None;
@@ -870,12 +902,26 @@ fn row_to_record(
             rusqlite::types::ValueRef::Real(n) => json!(n),
             rusqlite::types::ValueRef::Text(s) => {
                 let s = std::str::from_utf8(s).unwrap_or("");
-                if (s.starts_with('{') && s.ends_with('}'))
-                    || (s.starts_with('[') && s.ends_with(']'))
-                {
-                    serde_json::from_str(s).unwrap_or_else(|_| json!(s))
-                } else {
-                    json!(s)
+                // DECODE BY THE DECLARED TYPE, NEVER BY THE BYTES. Nested fields are
+                // stored as JSON text, so a schema-blind reader had to sniff `{…}` /
+                // `[…]` — and a String field whose text happened to be JSON-shaped (a
+                // chat line `{"path": "sympy"}` admitted as an engram's content,
+                // 2026-08-09) came back as a map, the entity refused it, `find_all`
+                // failed whole, and the citizen whose store held that ONE row never
+                // seated (Atlas + Benchy, 2026-09-13: two of five seats in backoff
+                // forever). The sniff survives only for undeclared collections.
+                match types.and_then(|t| t.get(col.as_str())) {
+                    Some(FieldType::String | FieldType::Uuid | FieldType::Date) => json!(s),
+                    Some(FieldType::Json) => serde_json::from_str(s).unwrap_or_else(|_| json!(s)), // unwrap_or_else: a declared-JSON column holding non-JSON text is handed back as that text, never dropped
+                    Some(FieldType::Number | FieldType::Boolean) | None => {
+                        if (s.starts_with('{') && s.ends_with('}'))
+                            || (s.starts_with('[') && s.ends_with(']'))
+                        {
+                            serde_json::from_str(s).unwrap_or_else(|_| json!(s)) // unwrap_or_else: legacy sniff — JSON-shaped text that does not parse stays text
+                        } else {
+                            json!(s)
+                        }
+                    }
                 }
             }
             rusqlite::types::ValueRef::Blob(b) => {
@@ -1121,10 +1167,11 @@ impl StorageAdapter for SqliteAdapter {
         let collection = collection.to_string();
         let id = id.clone();
         let pressure = self.last_pressure_check.clone();
+        let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
-            do_read(&conn, &collection, &id)
+            do_read(&conn, &collection, &id, types.as_deref())
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
@@ -1156,11 +1203,12 @@ impl StorageAdapter for SqliteAdapter {
         };
         let pressure = self.last_pressure_check.clone();
         let collection_name = query.collection.clone();
+        let types = self.declared_types(&query.collection);
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             let start = std::time::Instant::now();
-            let result = do_query(&conn, query);
+            let result = do_query(&conn, query, types.as_deref());
             if start.elapsed().as_millis() > 100 {
                 clog_warn!(
                     "SLOW query on {}: {}ms",
@@ -1257,10 +1305,11 @@ impl StorageAdapter for SqliteAdapter {
         let collection = collection.to_string();
         let id = id.clone();
         let pressure = self.last_pressure_check.clone();
+        let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
-            do_update(&conn, &collection, &id, data, increment_version)
+            do_update(&conn, &collection, &id, data, increment_version, types.as_deref())
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
@@ -1291,10 +1340,11 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let pressure = self.last_pressure_check.clone();
+        let declared = self.declared.read().map(|d| d.clone()).unwrap_or_default(); // unwrap_or: a poisoned lock reads as "nothing declared" — the legacy sniff, never a refused batch
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
-            do_batch(&conn, operations)
+            do_batch(&conn, operations, &declared)
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
@@ -1305,6 +1355,12 @@ impl StorageAdapter for SqliteAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
+        // Remember the declared column types: reads decode by them (row_to_record).
+        let types: HashMap<String, FieldType> =
+            schema.fields.iter().map(|f| (f.name.clone(), f.field_type.clone())).collect();
+        if let Ok(mut declared) = self.declared.write() {
+            declared.insert(schema.collection.clone(), Arc::new(types));
+        }
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             do_ensure_schema(&conn, schema)
