@@ -3121,6 +3121,7 @@ impl LlamaServerControl for LlamaServerProcess {
             );
         } else {
             sweep_stale_page_generations(&slot_save_dir);
+            crate::inference::slots::note_page_dir(&slot_save_dir);
         }
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
