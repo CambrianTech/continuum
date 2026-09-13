@@ -1639,6 +1639,29 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
+        // A STATE THAT MEANS "I HOLD THIS" IS A CLAIM. `claimed` / `in_progress` are the
+        // holder's columns; setting one is unambiguous intent to hold the card, and
+        // there is ONE way to hold a card — `work/claim` (lease + owner + staged
+        // checkout). Measured 2026-09-13 03:0xZ: Joaquin took matplotlib-21568 with
+        // `work/state claimed`, which moved the column and set no owner; the sweep read
+        // "claimed, owner none = held by nobody" and reopened it while she worked it
+        // believing it hers. Idempotent for the holder (the claim verb's already-yours
+        // arm), so `in_progress` on a held card costs one re-claim, never a refusal.
+        if matches!(state, CardState::Claimed | CardState::InProgress) {
+            let claim = WorkClaim { registry: self.registry.clone() }
+                .run(ctx, WorkClaimParams { card_id: p.card_id.clone(), ttl_ms: None })
+                .await?;
+            crate::probe!(
+                class = "work.state.held_through_claim",
+                card_id = %card_id.as_uuid(),
+                state = state_str(&state),
+                claim_id = %claim.claim_id,
+                "a holder's column set through the one claim path — owner + lease + staging, never a bare column"
+            );
+            if state == CardState::Claimed {
+                return Ok(WorkStateResult { card_id: p.card_id, state: state_str(&state).to_string() });
+            }
+        }
         let actor = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
         let landed = advance_card_state_effective(&airc, card_id, state, "work-state-verb", actor)
             .await
