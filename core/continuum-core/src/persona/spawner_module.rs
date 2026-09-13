@@ -725,9 +725,10 @@ mod tests {
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
 
-    // what this catches (2026-09-06 18:0xZ): a roster that never grows past the boot
-    // plan's lanes. Five seats with three already hosted draws two; a full roster draws
-    // none; more hosted than seats draws none (the shrink is the reconciler's, not a draw).
+    // what this catches (2026-09-06, re-pinned 2026-09-13): the missing plan is the seats
+    // not yet filled — and the seats are the POPULATION, never the lanes (minds page over
+    // slots). Twelve seats with three hosted draws nine; a full roster draws none; more
+    // hosted than seats draws none (the shrink is the reconciler's, not a draw).
     #[test]
     fn the_missing_plan_is_the_seats_not_yet_filled() {
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
@@ -735,10 +736,10 @@ mod tests {
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 5;
         let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
-        assert_eq!(missing_plan(&spawner, 3).len(), 2 * per_seat);
-        assert_eq!(missing_plan(&spawner, 5).len(), 0);
-        assert_eq!(missing_plan(&spawner, 7).len(), 0);
-        assert_eq!(missing_plan(&spawner, 0).len(), 5 * per_seat);
+        assert_eq!(missing_plan(&spawner, 3).len(), 9 * per_seat, "lanes (5) do not cap the seats (12)");
+        assert_eq!(missing_plan(&spawner, 12).len(), 0);
+        assert_eq!(missing_plan(&spawner, 14).len(), 0);
+        assert_eq!(missing_plan(&spawner, 0).len(), 12 * per_seat);
     }
 
     #[test]

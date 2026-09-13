@@ -280,14 +280,14 @@ pub fn trim_page_store(
         if !md.is_file() {
             continue;
         }
-        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string();
+        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string(); // JUSTIFIED unwrap_or: a name without the sidecar suffix IS the page name
         if !(page.starts_with("a-") && page.ends_with(".bin")) {
             continue;
         }
         let slot = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
         slot.1 += md.len();
         if !name.ends_with(".ckpt") {
-            slot.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            slot.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // JUSTIFIED unwrap_or: an unreadable mtime sorts OLDEST — the safe side for an eviction candidate
         }
     }
     let mut total: u64 = pages.values().map(|v| v.1).sum();
@@ -303,7 +303,7 @@ pub fn trim_page_store(
         if total <= max_bytes {
             break;
         }
-        let age_ms = now.duration_since(mtime).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let age_ms = now.duration_since(mtime).map(|d| d.as_millis() as u64).unwrap_or(0); // JUSTIFIED unwrap_or: a future mtime reads as age 0 = protected, never trimmed
         if name == keep || age_ms < min_age_ms {
             continue;
         }
