@@ -303,7 +303,7 @@ pub fn acting(
         // ([`acting_caller`]) — is still the agent or the human with its own runtime,
         // never a stranger persona with none.
         let runtime = registry.get(peer).or_else(|| local_runtime_of(peer));
-        let kind = self_peer_kind(peer).unwrap_or(ActorKind::Persona);
+        let kind = self_peer_kind(peer).unwrap_or(ActorKind::Persona); // unwrap_or: not a self-peer = a citizen, by definition of the two self-peers
         return Ok(Acting { peer, kind, runtime });
     }
     if ctx.claimed_actor_kind.as_deref() == Some("agent") {

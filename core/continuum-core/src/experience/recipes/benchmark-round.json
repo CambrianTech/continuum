@@ -223,7 +223,8 @@
       "params": {
         "room": "$room.name",
         "members": "$args.team"
-      }
+      },
+      "condition": "$args.team"
     },
     {
       "command": "chat/send",
