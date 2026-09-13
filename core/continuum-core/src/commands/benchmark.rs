@@ -2001,6 +2001,7 @@ impl ActionCommand for BenchmarkDispatch {
             None,
             &run_params,
             self.executor().ok(),
+            None, // hard-rs recipes declare no pipeline; nothing acts here
         )
         .await?;
         // The round's standing rules, published as the run room's operating doctrine

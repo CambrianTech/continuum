@@ -355,6 +355,8 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
+        // The pipeline acts as the same identity that joins the room — one resolver.
+        let caller = crate::persona::operator_peer::acting_caller(&self.registry, ctx, "activity verbs")?;
         // A BENCHMARK ACTIVITY ROOTS ITSELF THROUGH ITS RUN.
         //
         // We work activities, period — so this verb does not get to hand back a
@@ -393,6 +395,7 @@ impl ActionCommand for ActivitySpawn {
             p.parent,
             &p.params,
             self.executor_slot.get().cloned(),
+            Some(caller),
         )
         .await
     }
@@ -683,6 +686,9 @@ pub async fn spawn_activity_room(
     parent: Option<RoomId>,
     params: &std::collections::BTreeMap<String, serde_json::Value>,
     executor: Option<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>>,
+    // The identity the pipeline's steps act as — the spawner's (`acting_caller`);
+    // `None` only for a recipe with no pipeline or a substrate-internal birth.
+    caller: Option<crate::routing::CallerIdentity>,
 ) -> Result<ActivitySpawnResult, CommandError> {
     let recipe_def = resolve_recipe(
         recipe,
@@ -887,6 +893,7 @@ pub async fn spawn_activity_room(
                         }),
                     )];
                     let receipt = match crate::recipe::PipelineExecutor::new(exec)
+                        .with_caller(caller.clone())
                         .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
                         .await
                     {

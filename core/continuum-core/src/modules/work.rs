@@ -1208,6 +1208,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 Some(room),
                 &std::collections::BTreeMap::new(),
                 None,
+                None, // no pipeline on this recipe
             )
             .await
             {

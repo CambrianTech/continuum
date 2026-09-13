@@ -35,11 +35,22 @@ pub struct RecipeRunReceipt {
 
 pub struct PipelineExecutor {
     executor: Arc<CommandExecutor>,
+    /// The identity every step acts as (`operator_peer::acting_caller`). `None` =
+    /// the substrate's own code — right for a bare `recipe/run`, wrong for a birth,
+    /// whose steps must be the spawner (2026-09-13: cards posted as the operator
+    /// into a room only the agent peer had joined).
+    caller: Option<crate::routing::CallerIdentity>,
 }
 
 impl PipelineExecutor {
     pub fn new(executor: Arc<CommandExecutor>) -> Self {
-        Self { executor }
+        Self { executor, caller: None }
+    }
+
+    /// Act as `caller` in every step.
+    pub fn with_caller(mut self, caller: Option<crate::routing::CallerIdentity>) -> Self {
+        self.caller = caller;
+        self
     }
 
     /// Walk `pipeline` under `name` (the recipe's purpose, for receipts and probes).
@@ -245,7 +256,8 @@ impl PipelineExecutor {
     async fn dispatch_step(&self, name: &str, idx: usize, step: &RecipeStep, params: Value) -> Result<Value, String> {
         let mut outcome: Result<Value, String> = Err("unattempted".into());
         for attempt in 0..=step.retry_count {
-            let dispatch = self.executor.execute(step.command.as_str(), params.clone());
+            let dispatch =
+                self.executor.execute_with_caller(step.command.as_str(), params.clone(), self.caller.clone());
             let result = match step.timeout_ms {
                 Some(ms) => {
                     match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch)
