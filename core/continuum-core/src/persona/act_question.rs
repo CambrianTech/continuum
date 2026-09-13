@@ -648,6 +648,24 @@ pub(crate) async fn ask_the_act_question(
                                 decision = ?std::mem::discriminant(&other),
                                 "work-turn settled without a spoken report"
                             );
+                            // THE ACTED CHAIN LEARNS (2026-09-13): every work turn ends
+                            // here, and until now only the rare spoken report reached the
+                            // producer — a day of five coders staged zero code turns. The
+                            // intent + the exact calls are staged against the held card;
+                            // the card's verdict stamps them (settle_card_credit).
+                            if let crate::cognition::act_observe::SettleStep::Acted { calls, intent } = &other {
+                                if let Some(card) = held.first() {
+                                    crate::persona::training_producer::produce(
+                                        ctx.identity.peer_id.as_uuid(),
+                                        ctx.identity.agent_name.clone(),
+                                        ctx.profile.model_id.clone(),
+                                        work_context.clone(),
+                                        crate::persona::training_producer::acted_completion(intent, calls),
+                                        Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
+                                        work_generation_receipts.clone(),
+                                    );
+                                }
+                            }
                         }
                     }
                     // She held work and worked it this turn — tell the caller so
