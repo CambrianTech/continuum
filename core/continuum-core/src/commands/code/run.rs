@@ -150,6 +150,65 @@ impl ActionCommand for CodeRun {
     }
 }
 
+/// What a bounded child run produced — including everything it wrote BEFORE a
+/// timeout killed it. `tokio::process::Child::wait_with_output` under
+/// `tokio::time::timeout` discards the pipes on expiry, so a killed `find` sweep
+/// came back as bare "timedOut" (QA from Joaquin, 2026-09-13, card ba846f38: the
+/// longest dead-air windows of her session gave her nothing to act on). The
+/// pipes are drained concurrently with the wait; on expiry the child is killed
+/// and the drained bytes are returned with the verdict.
+pub(crate) struct BoundedOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// `None` when the timeout killed the child.
+    pub status: Option<std::process::ExitStatus>,
+}
+
+pub(crate) async fn run_bounded(
+    mut child: tokio::process::Child,
+    timeout: std::time::Duration,
+) -> std::io::Result<BoundedOutput> {
+    use tokio::io::AsyncReadExt as _;
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let drain_out = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let drain_err = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => Some(status?),
+        Err(_) => {
+            // Expired: kill, then let the drains reach EOF so the partial output is whole.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            None
+        }
+    };
+    let stdout = drain_out.await.unwrap_or_default();
+    let stderr = drain_err.await.unwrap_or_default();
+    Ok(BoundedOutput { stdout, stderr, status })
+}
+
+/// The timeout verdict, appended AFTER whatever the child managed to write.
+fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
+    let mut s = partial_stderr.to_string();
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s.push_str(&format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is everything it produced before the kill]"));
+    s
+}
+
 /// Compile the given complete Rust program with `rustc`, then run the produced
 /// binary — each step under `timeout` with `kill_on_drop(true)`. Returns the ground
 /// truth of what happened: a COMPILE error is reported as the run result (ok=false,
@@ -178,38 +237,38 @@ async fn run_python(
         .spawn()
         .map_err(|e| CommandError::Internal(format!("code/run: python3 spawn failed: {e}")))?;
     let started = std::time::Instant::now();
-    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    let out = run_bounded(child, timeout)
+        .await
+        .map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?;
     let duration_ms = started.elapsed().as_millis() as u64;
-    let out = match waited {
-        Err(_) => {
-            // Same honest shape as the Rust path: a timeout is a RESULT (she
-            // reads it and adjusts), never a hidden kill.
-            return Ok(CodeRunResult {
-                ok: false,
-                stdout: String::new(),
-                stderr: format!(
-                    "killed: exceeded the {}s run timeout (raise timeout_secs up to {}s, \
-                     or use code/shell for long-running work)",
-                    timeout.as_secs(),
-                    MAX_TIMEOUT_SECS
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    match out.status {
+        // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
+        // and adjusts), never a hidden kill — and it carries the partial output.
+        None => Ok(CodeRunResult {
+            ok: false,
+            stdout,
+            stderr: timeout_note(
+                &stderr,
+                timeout.as_secs(),
+                &format!(
+                    " (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)"
                 ),
-                exit_code: None,
-                duration_ms,
-                timed_out: true,
-            });
-        }
-        Ok(r) => {
-            r.map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?
-        }
-    };
-    Ok(CodeRunResult {
-        ok: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        exit_code: out.status.code(),
-        duration_ms,
-        timed_out: false,
-    })
+            ),
+            exit_code: None,
+            duration_ms,
+            timed_out: true,
+        }),
+        Some(status) => Ok(CodeRunResult {
+            ok: status.success(),
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            duration_ms,
+            timed_out: false,
+        }),
+    }
 }
 
 async fn compile_and_run_rust(
@@ -271,30 +330,38 @@ async fn compile_and_run_rust(
     //    child is NOT killed — it orphans to init and burns a core forever (observed:
     //    6h+ runaway at 100% CPU). Dropping the Child with kill_on_drop sends SIGKILL.
     let mut child = tokio::process::Command::new(&bin);
-    child.kill_on_drop(true);
-    match tokio::time::timeout(timeout, child.output()).await {
+    child
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = child
+        .spawn()
+        .map_err(|e| CommandError::Internal(format!("code/run: failed to spawn compiled binary: {e}")))?;
+    let out = run_bounded(child, timeout)
+        .await
+        .map_err(|e| CommandError::Internal(format!("code/run: binary wait failed: {e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    match out.status {
         // Ran to completion (clean, or a nonzero exit / panic on stderr).
-        Ok(Ok(out)) => {
-            let code = out.status.code();
+        Some(status) => {
+            let code = status.code();
             Ok(CodeRunResult {
                 exit_code: code,
                 ok: code == Some(0),
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                stdout,
+                stderr,
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
             })
         }
-        Ok(Err(e)) => Err(CommandError::Internal(format!(
-            "code/run: failed to spawn compiled binary: {e}"
-        ))),
         // Safety timeout fired — a RESULT, not an error: a hung run IS information
-        // the mind should observe and react to.
-        Err(_) => Ok(CodeRunResult {
+        // the mind should observe and react to, and so is everything it printed first.
+        None => Ok(CodeRunResult {
             exit_code: None,
             ok: false,
-            stdout: String::new(),
-            stderr: format!("killed by safety timeout after {}s", timeout.as_secs()),
+            stdout,
+            stderr: timeout_note(&stderr, timeout.as_secs(), ""),
             duration_ms: started.elapsed().as_millis() as u64,
             timed_out: true,
         }),
@@ -491,4 +558,25 @@ mod tests {
         assert!(r.ok, "clean exit: {r:?}");
         assert_eq!(r.stdout.trim(), "4");
     }
+    // what this catches: a timed-out run losing everything it printed before the kill
+    // (QA from Joaquin, 2026-09-13, card ba846f38 — bare "timedOut" was the longest dead
+    // air of her session). The partial stdout must ride with the timeout verdict.
+    #[tokio::test]
+    async fn a_timed_out_run_returns_what_it_printed_before_the_kill() {
+        let dir = std::env::temp_dir().join(format!("code-run-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let out = run_python(
+            &dir,
+            "import sys, time\nprint('partial-evidence', flush=True)\nsys.stderr.write('warming\\n'); sys.stderr.flush()\ntime.sleep(30)\nprint('never')\n",
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("python3 on PATH");
+        assert!(out.timed_out, "the run must report the kill");
+        assert!(out.stdout.contains("partial-evidence"), "partial stdout survives: {:?}", out.stdout);
+        assert!(!out.stdout.contains("never"));
+        assert!(out.stderr.contains("warming") && out.stderr.contains("killed: exceeded the 1s"), "stderr keeps the partial text AND the verdict: {:?}", out.stderr);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
