@@ -1532,25 +1532,35 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
 /// renewal loop, anything that asks. Never the work roster: it is rebuilt after a boot
 /// and reads empty for its first seconds (2026-09-13 08:40:50Z, a second pull).
 pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+    // EVERY ROOM SHE STANDS IN, never "the board". airc's `work_board_complete` folds
+    // the scope's CURRENT room only — right after a boot that is her home room, so a
+    // card held in a run room read as not held: 2026-09-13 09:29:01Z, 13 s after the
+    // core answered, Atlas's gate read held=0 against her live django claim and the
+    // pull took her matplotlib as a second card (the same shape the roster read had).
+    // The per-room projection is what the pull itself reads; held work folds the same.
     let me = airc.peer_id();
-    let board = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-        .await?
-        .snapshot();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
-    Ok(board
-        .cards
-        .into_iter()
-        .filter(|card| {
+    let rooms: Vec<Uuid> = airc
+        .subscription_set()
+        .await?
+        .all()
+        .map(|sub| sub.as_room().channel.as_uuid())
+        .collect();
+    let mut held = Vec::new();
+    for room in rooms {
+        let board =
+            crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await?;
+        held.extend(board.cards.into_iter().filter(|card| {
             card.owner == Some(me)
                 && crate::persona::card_holder::hold_of(card, now_ms)
                     == crate::persona::card_holder::Hold::Held
                 && !crate::persona::card_holder::claimable_now(card, now_ms)
-        })
-        .collect())
+        }));
+    }
+    Ok(held)
 }
 
 impl Drop for PersonaAircRuntime {
