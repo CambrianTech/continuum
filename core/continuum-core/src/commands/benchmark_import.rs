@@ -103,6 +103,12 @@ pub struct BenchmarkImportResult {
     /// Instances drawn by the selection but NOT offered because a citizen already
     /// resolved them here — named, so the round's receipt can say why 3 drew and 1 posted.
     pub skipped_already_resolved: Vec<String>,
+    /// Instances drawn but NOT offered because THIS BOX cannot grade them: their env class
+    /// is proven red by `benchmark/validate`, or their own env refusal marker stands from
+    /// an earlier round. Each entry names the instance and the wall, so the round's
+    /// receipt says what the deck withheld and why (2026-09-13: two of five seed-4 cards
+    /// burned hours on pytest's pluggy and requests' 2013 pytest).
+    pub skipped_ungradeable: Vec<String>,
 }
 
 pub struct BenchmarkImport;
@@ -162,6 +168,7 @@ impl ActionCommand for BenchmarkImport {
         .await?;
         let mut cards = Vec::with_capacity(prepared.len());
         let mut skipped_already_resolved = Vec::new();
+        let mut skipped_ungradeable = Vec::new();
         for pc in &prepared {
             let row = imported_from(pc, p.repo.as_deref().unwrap_or(""))?;
             if p.skip_already_resolved
@@ -176,12 +183,30 @@ impl ActionCommand for BenchmarkImport {
                 skipped_already_resolved.push(row.task_id);
                 continue;
             }
+            // THE DECK NEVER OFFERS WHAT THIS BOX CANNOT GRADE — the same gate dispatch
+            // applies (known_red_wall), plus the instance's own standing env refusal.
+            if let CardWork::Swe { instance } = &pc.work {
+                let wall = crate::commands::benchmark::known_red_wall(spec.name, &instance.repo, instance.year())
+                    .map(|w| format!("env class {} {} proven red by benchmark/validate: {w}", instance.repo, instance.year()))
+                    .or_else(|| crate::cognition::swe_verdict_sweep::standing_env_refusal(&row.task_id)
+                        .map(|r| format!("env refusal stands from an earlier round: {r}")));
+                if let Some(wall) = wall {
+                    crate::probe!(
+                        class = "bench.round.ungradeable_withheld",
+                        instance = %row.task_id,
+                        wall = %wall,
+                        "an instance this box cannot grade is not offered as work"
+                    );
+                    skipped_ungradeable.push(format!("{}: {}", row.task_id, wall));
+                    continue;
+                }
+            }
             cards.push(row);
         }
         if let Some(n) = p.limit.filter(|n| *n > 0) {
             cards.truncate(n as usize);
         }
-        Ok(BenchmarkImportResult { suite: p.suite, cards, skipped_already_resolved })
+        Ok(BenchmarkImportResult { suite: p.suite, cards, skipped_already_resolved, skipped_ungradeable })
     }
 }
 
