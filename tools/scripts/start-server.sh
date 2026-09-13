@@ -930,6 +930,19 @@ if core_bin_is_stale; then
   echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
 fi
 
+# ── Build-only: the warm deploy ────────────────────────────────────────
+# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 BEFORE it stops the
+# running core, when the machine has headroom: the core keeps serving through the
+# minutes of compile, and the launch that follows the stop finds the binary fresh
+# (its own build is a warm no-op), so the dark window is the stop plus the start —
+# seconds, not ten minutes (eight deploys on 2026-09-13 = 80 minutes dark, every
+# citizen's turns dropped and leases unrenewed each time). One build definition:
+# this script's, with the same manifest, profile and features.
+if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
+  exit 0
+fi
+
 # ── LiveKit avatar rail (voice/video calls) ──────────────────────────
 # The persona's talking avatar is Bevy-rendered and published to a LiveKit room via
 # the livekit-bridge sidecar; the browser's "Go live" subscribes to that room. Neither

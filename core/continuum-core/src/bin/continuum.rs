@@ -957,6 +957,34 @@ impl PrebuiltCore {
     }
 }
 
+/// Free memory a warm build needs beside a serving core: rustc's codegen wants ~7 GiB
+/// (BigMama, 2026-09-05: test builds killed at 2.59 GiB free beside a 39 GiB server) —
+/// twelve leaves the server, the citizens and the build their room.
+const WARM_BUILD_MIN_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+
+/// May this reboot build before it stops? Needs a start script (one build definition)
+/// and headroom. The refusal names the number so the operator sees why the dark
+/// window will be long this time.
+fn warm_build_allowed(free_bytes: u64, script: Option<PathBuf>) -> Result<PathBuf, String> {
+    let Some(script) = script else {
+        return Err("no start script (installed node) — nothing to build".to_string());
+    };
+    if free_bytes < WARM_BUILD_MIN_FREE_BYTES {
+        return Err(format!(
+            "{:.1} GiB free, the warm build wants {} GiB beside the serving core",
+            free_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            WARM_BUILD_MIN_FREE_BYTES / (1024 * 1024 * 1024)
+        ));
+    }
+    Ok(script)
+}
+
+fn available_memory_bytes() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.available_memory()
+}
+
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
 async fn reboot(options: RebootOptions) -> Result<(), String> {
@@ -1082,6 +1110,40 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // Publish the claim before teardown for the WHOLE build/swap. Held until this function returns, so a
     // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
     // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
+    // THE WARM BUILD. Stop-first is right when a build beside a serving core would
+    // starve it (Joel, 2026-08-23); on a machine with headroom it is ten minutes of
+    // darkness per deploy for nothing — eight deploys on 2026-09-13 cost the round
+    // eighty dark minutes, dropped turns and lapsed leases each time. So: with a
+    // source tree, no --prebuilt, and enough free memory, build FIRST through the
+    // start script's own definition (CONTINUUM_BUILD_ONLY=1) while the core serves;
+    // the launch after the stop then finds the binary fresh and its build is a warm
+    // no-op. Below the headroom line, or on any failure, the old path runs and the
+    // receipt says why.
+    if prebuilt.is_none() {
+        match warm_build_allowed(available_memory_bytes(), locate_start_script().ok()) {
+            Ok(script) => {
+                let started = std::time::Instant::now();
+                let mut cmd = std::process::Command::new(locate_bash()?);
+                cmd.arg(&script);
+                apply_core_runtime_env(&mut cmd);
+                if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
+                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+                }
+                cmd.env("CONTINUUM_BUILD_ONLY", "1");
+                cmd.stdin(Stdio::null());
+                println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
+                match cmd.status() {
+                    Ok(st) if st.success() => println!(
+                        "✓ warm build done in {}s — the core served throughout; stopping now for a swap-length dark window",
+                        started.elapsed().as_secs()
+                    ),
+                    Ok(st) => println!("⚠ warm build exited {st} after {}s — falling back to stop-then-build", started.elapsed().as_secs()),
+                    Err(e) => println!("⚠ warm build could not start ({e}) — falling back to stop-then-build"),
+                }
+            }
+            Err(why) => println!("▶ no warm build: {why} — stopping first, then building"),
+        }
+    }
     let target_sha = prebuilt
         .as_ref()
         .map(|p| p.build_sha.clone())
@@ -3982,6 +4044,18 @@ mod tests {
     }
 
     use super::*;
+
+    // what this catches (2026-09-13): a warm build attempted without headroom (starving the
+    // serving core, Joel 08-23) or without a build definition; and a refusal that does not
+    // name the number the operator needs.
+    #[test]
+    fn a_warm_build_needs_a_script_and_headroom_and_says_why_not() {
+        let script = Some(PathBuf::from("/x/start-server.sh"));
+        assert!(warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES, script.clone()).is_ok());
+        let err = warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES - 1, script).unwrap_err();
+        assert!(err.contains("GiB free"), "{err}");
+        assert!(warm_build_allowed(u64::MAX, None).is_err(), "no script = no build definition");
+    }
     use serde_json::json;
 
     fn ptable(pairs: &[(i32, i32)]) -> std::collections::HashMap<i32, i32> {
