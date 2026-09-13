@@ -105,7 +105,7 @@ pub async fn follow(verdict: &SweVerdict) {
         Err(_) => all.iter().map(|c| (*c, None)).collect(),
     };
     let solver = Uuid::parse_str(&verdict.solver).ok();
-    let (settle, inform) = cards_to_settle(&owners, solver);
+    let (settle, inform) = cards_to_settle(&owners, solver, verdict.resolved);
     for card in inform {
         crate::probe!(
             class = "benchmark.verdict.card_informed",
@@ -333,9 +333,14 @@ mod tests {
         let (a, b, c) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         let me = Uuid::from_u128(9);
         let cards = vec![(a, Some(Uuid::from_u128(7))), (b, Some(me)), (c, None)];
-        assert_eq!(cards_to_settle(&cards, Some(me)), (vec![b], vec![a, c]));
-        assert_eq!(cards_to_settle(&cards[..1], None), (vec![a], vec![]), "a lone card is the graded one");
-        assert_eq!(cards_to_settle(&cards, None), (vec![], vec![a, b, c]), "no match, several cards: move none");
+        assert_eq!(cards_to_settle(&cards, Some(me), false), (vec![b], vec![a, c]));
+        assert_eq!(cards_to_settle(&cards[..1], None, false), (vec![a], vec![]), "a lone card is the graded one");
+        // what this catches (2026-09-13): a RESOLVED instance leaving a teammate's or a
+        // duplicate round's card open — Demetri kept working astropy-13453 after Joaquin's
+        // fix graded resolved because his card was only "informed".
+        assert_eq!(cards_to_settle(&cards, Some(me), true), (vec![a, b, c], vec![]), "resolved settles every card of the instance");
+        assert_eq!(cards_to_settle(&cards, None, true), (vec![a, b, c], vec![]), "even when the solver holds none of them");
+        assert_eq!(cards_to_settle(&cards, None, false), (vec![], vec![a, b, c]), "no match, several cards: move none");
     }
 
     // Regression: remote holders have no local runtime. Missing identity must
@@ -440,7 +445,17 @@ mod tests {
 pub(crate) fn cards_to_settle(
     cards: &[(Uuid, Option<Uuid>)],
     solver: Option<Uuid>,
+    resolved: bool,
 ) -> (Vec<Uuid>, Vec<Uuid>) {
+    // A RESOLVED instance is finished EVERYWHERE. Every open card of it — the solver's,
+    // a teammate's who took it over, a duplicate in another round — settles; nobody keeps
+    // working a solved instance. 2026-09-13 11:2xZ: astropy-13453 was graded resolved
+    // from Joaquin's checkout while Demetri held the seed-4 card; the card was only
+    // "informed" and he kept working it until an operator closed it by hand. A miss
+    // keeps the old shape: the solver's card returns to its holder, the rest are told.
+    if resolved {
+        return (cards.iter().map(|(c, _)| *c).collect(), Vec::new());
+    }
     let mine: Vec<Uuid> = cards
         .iter()
         .filter(|(_, owner)| solver.is_some() && *owner == solver)
