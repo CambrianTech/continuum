@@ -1493,10 +1493,16 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         )
         .await?;
         let me = self.airc.peer_id();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
         Ok(board
             .cards
             .iter()
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .filter(|c| {
+                let owner_resident = c
+                    .owner
+                    .is_some_and(|o| registry.as_ref().is_some_and(|r| r.get(o.as_uuid()).is_some()));
+                crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
+            })
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {

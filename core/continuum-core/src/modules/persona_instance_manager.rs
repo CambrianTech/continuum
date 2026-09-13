@@ -593,6 +593,54 @@ impl ServiceModule for PersonaInstanceManagerModule {
         )
     }
 
+    /// THE SEAM RENEWAL. A lease is renewed only by cognition, and a reboot's build window
+    /// has none: every held card lapsed across each of the eight deploys on 2026-09-13 and
+    /// idle peers took them at boot. Before the core stops, every resident's held leases
+    /// are renewed once (board-derived, a full TTL), so the holds outlive the dark window.
+    /// Bounded well inside the runtime's 2 s save budget; a slow daemon is probed, not waited on.
+    async fn save_state(&self) -> Result<(), String> {
+        let runtimes: Vec<_> = self.registry.iter().collect();
+        let work = async {
+            let mut renewed = 0usize;
+            for rt in &runtimes {
+                let held = match crate::persona::airc_runtime::board_held_by(rt.airc().as_ref()).await {
+                    Ok(held) => held,
+                    Err(_) => continue,
+                };
+                for card in held {
+                    let Some(claim_id) = card.claim_id else { continue };
+                    if rt
+                        .airc()
+                        .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
+                            card_id: card.card_id,
+                            claim_id,
+                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                        })
+                        .await
+                        .is_ok()
+                    {
+                        renewed += 1;
+                    }
+                }
+            }
+            renewed
+        };
+        match tokio::time::timeout(std::time::Duration::from_millis(1500), work).await {
+            Ok(renewed) => crate::probe!(
+                class = "persona.claim.renewed_for_seam",
+                residents = runtimes.len() as u64,
+                renewed = renewed as u64,
+                "held leases renewed before the core stops — the holds outlive the build window"
+            ),
+            Err(_) => crate::probe!(
+                class = "persona.claim.seam_renewal_timed_out",
+                residents = runtimes.len() as u64,
+                "seam renewal did not finish inside its bound — some holds may lapse across this stop"
+            ),
+        }
+        Ok(())
+    }
+
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
         self.executor.install(executor);
     }

@@ -587,7 +587,8 @@ const SWEEP_MAX_CLOSES_PER_TICK: usize = 3;
 /// above a worst-case reboot+resume (the 35B lane's build+load alone is ~10min)
 /// and far below the multi-hour wedge this un-strands (measured 2026-09-02:
 /// rounds stalled ~20h with artifacts present, owner resident, never graded).
-const RESIDENT_OWNER_GRACE_MS: u64 = 30 * 60 * 1000;
+// One grace for the sweep and the pull (card_holder::claimable_by).
+use crate::persona::card_holder::RESIDENT_OWNER_GRACE_MS;
 
 /// A resident owner with a LAPSED claim is presumed "still working" only inside
 /// the post-lapse resume window. Pure so the boundary is unit-testable.
