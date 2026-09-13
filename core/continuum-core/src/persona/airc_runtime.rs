@@ -1560,7 +1560,13 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
         let board =
             crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await?;
         held.extend(board.cards.into_iter().filter(|card| {
-            card.owner == Some(me)
+            // A settled card is nobody's work, whatever its lease says: a closed card
+            // whose claim fields outlive the close read as HELD, focused her ticks on a
+            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+            !matches!(
+                card.state,
+                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
+            ) && card.owner == Some(me)
                 && crate::persona::card_holder::hold_of(card, now_ms)
                     == crate::persona::card_holder::Hold::Held
                 && !crate::persona::card_holder::claimable_now(card, now_ms)
