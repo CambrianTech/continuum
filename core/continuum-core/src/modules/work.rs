@@ -508,6 +508,33 @@ impl ActionCommand for WorkClaim {
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
+        // A card whose instance this box cannot grade is refused at the VERB, the same
+        // predicate the pull reads (`card_holder::standing_refusal_for_card`): the pull
+        // skipped requests-1766, then a message-turn claim by id took it anyway (Atlas,
+        // 2026-09-13, an hour of lane on work no grade could score).
+        if let Ok(board) = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+        {
+            let board = board.snapshot();
+            if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
+                if let Some((instance, reason)) =
+                    crate::persona::card_holder::standing_refusal_for_card(&card.title)
+                {
+                    crate::probe!(
+                        class = "work.claim.refused_ungradeable",
+                        card_id = %card_id.as_uuid(),
+                        instance = %instance,
+                        "claim refused: this box cannot grade the instance"
+                    );
+                    return Err(CommandError::Invalid(format!(
+                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card — work/list with claimable=true.",
+                        short8(card_id.as_uuid()),
+                        reason.trim_end_matches('.')
+                    )));
+                }
+            }
+        }
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
         let mut claim_attempt = airc
             .claim_work_card(ClaimWorkCard { card_id, ttl_ms })

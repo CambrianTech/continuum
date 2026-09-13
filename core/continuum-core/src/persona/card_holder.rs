@@ -165,12 +165,18 @@ pub fn lapsed_within_owner_grace(card: &WorkCard, now_ms: u64) -> bool {
 /// (`swe_verdict_sweep::standing_env_refusal`). Non-bench titles are never refused.
 /// The probe fires once per instance per process — the pull asks every tick.
 pub fn refused_on_this_box(title: &str) -> bool {
+    standing_refusal_for_card(title).is_some()
+}
+
+/// The (instance, reason) of the standing ENV refusal a bench card's title names on
+/// this box — ONE predicate for the pull filter AND the claim verb (2026-09-13: the
+/// pull skipped requests-1766 correctly, then Atlas claimed it by id from a message
+/// turn and spent her next hour on it; a refusal that lives in one caller is not a rule).
+pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
     let Some((_, instance)) = crate::commands::benchmark::parse_card_title(title) else {
-        return false;
+        return None;
     };
-    let Some(reason) = crate::cognition::swe_verdict_sweep::standing_env_refusal(&instance) else {
-        return false;
-    };
+    let reason = crate::cognition::swe_verdict_sweep::standing_env_refusal(&instance)?;
     static PROBED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
     // Poisoned or contended: the probe is the only thing at stake, never the decision.
@@ -179,10 +185,10 @@ pub fn refused_on_this_box(title: &str) -> bool {
             class = "bench.round.pull_skipped_ungradeable",
             instance = %instance,
             reason = %reason,
-            "a standing env refusal keeps this card off every pull on this box"
+            "a standing env refusal keeps this card off every pull and claim on this box"
         );
     }
-    true
+    Some((instance, reason))
 }
 
 pub fn claimable_by(card: &WorkCard, now_ms: u64, me: airc_core::PeerId, owner_resident: bool) -> bool {
