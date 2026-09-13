@@ -1049,6 +1049,143 @@ pub(crate) async fn submit_training<T: Transport>(
     Ok(serde_json::from_value(receipt)?) // Decode the Value-native command response once; producers share this typed receipt.
 }
 
+
+/// The COMPLETION a work turn that ended in acts is lifted as: the intent she
+/// stated plus the exact calls she made, rendered deterministically. This is the
+/// ACTED chain the learning loop never saw (2026-09-13: every work turn ends
+/// `Acted`; only the rare spoken report reached the producer, so a day of five
+/// coders produced 14 conversation examples and zero code ones). A card that later
+/// settles PASS turns each of these into a code example in her curriculum.
+pub fn acted_completion(intent: &str, calls: &[crate::ai::types::ToolCall]) -> String {
+    let mut out = String::new();
+    let intent = intent.trim();
+    if !intent.is_empty() {
+        out.push_str(intent);
+        out.push('\n');
+    }
+    for c in calls {
+        out.push_str(&format!(
+            "{}({})\n",
+            c.name,
+            serde_json::to_string(&c.input).unwrap_or_default() // JUSTIFIED unwrap_or_default: an unserializable arg renders empty; the call NAME still trains the shape
+        ));
+    }
+    out
+}
+
+/// SETTLE a card's staged credit: every citizen's staged turns on `card_id` become
+/// examples when the card PASSED (stamped with role + outcome, through the same
+/// quality gate as live turns) and are discarded when it failed. Reads each
+/// resident's own staged store, the mirror of `stage_credit`. Best-effort and
+/// receipted: a store that cannot be read names itself; nothing here can fail the
+/// verdict that triggered it.
+pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
+    let Some(executor) = EXECUTOR.cloned() else {
+        return;
+    };
+    let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() else {
+        return;
+    };
+    let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
+    for (persona_name, persona_id) in registry.roster_snapshot() {
+        let handle = format!("@persona:{persona_name}");
+        let listed = match executor
+            .execute_json(
+                "data/list",
+                json!({
+                    "collection": StagedCredit::COLLECTION,
+                    "dbPath": handle,
+                    "filter": { "cardId": card_id.to_string() },
+                }),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                crate::probe!(
+                    class = "training.credit.settle_unreadable",
+                    persona = %persona_name,
+                    card = %card_id,
+                    error = %e,
+                    "a citizen's staged-credit store could not be read at settle — her credit on this card stands unsettled"
+                );
+                continue;
+            }
+        };
+        let rows: Vec<StagedCredit> = listed
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect()) // ORM boundary: her own staged_credit rows, decoded as the typed entity; a malformed row is skipped, not fatal
+            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no items key = nothing staged
+        if rows.is_empty() {
+            continue;
+        }
+        // The base model is what ANSWERED those turns (served provenance), never what
+        // is configured now — a persona re-homed onto another model since would
+        // otherwise mis-file the examples.
+        let base_model = rows
+            .iter()
+            .find_map(|r| r.served.as_ref().map(|s| s.model.clone()))
+            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no served provenance on any row = the empty string, named honestly on the submission
+        let mut submitted = 0usize;
+        for row in &rows {
+            let stamp = OutcomeStamp {
+                card_id,
+                role: row.role.unwrap_or(CreditRole::Owner), // JUSTIFIED unwrap_or: a claimless stage was hers to author
+                outcome: passed,
+            };
+            if let Some(plan) = plan(classifier, &row.prompt, &row.completion, Some(stamp)) {
+                submit_plan(
+                    persona_id,
+                    persona_name.clone(),
+                    base_model.clone(),
+                    executor.clone(),
+                    plan,
+                    "card-credit",
+                )
+                .await;
+                submitted += 1;
+            }
+            let _ = executor
+                .execute_json(
+                    "data/delete",
+                    json!({ "collection": StagedCredit::COLLECTION, "id": row.id, "dbPath": handle }),
+                )
+                .await;
+        }
+        crate::probe!(
+            class = "training.credit.settled",
+            persona = %persona_name,
+            card = %card_id,
+            passed,
+            staged = rows.len() as u64,
+            submitted = submitted as u64,
+            "a settled card stamped its staged turns — PASS lifts them into her curriculum, FAIL discards them"
+        );
+    }
+}
+
+/// Every card an INSTANCE names (a round's cards for it) settles when its verdict
+/// is written — the hook `record_verdict` fires, spawned so a verdict never waits
+/// on a curriculum write.
+pub fn settle_instance_credit(instance: &str, passed: bool) {
+    let cards = crate::cognition::bench_round::cards_for_instance(instance);
+    if cards.is_empty() {
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        crate::probe!(
+            class = "training.credit.settle_deferred",
+            instance,
+            "verdict written outside the runtime — its cards' staged credit settles on the next verdict of this instance"
+        );
+        return;
+    };
+    for card in cards {
+        handle.spawn(settle_card_credit(card, passed));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1702,6 +1839,19 @@ mod tests {
 
         // And the two runs are distinguishable: the control produced a real id.
         assert!(!submission.is_nil(), "the clean stage returned a real submission id");
+    }
+
+    // what this catches: the ACTED chain rendering non-deterministically or dropping
+    // the calls — the completion a passed card lifts into her curriculum.
+    #[test]
+    fn the_acted_chain_renders_intent_then_every_call_in_order() {
+        let calls = vec![
+            crate::ai::types::ToolCall { id: "a".into(), name: "code/read".into(), input: json!({"path": "x.py"}) },
+            crate::ai::types::ToolCall { id: "b".into(), name: "code/edit".into(), input: json!({"path": "x.py", "mode": "replace"}) },
+        ];
+        let c = acted_completion("  fix the qop quoting  ", &calls);
+        assert_eq!(c, "fix the qop quoting\ncode/read({\"path\":\"x.py\"})\ncode/edit({\"mode\":\"replace\",\"path\":\"x.py\"})\n");
+        assert_eq!(acted_completion("", &[]), "");
     }
 
 }

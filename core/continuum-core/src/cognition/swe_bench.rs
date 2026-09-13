@@ -642,6 +642,9 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
         return Ok(None);
     }
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // The verdict is the OUTCOME every staged work turn on this instance's cards
+    // was waiting for: PASS lifts them into the makers' curricula, FAIL discards.
+    crate::persona::training_producer::settle_instance_credit(&verdict.instance_id, verdict.resolved);
     Ok(Some(path))
 }
 
