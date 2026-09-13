@@ -339,7 +339,7 @@ impl PersonaSpawnerModule {
     /// restore that came back cold — fixed at the server: checkpoints ride with the
     /// slot state.)
     pub fn seats(&self) -> usize {
-        self.population.max(1)
+        seats_under(self.population, crate::persona::roster_hold::active().as_ref())
     }
 }
 
@@ -555,6 +555,21 @@ async fn draw_intents(
 /// cap computed there seats one citizen; when the pin brings five lanes the
 /// reconciler must draw the four missing seats on that edge, never wait for a
 /// reboot (M5 2026-09-06 18:0xZ: one citizen on a five-lane node).
+/// The seat count under an operator hold: a hold DEFINES the roster — only its
+/// names may sit — so it also bounds how many seats there are to fill. Without
+/// this (2026-09-13, first boot after the lane cap left the roster): population 12,
+/// hold of 5 → draw_intents filled 5 and returned; the reconciler then asked for
+/// the 7 "missing" every second, the exhausted provider yielded none, the Err path
+/// drained the five as partially registered, and the node sat at ZERO residents
+/// until the operator moved the hold file aside. Pure.
+pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
+    let seats = population.max(1);
+    match hold {
+        Some(h) if !h.only.is_empty() => seats.min(h.only.len()),
+        _ => seats,
+    }
+}
+
 pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
     let mut plan = module.plan();
     let missing = plan.len().saturating_sub(already_hosted);
@@ -951,4 +966,20 @@ mod tests {
         let back: DesiredRole = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, role);
     }
+    // what this catches: a hold smaller than the population turning the boot into a
+    // drain loop (2026-09-13: 12 seats, 5 allowed, zero residents for four minutes).
+    // A hold defines the roster, so it bounds the seats; no hold, population stands.
+    #[test]
+    fn a_roster_hold_bounds_the_seats_to_the_names_it_allows() {
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
+            until_ms: u64::MAX,
+            reason: "test".to_string(),
+        };
+        assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
+        assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
+        assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
+        assert_eq!(seats_under(0, None), 1, "never zero");
+    }
+
 }
