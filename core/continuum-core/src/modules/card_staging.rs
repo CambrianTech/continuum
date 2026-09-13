@@ -264,14 +264,18 @@ async fn stage_shell(workspace: &Path, shell: &str) -> Staging {
 }
 
 /// Does an existing checkout restage pristine for a new claim? Only when the instance
-/// has a recorded verdict and the checkout's work is not newer than it: that work was
-/// graded (or is clean), so it belongs to the settled round. No verdict, or work newer
-/// than the verdict (she kept going after a failed grade), keeps the tree.
-fn restages_pristine(verdict_ms: Option<u64>, work_ms: Option<u64>) -> bool {
-    match (verdict_ms, work_ms) {
+/// is SETTLED — a RESOLVED verdict — and the checkout's work is not newer than it: that
+/// work was graded and the instance belongs to a finished round. No verdict, a FAILED
+/// verdict (the card stays open; she continues from the tree the grade was taken from —
+/// matplotlib-21568, 2026-09-13: Atlas's edit was graded failed, the card reopened, and
+/// every re-claim of her own lapsed hold razed the tree to pristine, three times), or
+/// work newer than the verdict keeps the tree.
+fn restages_pristine(verdict: Option<(u64, bool)>, work_ms: Option<u64>) -> bool {
+    match (verdict, work_ms) {
         (None, _) => false,
-        (Some(_), None) => true,
-        (Some(v), Some(w)) => v >= w,
+        (Some((_, false)), _) => false,
+        (Some((_, true)), None) => true,
+        (Some((v, true)), Some(w)) => v >= w,
     }
 }
 
@@ -292,14 +296,16 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
         let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
-        if restages_pristine(verdict_ms, work_ms) {
+        let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
+        let verdict = verdict_ms.zip(resolved);
+        if restages_pristine(verdict, work_ms) {
             crate::probe!(
                 class = "benchmark.staging.reset_after_verdict",
                 instance = %instance.instance_id,
                 verdict_ms = verdict_ms.unwrap_or(0),
                 work_ms = work_ms.unwrap_or(0),
-                "the checkout carried work older than the instance's verdict — settled work \
-                 from an earlier round; restaging pristine for this claim"
+                "the checkout carried work older than the instance's RESOLVED verdict — settled \
+                 work from a finished round; restaging pristine for this claim"
             );
             if let Err(error) = swe_bench::clone_at(instance, &dir).await {
                 return Staging::Failed { stage: "checkout", error };
@@ -483,13 +489,20 @@ mod tests {
     // previous round's graded checkout (astropy-13236, 2026-09-07: resolved Aug 26 by
     // Atlas, re-dispatched by seed 3, the claimer inherited the August diff).
     #[test]
+    // ... and (2026-09-13, matplotlib-21568): a FAILED grade is not a settle — the card
+    // reopens and the re-claim (her own lapsed hold, or a teammate's) must find the tree
+    // the grade was taken from, not pristine.
     fn a_settled_checkout_restages_pristine_but_in_progress_work_is_kept() {
+        let resolved = |ms| Some((ms, true));
+        let failed = |ms| Some((ms, false));
         assert!(!restages_pristine(None, None), "no verdict: a fresh clean tree is reused");
         assert!(!restages_pristine(None, Some(10)), "no verdict: her work in progress stays");
-        assert!(restages_pristine(Some(20), None), "settled and clean: pristine costs nothing");
-        assert!(restages_pristine(Some(20), Some(10)), "work older than the verdict was graded");
-        assert!(restages_pristine(Some(20), Some(20)), "work at the verdict instant was graded");
-        assert!(!restages_pristine(Some(20), Some(30)), "work after a grade is a new attempt");
+        assert!(restages_pristine(resolved(20), None), "settled and clean: pristine costs nothing");
+        assert!(restages_pristine(resolved(20), Some(10)), "work older than the verdict was graded");
+        assert!(restages_pristine(resolved(20), Some(20)), "work at the verdict instant was graded");
+        assert!(!restages_pristine(resolved(20), Some(30)), "work after a grade is a new attempt");
+        assert!(!restages_pristine(failed(20), Some(10)), "a failed grade keeps the graded tree");
+        assert!(!restages_pristine(failed(20), None), "a failed grade on a clean tree keeps it too");
     }
 
 }
