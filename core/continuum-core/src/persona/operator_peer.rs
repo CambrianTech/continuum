@@ -299,7 +299,12 @@ pub fn acting(
         // A signed caller IS who it says it is — an identity even with no live runtime
         // here (a remote peer, a persona not hosted on this node).
         let peer = caller.peer_id.as_uuid();
-        return Ok(Acting { peer, kind: ActorKind::Persona, runtime: registry.get(peer) });
+        // A self-peer presenting itself — a birth's pipeline acting AS its spawner
+        // ([`acting_caller`]) — is still the agent or the human with its own runtime,
+        // never a stranger persona with none.
+        let runtime = registry.get(peer).or_else(|| local_runtime_of(peer));
+        let kind = self_peer_kind(peer).unwrap_or(ActorKind::Persona); // unwrap_or: not a self-peer = a citizen, by definition of the two self-peers
+        return Ok(Acting { peer, kind, runtime });
     }
     if ctx.claimed_actor_kind.as_deref() == Some("agent") {
         let rt = agent_runtime().ok_or_else(|| {
@@ -318,6 +323,36 @@ pub fn acting(
         ))
     })?;
     Ok(Acting { peer: rt.airc().peer_id().as_uuid(), kind: ActorKind::Human, runtime: Some(rt) })
+}
+
+/// The identity a verb's SUB-DISPATCHES act as — what a recipe's birth pipeline threads
+/// into every step so `work/create` in step 3 is the same peer that joined the room in
+/// step 0. A signed caller passes through unchanged (its trust is its own); an agent or
+/// operator session becomes its self-peer as a local caller, which [`acting`] resolves
+/// back to the same runtime. Measured 2026-09-13: a seeded round born by the CLI joined
+/// its room as the agent peer and posted its cards as the operator — "room … is not
+/// among the rooms this caller is in" — zero cards, a room bound and empty.
+pub fn acting_caller(
+    registry: &crate::persona::PersonaAircRuntimeRegistry,
+    ctx: &crate::sdk_codegen::Ctx,
+    family: &str,
+) -> Result<crate::routing::CallerIdentity, crate::sdk_codegen::CommandError> {
+    if let Some(caller) = ctx.caller.as_ref().filter(|c| !c.is_anonymous_socket()) {
+        return Ok(caller.clone());
+    }
+    let peer = acting(registry, ctx, family)?.peer;
+    Ok(crate::routing::CallerIdentity::local(crate::identity::PeerId::from_uuid(peer)))
+}
+
+/// Which self-peer a peer id is, if either.
+fn self_peer_kind(peer: uuid::Uuid) -> Option<ActorKind> {
+    if agent_runtime().is_some_and(|rt| rt.airc().peer_id().as_uuid() == peer) {
+        return Some(ActorKind::Agent);
+    }
+    if operator_runtime().is_some_and(|rt| rt.airc().peer_id().as_uuid() == peer) {
+        return Some(ActorKind::Human);
+    }
+    None
 }
 
 /// The runtime a verb ACTS THROUGH — [`acting`] with a live runtime demanded: a signed
@@ -406,4 +441,37 @@ pub fn operator_airc() -> Option<Arc<airc_lib::Airc>> {
 /// The operator's runtime (transcript/roster readers), when online.
 pub fn operator_runtime() -> Option<Arc<PersonaAircRuntime>> {
     OPERATOR.get().cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (2026-09-13): a birth's pipeline steps acting as a DIFFERENT
+    // identity than the spawner — the spawner joins the room, the steps post as
+    // someone not in it. A signed caller must pass through `acting_caller` as itself,
+    // and `acting` must read that same identity back (peer + kind) with no runtime
+    // needed — the shape every pipeline step sees.
+    #[test]
+    fn a_signed_caller_is_the_identity_a_birth_acts_as() {
+        let peer = uuid::Uuid::new_v4();
+        let ctx = crate::sdk_codegen::Ctx {
+            handle: None,
+            session_id: None,
+            user_id: None,
+            context_id: None,
+            caller: Some(crate::routing::CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(peer),
+            )),
+            claimed_actor_kind: None,
+        };
+        let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        let threaded = acting_caller(&registry, &ctx, "test").expect("a signed caller resolves");
+        assert_eq!(threaded.peer_id.as_uuid(), peer);
+        assert!(matches!(threaded.source, crate::routing::CallerSource::LocalPersona));
+        let step_ctx = crate::sdk_codegen::Ctx { caller: Some(threaded), ..ctx };
+        let a = acting(&registry, &step_ctx, "test").expect("the step acts as the same peer");
+        assert_eq!(a.peer, peer);
+        assert_eq!(a.kind, ActorKind::Persona);
+    }
 }

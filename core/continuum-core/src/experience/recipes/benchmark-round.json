@@ -203,7 +203,7 @@
       "command": "work/create",
       "each": "$imported.cards",
       "params": {
-        "repo": "$args.repo",
+        "repo": "$item.repo",
         "room": "$room.id",
         "title": "$item.title",
         "body": "$item.body"
@@ -223,7 +223,8 @@
       "params": {
         "room": "$room.name",
         "members": "$args.team"
-      }
+      },
+      "condition": "$args.team"
     },
     {
       "command": "chat/send",
