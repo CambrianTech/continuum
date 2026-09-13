@@ -721,7 +721,11 @@ async fn serve_persona_loop_inner(
         qualifying.retain(|m| {
             let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .is_some_and(|r| r.get(m.peer_id).is_some());
-            crate::persona::wake_backlog::triggers_a_turn(priority_line(m), sender_is_citizen)
+            crate::persona::wake_backlog::triggers_a_turn(
+                priority_line(m),
+                sender_is_citizen,
+                crate::persona::wake_backlog::is_receipt(&m.text),
+            )
         });
         let perceived_only = before - qualifying.len();
         if perceived_only > 0 {
