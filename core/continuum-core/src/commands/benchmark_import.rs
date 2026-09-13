@@ -53,6 +53,9 @@ pub struct BenchmarkImportParams {
     /// authored round must offer exactly what dispatch offers. Default true.
     #[serde(default = "default_true")]
     pub skip_already_resolved: bool,
+    /// Board key for GYM cards (a gym has no per-task repo); SWE cards carry their own.
+    #[serde(default)]
+    pub repo: Option<String>,
     /// Cap on cards offered, applied AFTER the gate. `None`/0 = every card the selection
     /// drew. The gym suites do not sample (a suite IS its task list), so this is how a
     /// round takes the first N of `hard-rs` — dispatch's `limit`, kept.
@@ -85,6 +88,10 @@ pub struct ImportedCard {
     pub task_id: String,
     /// `"swe"` (a real-project instance) or `"gym"` (an eval-set task).
     pub kind: String,
+    /// The board key the card is created under: the SWE instance's own repo (a seeded
+    /// Verified round mixes repos — a round-wide repo was wrong for every card but one);
+    /// a gym task's repo is the import's `repo` param.
+    pub repo: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -102,7 +109,7 @@ pub struct BenchmarkImport;
 
 /// The row an authored pipeline fans out over. Pure, so the projection is testable
 /// without a dataset: the title's key is the task id (one parser, one writer).
-pub(crate) fn imported_from(pc: &PreparedCard) -> Result<ImportedCard, CommandError> {
+pub(crate) fn imported_from(pc: &PreparedCard, gym_repo: &str) -> Result<ImportedCard, CommandError> {
     let (_, task_id) = parse_card_title(&pc.title).ok_or_else(|| {
         CommandError::Internal(format!(
             "prepared card title is not a benchmark title: {:?} — the ONE writer and the ONE \
@@ -117,6 +124,10 @@ pub(crate) fn imported_from(pc: &PreparedCard) -> Result<ImportedCard, CommandEr
         kind: match pc.work {
             CardWork::Swe { .. } => "swe".to_string(),
             CardWork::Gym { .. } => "gym".to_string(),
+        },
+        repo: match &pc.work {
+            CardWork::Swe { instance } => instance.repo.clone(),
+            CardWork::Gym { .. } => gym_repo.to_string(),
         },
     })
 }
@@ -152,7 +163,7 @@ impl ActionCommand for BenchmarkImport {
         let mut cards = Vec::with_capacity(prepared.len());
         let mut skipped_already_resolved = Vec::new();
         for pc in &prepared {
-            let row = imported_from(pc)?;
+            let row = imported_from(pc, p.repo.as_deref().unwrap_or(""))?;
             if p.skip_already_resolved
                 && row.kind == "swe"
                 && crate::cognition::swe_bench::read_verdict(&row.task_id).is_some_and(|v| v.resolved)

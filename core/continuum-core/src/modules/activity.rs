@@ -886,16 +886,38 @@ pub async fn spawn_activity_room(
                             "recipe": recipe,
                         }),
                     )];
-                    let receipt = crate::recipe::PipelineExecutor::new(exec)
+                    let receipt = match crate::recipe::PipelineExecutor::new(exec)
                         .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
                         .await
-                        .map_err(|e| {
-                            CommandError::Internal(format!(
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // A FAILED BIRTH IS ARCHIVED, never left as a bound, empty room the
+                            // rail lists and the reconciler reseats (2026-09-12: three Rust rounds
+                            // and a seed-4 round born with zero cards, card 5f36ce37).
+                            let note = format!("birth failed: {e}");
+                            let standing = RoomStanding { archived: true, protected: false, note: Some(note.clone()) };
+                            match serde_json::to_string(&standing) { // boundary: the standing wall record — airc's wire + store
+                                Ok(body) => {
+                                    let _ = airc
+                                        .publish_wall_post_in(&room, STANDING_WALL_CATEGORY.to_string(), body, None)
+                                        .await;
+                                }
+                                Err(_) => {}
+                            }
+                            crate::probe!(
+                                class = "activity.birth_failed_archived",
+                                room = %room.channel,
+                                error = %e,
+                                "the recipe's pipeline failed after the room was bound — archived, not left half-born"
+                            );
+                            return Err(CommandError::Internal(format!(
                                 "room {} was created and bound, but its recipe's pipeline \
-                                 failed: {e}",
+                                 failed: {e} — the room is archived",
                                 room.channel
-                            ))
-                        })?;
+                            )));
+                        }
+                    };
                     Some(ActivityPipelineReceipt {
                         steps_run: receipt.steps_run,
                         steps_skipped: receipt.steps_skipped,

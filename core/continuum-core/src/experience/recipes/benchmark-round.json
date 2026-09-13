@@ -203,7 +203,7 @@
       "command": "work/create",
       "each": "$imported.cards",
       "params": {
-        "repo": "$args.repo",
+        "repo": "$item.repo",
         "room": "$room.id",
         "title": "$item.title",
         "body": "$item.body"
