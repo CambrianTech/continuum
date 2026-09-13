@@ -857,18 +857,11 @@ impl PersonaAircRuntime {
                             }
                         }
                     }
-                    match hb_airc
-                        .work_roster_status(airc_lib::WorkRosterQuery::default())
-                        .await
-                    {
-                        Ok(status) => {
-                            let me = hb_airc.peer_id();
-                            let mine = status
-                                .rows
-                                .into_iter()
-                                .find(|r| r.peer == me)
-                                .map(|r| r.active_claims)
-                                .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
+                    // Renew what the BOARD says she holds (board_held_by) — the roster
+                    // reads empty right after a boot, and a lease not renewed in that
+                    // window lapses out from under her.
+                    match board_held_by(hb_airc.as_ref()).await {
+                        Ok(mine) => {
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
                             for card in &mine {
@@ -1351,26 +1344,7 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
         // django-15467, so the pull took her a SECOND card (matplotlib-21568) while a
         // teammate sat with none. The board carries owner, lease and claim id; nothing
         // the roster adds is needed to know her held work.
-        let me = self.airc.peer_id();
-        let board = self
-            .airc
-            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-            .await?
-            .snapshot();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
-        Ok(board
-            .cards
-            .into_iter()
-            .filter(|card| {
-                card.owner == Some(me)
-                    && crate::persona::card_holder::hold_of(card, now_ms)
-                        == crate::persona::card_holder::Hold::Held
-                    && !crate::persona::card_holder::claimable_now(card, now_ms)
-            })
-            .collect())
+        board_held_by(self.airc.as_ref()).await
     }
 }
 
@@ -1551,6 +1525,32 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .filter(|c| crate::persona::card_holder::in_flight_now(c, now_ms))
             .count())
     }
+}
+
+/// The cards `airc`'s peer HOLDS right now, by the board alone: owner = her, lease live,
+/// not claimable. The one source for "her held work" — the pull's WIP=1 guard, the
+/// renewal loop, anything that asks. Never the work roster: it is rebuilt after a boot
+/// and reads empty for its first seconds (2026-09-13 08:40:50Z, a second pull).
+pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+    let me = airc.peer_id();
+    let board = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await?
+        .snapshot();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
+    Ok(board
+        .cards
+        .into_iter()
+        .filter(|card| {
+            card.owner == Some(me)
+                && crate::persona::card_holder::hold_of(card, now_ms)
+                    == crate::persona::card_holder::Hold::Held
+                && !crate::persona::card_holder::claimable_now(card, now_ms)
+        })
+        .collect())
 }
 
 impl Drop for PersonaAircRuntime {
