@@ -749,6 +749,8 @@ impl ActionCommand for WorkClaim {
                 ),
             }
         }
+        // A claim is a hold boundary for the governor, whichever path took it.
+        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
@@ -1593,6 +1595,7 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
         Ok(WorkReleaseResult { released: true })
     }
 }
@@ -1639,6 +1642,26 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
+        // A HOLDER NEVER "OPENS" HER OWN CARD. `open` from the live holder is a release
+        // with no note and no hand-off — and it is almost never intent: Atlas, 2026-09-13
+        // 12:58Z, "let me get the card" → `work/state` (open) on the card she held with a
+        // real edit in her checkout; Joaquin pulled it and re-staged fresh. Reading is
+        // `work/get`; handing back is `work/release` (say why). The operator and a
+        // non-holder may still reopen a card — that is a board repair, not a slip.
+        if state == CardState::Open {
+            let held = crate::persona::airc_runtime::board_held_by(airc.as_ref())
+                .await
+                .map(|cards| cards.iter().any(|c| c.card_id == card_id))
+                .unwrap_or(false); // unwrap_or: an unreadable board cannot prove she holds it — the reopen proceeds as before
+            if held {
+                return Err(CommandError::Invalid(format!(
+                    "you HOLD card {} — `open` from its holder would drop your claim and leave your diff \
+                     behind. To read the card: work/get. To hand it back: work/release (with a note for \
+                     the next holder). To mark progress: work/state in_progress|review|done.",
+                    short8(card_id.as_uuid())
+                )));
+            }
+        }
         // A STATE THAT MEANS "I HOLD THIS" IS A CLAIM. `claimed` / `in_progress` are the
         // holder's columns; setting one is unambiguous intent to hold the card, and
         // there is ONE way to hold a card — `work/claim` (lease + owner + staged

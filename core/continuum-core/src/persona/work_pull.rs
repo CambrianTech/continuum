@@ -68,6 +68,18 @@ impl HasCard for crate::cognition::bench_round::NextCard {
 
 /// When this peer last pulled a card (ms), 0 if never this boot — the governor's hold
 /// boundary.
+/// Stamp a HOLD BOUNDARY for `peer` — a claim or a release, by the pull or by her own
+/// verb. The write-or-release governor counts write-less acts from here. Before this
+/// only the pull stamped it: a card claimed inside a turn (Mathis, 2026-09-13 13:50Z)
+/// kept the window at her last pull hours earlier, and forty old acts released a
+/// four-minute-old claim.
+pub(crate) fn note_hold_boundary(peer: Uuid) {
+    LAST_PULL_MS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .insert(peer, crate::modules::chat::now_ms());
+}
+
 pub(crate) fn last_pull_ms(peer: Uuid) -> u64 {
     LAST_PULL_MS
         .lock()
@@ -261,10 +273,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
     let card_id = airc_work::WorkCardId::from_uuid(next.card);
     match citizen.claim_card(card_id).await {
         Ok(true) => {
-            LAST_PULL_MS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())  // poisoned lock = read the last state, same policy as every lock in this crate
-                .insert(ctx.identity.peer_id.as_uuid(), crate::modules::chat::now_ms());
+            note_hold_boundary(ctx.identity.peer_id.as_uuid());
             crate::probe!(
                 class = "bench.round.pulled",
                 persona = %ctx.identity.agent_name,
