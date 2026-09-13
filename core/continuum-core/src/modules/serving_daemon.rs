@@ -2890,7 +2890,13 @@ impl ServingDaemonModule {
                 .map(|p| p.base_model.model_id.clone()),
             (self.inherited_lane)().as_ref(),
         );
-        let demand = self.serving_demand();
+        // The window this host served the incumbent at last time (across runs) is
+        // the plan's first choice — the KV page geometry holds still (card 6e8214e8).
+        let demand = self.serving_demand().with_sticky_window(
+            incumbent
+                .as_deref()
+                .and_then(crate::modules::served_window_store::load_for),
+        );
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
