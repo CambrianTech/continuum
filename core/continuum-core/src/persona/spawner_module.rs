@@ -331,15 +331,10 @@ impl PersonaSpawnerModule {
     }
 
     /// How many citizens this node seats: the configured population, capped at the
-    /// served CITIZEN slots once a real serving plan is known — the lanes minus the
-    /// scratch slot the slot directory reserves (`slots::citizen_slots`), so every
-    /// seated citizen holds a warm slot of her own and nobody evicts anybody. ≥1.
+    /// served lane count once a real serving plan is known. ≥1.
     pub fn seats(&self) -> usize {
         match self.serving_base_model {
-            Some(_) => self
-                .population
-                .min(crate::inference::slots::citizen_slots(self.serving_lanes) as usize)
-                .max(1),
+            Some(_) => self.population.min(self.serving_lanes as usize).max(1),
             None => self.population.max(1),
         }
     }
@@ -750,10 +745,8 @@ mod tests {
         assert_eq!(spawner.seats(), 12, "no plan yet: the configured population stands");
         spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
         spawner.serving_lanes = 4;
-        assert_eq!(spawner.seats(), 3, "a real plan caps the roster at its CITIZEN slots: lanes minus the scratch slot");
-        assert_eq!(spawner.plan().len(), 3 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
-        spawner.serving_lanes = 2;
-        assert_eq!(spawner.seats(), 2, "below three lanes nothing is reserved: every lane seats a citizen");
+        assert_eq!(spawner.seats(), 4, "a real plan caps the roster at its lanes");
+        assert_eq!(spawner.plan().len(), 4 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
         spawner.serving_lanes = 0;
         assert_eq!(spawner.seats(), 1, "never zero");
     }

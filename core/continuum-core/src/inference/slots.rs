@@ -39,12 +39,9 @@ use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
 /// How many of a server's `n_slots` are CITIZEN slots — warm activity slots a
 /// Turn may hold. ≥3 slots reserve the highest index as scratch for non-Turn
-/// traffic; below that every slot is a citizen slot. ONE rule, read by the slot
-/// directory (which slots lease) AND the spawner (how many citizens to seat):
-/// measured 2026-09-13, the roster was capped at `lanes` (5) while the directory
-/// leased `lanes - 1` (4) → the fifth citizen evicted a warm slot every cycle —
-/// 60 context switches in 40 minutes on five activities, KV reuse 0.0 for the
-/// whole serve, every turn a full ~25k-token prefill.
+/// traffic; below that every slot is a citizen slot. More citizens than this is
+/// the DESIGN (N minds over M slots, paged like registers), never a fault — the
+/// roster is not capped here.
 pub fn citizen_slots(n_slots: u32) -> u32 {
     if n_slots >= 3 { n_slots - 1 } else { n_slots }
 }
