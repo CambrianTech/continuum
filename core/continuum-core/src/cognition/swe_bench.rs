@@ -3567,13 +3567,68 @@ fn compose_failure_excerpt(
     // This is what turns "test_issue_24062 failed" into
     // "AssertionError: Dimension(impedance*capacitance/time) != 1".
     if f2p_still_failing && !f2p_report.trim().is_empty() {
-        sections.push(report_tail(f2p_report));
+        // THE FAILING TEST'S OWN OUTPUT, not the report's tail. 2026-09-12: a 1/2 verdict's
+        // excerpt was a wall of `CONTINUUM_TEST {"ok": true}` rows — the one assertion that
+        // mattered never reached the holder. The tail stays as the fallback when no section
+        // for a named test can be found.
+        sections.push(failing_test_excerpt(f2p_report).unwrap_or_else(|| report_tail(f2p_report))); // unwrap_or_else: no per-test section in this report shape = the tail, as before
     }
     if sections.is_empty() {
         None
     } else {
         Some(sections.join("\n\n"))
     }
+}
+
+/// The failing tests' OWN output from a harness report: pytest's `_____ test_name _____`
+/// sections and its `FAILED node - reason` summary lines; unittest/Django's `FAIL:` / `ERROR:`
+/// blocks up to their closing rule. Capped per test and in count so the excerpt is read. `None`
+/// when the report carries no such section (a shape the tail must cover).
+fn failing_test_excerpt(report: &str) -> Option<String> {
+    const MAX_TESTS: usize = 3;
+    const MAX_LINES: usize = 40;
+    let clean = strip_ansi(report);
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut sections: Vec<String> = Vec::new();
+    let is_pytest_head = |l: &str| l.starts_with("____") && l.ends_with("____") && l.trim_matches('_').trim().len() > 0;
+    let is_unittest_head = |l: &str| l.starts_with("FAIL: ") || l.starts_with("ERROR: ");
+    let mut i = 0;
+    while i < lines.len() && sections.len() < MAX_TESTS {
+        let l = lines[i].trim_end();
+        if is_pytest_head(l) || is_unittest_head(l) {
+            let mut block: Vec<&str> = vec![l];
+            let mut j = i + 1;
+            while j < lines.len() && block.len() < MAX_LINES {
+                let m = lines[j].trim_end();
+                if is_pytest_head(m) || is_unittest_head(m) || m.starts_with("=====") || m.starts_with("- generated") {
+                    break;
+                }
+                block.push(m);
+                j += 1;
+            }
+            if block.len() >= MAX_LINES {
+                block.push("…");
+            }
+            sections.push(block.join("\n"));
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    if sections.is_empty() {
+        // pytest's short summary is the last resort: one line per failed test with its reason.
+        let summary: Vec<&str> = lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("FAILED ") || l.starts_with("ERROR "))
+            .take(MAX_TESTS)
+            .collect();
+        if summary.is_empty() {
+            return None;
+        }
+        return Some(summary.join("\n"));
+    }
+    Some(sections.join("\n\n"))
 }
 
 /// The compiler's account of a build that failed, from a harness report — or `None` when
@@ -4620,6 +4675,23 @@ diff --git a/odd name.py b/odd name.py
         assert_eq!(skipped_in_report(django), vec!["a.B.test_x".to_string()]);
         let wanted = vec!["sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output".to_string(), "a.B.test_y".to_string()];
         assert_eq!(skipped_of(&wanted, &skipped_in_report(pytest)).len(), 1);
+    }
+
+    // what this catches (2026-09-12, django-16667): a near-miss verdict's excerpt showing the
+    // report's tail of `ok` rows instead of the failing test's assertion.
+    #[test]
+    fn a_near_miss_excerpt_quotes_the_failing_tests_own_section() {
+        let pytest = "tests/a.py::test_ok PASSED\n=================================== FAILURES ===================================\n_____________________ test_remainder_set_output _____________________\n\n    def test_remainder_set_output():\n>       assert isinstance(out, pd.DataFrame)\nE       AssertionError: assert False\n\ntests/a.py:12: AssertionError\n=========================== short test summary info ============================\nFAILED tests/a.py::test_remainder_set_output - AssertionError: assert False\n";
+        let e = failing_test_excerpt(pytest).expect("a section exists");
+        assert!(e.starts_with("_____"), "{e}");
+        assert!(e.contains("AssertionError: assert False"));
+        assert!(!e.contains("test_ok PASSED"), "passing rows are not excerpt material");
+        let unittest = "CONTINUUM_TEST {\"id\": \"a.B.test_y\", \"ok\": true}\nFAIL: test_x (a.B)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"a.py\", line 3, in test_x\nAssertionError: 1 != 2\n\n----------------------------------------------------------------------\nRan 2 tests\n";
+        let e = failing_test_excerpt(unittest).expect("unittest block");
+        assert!(e.starts_with("FAIL: test_x"));
+        assert!(e.contains("AssertionError: 1 != 2"));
+        assert!(!e.contains("\"ok\": true"));
+        assert_eq!(failing_test_excerpt("nothing here\n"), None);
     }
 
     #[test]
