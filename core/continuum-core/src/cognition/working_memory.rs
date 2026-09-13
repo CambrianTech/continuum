@@ -1205,11 +1205,26 @@ impl WorkingMemory {
     /// otherwise). Called at SETTLEMENT — never mid-settle, where a pop_front
     /// rotates the prompt head and re-prefills everything after it on a
     /// non-KV-shiftable model (the 2026-08-24 reuse collapse).
+    ///
+    /// COLLAPSE IN CHUNKS (2026-09-13, the KV divergence audit): over 55 consecutive
+    /// captured turns, the FIRST block to differ from the previous prompt was the
+    /// oldest surviving `[result #n]` in 28 of them — a full ledger evicting one
+    /// entry per settle rotates the prompt's head by one entry EVERY turn, and on a
+    /// model that cannot shift its cache everything after it re-prefills every
+    /// time. So when the ledger is over cap it collapses down to HALF the cap in one
+    /// jump: the surviving head then stays byte-identical for ~cap/2 chars of new
+    /// results (several settles), and the prefix reuse those settles get is worth
+    /// far more than the half-cap of oldest tails they briefly forgo (the pointers
+    /// keep them queryable). Same law as `fit_messages`' chunked window start.
     fn collapse_results_over_cap(&self) {
         let cap = self.budget().recent_results_chars();
         let mut rr = self.recent_results.lock();
         let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
-        while total > cap && rr.len() > 1 {
+        if total <= cap {
+            return;
+        }
+        let target = cap / 2;
+        while total > target && rr.len() > 1 {
             if let Some((eseq, room, evicted, elabel, ehandle)) = rr.pop_front() {
                 total -= evicted.chars().count() + 1;
                 // COLLAPSE, never delete: the evicted result leaves a queryable
@@ -1662,6 +1677,25 @@ mod tests {
         assert!(
             total <= cap + 256,
             "settlement must restore the window-derived bound: {total} > {cap}"
+        );
+        // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
+        // stays byte-identical across the next settles (the KV divergence audit,
+        // 2026-09-13: the oldest surviving result was the first differing block in
+        // 28 of 55 consecutive turns under one-entry-per-settle eviction).
+        assert!(
+            total <= cap / 2 + 256,
+            "an over-cap collapse lands at half the cap, not at the cap: {total} > {}",
+            cap / 2
+        );
+        let head_after_collapse = wm.recent_results_messages().get(1).cloned();
+        wm.record_receipt("[action] code/read(a.rs) fine");
+        wm.record_settlement("one");
+        wm.record_receipt("[action] code/read(b.rs) fine");
+        wm.record_settlement("two");
+        assert_eq!(
+            wm.recent_results_messages().get(1).cloned(),
+            head_after_collapse,
+            "the ledger head is byte-stable across settles that fit under the cap"
         );
         assert!(
             !wm.recent_results_block()
