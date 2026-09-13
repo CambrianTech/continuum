@@ -109,6 +109,9 @@ pub struct BenchmarkImportResult {
     /// receipt says what the deck withheld and why (2026-09-13: two of five seed-4 cards
     /// burned hours on pytest's pluggy and requests' 2013 pytest).
     pub skipped_ungradeable: Vec<String>,
+    /// Instances drawn but NOT offered because another WORKING round on this node still
+    /// has an open card for them — one tree, one verdict, one holder per instance.
+    pub skipped_duplicate: Vec<String>,
 }
 
 pub struct BenchmarkImport;
@@ -169,6 +172,8 @@ impl ActionCommand for BenchmarkImport {
         let mut cards = Vec::with_capacity(prepared.len());
         let mut skipped_already_resolved = Vec::new();
         let mut skipped_ungradeable = Vec::new();
+        let mut skipped_duplicate = Vec::new();
+        let open_elsewhere = crate::cognition::bench_round::instances_open_in_working_rounds();
         for pc in &prepared {
             let row = imported_from(pc, p.repo.as_deref().unwrap_or(""))?;
             if p.skip_already_resolved
@@ -201,12 +206,21 @@ impl ActionCommand for BenchmarkImport {
                     continue;
                 }
             }
+            if row.kind == "swe" && open_elsewhere.contains(&row.task_id) {
+                crate::probe!(
+                    class = "bench.round.duplicate_withheld",
+                    instance = %row.task_id,
+                    "another working round on this node holds an open card for this instance — not offered twice"
+                );
+                skipped_duplicate.push(row.task_id);
+                continue;
+            }
             cards.push(row);
         }
         if let Some(n) = p.limit.filter(|n| *n > 0) {
             cards.truncate(n as usize);
         }
-        Ok(BenchmarkImportResult { suite: p.suite, cards, skipped_already_resolved, skipped_ungradeable })
+        Ok(BenchmarkImportResult { suite: p.suite, cards, skipped_already_resolved, skipped_ungradeable, skipped_duplicate })
     }
 }
 
