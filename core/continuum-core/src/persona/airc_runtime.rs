@@ -1343,20 +1343,15 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
     /// hold only while the board's own card says so (`hold_of` = Held); the rest are
     /// history, not work.
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
-        let status = self
-            .airc
-            .work_roster_status(airc_lib::WorkRosterQuery::default())
-            .await?;
+        // THE BOARD IS THE TRUTH ABOUT WHO HOLDS WHAT. This read used to start from the
+        // work ROSTER (the scope's claim ledger) and intersect it with the board. The
+        // roster is rebuilt after a boot, so for the first seconds of a fresh runtime it
+        // listed nothing — 2026-09-13 08:40:50Z, 13 s after the core answered: Atlas's
+        // `persona.work.gate held=0` while the board showed her live claim on
+        // django-15467, so the pull took her a SECOND card (matplotlib-21568) while a
+        // teammate sat with none. The board carries owner, lease and claim id; nothing
+        // the roster adds is needed to know her held work.
         let me = self.airc.peer_id();
-        let claims = status
-            .rows
-            .into_iter()
-            .find(|r| r.peer == me)
-            .map(|r| r.active_claims)
-            .unwrap_or_default();
-        if claims.is_empty() {
-            return Ok(claims);
-        }
         let board = self
             .airc
             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
@@ -1366,24 +1361,16 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
-        let (held, stale): (Vec<_>, Vec<_>) = claims.into_iter().partition(|claim| {
-            board.cards.iter().any(|card| {
-                card.card_id == claim.card_id
-                    && card.owner == Some(me)
+        Ok(board
+            .cards
+            .into_iter()
+            .filter(|card| {
+                card.owner == Some(me)
                     && crate::persona::card_holder::hold_of(card, now_ms)
                         == crate::persona::card_holder::Hold::Held
                     && !crate::persona::card_holder::claimable_now(card, now_ms)
             })
-        });
-        for claim in &stale {
-            crate::probe!(
-                class = "persona.claim.not_held_on_board",
-                card = %claim.card_id.as_uuid(),
-                "the roster lists a live claim the board does not honour (Open, lapsed, or \
-                 another owner) — not counted as held work"
-            );
-        }
-        Ok(held)
+            .collect())
     }
 }
 
