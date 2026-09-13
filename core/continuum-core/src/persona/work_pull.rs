@@ -94,6 +94,14 @@ fn pull_probe_due(peer: Uuid) -> bool {
 
 pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> PullOutcome {
     let Some(citizen) = conversation.stream_citizen() else {
+        if pull_probe_due(ctx.identity.peer_id.as_uuid()) {
+            crate::probe!(
+                class = "bench.round.pull_none",
+                persona = %ctx.identity.agent_name,
+                reason = "no_citizen_stream",
+                "no pull: this conversation has no airc citizen to pull through"
+            );
+        }
         return PullOutcome::Nothing;
     };
     // WIP = 1, enforced HERE and not by call order: a citizen who already holds a
@@ -122,6 +130,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         let me = ctx.identity.peer_id.as_uuid();
         let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
         if crate::modules::chat::now_ms().saturating_sub(last) < PULL_SETTLE_MS {
+            // Not probed: a pull two minutes ago is the normal case, not an absence.
             return PullOutcome::Nothing;
         }
     }

@@ -2517,7 +2517,14 @@ async fn run_self_cycle(
                 );
                 return true;
             }
-            PullOutcome::DeferredWip | PullOutcome::Nothing => {}
+            outcome @ (PullOutcome::DeferredWip | PullOutcome::Nothing) => {
+                crate::probe!(
+                    class = "persona.selftick.deck_first",
+                    persona = %ctx.identity.agent_name,
+                    outcome = ?outcome,
+                    "idle citizen asked the deck first — nothing taken; on to the act question"
+                );
+            }
         }
     }
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
