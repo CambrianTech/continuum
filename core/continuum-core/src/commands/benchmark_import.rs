@@ -345,7 +345,7 @@ mod tests {
             setup_shell: None,
             work: CardWork::Swe { instance: Box::new(inst) },
         };
-        let row = imported_from(&pc).expect("a writer's title parses");
+        let row = imported_from(&pc, "").expect("a writer's title parses");
         assert_eq!(row.task_id, "demo__repo-1");
         assert_eq!(row.kind, "swe");
         assert!(row.title.starts_with("[bench swe-bench-verified] demo__repo-1:"));
