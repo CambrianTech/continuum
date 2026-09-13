@@ -25,6 +25,8 @@ use crate::cognition::swe_bench::SweVerdict;
 /// review of #3868: a failed board write must not produce a success claim in the room).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardMove {
+    /// Another round graded this instance; this card only hears of it.
+    Informed,
     Closed,
     ReturnedToHolder,
     Failed(String),
@@ -38,6 +40,7 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &Boa
     );
     let card = match moved {
         BoardMove::Closed => "The card is closed.".to_string(),
+        BoardMove::Informed => "This is another round's grade of the same instance; this card's state is unchanged.".to_string(),
         BoardMove::ReturnedToHolder => "The card is back with you as in-progress: make the \
              failing test pass in your checkout, then 'PASS: done' again."
             .to_string(),
@@ -63,8 +66,8 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &Boa
 
 /// What a recorded verdict does to the board. Never called for gold or ungradeable runs.
 pub async fn follow(verdict: &SweVerdict) {
-    let cards = crate::cognition::bench_round::cards_for_instance(&verdict.instance_id);
-    if cards.is_empty() {
+    let all = crate::cognition::bench_round::cards_for_instance(&verdict.instance_id);
+    if all.is_empty() {
         return;
     }
     let short = |c: &Uuid| c.to_string().chars().take(8).collect::<String>();
@@ -78,7 +81,41 @@ pub async fn follow(verdict: &SweVerdict) {
         );
         return;
     };
-    for card in cards {
+    // THE CARD OWNS ITS GRADE (2026-09-13 00:14Z: one round's resolve closed two other rounds'
+    // cards for the same instance — other holders' work — and could not even say so in their
+    // rooms). The verdict MOVES the card the graded copy belongs to (the solver's live hold on
+    // the board, or the only card when there is one) and only INFORMS the rest.
+    let owners: Vec<(Uuid, Option<Uuid>)> = match airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+    {
+        Ok(board) => {
+            let snap = board.snapshot();
+            all.iter()
+                .map(|c| {
+                    let owner = snap
+                        .cards
+                        .iter()
+                        .find(|k| k.card_id.as_uuid() == *c)
+                        .and_then(|k| k.owner.map(|o| o.as_uuid()));
+                    (*c, owner)
+                })
+                .collect()
+        }
+        Err(_) => all.iter().map(|c| (*c, None)).collect(),
+    };
+    let solver = Uuid::parse_str(&verdict.solver).ok();
+    let (settle, inform) = cards_to_settle(&owners, solver);
+    for card in inform {
+        crate::probe!(
+            class = "benchmark.verdict.card_informed",
+            instance = verdict.instance_id.as_str(),
+            card = %short(&card),
+            "another round's card for this instance — told of the grade, its state untouched"
+        );
+        say_in_card_room(verdict, card, &airc, &BoardMove::Informed).await;
+    }
+    for card in settle {
         let card_id = airc_lib::WorkCardId::from_uuid(card);
         let next = if verdict.resolved {
             airc_lib::CardState::Closed
@@ -289,6 +326,18 @@ async fn holder_of(
 mod tests {
     use super::*;
 
+    // what this catches (2026-09-13): one round's resolve closing two other rounds' cards for
+    // the same instance — other holders' work — instead of informing them.
+    #[test]
+    fn a_verdict_moves_the_solvers_card_and_informs_the_rest() {
+        let (a, b, c) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let me = Uuid::from_u128(9);
+        let cards = vec![(a, Some(Uuid::from_u128(7))), (b, Some(me)), (c, None)];
+        assert_eq!(cards_to_settle(&cards, Some(me)), (vec![b], vec![a, c]));
+        assert_eq!(cards_to_settle(&cards[..1], None), (vec![a], vec![]), "a lone card is the graded one");
+        assert_eq!(cards_to_settle(&cards, None), (vec![], vec![a, b, c]), "no match, several cards: move none");
+    }
+
     // Regression: remote holders have no local runtime. Missing identity must
     // not erase their address, or erase the uncertainty of an old assignment.
     #[test]
@@ -383,4 +432,26 @@ mod tests {
             "{line}"
         );
     }
+}
+
+/// Which cards a verdict MOVES and which it only INFORMS — pure. The solver's live hold is the
+/// graded card; with no solver match, a lone card is the graded one; otherwise every card is
+/// informed and none is moved (a verdict must never close a stranger's work).
+pub(crate) fn cards_to_settle(
+    cards: &[(Uuid, Option<Uuid>)],
+    solver: Option<Uuid>,
+) -> (Vec<Uuid>, Vec<Uuid>) {
+    let mine: Vec<Uuid> = cards
+        .iter()
+        .filter(|(_, owner)| solver.is_some() && *owner == solver)
+        .map(|(c, _)| *c)
+        .collect();
+    if !mine.is_empty() {
+        let rest = cards.iter().map(|(c, _)| *c).filter(|c| !mine.contains(c)).collect();
+        return (mine, rest);
+    }
+    if cards.len() == 1 {
+        return (vec![cards[0].0], Vec::new());
+    }
+    (Vec::new(), cards.iter().map(|(c, _)| *c).collect())
 }
