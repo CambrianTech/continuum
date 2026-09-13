@@ -105,6 +105,17 @@ fn pull_probe_due(peer: Uuid) -> bool {
 }
 
 pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> PullOutcome {
+    // THE SETTLE COMES FIRST — before a single board read. The held-work read walks every
+    // room she stands in; on every inbound wake for five citizens that was 1,700 board
+    // reads in ten minutes (2026-09-13 15:0xZ), a daemon and a ledger full of nothing.
+    {
+        let me = ctx.identity.peer_id.as_uuid();
+        let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
+        if crate::modules::chat::now_ms().saturating_sub(last) < PULL_SETTLE_MS {
+            // Not probed: a pull two minutes ago is the normal case, not an absence.
+            return PullOutcome::Nothing;
+        }
+    }
     let Some(citizen) = conversation.stream_citizen() else {
         if pull_probe_due(ctx.identity.peer_id.as_uuid()) {
             crate::probe!(
@@ -138,14 +149,6 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         }
     };
     let reviews_only = !held.is_empty();
-    {
-        let me = ctx.identity.peer_id.as_uuid();
-        let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
-        if crate::modules::chat::now_ms().saturating_sub(last) < PULL_SETTLE_MS {
-            // Not probed: a pull two minutes ago is the normal case, not an absence.
-            return PullOutcome::Nothing;
-        }
-    }
     // ELIGIBILITY IS RESIDENCY: she pulls from the run rooms she is standing in. A
     // card is content of its room; any resident may work it.
     let resident: std::collections::HashSet<Uuid> = match citizen.subscribed_rooms().await {
