@@ -1948,6 +1948,8 @@ async fn raw_advance(
     // The reopen releases the claim through the same verb the holder would use.
     if state == CardState::Open {
         release_live_claim_on_reopen(airc, card_id, via).await;
+        // ...and the round tracker's settled mark, or the deck never offers it again.
+        crate::cognition::bench_round::reopen_card(card_id.as_uuid());
     }
     // The CARD's room, never `current_room()` — boards are per-room and the grade
     // subscriber refuses an event with no room.
