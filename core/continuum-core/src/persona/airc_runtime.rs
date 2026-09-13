@@ -1551,8 +1551,20 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
         .collect();
     let mut held = Vec::new();
     for room in rooms {
-        let board =
-            crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await?;
+        // ONE unreadable room must not erase every hold: this fold feeds the renewal loop,
+        // and a `?` here made a single bad room read lapse every card she held elsewhere.
+        let board = match crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await {
+            Ok(board) => board,
+            Err(error) => {
+                crate::probe!(
+                    class = "persona.claim.board_room_unreadable",
+                    room = %room,
+                    error = %error,
+                    "a subscribed room's board did not read — her holds elsewhere still count"
+                );
+                continue;
+            }
+        };
         held.extend(board.cards.into_iter().filter(|card| {
             card.owner == Some(me)
                 && crate::persona::card_holder::hold_of(card, now_ms)
