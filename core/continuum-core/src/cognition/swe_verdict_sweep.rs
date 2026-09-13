@@ -171,6 +171,17 @@ pub enum SweepDecision {
 /// [`crate::persona::staged_workspace::grade_target`] is split from `owners_of`: the DECISION
 /// is tested against a table, not against a disk fixture that re-derives it. A test that
 /// rebuilds the predicate in its own body cannot fail when the real one changes.
+/// Is a recorded verdict older than the newest worked copy? Then a later attempt exists
+/// and the instance is pending again. A verdict without a grade time (pre-2026-09 files)
+/// cannot vouch for any work, so any work makes it stale.
+pub fn verdict_is_stale(graded_at_ms: Option<u64>, newest_work_mtime_ms: Option<u64>) -> bool {
+    match (graded_at_ms, newest_work_mtime_ms) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(graded), Some(work)) => work > graded,
+    }
+}
+
 pub fn decide(has_verdict: bool, target: GradeTarget) -> SweepDecision {
     if has_verdict {
         // Checked FIRST and deliberately: idempotence must not depend on the tree still
@@ -218,14 +229,22 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     let mut out = Vec::new();
     let mut skipped_refused = 0usize;
     for instance in all_staged_instances() {
-        let has_verdict = crate::cognition::swe_bench::read_verdict(&instance).is_some();
-        // Skip the `git status` fan-out entirely when a verdict already exists — `owners_of`
-        // shells out once per staged copy, and on a box with 100+ trees that is the whole
-        // cost of the sweep. Cheap check first.
+        // A VERDICT IS AN ATTEMPT'S, NOT THE INSTANCE'S FOREVER. Keyed by instance, an
+        // old verdict blocked every later attempt: django-15467 carried a False from
+        // 2026-09-12 and astropy-13453 an old False, so Joaquin's validated astropy fix
+        // (2026-09-13) was never graded by this sweep — a hand grade found it resolved.
+        // A worked copy newer than the recorded grade is pending again; the new verdict
+        // replaces the old (the card, not the instance, owns the outcome — #3855 keeps
+        // the board settle per card).
+        let prior = crate::cognition::swe_bench::read_verdict(&instance);
+        let copies = owners_of(&instance);
+        let newest_work = copies.iter().filter(|c| c.has_work).filter_map(|c| c.work_mtime_ms).max();
+        // The `git status` fan-out now runs for graded instances too — the price of never
+        // losing a later attempt; it is off every hot path (the 7-minute tick).
+        let has_verdict = prior.is_some_and(|v| !verdict_is_stale(Some(v.graded_at_ms), newest_work));
         if has_verdict {
             continue;
         }
-        let copies = owners_of(&instance);
         let worked = copies.iter().filter(|c| c.has_work).count();
         match decide(false, grade_target(&copies)) {
             SweepDecision::Grade(workspace) => {
@@ -411,6 +430,18 @@ pub async fn sweep() -> SweepReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-13): an instance's OLD verdict blocking the grade of a
+    // NEW attempt — django-15467 (False, 09-12) and astropy-13453 (old False) were never
+    // regraded while citizens worked them; a hand grade found astropy resolved.
+    #[test]
+    fn a_worked_copy_newer_than_the_verdict_makes_the_instance_pending_again() {
+        assert!(verdict_is_stale(Some(1_000), Some(2_000)), "work after the grade = grade again");
+        assert!(!verdict_is_stale(Some(2_000), Some(1_000)), "the grade already covers this work");
+        assert!(!verdict_is_stale(Some(2_000), None), "no work at all: the verdict stands");
+        assert!(verdict_is_stale(None, Some(1)), "a grade with no time cannot vouch for any work");
+        assert!(!verdict_is_stale(None, None));
+    }
 
     // what this catches (2026-09-13, seed-4): an instance this box cannot grade — pytest-7236
     // (pristine PASS_TO_PASS 0/40), requests-1766 (era pytest cannot run here) — dispatched
