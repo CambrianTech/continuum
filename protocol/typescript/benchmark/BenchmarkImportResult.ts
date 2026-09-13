@@ -6,4 +6,12 @@ export type BenchmarkImportResult = { suite: string, cards: Array<ImportedCard>,
  * Instances drawn by the selection but NOT offered because a citizen already
  * resolved them here — named, so the round's receipt can say why 3 drew and 1 posted.
  */
-skippedAlreadyResolved: Array<string>, };
+skippedAlreadyResolved: Array<string>, 
+/**
+ * Instances drawn but NOT offered because THIS BOX cannot grade them: their env class
+ * is proven red by `benchmark/validate`, or their own env refusal marker stands from
+ * an earlier round. Each entry names the instance and the wall, so the round's
+ * receipt says what the deck withheld and why (2026-09-13: two of five seed-4 cards
+ * burned hours on pytest's pluggy and requests' 2013 pytest).
+ */
+skippedUngradeable: Array<string>, };

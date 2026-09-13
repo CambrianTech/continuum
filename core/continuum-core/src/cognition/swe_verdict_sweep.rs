@@ -100,6 +100,25 @@ pub fn record_refusal(instance: &str, reason: &str, work_mtime_ms: Option<u64>) 
     }
 }
 
+/// Is this refusal about the ENVIRONMENT — the box cannot grade the instance at all
+/// (pristine-tree verdicts: PASS_TO_PASS 0/N, FAIL_TO_PASS passing or skipped before the
+/// patch; no runnable harness for the era; the repo will not install) — rather than about
+/// the WORK (no patch to grade)? An env refusal is deck hygiene: the instance is not
+/// offered on this box again until the env changes. A work refusal is the citizen's.
+pub fn refusal_is_env_fault(reason: &str) -> bool {
+    reason.starts_with("UNGRADEABLE — ")
+        || reason.contains("env has no runnable test harness")
+        || reason.contains("could not install")
+}
+
+/// The standing ENV refusal recorded for `instance` on this box, if any. Markers outlive
+/// the work-change TTL on purpose: an environment does not fix itself between rounds —
+/// clear the marker (or run `benchmark/validate`) when it does.
+pub fn standing_env_refusal(instance: &str) -> Option<String> {
+    let r = read_refusal(instance)?;
+    refusal_is_env_fault(&r.reason).then_some(r.reason)
+}
+
 pub fn clear_refusal(instance: &str) {
     let _ = std::fs::remove_file(refusal_path(instance));
 }
@@ -392,6 +411,19 @@ pub async fn sweep() -> SweepReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-13, seed-4): an instance this box cannot grade — pytest-7236
+    // (pristine PASS_TO_PASS 0/40), requests-1766 (era pytest cannot run here) — dispatched
+    // again the next round while its refusal marker stood; two of five cards burned hours
+    // on a wall. A WORK refusal (no patch) must not be mistaken for it.
+    #[test]
+    fn an_env_refusal_is_told_apart_from_a_work_refusal() {
+        assert!(refusal_is_env_fault("UNGRADEABLE — PASS_TO_PASS passes 0 of 40 on the PRISTINE tree: the suite does not run"));
+        assert!(refusal_is_env_fault("UNGRADEABLE — every FAIL_TO_PASS test already passes on the pristine tree ([\"a\"])"));
+        assert!(refusal_is_env_fault("psf__requests-1766's env has no runnable test harness: era-pinned pytest cannot execute"));
+        assert!(refusal_is_env_fault("could not install scikit-learn__scikit-learn-14983's repo into a venv — a cached broken env"));
+        assert!(!refusal_is_env_fault("no candidate patch to grade for matplotlib__matplotlib-21568 — the workspace holds no diff"));
+    }
 
     /// what this catches: the sweep manufacturing a score out of an absence or an ambiguity —
     /// the #384/#386 laundering class, which is why the grade tail existed at all. A worked
