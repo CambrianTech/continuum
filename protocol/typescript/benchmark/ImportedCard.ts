@@ -14,4 +14,10 @@ taskId: string,
 /**
  * `"swe"` (a real-project instance) or `"gym"` (an eval-set task).
  */
-kind: string, };
+kind: string, 
+/**
+ * The board key the card is created under: the SWE instance's own repo (a seeded
+ * Verified round mixes repos — a round-wide repo was wrong for every card but one);
+ * a gym task's repo is the import's `repo` param.
+ */
+repo: string, };

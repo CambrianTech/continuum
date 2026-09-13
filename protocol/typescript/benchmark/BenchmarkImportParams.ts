@@ -23,6 +23,10 @@ sample?: number, seed?: number,
  */
 skipAlreadyResolved: boolean, 
 /**
+ * Board key for GYM cards (a gym has no per-task repo); SWE cards carry their own.
+ */
+repo: string | null, 
+/**
  * Cap on cards offered, applied AFTER the gate. `None`/0 = every card the selection
  * drew. The gym suites do not sample (a suite IS its task list), so this is how a
  * round takes the first N of `hard-rs` — dispatch's `limit`, kept.
