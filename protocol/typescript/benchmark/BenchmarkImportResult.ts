@@ -14,4 +14,9 @@ skippedAlreadyResolved: Array<string>,
  * receipt says what the deck withheld and why (2026-09-13: two of five seed-4 cards
  * burned hours on pytest's pluggy and requests' 2013 pytest).
  */
-skippedUngradeable: Array<string>, };
+skippedUngradeable: Array<string>, 
+/**
+ * Instances drawn but NOT offered because another WORKING round on this node still
+ * has an open card for them — one tree, one verdict, one holder per instance.
+ */
+skippedDuplicate: Array<string>, };

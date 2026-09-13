@@ -527,6 +527,28 @@ pub fn set_run_room_name(round_id: Uuid, name: &str) {
     }
 }
 
+/// The instances with an OPEN card (not yet settled in the tracker) in any WORKING round
+/// on this node. A new round must not draw them again: staging reuses the checkout by
+/// instance, so two rounds would work one tree and grade one verdict (2026-09-13:
+/// pytest-7236 and astropy-13453 sat in seed-4 and in a paused duplicate round at once).
+pub fn instances_open_in_working_rounds() -> std::collections::HashSet<String> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = std::collections::HashSet::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, state) in &r.cards {
+            if state.is_none() {
+                if let Some(inst) = r.card_instances.get(card) {
+                    out.insert(inst.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {
