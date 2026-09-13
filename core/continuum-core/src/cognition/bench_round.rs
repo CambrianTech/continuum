@@ -270,6 +270,21 @@ impl BenchRound {
     /// ([`observe_card_event`]) turns the outcome into probes. A card outside the set is
     /// `NotOurs`; a duplicate settle is `AlreadySettled` (never double-counted); the
     /// settle that empties the set transitions the round to `Done` exactly once.
+    /// Undo a settle: the card's slot returns to unsettled and a round the settle
+    /// finished returns to Working. True when the tracker held it settled.
+    fn reopen_card(&mut self, card: Uuid) -> bool {
+        match self.cards.get_mut(&card) {
+            Some(slot @ Some(_)) => {
+                *slot = None;
+                if self.stage == RoundStage::Done {
+                    self.stage = RoundStage::Working;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn settle_card(&mut self, card: Uuid, state: &str) -> SettleOutcome {
         match self.cards.get_mut(&card) {
             None => SettleOutcome::NotOurs,
@@ -1079,6 +1094,32 @@ pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
 /// longer offered, every attempt honestly aborting "not on the board"). Routes
 /// through the SAME payload-shaped observer so probes and the Done transition
 /// stay single-sourced.
+/// A BOARD REOPEN REOPENS THE TRACKER. `work/state open` on a settled card moved the
+/// board column back to Open, but the tracker kept its settled mark — so the pull,
+/// which offers `tracker-unsettled ∩ board-claimable`, never offered it again
+/// (2026-09-13 08:0xZ: matplotlib-21568 reopened after an ungradeable "no patch"
+/// refusal; two idle coders read `dd712faf:1` claimable and `none_claimable`). One
+/// truth per card: the board's column is the state, the tracker follows it.
+pub fn reopen_card(card: Uuid) -> bool {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card)) else {
+        return false;
+    };
+    if !round.reopen_card(card) {
+        return false;
+    }
+    persist_round_in(&rounds_state_dir(), round);
+    crate::probe!(
+        class = "bench.round.card_reopened",
+        round_id = %round.round_id,
+        card_id = %card,
+        remaining = round.remaining(),
+        stage = ?round.stage,
+        "a settled card returned to the deck — the board reopened it, the tracker follows"
+    );
+    true
+}
+
 pub fn settle_card_direct(card: Uuid, state: &str) {
     observe_card_event(&serde_json::json!({
         "card_id": card.to_string(),
@@ -2131,6 +2172,33 @@ mod tests {
     // "settled" count that drifts from the round's own card map is worse than no query at
     // all, because a driver would BELIEVE it. Also pins that progress is legible mid-round:
     // the whole point of #371 is answering "how far along" without reading a log.
+    // what this catches (2026-09-13): a card the board reopened staying settled in the
+    // tracker, so the pull never offers it again and a finished round never resumes.
+    #[test]
+    fn a_board_reopen_returns_a_settled_card_to_the_deck() {
+        let round_id = Uuid::new_v4();
+        let ids = cards(2);
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        for id in &ids {
+            add_card(round_id, *id);
+        }
+        // Settle ONE card: the round stays Working (a finished round leaves the tracker,
+        // and a card of a finished round is a new dispatch, not a reopen).
+        settle_card_direct(ids[0], "closed");
+        let mid = live_rounds().into_iter().find(|r| r.round_id == round_id.to_string()).expect("tracked");
+        assert_eq!((mid.settled, mid.remaining), (1, 1));
+        assert!(reopen_card(ids[0]), "the tracker held it settled");
+        assert!(!reopen_card(ids[0]), "already unsettled: nothing to undo");
+        let again = live_rounds().into_iter().find(|r| r.round_id == round_id.to_string()).expect("tracked");
+        assert_eq!((again.stage.as_str(), again.settled, again.remaining), ("working", 0, 2));
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        assert!(
+            pullable_cards(Uuid::new_v4(), &resident).iter().any(|c| c.card == ids[0]),
+            "the reopened card is offered by the pull again"
+        );
+        ROUNDS.lock().unwrap().remove(&round_id); // test: cleanup of the round opened above
+    }
+
     #[test]
     fn a_round_in_flight_reports_its_own_progress_honestly() {
         let round_id = Uuid::new_v4();
