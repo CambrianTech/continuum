@@ -98,7 +98,8 @@ impl ActionCommand for CodeRun {
          Python script (use this for Python tasks/repos — do NOT pass Python as lang=rust). \
          A compile error or traceback comes back as the result (ok=false) in stderr. Use it \
          to actually RUN and test your own code instead of guessing. For workspace-scoped \
-         Rust grading use code/cargo/check and code/cargo/test.";
+         Rust grading use code/cargo/check and code/cargo/test. Commands (git, pytest, \
+         find) go through code/shell, never a Python subprocess wrapper here.";
     type Params = CodeRunParams;
     type Output = CodeRunResult;
 
