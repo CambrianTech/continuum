@@ -2153,6 +2153,21 @@ impl LlmDeliberationFaculty {
             Ok(fitted) => (fitted, None),
             Err(error) => (FittedMessages::default(), Some(error)),
         };
+        // WHAT THIS TURN ACTUALLY SENDS — the post-fit size the served window must
+        // hold. Recorded beside the untrimmed demand above: that one is the growth
+        // signal (and the upper bound), this one is what a slot must FIT. The planner
+        // sizes the window from this with headroom (`ServingDemand::window_target`),
+        // so a 25k working set no longer provisions a 137k slot (2026-09-13).
+        if let Some(reg) = &self.working_set {
+            let sent = framing_tokens
+                .saturating_add(Self::messages_cost(&fitted.messages))
+                .saturating_add(desired_completion_reserve);
+            reg.record_sent(
+                self.persona_id,
+                sent.min(u32::MAX as usize) as u32,
+                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
+            );
+        }
         // Only the source's truthful minimum outranks optional conversation.
         // Additional declared list units use actual leftover room after fitting;
         // a large list cannot turn every detail into mandatory input.

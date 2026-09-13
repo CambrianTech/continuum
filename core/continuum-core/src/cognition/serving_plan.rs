@@ -174,7 +174,18 @@ pub struct ServingDemand {
     /// KV page geometry — `<model>--c<window>` — is the same across boots and the
     /// citizens' pages carry over. `None` = no memory (first serve of this model).
     pub sticky_window: Option<u32>,
+    /// The largest prompt any resident actually SENT (post-fit), when measured. The
+    /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
+    /// `window_tokens` (which is the whole assembled context and saturates at
+    /// 225k–505k): a 25k working set provisions ~32k per slot, leaving the host RAM
+    /// for more lanes and the prompt-cache tier instead of a 137k slot nobody fills.
+    pub sent_tokens: Option<u32>,
 }
+
+/// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
+/// so a window sized from what-was-sent must GROW past it to escape the clamp — 25%
+/// per plan, geometric, until the demand is met. The untrimmed demand still caps it.
+pub const SENT_HEADROOM: f64 = 1.25;
 
 /// The pinned solve-class window floor (see `ServingDemand::window_floor_tokens`).
 /// ONE writer — the benchmark lease (`benchmark_resume`) — sets it to the
@@ -209,6 +220,23 @@ impl ServingDemand {
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
             window_floor_tokens: solve_window_floor(),
             sticky_window: None,
+            sent_tokens: None,
+        }
+    }
+
+    /// The largest SENT prompt among residents (see `sent_tokens`).
+    pub fn with_sent_tokens(mut self, sent: Option<u32>) -> Self {
+        self.sent_tokens = sent.filter(|s| *s > 0);
+        self
+    }
+
+    /// The window a plan should TARGET per slot: the sent prompt with headroom when
+    /// measured (capped by the untrimmed demand, which is an upper bound by
+    /// construction), else the untrimmed demand as before.
+    pub fn window_target(&self) -> u32 {
+        match self.sent_tokens {
+            Some(sent) => ((sent as f64 * SENT_HEADROOM) as u32).min(self.window_tokens).max(MIN_SERVE_CTX),
+            None => self.window_tokens,
         }
     }
 
@@ -706,7 +734,7 @@ pub fn plan_serving(
     // now holds still: last serve's window while it still fits and still covers the
     // demand, else the demand. See `choose_served_window`.
     let served_context_window =
-        choose_served_window(window_for(lanes as u64), demand.window_tokens, demand.sticky_window);
+        choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -2179,6 +2207,23 @@ mod tests {
         let first = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(40_000))).unwrap();
         let again = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(33_000)).with_sticky_window(Some(first.served_context_window))).unwrap();
         assert_eq!(again.served_context_window, first.served_context_window, "the next boot, with demand drifted DOWN, serves the SAME window — the pages carry over");
+    }
+
+    // what this catches: the window sized from the untrimmed context (225k–505k measured
+    // 2026-09-13) instead of what turns actually send — a 25k working set provisioned a
+    // 137k slot, starving the lane count and the RAM prompt-cache tier, and the sticky
+    // window could never "cover" a demand that large.
+    #[test]
+    fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
+        let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
+        assert_eq!(d.window_target(), 37_500, "sent × 1.25, not the untrimmed 505k");
+        assert_eq!(ServingDemand::new(4, Some(505_342)).window_target(), 505_342, "unmeasured sent: the untrimmed demand, as before");
+        assert_eq!(ServingDemand::new(4, Some(20_000)).with_sent_tokens(Some(30_000)).window_target(), 20_000, "the untrimmed demand is the upper bound");
+        assert_eq!(choose_served_window(137_222, 37_500, Some(47_280)), 47_280, "the remembered 47k window covers a 37.5k target: served verbatim — pages carry over");
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let m = fp("m", 14, 112 * 1024, 131_072, 3);
+        let plan = plan_serving(host, std::slice::from_ref(&m), d).unwrap();
+        assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
     }
 
 }

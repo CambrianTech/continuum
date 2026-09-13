@@ -943,7 +943,18 @@ impl ServingDaemonModule {
         // residents < 2 keeps the old shape (the adapter reserves nothing
         // below n_slots 3, so asking for the extra lane would waste it).
         let lanes = if residents >= 2 { residents + 1 } else { residents };
-        ServingDemand::new(lanes, self.working_set.ceiling())
+        // Both ceilings are over the RESIDENTS, never the whole persisted registry
+        // (490 entries: every test fixture and departed mind); the sent ceiling is what
+        // the window follows, the untrimmed one only bounds it.
+        let live: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas())
+            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no residents measured = cold-start prior
+        let (demand, sent) = if live.is_empty() {
+            (self.working_set.ceiling(), None)
+        } else {
+            (self.working_set.ceiling_of(&live), self.working_set.sent_ceiling_of(&live))
+        };
+        ServingDemand::new(lanes, demand).with_sent_tokens(sent)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to

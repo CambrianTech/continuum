@@ -113,6 +113,14 @@ pub struct PersonaDemand {
     /// How many turns have been observed. One observation is a measurement; the
     /// count is what lets a reader judge how much to trust the peak.
     pub turns: u64,
+    /// The largest prompt this mind actually SENT (post-fit: framing + fitted
+    /// messages + reserve). `peak_tokens` says how much she COULD use (225k–505k
+    /// measured 2026-09-13 — the whole assembled context); this says how much a turn
+    /// needs to FIT. The served window follows this with headroom, so a 25k working
+    /// set no longer provisions a 137k slot that starves the RAM tier and the lane
+    /// count. Legacy files without it read 0.
+    #[serde(default)]
+    pub sent_peak: u32,
 }
 
 /// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
@@ -204,7 +212,46 @@ impl WorkingSetRegistry {
                 last_tokens: demand_tokens,
                 last_seen_ms: now_ms,
                 turns: 1,
+                sent_peak: 0,
             })
+    }
+
+    /// Record what a turn actually SENT (post-fit). Persisted with the demand.
+    pub fn record_sent(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) {
+        if sent_tokens == 0 {
+            return;
+        }
+        let updated = *self
+            .observed
+            .entry(persona)
+            .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
+            .or_insert(PersonaDemand {
+                peak_tokens: 0,
+                last_tokens: 0,
+                last_seen_ms: now_ms,
+                turns: 0,
+                sent_peak: sent_tokens,
+            });
+        Self::save(persona, &updated);
+    }
+
+    /// The largest untrimmed demand among `personas` (the residents), not the whole
+    /// registry — 490 persisted entries include every test fixture and departed mind.
+    pub fn ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
+        personas
+            .iter()
+            .filter_map(|p| self.observed.get(p).map(|e| e.value().peak_tokens))
+            .max()
+            .filter(|&t| t > 0)
+    }
+
+    /// The largest SENT prompt among `personas`, when any has been measured.
+    pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
+        personas
+            .iter()
+            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .max()
+            .filter(|&t| t > 0)
     }
 
     /// Record one completed generation's measured output for `persona`.
