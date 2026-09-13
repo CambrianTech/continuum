@@ -214,6 +214,108 @@ pub fn page_filename(key: &ActivityKey) -> String {
     format!("a-{}-{}.bin", key.persona.simple(), key.room.simple())
 }
 
+/// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ one
+/// checkpoint sidecar) per activity, overwritten on each save, kept across runs
+/// under the geometry-keyed dir — and it must hold EVERY active resident's
+/// activities without eviction (Joel, 2026-09-13: "disk is cheap … could easily
+/// support all active resident persona"). So the limit is generous bytes on
+/// disk, never the slot count, and only pages nobody has touched for
+/// [`KV_PAGE_MIN_AGE_MS`] are candidates: an active resident's page is always
+/// younger than that. Beyond the budget the OLDEST go first — the cheapest to
+/// lose (a return re-prefills once).
+pub const KV_PAGE_STORE_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+/// A page younger than this is an active resident's working set: never trimmed.
+pub const KV_PAGE_MIN_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+
+static PAGE_DIR: parking_lot::Mutex<Option<std::path::PathBuf>> = parking_lot::Mutex::new(None);
+
+/// The spawn — the one place that knows the live geometry dir — registers it so
+/// a save can trim the store it just wrote into.
+pub fn note_page_dir(dir: &std::path::Path) {
+    *PAGE_DIR.lock() = Some(dir.to_path_buf());
+}
+
+/// After a successful save of `just_saved` (a page filename), keep the live
+/// geometry dir under [`KV_PAGE_STORE_MAX_BYTES`]. Never touches the page just
+/// written. Cheap: one `read_dir` per save, a few files.
+pub fn trim_page_store_after_save(just_saved: &str) {
+    let Some(dir) = PAGE_DIR.lock().clone() else {
+        return;
+    };
+    let (removed, freed, kept) =
+        trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
+    if removed > 0 {
+        crate::probe!(
+            class = "inference.kv_page.store_trimmed",
+            dir = %dir.display(),
+            removed = removed as u64,
+            freed_bytes = freed,
+            kept_bytes = kept,
+            budget_bytes = KV_PAGE_STORE_MAX_BYTES,
+            "KV page store over budget — oldest pages (and their checkpoint sidecars) dropped; \
+             their next return re-prefills once",
+        );
+    }
+}
+
+/// Pure trim: pages (`a-*.bin`) with their `.ckpt` sidecars, oldest mtime first,
+/// until the dir is within `max_bytes`. Returns (pages removed, bytes freed,
+/// bytes kept). The page named `keep` is never removed; neither is any page
+/// younger than `min_age_ms` (an active resident's working set).
+pub fn trim_page_store(
+    dir: &std::path::Path,
+    keep: &str,
+    max_bytes: u64,
+    min_age_ms: u64,
+) -> (usize, u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0, 0);
+    };
+    // page name → (mtime, bytes incl. sidecar)
+    let mut pages: std::collections::HashMap<String, (std::time::SystemTime, u64)> =
+        std::collections::HashMap::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(md) = e.metadata() else { continue };
+        if !md.is_file() {
+            continue;
+        }
+        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string();
+        if !(page.starts_with("a-") && page.ends_with(".bin")) {
+            continue;
+        }
+        let slot = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
+        slot.1 += md.len();
+        if !name.ends_with(".ckpt") {
+            slot.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        }
+    }
+    let mut total: u64 = pages.values().map(|v| v.1).sum();
+    if total <= max_bytes {
+        return (0, 0, total);
+    }
+    let mut order: Vec<(String, std::time::SystemTime, u64)> =
+        pages.into_iter().map(|(n, (t, b))| (n, t, b)).collect();
+    order.sort_by_key(|(_, t, _)| *t);
+    let (mut removed, mut freed) = (0usize, 0u64);
+    let now = std::time::SystemTime::now();
+    for (name, mtime, bytes) in order {
+        if total <= max_bytes {
+            break;
+        }
+        let age_ms = now.duration_since(mtime).map(|d| d.as_millis() as u64).unwrap_or(0);
+        if name == keep || age_ms < min_age_ms {
+            continue;
+        }
+        let _ = std::fs::remove_file(dir.join(&name));
+        let _ = std::fs::remove_file(dir.join(format!("{name}.ckpt")));
+        removed += 1;
+        freed += bytes;
+        total = total.saturating_sub(bytes);
+    }
+    (removed, freed, total)
+}
+
 impl KvSlotPool {
     pub fn new(server_root: &str, n_slots: u32) -> Self {
         // ≥3 slots: the highest index is RESERVED as scratch and never enters
@@ -618,4 +720,36 @@ mod tests {
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
     }
+    // what this catches: the page store growing without bound (it is temporary disk),
+    // and the trim removing the page just saved or a page's sidecar surviving its page.
+    #[test]
+    fn the_page_store_trims_oldest_first_and_never_the_page_just_saved() {
+        let dir = std::env::temp_dir().join(format!("kv-page-trim-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let write = |name: &str, bytes: usize, age_s: u64| {
+            let p = dir.join(name);
+            std::fs::write(&p, vec![0u8; bytes]).unwrap(); // JUSTIFIED unwrap: test scaffolding
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
+            let _ = std::fs::File::open(&p).and_then(|f| f.set_modified(t));
+        };
+        write("a-old.bin", 100, 300);
+        write("a-old.bin.ckpt", 10, 300);
+        write("a-mid.bin", 100, 200);
+        write("a-new.bin", 100, 100);
+        write("unrelated.txt", 500, 0);
+        let (removed, freed, kept) = trim_page_store(&dir, "a-old.bin", 250, 0);
+        assert_eq!(removed, 1, "one page over budget: the oldest NOT protected → a-mid");
+        assert_eq!(freed, 100);
+        assert_eq!(kept, 210);
+        assert!(dir.join("a-old.bin").exists() && dir.join("a-old.bin.ckpt").exists(), "the just-saved page is kept");
+        assert!(!dir.join("a-mid.bin").exists());
+        let (removed, _, _) = trim_page_store(&dir, "a-new.bin", 150, 0);
+        let (young, _, _) = trim_page_store(&dir, "a-new.bin", 0, 60_000);
+        assert_eq!(young, 0, "a page younger than the floor is an active resident's: never trimmed");
+        assert_eq!(removed, 1, "now a-old goes, sidecar with it");
+        assert!(!dir.join("a-old.bin.ckpt").exists());
+        assert!(dir.join("unrelated.txt").exists(), "only pages are trimmed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

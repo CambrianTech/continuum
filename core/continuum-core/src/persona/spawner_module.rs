@@ -330,13 +330,16 @@ impl PersonaSpawnerModule {
         roster
     }
 
-    /// How many citizens this node seats: the configured population, capped at the
-    /// served lane count once a real serving plan is known. ≥1.
+    /// How many citizens this node seats: the configured population, ≥1. The served
+    /// lane count is NOT a cap (Joel, 2026-09-13: "it's for no reason … this is
+    /// temporary disk space"): N minds over M slots is the design — a citizen whose
+    /// slot is taken pages her KV to disk and restores it on return, registers-style.
+    /// The reasonable limit is the KV page store's disk budget, owned by the page
+    /// sweeper, never the slot count. (#3798's lane cap was a compensation for a
+    /// restore that came back cold — fixed at the server: checkpoints ride with the
+    /// slot state.)
     pub fn seats(&self) -> usize {
-        match self.serving_base_model {
-            Some(_) => self.population.min(self.serving_lanes as usize).max(1),
-            None => self.population.max(1),
-        }
+        self.population.max(1)
     }
 }
 
@@ -739,15 +742,15 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_never_exceeds_the_warm_lanes() {
+    fn the_roster_is_the_population_and_lanes_are_never_a_cap() {
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         assert_eq!(spawner.seats(), 12, "no plan yet: the configured population stands");
         spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
         spawner.serving_lanes = 4;
-        assert_eq!(spawner.seats(), 4, "a real plan caps the roster at its lanes");
-        assert_eq!(spawner.plan().len(), 4 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
-        spawner.serving_lanes = 0;
+        assert_eq!(spawner.seats(), 12, "a real plan does not cap the roster: minds page over slots");
+        assert_eq!(spawner.plan().len(), 12 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
+        spawner.set_population(0);
         assert_eq!(spawner.seats(), 1, "never zero");
     }
 
@@ -760,9 +763,9 @@ mod tests {
         spawner.set_population(6);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
-        assert_eq!(spawner.seats(), 2);
+        assert_eq!(spawner.seats(), 6, "lanes never cap the roster");
         spawner.set_serving(None);
-        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands, no stale cap");
+        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands");
         assert!(spawner.serving_base_model.is_none());
     }
 
