@@ -2500,6 +2500,26 @@ async fn run_self_cycle(
     // concludes it (`PASS: done`) — the autonomous loop the architecture always
     // promised ("the heartbeat advances my thread, not just reacts to pokes").
     // Returns early so she never ALSO spends a musing turn the same tick.
+    // NO CARD IN HAND → THE DECK FIRST. The act question below lets an idle citizen
+    // muse (read, run, look around) and, when she does, this tick returns before the
+    // pull — so a citizen who always finds something to look at never takes a card.
+    // Measured 2026-09-13 08:41–09:20Z: Joaquin, holding nothing, acted in her home
+    // room every tick (code/shell, code/read) while a seed-4 card sat open for 40
+    // minutes; not one pull attempt. Held work keeps its order (a holder's tick is
+    // her work turn; she pulls review cards after it, below).
+    if focus_room.is_none() {
+        match try_pull_next_card(ctx, conversation).await {
+            PullOutcome::Pulled => {
+                crate::probe!(
+                    class = "persona.selftick.pulled_before_musing",
+                    persona = %ctx.identity.agent_name,
+                    "idle citizen took a card from the deck before the act question"
+                );
+                return true;
+            }
+            PullOutcome::DeferredWip | PullOutcome::Nothing => {}
+        }
+    }
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
     if crate::persona::act_question::ask_the_act_question(
         ctx,
