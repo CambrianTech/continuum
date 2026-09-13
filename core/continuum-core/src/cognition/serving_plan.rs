@@ -169,6 +169,11 @@ pub struct ServingDemand {
     /// more" from "the measured demand did not ask for more". A bootstrap prior wearing
     /// the `demand` label defeats exactly that.
     pub measured: bool,
+    /// The per-slot window this host served this model at LAST time (the
+    /// served-window store). When it still fits, the plan serves it VERBATIM so the
+    /// KV page geometry — `<model>--c<window>` — is the same across boots and the
+    /// citizens' pages carry over. `None` = no memory (first serve of this model).
+    pub sticky_window: Option<u32>,
 }
 
 /// The pinned solve-class window floor (see `ServingDemand::window_floor_tokens`).
@@ -203,8 +208,29 @@ impl ServingDemand {
             window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
             window_floor_tokens: solve_window_floor(),
+            sticky_window: None,
         }
     }
+
+    /// Remember last serve's per-slot window for this model (see `sticky_window`).
+    pub fn with_sticky_window(mut self, w: Option<u32>) -> Self {
+        self.sticky_window = w.filter(|w| *w >= MIN_SERVE_CTX);
+        self
+    }
+}
+
+/// The served per-slot window: the window this host served LAST time when it
+/// still fits AND still covers the measured demand — the KV page geometry then
+/// holds across boots — else the demand itself (the law above: provision for what
+/// the minds use, never for what RAM allows), clamped to what fits and the
+/// runnable floor. A demand that outgrows the remembered window re-keys the pages
+/// once and is remembered in turn. Pure.
+pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) -> u32 {
+    let wanted = match sticky {
+        Some(s) if s <= fits && s >= demand_tokens => s,
+        _ => demand_tokens,
+    };
+    wanted.min(fits).max(MIN_SERVE_CTX)
 }
 
 /// Hysteresis margin for switching UP to a more capable model: it must fit
@@ -674,9 +700,13 @@ pub fn plan_serving(
     // already ≤ the model's trained ceiling AND ≤ what the host fits, so `.min` never
     // forces UP past either, and `.max(MIN_SERVE_CTX)` keeps the lane runnable. A
     // citizen who demands more than the machine has simply receives what fits.
-    let served_context_window = window_for(lanes as u64)
-        .min(demand.window_tokens)
-        .max(MIN_SERVE_CTX);
+    // STICKY + STEPPED (2026-09-13): the same host + model served 83,968 → 102,656 →
+    // 126,464 → 138,240 across four boots as the measured demand moved, and every
+    // boot re-keyed the KV page geometry and swept the previous pages. The window
+    // now holds still: last serve's window while it still fits and still covers the
+    // demand, else the demand. See `choose_served_window`.
+    let served_context_window =
+        choose_served_window(window_for(lanes as u64), demand.window_tokens, demand.sticky_window);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -2133,4 +2163,22 @@ mod tests {
             "a better model with no headroom left is refused — the credit is not a blank cheque"
         );
     }
+    // what this catches: the served window re-keying the KV page geometry every boot
+    // (2026-09-13: four windows in four boots on one host + model; no page survived a
+    // reboot). A remembered window that fits and covers the demand is served verbatim;
+    // one the demand has outgrown, or that no longer fits, gives way to the demand.
+    #[test]
+    fn the_served_window_holds_still_across_boots_while_it_covers_the_demand() {
+        assert_eq!(choose_served_window(138_240, 90_000, Some(102_656)), 102_656, "sticky fits and covers: served verbatim");
+        assert_eq!(choose_served_window(65_536, 90_000, Some(102_656)), 65_536, "sticky no longer fits: the fit bounds the demand");
+        assert_eq!(choose_served_window(138_240, 110_000, Some(102_656)), 110_000, "demand outgrew the sticky window: serve the demand (pages re-key once)");
+        assert_eq!(choose_served_window(138_240, 90_000, None), 90_000, "no memory: the demand, as before");
+        assert_eq!(choose_served_window(138_240, 100, None), MIN_SERVE_CTX, "never below the runnable floor");
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let m = fp("m", 14, 112 * 1024, 131_072, 3);
+        let first = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(40_000))).unwrap();
+        let again = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(33_000)).with_sticky_window(Some(first.served_context_window))).unwrap();
+        assert_eq!(again.served_context_window, first.served_context_window, "the next boot, with demand drifted DOWN, serves the SAME window — the pages carry over");
+    }
+
 }

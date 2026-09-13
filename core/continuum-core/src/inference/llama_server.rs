@@ -3108,6 +3108,9 @@ impl LlamaServerControl for LlamaServerProcess {
         // is the one place that knows the new truth. Tracked + eviction-decided
         // in system_resources (the no-new-cache-dir-without-eviction law).
         let slot_save_dir = kv_page_dir(&target.model.id, total_ctx / lanes.max(1));
+        // Remember this geometry ACROSS RUNS: the next boot's plan serves it first, so
+        // the pages under this dir are still restorable after a reboot.
+        crate::modules::served_window_store::save(&target.model.id, total_ctx / lanes.max(1));
         if let Err(e) = std::fs::create_dir_all(&slot_save_dir) {
             tracing::warn!(
                 probe_class = "inference.kv_page.dir_failed",
