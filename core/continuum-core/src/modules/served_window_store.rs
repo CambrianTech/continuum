@@ -80,7 +80,7 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32) {
     let set_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .unwrap_or(0); // JUSTIFIED unwrap_or: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
     let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, set_at_ms };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
