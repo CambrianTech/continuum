@@ -243,6 +243,10 @@ pub struct BenchmarkRoundOpenParams {
     #[serde(default)]
     #[ts(optional)]
     pub review_gate: Option<bool>,
+    /// The team by name (`$args.team`); recorded on the round so the hosting
+    /// reconciler seats it while the round works. Empty = the live roster.
+    #[serde(default)]
+    pub team: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -273,6 +277,9 @@ impl ActionCommand for BenchmarkRoundOpen {
         crate::cognition::bench_round::set_run_room_name(room, &p.room_name);
         if p.review_gate.unwrap_or(false) { // unwrap_or: gate not named = off, the control arm
             crate::cognition::bench_round::set_review_gate(room, true);
+        }
+        if !p.team.is_empty() {
+            crate::cognition::bench_round::set_round_team_names(room, p.team.clone());
         }
         Ok(BenchmarkRoundOpenResult { round_id: room, driver })
     }

@@ -196,7 +196,8 @@
         "roomName": "$room.name",
         "suite": "$args.suite",
         "driver": "$args.driver",
-        "reviewGate": "$args.review_gate"
+        "reviewGate": "$args.review_gate",
+        "team": "$args.team"
       }
     },
     {
