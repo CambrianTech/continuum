@@ -169,6 +169,11 @@ pub struct BenchRound {
     /// converting a team round to solo — the review event could never fire).
     #[serde(default)]
     team: Vec<Uuid>,
+    /// The team BY NAME — what a recipe or a dispatch named. The hosting reconciler seats
+    /// the union of every WORKING citizen-driven round's team when no operator hold stands
+    /// (`roster_hold::active`), so a round staffs itself; an old round file reads empty.
+    #[serde(default)]
+    team_names: Vec<String>,
     /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
     /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
     /// and the boot resume know WHO works a card that has never run.
@@ -249,6 +254,7 @@ impl BenchRound {
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
             team: Vec::new(),
+            team_names: Vec::new(),
         }
     }
 
@@ -543,6 +549,34 @@ pub fn instances_open_in_working_rounds() -> std::collections::HashSet<String> {
                 if let Some(inst) = r.card_instances.get(card) {
                     out.insert(inst.clone());
                 }
+            }
+        }
+    }
+    out
+}
+
+/// Record the team a round was born with, by name (see `team_names`).
+pub fn set_round_team_names(round_id: Uuid, names: Vec<String>) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    if let Some(r) = rounds.get_mut(&round_id) {
+        r.team_names = names;
+        persist_round_in(&rounds_state_dir(), r);
+    }
+}
+
+/// The union of every WORKING citizen-driven round's named team, deduplicated, in the
+/// order first named. Empty when no working round names a team — the host then seats
+/// the roster as before.
+pub fn working_round_team_names() -> Vec<String> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out: Vec<String> = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working || r.driver != WorkDriver::Citizen {
+            continue;
+        }
+        for n in &r.team_names {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(n)) {
+                out.push(n.clone());
             }
         }
     }
@@ -1932,6 +1966,7 @@ mod tests {
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
                 team: Vec::new(),
+            team_names: Vec::new(),
             }
         }
         let live = std::collections::HashSet::new();

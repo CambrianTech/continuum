@@ -10,4 +10,9 @@ roomId: string, roomName: string, suite: string,
  * Who works the cards. Absent = `citizen` — resolved by the RECIPE's declared
  * default on the authored path, which is what makes the declared default real.
  */
-driver?: WorkDriver, reviewGate?: boolean, };
+driver?: WorkDriver, reviewGate?: boolean, 
+/**
+ * The team by name (`$args.team`); recorded on the round so the hosting
+ * reconciler seats it while the round works. Empty = the live roster.
+ */
+team: Array<string>, };
