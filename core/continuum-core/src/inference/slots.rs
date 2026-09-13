@@ -37,6 +37,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
+/// How many of a server's `n_slots` are CITIZEN slots — warm activity slots a
+/// Turn may hold. ≥3 slots reserve the highest index as scratch for non-Turn
+/// traffic; below that every slot is a citizen slot. ONE rule, read by the slot
+/// directory (which slots lease) AND the spawner (how many citizens to seat):
+/// measured 2026-09-13, the roster was capped at `lanes` (5) while the directory
+/// leased `lanes - 1` (4) → the fifth citizen evicted a warm slot every cycle —
+/// 60 context switches in 40 minutes on five activities, KV reuse 0.0 for the
+/// whole serve, every turn a full ~25k-token prefill.
+pub fn citizen_slots(n_slots: u32) -> u32 {
+    if n_slots >= 3 { n_slots - 1 } else { n_slots }
+}
+
 /// A slot pinned for the duration of a turn — while held, the pool cannot evict
 /// this activity's slot, so a concurrent returner never leases (and restores into)
 /// a slot that is still decoding. RAII: dropping it releases the pin.
@@ -210,8 +222,8 @@ impl KvSlotPool {
         // ≥3 slots: the highest index is RESERVED as scratch and never enters
         // the citizen free list. Costs one window; buys structural immunity
         // from every non-Turn clobber class at once.
-        let scratch = (n_slots >= 3).then(|| n_slots - 1);
-        let citizen_slots = scratch.map(|s| s).unwrap_or(n_slots); // no scratch reserved (n_slots<3) → all slots are citizen slots
+        let citizen_slots = citizen_slots(n_slots);
+        let scratch = (citizen_slots < n_slots).then_some(citizen_slots);
         // Low indices lease first (pop from the back), deterministic occupancy.
         let free: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new((0..citizen_slots).rev().collect()));
         let pool = PagedResourcePool::new(PoolConfig {

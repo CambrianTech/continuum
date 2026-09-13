@@ -261,6 +261,22 @@ pub fn base_invocation(
             // `llm_deliberation_faculty`, not by touching this value.
             arg("--cache-reuse"),
             arg("256"),
+            // CONTEXT CHECKPOINTS for the models `--cache-reuse` cannot serve. On a
+            // hybrid / recurrent cache (Ornith: "cache_reuse is not supported by this
+            // context, it will be disabled") a prefix is reusable only up to a
+            // CHECKPOINT of the recurrent state at or before the point the new
+            // prompt diverges. llama.cpp creates them at user-message starts, but
+            // never closer than `--checkpoint-min-step` (default 8192 tokens) apart —
+            // measured 2026-09-13: consecutive work turns share a 48% prefix
+            // (~5k tokens, the results ledger) and diverge where working memory is
+            // re-rendered; with the first checkpoint at ~350 tokens and the next
+            // only after 8192, the rollback landed at the head → cache_n 0 on every
+            // pinned turn. 1024 puts a checkpoint within a kilotoken below any
+            // divergence; 32 per slot covers a 32k prompt at that spacing.
+            arg("--ctx-checkpoints"),
+            arg("32"),
+            arg("--checkpoint-min-step"),
+            arg("1024"),
             // The governed host-RAM prompt cache — see [`CACHE_RAM_MIB`]. Explicit
             // so llama.cpp's 8 GiB default can never run un-owned again (§4).
             arg("--cache-ram"),
@@ -642,6 +658,15 @@ mod tests {
     // LAUNCHED with `--slot-save-path`; a lane missing it turns every rotation
     // on an oversubscribed server into a full re-prefill (hit_rate 0.0 across
     // all acts, 2026-09-01) while the code above it believes paging works.
+    // what this catches: a lane launched without context checkpoints dense enough
+    // for a hybrid-cache model — the 2026-09-13 KV reuse 0.0 on every pinned turn.
+    #[test]
+    fn context_checkpoints_are_dense_enough_for_a_hybrid_cache() {
+        let i = inv(5, 5 * 138_240);
+        assert_eq!(i.value_of("--ctx-checkpoints"), Some("32"));
+        assert_eq!(i.value_of("--checkpoint-min-step"), Some("1024"));
+    }
+
     #[test]
     fn slot_save_path_is_part_of_the_unconditional_spine() {
         let i = inv(4, 65_536);
