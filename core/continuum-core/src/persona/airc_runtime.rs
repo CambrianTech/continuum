@@ -1551,6 +1551,19 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .map(|c| c.card_id.as_uuid())
             .collect())
     }
+
+    async fn in_flight_cards_in(&self, room: Uuid, now_ms: u64) -> Result<usize, AircError> {
+        let board = crate::persona::room_board_source::RoomBoardReader::work_board(
+            self.airc.as_ref(),
+            Some(room),
+        )
+        .await?;
+        Ok(board
+            .cards
+            .iter()
+            .filter(|c| crate::persona::card_holder::in_flight_now(c, now_ms))
+            .count())
+    }
 }
 
 impl Drop for PersonaAircRuntime {

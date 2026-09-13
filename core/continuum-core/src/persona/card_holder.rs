@@ -151,6 +151,21 @@ pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
     }
 }
 
+/// Is this card IN FLIGHT — a live hold in a holder's column (Claimed/InProgress on
+/// an unexpired lease)? The WIP = lanes gate counts THESE and nothing else. Its
+/// previous proxy, `dispatched − settled − claimable`, counted every card that was
+/// merely not takeable: ownerless review cards, lapsed holds of citizens no longer
+/// resident, reviews under way — measured 2026-09-13 07:16Z on the M5: in_flight 5 of
+/// lanes 5 with ONE live hold on the board, and every resident's pull deferred while
+/// three cards sat open. A review card is never in flight for this gate (the 09-06
+/// rule: a done must free the slot its review needs).
+pub fn in_flight_now(card: &WorkCard, now_ms: u64) -> bool {
+    matches!(
+        card.state,
+        airc_work::model::CardState::Claimed | airc_work::model::CardState::InProgress
+    ) && hold_of(card, now_ms) == Hold::Held
+}
+
 /// The 8-char short id every surface in the system uses to name a uuid.
 pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
@@ -293,6 +308,26 @@ mod tests {
             updated_at_ms: 0,
             reviews: None,
         }
+    }
+
+    // what this catches (2026-09-13): the WIP gate counting cards that nobody holds —
+    // an ownerless review, a lapsed hold, an open card — as in flight, which filled
+    // every lane on paper and deferred every pull while three cards sat open.
+    #[test]
+    fn only_a_live_hold_in_a_holders_column_is_in_flight() {
+        let now = 1_000;
+        let live = card(Some(PeerId::new()), true, Some(now + 60_000));
+        assert!(in_flight_now(&live, now), "a live claimed hold is in flight");
+        let mut in_progress = card(Some(PeerId::new()), true, Some(now + 60_000));
+        in_progress.state = CardState::InProgress;
+        assert!(in_flight_now(&in_progress, now));
+        let lapsed = card(Some(PeerId::new()), true, Some(now - 1));
+        assert!(!in_flight_now(&lapsed, now), "a lapsed hold is the deck's, not a lane's");
+        let mut review = card(Some(PeerId::new()), true, Some(now + 60_000));
+        review.state = CardState::Review;
+        assert!(!in_flight_now(&review, now), "a review never counts against the lanes");
+        let open = card(None, false, None);
+        assert!(!in_flight_now(&open, now));
     }
 
     // what this catches: a card the WRITE side refuses being advertised by a READ

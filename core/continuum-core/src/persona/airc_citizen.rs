@@ -244,6 +244,14 @@ pub trait AircCitizen:
     async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
         Ok(Vec::new())
     }
+
+    /// How many cards on `room`'s board are IN FLIGHT — live holds in a holder's
+    /// column, per the ONE predicate ([`crate::persona::card_holder::in_flight_now`]).
+    /// The WIP = lanes gate counts this, never a tracker arithmetic. Fixture default:
+    /// nothing in flight; the production runtime folds the room's board.
+    async fn in_flight_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<usize, AircError> {
+        Ok(0)
+    }
 }
 
 /// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a

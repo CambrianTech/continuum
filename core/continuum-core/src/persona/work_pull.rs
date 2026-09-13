@@ -162,8 +162,12 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             if !resident.contains(&room) {
                 continue;
             }
-            let open = citizen.claimable_cards_in(room, now).await.map(|o| o.len()).unwrap_or(0); // unwrap_or: an unreadable board counts every unsettled card as in flight (conservative)
-            in_flight += round.dispatched.saturating_sub(round.settled).saturating_sub(open);
+            // BOARD TRUTH, ONE PREDICATE: live holds in a holder's column
+            // (card_holder::in_flight_now). The tracker arithmetic this replaces
+            // (dispatched − settled − claimable) counted ownerless reviews and lapsed
+            // holds of absent citizens as lanes in use — 2026-09-13 07:16Z: 5/5 "in
+            // flight" with one live hold, every pull deferred, three cards open.
+            in_flight += citizen.in_flight_cards_in(room, now).await.unwrap_or(round.dispatched.saturating_sub(round.settled)); // unwrap_or: an unreadable board counts every unsettled card as in flight (conservative, as before)
         }
         if lanes > 0 && in_flight >= lanes {
             // Once a minute per citizen, never sampled: a 1/50 sample on a four-coder
