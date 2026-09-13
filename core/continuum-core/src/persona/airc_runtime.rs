@@ -1493,10 +1493,16 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         )
         .await?;
         let me = self.airc.peer_id();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
         Ok(board
             .cards
             .iter()
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .filter(|c| {
+                let owner_resident = c
+                    .owner
+                    .is_some_and(|o| registry.as_ref().is_some_and(|r| r.get(o.as_uuid()).is_some()));
+                crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
+            })
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {
@@ -1566,7 +1572,13 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
             }
         };
         held.extend(board.cards.into_iter().filter(|card| {
-            card.owner == Some(me)
+            // A settled card is nobody's work, whatever its lease says: a closed card
+            // whose claim fields outlive the close read as HELD, focused her ticks on a
+            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+            !matches!(
+                card.state,
+                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
+            ) && card.owner == Some(me)
                 && crate::persona::card_holder::hold_of(card, now_ms)
                     == crate::persona::card_holder::Hold::Held
                 && !crate::persona::card_holder::claimable_now(card, now_ms)

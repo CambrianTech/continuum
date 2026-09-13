@@ -140,6 +140,36 @@ pub fn refused_by_claim(state: airc_work::model::CardState) -> bool {
 /// re-deriving it: before 2026-08-07 `room_board_source` and `CardHolder` each
 /// filtered terminal states by hand, both missed `Review`, and the board offered
 /// 11 unclaimable cards to citizens who had no way to know.
+/// How long a RESIDENT owner's lapsed hold stays hers before anyone else may take it —
+/// the one number the verdict sweep (close/reopen) and the pull (claimability) share.
+/// A lease lapses whenever cognition pauses for the TTL — a reboot's dark window, a
+/// long build — and the owner's own pump reclaims it on her next tick; a peer who takes
+/// it first strands her diff (2026-09-13: Atlas's django and Joaquin's validated astropy
+/// fix both changed hands at a boot within seconds of the core answering).
+pub const RESIDENT_OWNER_GRACE_MS: u64 = 30 * 60 * 1000;
+
+/// A lapsed hold still inside its resident owner's grace.
+pub fn lapsed_within_owner_grace(card: &WorkCard, now_ms: u64) -> bool {
+    hold_of(card, now_ms) == Hold::Lapsed
+        && card
+            .claim_expires_at_ms
+            .is_some_and(|e| now_ms.saturating_sub(e) < RESIDENT_OWNER_GRACE_MS)
+}
+
+/// May `me` take this card right now? [`claimable_now`] plus the resident owner's grace:
+/// her own lapsed card is always hers; another resident's lapsed card is not takeable
+/// until the grace runs out (her pump reclaims it first). An ABSENT owner's lapsed card
+/// is the deck's at once — the sweep reopens it, the pull may take it.
+pub fn claimable_by(card: &WorkCard, now_ms: u64, me: airc_core::PeerId, owner_resident: bool) -> bool {
+    if !claimable_now(card, now_ms) {
+        return false;
+    }
+    if card.owner == Some(me) {
+        return true;
+    }
+    !(owner_resident && lapsed_within_owner_grace(card, now_ms))
+}
+
 pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
     if refused_by_claim(card.state) {
         return false;
@@ -328,6 +358,27 @@ mod tests {
         assert!(!in_flight_now(&review, now), "a review never counts against the lanes");
         let open = card(None, false, None);
         assert!(!in_flight_now(&open, now));
+    }
+
+    // what this catches (2026-09-13): a peer taking a RESIDENT owner's lapsed hold at a
+    // boot before her pump reclaims it — the maker's diff stranded twice in one day. The
+    // owner's own lapsed card stays hers; a peer waits out the grace; an absent owner's
+    // card is the deck's at once.
+    #[test]
+    fn a_resident_owners_lapsed_hold_stays_hers_for_the_grace() {
+        let now = 10_000_000;
+        let owner = PeerId::new();
+        let peer = PeerId::new();
+        let just_lapsed = card(Some(owner), true, Some(now - 60_000));
+        assert!(lapsed_within_owner_grace(&just_lapsed, now));
+        assert!(claimable_by(&just_lapsed, now, owner, true), "her own lapsed card is hers");
+        assert!(!claimable_by(&just_lapsed, now, peer, true), "a peer waits out a resident owner's grace");
+        assert!(claimable_by(&just_lapsed, now, peer, false), "an absent owner's lapsed card is the deck's");
+        let long_lapsed = card(Some(owner), true, Some(now - RESIDENT_OWNER_GRACE_MS - 1));
+        assert!(!lapsed_within_owner_grace(&long_lapsed, now));
+        assert!(claimable_by(&long_lapsed, now, peer, true), "after the grace anyone may take it");
+        let live = card(Some(owner), true, Some(now + 60_000));
+        assert!(!claimable_by(&live, now, peer, false), "a live hold is never claimable");
     }
 
     // what this catches: a card the WRITE side refuses being advertised by a READ
