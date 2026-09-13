@@ -1115,7 +1115,7 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
         let rows: Vec<StagedCredit> = listed
             .get("items")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect())
+            .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect()) // ORM boundary: her own staged_credit rows, decoded as the typed entity; a malformed row is skipped, not fatal
             .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no items key = nothing staged
         if rows.is_empty() {
             continue;
