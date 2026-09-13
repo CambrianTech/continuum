@@ -1503,6 +1503,14 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
                     .is_some_and(|o| registry.as_ref().is_some_and(|r| r.get(o.as_uuid()).is_some()));
                 crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
             })
+            // A card whose instance carries a STANDING ENV refusal on this box (the
+            // harness cannot grade it: era-pinned pytest, repo will not install,
+            // pristine-tree f2p passes) is never offered to a pull. Import withholds
+            // such instances from new rounds (#4001/#4003); this is the same rule for
+            // cards already on a board — psf__requests-1766 (2026-09-13): refused
+            // ungradeable at 09:36, closed, reopened by its closer at 16:27, pulled by
+            // Kira at 17:15 → a lane spent on work no grade can ever score.
+            .filter(|c| !crate::persona::card_holder::refused_on_this_box(&c.title))
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {
