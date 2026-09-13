@@ -1057,23 +1057,29 @@ pub(crate) fn dispatch_swe_card_body(
     } else {
         f2p.join(", ")
     };
+    // THE DEFINITION OF DONE LEADS. The card is a wall post, and a wall render keeps a
+    // body PREFIX (wall_source: max_chars − reserved) — with the tests named after a long
+    // problem statement, every holder's first turns went to "determine the FAIL_TO_PASS
+    // tests" by reading the dataset (Kira, Atlas, 2026-09-13 11:2xZ) for a fact the card
+    // already carried, below the cut.
     format!(
-        "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
+        "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\
+         DEFINITION OF DONE: these tests pass — {}. Do not edit the tests; your DIFF is graded \
+         against the repo's held-out suite.\n\n{}\n\n\
          This is a REAL open-source issue. When you CLAIM this card, the repo is staged in \
          your workspace at `swe/{}/` (checked out at the buggy commit), and while you hold the \
          card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
          and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
-         your tools, then run the tests. Definition of done: these tests pass — {}. Your DIFF is \
-         graded against the repo's held-out test suite; do not edit the tests. END EVERY WORK TURN \
-         with work/note (the card's ledger: what you established, the competing hypotheses with \
-         the test that settles each, the one unknown, the next test) — your next turn opens from \
-         it instead of re-orienting.",
+         your tools, then run the tests named above. END EVERY WORK TURN with work/note (the \
+         card's ledger: what you established, the competing hypotheses with the test that settles \
+         each, the one unknown, the next test) — your next turn opens from it instead of \
+         re-orienting.",
         i.instance_id,
         i.repo,
         i.base_commit,
+        tests,
         i.problem_statement.trim(),
         i.instance_id,
-        tests,
     )
 }
 
