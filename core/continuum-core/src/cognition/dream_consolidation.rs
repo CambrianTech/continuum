@@ -941,7 +941,7 @@ impl DreamConsolidationRegion {
                     dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed),
                 )
                 .await;
-                in_flight.lock().unwrap().remove(&persona_id);
+                in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
                 return;
             }
             crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
@@ -962,7 +962,7 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
 
         TickOutcome {
@@ -1019,7 +1019,7 @@ impl DreamConsolidationRegion {
         let reflector = reflector.clone();
         tokio::spawn(async move {
             review_pass(reflector, persona_id, beliefs, reviewed).await;
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
@@ -1121,7 +1121,7 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
