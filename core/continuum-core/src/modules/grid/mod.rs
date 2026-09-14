@@ -362,6 +362,16 @@ impl ServiceModule for GridModule {
             FLEET_SILENT_AFTER_MS,
             env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
         );
+        // PLACEMENT FOLLOWS THE FLEET (2026-09-14): remote-bound minds fall home when
+        // their seat goes dark and return when it beacons again — the two hand moves of
+        // 2026-09-07, now the substrate's, once per tick, receipted in the org room.
+        for line in crate::persona::placement_switch::follow_the_fleet(
+            crate::modules::grid::frame::now_millis(),
+        )
+        .await
+        {
+            say_in_org_room(&line).await;
+        }
         for t in transitions {
             crate::probe!(
                 class = "fleet.node.transition",
