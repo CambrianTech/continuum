@@ -353,13 +353,14 @@ impl ServiceModule for GridModule {
             self.state.registry.note_peer_build(
                 &crate::identity::PeerId::from_uuid(peer_uuid),
                 crate::capacity::gossip::build_hex(offer.build),
+                offer.build_number,
                 heard_at_ms,
             );
         }
         let transitions = self.state.registry.fold_liveness(
             crate::modules::grid::frame::now_millis(),
             FLEET_SILENT_AFTER_MS,
-            env!("CONTINUUM_BUILD_GIT_SHA"),
+            env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
         );
         for t in transitions {
             crate::probe!(
@@ -373,7 +374,7 @@ impl ServiceModule for GridModule {
             let line = match t.kind {
                 registry::FleetChange::WentStale => format!("[fleet] {} has been silent {} h — treat as DOWN until it beacons again", t.node, t.silent_secs / 3600),
                 registry::FleetChange::BackFresh => format!("[fleet] {} is back (heard {} s ago)", t.node, t.silent_secs),
-                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} while this node runs {} — behind tip; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), env!("CONTINUUM_BUILD_GIT_SHA")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
                 registry::FleetChange::CaughtUp => format!("[fleet] {} caught up to build {}", t.node, env!("CONTINUUM_BUILD_GIT_SHA")),
             };
             say_in_org_room(&line).await;

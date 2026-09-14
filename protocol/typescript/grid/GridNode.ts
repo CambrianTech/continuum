@@ -54,6 +54,10 @@ peer_id?: string | undefined,
  */
 build_sha?: string, 
 /**
+ * The node's monotonic build number as its last beacon reported it (0 = unknown).
+ */
+build_number: number, 
+/**
  * Seconds since this node was last heard (a beacon, a discovery, a frame).
  */
 silent_secs: number, 

@@ -63,6 +63,12 @@ pub struct CapacityOffer {
     /// every node knows who is behind tip without anyone reading a room.
     #[serde(default)]
     pub build: u64,
+    /// The sender's monotonic build number (CONTINUUM_BUILD_NUMBER; 0 = unknown).
+    /// "Behind" is a comparison of NUMBERS, never of shas: the first cross-node fold
+    /// (2026-09-14 16:5xZ) had both nodes call each other "behind tip" because their
+    /// shas differed, and the M5 was the one ahead.
+    #[serde(default)]
+    pub build_number: u64,
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -196,6 +202,7 @@ mod tests {
             system_ram_free_bytes: 16 * GB,
             at_ms,
                     build: 0,
+                    build_number: 0,
         }
     }
     fn local() -> DeviceCapacity {

@@ -387,6 +387,7 @@ mod tests {
             latency_ms: Some(47),
             peer_id: None,
             build_sha: None,
+            build_number: 0,
             silent_secs: 0,
             stale: false,
             behind: false,
@@ -425,6 +426,7 @@ mod tests {
                 // the registry learned before any beacon correlated it.
                 peer_id: None,
                 build_sha: None,
+                build_number: 0,
                 silent_secs: 0,
                 stale: false,
                 behind: false,
