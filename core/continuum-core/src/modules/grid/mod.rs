@@ -380,11 +380,13 @@ impl ServiceModule for GridModule {
         }
 
         for (peer_uuid, offer) in crate::capacity::gossip::global_ledger().heard_offers() {
-            let vram_mb = (offer.gpu_total_bytes / (1024 * 1024)).max(1);
+            // A RAM-only beacon (gpu_total_bytes 0) is a CPU node: no Compute
+            // capability, never a fabricated 1 MiB of VRAM (card deb26770).
+            let vram_mb = (offer.gpu_total_bytes > 0).then(|| offer.gpu_total_bytes / (1024 * 1024));
             if self
                 .state
                 .registry
-                .ensure_peer_node(crate::identity::PeerId::from_uuid(peer_uuid), Some(vram_mb))
+                .ensure_peer_node(crate::identity::PeerId::from_uuid(peer_uuid), vram_mb)
             {
                 crate::probe!(
                     class = "grid.peer.autocorrelated",
