@@ -867,6 +867,7 @@ async fn serve_persona_loop_inner(
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
+        crate::cognition::resource_admission::note_turn_started(ctx.identity.peer_id.as_uuid(), crate::persona::trace::now_ms());
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
@@ -2573,7 +2574,11 @@ async fn run_self_cycle(
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
     // needed one.
-    let Some(_ambient_permit) = crate::cognition::resource_admission::try_hold_ambient_turn()
+    let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
+        ctx.identity.peer_id.as_uuid(),
+        now_ms,
+    )
+    .await
     else {
         return true;
     };
