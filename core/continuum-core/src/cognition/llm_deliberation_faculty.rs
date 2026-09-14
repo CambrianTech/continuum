@@ -1297,11 +1297,24 @@ impl LlmDeliberationFaculty {
         //
         // Containment is asymmetric and that is what makes this safe to add rather than a
         // new false-positive surface: `containment(draft, fact)` asks how much of the FACT
-        // reappears in the DRAFT. The identity block is large, so a citizen who merely talks
-        // ABOUT herself ("I'm Paige, I work on the grid") shares a handful of its tokens and
-        // scores near zero. Only near-total reproduction reaches 0.8. No new threshold, no
-        // new measure, no phrase list.
-        facts.push(self.system_prompt.as_str());
+        // reappears in the DRAFT. The identity block is large enough that a citizen who
+        // merely talks ABOUT herself ("I'm Paige, I work on the grid") shares a handful of
+        // its tokens and scores near zero. Only near-total reproduction reaches 0.8. No new
+        // threshold, no new measure, no phrase list.
+        //
+        // PER BLOCK, NEVER WHOLE — measured, after I first wrote this as a single
+        // `facts.push(&self.system_prompt)` and checked it against her real turn:
+        //
+        //     containment(draft, WHOLE composed prompt) = 0.135   INERT
+        //     containment(draft, identity block)        = 0.875   fires
+        //     next-highest block                        = 0.433   clean margin
+        //
+        // Because containment measures how much of the FACT came back, a fact gets HARDER to
+        // trip the longer it is. She recited one 56-token block of an 850-token prompt —
+        // entirely — and the whole-prompt score calls that speech. Whatever this field holds
+        // (identity alone, or identity plus more framing) the split is what makes the gate
+        // work, so this does not depend on knowing which.
+        facts.extend(parroted_perception::prompt_blocks(&self.system_prompt));
         let Some(echoed) = parroted_perception::parroted_fact(
             text,
             &facts,
