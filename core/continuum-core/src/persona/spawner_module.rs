@@ -515,13 +515,21 @@ async fn draw_intents(
                 source,
             })?;
         let Some(intent) = next else {
-            if hold.is_some() && !intents.is_empty() {
+            // A SHORTFALL IS A PARTIAL ROSTER, NEVER A DRAIN (2026-09-13): with the
+            // roster no longer capped at lanes, a plan can ask for more seats than the
+            // provider holds identities (or than a hold allows). Returning Err here made
+            // the host drain the already-registered minds as "partially registered" and
+            // retry every second — zero residents until an operator intervened. The
+            // identities the provider yielded ARE the roster; the plan's surplus seats are
+            // the plan's business (a probe names the shortfall), not a boot failure.
+            if !intents.is_empty() {
                 crate::probe!(
-                    class = "persona.host.hold_filled_fewer_seats",
+                    class = "persona.host.provider_filled_fewer_seats",
                     seats = required,
                     filled = intents.len(),
                     drawn,
-                    "the provider ran out of identities the hold allows — seating fewer, not failing"
+                    held = hold.is_some(),
+                    "the provider ran out of identities (or the hold allows no more) — seating fewer, not failing"
                 );
                 break;
             }
@@ -533,7 +541,9 @@ async fn draw_intents(
             });
         };
         drawn += 1;
-        if let Some(h) = hold.as_ref() {
+        // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
+        // orders the roster — team first — but seats the whole population (below).
+        if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
             if !h.allows(&intent.agent_name) {
                 crate::probe!(
                     class = "persona.host.held_out",
@@ -545,6 +555,12 @@ async fn draw_intents(
             }
         }
         intents.push(intent);
+    }
+    // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
+    // after — never fewer minds. Stable: the provider's order is kept within each half.
+    if let Some(h) = hold.as_ref().filter(|h| !h.exclusive) {
+        let (team, rest): (Vec<_>, Vec<_>) = intents.into_iter().partition(|i| h.allows(&i.agent_name));
+        intents = team.into_iter().chain(rest).collect();
     }
     Ok(intents)
 }
@@ -565,7 +581,7 @@ async fn draw_intents(
 pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
     let seats = population.max(1);
     match hold {
-        Some(h) if !h.only.is_empty() => seats.min(h.only.len()),
+        Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
         _ => seats,
     }
 }
@@ -734,6 +750,7 @@ mod tests {
             only: ["Delta", "Foxtrot", "Alpha"].iter().map(|s| s.to_string()).collect(),
             until_ms: u64::MAX,
             reason: "test".to_string(),
+            exclusive: true,
         };
         let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
@@ -975,11 +992,54 @@ mod tests {
             only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
             until_ms: u64::MAX,
             reason: "test".to_string(),
+            exclusive: true,
         };
         assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
         assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
         assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
         assert_eq!(seats_under(0, None), 1, "never zero");
+    }
+
+    // what this catches (2026-09-13): a plan larger than the provider's identities turning
+    // the boot into a drain loop — zero residents until an operator moved a file. The
+    // identities the provider yields ARE the roster; the surplus seats are a probe.
+    #[tokio::test]
+    async fn a_provider_shortfall_seats_what_it_has_and_never_fails_the_boot() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
+        let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
+        let intents = draw_intents(&mut provider, &plan, None).await.expect("a shortfall is not an error");
+        let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
+        let mut empty = Yield(std::collections::VecDeque::new());
+        assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+    }
+
+    // what this catches (2026-09-14): a working round's team hold shrinking the roster —
+    // seven of twelve minds held out on a sixteen-seat node because the derived hold read
+    // as exclusive. A derived hold orders (team first); only an operator hold excludes.
+    #[test]
+    fn a_derived_team_hold_seats_the_team_first_and_never_fewer_minds() {
+        let derived = crate::persona::roster_hold::from_team_names(vec!["Delta".into(), "Alpha".into()], 0).expect("hold");
+        assert!(!derived.exclusive);
+        assert_eq!(seats_under(12, Some(&derived)), 12, "a team hold never bounds the seats");
+        let operator = crate::persona::roster_hold::RosterHold { only: vec!["Alpha".into()], until_ms: u64::MAX, reason: "op".into(), exclusive: true };
+        assert_eq!(seats_under(12, Some(&operator)), 1, "an operator hold does");
     }
 
 }

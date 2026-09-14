@@ -33,6 +33,17 @@ pub struct RosterHold {
     pub until_ms: u64,
     /// Why — travels into every skip probe so a held-down fleet explains itself.
     pub reason: String,
+    /// `true` = the operator's file: ONLY these names sit and they bound the seats.
+    /// `false` = derived from working rounds' teams: these names sit FIRST, the rest
+    /// of the population fills the remaining seats (2026-09-14: the seed-5 team hold
+    /// read as exclusive held out seven of twelve minds on a sixteen-seat node; a
+    /// team round must never shrink the roster — Joel: push the mind count).
+    #[serde(default = "exclusive_default")]
+    pub exclusive: bool,
+}
+
+fn exclusive_default() -> bool {
+    true
 }
 
 impl RosterHold {
@@ -81,6 +92,7 @@ pub fn from_team_names(names: Vec<String>, now_ms: u64) -> Option<RosterHold> {
         reason: format!("the working rounds' team ({} named) seats itself", names.len()),
         only: names,
         until_ms: now_ms.saturating_add(60 * 60 * 1000),
+        exclusive: false,
     })
 }
 
@@ -122,6 +134,7 @@ pub fn set(only: Vec<String>, minutes: u64, reason: String) -> Result<RosterHold
         only,
         until_ms: now_ms() + minutes * 60_000,
         reason,
+        exclusive: true,
     };
     let path = hold_path().ok_or_else(|| "no home directory".to_string())?;
     if let Some(parent) = path.parent() {
@@ -167,6 +180,7 @@ mod tests {
             only: vec!["Atlas".into()],
             until_ms: 10_000,
             reason: "exam".into(),
+            exclusive: true,
         };
         std::fs::write(&path, serde_json::to_vec(&hold).expect("ser")).expect("write");
 

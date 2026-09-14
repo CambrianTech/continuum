@@ -139,7 +139,12 @@ case "$(uname -sm)" in
     ;;
   "Darwin arm64")
     CONTINUUM_FEATURES="--features metal,accelerate"
-    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
+    # ONE library compile per deploy (2026-09-13): a CLI feature set that differs from the
+    # core's makes cargo compile continuum-core TWICE per deploy (measured: the "pure
+    # relaunch" spent ~10 min in a second full lib build). On Apple silicon the featured
+    # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
+    # runtime) does not apply here. Same features → the CLI shares the core's lib.
+    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
     ;;
   *)
     # Source the existing detector for Linux/Windows.
