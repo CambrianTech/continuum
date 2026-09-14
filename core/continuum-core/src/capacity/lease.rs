@@ -198,6 +198,7 @@ mod tests {
             gpu_free_bytes_live: 7 * GB,
             system_ram_free_bytes: 16 * GB,
             at_ms: 0,
+            build: 0,
         }
         .capacity()
     }

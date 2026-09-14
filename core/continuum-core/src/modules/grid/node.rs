@@ -219,6 +219,20 @@ pub struct GridNode {
     #[ts(optional)]
     #[ts(type = "string | undefined")]
     pub peer_id: Option<PeerId>,
+    /// The node's running build (9-hex sha) as its last beacon reported it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub build_sha: Option<String>,
+    /// Seconds since this node was last heard (a beacon, a discovery, a frame).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub silent_secs: u64,
+    /// Heard nothing for longer than the fleet's silence threshold — treat as DOWN.
+    #[serde(default)]
+    pub stale: bool,
+    /// Running a build other than this node's — behind (or ahead of) tip.
+    #[serde(default)]
+    pub behind: bool,
 }
 
 /// A node discovered during transport-level discovery (before trust assignment).

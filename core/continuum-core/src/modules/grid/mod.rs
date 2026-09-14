@@ -345,6 +345,40 @@ impl ServiceModule for GridModule {
         // becomes a routable node with its `peer_id` set — the grid figures out node identities
         // automatically, no manual `grid/pair`. Trust stays default (discovery ≠ authorization,
         // #38), so the node is visible to pricing but not sent work until trusted.
+        // FLEET DRIFT IS A RECEIPT (2026-09-14): every beacon names its build; the
+        // fold flags silence and drift ONCE per transition — a probe and one line in
+        // the org room — so "a node ran a nine-day-old core" is said by the substrate,
+        // not noticed by whoever happens to be reading.
+        for (peer_uuid, offer, heard_at_ms) in crate::capacity::gossip::global_ledger().heard_offers_with_age() {
+            self.state.registry.note_peer_build(
+                &crate::identity::PeerId::from_uuid(peer_uuid),
+                crate::capacity::gossip::build_hex(offer.build),
+                heard_at_ms,
+            );
+        }
+        let transitions = self.state.registry.fold_liveness(
+            crate::modules::grid::frame::now_millis(),
+            FLEET_SILENT_AFTER_MS,
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+        );
+        for t in transitions {
+            crate::probe!(
+                class = "fleet.node.transition",
+                node = %t.node,
+                change = t.kind.as_str(),
+                silent_secs = t.silent_secs,
+                build = %t.build_sha.clone().unwrap_or_else(|| "?".into()), // JUSTIFIED unwrap_or_else: "?" = this node never beaconed a build, a legible absence in the probe
+                "fleet liveness changed for a node"
+            );
+            let line = match t.kind {
+                registry::FleetChange::WentStale => format!("[fleet] {} has been silent {} h — treat as DOWN until it beacons again", t.node, t.silent_secs / 3600),
+                registry::FleetChange::BackFresh => format!("[fleet] {} is back (heard {} s ago)", t.node, t.silent_secs),
+                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} while this node runs {} — behind tip; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), env!("CONTINUUM_BUILD_GIT_SHA")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up to build {}", t.node, env!("CONTINUUM_BUILD_GIT_SHA")),
+            };
+            say_in_org_room(&line).await;
+        }
+
         for (peer_uuid, offer) in crate::capacity::gossip::global_ledger().heard_offers() {
             let vram_mb = (offer.gpu_total_bytes / (1024 * 1024)).max(1);
             if self
@@ -442,5 +476,32 @@ impl ServiceModule for GridModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Six hours without a beacon, a discovery or a frame = the node is treated as down.
+const FLEET_SILENT_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// One line into the org room (the git-remote-derived base the operator peer
+/// subscribes at boot), as the operator. No operator online or no org room = the
+/// probe alone carries the transition; never a panic, never a retry loop.
+async fn say_in_org_room(line: &str) {
+    let Some(airc) = crate::persona::operator_peer::operator_airc() else { return };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| crate::modules::persona_instance_manager::resolve_continuum_root()); // JUSTIFIED unwrap_or_else: no cwd = the home, same fallback the operator peer takes
+    let Some(org) = airc_lib::JoinContext::from_cwd(&cwd)
+        .channels
+        .into_iter()
+        .find(|c| c.as_str() != airc_lib::GENERAL_CHANNEL)
+    else {
+        return;
+    };
+    let Ok(set) = airc.subscription_set().await else { return };
+    let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.name == org.as_str()) else { return };
+    if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room.channel.as_uuid(), line).await {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            error = %e.to_string(),
+            "the fleet transition could not be said in the org room — the probe stands"
+        );
     }
 }

@@ -322,6 +322,10 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         last_seen: frame::now_millis(),
         latency_ms: None,
         peer_id,
+        build_sha: None,
+        silent_secs: 0,
+        stale: false,
+        behind: false,
     };
 
     state.registry.register_node(node);
