@@ -1073,6 +1073,11 @@ pub fn acted_completion(intent: &str, calls: &[crate::ai::types::ToolCall]) -> S
     out
 }
 
+/// The whole turn's act chain, rendered in order — one `acted_completion` per act.
+pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> String {
+    turn_acts.iter().map(|(intent, calls)| acted_completion(intent, calls)).collect::<Vec<_>>().join("")
+}
+
 /// SETTLE a card's staged credit: every citizen's staged turns on `card_id` become
 /// examples when the card PASSED (stamped with role + outcome, through the same
 /// quality gate as live turns) and are discarded when it failed. Reads each
@@ -1852,6 +1857,15 @@ mod tests {
         let c = acted_completion("  fix the qop quoting  ", &calls);
         assert_eq!(c, "fix the qop quoting\ncode/read({\"path\":\"x.py\"})\ncode/edit({\"mode\":\"replace\",\"path\":\"x.py\"})\n");
         assert_eq!(acted_completion("", &[]), "");
+    }
+
+    // what this catches: the chain dropping an act or reordering it — the completion a
+    // passed card lifts must be the turn as she took it.
+    #[test]
+    fn the_act_chain_keeps_every_act_in_order() {
+        let c = |n: &str| crate::ai::types::ToolCall { id: n.into(), name: n.into(), input: json!({}) };
+        let chain = acted_chain(&[("look".into(), vec![c("code/read")]), ("fix".into(), vec![c("code/edit"), c("code/run")])]);
+        assert_eq!(chain, "look\ncode/read({})\nfix\ncode/edit({})\ncode/run({})\n");
     }
 
 }

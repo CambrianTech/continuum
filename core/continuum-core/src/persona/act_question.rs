@@ -478,8 +478,26 @@ pub(crate) async fn ask_the_act_question(
                     // OTHER produce call site. Bound rather than dropped so the
                     // card-linked staging path can carry the same provenance the
                     // directed path does (card 0d51573a).
+                    // THE WHOLE ACT CHAIN LEARNS (2026-09-14): every act of this work turn,
+                    // in order, staged against the held card whatever the turn's final step
+                    // was — acts run mid-turn, so inspecting only the last step staged
+                    // nothing (24 holder acts, 0 staged). The card's verdict stamps the chain.
+                    let turn_acts = work.turn_acts.clone();
                     let (work_step, _, work_generation_receipts) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
+                    if !turn_acts.is_empty() {
+                        if let Some(card) = held.first() {
+                            crate::persona::training_producer::produce(
+                                ctx.identity.peer_id.as_uuid(),
+                                ctx.identity.agent_name.clone(),
+                                ctx.profile.model_id.clone(),
+                                work_context.clone(),
+                                crate::persona::training_producer::acted_chain(&turn_acts),
+                                Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
+                                work_generation_receipts.clone(),
+                            );
+                        }
+                    }
                     match work_step {
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —
@@ -648,24 +666,6 @@ pub(crate) async fn ask_the_act_question(
                                 decision = ?std::mem::discriminant(&other),
                                 "work-turn settled without a spoken report"
                             );
-                            // THE ACTED CHAIN LEARNS (2026-09-13): every work turn ends
-                            // here, and until now only the rare spoken report reached the
-                            // producer — a day of five coders staged zero code turns. The
-                            // intent + the exact calls are staged against the held card;
-                            // the card's verdict stamps them (settle_card_credit).
-                            if let crate::cognition::act_observe::SettleStep::Acted { calls, intent } = &other {
-                                if let Some(card) = held.first() {
-                                    crate::persona::training_producer::produce(
-                                        ctx.identity.peer_id.as_uuid(),
-                                        ctx.identity.agent_name.clone(),
-                                        ctx.profile.model_id.clone(),
-                                        work_context.clone(),
-                                        crate::persona::training_producer::acted_completion(intent, calls),
-                                        Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
-                                        work_generation_receipts.clone(),
-                                    );
-                                }
-                            }
                         }
                     }
                     // She held work and worked it this turn — tell the caller so
