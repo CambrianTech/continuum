@@ -101,6 +101,11 @@ once() {
   ( cd "$REPO_DIR" && git checkout -q "$BRANCH" && git pull -q --ff-only origin "$BRANCH" && git submodule update --init --recursive -q ) \
     || { say "refuse: checkout/pull of $BRANCH failed"; return 0; }
   local started; started="$(date +%s)"
+  # FROM THE REPO. Under launchd the cwd is `/`; `continuum reboot` then finds no source
+  # tree, skips the build, and bounces the installed artifact — the first self-deploy
+  # (2026-09-14 03:32Z) "deployed" the old binary and left the core down on a stale airc
+  # socket. The deploy tree is where a deploy runs.
+  cd "$REPO_DIR" || { say "refuse: cannot cd $REPO_DIR"; return 0; }
   if continuum reboot >>"$LOG" 2>&1; then
     say "deployed: $(running_sha) in $(( $(date +%s) - started )) s"
     self_check "$tip"
@@ -166,8 +171,8 @@ install_agent() {
   <key>StartInterval</key><integer>$INTERVAL</integer>
   <key>RunAtLoad</key><true/>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
-  <key>StandardOutPath</key><string>$LOG</string>
-  <key>StandardErrorPath</key><string>$LOG</string>
+  <key>StandardOutPath</key><string>$LOG.launchd</string>
+  <key>StandardErrorPath</key><string>$LOG.launchd</string>
 </dict></plist>
 EOF
       launchctl unload "$plist" 2>/dev/null; launchctl load "$plist" && say "installed launchd agent com.continuum.track-canary every ${INTERVAL}s ($plist)"
