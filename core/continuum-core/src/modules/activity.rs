@@ -1184,7 +1184,11 @@ pub struct ActivityStateResult {
 impl ActionCommand for ActivityState {
     const NAME: &'static str = "activity/state";
     const ALIASES: &'static [&'static str] = &["activity_state"];
-    const NATIVE: bool = true;
+    // NOT native: a read of the bundle is a resume-time/operator verb, not a per-turn
+    // act — offering it to every persona would grow the agentic tool surface past
+    // its ceiling (llm_deliberation_faculty: shrink first, #333). Discoverable via
+    // commands/list; callable by name.
+    const NATIVE: bool = false;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Read the room's saved activity state — what its recipe and tracker saved on the \
