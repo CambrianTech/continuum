@@ -3210,6 +3210,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let burst = held_work_burst(&[&card], &[]);
@@ -5191,6 +5193,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let card_id = card.card_id;
         let stub = StubAircCitizen::new(persona_peer).with_claims(vec![card]);
@@ -5334,6 +5338,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         }
     }
 
