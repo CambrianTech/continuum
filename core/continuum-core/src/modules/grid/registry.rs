@@ -168,6 +168,14 @@ impl NodeRegistry {
         let mut out = Vec::new();
         for mut r in self.nodes.iter_mut() {
             let n = r.value_mut();
+            // Only a node that has ever BEACONED a build or has a transport address is
+            // a fleet member the fold may judge. A bare registry row (a seat registered
+            // by hand, an id with no addresses) is not a node that can go silent —
+            // 2026-09-14 the first live fold flagged this node's OWN operator seat as
+            // "silent 828 h — treat as DOWN" in the org room.
+            if n.build_sha.is_none() && n.addresses.is_empty() {
+                continue;
+            }
             let silent = now_ms.saturating_sub(n.last_seen);
             n.silent_secs = silent / 1000;
             let stale = silent > silent_after_ms;
@@ -349,6 +357,19 @@ mod tests {
     /// what this catches: a node nine days silent (or on an old build) reading as a
     /// live, current peer — the fold must flag it ONCE and unflag it once when it
     /// returns, never a transition per tick.
+    #[test]
+    fn a_bare_registry_row_is_never_judged_by_the_fold() {
+        let dir = std::env::temp_dir().join(format!("grid-fleet-bare-{}", uuid::Uuid::new_v4()));
+        let reg = NodeRegistry::new(&dir);
+        let peer = PeerId::from_uuid(uuid::Uuid::from_u128(11));
+        assert!(reg.ensure_peer_node(peer, None));
+        let t0 = now_millis();
+        let six_h = 6 * 3600 * 1000;
+        assert!(reg.fold_liveness(t0 + six_h * 200, six_h, "740055750").is_empty(), "no beacon, no address: not a fleet member");
+        reg.note_peer_build(&peer, Some("8d1282271".into()), t0);
+        assert_eq!(reg.fold_liveness(t0 + 1000, six_h, "740055750").len(), 1, "once it beacons, it is judged");
+    }
+
     #[test]
     fn the_fleet_fold_flags_silence_and_drift_once_each_way() {
         let dir = std::env::temp_dir().join(format!("grid-fleet-fold-{}", uuid::Uuid::new_v4()));
