@@ -81,6 +81,9 @@ impl ServiceModule for BenchmarkGradeModule {
                 "pending citizen work found on the tick — grading now, not at the next boot"
             );
         }
+        // THE VERDICT LAW on the tick (card 52842311): verdicts on file settle the
+        // cards the board left open — review-parked parents, unpulled review cards.
+        crate::modules::verdict_board::reconcile_verdicted().await;
         sweep_lapsed_bench_cards(&self.registry).await
     }
 
