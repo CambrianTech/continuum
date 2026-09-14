@@ -209,6 +209,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // the room is left alone (no epoch bump, no stream re-open).
             reseat_working_rounds(&registry).await;
             seat_announced_rounds(&registry).await;
+            sync_round_bundles(&registry).await;
             unseat_finished_rounds(&registry).await;
             release_surplus_holds(&registry).await;
             if attempt == 1 {
@@ -740,5 +741,134 @@ mod tests {
         assert_eq!(release, vec![a, c]);
         let (keep, _) = surplus_holds(&[(a, 10), (b, 30)], Some(c)).unwrap();
         assert_eq!(keep, b, "an acting card she does not hold cannot be kept");
+    }
+}
+
+/// THE BUNDLE PASS (card c9ddb911, slice 2). Two directions, both idempotent:
+/// (1) every round the tracker changed since the last pass is published to its run
+/// room as the activity bundle (`activity-state`, kind `benchmark/round`); (2) every
+/// announced citizen round this tracker does not know is restored from its room's
+/// bundle — a reboot with no `bench-rounds/` files, or a round born on another node
+/// whose residents were just seated here, comes back as a tracked round with no
+/// hand. A room nobody here is subscribed to cannot be read or written this pass;
+/// the dirty mark is kept and the next pass retries.
+async fn sync_round_bundles(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::experience::activity_state::{ActivityStateStore, WallActivityStateStore};
+    use crate::persona::airc_citizen::AircCitizen as _;
+    const KIND: &str = "benchmark/round";
+    // A runtime subscribed to `room_id`, with the Room resolved from its own set.
+    async fn seated_in(
+        registry: &crate::persona::PersonaAircRuntimeRegistry,
+        room_id: uuid::Uuid,
+    ) -> Option<(std::sync::Arc<crate::persona::PersonaAircRuntime>, airc_lib::Room)> {
+        for rt in registry.iter() {
+            let member = rt
+                .subscribed_rooms()
+                .await
+                .map(|rooms| rooms.contains(&room_id))
+                .unwrap_or(false); // JUSTIFIED unwrap_or: an unreadable room list reads as "not seated" — the next runtime is tried
+            if !member {
+                continue;
+            }
+            let room = rt
+                .airc()
+                .subscription_set()
+                .await
+                .ok()
+                .and_then(|set| set.all().map(|sub| sub.as_room()).find(|r| r.channel.as_uuid() == room_id));
+            if let Some(room) = room {
+                return Some((rt, room));
+            }
+        }
+        None
+    }
+    // (1) publish what changed.
+    let (mut published, mut deferred, mut failed) = (0u64, 0u64, 0u64);
+    for dirty in crate::cognition::bench_round::take_dirty_bundles() {
+        let Some((rt, room)) = seated_in(registry, dirty.round_id).await else {
+            crate::cognition::bench_round::requeue_bundle_dirty(dirty.round_id);
+            deferred += 1;
+            continue;
+        };
+        let store = WallActivityStateStore::new(rt.airc().clone());
+        let mut patch = serde_json::Map::new();
+        patch.insert(crate::cognition::bench_round::ROUND_BUNDLE_KEY.to_string(), dirty.json);
+        match store.save(&room, KIND, patch).await {
+            Ok(_) => published += 1,
+            Err(e) => {
+                crate::cognition::bench_round::requeue_bundle_dirty(dirty.round_id);
+                failed += 1;
+                crate::probe!(
+                    class = "activity.state.save_failed",
+                    kind = KIND,
+                    room = %dirty.run_room_name,
+                    error = %e,
+                    "round bundle not published this pass — kept dirty"
+                );
+            }
+        }
+    }
+    // (2) restore what this tracker does not know.
+    let local: std::collections::HashSet<uuid::Uuid> = crate::cognition::bench_round::live_rounds()
+        .into_iter()
+        .filter_map(|r| uuid::Uuid::parse_str(&r.round_id).ok())
+        .collect();
+    let (mut restored, mut unread) = (0u64, 0u64);
+    if let Some(reader) = registry.any_live_citizen() {
+        if let Ok(set) = reader.airc().subscription_set().await {
+            if let Some(commons) = set
+                .all()
+                .map(|sub| sub.as_room())
+                .find(|r| r.name == crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
+            {
+                if let Ok(posts) = reader
+                    .airc()
+                    .wall_posts_in(&commons, Some(crate::experience::children::CHILD_WALL_CATEGORY))
+                    .await
+                {
+                    for child in crate::experience::children::project_children(&posts) {
+                        if !child.is_citizen_benchmark() || local.contains(&child.room_id) {
+                            continue;
+                        }
+                        let Some((rt, room)) = seated_in(registry, child.room_id).await else {
+                            unread += 1;
+                            continue;
+                        };
+                        let store = WallActivityStateStore::new(rt.airc().clone());
+                        let bundle = match store.load(&room, KIND).await {
+                            Ok(Some(rec)) => rec.state.get(crate::cognition::bench_round::ROUND_BUNDLE_KEY).cloned(),
+                            _ => None,
+                        };
+                        let Some(bundle) = bundle else {
+                            unread += 1;
+                            continue;
+                        };
+                        match crate::cognition::bench_round::restore_round_from_bundle(&bundle) {
+                            Ok(Some(_)) => restored += 1,
+                            Ok(None) => {}
+                            Err(e) => crate::probe!(
+                                class = "activity.state.restore_failed",
+                                kind = KIND,
+                                room = %child.name,
+                                error = %e,
+                                "the room's bundle is not a round — left alone"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if published + deferred + failed + restored + unread > 0 {
+        crate::probe!(
+            class = "activity.state.pass",
+            kind = KIND,
+            published,
+            deferred,
+            failed,
+            restored,
+            unread,
+            "bundle pass: rounds published to their rooms / restored from them"
+        );
     }
 }
