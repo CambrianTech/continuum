@@ -1158,6 +1158,13 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 )
                 .await;
         }
+        // The card is a boundary for its maker: one bounded consolidation pass, now.
+        if let Some(region) = crate::cognition::dream_consolidation::global() {
+            let pid = persona_id;
+            tokio::spawn(async move {
+                let _ = region.consolidate_at_card_boundary(pid).await;
+            });
+        }
         crate::probe!(
             class = "training.credit.settled",
             persona = %persona_name,
