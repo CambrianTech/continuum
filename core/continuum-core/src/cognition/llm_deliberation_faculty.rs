@@ -1278,7 +1278,30 @@ impl LlmDeliberationFaculty {
         let Decision::Speak { text } = &decision else {
             return decision;
         };
-        let facts = parroted_perception::perception_facts(&ws.turns);
+        let mut facts = parroted_perception::perception_facts(&ws.turns);
+        // Her IDENTITY block is the system's own words too — and measurably the one she
+        // reproduces most. 2026-09-14, IntelMac, from her own prompt capture: a 6,187-char
+        // turn opening with 123 chars of "Yes, I can assist with that task. Please provide
+        // more details..." and then her entire identity prompt verbatim ("Identity (never
+        // drift from this): - You are Paige. You are NOT Claude, GPT, ..."). ~98% of the
+        // turn was the thing she was told, and it reached the room.
+        //
+        // It reached the room because every gate we had was looking somewhere else:
+        // `framing_echo` is ANCHORED (a marker counts only when it LEADS), so 123
+        // characters of filler walked straight past it — correctly, since un-anchoring it
+        // would silence every citizen REPORTING an echo. And this gate only saw
+        // `TurnVoice::Perception` turns, which the system prompt is not: it is composed by
+        // `deliberation_prompt` into the system message, never as a burst turn. The system's
+        // most-repeated words were the one thing "did you speak what the system said to you"
+        // did not check.
+        //
+        // Containment is asymmetric and that is what makes this safe to add rather than a
+        // new false-positive surface: `containment(draft, fact)` asks how much of the FACT
+        // reappears in the DRAFT. The identity block is large, so a citizen who merely talks
+        // ABOUT herself ("I'm Paige, I work on the grid") shares a handful of its tokens and
+        // scores near zero. Only near-total reproduction reaches 0.8. No new threshold, no
+        // new measure, no phrase list.
+        facts.push(self.system_prompt.as_str());
         let Some(echoed) = parroted_perception::parroted_fact(
             text,
             &facts,
