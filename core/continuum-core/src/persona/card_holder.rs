@@ -368,6 +368,8 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         }
     }
 
