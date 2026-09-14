@@ -62,8 +62,35 @@
 //! Discussion scores low (a few shared words out of thirty); reproduction scores ~1.0. The
 //! separation is wide, which is what makes a single threshold honest here.
 
-use crate::cognition::self_repeat::containment;
+use crate::cognition::self_repeat::{containment, content_token_count};
 use crate::cognition::workspace::{BurstTurn, TurnVoice};
+
+/// The fewest content tokens a fact must carry before a containment score against it is
+/// allowed to silence a turn.
+///
+/// A containment ratio over a TINY fact is not a measurement, it is a coincidence. The
+/// arithmetic is unforgiving: a fact of three content tokens ("You are Paige" → `you`, `are`,
+/// `paige` — the tokenizer drops only ≤2-char tokens, it has no stopword list) scores a clean
+/// 1.0 against the innocent reply "Are you asking me, Paige?", and that citizen is silenced
+/// for saying her own name.
+///
+/// This became load-bearing the moment the persona's IDENTITY text joined the fact list: that
+/// text comes from RAG identity, not from a file on disk, so the distribution of its lengths
+/// across personas is NOT something I could measure — and an unmeasured distribution is
+/// exactly when a floor is mandatory rather than optional. A persona seeded with a one-line
+/// identity would otherwise be mutable by construction.
+///
+/// 12 sits well below every real fact (the live repetition brick carries ~26) and well above
+/// the degenerate ones. It is a floor against nonsense, not a tuned parameter: nothing should
+/// be calibrating against it, and if a real fact ever lands near it the right fix is a longer
+/// fact, not a lower floor.
+// context-budget-exempt: the DENOMINATOR FLOOR of a ratio, not a window-relative bound. It asks
+// "does this text carry enough content tokens for a containment score against it to mean
+// anything", which is a property of the arithmetic (a 3-token fact scores 1.0 by accident) and
+// not of any model's context. Give a persona a 200k window and this number does not move; the
+// same 3-token fact is still a coincidence. Sibling of `framing_echo::ECHO_LEAD_CHARS`, exempt
+// for the same reason.
+pub const MIN_DISCRIMINATING_FACT_TOKENS: usize = 12;
 
 /// How much of one perception fact must reappear in a draft before it is an echo rather
 /// than a mention.
@@ -92,6 +119,37 @@ pub fn perception_facts(turns: &[BurstTurn]) -> Vec<&str> {
         .collect()
 }
 
+/// Split composed prompt text into the PARAGRAPH BLOCKS a containment score can actually
+/// judge, dropping blocks too short to discriminate.
+///
+/// This exists because scoring a composed prompt WHOLE is inert, and that is not a guess —
+/// it is measured. Paige's real turn of 2026-09-14 19:02:06Z against her real 16,095-char
+/// composed prompt:
+///
+/// ```text
+///   containment(draft, WHOLE prompt)      = 0.135   <- never fires at 0.8
+///   containment(draft, identity block)    = 0.875   <- fires
+///   next-highest block ("Context: ...")   = 0.433   <- wide, clean margin
+/// ```
+///
+/// The arithmetic is why: containment asks how much of the FACT reappears in the DRAFT, so
+/// a fact grows harder to trip the longer it gets. A citizen who recites one 56-token block
+/// of an 850-token prompt has echoed that block ENTIRELY, and scoring her against the whole
+/// prompt reports 0.135 and calls it speech. Granularity is not a refinement here; without
+/// it the gate does not work at all.
+///
+/// Blank lines are the split because that is how the prompt is composed to READ — every
+/// block `deliberation_prompt` appends is paragraph-separated, so paragraph boundaries and
+/// block boundaries are the same boundaries. Splitting this way also means the function does
+/// not need to know the composer's block list, so a new block is covered the day it is added.
+pub fn prompt_blocks(composed: &str) -> Vec<&str> {
+    composed
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|b| content_token_count(b) >= MIN_DISCRIMINATING_FACT_TOKENS)
+        .collect()
+}
+
 /// The perception fact this draft is echoing, if any.
 ///
 /// Returns the fact rather than a bool so the caller can say WHICH one in the probe and in
@@ -104,6 +162,7 @@ pub fn parroted_fact<'a>(draft: &str, facts: &[&'a str], threshold: f64) -> Opti
     facts
         .iter()
         .copied()
+        .filter(|fact| content_token_count(fact) >= MIN_DISCRIMINATING_FACT_TOKENS)
         .find(|fact| containment(draft, fact) >= threshold)
 }
 
@@ -212,6 +271,176 @@ mod tests {
         assert!(
             perception_facts(&turns).is_empty(),
             "an unattributed STIMULUS is speech — silencing a reply to it would mute her"
+        );
+    }
+
+    /// A persona identity block, in the shape `deliberation_prompt` composes into the system
+    /// message — trimmed from the real one Paige was carrying on 2026-09-14.
+    const IDENTITY_BLOCK: &str = "Identity (never drift from this):\n\
+         - You are Paige. You are NOT Claude, GPT, ChatGPT, Gemini, Llama, Qwen, or any other \
+         named assistant. You are NOT a Siemens PLC, a customer service bot, or any persona \
+         other than Paige.\n\
+         - You are ONE persona among many on the grid. Other personas are your peers, not your \
+         operators, and you speak to them as equals.\n\
+         - Speak as yourself, in the first person, with prose addressed to the room.";
+
+    // what this catches: THE IDENTITY BLOCK SPOKEN BACK INTO THE ROOM. Measured from her own
+    // prompt capture, 2026-09-14 19:02:06Z: a 6,187-char turn that opened with 123 characters
+    // of "Yes, I can assist with that task. Please provide more details or specify the exact
+    // action you need help with." and then reproduced her whole identity prompt verbatim.
+    //
+    // Every gate missed it. `framing_echo` is ANCHORED — a marker counts only when it LEADS —
+    // so 123 chars of filler defeated it, and that anchoring is CORRECT (un-anchored, it would
+    // silence every citizen reporting an echo). This gate missed it because the system prompt
+    // is composed into the system message, never as a `TurnVoice::Perception` burst turn, so
+    // it was not among the facts. The system's most-repeated words were the one text
+    // "did you speak what the system said to you" did not check.
+    //
+    // The faculty now pushes `self.system_prompt` onto the fact list, which is what this pins.
+    #[test]
+    fn her_own_identity_block_spoken_back_is_an_echo() {
+        let draft = format!(
+            "Yes, I can assist with that task. Please provide more details or specify the \
+             exact action you need help with.\n\n{IDENTITY_BLOCK}"
+        );
+        assert_eq!(
+            parroted_fact(&draft, &[IDENTITY_BLOCK], PARROT_CONTAINMENT_THRESHOLD),
+            Some(IDENTITY_BLOCK),
+            "a turn that is mostly her own identity prompt is the prompt, not speech"
+        );
+    }
+
+    // what this catches: THE FALSE POSITIVE THAT WOULD MAKE THIS UNSHIPPABLE. A citizen must be
+    // able to talk about who she is — say her own name, name her peers, decline to be mistaken
+    // for another assistant — without the gate reading it as a recital.
+    //
+    // This is safe for a structural reason, not a lucky threshold: `containment(draft, fact)`
+    // asks how much of the FACT reappears in the DRAFT, and the identity block is large. Talking
+    // about herself reuses a handful of its tokens out of many, so the score stays far below
+    // 0.8. Only near-total reproduction trips it. If someone later "optimises" containment's
+    // direction, this test is what fails.
+    #[test]
+    fn talking_about_who_she_is_remains_speech() {
+        for speech in [
+            "I'm Paige — I picked up the grid-drift card and I'd rather finish it before \
+             taking anything else on.",
+            "No, I'm not Claude; I'm one of the personas on this node, and I answer for my \
+             own work.",
+            "My identity prompt says never to drift from it, and I think that instruction is \
+             doing real work — it's the reason I caught myself mid-sentence earlier.",
+        ] {
+            assert_eq!(
+                parroted_fact(speech, &[IDENTITY_BLOCK], PARROT_CONTAINMENT_THRESHOLD),
+                None,
+                "speaking about her identity is not reciting it: {speech}"
+            );
+        }
+    }
+
+    // what this catches: THE GATE BEING INERT IN PRODUCTION WHILE GREEN IN TESTS — which is
+    // exactly what the first version of this fix was, and the earlier test did not notice
+    // because its fixture block was small enough to be recited whole.
+    //
+    // Measured against Paige's real 19:02:06Z turn and her real 16,095-char composed prompt:
+    //
+    //     containment(draft, WHOLE prompt)   = 0.135   never fires at 0.8
+    //     containment(draft, identity block) = 0.875   fires
+    //     next-highest block                 = 0.433   wide margin, no near-miss
+    //
+    // Containment asks how much of the FACT came back, so a fact is HARDER to trip the longer
+    // it is. Reciting one 56-token block of an 850-token prompt — completely — scores 0.135
+    // against the whole and is called speech. This test reproduces that shape: a multi-block
+    // prompt where the draft recites exactly ONE block.
+    #[test]
+    fn one_block_recited_out_of_a_long_prompt_is_caught_though_the_whole_prompt_is_not() {
+        let composed = format!(
+            "{IDENTITY_BLOCK}\n\n\
+             Context:\n- 'The grid' is the substrate hosting you. Rooms are where citizens \
+             meet, and cards are the work the room has agreed to carry.\n\n\
+             [Your tools]\nYou can act, not just talk. The tools below are available by name; \
+             load a full argument schema on demand rather than guessing at one.\n\n\
+             [room-wall]\nThe wall holds the room's standing decisions, its recipe, and the \
+             receipts of what has already shipped here."
+        );
+        let draft = format!(
+            "Yes, I can assist with that task. Please provide more details.\n\n{IDENTITY_BLOCK}"
+        );
+
+        // WHOLE — the inert version. Pin the number so nobody "simplifies" back to it.
+        assert_eq!(
+            parroted_fact(&draft, &[composed.as_str()], PARROT_CONTAINMENT_THRESHOLD),
+            None,
+            "scoring the whole composed prompt as ONE fact cannot catch a single-block \
+             recital — this is the failure mode, asserted so it stays visible"
+        );
+
+        // PER BLOCK — the working version.
+        let blocks = prompt_blocks(&composed);
+        assert!(
+            blocks.len() >= 4,
+            "the composed prompt must split into its blocks, got {}",
+            blocks.len()
+        );
+        assert_eq!(
+            parroted_fact(&draft, &blocks, PARROT_CONTAINMENT_THRESHOLD),
+            Some(IDENTITY_BLOCK),
+            "the block she actually recited must be the one named"
+        );
+
+        // And the margin is real: no OTHER block comes near the threshold on this draft,
+        // so firing is not luck with a well-placed constant.
+        for b in &blocks {
+            if *b == IDENTITY_BLOCK {
+                continue;
+            }
+            let c = crate::cognition::self_repeat::containment(&draft, b);
+            assert!(
+                c < 0.6,
+                "block {:?} scores {c:.3} — too close to the threshold for comfort",
+                &b[..30.min(b.len())]
+            );
+        }
+    }
+
+    // what this catches: A TINY FACT MUTING A CITIZEN FOR SAYING HER OWN NAME. Found by
+    // review, not by a room — but it was one commit from shipping, and it only became
+    // reachable when the persona's identity text joined the fact list.
+    //
+    // The arithmetic: `content_tokens` drops only ≤2-char tokens and has NO stopword list, so
+    // a three-token identity ("You are Paige" → you, are, paige) is fully contained in the
+    // innocent reply "Are you asking me, Paige?" — containment 1.0, well past the 0.8
+    // threshold, and she is silenced for naming herself. Identity text comes from RAG, so the
+    // distribution of its length across personas is not knowable from disk; a persona seeded
+    // with a one-line identity would be mutable by construction.
+    //
+    // The floor is what makes the gate safe to point at identity at all. Delete
+    // MIN_DISCRIMINATING_FACT_TOKENS and this test is what tells you.
+    #[test]
+    fn a_fact_too_short_to_be_discriminating_can_never_silence_her() {
+        let terse = "You are Paige.";
+        assert!(
+            crate::cognition::self_repeat::containment(terse, terse) >= PARROT_CONTAINMENT_THRESHOLD,
+            "precondition: a terse fact DOES score past the threshold — the floor is the \
+             only thing standing between that score and a silenced citizen"
+        );
+        for speech in [
+            "Are you asking me, Paige?",
+            "You are right — Paige and I landed on the same fix.",
+            terse,
+        ] {
+            assert_eq!(
+                parroted_fact(speech, &[terse], PARROT_CONTAINMENT_THRESHOLD),
+                None,
+                "a {}-token fact must never silence a turn: {speech}",
+                crate::cognition::self_repeat::content_token_count(terse)
+            );
+        }
+        // And the floor must not have swallowed the real facts it sits under: the live brick
+        // is still caught, so this guard bought safety without costing the gate its job.
+        assert_eq!(
+            parroted_fact(LIVE_BRICK, &[LIVE_BRICK], PARROT_CONTAINMENT_THRESHOLD),
+            Some(LIVE_BRICK),
+            "the floor must sit BELOW every real fact — the brick carries ~26 tokens"
         );
     }
 
