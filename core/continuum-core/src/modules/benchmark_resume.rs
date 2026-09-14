@@ -724,18 +724,6 @@ async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
 mod tests {
     use super::*;
 
-
-    /// what this catches: an idle claim never reading idle because lease heartbeats
-    /// refresh the board row (a card claimed 10.6 h with zero acts, 2026-09-14).
-    #[test]
-    fn an_actless_claim_is_measured_from_the_first_pass_that_saw_it_not_the_boards_heartbeat() {
-        let card = uuid::Uuid::new_v4();
-        let t0 = 1_000_000u64;
-        assert_eq!(idle_clock_for(card, None, t0), t0, "first sight starts the clock");
-        assert_eq!(idle_clock_for(card, None, t0 + 5_000), t0, "later passes keep the first sight");
-        assert_eq!(idle_clock_for(card, Some(t0 + 9_000), t0 + 10_000), t0 + 9_000, "an act is the clock and clears the mark");
-        assert_eq!(idle_clock_for(card, None, t0 + 20_000), t0 + 20_000, "after an act, a new idle stretch starts fresh");
-    }
     // what this catches: the reconciler taking the card she is working on instead of
     // the surplus, or "fixing" a citizen who is already at one card (2026-09-12: one
     // coder on four cards, the pull deferred for an hour behind the lane cap).
@@ -970,8 +958,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
         // "updated recently" is NOT "worked recently" (measured 2026-09-14: a card
         // claimed 10.6 h with zero acts never read idle). With no act on record the
         // clock starts when THIS reconciler first saw the claim idle.
-        let last_act = crate::cognition::bench_round::card_last_act_ms(card);
-        let idle_since = idle_clock_for(card, last_act, now_ms);
+        let idle_since = crate::cognition::bench_round::idle_clock_for(card, owner.as_uuid(), now_ms);
         if now_ms.saturating_sub(idle_since) < IDLE_CLAIM_RELEASE_MS {
             continue;
         }
@@ -1014,20 +1001,3 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
     }
 }
 
-/// When each claimed-but-actless card was first seen idle by this process.
-static IDLE_FIRST_SEEN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-/// The instant an idle claim's clock runs from: her last act when there is one
-/// (and the first-seen mark is dropped), else the first pass that saw the claim
-/// with no act — never the board's `updated_at_ms`, which lease heartbeats refresh.
-fn idle_clock_for(card: uuid::Uuid, last_act_ms: Option<u64>, now_ms: u64) -> u64 {
-    let mut seen = IDLE_FIRST_SEEN.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: a poisoned map still marks — one pass of drift, never a panic
-    match last_act_ms {
-        Some(act) => {
-            seen.remove(&card);
-            act
-        }
-        None => *seen.entry(card).or_insert(now_ms),
-    }
-}
