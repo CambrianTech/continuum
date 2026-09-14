@@ -215,6 +215,69 @@ mod tests {
         );
     }
 
+    /// A persona identity block, in the shape `deliberation_prompt` composes into the system
+    /// message — trimmed from the real one Paige was carrying on 2026-09-14.
+    const IDENTITY_BLOCK: &str = "Identity (never drift from this):\n\
+         - You are Paige. You are NOT Claude, GPT, ChatGPT, Gemini, Llama, Qwen, or any other \
+         named assistant. You are NOT a Siemens PLC, a customer service bot, or any persona \
+         other than Paige.\n\
+         - You are ONE persona among many on the grid. Other personas are your peers, not your \
+         operators, and you speak to them as equals.\n\
+         - Speak as yourself, in the first person, with prose addressed to the room.";
+
+    // what this catches: THE IDENTITY BLOCK SPOKEN BACK INTO THE ROOM. Measured from her own
+    // prompt capture, 2026-09-14 19:02:06Z: a 6,187-char turn that opened with 123 characters
+    // of "Yes, I can assist with that task. Please provide more details or specify the exact
+    // action you need help with." and then reproduced her whole identity prompt verbatim.
+    //
+    // Every gate missed it. `framing_echo` is ANCHORED — a marker counts only when it LEADS —
+    // so 123 chars of filler defeated it, and that anchoring is CORRECT (un-anchored, it would
+    // silence every citizen reporting an echo). This gate missed it because the system prompt
+    // is composed into the system message, never as a `TurnVoice::Perception` burst turn, so
+    // it was not among the facts. The system's most-repeated words were the one text
+    // "did you speak what the system said to you" did not check.
+    //
+    // The faculty now pushes `self.system_prompt` onto the fact list, which is what this pins.
+    #[test]
+    fn her_own_identity_block_spoken_back_is_an_echo() {
+        let draft = format!(
+            "Yes, I can assist with that task. Please provide more details or specify the \
+             exact action you need help with.\n\n{IDENTITY_BLOCK}"
+        );
+        assert_eq!(
+            parroted_fact(&draft, &[IDENTITY_BLOCK], PARROT_CONTAINMENT_THRESHOLD),
+            Some(IDENTITY_BLOCK),
+            "a turn that is mostly her own identity prompt is the prompt, not speech"
+        );
+    }
+
+    // what this catches: THE FALSE POSITIVE THAT WOULD MAKE THIS UNSHIPPABLE. A citizen must be
+    // able to talk about who she is — say her own name, name her peers, decline to be mistaken
+    // for another assistant — without the gate reading it as a recital.
+    //
+    // This is safe for a structural reason, not a lucky threshold: `containment(draft, fact)`
+    // asks how much of the FACT reappears in the DRAFT, and the identity block is large. Talking
+    // about herself reuses a handful of its tokens out of many, so the score stays far below
+    // 0.8. Only near-total reproduction trips it. If someone later "optimises" containment's
+    // direction, this test is what fails.
+    #[test]
+    fn talking_about_who_she_is_remains_speech() {
+        for speech in [
+            "I'm Paige — I picked up the grid-drift card and I'd rather finish it before \
+             taking anything else on.",
+            "No, I'm not Claude; I'm one of the personas on this node, and I answer for my \
+             own work.",
+            "My identity prompt says never to drift from it, and I think that instruction is \
+             doing real work — it's the reason I caught myself mid-sentence earlier.",
+        ] {
+            assert_eq!(
+                parroted_fact(speech, &[IDENTITY_BLOCK], PARROT_CONTAINMENT_THRESHOLD),
+                None,
+                "speaking about her identity is not reciting it: {speech}"
+            );
+        }
+    }
+
     // what this catches: a turn with nothing handed to her cannot be an echo, and an empty
     // draft is already silence. Both are the no-op path on every single live turn, so a bug
     // here would be a constant cost paid for nothing.
