@@ -196,6 +196,12 @@ pub struct BenchRound {
     /// is read-the-saved-state, never re-derive.
     #[serde(default)]
     card_last_act_ms: HashMap<Uuid, u64>,
+    /// THE IDLE CLOCK (card deb26770's kin; Joel 2026-09-14: "waiting three hours for
+    /// something to fix itself is insane"): when a claimed card was first seen with
+    /// no act, by which holder. Persisted with the round (file + room bundle) so a
+    /// reboot never restarts it; an act clears it; a new holder restarts it.
+    #[serde(default)]
+    card_idle_since: HashMap<Uuid, IdleMark>,
     /// THE REVIEW GATE (team-recipe Arm 2, 2026-09-03): when set, an owner's `done`
     /// on a card of this round becomes `review` + a sibling review card that a
     /// NON-owner pulls; only the reviewer's `done` closes the parent (and fires its
@@ -250,6 +256,7 @@ impl BenchRound {
             card_assignees: HashMap::new(),
             card_instances: HashMap::new(),
             card_last_act_ms: HashMap::new(),
+            card_idle_since: HashMap::new(),
             review_gate: false,
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
@@ -326,10 +333,44 @@ static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
 /// from the held-work turn boundary so `enrich_rounds` can see Citizen progress.
 /// Persisted with the round: freshness survives the seam. A card outside any live
 /// round records nothing (there is no round to read it back for).
+/// When a holder's actless claim was first seen (persisted on the round).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdleMark {
+    pub holder: Uuid,
+    pub since_ms: u64,
+}
+
+/// The instant an idle claim's clock runs from: the holder's last act on the card
+/// when there is one; else the first pass that saw THIS holder's claim actless —
+/// recorded on the round and persisted, so a reboot does not restart it and a new
+/// holder gets a fresh clock. Never the board row's `updated_at_ms`, which lease
+/// heartbeats refresh.
+pub fn idle_clock_for(card_id: Uuid, holder: Uuid, now_ms: u64) -> u64 {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) else {
+        return now_ms;
+    };
+    if let Some(act) = round.card_last_act_ms.get(&card_id).copied() {
+        if round.card_idle_since.remove(&card_id).is_some() {
+            persist_round_in(&rounds_state_dir(), round);
+        }
+        return act;
+    }
+    match round.card_idle_since.get(&card_id).copied() {
+        Some(mark) if mark.holder == holder => mark.since_ms,
+        _ => {
+            round.card_idle_since.insert(card_id, IdleMark { holder, since_ms: now_ms });
+            persist_round_in(&rounds_state_dir(), round);
+            now_ms
+        }
+    }
+}
+
 pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
         round.card_last_act_ms.insert(card_id, now_ms);
+        round.card_idle_since.remove(&card_id);
         persist_round_in(&rounds_state_dir(), round);
     }
 }
@@ -2114,6 +2155,7 @@ mod tests {
                 card_assignees: cards.iter().copied().collect(),
                 card_instances: Default::default(),
                 card_last_act_ms: HashMap::new(),
+                card_idle_since: HashMap::new(),
             review_gate: false,
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
@@ -2153,6 +2195,23 @@ mod tests {
 
     use super::*;
 
+
+    /// what this catches: an idle claim's clock restarting at every boot (a card
+    /// claimed 11 h with zero acts waited 3 h more after a deploy), or surviving a
+    /// change of hands.
+    #[test]
+    fn the_idle_clock_is_on_the_round_clears_on_an_act_and_restarts_for_a_new_holder() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let card = Uuid::new_v4();
+        add_card(round, card);
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(idle_clock_for(card, a, 1_000), 1_000, "first sight starts the clock");
+        assert_eq!(idle_clock_for(card, a, 5_000), 1_000, "later passes keep it (persisted on the round)");
+        assert_eq!(idle_clock_for(card, b, 6_000), 6_000, "a new holder restarts it");
+        record_card_worked(card, 7_000);
+        assert_eq!(idle_clock_for(card, b, 8_000), 7_000, "an act is the clock and clears the mark");
+    }
     /// what this catches: a resolved instance whose board card sat in REVIEW (or whose
     /// review card nobody pulled) counting as unsettled forever — the round never
     /// settles, the standing autopilot never advances (2026-09-14: django-12663 resolved
