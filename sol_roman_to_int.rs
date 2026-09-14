@@ -1,92 +1,91 @@
 //! roman_to_int — convert a Roman numeral string to its integer value.
 //!
-//! Subtractive pairs are handled by the classic scan: if a symbol is worth
-//! less than the one immediately after it, it is subtracted (IV = 4, IX = 9,
-//! XL = 40, XC = 90, CD = 400, CM = 900); otherwise it is added.
+//! Rules implemented (canonical numerals, 1..=3999):
+//!   - Each symbol has a fixed value: I=1 V=5 X=10 L=50 C=100 D=500 M=1000
+//!   - A smaller symbol immediately BEFORE a larger one is subtracted (IV, IX, XL, XC, CD, CM)
+//!   - All other symbols are added left to right.
+//! Empty or whitespace-only input yields 0; unknown characters are skipped.
 
-/// Convert a Roman numeral string to its integer value.
-///
-/// Valid input uses the symbols I (1), V (5), X (10), L (50), C (100),
-/// D (500) and M (1000). A symbol worth less than the following one is
-/// subtracted; all others are added. Characters outside that set are
-/// ignored, so garbage input degrades gracefully instead of panicking.
 pub fn roman_to_int(s: &str) -> i32 {
-    let value = |c: u8| -> i32 {
+    let value = |c: char| -> Option<i32> {
         match c {
-            b'I' => 1,
-            b'V' => 5,
-            b'X' => 10,
-            b'L' => 50,
-            b'C' => 100,
-            b'D' => 500,
-            b'M' => 1_000,
-            _ => 0,
+            'I' => Some(1),
+            'V' => Some(5),
+            'X' => Some(10),
+            'L' => Some(50),
+            'C' => Some(100),
+            'D' => Some(500),
+            'M' => Some(1000),
+            _ => None,
         }
     };
 
-    let bytes = s.as_bytes();
     let mut total: i32 = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        let v = value(b);
-        if v == 0 {
-            continue; // not a Roman numeral symbol — ignore
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        let Some(v) = value(c) else { continue };
+        // Subtractive pair: a smaller symbol directly before a larger one.
+        if i + 1 < chars.len() {
+            if let Some(next_v) = value(chars[i + 1]) {
+                if v < next_v {
+                    total -= v;
+                    continue;
+                }
+            }
         }
-        match bytes.get(i + 1).map(|&n| value(n)) {
-            Some(nv) if nv > v => total -= v, // subtractive pair: IV, IX, XL, XC, CD, CM
-            _ => total += v,
-        }
+        total += v;
     }
     total
 }
 
-fn main() {
-    // Canonical builder — the mirror image of `roman_to_int`, used below to
-    // round-trip every value in the representable range.
-    fn to_roman(n: u32) -> String {
-        let pairs: [(u32, &str); 13] = [
-            (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
-            (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"),
-            (5, "V"), (4, "IV"), (1, "I"),
-        ];
-        let mut out = String::new();
-        let mut n = n;
-        for (v, sym) in pairs {
-            while n >= v {
-                out.push_str(sym);
-                n -= v;
-            }
+/// Canonical builder — the mirror image of `roman_to_int`, used below to
+/// round-trip-test every value in the representable range.
+fn to_roman(mut n: u32) -> String {
+    let table: [(u32, &str); 13] = [
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ];
+    let mut out = String::new();
+    for (val, sym) in table {
+        while n >= val {
+            out.push_str(sym);
+            n -= val;
         }
-        out
     }
+    out
+}
 
-    let cases: [(&str, i32); 17] = [
-        ("MCMXCIV", 1_994), // classic example: M + CM + XC + IV
-        ("MMXXIV", 2_024),  // the year, in Roman numerals
-        ("LVIII", 58),      // plain additive
-        ("IX", 9),          // subtractive pair
-        ("XL", 40),         // subtractive pair
-        ("XC", 90),         // subtractive pair
-        ("CD", 400),        // subtractive pair
-        ("CM", 900),        // subtractive pair
-        ("IV", 4),          // subtractive pair
-        ("DCLXVI", 666),    // additive mix
-        ("MMDCCXXI", 2_721),
-        ("III", 3),         // repeated ones
-        ("MMCDXLIX", 2_449),
-        ("CXC", 190),       // XC embedded in C _ XC
-        ("MCMLVII", 1_957), // canonical 1957: M + CM + L + VII
-        ("CMXCVII", 997),   // canonical 997: CM + XC + VII (not 1957 — C before M is additive here)
-        ("" , 0),           // empty input: nothing to add
+fn main() {
+    // Hand-picked cases: plain values, every subtractive pair, and real dates.
+    let cases = [
+        ("MCMXCIV", 1994),   // the classic "year of the first computer" example
+        ("MMXXIV", 2024),
+        ("LVIII", 58),
+        ("IX", 9),
+        ("XL", 40),
+        ("XC", 90),
+        ("CD", 400),
+        ("CM", 900),
+        ("IV", 4),
+        ("DCLXVI", 666),
+        ("MMDCCXXI", 2721),
+        ("III", 3),
+        ("MMCDXLIX", 2449),
+        ("CXC", 190),
+        ("MCMLVII", 1957),
+        ("CMXCVII", 997),
+        ("", 0),             // empty input -> 0
     ];
 
     let mut failed = 0;
     for (input, expected) in cases {
         let got = roman_to_int(input);
         let ok = got == expected;
+        println!("{:>10} -> {:>4}  (expected {:>4})  {}", input, got, expected, if ok { "OK" } else { "FAIL" });
         if !ok {
             failed += 1;
         }
-        println!("{:>9} -> {:>5}  (expected {:>5})  {}", input, got, expected, if ok { "OK" } else { "FAIL" });
     }
 
     // Property: every subtractive pair must be worth exactly the difference.
