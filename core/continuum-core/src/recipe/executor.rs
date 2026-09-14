@@ -409,7 +409,7 @@ mod tests {
             .with_state_sink(sink_dyn)
             .run("bench/saves", std::slice::from_ref(&post), args.clone())
             .await
-            .expect("skips are not failures");
+            .expect("skips are not failures"); // JUSTIFIED: on_error skip by construction
         let saved = sink.0.lock().unwrap(); // JUSTIFIED: a test's own mutex
         assert_eq!(saved.len(), 1, "one save at the step boundary");
         assert_eq!(saved[0].get("cards"), Some(&Value::Array(vec![])), "the bound name is saved");
@@ -418,7 +418,7 @@ mod tests {
         let receipt = PipelineExecutor::new(exec)
             .run("bench/saves-unsunk", &[post], args)
             .await
-            .expect("no sink is a probe, never a failure");
+            .expect("no sink is a probe, never a failure"); // JUSTIFIED: the invariant under test
         assert_eq!(receipt.steps_skipped, 1);
     }
 

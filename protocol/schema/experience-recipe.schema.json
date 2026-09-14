@@ -346,6 +346,14 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "saves": {
+          "default": [],
+          "description": "Bindings to SAVE into the activity's bundle once this step completes — its own `outputTo` or any earlier one. The framework saves at the boundary the recipe marks (`onSaveInstanceState`); a bare `recipe/run` with no bundle sink probes the ask and carries on. See [`crate::experience::activity_state`].",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "timeoutMs": {
           "default": null,
           "description": "Per-attempt wall-clock bound. Absent = the command's own timeout discipline governs.",

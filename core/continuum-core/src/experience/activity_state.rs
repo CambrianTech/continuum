@@ -60,7 +60,7 @@ pub fn merged(
     patch: serde_json::Map<String, serde_json::Value>,
     now_ms: u64,
 ) -> ActivityStateRecord {
-    let mut state = base.map(|b| b.state.clone()).unwrap_or_default();
+    let mut state = base.map(|b| b.state.clone()).unwrap_or_default(); // JUSTIFIED unwrap_or_default: no bundle yet IS the empty bundle
     for (k, v) in patch {
         state.insert(k, v);
     }
@@ -189,7 +189,7 @@ mod tests {
             post(r#"{"kind":"benchmark/round","savedAtMs":3,"state":{"stage":"settled"}}"#),
             post("not a bundle at all"),
         ];
-        let r = project_activity_state(&posts, "benchmark/round").expect("a bundle");
+        let r = project_activity_state(&posts, "benchmark/round").expect("a bundle"); // JUSTIFIED: the test built the post
         assert_eq!(r.saved_at_ms, 3);
         assert_eq!(r.state["stage"], "settled");
         assert!(project_activity_state(&posts, "chat").is_none());
