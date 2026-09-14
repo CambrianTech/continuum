@@ -699,6 +699,18 @@ static GLOBAL_DREAM_REGION: std::sync::OnceLock<Arc<DreamConsolidationRegion>> =
     std::sync::OnceLock::new();
 
 /// Install the live region's handle (idempotent; first install wins).
+/// What asked for a consolidation pass: her sustained idle (the default, gated and
+/// cancellable), or a settled card of hers (bounded, never cancelled by her next act).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DreamTrigger {
+    Idle,
+    CardBoundary,
+}
+
+/// The wall budget of a card-boundary pass — about one lane-minute of consolidation,
+/// then the pass ends whether or not every cluster was distilled.
+pub const CARD_BOUNDARY_PASS_SECS: u64 = 90;
+
 pub fn install_global(region: Arc<DreamConsolidationRegion>) {
     let _ = GLOBAL_DREAM_REGION.set(region);
 }
@@ -754,6 +766,20 @@ impl DreamConsolidationRegion {
     /// boot, 2026-07-12). Long work on its own task is the concurrency
     /// style-guide's first rule; the tick is only the gate + launcher.
     pub(crate) async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+        self.consolidate_with(persona_id, DreamTrigger::Idle).await
+    }
+
+    /// A SETTLED CARD is a consolidation boundary for its maker (2026-09-14: five coders
+    /// working all day → dream.awaiting_boredom ×26, dream.paged_out ×6, zero
+    /// consolidations — the more they worked the less they learned from it). The pass
+    /// runs once, bounded, without waiting for her sustained idle and without being
+    /// cancelled by her next act; everything else — the clusters, the reflector, the
+    /// exam courtesy, the serving check — is the idle pass's own.
+    pub async fn consolidate_at_card_boundary(&self, persona_id: Uuid) -> TickOutcome {
+        self.consolidate_with(persona_id, DreamTrigger::CardBoundary).await
+    }
+
+    async fn consolidate_with(&self, persona_id: Uuid, trigger: DreamTrigger) -> TickOutcome {
         // A dream for this persona is already running on its own task — rest.
         if self.in_flight.lock().unwrap().contains(&persona_id) {
             return sleep();
@@ -904,6 +930,20 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
+            if trigger == DreamTrigger::CardBoundary {
+                crate::probe!(
+                    class = "dream.card_boundary",
+                    persona = %persona_id,
+                    "a settled card is a consolidation boundary — one bounded pass, no boredom wait, not paged out by her next act"
+                );
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(CARD_BOUNDARY_PASS_SECS),
+                    dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed),
+                )
+                .await;
+                in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
+                return;
+            }
             crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
             tokio::select! {
                 _ = dream_pass(
@@ -922,7 +962,7 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
 
         TickOutcome {
@@ -979,7 +1019,7 @@ impl DreamConsolidationRegion {
         let reflector = reflector.clone();
         tokio::spawn(async move {
             review_pass(reflector, persona_id, beliefs, reviewed).await;
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
@@ -1081,7 +1121,7 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id);
+            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
