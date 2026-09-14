@@ -23,6 +23,34 @@ struct PersistedRegistry {
     nodes: Vec<GridNode>,
 }
 
+/// One fleet liveness transition, for a probe and one room line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetTransition {
+    pub node: String,
+    pub kind: FleetChange,
+    pub silent_secs: u64,
+    pub build_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetChange {
+    WentStale,
+    BackFresh,
+    FellBehind,
+    CaughtUp,
+}
+
+impl FleetChange {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FleetChange::WentStale => "went_stale",
+            FleetChange::BackFresh => "back_fresh",
+            FleetChange::FellBehind => "fell_behind",
+            FleetChange::CaughtUp => "caught_up",
+        }
+    }
+}
+
 impl NodeRegistry {
     /// Create a new registry, loading from disk if available.
     pub fn new(grid_dir: &Path) -> Self {
@@ -87,6 +115,10 @@ impl NodeRegistry {
                 last_seen: now_millis(),
                 latency_ms: None,
                 peer_id: None, // learned later via set_peer_id (pairing/gossip correlation, #2228)
+                build_sha: None,
+                silent_secs: 0,
+                stale: false,
+                behind: false,
             });
     }
 
@@ -115,6 +147,44 @@ impl NodeRegistry {
     /// authorization, so the node is visible to `get_by_peer`/pricing but is not sent work
     /// until the trust bridge (#38) elevates it. `vram_mb` seeds a Compute capability from the
     /// offer so the router can weigh it. Returns true when a node was newly created.
+    /// Record the build a peer's beacon reported (and that it was just heard).
+    pub fn note_peer_build(&self, peer: &PeerId, build_sha: Option<String>, heard_at_ms: u64) {
+        for mut r in self.nodes.iter_mut() {
+            if r.value().peer_id.as_ref() == Some(peer) {
+                let n = r.value_mut();
+                if build_sha.is_some() {
+                    n.build_sha = build_sha.clone();
+                }
+                n.last_seen = n.last_seen.max(heard_at_ms);
+            }
+        }
+    }
+
+    /// THE FLEET FOLD: refresh every node's `silent_secs` / `stale` / `behind` from
+    /// `now` and this node's own build; returns the transitions (a node going stale
+    /// or fresh, falling behind or catching up) so the caller probes and says each
+    /// ONCE, never per tick. `stale` is relative to `silent_after_ms`.
+    pub fn fold_liveness(&self, now_ms: u64, silent_after_ms: u64, local_build: &str) -> Vec<FleetTransition> {
+        let mut out = Vec::new();
+        for mut r in self.nodes.iter_mut() {
+            let n = r.value_mut();
+            let silent = now_ms.saturating_sub(n.last_seen);
+            n.silent_secs = silent / 1000;
+            let stale = silent > silent_after_ms;
+            let behind = n.build_sha.as_deref().map(|b| b != local_build).unwrap_or(false); // JUSTIFIED unwrap_or: a node whose build is unknown is not called behind — absence is not a value
+            let label = n.node_name.clone().unwrap_or_else(|| n.node_id.clone()); // JUSTIFIED unwrap_or_else: an unnamed node is named by its id
+            if stale != n.stale {
+                out.push(FleetTransition { node: label.clone(), kind: if stale { FleetChange::WentStale } else { FleetChange::BackFresh }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                n.stale = stale;
+            }
+            if behind != n.behind {
+                out.push(FleetTransition { node: label, kind: if behind { FleetChange::FellBehind } else { FleetChange::CaughtUp }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                n.behind = behind;
+            }
+        }
+        out
+    }
+
     pub fn ensure_peer_node(&self, peer: PeerId, vram_mb: Option<u64>) -> bool {
         if self.get_by_peer(&peer).is_some() {
             return false;
@@ -139,6 +209,10 @@ impl NodeRegistry {
                 last_seen: now_millis(),
                 latency_ms: None,
                 peer_id: Some(peer),
+                build_sha: None,
+                silent_secs: 0,
+                stale: false,
+                behind: false,
             }
         });
         created
@@ -271,6 +345,36 @@ mod tests {
     use super::super::node::NodeCapability;
     use super::*;
 
+
+    /// what this catches: a node nine days silent (or on an old build) reading as a
+    /// live, current peer — the fold must flag it ONCE and unflag it once when it
+    /// returns, never a transition per tick.
+    #[test]
+    fn the_fleet_fold_flags_silence_and_drift_once_each_way() {
+        let dir = std::env::temp_dir().join(format!("grid-fleet-fold-{}", uuid::Uuid::new_v4()));
+        let reg = NodeRegistry::new(&dir);
+        let peer = PeerId::from_uuid(uuid::Uuid::from_u128(7));
+        assert!(reg.ensure_peer_node(peer, None));
+        // The registry stamps last_seen with the real clock on creation; the fold is
+        // relative to that, so the test's clock starts there.
+        let t0 = now_millis();
+        reg.note_peer_build(&peer, Some("8d1282271".into()), t0);
+        let six_h = 6 * 3600 * 1000;
+        let first = reg.fold_liveness(t0 + 1000, six_h, "740055750");
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].kind, FleetChange::FellBehind);
+        assert!(reg.fold_liveness(t0 + 2000, six_h, "740055750").is_empty(), "no second transition while nothing changed");
+        let later = reg.fold_liveness(t0 + six_h + 1, six_h, "740055750");
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].kind, FleetChange::WentStale);
+        assert!(later[0].silent_secs >= 6 * 3600);
+        reg.note_peer_build(&peer, Some("740055750".into()), t0 + six_h + 5000);
+        let back: Vec<FleetChange> = reg.fold_liveness(t0 + six_h + 6000, six_h, "740055750").into_iter().map(|t| t.kind).collect();
+        assert!(back.contains(&FleetChange::BackFresh) && back.contains(&FleetChange::CaughtUp), "{back:?}");
+        let node = reg.get_by_peer(&peer).expect("registered"); // JUSTIFIED: the test registered it
+        assert_eq!(node.build_sha.as_deref(), Some("740055750"));
+        assert!(!node.stale && !node.behind);
+    }
     #[test]
     fn test_upsert_new_node() {
         let dir = std::env::temp_dir().join("grid-test-registry");

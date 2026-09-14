@@ -48,4 +48,20 @@ latency_ms?: number | undefined,
  * capacity ↔ reputation — #2228, the node sibling of the enforced
  * `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
  */
-peer_id?: string | undefined, };
+peer_id?: string | undefined, 
+/**
+ * The node's running build (9-hex sha) as its last beacon reported it.
+ */
+build_sha?: string, 
+/**
+ * Seconds since this node was last heard (a beacon, a discovery, a frame).
+ */
+silent_secs: number, 
+/**
+ * Heard nothing for longer than the fleet's silence threshold — treat as DOWN.
+ */
+stale: boolean, 
+/**
+ * Running a build other than this node's — behind (or ahead of) tip.
+ */
+behind: boolean, };

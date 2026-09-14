@@ -68,6 +68,7 @@ impl GridCapacityModule {
             gpu_free_bytes_live: vram.available_bytes,
             system_ram_free_bytes: ram_free,
             at_ms: now_ms(),
+            build: crate::capacity::gossip::build_from_sha(env!("CONTINUUM_BUILD_GIT_SHA")),
         })
     }
 }
