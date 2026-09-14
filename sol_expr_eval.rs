@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(eval("2 * -3"), -6);
         assert_eq!(eval("8 / (1 + 1)"), 4);
         assert_eq!(eval("7 / 2"), 3); // integer division truncates toward zero
-        assert_eq!("-7 / 2", -3);
+        assert_eq!(eval("-7 / 2"), -3);
         assert_eq!(eval("\n\t 1 + \r\n 2 * 3 \t "), 7);
         assert_eq!(eval("((((((9))))))"), 9);
     }
