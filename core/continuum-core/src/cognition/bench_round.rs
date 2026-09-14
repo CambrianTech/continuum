@@ -1165,6 +1165,16 @@ pub fn total_unworked_cards() -> usize {
         .sum()
 }
 
+/// Is any Working round NOT citizen-driven — the only shape whose queued cards are a
+/// lane demand of their own (a detached solve holds exclusive lanes). Citizen rounds
+/// are worked by the resident roster, which is already the demand.
+pub fn any_working_detached_round() -> bool {
+    ROUNDS
+        .lock()
+        .expect("bench rounds mutex")
+        .values()
+        .any(|r| r.stage == RoundStage::Working && !matches!(r.driver, WorkDriver::Citizen))
+}
 /// Are any Working rounds tracked at all — the boot resume's cheap early-exit.
 pub fn any_working_round() -> bool {
     ROUNDS

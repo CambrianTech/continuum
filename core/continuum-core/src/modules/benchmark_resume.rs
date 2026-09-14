@@ -108,6 +108,12 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     .unwrap_or(0); // recency stamp is display-only for demand entries
                 crate::cognition::working_set::global().record(regime_id, REGIME_WINDOW, now_ms);
             }
+            // THE LEASE IS FOR DETACHED SOLVES ONLY (2026-09-14). `quiesce_lane_demand`
+            // is a CAP — it replaces the base demand, it does not add to it. Leasing the
+            // queued-card count for a CITIZEN round capped 16 resident minds to 2 lanes
+            // (+ scratch) with 40 GB of KV idle; the roster is already the demand for
+            // citizen rounds. A detached solve still needs its exclusive lanes.
+            let queued = if crate::cognition::bench_round::any_working_detached_round() { queued } else { 0 };
             let want = queued.clamp(1, LANE_CAP);
             match demand_lease {
                 Some((_, held)) if held == want => {}
