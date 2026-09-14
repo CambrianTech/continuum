@@ -943,6 +943,16 @@ fi
 # seconds, not ten minutes (eight deploys on 2026-09-13 = 80 minutes dark, every
 # citizen's turns dropped and leases unrenewed each time). One build definition:
 # this script's, with the same manifest, profile and features.
+# THIS NODE FOLLOWS A BRANCH (opt-in, for every install — not an operator's shell chain):
+# `CONTINUUM_TRACK_BRANCH=canary` in ~/.continuum/config.env installs the tracker agent
+# (launchd / systemd user timer) on every start, idempotently. The agent deploys a green
+# tip by itself, refuses red/pending ones, self-checks each deploy, and holds itself on a
+# failure. Unset = this node deploys only when told to (`continuum reboot`).
+if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then
+  CONTINUUM_TRACK_INTERVAL="${CONTINUUM_TRACK_INTERVAL:-300}" bash "$SCRIPT_DIR/track-canary.sh" --install >&2 \
+    || echo "⚠ track-canary install failed — this node will not follow $CONTINUUM_TRACK_BRANCH by itself" >&2
+fi
+
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
   echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
   exit 0
