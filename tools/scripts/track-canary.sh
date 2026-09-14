@@ -103,9 +103,54 @@ once() {
   local started; started="$(date +%s)"
   if continuum reboot >>"$LOG" 2>&1; then
     say "deployed: $(running_sha) in $(( $(date +%s) - started )) s"
+    self_check "$tip"
   else
     say "FAILED: continuum reboot exited non-zero after $(( $(date +%s) - started )) s — read the log above; the tracker will retry next pass"
   fi
+}
+
+# POST-DEPLOY SELF-CHECK — catch it now, not an hour later (2026-09-14: a regressed
+# server pin, a boot that drained the roster, and cold KV restores each sat unseen for
+# 40–60 minutes while the operator read probes by hand). Three receipts, each with a
+# named outcome; any failure writes the HOLD file so the tracker stops chasing a broken
+# tip until a human reads the log, and posts one line to the project room.
+#   1. the running build is the tip (deploy provenance)
+#   2. the roster fills: residents ≥ min(seats, 1) within RESIDENCY_WAIT seconds
+#   3. the KV restore economy is warm: `serving/cache-probe --roundtrip` says reuses
+self_check() {
+  local tip="$1" run ok=1 residents verdict
+  run="$(running_sha)"
+  if [ "${run:0:9}" != "${tip:0:9}" ]; then say "SELF-CHECK FAIL: running ${run:0:9} ≠ deployed tip ${tip:0:9}"; ok=0; fi
+  local waited=0
+  while [ "$waited" -lt "${RESIDENCY_WAIT:-900}" ]; do
+    residents="$(continuum persona/list 2>/dev/null </dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for x in d.get("citizens",[]) if x.get("resident")))' 2>/dev/null || echo 0)"
+    [ "${residents:-0}" -ge 1 ] && break
+    sleep 30; waited=$((waited+30))
+  done
+  if [ "${residents:-0}" -lt 1 ]; then say "SELF-CHECK FAIL: no resident citizen ${RESIDENCY_WAIT:-900}s after the deploy (the empty-node class)"; ok=0; else say "self-check: $residents resident after ${waited}s"; fi
+  verdict="$(continuum serving/cache-probe --roundtrip 2>/dev/null </dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("restore_verdict") or d.get("verdict") or "unknown")' 2>/dev/null || echo unknown)"
+  case "$verdict" in
+    reuses) say "self-check: KV restore economy warm (cache-probe: reuses)" ;;
+    *) say "SELF-CHECK FAIL: cache-probe restore verdict '$verdict' — a restored slot is cold (the 09-04 / 09-14 class)"; ok=0 ;;
+  esac
+  if [ "$ok" = "1" ]; then
+    say "self-check PASSED on ${tip:0:9}"
+    continuum chat/send --roomId "$(project_room)" --text "deploy self-check PASSED on ${tip:0:9}: build verified, $residents resident, KV restores warm" >/dev/null 2>&1 </dev/null || true
+  else
+    printf 'self-check failed on %s at %s — read %s, fix, then remove this file
+' "${tip:0:9}" "$(date -u +%H:%M:%SZ)" "$LOG" > "$HOLD"
+    say "HOLD written ($HOLD): the tracker will not chase the next tip until a human clears it"
+    continuum chat/send --roomId "$(project_room)" --text "deploy SELF-CHECK FAILED on ${tip:0:9} — tracker on hold; see $LOG" >/dev/null 2>&1 </dev/null || true
+  fi
+}
+
+# The project room to post receipts into: the room bound to this checkout's origin
+# (never a hardcoded id). Empty = no post.
+project_room() {
+  continuum room/list 2>/dev/null </dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); rooms=d.get("rooms") or d.get("items") or []
+for r in rooms:
+    if (r.get("purpose") or r.get("recipe") or "") == "project": print(r.get("id") or r.get("roomId") or ""); break' 2>/dev/null
 }
 
 install_agent() {
