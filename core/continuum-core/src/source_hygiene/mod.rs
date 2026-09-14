@@ -366,3 +366,4 @@ mod tests {
         assert!(scan(&[&Collect]).is_empty());
     }
 }
+pub mod vendor_pin;
