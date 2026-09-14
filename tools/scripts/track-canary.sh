@@ -84,7 +84,9 @@ once() {
   tip="$(tip_sha)" || { say "skip: fetch failed (offline?) — the running build stands"; return 0; }
   run="$(running_sha)"
   if [ -z "$run" ]; then say "skip: core not answering — not a deploy trigger (start it, then track)"; return 0; fi
-  if [ "${tip:0:9}" = "${run:0:9}" ]; then return 0; fi
+  # A silent watcher reads as a dead one (airc law: silent = down). One line per pass,
+  # even when there is nothing to do — the receipt that the agent is alive.
+  if [ "${tip:0:9}" = "${run:0:9}" ]; then say "ok: running ${run:0:9} == tip"; return 0; fi
   if [ -e "$HOLD" ]; then say "hold: tip ${tip:0:9} ≠ running ${run:0:9} but $HOLD is present ($(cat "$HOLD" 2>/dev/null | head -c 80))"; return 0; fi
   if build_in_flight; then say "wait: a build/reboot is already in flight"; return 0; fi
   verdict="$(tip_checks "$repo" "$tip")"
