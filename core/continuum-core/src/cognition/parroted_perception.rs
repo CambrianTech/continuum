@@ -390,7 +390,7 @@ mod tests {
             let c = crate::cognition::self_repeat::containment(&draft, b);
             assert!(
                 c < 0.6,
-                "block {:?} scores {c:.3f} — too close to the threshold for comfort",
+                "block {:?} scores {c:.3} — too close to the threshold for comfort",
                 &b[..30.min(b.len())]
             );
         }
