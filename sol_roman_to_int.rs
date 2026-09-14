@@ -38,9 +38,29 @@ pub fn roman_to_int(s: &str) -> i32 {
     total
 }
 
+/// Canonical encoder (test harness only): 1..=3999 -> Roman numeral string.
+fn to_roman(n: u32) -> String {
+    const TABLE: &[(u32, &str)] = &[
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ];
+
+    let mut r = String::new();
+    let mut n = n;
+    for &(v, sym) in TABLE {
+        while n >= v {
+            r.push_str(sym);
+            n -= v;
+        }
+    }
+    debug_assert_eq!(n, 0);
+    r
+}
+
 #[cfg(test)]
 mod tests {
-    use super::roman_to_int;
+    use super::{roman_to_int, to_roman};
 
     #[test]
     fn subtractive_pairs() {
@@ -68,33 +88,20 @@ mod tests {
 
     #[test]
     fn exhaustive_round_trip() {
-        // Canonical encoder: every numeral in 1..=3999 must decode back to itself.
-        const THOUSANDS: &[(u32, &str)] = &[(0, ""), (1, "M"), (2, "MM"), (3, "MMM")];
-        const HUNDREDS: &[(u32, &str)] = &[
-            (0, ""), (90, "CM"), (80, "CCCCLXXX"), (70, "DCC"), (60, "DC"),
-            (50, "D"), (40, "CD"), (30, "CCC"), (20, "CC"), (10, "C"),
-        ];
-        const TENS: &[(u32, &str)] = &[
-            (0, ""), (9, "XC"), (8, "LXXX"), (7, "LXX"), (6, "LX"),
-            (5, "L"), (4, "XL"), (3, "XXX"), (2, "XX"), (1, "X"),
-        ];
-        const ONES: &[(u32, &str)] = &[
-            (0, ""), (9, "IX"), (8, "VIII"), (7, "VII"), (6, "VI"),
-            (5, "V"), (4, "IV"), (3, "III"), (2, "II"), (1, "I"),
-        ];
-
+        // Every canonical numeral in 1..=3999 must decode back to itself.
         for n in 1u32..=3999 {
-            let th = THOUSANDS[(n / 1000) as usize];
-            let hu = HUNDREDS[((n % 1000) / 100) as usize];
-            let te = TENS[((n % 100) / 10) as usize];
-            let on = ONES[(n % 10) as usize];
-            let mut r = String::new();
-            r.push_str(th.1);
-            r.push_str(hu.1);
-            r.push_str(te.1);
-            r.push_str(on.1);
+            let r = to_roman(n);
             assert_eq!(roman_to_int(&r), n as i32, "round-trip failed at {n} -> {r}");
         }
+    }
+
+    #[test]
+    fn encoder_sanity() {
+        assert_eq!(to_roman(1), "I");
+        assert_eq!(to_roman(9), "IX");
+        assert_eq!(to_roman(40), "XL");
+        assert_eq!(to_roman(3888), "MMMDCCCLXXXVIII");
+        assert_eq!(to_roman(3999), "MMMCMXCIX");
     }
 }
 
@@ -140,28 +147,4 @@ fn main() {
         println!("\n{} case(s) FAILED", failed);
         std::process::exit(1);
     }
-}
-
-/// Canonical encoder (test harness only): 1..=3999 -> Roman numeral string.
-fn to_roman(n: u32) -> String {
-    const THOUSANDS: &[(u32, &str)] = &[(0, ""), (1, "M"), (2, "MM"), (3, "MMM")];
-    const HUNDREDS: &[(u32, &str)] = &[
-        (0, ""), (90, "CM"), (80, "CCCCLXXX"), (70, "DCC"), (60, "DC"),
-        (50, "D"), (40, "CD"), (30, "CCC"), (20, "CC"), (10, "C"),
-    ];
-    const TENS: &[(u32, &str)] = &[
-        (0, ""), (9, "XC"), (8, "LXXX"), (7, "LXX"), (6, "LX"),
-        (5, "L"), (4, "XL"), (3, "XXX"), (2, "XX"), (1, "X"),
-    ];
-    const ONES: &[(u32, &str)] = &[
-        (0, ""), (9, "IX"), (8, "VIII"), (7, "VII"), (6, "VI"),
-        (5, "V"), (4, "IV"), (3, "III"), (2, "II"), (1, "I"),
-    ];
-
-    let mut r = String::new();
-    r.push_str(THOUSANDS[(n / 1000) as usize].1);
-    r.push_str(HUNDREDS[((n % 1000) / 100) as usize].1);
-    r.push_str(TENS[((n % 100) / 10) as usize].1);
-    r.push_str(ONES[(n % 10) as usize].1);
-    r
 }
