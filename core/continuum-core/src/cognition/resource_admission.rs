@@ -272,6 +272,7 @@ pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
 
 /// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
 pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
+    // JUSTIFIED unwrap_or: a mind with no turn yet is measured from boot — absence IS "since boot"
     now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS
 }
 
@@ -298,7 +299,7 @@ pub async fn hold_ambient_turn_for(persona: uuid::Uuid, now_ms: u64) -> Option<t
                 class = "admission.lane.idle_share",
                 persona = %persona,
                 waited_ms = started.elapsed().as_millis() as u64,
-                idle_ms = now_ms.saturating_sub(last.unwrap_or(*BOOT_MS)),
+                idle_ms = now_ms.saturating_sub(last.unwrap_or(*BOOT_MS)), // JUSTIFIED unwrap_or: no turn yet = idle since boot
                 "a starving idle mind waited for an ambient permit and got one — the minimum share"
             );
             Some(permit)
