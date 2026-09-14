@@ -2466,6 +2466,10 @@ pub fn start_server(
         runtime.register(Arc::new(
             crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
         ));
+        // CITIZEN HEALTH IS A SUBSTRATE RECEIPT (2026-09-14): the hour's acts, writes,
+        // lane grants and settles beside residency and lanes, judged and said in the
+        // org room by the core itself — never a hand read again.
+        runtime.register(Arc::new(crate::modules::citizen_health::CitizenHealthModule::new()));
         // The STANDING ROUND — benchmarks dispatch themselves when none is
         // working (the last hand-managed act, retired 2026-09-02). Off until
         // `benchmark/standing --enabled true`; ticks on the runtime cadence.

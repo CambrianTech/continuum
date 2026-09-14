@@ -1088,6 +1088,7 @@ impl LlmDeliberationFaculty {
                 persona = %self.persona_name,
                 "lane admission granted — prefill slot next"
             );
+            crate::modules::citizen_health::note_lane_granted();
             // #56 prefill throttle: under live external GPU pressure (a game, the browser)
             // fewer than the served lane count may PREFILL concurrently — the instant valve
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;

@@ -28,6 +28,7 @@ pub mod ext_commands;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark_grade;
+pub mod citizen_health;
 pub mod benchmark_standing;
 pub mod benchmark_resume;
 pub mod bevy_consumer;

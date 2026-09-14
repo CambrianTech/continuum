@@ -641,6 +641,7 @@ pub fn produce(
         }
 
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
+    crate::modules::citizen_health::note_credit_staged();
         // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
         // is the pre-cc34ac0f path, byte-identical.
         //
@@ -1174,6 +1175,7 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             submitted = submitted as u64,
             "a settled card stamped its staged turns — PASS lifts them into her curriculum, FAIL discards them"
         );
+    crate::modules::citizen_health::note_credit_settled();
     }
 }
 
