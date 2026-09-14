@@ -187,6 +187,47 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         say_in_card_room(verdict, card, &airc, &BoardMove::Informed).await;
     }
     for card in settle {
+        // THE REVIEW PATH: a resolved parent whose gate opened a review card is closed
+        // THROUGH the review card — the same transition a reviewer's pass makes
+        // (`work::advance_card_state_effective`: the review card finishing settles the
+        // review as passed and closes the parent). Closing the parent directly is
+        // refused while its review is pending (measured 2026-09-14: 12663 sat in
+        // review 18 h; the operator's close was a no-op; closing the review card
+        // settled parent and round within a second).
+        if verdict.resolved {
+            if let Some(review) = crate::cognition::bench_round::review_card_of(card) {
+                match crate::modules::work::advance_card_state(
+                    &airc,
+                    airc_lib::WorkCardId::from_uuid(review),
+                    airc_lib::CardState::Closed,
+                    crate::modules::work::VIA_VERDICT,
+                    None,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tally.review_closed += 1;
+                        tally.closed += 1;
+                        crate::probe!(
+                            class = "benchmark.verdict.review_closed",
+                            instance = verdict.instance_id.as_str(),
+                            card = %short(&card),
+                            review = %short(&review),
+                            "the review card follows its resolved parent — closed as passed, parent closed through the gate"
+                        );
+                        say_in_card_room(verdict, card, &airc, &BoardMove::Closed).await;
+                        continue;
+                    }
+                    Err(e) => crate::probe!(
+                        class = "benchmark.verdict.board_close_failed",
+                        instance = verdict.instance_id.as_str(),
+                        card = %short(&review),
+                        error = %e,
+                        "the review card could not be closed — falling through to the parent move; retried next pass"
+                    ),
+                }
+            }
+        }
         let card_id = airc_lib::WorkCardId::from_uuid(card);
         let next = if verdict.resolved {
             airc_lib::CardState::Closed
@@ -242,44 +283,6 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         let say = mode == FollowMode::Live || matches!(moved, BoardMove::Closed | BoardMove::ReturnedToHolder);
         if say {
             say_in_card_room(verdict, card, &airc, &moved).await;
-        }
-        // THE REVIEW CARD FOLLOWS ITS PARENT: a resolve closes the gate's review card
-        // too — a reviewer has nothing left to judge — and the tracker records the
-        // review as passed so the round counts the parent settled.
-        if verdict.resolved {
-            if let Some(review) = crate::cognition::bench_round::review_card_of(card) {
-                match crate::modules::work::advance_card_state(
-                    &airc,
-                    airc_lib::WorkCardId::from_uuid(review),
-                    airc_lib::CardState::Closed,
-                    crate::modules::work::VIA_VERDICT,
-                    None,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        crate::cognition::bench_round::settle_review_card(review, true);
-                        tally.review_closed += 1;
-                        crate::probe!(
-                            class = "benchmark.verdict.review_closed",
-                            instance = verdict.instance_id.as_str(),
-                            card = %short(&card),
-                            review = %short(&review),
-                            "the review card follows its resolved parent — closed"
-                        );
-                    }
-                    Err(e) => {
-                        tally.failed += 1;
-                        crate::probe!(
-                            class = "benchmark.verdict.board_close_failed",
-                            instance = verdict.instance_id.as_str(),
-                            card = %short(&review),
-                            error = %e,
-                            "the review card could not be closed — retried next pass"
-                        );
-                    }
-                }
-            }
         }
     }
     tally
