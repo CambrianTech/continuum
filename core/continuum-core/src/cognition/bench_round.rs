@@ -371,7 +371,105 @@ fn rounds_state_dir() -> std::path::PathBuf {
 
 /// Persist one round. Failure degrades to the pre-2026-08-21 behaviour (the round
 /// forgets on reboot) and WARNS — durability must never make a live dispatch fail.
+/// THE BUNDLE (card c9ddb911, slice 2): every persisted change to a round also marks
+/// it dirty for the ACTIVITY BUNDLE — the round's saved instance state on its own
+/// room (`experience::activity_state`, kind `benchmark/round`, key
+/// [`ROUND_BUNDLE_KEY`]). The reconciler drains the set each pass and publishes;
+/// a node that never held the round restores it from the room alone
+/// ([`restore_round_from_bundle`]). The file under `state/bench-rounds/` stays as
+/// this process's fast path; the room is the truth that crosses a seam.
+static BUNDLE_DIRTY: LazyLock<Mutex<std::collections::HashSet<Uuid>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// The bundle key the round's serialized state lives under.
+pub const ROUND_BUNDLE_KEY: &str = "round";
+
+/// A round whose bundle is behind its state — what the reconciler publishes.
+pub struct DirtyRound {
+    pub round_id: Uuid,
+    pub run_room_name: String,
+    pub json: Value,
+}
+
+fn mark_bundle_dirty(round_id: Uuid) {
+    BUNDLE_DIRTY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned set still marks — same policy as every ROUNDS lock
+        .insert(round_id);
+}
+
+/// Put a round back on the dirty set (its publish failed; the next pass retries).
+pub fn requeue_bundle_dirty(round_id: Uuid) {
+    mark_bundle_dirty(round_id);
+}
+
+/// Drain the dirty set and serialize each round under the tracker lock. Lock order
+/// is DIRTY (dropped) then ROUNDS — the marker holds ROUNDS while taking DIRTY, so
+/// never the reverse here. A round with no run room yet stays dirty (nowhere to
+/// publish); a round the tracker no longer knows is dropped.
+pub fn take_dirty_bundles() -> Vec<DirtyRound> {
+    let ids: Vec<Uuid> = {
+        let mut set = BUNDLE_DIRTY.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: a poisoned set drains what it has
+        set.drain().collect()
+    };
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut homeless = Vec::new();
+    {
+        let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+        for id in ids {
+            let Some(round) = rounds.get(&id) else { continue };
+            if round.run_room_name.is_empty() {
+                homeless.push(id);
+                continue;
+            }
+            match serde_json::to_value(round) {
+                Ok(json) => out.push(DirtyRound { round_id: id, run_room_name: round.run_room_name.clone(), json }),
+                Err(e) => tracing::warn!(round = %id, error = %e, "bench round not serializable — its bundle stays behind"),
+            }
+        }
+    }
+    for id in homeless {
+        mark_bundle_dirty(id);
+    }
+    out
+}
+
+/// Restore a round from its bundle (the value under [`ROUND_BUNDLE_KEY`]). Returns
+/// `Ok(Some(id))` when the tracker learned a round it did not know, `Ok(None)` when
+/// it already knew it (this process's own state wins — it is newer or equal), `Err`
+/// for a bundle that is not a round.
+pub fn restore_round_from_bundle(bundle: &Value) -> Result<Option<Uuid>, String> {
+    let round: BenchRound = serde_json::from_value(bundle.clone()).map_err(|e| format!("bundle is not a round: {e}"))?; // ORM boundary: the bundle is the round's own serialization, read back across a seam
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    if rounds.contains_key(&round.round_id) {
+        return Ok(None);
+    }
+    let id = round.round_id;
+    crate::probe!(
+        class = "activity.state.restored",
+        kind = "benchmark/round",
+        round_id = %id,
+        room = %round.run_room_name,
+        stage = ?round.stage,
+        remaining = round.remaining(),
+        "round restored from its room's bundle — this node never held it"
+    );
+    persist_file_only(&rounds_state_dir(), &round);
+    rounds.insert(id, round);
+    Ok(Some(id))
+}
+
 fn persist_round_in(dir: &Path, round: &BenchRound) {
+    mark_bundle_dirty(round.round_id);
+    persist_file_only(dir, round);
+}
+
+/// The file half alone — what a restore writes (a restored bundle is already
+/// published; marking it dirty would republish it unchanged).
+fn persist_file_only(dir: &Path, round: &BenchRound) {
     let _ = std::fs::create_dir_all(dir);
     let path = dir.join(format!("{}.json", round.round_id));
     match serde_json::to_string(round) {
@@ -2001,6 +2099,28 @@ mod tests {
 
     use super::*;
 
+
+    /// what this catches: a round change that never reaches the bundle (the
+    /// tracker's second copy shadowing the room, card c9ddb911), and a restore
+    /// that overwrites this process's own state with an older bundle.
+    #[test]
+    fn a_persisted_change_is_dirty_for_the_bundle_and_a_restore_never_overwrites_a_known_round() {
+        let id = Uuid::new_v4();
+        open_round(id, "swe-bench-verified", WorkDriver::Citizen);
+        set_run_room_name(id, "bench-test-bundle");
+        let dirty = take_dirty_bundles();
+        let mine = dirty.iter().find(|d| d.round_id == id).expect("the opened round is dirty"); // JUSTIFIED: the test opened it
+        assert_eq!(mine.run_room_name, "bench-test-bundle");
+        assert_eq!(mine.json["run_room_name"], "bench-test-bundle");
+        assert!(take_dirty_bundles().iter().all(|d| d.round_id != id), "drained");
+        assert_eq!(restore_round_from_bundle(&mine.json).expect("a round"), None, "known round: own state wins"); // JUSTIFIED: the value came from this tracker
+        let mut foreign = mine.json.clone();
+        let other = Uuid::new_v4();
+        foreign["round_id"] = Value::String(other.to_string());
+        assert_eq!(restore_round_from_bundle(&foreign).expect("a round"), Some(other)); // JUSTIFIED: a copy of a value this tracker produced
+        assert!(live_rounds().iter().any(|r| r.round_id == other.to_string()), "restored round is live");
+        assert!(restore_round_from_bundle(&serde_json::json!({"not": "a round"})).is_err());
+    }
     fn cards(n: usize) -> Vec<Uuid> {
         (0..n).map(|_| Uuid::new_v4()).collect()
     }

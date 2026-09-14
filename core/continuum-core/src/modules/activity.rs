@@ -1147,7 +1147,87 @@ impl ActionCommand for ActivityProtect {
 // is exactly how `activity/spawn` — the verb that mints every room, benchmark rooms
 // included — became undiscoverable while the catalog promised "Listed == callable".
 // `ModuleRegistry::register` now refuses to boot on the omission.
+// ─────────────────────────── activity/state ───────────────────────────
+
+/// Read an activity's saved bundle — the state its recipe and its tracker saved on
+/// the room (card c9ddb911). The same pipe a resuming node reads; a human or a
+/// citizen standing in the room sees exactly what a resume would restore.
+pub struct ActivityState {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/ActivityStateParams.ts")]
+pub struct ActivityStateParams {
+    /// Room name or id; the caller's current room when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
+    /// One recipe kind (`benchmark/round`); every kind's newest bundle when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/experience/ActivityStateResult.ts")]
+pub struct ActivityStateResult {
+    #[ts(type = "string")]
+    pub room_id: uuid::Uuid,
+    pub room: String,
+    /// Newest bundle per kind (one entry when `kind` was given).
+    pub bundles: Vec<crate::experience::activity_state::ActivityStateRecord>,
+}
+
+#[async_trait]
+impl ActionCommand for ActivityState {
+    const NAME: &'static str = "activity/state";
+    const ALIASES: &'static [&'static str] = &["activity_state"];
+    // NOT native: a read of the bundle is a resume-time/operator verb, not a per-turn
+    // act — offering it to every persona would grow the agentic tool surface past
+    // its ceiling (llm_deliberation_faculty: shrink first, #333). Discoverable via
+    // commands/list; callable by name.
+    const NATIVE: bool = false;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Read the room's saved activity state — what its recipe and tracker saved on the \
+         room (the bundle a resume restores from). Newest per recipe kind.";
+    type Params = ActivityStateParams;
+    type Output = ActivityStateResult;
+
+    async fn run(&self, ctx: &Ctx, p: ActivityStateParams) -> Result<ActivityStateResult, CommandError> {
+        use crate::experience::activity_state::{project_activity_state, ACTIVITY_STATE_WALL_CATEGORY};
+        let airc = caller_airc(&self.registry, ctx)?;
+        let room = resolve_room(&airc, p.room.as_deref()).await?;
+        let posts = airc
+            .wall_posts_in(&room, Some(ACTIVITY_STATE_WALL_CATEGORY))
+            .await
+            .map_err(|e| CommandError::Internal(format!("activity-state wall read failed: {e}")))?;
+        let kinds: Vec<String> = match &p.kind {
+            Some(k) => vec![k.clone()],
+            None => {
+                let mut seen = Vec::new();
+                for post in posts.iter().rev() {
+                    if let Ok(rec) = serde_json::from_str::<crate::experience::activity_state::ActivityStateRecord>(&post.body) { // ORM boundary: a record another writer could not encode is not a bundle
+                        if !seen.contains(&rec.kind) {
+                            seen.push(rec.kind);
+                        }
+                    }
+                }
+                seen
+            }
+        };
+        let bundles = kinds
+            .iter()
+            .filter_map(|k| project_activity_state(&posts, k))
+            .collect();
+        Ok(ActivityStateResult { room_id: room.channel.as_uuid(), room: room.name.clone(), bundles })
+    }
+}
+
 crate::register_command!(ActivitySpawn);
+crate::register_command!(ActivityState);
 crate::register_command!(ActivityRecipes);
 crate::register_command!(ActivityInvite);
 crate::register_command!(ActivityArchive);
@@ -1221,6 +1301,9 @@ impl ServiceModule for ActivityModule {
             Arc::new(ActivityProtect {
                 registry: self.registry.clone(),
             }),
+            Arc::new(ActivityState {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
@@ -1248,6 +1331,7 @@ mod tests {
     #[test]
     fn start_a_project_verbs_are_aisafe_under_their_wire_names() {
         assert_eq!(ActivityRecipes::NAME, "activity/recipes");
+        assert_eq!(ActivityState::NAME, "activity/state");
         assert_eq!(ActivityRecipes::ACCESS, AccessLevel::AiSafe);
         assert_eq!(ActivityInvite::NAME, "activity/invite");
         assert_eq!(ActivityInvite::ACCESS, AccessLevel::AiSafe);
