@@ -233,7 +233,19 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             "persona's brain bound to a REMOTE lane — her inference crosses the grid"
         );
 
-        Ok(Arc::new(adapter))
+        // PLACEMENT FOLLOWS THE FLEET (2026-09-14): she runs on a switch that holds this
+        // remote lane and, built on first need, her home adapter from the same local
+        // factory; the grid tick moves her between them by beacon age + breaker state.
+        let switch = Arc::new(crate::persona::placement_switch::PlacementSwitch::new(
+            profile.persona_id,
+            profile.persona_name.clone(),
+            peer,
+            Arc::new(adapter),
+            Arc::clone(&self.inner),
+            profile.clone(),
+        ));
+        crate::persona::placement_switch::register(Arc::clone(&switch));
+        Ok(switch)
     }
 }
 
