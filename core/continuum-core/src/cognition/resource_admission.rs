@@ -246,6 +246,67 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
     LANES.try_hold_ambient_turn()
 }
 
+/// An idle mind that has not started a turn for this long is STARVING: her next ambient
+/// try may wait a bounded moment for a permit instead of losing every race. Measured
+/// 2026-09-14 (16 minds, 5 lanes): three idle minds ticked every 75 s for 45 minutes and
+/// never won a lane while holders-first ran the pool. Holders first is right under
+/// contention; zero for an hour is not — she cannot notice, dream, or pull when a card frees.
+pub const IDLE_STARVATION_MS: u64 = 15 * 60 * 1000;
+/// How long a starving mind waits for an ambient permit before yielding again.
+pub const IDLE_SHARE_WAIT_MS: u64 = 30_000;
+
+static LAST_TURN_MS: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0) // JUSTIFIED unwrap_or: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
+});
+
+/// Stamp that `persona` started a turn now (any kind).
+pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
+    LAST_TURN_MS.lock().insert(persona, now_ms);
+}
+
+/// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
+pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
+    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
+}
+
+/// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
+/// then a bounded wait, so the pool is still the pool but the race is not rigged against
+/// the idle forever. Probe `admission.lane.idle_share` names every granted wait.
+pub async fn hold_ambient_turn_for(persona: uuid::Uuid, now_ms: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if let Some(p) = LANES.try_hold_ambient_turn() {
+        return Some(p);
+    }
+    let last = LAST_TURN_MS.lock().get(&persona).copied();
+    if !starving_since(last, now_ms, *BOOT_MS) {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS),
+        LANES.ambient_semaphore().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => {
+            crate::probe!(
+                class = "admission.lane.idle_share",
+                persona = %persona,
+                waited_ms = started.elapsed().as_millis() as u64,
+                idle_ms = now_ms.saturating_sub(last.unwrap_or(*BOOT_MS)), // JUSTIFIED unwrap_or: no turn yet = idle since boot
+                "a starving idle mind waited for an ambient permit and got one — the minimum share"
+            );
+            Some(permit)
+        }
+        _ => None,
+    }
+}
+
 // ── Serving-lane reservation for directed turns (#139) ──────────────────────────
 //
 // The ambient PERMIT above bounds how many ambient TURNS run at once (1). But ONE
@@ -464,6 +525,17 @@ impl LaneAdmission {
     /// See [`try_hold_ambient_turn`]. Lazy like its siblings, and for the same load-bearing
     /// reason: it must capture the budget at FIRST USE, once serving has published a real
     /// lane count — never at construction, when only the boot ceiling is known.
+    /// The ambient pool itself, for a bounded wait (see `hold_ambient_turn_for`).
+    pub fn ambient_semaphore(&self) -> std::sync::Arc<tokio::sync::Semaphore> {
+        self.ambient
+            .get_or_init(|| {
+                let n = self.nondirected_budget();
+                self.ambient_installed.store(n, Ordering::Release);
+                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+            })
+            .clone()
+    }
+
     pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.ambient
             .get_or_init(|| {
@@ -1060,4 +1132,15 @@ mod tests {
             "published live count wins over the ceiling"
         );
     }
+    // what this catches (2026-09-14): an idle mind starving forever under holders-first —
+    // starvation is a function of her last turn, counted from boot when she never had one.
+    #[test]
+    fn a_mind_with_no_turn_for_fifteen_minutes_is_starving_and_a_recent_one_is_not() {
+        let boot = 1_000_000;
+        assert!(!starving_since(Some(boot + 60_000), boot + 600_000, boot), "ten minutes idle: not yet");
+        assert!(starving_since(Some(boot + 60_000), boot + 60_000 + IDLE_STARVATION_MS, boot), "fifteen minutes: starving");
+        assert!(starving_since(None, boot + IDLE_STARVATION_MS, boot), "never had a turn: counted from boot");
+        assert!(!starving_since(None, boot + 1_000, boot), "just booted: not starving");
+    }
+
 }
