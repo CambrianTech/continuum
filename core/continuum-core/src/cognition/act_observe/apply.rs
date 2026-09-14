@@ -832,6 +832,7 @@ pub async fn apply_act(
         chars = observation.len(),
         "acted and observed the result"
     );
+    crate::modules::citizen_health::note_act(wrote);
 
     ActOutcome::Acted { acts }
 }

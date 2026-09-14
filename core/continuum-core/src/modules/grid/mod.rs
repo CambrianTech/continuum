@@ -498,7 +498,7 @@ const FLEET_SILENT_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
 /// One line into the org room (the git-remote-derived base the operator peer
 /// subscribes at boot), as the operator. No operator online or no org room = the
 /// probe alone carries the transition; never a panic, never a retry loop.
-async fn say_in_org_room(line: &str) {
+pub(crate) async fn say_in_org_room(line: &str) {
     let Some(airc) = crate::persona::operator_peer::operator_airc() else { return };
     let cwd = std::env::current_dir().unwrap_or_else(|_| crate::modules::persona_instance_manager::resolve_continuum_root()); // JUSTIFIED unwrap_or_else: no cwd = the home, same fallback the operator peer takes
     let Some(org) = airc_lib::JoinContext::from_cwd(&cwd)

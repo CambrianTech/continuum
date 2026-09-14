@@ -1402,6 +1402,7 @@ pub fn observe_card_event(payload: &Value) {
     match round.settle_card(card, state) {
         SettleOutcome::NotOurs | SettleOutcome::AlreadySettled => {}
         SettleOutcome::Settled { remaining } => {
+            crate::modules::citizen_health::note_settle();
             persist_round_in(&rounds_state_dir(), round);
             crate::probe!(
                 class = "bench.round.card_settled",
@@ -1413,6 +1414,7 @@ pub fn observe_card_event(payload: &Value) {
             );
         }
         SettleOutcome::RoundDone => {
+            crate::modules::citizen_health::note_settle();
             let (dispatched, benchmark) = (round.dispatched(), round.benchmark.clone());
             crate::probe!(
                 class = "bench.round.card_settled",
