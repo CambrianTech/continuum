@@ -203,6 +203,15 @@ pub use unified::PersonaCognition;
 ///
 /// Production boot:
 ///   `register_substrate_orm_entities(OrmEntityRegistry::global())?;`
+/// Every collection [`register_substrate_orm_entities`] registers — the boot
+/// receipt and the regression test count against this list.
+pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
+    <hw_tier_descriptor::HwTierDescriptor as crate::orm::OrmEntity>::COLLECTION,
+    <role_template::RoleTemplate as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCredit as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCreditGeneration as crate::orm::OrmEntity>::COLLECTION,
+];
+
 pub fn register_substrate_orm_entities(
     registry: &crate::orm::OrmEntityRegistry,
 ) -> Result<(), crate::orm::RegistrationError> {

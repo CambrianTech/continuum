@@ -448,6 +448,18 @@ impl Default for DataModule {
     }
 }
 
+/// Register the substrate's Rust-authored ORM entities into the global registry.
+/// Idempotent; returns how many collections the registry resolves afterwards.
+pub(crate) fn wire_substrate_orm_entities() -> Result<usize, String> {
+    let registry = crate::orm::OrmEntityRegistry::global();
+    crate::persona::register_substrate_orm_entities(registry)
+        .map_err(|e| format!("substrate ORM entity registration conflict — boot refused: {e}"))?;
+    Ok(crate::persona::SUBSTRATE_ORM_COLLECTIONS
+        .iter()
+        .filter(|c| registry.resolve(c).is_some())
+        .count())
+}
+
 #[async_trait]
 impl ServiceModule for DataModule {
     fn config(&self) -> ModuleConfig {
@@ -465,6 +477,19 @@ impl ServiceModule for DataModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // THE SUBSTRATE'S OWN ENTITIES (2026-09-14): `register_substrate_orm_entities`
+        // existed with a doc comment saying "boot wires it" and NO caller — so every
+        // `data/ensure-schema` for a Rust-authored collection (`staged_credit`, the
+        // learning flywheel's per-persona credit) was refused as an unknown
+        // collection, on every node, and the flywheel stayed dead for work turns
+        // (training.credit.stage_failed ×2 per act turn, 0 staged). A conflict is a
+        // boot failure, never a warning: two shapes for one collection is a bug.
+        let registered = wire_substrate_orm_entities()?;
+        crate::probe!(
+            class = "orm.substrate_entities.registered",
+            registered = registered as u64,
+            "Rust-authored ORM entities registered before the first ensure-schema"
+        );
         // Store context for event publishing
         let ctx_arc = Arc::new(ModuleContext::new(
             ctx.registry.clone(),
@@ -2207,7 +2232,22 @@ impl DataState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::types::CollectionSchema;
+
+
+    /// what this catches: the substrate's own collections unknown to the ORM at
+    /// runtime — `register_substrate_orm_entities` had no production caller for
+    /// weeks; `staged_credit` was refused by ensure-schema on every node and the
+    /// learning flywheel never staged a credit. Boot must wire it, and the wiring
+    /// must make every substrate collection resolvable on the GLOBAL registry.
+    #[test]
+    fn boot_wiring_makes_every_substrate_collection_resolvable_on_the_global_registry() {
+        let n = wire_substrate_orm_entities().expect("no conflict on a fresh or repeated wiring"); // JUSTIFIED: the invariant under test
+        assert_eq!(n, crate::persona::SUBSTRATE_ORM_COLLECTIONS.len(), "every substrate collection resolves");
+        for c in crate::persona::SUBSTRATE_ORM_COLLECTIONS {
+            assert!(crate::orm::OrmEntityRegistry::global().resolve(c).is_some(), "{c} must resolve");
+        }
+        assert!(crate::orm::OrmEntityRegistry::global().resolve("staged_credit").is_some());
+    }    use crate::orm::types::CollectionSchema;
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
     /// legacy passthrough. Tests still hit the abstraction (handle resolves
