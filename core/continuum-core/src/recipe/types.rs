@@ -72,6 +72,12 @@ pub struct RecipeStep {
     #[serde(default)]
     #[ts(optional)]
     pub each: Option<String>,
+    /// Bindings to SAVE into the activity's bundle once this step completes — its
+    /// own `outputTo` or any earlier one. The framework saves at the boundary the
+    /// recipe marks (`onSaveInstanceState`); a bare `recipe/run` with no bundle sink
+    /// probes the ask and carries on. See [`crate::experience::activity_state`].
+    #[serde(default)]
+    pub saves: Vec<String>,
 }
 
 /// What a failed step does to the run.

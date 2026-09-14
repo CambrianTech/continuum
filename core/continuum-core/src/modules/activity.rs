@@ -892,8 +892,18 @@ pub async fn spawn_activity_room(
                             "recipe": recipe,
                         }),
                     )];
+                    // THE BUNDLE SINK: every `saves` in this recipe lands on THIS room
+                    // as its activity-state record (kind = the recipe purpose), so
+                    // whoever resumes the activity reads the bundle, not a process map.
+                    let sink: std::sync::Arc<dyn crate::experience::activity_state::StepStateSink> =
+                        std::sync::Arc::new(crate::experience::activity_state::BoundStateSink::new(
+                            std::sync::Arc::new(crate::experience::activity_state::WallActivityStateStore::new(std::sync::Arc::new(airc.clone()))),
+                            room.clone(),
+                            recipe_def.purpose.clone(),
+                        ));
                     let receipt = match crate::recipe::PipelineExecutor::new(exec)
                         .with_caller(caller.clone())
+                        .with_state_sink(sink)
                         .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
                         .await
                     {
