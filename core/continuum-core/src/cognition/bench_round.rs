@@ -751,6 +751,39 @@ pub fn review_parent(card: Uuid) -> Option<Uuid> {
 
 /// The reviewer's verdict landed: the review card retires; a pass unlocks the
 /// parent's `done`. Returns the parent.
+/// The review card opened for `parent`, if the gate opened one and it is still pending.
+pub fn review_card_of(parent: Uuid) -> Option<Uuid> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    rounds
+        .values()
+        .find_map(|r| r.review_cards.iter().find(|(_, p)| **p == parent).map(|(rv, _)| *rv))
+}
+
+/// THE VERDICT LAW (card 52842311): a verdict settles every card of its instance.
+/// Cards the tracker still counts as unsettled whose instance already HAS a verdict
+/// (`lookup`), with that verdict — the ones a board move never reached (a parent
+/// parked in REVIEW when the grade landed, a review card nobody pulled, a duplicate
+/// in another round). The reconciler closes them each pass until the board agrees.
+pub fn unsettled_cards_with<V>(lookup: impl Fn(&str) -> Option<V>) -> Vec<(Uuid, String, V)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, settled) in &r.cards {
+            if settled.is_some() {
+                continue;
+            }
+            let Some(instance) = r.card_instances.get(card) else { continue };
+            if let Some(v) = lookup(instance) {
+                out.push((*card, instance.clone(), v));
+            }
+        }
+    }
+    out
+}
+
 pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.values_mut().find(|r| r.review_cards.contains_key(&review))?;
@@ -2119,6 +2152,30 @@ mod tests {
 
 
     use super::*;
+
+    /// what this catches: a resolved instance whose board card sat in REVIEW (or whose
+    /// review card nobody pulled) counting as unsettled forever — the round never
+    /// settles, the standing autopilot never advances (2026-09-14: django-12663 resolved
+    /// 18 h earlier, round 7/8, standing skipped every tick).
+    #[test]
+    fn a_verdicted_card_the_board_never_closed_is_named_for_the_reconciler() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        add_card(round, a);
+        add_card(round, b);
+        record_card_instance(a, "django__django-12663");
+        record_card_instance(b, "django__django-11211");
+        let review = Uuid::new_v4();
+        register_review_card(a, review);
+        assert_eq!(review_card_of(a), Some(review));
+        assert_eq!(review_card_of(b), None);
+        let hits = unsettled_cards_with(|i| (i == "django__django-12663").then_some(true));
+        assert_eq!(hits.iter().filter(|(c, _, _)| *c == a).count(), 1, "the verdicted, unsettled card is named");
+        assert!(hits.iter().all(|(c, _, _)| *c != b), "no verdict, not named");
+        settle_card_direct(a, "closed");
+        assert!(unsettled_cards_with(|_| Some(true)).iter().all(|(c, _, _)| *c != a), "settled = not named again");
+    }
 
 
     /// what this catches: a working round's open card missing from the reconciler's

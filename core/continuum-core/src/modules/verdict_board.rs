@@ -65,10 +65,78 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &Boa
 }
 
 /// What a recorded verdict does to the board. Never called for gold or ungradeable runs.
+/// How a verdict is followed onto the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowMode {
+    /// The grade just landed: move the cards, tell every card's room (the holder hears it).
+    Live,
+    /// THE RECONCILER (card 52842311): a verdict already on file whose cards the board
+    /// never settled — move what still needs moving, say it only when a card actually
+    /// moved, never re-inform other rounds' cards pass after pass.
+    Reconcile,
+}
+
+/// What one follow moved, for the pass receipt.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FollowTally {
+    pub closed: u64,
+    pub returned: u64,
+    pub review_closed: u64,
+    pub failed: u64,
+}
+
 pub async fn follow(verdict: &SweVerdict) {
+    let _ = follow_with(verdict, FollowMode::Live).await;
+}
+
+/// THE VERDICT LAW, applied on the tick: every card the tracker still counts as
+/// unsettled whose instance has a verdict on file is followed again — the parent
+/// parked in REVIEW when the grade landed, the review card nobody pulled, the
+/// duplicate in another round. Idempotent: a card the board already moved is not on
+/// the list; one that cannot be moved is probed and retried next pass. Measured
+/// 2026-09-14: django-12663 resolved 18 h earlier, its parent in review, the round
+/// 7/8 forever, the standing autopilot skipping every tick.
+pub async fn reconcile_verdicted() -> FollowTally {
+    let pending = crate::cognition::bench_round::unsettled_cards_with(|instance| {
+        crate::cognition::swe_bench::read_verdict(instance)
+    });
+    let mut seen: Vec<String> = Vec::new();
+    let mut tally = FollowTally::default();
+    for (_card, instance, verdict) in pending {
+        if seen.contains(&instance) {
+            continue;
+        }
+        seen.push(instance.clone());
+        // A failed verdict returns the card to its holder ONCE, live; on the tick it
+        // would hand it back every pass. Reconcile only what a resolve settles.
+        if !verdict.resolved {
+            continue;
+        }
+        let t = follow_with(&verdict, FollowMode::Reconcile).await;
+        tally.closed += t.closed;
+        tally.returned += t.returned;
+        tally.review_closed += t.review_closed;
+        tally.failed += t.failed;
+    }
+    if tally != FollowTally::default() {
+        crate::probe!(
+            class = "benchmark.verdict.reconciled",
+            closed = tally.closed,
+            review_closed = tally.review_closed,
+            returned = tally.returned,
+            failed = tally.failed,
+            instances = seen.len() as u64,
+            "verdicts on file settled the cards the board had left open"
+        );
+    }
+    tally
+}
+
+pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally {
+    let mut tally = FollowTally::default();
     let all = crate::cognition::bench_round::cards_for_instance(&verdict.instance_id);
     if all.is_empty() {
-        return;
+        return tally;
     }
     let short = |c: &Uuid| c.to_string().chars().take(8).collect::<String>();
     let Some(airc) = crate::persona::operator_peer::operator_airc() else {
@@ -79,7 +147,7 @@ pub async fn follow(verdict: &SweVerdict) {
             error = "operator self-peer not online",
             "no airc handle to move the board card with"
         );
-        return;
+        return tally;
     };
     // THE CARD OWNS ITS GRADE (2026-09-13 00:14Z: one round's resolve closed two other rounds'
     // cards for the same instance — other holders' work — and could not even say so in their
@@ -107,6 +175,9 @@ pub async fn follow(verdict: &SweVerdict) {
     let solver = Uuid::parse_str(&verdict.solver).ok();
     let (settle, inform) = cards_to_settle(&owners, solver, verdict.resolved);
     for card in inform {
+        if mode == FollowMode::Reconcile {
+            continue;
+        }
         crate::probe!(
             class = "benchmark.verdict.card_informed",
             instance = verdict.instance_id.as_str(),
@@ -116,6 +187,47 @@ pub async fn follow(verdict: &SweVerdict) {
         say_in_card_room(verdict, card, &airc, &BoardMove::Informed).await;
     }
     for card in settle {
+        // THE REVIEW PATH: a resolved parent whose gate opened a review card is closed
+        // THROUGH the review card — the same transition a reviewer's pass makes
+        // (`work::advance_card_state_effective`: the review card finishing settles the
+        // review as passed and closes the parent). Closing the parent directly is
+        // refused while its review is pending (measured 2026-09-14: 12663 sat in
+        // review 18 h; the operator's close was a no-op; closing the review card
+        // settled parent and round within a second).
+        if verdict.resolved {
+            if let Some(review) = crate::cognition::bench_round::review_card_of(card) {
+                match crate::modules::work::advance_card_state(
+                    &airc,
+                    airc_lib::WorkCardId::from_uuid(review),
+                    airc_lib::CardState::Closed,
+                    crate::modules::work::VIA_VERDICT,
+                    None,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tally.review_closed += 1;
+                        tally.closed += 1;
+                        crate::probe!(
+                            class = "benchmark.verdict.review_closed",
+                            instance = verdict.instance_id.as_str(),
+                            card = %short(&card),
+                            review = %short(&review),
+                            "the review card follows its resolved parent — closed as passed, parent closed through the gate"
+                        );
+                        say_in_card_room(verdict, card, &airc, &BoardMove::Closed).await;
+                        continue;
+                    }
+                    Err(e) => crate::probe!(
+                        class = "benchmark.verdict.board_close_failed",
+                        instance = verdict.instance_id.as_str(),
+                        card = %short(&review),
+                        error = %e,
+                        "the review card could not be closed — falling through to the parent move; retried next pass"
+                    ),
+                }
+            }
+        }
         let card_id = airc_lib::WorkCardId::from_uuid(card);
         let next = if verdict.resolved {
             airc_lib::CardState::Closed
@@ -162,8 +274,18 @@ pub async fn follow(verdict: &SweVerdict) {
                 BoardMove::Failed(e)
             }
         };
-        say_in_card_room(verdict, card, &airc, &moved).await;
+        match &moved {
+            BoardMove::Closed => tally.closed += 1,
+            BoardMove::ReturnedToHolder => tally.returned += 1,
+            BoardMove::Failed(_) => tally.failed += 1,
+            BoardMove::Informed => {}
+        }
+        let say = mode == FollowMode::Live || matches!(moved, BoardMove::Closed | BoardMove::ReturnedToHolder);
+        if say {
+            say_in_card_room(verdict, card, &airc, &moved).await;
+        }
     }
+    tally
 }
 
 /// The room hears the verdict, addressed to the holder. Authored by a live citizen who is
