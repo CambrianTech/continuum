@@ -415,19 +415,24 @@ pub fn take_dirty_bundles() -> Vec<DirtyRound> {
     if ids.is_empty() {
         return Vec::new();
     }
-    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
     let mut out = Vec::new();
-    for id in ids {
-        let Some(round) = rounds.get(&id) else { continue };
-        if round.run_room_name.is_empty() {
-            drop(rounds);
-            mark_bundle_dirty(id);
-            return out;
+    let mut homeless = Vec::new();
+    {
+        let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+        for id in ids {
+            let Some(round) = rounds.get(&id) else { continue };
+            if round.run_room_name.is_empty() {
+                homeless.push(id);
+                continue;
+            }
+            match serde_json::to_value(round) {
+                Ok(json) => out.push(DirtyRound { round_id: id, run_room_name: round.run_room_name.clone(), json }),
+                Err(e) => tracing::warn!(round = %id, error = %e, "bench round not serializable — its bundle stays behind"),
+            }
         }
-        match serde_json::to_value(round) {
-            Ok(json) => out.push(DirtyRound { round_id: id, run_room_name: round.run_room_name.clone(), json }),
-            Err(e) => tracing::warn!(round = %id, error = %e, "bench round not serializable — its bundle stays behind"),
-        }
+    }
+    for id in homeless {
+        mark_bundle_dirty(id);
     }
     out
 }
