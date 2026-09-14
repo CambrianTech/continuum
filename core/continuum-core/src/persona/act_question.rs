@@ -485,6 +485,13 @@ pub(crate) async fn ask_the_act_question(
                     let turn_acts = work.turn_acts.clone();
                     let (work_step, _, work_generation_receipts) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
+                    crate::probe!(
+                        class = "training.hook.work_turn",
+                        persona = %ctx.identity.agent_name,
+                        acts = turn_acts.len() as u64,
+                        held = held.len() as u64,
+                        "held-work turn settled — what the learning hook sees"
+                    );
                     if !turn_acts.is_empty() {
                         if let Some(card) = held.first() {
                             crate::persona::training_producer::produce(
