@@ -223,6 +223,10 @@ pub struct GridNode {
     #[serde(default)]
     #[ts(optional)]
     pub build_sha: Option<String>,
+    /// The node's monotonic build number as its last beacon reported it (0 = unknown).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub build_number: u64,
     /// Seconds since this node was last heard (a beacon, a discovery, a frame).
     #[serde(default)]
     #[ts(type = "number")]

@@ -176,6 +176,7 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         system_ram_free_bytes: ram.map(|k| k.available_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: a VRAM-only board (no RAM kind governed) offers 0 RAM rather than a guess
         at_ms,
         build: crate::capacity::gossip::build_from_sha(env!("CONTINUUM_BUILD_GIT_SHA")),
+        build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: a build with no number beacons 0 = unknown, never a fake ordering
     })
 }
 

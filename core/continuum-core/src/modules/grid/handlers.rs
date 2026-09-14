@@ -323,6 +323,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         latency_ms: None,
         peer_id,
         build_sha: None,
+        build_number: 0,
         silent_secs: 0,
         stale: false,
         behind: false,
