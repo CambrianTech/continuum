@@ -36,6 +36,16 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
     inter / union
 }
 
+/// How many CONTENT tokens a text carries, by the one tokenizer all these measures share.
+///
+/// Exposed so a caller can ask whether a text is long enough for a containment score to MEAN
+/// anything before it acts on one — see [`crate::cognition::parroted_perception`]. Sharing
+/// `content_tokens` is the point: a guard that counted tokens differently from the measure it
+/// guards would disagree with it about some text, which is the whole failure mode.
+pub fn content_token_count(s: &str) -> usize {
+    content_tokens(s).len()
+}
+
 /// How much of `part` reappears in `whole`, in `0.0..=1.0` — ASYMMETRIC containment, the
 /// sibling of [`text_similarity`] and deliberately NOT the same measure.
 ///

@@ -62,8 +62,29 @@
 //! Discussion scores low (a few shared words out of thirty); reproduction scores ~1.0. The
 //! separation is wide, which is what makes a single threshold honest here.
 
-use crate::cognition::self_repeat::containment;
+use crate::cognition::self_repeat::{containment, content_token_count};
 use crate::cognition::workspace::{BurstTurn, TurnVoice};
+
+/// The fewest content tokens a fact must carry before a containment score against it is
+/// allowed to silence a turn.
+///
+/// A containment ratio over a TINY fact is not a measurement, it is a coincidence. The
+/// arithmetic is unforgiving: a fact of three content tokens ("You are Paige" → `you`, `are`,
+/// `paige` — the tokenizer drops only ≤2-char tokens, it has no stopword list) scores a clean
+/// 1.0 against the innocent reply "Are you asking me, Paige?", and that citizen is silenced
+/// for saying her own name.
+///
+/// This became load-bearing the moment the persona's IDENTITY text joined the fact list: that
+/// text comes from RAG identity, not from a file on disk, so the distribution of its lengths
+/// across personas is NOT something I could measure — and an unmeasured distribution is
+/// exactly when a floor is mandatory rather than optional. A persona seeded with a one-line
+/// identity would otherwise be mutable by construction.
+///
+/// 12 sits well below every real fact (the live repetition brick carries ~26) and well above
+/// the degenerate ones. It is a floor against nonsense, not a tuned parameter: nothing should
+/// be calibrating against it, and if a real fact ever lands near it the right fix is a longer
+/// fact, not a lower floor.
+pub const MIN_DISCRIMINATING_FACT_TOKENS: usize = 12;
 
 /// How much of one perception fact must reappear in a draft before it is an echo rather
 /// than a mention.
@@ -104,6 +125,7 @@ pub fn parroted_fact<'a>(draft: &str, facts: &[&'a str], threshold: f64) -> Opti
     facts
         .iter()
         .copied()
+        .filter(|fact| content_token_count(fact) >= MIN_DISCRIMINATING_FACT_TOKENS)
         .find(|fact| containment(draft, fact) >= threshold)
 }
 
@@ -276,6 +298,48 @@ mod tests {
                 "speaking about her identity is not reciting it: {speech}"
             );
         }
+    }
+
+    // what this catches: A TINY FACT MUTING A CITIZEN FOR SAYING HER OWN NAME. Found by
+    // review, not by a room — but it was one commit from shipping, and it only became
+    // reachable when the persona's identity text joined the fact list.
+    //
+    // The arithmetic: `content_tokens` drops only ≤2-char tokens and has NO stopword list, so
+    // a three-token identity ("You are Paige" → you, are, paige) is fully contained in the
+    // innocent reply "Are you asking me, Paige?" — containment 1.0, well past the 0.8
+    // threshold, and she is silenced for naming herself. Identity text comes from RAG, so the
+    // distribution of its length across personas is not knowable from disk; a persona seeded
+    // with a one-line identity would be mutable by construction.
+    //
+    // The floor is what makes the gate safe to point at identity at all. Delete
+    // MIN_DISCRIMINATING_FACT_TOKENS and this test is what tells you.
+    #[test]
+    fn a_fact_too_short_to_be_discriminating_can_never_silence_her() {
+        let terse = "You are Paige.";
+        assert!(
+            crate::cognition::self_repeat::containment(terse, terse) >= PARROT_CONTAINMENT_THRESHOLD,
+            "precondition: a terse fact DOES score past the threshold — the floor is the \
+             only thing standing between that score and a silenced citizen"
+        );
+        for speech in [
+            "Are you asking me, Paige?",
+            "You are right — Paige and I landed on the same fix.",
+            terse,
+        ] {
+            assert_eq!(
+                parroted_fact(speech, &[terse], PARROT_CONTAINMENT_THRESHOLD),
+                None,
+                "a {}-token fact must never silence a turn: {speech}",
+                crate::cognition::self_repeat::content_token_count(terse)
+            );
+        }
+        // And the floor must not have swallowed the real facts it sits under: the live brick
+        // is still caught, so this guard bought safety without costing the gate its job.
+        assert_eq!(
+            parroted_fact(LIVE_BRICK, &[LIVE_BRICK], PARROT_CONTAINMENT_THRESHOLD),
+            Some(LIVE_BRICK),
+            "the floor must sit BELOW every real fact — the brick carries ~26 tokens"
+        );
     }
 
     // what this catches: a turn with nothing handed to her cannot be an echo, and an empty
