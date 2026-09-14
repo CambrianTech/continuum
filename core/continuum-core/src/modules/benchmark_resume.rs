@@ -210,6 +210,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             reseat_working_rounds(&registry).await;
             seat_announced_rounds(&registry).await;
             sync_round_bundles(&registry).await;
+            settle_from_board_and_return_idle_claims(&registry).await;
             unseat_finished_rounds(&registry).await;
             release_surplus_holds(&registry).await;
             if attempt == 1 {
@@ -869,6 +870,129 @@ async fn sync_round_bundles(registry: &crate::persona::PersonaAircRuntimeRegistr
             restored,
             unread,
             "bundle pass: rounds published to their rooms / restored from them"
+        );
+    }
+}
+
+/// How long a claimed bench card may sit with no act from its holder before the
+/// substrate returns it to the deck. A lease heartbeat is not work: 2026-09-14 a
+/// card sat CLAIMED 6.5 h with zero acts while the round it blocked kept the
+/// standing autopilot from ever spawning the next one.
+const IDLE_CLAIM_RELEASE_MS: u64 = 3 * 60 * 60 * 1000;
+
+/// THE TRACKER FOLLOWS THE BOARD (reconciler rule; plan S3, card 52842311's kin).
+/// Each pass, for every card a working round still counts unsettled: (1) a board
+/// state that is already terminal settles the tracker's card — the close happened
+/// across a seam and the state event never reached this process (measured
+/// 2026-09-14: seed-4 pytest-7236 tracker `working`, board `closed`); (2) a card
+/// claimed by a resident of THIS node with no act for [`IDLE_CLAIM_RELEASE_MS`] is
+/// released by her — the same `work/release` her governor uses — so the deck offers
+/// it again. Review cards are never released here (their lifetime is the gate's).
+async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::persona::airc_citizen::AircCitizen as _;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0); // JUSTIFIED unwrap_or: a pre-epoch clock releases nothing (every claim reads fresh)
+    let (mut settled, mut released, mut unread, mut release_failed) = (0u64, 0u64, 0u64, 0u64);
+    let mut boards: std::collections::HashMap<uuid::Uuid, Vec<airc_lib::WorkCard>> = std::collections::HashMap::new();
+    for (room_id, card, instance) in crate::cognition::bench_round::unsettled_cards() {
+        if !boards.contains_key(&room_id) {
+            // One board read per room per pass, through any resident seated there.
+            let mut snapshot = None;
+            for rt in registry.iter() {
+                let member = rt
+                    .subscribed_rooms()
+                    .await
+                    .map(|rooms| rooms.contains(&room_id))
+                    .unwrap_or(false); // JUSTIFIED unwrap_or: an unreadable room list reads as "not seated" — the next runtime is tried
+                if !member {
+                    continue;
+                }
+                let room = rt
+                    .airc()
+                    .subscription_set()
+                    .await
+                    .ok()
+                    .and_then(|set| set.all().map(|sub| sub.as_room()).find(|r| r.channel.as_uuid() == room_id));
+                let Some(room) = room else { continue };
+                if let Ok(board) = rt.airc().work_board_in(&room).await {
+                    snapshot = Some(board.snapshot().cards.clone());
+                    break;
+                }
+            }
+            match snapshot {
+                Some(cards) => {
+                    boards.insert(room_id, cards);
+                }
+                None => {
+                    unread += 1;
+                    continue;
+                }
+            }
+        }
+        let Some(on_board) = boards.get(&room_id).and_then(|cards| cards.iter().find(|c| c.card_id.as_uuid() == card)) else {
+            unread += 1;
+            continue;
+        };
+        let state = format!("{:?}", on_board.state).to_ascii_lowercase();
+        if crate::cognition::bench_round::is_terminal_card_state(&state) {
+            crate::cognition::bench_round::settle_card_direct(card, &state);
+            settled += 1;
+            crate::probe!(
+                class = "bench.round.settled_from_board",
+                card = %card.to_string().chars().take(8).collect::<String>(),
+                instance = %instance,
+                state = %state,
+                "the board had settled this card; the tracker follows it"
+            );
+            continue;
+        }
+        // (2) an idle claim by one of ours goes back to the deck.
+        let claimed = matches!(on_board.state, airc_lib::CardState::Claimed | airc_lib::CardState::InProgress);
+        if !claimed || crate::commands::benchmark::parse_review_title(&on_board.title).is_some() {
+            continue;
+        }
+        let (Some(owner), Some(claim_id)) = (on_board.owner, on_board.claim_id.clone()) else { continue };
+        let last_act = crate::cognition::bench_round::card_last_act_ms(card).unwrap_or(on_board.updated_at_ms); // JUSTIFIED unwrap_or: no act recorded = the claim itself is her last sign of life
+        if now_ms.saturating_sub(last_act) < IDLE_CLAIM_RELEASE_MS {
+            continue;
+        }
+        let Some(rt) = registry.iter().find(|rt| rt.peer_id() == owner.as_uuid()) else { continue };
+        let idle_min = now_ms.saturating_sub(last_act) / 60_000;
+        let reason = format!("released by the substrate: no act on this card for {idle_min} min — back to the deck");
+        match rt.release_card(on_board.card_id, claim_id, &reason).await {
+            Ok(()) => {
+                released += 1;
+                crate::probe!(
+                    class = "persona.work.released_idle_claim",
+                    persona = %rt.agent_name(),
+                    card = %card.to_string().chars().take(8).collect::<String>(),
+                    instance = %instance,
+                    idle_min,
+                    "a claim with no act for hours is not work — returned to the deck"
+                );
+            }
+            Err(e) => {
+                release_failed += 1;
+                crate::probe!(
+                    class = "persona.work.release_idle_failed",
+                    persona = %rt.agent_name(),
+                    card = %card.to_string().chars().take(8).collect::<String>(),
+                    error = %e,
+                    "the idle claim could not be released this pass"
+                );
+            }
+        }
+    }
+    if settled + released + unread + release_failed > 0 {
+        crate::probe!(
+            class = "bench.round.board_pass",
+            settled,
+            released,
+            unread,
+            release_failed,
+            "board pass: cards settled from the board / idle claims returned"
         );
     }
 }
