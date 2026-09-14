@@ -50,6 +50,15 @@ pub struct StandingConfig {
     /// standing dispatch, so every round is a fresh sample and the sequence is
     /// reproducible from this file alone.
     pub next_seed: u64,
+    /// The named team the round seats (empty = every resident pulls). Since 2026-09-14
+    /// the standing round is the RECIPE round — the same `activity/spawn` a human makes
+    /// — so it carries the team, the review gate and the doctrine, never `assignees`.
+    #[serde(default)]
+    pub team: Vec<String>,
+    #[serde(default)]
+    pub review_gate: bool,
+    #[serde(default)]
+    pub doctrine: Option<String>,
 }
 
 impl Default for StandingConfig {
@@ -61,6 +70,9 @@ impl Default for StandingConfig {
             benchmark: "swe-bench-verified-mini".to_string(),
             sample: 4,
             next_seed: 2, // seed=1 was the hand-dispatched 2026-09-01 batch
+            team: Vec::new(),
+            review_gate: false,
+            doctrine: None,
         }
     }
 }
@@ -155,7 +167,6 @@ impl BenchmarkStandingModule {
             );
             return Ok(false);
         }
-        let assignees: Vec<String> = residents.iter().map(|(name, _)| name.clone()).collect();
         // BACKLOG GUARD: if there are already more unworked (unstarted) cards in
         // flight than there are citizens to work them, the team is saturated —
         // dispatching another round just deepens the pile (measured 2026-09-02:
@@ -187,18 +198,31 @@ impl BenchmarkStandingModule {
             return Ok(false);
         };
         let seed = cfg.next_seed;
+        // THE STANDING ROUND IS THE RECIPE ROUND (2026-09-14): the same `activity/spawn`
+        // a human makes for a team round — the recipe births the room, imports the
+        // cards (withholding what this box cannot grade), seats the named team, posts
+        // the doctrine — never the legacy `benchmark/dispatch` with `assignees` (which
+        // minted thirty paused verified-mini duplicates no citizen could resume).
+        let name = format!("standing-{}-seed{}", cfg.benchmark, seed);
+        let mut params = json!({
+            "suite": cfg.benchmark,
+            "sample": cfg.sample,
+            "seed": seed,
+            "review_gate": cfg.review_gate,
+        });
+        if !cfg.team.is_empty() {
+            params["team"] = json!(cfg.team);
+        }
+        if let Some(d) = &cfg.doctrine {
+            params["doctrine"] = json!(d);
+        }
         executor
             .execute_json(
-                "benchmark/dispatch",
-                json!({
-                    "name": cfg.benchmark,
-                    "sample": cfg.sample,
-                    "seed": seed,
-                    "assignees": assignees,
-                }),
+                "activity/spawn",
+                json!({ "recipe": "benchmark/round", "name": name, "params": params }),
             )
             .await
-            .map_err(|e| format!("standing dispatch failed: {e}"))?;
+            .map_err(|e| format!("standing spawn failed: {e}"))?;
         // Persist the seed bump ONLY after a successful dispatch — a failed
         // dispatch retries the SAME seed, so the sequence has no holes.
         let mut next = cfg.clone();
@@ -209,8 +233,9 @@ impl BenchmarkStandingModule {
             benchmark = %next.benchmark,
             sample = next.sample as u64,
             seed = seed,
-            assignees = assignees.len() as u64,
-            "standing round dispatched — benchmarks run themselves"
+            team = next.team.len() as u64,
+            review_gate = next.review_gate,
+            "standing round spawned from the recipe — benchmarks run themselves, as activities"
         );
         Ok(true)
     }
