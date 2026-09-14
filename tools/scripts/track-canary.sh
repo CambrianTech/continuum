@@ -23,6 +23,7 @@
 #      the GitHub repo is derived from `git remote get-url origin` — nothing is
 #      hardcoded (this repo is for other people and their orgs).
 set -u
+set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BRANCH="${CONTINUUM_TRACK_BRANCH:-canary}"

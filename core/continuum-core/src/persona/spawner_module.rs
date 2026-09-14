@@ -541,7 +541,9 @@ async fn draw_intents(
             });
         };
         drawn += 1;
-        if let Some(h) = hold.as_ref() {
+        // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
+        // orders the roster — team first — but seats the whole population (below).
+        if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
             if !h.allows(&intent.agent_name) {
                 crate::probe!(
                     class = "persona.host.held_out",
@@ -553,6 +555,12 @@ async fn draw_intents(
             }
         }
         intents.push(intent);
+    }
+    // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
+    // after — never fewer minds. Stable: the provider's order is kept within each half.
+    if let Some(h) = hold.as_ref().filter(|h| !h.exclusive) {
+        let (team, rest): (Vec<_>, Vec<_>) = intents.into_iter().partition(|i| h.allows(&i.agent_name));
+        intents = team.into_iter().chain(rest).collect();
     }
     Ok(intents)
 }
@@ -573,7 +581,7 @@ async fn draw_intents(
 pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
     let seats = population.max(1);
     match hold {
-        Some(h) if !h.only.is_empty() => seats.min(h.only.len()),
+        Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
         _ => seats,
     }
 }
@@ -742,6 +750,7 @@ mod tests {
             only: ["Delta", "Foxtrot", "Alpha"].iter().map(|s| s.to_string()).collect(),
             until_ms: u64::MAX,
             reason: "test".to_string(),
+            exclusive: true,
         };
         let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
@@ -983,6 +992,7 @@ mod tests {
             only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
             until_ms: u64::MAX,
             reason: "test".to_string(),
+            exclusive: true,
         };
         assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
         assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
@@ -1018,6 +1028,18 @@ mod tests {
         assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
         let mut empty = Yield(std::collections::VecDeque::new());
         assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+    }
+
+    // what this catches (2026-09-14): a working round's team hold shrinking the roster —
+    // seven of twelve minds held out on a sixteen-seat node because the derived hold read
+    // as exclusive. A derived hold orders (team first); only an operator hold excludes.
+    #[test]
+    fn a_derived_team_hold_seats_the_team_first_and_never_fewer_minds() {
+        let derived = crate::persona::roster_hold::from_team_names(vec!["Delta".into(), "Alpha".into()], 0).expect("hold");
+        assert!(!derived.exclusive);
+        assert_eq!(seats_under(12, Some(&derived)), 12, "a team hold never bounds the seats");
+        let operator = crate::persona::roster_hold::RosterHold { only: vec!["Alpha".into()], until_ms: u64::MAX, reason: "op".into(), exclusive: true };
+        assert_eq!(seats_under(12, Some(&operator)), 1, "an operator hold does");
     }
 
 }

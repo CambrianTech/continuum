@@ -414,7 +414,8 @@ impl PersonaSpawnSupervisor {
         plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
         match hold {
-            Some(hold) => plans
+            // An operator's hold EXCLUDES: only its names sit.
+            Some(hold) if hold.exclusive => plans
                 .into_iter()
                 .filter(|p| {
                     let name = p.instance.agent_name.as_str();
@@ -425,6 +426,15 @@ impl PersonaSpawnSupervisor {
                     allowed
                 })
                 .collect(),
+            // A derived hold (a working round's team) ORDERS: the team first, then the
+            // rest of the population — never fewer minds (2026-09-14: this filter, read
+            // as exclusive, held out seven of twelve on a sixteen-seat node).
+            Some(hold) => {
+                let (team, rest): (Vec<_>, Vec<_>) = plans
+                    .into_iter()
+                    .partition(|p| hold.allows(p.instance.agent_name.as_str()));
+                team.into_iter().chain(rest).collect()
+            }
             None => plans,
         }
     }
@@ -870,6 +880,7 @@ mod tests {
             only: vec!["Atlas".into()],
             until_ms: u64::MAX,
             reason: "test measurement window".into(),
+            exclusive: true, // an operator-issued hold: only these names sit
         };
         let plans = vec![plan_named("Atlas"), plan_named("Kira")];
         let kept = PersonaSpawnSupervisor::filter_by_hold_with(Some(hold), plans);
@@ -974,4 +985,15 @@ mod tests {
         assert!(json.contains("\"hosted\":1"));
         assert!(json.contains("\"slotIndex\":0"));
     }
+    // what this catches (2026-09-14): the reconciler's hold filter dropping the rest of
+    // the population under a DERIVED team hold. Team first, nobody dropped.
+    #[test]
+    fn a_derived_team_hold_orders_the_plans_and_drops_nobody() {
+        let hold = crate::persona::roster_hold::from_team_names(vec!["Kira".into()], 0).expect("hold");
+        let plans = vec![plan_named("Atlas"), plan_named("Kira"), plan_named("Benchy")];
+        let kept = PersonaSpawnSupervisor::filter_by_hold_with(Some(hold), plans);
+        let names: Vec<&str> = kept.iter().map(|p| p.instance.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Kira", "Atlas", "Benchy"], "team first, everyone seated");
+    }
+
 }
