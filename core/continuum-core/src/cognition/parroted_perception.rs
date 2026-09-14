@@ -113,6 +113,37 @@ pub fn perception_facts(turns: &[BurstTurn]) -> Vec<&str> {
         .collect()
 }
 
+/// Split composed prompt text into the PARAGRAPH BLOCKS a containment score can actually
+/// judge, dropping blocks too short to discriminate.
+///
+/// This exists because scoring a composed prompt WHOLE is inert, and that is not a guess —
+/// it is measured. Paige's real turn of 2026-09-14 19:02:06Z against her real 16,095-char
+/// composed prompt:
+///
+/// ```text
+///   containment(draft, WHOLE prompt)      = 0.135   <- never fires at 0.8
+///   containment(draft, identity block)    = 0.875   <- fires
+///   next-highest block ("Context: ...")   = 0.433   <- wide, clean margin
+/// ```
+///
+/// The arithmetic is why: containment asks how much of the FACT reappears in the DRAFT, so
+/// a fact grows harder to trip the longer it gets. A citizen who recites one 56-token block
+/// of an 850-token prompt has echoed that block ENTIRELY, and scoring her against the whole
+/// prompt reports 0.135 and calls it speech. Granularity is not a refinement here; without
+/// it the gate does not work at all.
+///
+/// Blank lines are the split because that is how the prompt is composed to READ — every
+/// block `deliberation_prompt` appends is paragraph-separated, so paragraph boundaries and
+/// block boundaries are the same boundaries. Splitting this way also means the function does
+/// not need to know the composer's block list, so a new block is covered the day it is added.
+pub fn prompt_blocks(composed: &str) -> Vec<&str> {
+    composed
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|b| content_token_count(b) >= MIN_DISCRIMINATING_FACT_TOKENS)
+        .collect()
+}
+
 /// The perception fact this draft is echoing, if any.
 ///
 /// Returns the fact rather than a bool so the caller can say WHICH one in the probe and in
@@ -296,6 +327,71 @@ mod tests {
                 parroted_fact(speech, &[IDENTITY_BLOCK], PARROT_CONTAINMENT_THRESHOLD),
                 None,
                 "speaking about her identity is not reciting it: {speech}"
+            );
+        }
+    }
+
+    // what this catches: THE GATE BEING INERT IN PRODUCTION WHILE GREEN IN TESTS — which is
+    // exactly what the first version of this fix was, and the earlier test did not notice
+    // because its fixture block was small enough to be recited whole.
+    //
+    // Measured against Paige's real 19:02:06Z turn and her real 16,095-char composed prompt:
+    //
+    //     containment(draft, WHOLE prompt)   = 0.135   never fires at 0.8
+    //     containment(draft, identity block) = 0.875   fires
+    //     next-highest block                 = 0.433   wide margin, no near-miss
+    //
+    // Containment asks how much of the FACT came back, so a fact is HARDER to trip the longer
+    // it is. Reciting one 56-token block of an 850-token prompt — completely — scores 0.135
+    // against the whole and is called speech. This test reproduces that shape: a multi-block
+    // prompt where the draft recites exactly ONE block.
+    #[test]
+    fn one_block_recited_out_of_a_long_prompt_is_caught_though_the_whole_prompt_is_not() {
+        let composed = format!(
+            "{IDENTITY_BLOCK}\n\n\
+             Context:\n- 'The grid' is the substrate hosting you. Rooms are where citizens \
+             meet, and cards are the work the room has agreed to carry.\n\n\
+             [Your tools]\nYou can act, not just talk. The tools below are available by name; \
+             load a full argument schema on demand rather than guessing at one.\n\n\
+             [room-wall]\nThe wall holds the room's standing decisions, its recipe, and the \
+             receipts of what has already shipped here."
+        );
+        let draft = format!(
+            "Yes, I can assist with that task. Please provide more details.\n\n{IDENTITY_BLOCK}"
+        );
+
+        // WHOLE — the inert version. Pin the number so nobody "simplifies" back to it.
+        assert_eq!(
+            parroted_fact(&draft, &[composed.as_str()], PARROT_CONTAINMENT_THRESHOLD),
+            None,
+            "scoring the whole composed prompt as ONE fact cannot catch a single-block \
+             recital — this is the failure mode, asserted so it stays visible"
+        );
+
+        // PER BLOCK — the working version.
+        let blocks = prompt_blocks(&composed);
+        assert!(
+            blocks.len() >= 4,
+            "the composed prompt must split into its blocks, got {}",
+            blocks.len()
+        );
+        assert_eq!(
+            parroted_fact(&draft, &blocks, PARROT_CONTAINMENT_THRESHOLD),
+            Some(IDENTITY_BLOCK),
+            "the block she actually recited must be the one named"
+        );
+
+        // And the margin is real: no OTHER block comes near the threshold on this draft,
+        // so firing is not luck with a well-placed constant.
+        for b in &blocks {
+            if *b == IDENTITY_BLOCK {
+                continue;
+            }
+            let c = crate::cognition::self_repeat::containment(&draft, b);
+            assert!(
+                c < 0.6,
+                "block {:?} scores {c:.3f} — too close to the threshold for comfort",
+                &b[..30.min(b.len())]
             );
         }
     }
