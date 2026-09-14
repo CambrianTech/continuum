@@ -1,0 +1,19 @@
+   MCMXCIV -> 1994  (expected 1994)  OK
+    MMXXIV -> 2024  (expected 2024)  OK
+     LVIII ->   58  (expected   58)  OK
+        IX ->    9  (expected    9)  OK
+        XL ->   40  (expected   40)  OK
+        XC ->   90  (expected   90)  OK
+        CD ->  400  (expected  400)  OK
+        CM ->  900  (expected  900)  OK
+        IV ->    4  (expected    4)  OK
+    DCLXVI ->  666  (expected  666)  OK
+  MMDCCXXI -> 2721  (expected 2721)  OK
+       III ->    3  (expected    3)  OK
+  MMCDXLIX -> 2449  (expected 2449)  OK
+       CXC ->  190  (expected  190)  OK
+   MCMLVII -> 1957  (expected 1957)  OK
+   CMXCVII ->  997  (expected  997)  OK
+           ->    0  (expected    0)  OK
+
+all 17 cases + 3999 round-trips passed
