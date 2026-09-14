@@ -1,5 +1,10 @@
 # The Viral Launch Plan
 
+Current execution ladder: [From a useful desktop to a learning society](SOCIETY-RELEASE-PLAN.md).
+It connects dependable everyday teamwork, current-runtime demonstrations, learning
+evidence, integrations, and genome sharing. Existing activity cards remain the work
+queue; attach implementation and validation receipts to the applicable milestone.
+
 *2026-09-02. Input: [COMPETITIVE-BENCHMARK-LANDSCAPE.md](COMPETITIVE-BENCHMARK-LANDSCAPE.md)
 (~70 benchmarks surveyed), the live 68% Verified claim, and one hard law from our own
 history: [being heard is scarce — distribution is engineering](../../README.md), not an
