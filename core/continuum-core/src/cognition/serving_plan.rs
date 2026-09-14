@@ -180,6 +180,10 @@ pub struct ServingDemand {
     /// 225k–505k): a 25k working set provisions ~32k per slot, leaving the host RAM
     /// for more lanes and the prompt-cache tier instead of a 137k slot nobody fills.
     pub sent_tokens: Option<u32>,
+    /// The residents' TYPICAL sent prompt (median of sent peaks). The per-lane floor
+    /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
+    /// still shapes the window target when it fits.
+    pub sent_median: Option<u32>,
 }
 
 /// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
@@ -221,7 +225,18 @@ impl ServingDemand {
             window_floor_tokens: solve_window_floor(),
             sticky_window: None,
             sent_tokens: None,
+            sent_median: None,
         }
+    }
+    pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
+        self.sent_median = median.filter(|m| *m > 0);
+        self
+    }
+    /// The per-lane floor the residents actually need: their typical sent prompt with
+    /// headroom. `None` until a turn has been sent — the bootstrap prior stands then.
+    pub fn typical_prompt_floor(&self) -> Option<u32> {
+        self.sent_median
+            .map(|m| ((m as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX))
     }
 
     /// The largest SENT prompt among residents (see `sent_tokens`).
@@ -688,7 +703,13 @@ pub fn plan_serving(
     // Per-lane floor: the stable bootstrap, RAISED by a pinned regime floor when
     // one stands (solve-class work). Lanes multiply only while EVERY lane still
     // fits the floor — parallel to the max, starvation to none.
-    let per_lane_floor = BOOTSTRAP_WORKING_SET.max(demand.window_floor_tokens);
+    // LANES FOLLOW THE ROSTER AT THE TYPICAL PROMPT (2026-09-14). The floor is the
+    // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
+    // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
+    // The outlier is reconciled down to the served window; the roster gets its lanes.
+    let per_lane_floor = BOOTSTRAP_WORKING_SET
+        .max(demand.window_floor_tokens)
+        .max(demand.typical_prompt_floor().unwrap_or(0)); // JUSTIFIED unwrap_or: no sent prompt measured yet = no floor from it, the bootstrap prior stands
     let lanes = (1..=lane_cap)
         .rev()
         .find(|&l| window_for(l as u64) >= per_lane_floor)
@@ -1010,6 +1031,34 @@ mod tests {
     // healthy. Parallelism is capability; selection maximizes achievable lanes
     // toward demand FIRST, capability second. Degrade honesty is pinned too:
     // when demand is one lane, the capability order stands unchanged.
+    // what this catches: 16 residents planned onto 3 lanes because ONE mind's 96k
+    // sent prompt became every lane's size (2026-09-14, 40 GB of KV idle). With the
+    // floor at the residents' TYPICAL prompt the same host multiplies lanes toward
+    // the roster; the ceiling shapes the window only when it still fits.
+    #[test]
+    fn lanes_multiply_to_the_roster_at_the_typical_prompt_not_the_outlier() {
+        let host = HostBudget { usable_bytes: 61 * GB, perf_cores: 12 };
+        let ornith = fp("ornith", 21, 41_984, 262_144, 200);
+        let c = vec![ornith];
+        let outlier_only = ServingDemand::new(17, Some(120_000)).with_sent_tokens(Some(96_000));
+        let typical = ServingDemand::new(17, Some(120_000))
+            .with_sent_tokens(Some(96_000))
+            .with_sent_median(Some(40_000));
+        let a = plan_serving(host, &c, outlier_only).expect("plan");
+        let b = plan_serving(host, &c, typical).expect("plan");
+        assert!(b.lanes >= 5, "the roster gets its lanes at the typical prompt: {}", b.lanes);
+        assert!(
+            b.served_context_window >= 50_000,
+            "each lane holds a typical turn with headroom (40k × 1.25): {}",
+            b.served_context_window
+        );
+        // Without the median the planner packs the most lanes at the bootstrap floor —
+        // more lanes, each too small for a real turn. The floor trades at most a lane or
+        // two for windows the roster can actually use.
+        assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
+        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
+    }
+
     #[test]
     fn a_one_lane_giant_never_outranks_a_model_that_serves_the_fleet() {
         // 60GB budget. "giant" rank 5 fits ONE bootstrap lane and no more;

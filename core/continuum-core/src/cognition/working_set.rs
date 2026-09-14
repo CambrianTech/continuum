@@ -245,6 +245,23 @@ impl WorkingSetRegistry {
             .filter(|&t| t > 0)
     }
 
+    /// The TYPICAL sent prompt among `personas` — the median of their measured sent
+    /// peaks. The planner's per-lane floor follows this, not the ceiling: one mind
+    /// with a 96k prompt must not size every lane to 120k and starve the roster
+    /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
+    /// served window instead.
+    pub fn sent_median_of(&self, personas: &[Uuid]) -> Option<u32> {
+        let mut peaks: Vec<u32> = personas
+            .iter()
+            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter(|&t| t > 0)
+            .collect();
+        if peaks.is_empty() {
+            return None;
+        }
+        peaks.sort_unstable();
+        Some(peaks[peaks.len() / 2])
+    }
     /// The largest SENT prompt among `personas`, when any has been measured.
     pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
         personas
