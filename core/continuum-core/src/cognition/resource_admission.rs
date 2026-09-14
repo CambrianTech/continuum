@@ -272,8 +272,7 @@ pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
 
 /// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
 pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
-    // JUSTIFIED unwrap_or: a mind with no turn yet is measured from boot — absence IS "since boot"
-    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS
+    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
 }
 
 /// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
