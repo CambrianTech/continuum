@@ -336,6 +336,27 @@ pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
 
 /// The epoch-ms of the latest held-work turn on `card_id`, if any — the Citizen
 /// freshness [`enrich_rounds`] merges beside the detached run ledger.
+/// Every card of a WORKING round the tracker still counts unsettled: (round id —
+/// which IS the run room id — card, instance). The reconciler reads the board for
+/// each and settles what the board already settled (a close the tracker missed
+/// across a seam) or returns idle claims to the deck.
+pub fn unsettled_cards() -> Vec<(Uuid, Uuid, String)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, settled) in &r.cards {
+            if settled.is_none() {
+                let instance = r.card_instances.get(card).cloned().unwrap_or_default(); // JUSTIFIED unwrap_or_default: a card dispatched before instances were recorded has no name, only an id
+                out.push((r.round_id, *card, instance));
+            }
+        }
+    }
+    out
+}
+
 pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
     ROUNDS
         .lock()
@@ -2099,6 +2120,23 @@ mod tests {
 
     use super::*;
 
+
+    /// what this catches: a working round's open card missing from the reconciler's
+    /// list (it would never be settled from the board), or a settled one still on it.
+    #[test]
+    fn unsettled_cards_lists_exactly_the_open_cards_of_working_rounds() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        add_card(round, a);
+        add_card(round, b);
+        record_card_instance(a, "sympy__sympy-1");
+        settle_card_direct(b, "closed");
+        let mine: Vec<_> = unsettled_cards().into_iter().filter(|(r, _, _)| *r == round).collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].1, a);
+        assert_eq!(mine[0].2, "sympy__sympy-1");
+    }
 
     /// what this catches: a round change that never reaches the bundle (the
     /// tracker's second copy shadowing the room, card c9ddb911), and a restore
