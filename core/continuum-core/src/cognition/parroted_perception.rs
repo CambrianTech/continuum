@@ -84,6 +84,12 @@ use crate::cognition::workspace::{BurstTurn, TurnVoice};
 /// the degenerate ones. It is a floor against nonsense, not a tuned parameter: nothing should
 /// be calibrating against it, and if a real fact ever lands near it the right fix is a longer
 /// fact, not a lower floor.
+// context-budget-exempt: the DENOMINATOR FLOOR of a ratio, not a window-relative bound. It asks
+// "does this text carry enough content tokens for a containment score against it to mean
+// anything", which is a property of the arithmetic (a 3-token fact scores 1.0 by accident) and
+// not of any model's context. Give a persona a 200k window and this number does not move; the
+// same 3-token fact is still a coincidence. Sibling of `framing_echo::ECHO_LEAD_CHARS`, exempt
+// for the same reason.
 pub const MIN_DISCRIMINATING_FACT_TOKENS: usize = 12;
 
 /// How much of one perception fact must reappear in a draft before it is an echo rather
