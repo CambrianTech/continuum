@@ -832,6 +832,11 @@ impl LlmDeliberationFaculty {
     /// here is what the turn REQUIRES; the rest of the room is still reachable
     /// through history and recall.
     const ROOM_UPDATE_SHARE_DENOM: u32 = 4;
+    /// The action result's share of the window before its tail is DEMOTED to ordinary
+    /// history. Same denominator as the room payload for the same reason: no single
+    /// required item may claim more than a quarter of the window, because the moment one
+    /// does, every other required item is competing for what is left and the turn refuses.
+    const RESULT_SHARE_DENOM: u32 = 4;
 
     /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
     /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the
@@ -2471,15 +2476,20 @@ impl LlmDeliberationFaculty {
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
-        let latest_result = self.working_memory.as_ref().and_then(|wm| {
-            wm.active_action_full().map(|(seq, full)| {
-                let message = wm.full_result_message(seq, &full);
-                // Provenance is required input too. Hash the rendered allocation
-                // once, then move it into the request without a second encoding.
-                field(&mut input, message.as_bytes());
-                ChatMessage::text("user", message)
-            })
-        });
+        let (latest_result, demoted_result) = match self.working_memory.as_ref() {
+            None => (None, None),
+            Some(wm) => match wm.active_action_full() {
+                None => (None, None),
+                Some((seq, full)) => {
+                    let message = wm.full_result_message(seq, &full);
+                    // Provenance is required input too. Hash the rendered allocation
+                    // once, then move it into the request without a second encoding.
+                    field(&mut input, message.as_bytes());
+                    let (head, tail) = self.split_action_result(message);
+                    (Some(head), tail)
+                }
+            },
+        };
 
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled
@@ -2498,6 +2508,11 @@ impl LlmDeliberationFaculty {
         // chronologically newer than prior history, so they append to its end.
         let (room_updates, demoted_updates) = self.split_room_updates(ws);
         let mut messages = messages;
+        // The action result's demoted TAIL rides the same way, and goes in FIRST: it is
+        // the outcome of the act that preceded these room updates, so appending it before
+        // them keeps history in the order it happened. Without this the tail would be
+        // silently dropped, which is the discarding this whole split exists to avoid.
+        messages.extend(demoted_result);
         messages.extend(demoted_updates);
         PromptMessages {
             input_identity: input.finalize().into(),
@@ -2528,6 +2543,88 @@ impl LlmDeliberationFaculty {
     /// does not.
     ///
     /// Returns `(required_newest, demoted_older)`, both chronological.
+    /// Split the action result into the REQUIRED head and a DEMOTED tail.
+    ///
+    /// The result of the citizen's last act is required input — she cannot reason about
+    /// what her hands just did if it is dropped — and it was also UNBOUNDED. A single
+    /// `code/read` or `code/shell` output therefore claimed the whole window as
+    /// irreducible payload, and `fit_messages` refused the turn, and she went mute while
+    /// holding her card.
+    ///
+    /// Measured 2026-09-10 on a 23,040-token lane: `required_payload = 18,629` against
+    /// `after_reserves = 15,688`, over by 2,941, with `grounding_tokens = 113` proving
+    /// grounding innocent and `received = 2` proving it was ONE enormous message. 836
+    /// consecutive refusals, zero acts, zero inference, for the whole of a benchmark
+    /// round. The build had already bounded room updates (#3947) and stopped grounding
+    /// vetoing the turn (#3954) — this was the same class, one field over.
+    ///
+    /// The code here used to say oversized output "belongs to the existing
+    /// spill/tool-output producer, never to a generic byte reducer". That is a good rule
+    /// about WHO SHOULD SHRINK IT, and it was enforced nowhere: nothing checked that the
+    /// producer had, so an unspilled result walked straight into required input.
+    ///
+    /// DEMOTED, never discarded (Joel, 2026-09-09: "maybe trim clipped or killed
+    /// important information the persona needed to complete things"). The head stays
+    /// required so the act's outcome — status, error, the first lines that say what
+    /// happened — is always in front of her; the tail becomes ordinary history, still
+    /// rendered whenever the window allows, and still re-readable through its spill
+    /// handle. A cut on a CHAR boundary would split a UTF-8 sequence, so the split walks
+    /// to a line boundary and says how much moved.
+    fn split_action_result(&self, message: String) -> (ChatMessage, Option<ChatMessage>) {
+        let window = self.binding.load().context_window as usize;
+        let cap = window / Self::RESULT_SHARE_DENOM as usize;
+        let whole = ChatMessage::text("user", message.clone());
+        if Self::messages_cost(std::slice::from_ref(&whole)) <= cap {
+            return (whole, None);
+        }
+        // WHICH HALF IS REQUIRED IS DECIDED BY WIRE ORDER, not by preference.
+        //
+        // History renders BEFORE the required slot (`prompt.history.extend(latest_result)`
+        // appends the required part last). So keeping the HEAD required would place the
+        // result's beginning AFTER its middle on the wire — she would read it backwards.
+        // Keeping the TAIL required puts the demoted beginning in history and the ending
+        // in the required slot, which is the original order, and it keeps the payload
+        // ending byte-for-byte where the existing wire test expects it.
+        //
+        // Walk lines from the END while the tail still fits its share.
+        let lines: Vec<&str> = message.split_inclusive('\n').collect();
+        let mut take = 0usize;
+        let mut tail = String::new();
+        for line in lines.iter().rev() {
+            let candidate = format!("{line}{tail}");
+            let cost = Self::messages_cost(std::slice::from_ref(&ChatMessage::text(
+                "user",
+                candidate.clone(),
+            )));
+            // The LAST line is always required even if it alone exceeds the share: a
+            // required slot holding none of her result tells her nothing about what her
+            // hands just did, and a genuinely impossible payload is the existing capacity
+            // fault's job to report honestly.
+            if take == 0 || cost <= cap {
+                tail = candidate;
+                take += 1;
+            } else {
+                break;
+            }
+        }
+        if take >= lines.len() {
+            return (whole, None);
+        }
+        let head: String = lines[..lines.len() - take].concat();
+        let head_msg = ChatMessage::text("user", head);
+        let tail_msg = ChatMessage::text("user", tail);
+        crate::probe!(
+            class = "delib.action_result.demoted",
+            persona = %self.persona_name,
+            window = window,
+            cap = cap,
+            required_tokens = Self::messages_cost(std::slice::from_ref(&tail_msg)),
+            demoted_tokens = Self::messages_cost(std::slice::from_ref(&head_msg)),
+            "the action result exceeded its share of the window — its ending stays              REQUIRED and the earlier part was demoted to ordinary history, still rendered              when the window allows and still re-readable via its spill handle. Nothing              was discarded: an unbounded required result is what makes one big tool output              a mute citizen."
+        );
+        (tail_msg, Some(head_msg))
+    }
+
     fn split_room_updates(&self, ws: &Workspace) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
         let window = self.binding.load().context_window as usize;
         let cap = window / Self::ROOM_UPDATE_SHARE_DENOM as usize;
@@ -4056,6 +4153,158 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        /// A citizen must never be silenced by her own last tool result.
+        mod an_action_result_cannot_mute_a_citizen {
+            use super::*;
+
+            fn faculty_with_window(window: u32) -> LlmDeliberationFaculty {
+                LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Sahar",
+                    "You are Sahar.",
+                    Arc::new(HeuristicInferenceAdapter::new()),
+                )
+                .with_context_window(window)
+            }
+
+            // what this catches: the live 2026-09-10 mute, and it is the THIRD instance of
+            // one class. A `code/read` / `code/shell` output goes in as REQUIRED input, and
+            // it was unbounded — so one big result claimed the whole window and
+            // `fit_messages` refused every turn. Measured: required_payload 18,629 against
+            // after_reserves 15,688 on a 23,040 lane, grounding only 113 (innocent),
+            // received = 2 (ONE enormous message), 836 consecutive refusals, zero acts for
+            // a whole benchmark round.
+            #[test]
+            fn an_oversized_result_is_split_not_swallowed_whole() {
+                let faculty = faculty_with_window(4_096);
+                let huge: String = (0..4_000)
+                    .map(|i| format!("line {i} of a very large tool result
+"))
+                    .collect();
+                // (required, demoted) = (the result's ENDING, its earlier part). The ending
+                // is what stays required so the wire reads in the original order — see
+                // `split_action_result` for why history's position decides this.
+                let (required, demoted) = faculty.split_action_result(huge.clone());
+                let demoted = demoted.expect("an oversized result must yield a demoted part");
+
+                let cap = 4_096 / LlmDeliberationFaculty::RESULT_SHARE_DENOM as usize;
+                let required_cost =
+                    LlmDeliberationFaculty::messages_cost(std::slice::from_ref(&required));
+                assert!(
+                    required_cost <= cap,
+                    "the required part must fit its share: {required_cost} > {cap}"
+                );
+
+                // NOTHING IS DISCARDED. Head + tail reconstitute the original exactly —
+                // the property that separates demotion from truncation, and the one Joel
+                // asked for by name after the first cut of #3947 dropped instead of demoted.
+                let rebuilt = format!("{}{}", demoted.content_text(), required.content_text());
+                assert_eq!(
+                    rebuilt, huge,
+                    "demoted + required must reconstitute the result byte-for-byte"
+                );
+            }
+
+            // what this catches: THE WIRING, which the three unit tests above cannot see.
+            // They call `split_action_result` directly, so they stay green even when the
+            // production build site stops calling it — verified by mutation, and that is
+            // exactly the blind source-assertion mistake made earlier the same night. This
+            // one goes through `prompt_view`, the real path, and fails the moment the
+            // result is required whole again.
+            #[tokio::test]
+            async fn a_huge_result_does_not_fault_the_turn_on_the_real_path() {
+                use crate::cognition::working_memory::WorkingMemory;
+
+                let window = 8_192u32;
+                let wm = Arc::new(WorkingMemory::new(8));
+                wm.set_served_window(window);
+                // A tool result several times the whole window — an ordinary `code/read`
+                // of a large file.
+                let huge: String = (0..6_000)
+                    .map(|i| format!("line {i} of a very large tool result
+"))
+                    .collect();
+                wm.record_receipt(&huge);
+
+                let faculty = LlmDeliberationFaculty::new(
+                    Uuid::new_v4(),
+                    "Sahar",
+                    "You are Sahar.",
+                    Arc::new(HeuristicInferenceAdapter::new()),
+                )
+                .with_context_window(window)
+                .with_working_memory(Arc::clone(&wm));
+
+                let ws = Workspace::new("what did that produce?");
+                let view = faculty.prompt_view(&ws);
+                assert!(
+                    view.capacity_error.is_none(),
+                    "one big tool result must not refuse the turn — she holds her card                      while refusing, so this strands a benchmark round: {:?}",
+                    view.capacity_error
+                );
+                assert!(
+                    !view.messages.is_empty(),
+                    "and she must still be given her result to reason about"
+                );
+            }
+
+            // what this catches: a result that FITS must be left completely alone. A split
+            // that fires unconditionally would push every ordinary tool result into history
+            // and cost the citizen the outcome of her own act on the very next turn.
+            #[test]
+            fn a_result_that_fits_is_untouched() {
+                let faculty = faculty_with_window(32_768);
+                let small = "ok: wrote 3 lines
+".to_string();
+                let (required, demoted) = faculty.split_action_result(small.clone());
+                assert!(demoted.is_none(), "a small result has nothing to demote");
+                assert_eq!(required.content_text(), small);
+            }
+
+            // what this catches: the head must never be empty. If the FIRST line alone
+            // exceeds the share, it is still required — a citizen handed a demotion notice
+            // and none of her own result cannot reason about what her hands just did, and
+            // the honest failure for a genuinely impossible payload is the existing
+            // capacity fault, not a silently empty head.
+            #[test]
+            fn the_first_line_is_required_even_when_it_alone_exceeds_the_share() {
+                let faculty = faculty_with_window(1_024);
+                let one_giant_line = format!("{}
+", "x".repeat(20_000));
+                let (required, demoted) = faculty.split_action_result(one_giant_line.clone());
+                assert!(
+                    !required.content_text().is_empty(),
+                    "the required part is never empty — she must see what her act produced"
+                );
+                let rebuilt = format!(
+                    "{}{}",
+                    demoted.as_ref().map(|d| d.content_text()).unwrap_or_default(),
+                    required.content_text()
+                );
+                assert_eq!(rebuilt, one_giant_line, "still nothing discarded");
+            }
+
+            // what this catches: UTF-8 safety. Splitting on a byte or char budget can cut a
+            // multi-byte sequence in half; line granularity cannot. A panic here would take
+            // down the cognition cycle on any result containing non-ASCII — which is most
+            // of them, since the results carry the citizens' own prose.
+            #[test]
+            fn splitting_never_cuts_a_multibyte_sequence() {
+                let faculty = faculty_with_window(2_048);
+                let multibyte: String = (0..2_000)
+                    .map(|i| format!("строка {i} — ✅ 日本語テキスト
+"))
+                    .collect();
+                let (required, demoted) = faculty.split_action_result(multibyte.clone());
+                let rebuilt = format!(
+                    "{}{}",
+                    demoted.as_ref().map(|d| d.content_text()).unwrap_or_default(),
+                    required.content_text()
+                );
+                assert_eq!(rebuilt, multibyte, "multibyte content survives the split");
+            }
+        }
 
         /// A citizen must never be silenced by her ENRICHMENT not fitting.
         mod grounding_never_mutes {
@@ -7337,7 +7586,21 @@ mod tests {
                         .with_tools(vec![read_tool()])
                         .with_working_memory(wm);
                 let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
-                let stimulus = "Review PR #3858 against its actual source.";
+                // The STIMULUS carries the squeeze now. It used to be the oversized action
+                // result that forced `completion_reserve` to yield, and a result can no
+                // longer do that: it is capped at its share of the window with the
+                // remainder demoted to history (an unbounded required result was muting
+                // citizens outright — 836 refusals, zero acts, 2026-09-10). The stimulus
+                // IS still irreducible and unbounded — she cannot answer a question she was
+                // not given — so the reserve-yield property this test covers is exercised
+                // through the one required item that legitimately has no ceiling.
+                let stimulus: &str = Box::leak(
+                    format!(
+                        "Review PR #3858 against its actual source. {}",
+                        "supporting detail the reviewer sent inline ".repeat(1_200)
+                    )
+                    .into_boxed_str(),
+                );
                 let update = Arc::new(crate::persona::service_loop::IncomingMessage {
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -7387,9 +7650,18 @@ mod tests {
                     2,
                     "extracting the stimulus must not coalesce the self turns on opposite sides"
                 );
+                // The fixture's RESULT is big — that is what this test exercises. It used
+                // to assert `required_tokens()` itself exceeded the prefill target, which
+                // is now impossible BY DESIGN: an action result is capped at its share of
+                // the window and the remainder is demoted to history (an unbounded required
+                // result was muting citizens outright — 836 refusals, zero acts, 2026-09-10).
+                // The fixture property is asserted where it actually lives now.
                 assert!(
-                    unfitted.required_tokens()
-                        > PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S
+                    LlmDeliberationFaculty::messages_cost(&[ChatMessage::text(
+                        "user",
+                        result.clone()
+                    )]) > PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S,
+                    "fixture must present a genuinely oversized action result"
                 );
                 let view = faculty.prompt_view(&ws);
                 assert!(view.capacity_error.is_none(), "{view:?}");
@@ -7416,15 +7688,51 @@ mod tests {
                     .messages
                     .iter()
                     .any(|message| message.content_text().contains(stimulus)));
+                // WHAT IS GUARANTEED ON THE WIRE CHANGED HERE, deliberately.
+                //
+                // This used to assert the ENTIRE action result arrived byte-for-byte,
+                // because the result was REQUIRED input and required input is never
+                // dropped. That is precisely what muted citizens: one `code/read` of a
+                // large file claimed the whole window as irreducible payload and
+                // `fit_messages` refused every turn — measured 2026-09-10, required 18,629
+                // against 15,688 available, 836 consecutive refusals, zero acts for an
+                // entire benchmark round while she held the card.
+                //
+                // Now the result is capped at its share and the earlier part is DEMOTED to
+                // ordinary history: rendered whenever the window allows, evicted by the
+                // normal front-drop when it does not, and always re-readable through its
+                // spill handle. So the honest guarantee is:
+                //
+                //   - the result's ENDING is always on the wire (it stays required), and
+                //   - nothing is DISCARDED at the split — `split_action_result` is pinned
+                //     byte-exact by `an_oversized_result_is_split_not_swallowed_whole`.
+                //
+                // A 16k-token single line on a 32k window cannot be both demoted and
+                // retained; asserting otherwise would just be asserting the mute back.
+                let wire_text: String = request
+                    .messages
+                    .iter()
+                    .map(|message| message.content_text().to_string())
+                    .collect();
+                let ending = result
+                    .rsplit_once('\n')
+                    .map(|(_, last)| last)
+                    .filter(|last| !last.is_empty())
+                    .unwrap_or(result.as_str());
                 assert!(
                     request
                         .messages
                         .last()
                         .unwrap()
                         .content_text()
-                        .ends_with(&result),
-                    "the actual action payload survives byte-for-byte, not only its footer"
+                        .ends_with(ending),
+                    "the result's ENDING is the last thing she reads — she must always see                      what her own act produced, never only a footer"
                 );
+                assert!(
+                    wire_text.contains(ending),
+                    "and it is genuinely on the wire, not merely implied"
+                );
+
                 assert!(request
                     .system_prompt
                     .as_ref()
@@ -7728,7 +8036,7 @@ mod tests {
                 // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
                 // Parts 3-4 shed their enrichment and go on to think, so they need a real
                 // response — reaching the model is the outcome those cases assert.
-                let adapter = Arc::new(ScriptedAdapter::new(if oversized_part >= 3 {
+                let adapter = Arc::new(ScriptedAdapter::new(if oversized_part >= 3 || oversized_part == 1 {
                     vec![make_response(FinishReason::Stop, "PASS", None)]
                 } else {
                     vec![]
@@ -7782,7 +8090,14 @@ mod tests {
                         .with_context_window(window)
                         .with_working_memory(wm)
                         .with_working_set(registry.clone());
-                let grounding_case = oversized_part >= 3;
+                // Parts 3-4 shed their standing grounding (#3954) and part 1 caps its
+                // oversized action result and demotes the rest — all three now THINK
+                // instead of refusing. What still faults is a genuinely irreducible
+                // payload: the stimulus (part 0) and a room update (part 2), neither of
+                // which any bound may drop without answering a question she was never
+                // shown.
+                let bounded_case = oversized_part >= 3 || oversized_part == 1;
+                let grounding_case = bounded_case;
                 let view = faculty.prompt_view(&ws);
                 if grounding_case {
                     assert!(
