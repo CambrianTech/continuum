@@ -63,4 +63,11 @@ approval?: Approval,
  * array of per-element results in order. A step with no `each` runs once.
  * This is how one `work/create` step posts a whole imported suite.
  */
-each?: string, };
+each?: string, 
+/**
+ * Bindings to SAVE into the activity's bundle once this step completes — its
+ * own `outputTo` or any earlier one. The framework saves at the boundary the
+ * recipe marks (`onSaveInstanceState`); a bare `recipe/run` with no bundle sink
+ * probes the ask and carries on. See [`crate::experience::activity_state`].
+ */
+saves: Array<string>, };

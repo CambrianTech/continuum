@@ -63,6 +63,8 @@ pub enum IssueKind {
     ItemOutsideEach { reference: String },
     /// `$<root>` names nothing: not args, room, item, or an earlier step's `outputTo`.
     UnboundReference { reference: String, bound_so_far: Vec<String> },
+    /// `saves` names a binding no step (this one included) binds.
+    SaveOfUnbound { name: String, bound_so_far: Vec<String> },
 }
 
 impl std::fmt::Display for PipelineIssue {
@@ -95,6 +97,9 @@ impl std::fmt::Display for PipelineIssue {
             }
             IssueKind::UnboundReference { reference, bound_so_far } => {
                 write!(f, "{reference} is bound by nothing before this step — bound so far: [{}]", bound_so_far.join(", "))
+            }
+            IssueKind::SaveOfUnbound { name, bound_so_far } => {
+                write!(f, "saves names `{name}`, which no step up to this one binds — bound so far: [{}]", bound_so_far.join(", "))
             }
         }
     }
@@ -281,6 +286,11 @@ pub fn pipeline_issues(recipe: &ExperienceRecipe, lookup: impl Fn(&str) -> Optio
         let Some(schema) = lookup(&step.command) else {
             out.push(issue(IssueKind::UnknownCommand));
             if let Some(o) = &step.output_to { bound.push(o.clone()); }
+            for name in &step.saves {
+                if !bound.iter().any(|b| b == name) {
+                    out.push(issue(IssueKind::SaveOfUnbound { name: name.clone(), bound_so_far: bound.clone() }));
+                }
+            }
             continue;
         };
         let in_each = step.each.is_some();
@@ -340,6 +350,11 @@ pub fn pipeline_issues(recipe: &ExperienceRecipe, lookup: impl Fn(&str) -> Optio
         }
         if let Some(o) = &step.output_to {
             bound.push(o.clone());
+        }
+        for name in &step.saves {
+            if !bound.iter().any(|b| b == name) {
+                out.push(issue(IssueKind::SaveOfUnbound { name: name.clone(), bound_so_far: bound.clone() }));
+            }
         }
     }
     out
@@ -407,6 +422,26 @@ mod tests {
     // what this catches: references are RESOLVED, not pattern-matched. `$args.x` must
     // be declared; `$room.x` must be seeded; `$item` needs `each`; any other root must
     // be an earlier step's outputTo — and a typed `$args.x` is checked by its default.
+    /// what this catches: a recipe marking `saves` on a name nothing binds — the
+    /// bundle would silently never carry it; the validator names it before the
+    /// recipe ships. A step may save its OWN outputTo.
+    #[test]
+    fn saves_must_name_a_bound_binding() {
+        let r = recipe(r#"{
+            "purpose": "t", "regions": [],
+            "params": { "suite": { "default": "swe" } },
+            "pipeline": [
+                { "command": "benchmark/import", "params": { "suite": "$args.suite" }, "outputTo": "imported", "saves": ["imported"] },
+                { "command": "work/create", "each": "$imported.cards", "params": { "repo": "$room.id", "title": "$item.title" }, "outputTo": "cards", "saves": ["cards", "ghost"] }
+            ]
+        }"#);
+        let issues = pipeline_issues(&r, lookup);
+        let rendered: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        assert_eq!(issues.len(), 1, "{rendered:?}");
+        assert!(matches!(&issues[0].kind, IssueKind::SaveOfUnbound { name, .. } if name == "ghost"), "{rendered:?}");
+        assert!(rendered[0].contains("ghost"), "{rendered:?}");
+    }
+
     #[test]
     fn references_resolve_or_are_named() {
         let r = recipe(r#"{

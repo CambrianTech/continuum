@@ -40,11 +40,71 @@ pub struct PipelineExecutor {
     /// whose steps must be the spawner (2026-09-13: cards posted as the operator
     /// into a room only the agent peer had joined).
     caller: Option<crate::routing::CallerIdentity>,
+    /// Where a step's `saves` go: the activity's bundle, bound to its room by the
+    /// birth path. `None` for a bare `recipe/run`.
+    state_sink: Option<Arc<dyn crate::experience::activity_state::StepStateSink>>,
 }
 
 impl PipelineExecutor {
     pub fn new(executor: Arc<CommandExecutor>) -> Self {
-        Self { executor, caller: None }
+        Self { executor, caller: None, state_sink: None }
+    }
+
+    /// Save each step's `saves` bindings through `sink` (the activity's bundle).
+    pub fn with_state_sink(mut self, sink: Arc<dyn crate::experience::activity_state::StepStateSink>) -> Self {
+        self.state_sink = Some(sink);
+        self
+    }
+
+    /// THE SAVE BOUNDARY. After a step completes, the bindings it marks with `saves`
+    /// go into the activity's bundle — the framework saves, the recipe declares what.
+    /// A name that is bound to nothing is skipped by name; no sink at all is probed
+    /// once per step and never fails the run (state is a durability concern, not a
+    /// correctness gate for the step that just ran).
+    async fn save_step_state(&self, name: &str, idx: usize, step: &RecipeStep, state: &ExecutionState) {
+        if step.saves.is_empty() {
+            return;
+        }
+        let Some(sink) = &self.state_sink else {
+            crate::probe!(
+                class = "recipe.step.save_unsunk",
+                recipe = %name,
+                step = idx as u64,
+                command = %step.command,
+                saves = %step.saves.join(","),
+                "step asks to save bindings but this run has no activity bundle (bare recipe/run?)"
+            );
+            return;
+        };
+        let mut patch = serde_json::Map::new();
+        for key in &step.saves {
+            match state.lookup(key) {
+                Some(v) => {
+                    patch.insert(key.clone(), v.clone());
+                }
+                None => crate::probe!(
+                    class = "recipe.step.save_unbound",
+                    recipe = %name,
+                    step = idx as u64,
+                    command = %step.command,
+                    binding = %key,
+                    "saves names a binding nothing bound — skipped"
+                ),
+            }
+        }
+        if patch.is_empty() {
+            return;
+        }
+        if let Err(e) = sink.save(patch).await {
+            crate::probe!(
+                class = "recipe.step.save_failed",
+                recipe = %name,
+                step = idx as u64,
+                command = %step.command,
+                error = %e,
+                "activity bundle save failed — the step's result stands, the bundle is stale"
+            );
+        }
     }
 
     /// Act as `caller` in every step.
@@ -178,6 +238,7 @@ impl PipelineExecutor {
                         bound.push(out.clone());
                     }
                 }
+                self.save_step_state(name, idx, step, &state).await;
                 continue;
             }
             let params = interpolate(&step.params, &state)
@@ -201,6 +262,7 @@ impl PipelineExecutor {
                             bound.push(name.clone());
                         }
                     }
+                    self.save_step_state(name, idx, step, &state).await;
                 }
                 Err(e) => {
                     crate::probe!(
@@ -307,6 +369,7 @@ mod tests {
             command: command.to_string(),
             params: Value::Null,
             output_to: None,
+            saves: Vec::new(),
             condition: None,
             on_error: OnError::Fail,
             retry_count: 0,
@@ -314,6 +377,49 @@ mod tests {
             approval,
             each: None,
         }
+    }
+
+    struct MemorySink(std::sync::Mutex<Vec<serde_json::Map<String, Value>>>);
+    #[async_trait::async_trait]
+    impl crate::experience::activity_state::StepStateSink for MemorySink {
+        async fn save(&self, patch: serde_json::Map<String, Value>) -> Result<(), String> {
+            self.0.lock().unwrap().push(patch); // JUSTIFIED: a test's own mutex
+            Ok(())
+        }
+    }
+
+    /// what this catches: a step's `saves` never reaching the bundle — the round
+    /// that "resumed" from an empty state (card c9ddb911) — and the mirror: a bare
+    /// run with no bundle must not fail the step that just ran.
+    #[tokio::test]
+    async fn a_steps_saves_land_in_the_bundle_and_a_run_without_a_bundle_still_completes() {
+        let exec = Arc::new(crate::runtime::command_executor::CommandExecutor::new(Arc::new(
+            ModuleRegistry::new(),
+        )));
+        let mut post = step("work/create", None);
+        post.each = Some("$args.rows".to_string());
+        post.params = serde_json::json!({ "title": "$item.title" });
+        post.on_error = OnError::Skip;
+        post.output_to = Some("cards".to_string());
+        post.saves = vec!["cards".to_string(), "never_bound".to_string()];
+        let args = serde_json::json!({ "rows": [ {"title": "a"} ] });
+        let sink = Arc::new(MemorySink(std::sync::Mutex::new(Vec::new())));
+        let sink_dyn: Arc<dyn crate::experience::activity_state::StepStateSink> = sink.clone();
+        PipelineExecutor::new(exec.clone())
+            .with_state_sink(sink_dyn)
+            .run("bench/saves", std::slice::from_ref(&post), args.clone())
+            .await
+            .expect("skips are not failures");
+        let saved = sink.0.lock().unwrap(); // JUSTIFIED: a test's own mutex
+        assert_eq!(saved.len(), 1, "one save at the step boundary");
+        assert_eq!(saved[0].get("cards"), Some(&Value::Array(vec![])), "the bound name is saved");
+        assert!(saved[0].get("never_bound").is_none(), "an unbound name is skipped, not saved as null");
+        drop(saved);
+        let receipt = PipelineExecutor::new(exec)
+            .run("bench/saves-unsunk", &[post], args)
+            .await
+            .expect("no sink is a probe, never a failure");
+        assert_eq!(receipt.steps_skipped, 1);
     }
 
     #[tokio::test]

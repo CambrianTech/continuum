@@ -187,7 +187,10 @@
         "skipAlreadyResolved": true,
         "language": "$args.language"
       },
-      "outputTo": "imported"
+      "outputTo": "imported",
+      "saves": [
+        "imported"
+      ]
     },
     {
       "command": "benchmark/round-open",
@@ -209,7 +212,10 @@
         "title": "$item.title",
         "body": "$item.body"
       },
-      "outputTo": "cards"
+      "outputTo": "cards",
+      "saves": [
+        "cards"
+      ]
     },
     {
       "command": "benchmark/round-track",
