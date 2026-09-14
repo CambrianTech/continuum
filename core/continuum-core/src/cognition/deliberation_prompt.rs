@@ -278,10 +278,10 @@ fn taking_your_turn_block(name: &str) -> String {
     let _ = write!(
         s,
         "\n\n[Taking your turn]\n\
-         The conversation below is the recent activity in this space, as a thread \
+         {opening} the recent activity in this space, as a thread \
          of turns: `user` turns are messages from OTHER participants; any \
          `assistant` turns are YOUR OWN earlier messages, already sent — do not \
-         repeat, rephrase, or re-explain them. You are {name}. Take your turn now, \
+         repeat, rephrase, or re-explain them. You are {name}. {turn}, \
          as yourself, in the first person: the contribution the moment calls for, \
          in full. If the moment wants words, say your piece; if it asks for a \
          concrete deliverable — a function, a design, a written piece — the \
@@ -292,6 +292,8 @@ fn taking_your_turn_block(name: &str) -> String {
          you are ABOUT to do (a plan is not the work). Let the context above — \
          especially the room's operating doctrine — shape what kind of \
          contribution fits.",
+        opening = super::framing_echo::ROLE_PREAMBLE_OPENING,
+        turn = super::framing_echo::ROLE_PREAMBLE_TURN,
         name = name,
     );
     s
@@ -443,6 +445,45 @@ pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: COMPOSER/GATE DRIFT. `framing_echo` gates the role preamble by
+    // matching two sentences; this block is where those sentences are EMITTED. Until this
+    // test, the gate's doc comment claimed the two "cannot drift" while the composer held
+    // its own literal copies — so rewording the prompt here would silently disable the
+    // gate, and nothing would fail. M5 (7711fe60) caught exactly that on the review of
+    // #4043. The block now interpolates the constants, and this pins the loop shut from
+    // both ends: the emitted text still CONTAINS the anchors, and the prose a citizen
+    // echoes back is still RECOGNISED as the preamble.
+    //
+    // Note what this does NOT claim: the gate is anchored, so it matches the PROSE (which
+    // is what the observed echoes reproduced), not the whole block — `[Taking your turn]`
+    // leads the composed string and is not itself a gated marker.
+    #[test]
+    fn the_preamble_the_composer_emits_is_the_preamble_the_gate_catches() {
+        use super::super::framing_echo::{
+            echoes_turn_framing, ROLE_PREAMBLE_OPENING, ROLE_PREAMBLE_TURN,
+        };
+        let block = taking_your_turn_block("Paige");
+        // 1. The anchors the gate keys on are really in what we emit.
+        assert!(
+            block.contains(ROLE_PREAMBLE_OPENING),
+            "composer no longer emits the opening the gate anchors on: {block}"
+        );
+        assert!(
+            block.contains(ROLE_PREAMBLE_TURN),
+            "composer no longer emits the turn sentence the gate anchors on: {block}"
+        );
+        // 2. The prose of this very block, echoed back, is caught as the preamble.
+        let prose = block
+            .split_once("[Taking your turn]\n")
+            .expect("the block is headed by its bracket tag")
+            .1;
+        assert_eq!(
+            echoes_turn_framing(prose, Some("Paige")),
+            Some("role_preamble"),
+            "a citizen reproducing THIS block must be gated"
+        );
+    }
 
     // what this catches (#266 KV-cache reuse): the block that HARD-FLIPS every turn — the
     // own-time / conversational-presence framing (DIRECTED vs WORKING vs SILENCE) — must
