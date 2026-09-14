@@ -77,8 +77,16 @@ status() {
 }
 
 once() {
-  if ! mkdir "$LOCK" 2>/dev/null; then say "skip: another pass holds $LOCK"; return 0; fi
-  trap 'rmdir "$LOCK" 2>/dev/null' RETURN
+  # A PID-checked lock: a pass killed mid-deploy (2026-09-14 06:44 → 08:53: ten passes skipped
+  # on a lock whose holder was gone) must never hold the tracker forever.
+  if [ -d "$LOCK" ]; then
+    local holder; holder="$(cat "$LOCK/pid" 2>/dev/null)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then say "skip: pass $holder still running"; return 0; fi
+    say "lock: holder ${holder:-?} is gone — clearing the stale lock"; rm -rf "$LOCK"
+  fi
+  mkdir "$LOCK" 2>/dev/null || { say "skip: could not take $LOCK"; return 0; }
+  echo $$ > "$LOCK/pid"
+  trap 'rm -rf "$LOCK" 2>/dev/null' RETURN
   local repo tip run verdict
   repo="$(gh_repo)"; [ -z "$repo" ] && { say "skip: no origin remote"; return 0; }
   tip="$(tip_sha)" || { say "skip: fetch failed (offline?) — the running build stands"; return 0; }
@@ -110,6 +118,17 @@ once() {
   cd "$REPO_DIR" || { say "refuse: cannot cd $REPO_DIR"; return 0; }
   if continuum reboot >>"$LOG" 2>&1; then
     say "deployed: $(running_sha) in $(( $(date +%s) - started )) s"
+    # The core must ANSWER before anything else is believed (2026-09-14 06:53 → 08:58:
+    # a core launched by the tracker held its socket for two hours and never answered
+    # ping; the persona stores failed to open under the agent's environment). One
+    # supervised restart from THIS shell, then the self-check decides.
+    local waited=0
+    while [ "$waited" -lt 600 ] && [ -z "$(running_sha)" ]; do sleep 30; waited=$((waited+30)); done
+    if [ -z "$(running_sha)" ]; then
+      say "core silent ${waited}s after the deploy — one supervised restart (continuum start)"
+      continuum start >>"$LOG" 2>&1 </dev/null || true
+      waited=0; while [ "$waited" -lt 300 ] && [ -z "$(running_sha)" ]; do sleep 30; waited=$((waited+30)); done
+    fi
     self_check "$tip"
   else
     say "FAILED: continuum reboot exited non-zero after $(( $(date +%s) - started )) s — read the log above; the tracker will retry next pass"
@@ -169,7 +188,7 @@ install_agent() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.continuum.track-canary</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$SCRIPT_DIR/track-canary.sh</string><string>--once</string></array>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lc</string><string>exec bash '$SCRIPT_DIR/track-canary.sh' --once</string></array>
   <key>StartInterval</key><integer>$INTERVAL</integer>
   <key>RunAtLoad</key><true/>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
@@ -186,7 +205,7 @@ EOF
 Description=Continuum: this node follows the canary tip
 [Service]
 Type=oneshot
-ExecStart=/bin/bash $SCRIPT_DIR/track-canary.sh --once
+ExecStart=/bin/bash -lc "exec bash '$SCRIPT_DIR/track-canary.sh' --once"
 EOF
       cat >"$dir/continuum-track-canary.timer" <<EOF
 [Unit]
