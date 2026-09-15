@@ -406,7 +406,7 @@ jobs:
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         shell: powershell
         run: ./tools/scripts/tests/windows-service.test.ps1
-      - name: Windows native toolchain cache regression
+      - name: Windows native cache and engine ownership regressions
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         shell: powershell
         run: |
@@ -414,4 +414,9 @@ jobs:
           rustc --edition 2021 --test core/llama/msvc_cache.rs -o $helperTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $helperTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ownerTest = Join-Path $env:RUNNER_TEMP 'continuum-owned-engine-test.exe'
+          rustc --edition 2021 --test core/continuum-core/src/bin/continuum/owned_engines.rs -o $ownerTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $ownerTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
