@@ -54,6 +54,31 @@ function Update-ContinuumCheckout {
     } finally { $lease.Dispose() }
 }
 
+function Enter-ContinuumInstallLease {
+    $state = Join-Path $env:USERPROFILE '.continuum'
+    New-Item -ItemType Directory -Force -Path $state | Out-Null
+    try {
+        return [IO.File]::Open((Join-Path $state 'install.lock'),
+            [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] { throw 'Another installer holds the install lease. Let it finish before rerunning.' }
+}
+
+function Update-ContinuumCheckout {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    $lease = Enter-ContinuumInstallLease
+    try {
+    # Never reset, stash, switch branches, or discard a developer's changes.
+    # Pull the selected branch's configured upstream, not an invented channel.
+    $dirty = @(& git -C $RepoRoot status --porcelain --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect checkout before update.' }
+    if ($dirty.Count -ne 0) { throw 'Update refused: tracked checkout changes must be committed or resolved first.' }
+    & git -C $RepoRoot rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
+    if ($LASTEXITCODE -ne 0) { throw 'Update refused: the selected branch has no upstream. Configure its intended tracking branch first.' }
+    & git -C $RepoRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) { throw 'Update did not fast-forward. Resolve the upstream/network error without discarding local work, then rerun the same installer.' }
+    } finally { $lease.Dispose() }
+}
+
 #  Bootstrap: make the remote `irm | iex` one-liner work for the native build 
 # When piped, $PSScriptRoot is empty and there is no repo yet. Inline the minimum
 # to get one (winget + git, both per-user / no admin), clone, then re-invoke the
