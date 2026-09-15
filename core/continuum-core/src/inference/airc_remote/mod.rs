@@ -31,8 +31,8 @@
 //!   `send_request`) + three impls:
 //!     * `AircLiveTransport` — production. Wraps `Arc<airc_lib::Airc>`
 //!       + target `PeerId` + deadline; dispatches via airc's
-//!       `request`/`await_reply` using the `continuum-airc-protocol`
-//!       `AircCommandRequest{path="ai/generate", kind=KIND_PEER}` shape.
+//!         `request`/`await_reply` using the `continuum-airc-protocol`
+//!         `AircCommandRequest{path="ai/generate", kind=KIND_PEER}` shape.
 //!     * `LocalAdapterTransport` — in-process passthrough. Wraps an
 //!       `Arc<dyn AIProviderAdapter>` and round-trips through it.
 //!       Used for tests + single-process configurations that want to

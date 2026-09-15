@@ -4,6 +4,12 @@ The same `ai/generate` operation serves a local caller, a persona's remote lane,
 and an explicit `aircPeer` command dispatch. Placement belongs to the substrate;
 activities and benchmark recipes must not grow a second inference runner.
 
+Generic peer command URIs already use `CommandExecutor`'s installed
+`LateBoundAircTransport` and the same receiving command handler. New ML commands
+should register with that executor and reuse this route. The `aircPeer` parameter
+interceptor is inference-specific; it is not the limit of the generic transport.
+Remote command authorization still applies: reachability does not grant access.
+
 ## Boundary
 
 The requester carries a typed `TextGenerationRequest`. AIRC carries the existing
@@ -49,7 +55,43 @@ verifiable linked receipts rather than relabel the first hop as the final execut
    supplies tasks and grading only. A gain requires repeatable completed-work
    evidence, including failures; a connected fleet is not a throughput result.
 
+Capacity discovery must distinguish a machine's accounting identity from its
+callable runtime endpoint. Advertise a live, authorized command endpoint alongside
+capacity; keep machine identity for resource accounting and freshness. A beacon
+without a callable endpoint cannot justify inference placement. Validate this with
+multiple resident personas so only the advertised handler answers, not whichever
+persona hears a broadcast first.
+
 ## Remaining distributed-compute gates
+
+### Event delivery and handle cost
+
+Correct reply attribution is not a throughput measurement. The audited AIRC
+command path at `829a8f8` opens an unfiltered room IPC subscription per pending
+command. Unrelated events are serialized and decoded for each waiter before
+correlation is checked. The inference recovery path also scans a recent-event
+page every two seconds. These are known efficiency gaps, not the target design.
+
+Use the existing router's header index to select a registered command handle
+before IPC delivery or payload decoding. Register before publishing; remove the
+registration on completion, drop, deadline or send failure. Queue bounds and
+overload must be explicit. Local fan-out shares an immutable payload reference;
+large remote content uses a resolvable artifact or stream handle rather than
+being copied into every event. Local addresses are never valid remote handles.
+
+Validate many concurrent commands amid unrelated text, binary and stream events:
+only addressed replies may cross each command subscription, and unrelated
+payload decode counts must remain zero. Measure warm completion latency and
+aggregate delivery throughput separately from connection setup and inference.
+An indexed subscription still incurs per-request IPC setup until a shared
+session owns and multiplexes those registrations; do not call it zero-cost.
+
+Recovery belongs to that delivery owner: cursor-based replay on reconnect,
+followed by live event delivery under the same command deadline. Repeated
+transcript scans must be removed once that contract is available and verified,
+without adding a second reply router inside the inference adapter.
+
+### Placement and artifacts
 
 A command interface is necessary but does not make arbitrary kernels profitable
 over a network. Imatrix calibration, expert fetching and genomic artifact work

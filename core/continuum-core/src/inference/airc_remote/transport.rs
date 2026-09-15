@@ -25,7 +25,7 @@ use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
 use airc_lib::Airc;
 use airc_protocol::HEADER_AIRC_CORRELATION_ID;
 use continuum_airc_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_RESPONSE_BODY_HINT, DEFAULT_COMMAND_DEADLINE,
+    AircCommandRequest, AircCommandResponse, COMMAND_RESPONSE_BODY_HINT,
     HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
 };
 use uuid::Uuid;
@@ -71,12 +71,12 @@ pub trait AircInferenceTransport: Send + Sync {
 /// that maps a request to either a response or an error; the stub
 /// invokes it inline.
 pub struct StubInferenceTransport {
-    handler: Box<
-        dyn Fn(&RemoteInferenceRequest) -> Result<RemoteInferenceResponse, RemoteInferenceError>
-            + Send
-            + Sync,
-    >,
+    handler: Box<StubInferenceHandler>,
 }
+
+type StubInferenceHandler = dyn Fn(&RemoteInferenceRequest) -> Result<RemoteInferenceResponse, RemoteInferenceError>
+    + Send
+    + Sync;
 
 impl StubInferenceTransport {
     pub fn new<F>(handler: F) -> Arc<Self>
@@ -545,6 +545,7 @@ impl AircInferenceTransport for AircLiveTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE;
 
     // what this catches: an observed correlation is not authorization to answer
     // for another peer; recovery must enforce the same boundary as live replies.

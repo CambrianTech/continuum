@@ -375,7 +375,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // accepts any name: the peer's own catalog decides.
         self.default_model
             .as_deref()
-            .map_or(true, |lane| lane == model)
+            .is_none_or(|lane| lane == model)
     }
 }
 
