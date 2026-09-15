@@ -1345,7 +1345,7 @@ impl WarmBuildReceipt {
         std::fs::File::open(&self.0)
             .and_then(|file| file.take(MAX_RECEIPT_BYTES + 1).read_to_string(&mut report))
             .map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
-        let path = report.strip_suffix('\n').unwrap_or(&report);
+        let path = report.strip_suffix('\n').unwrap_or(&report); // No optional framing newline means the entire report is the path.
         if report.len() > MAX_RECEIPT_BYTES as usize
             || path.is_empty()
             || path.contains(['\n', '\r', '\0'])
