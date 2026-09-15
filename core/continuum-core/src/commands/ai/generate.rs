@@ -179,28 +179,19 @@ crate::action_command! {
         let is_local = adapter.capabilities().is_local;
         let mut response = adapter.generate_text(request).await?;
 
-        // Stamp routing info, preserving any adapters_applied / reason the adapter set.
-        let prior_routing = response.routing.take();
-        response.routing = Some(RoutingInfo {
-            provider: provider_id.to_string(),
+        // Preserve the serving node's receipt, model mapping and adapter metadata.
+        let route = RoutingInfo::stamp(
+            &mut response.routing,
+            provider_id,
             is_local,
-            routing_reason: prior_routing
-                .as_ref()
-                .map(|r| r.routing_reason.clone())
-                .unwrap_or_else(|| "adapter_selected".to_string()),
-            adapters_applied: prior_routing
-                .as_ref()
-                .map(|r| r.adapters_applied.clone())
-                .unwrap_or_default(),
-            model_mapped: None,
-            model_requested: prior_routing.and_then(|r| r.model_requested),
-            served_context_window: if is_local { served_window_now() } else { None },
-        });
-
+            "adapter_selected",
+        );
+        if is_local {
+            route.served_context_window = served_window_now().or(route.served_context_window);
+        }
         Ok(AiGenerateResult::from(response))
     }
 }
-
 
 /// The window the local lane serves right now, or None when no lane is ready —
 /// never a stand-in number (a requester would budget against it).

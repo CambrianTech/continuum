@@ -493,6 +493,24 @@ pub struct UsageMetrics {
     pub estimated_cost: Option<f64>,
 }
 
+/// Caller-observed wire receipt. The responding peer identifies the authenticated
+/// reply author; model/serving details remain responder-reported, including any
+/// inference the responder delegated onward.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/RemoteInferenceReceipt.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInferenceReceipt {
+    pub requested_peer: String,
+    pub responding_peer: String,
+    pub correlation_id: String,
+    /// Caller elapsed time across the remote request, in milliseconds.
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+}
+
 /// Routing observability info
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/RoutingInfo.ts")]
@@ -516,6 +534,36 @@ pub struct RoutingInfo {
     /// Absent when the answer did not come from a local served lane.
     #[ts(optional)]
     pub served_context_window: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remote: Option<RemoteInferenceReceipt>,
+}
+
+impl RoutingInfo {
+    /// Stamp the caller's selected route without discarding serving metadata.
+    pub fn stamp<'a>(
+        routing: &'a mut Option<Self>,
+        provider: &str,
+        is_local: bool,
+        reason: &str,
+    ) -> &'a mut Self {
+        let route = routing.get_or_insert_with(|| Self {
+            provider: String::new(),
+            is_local,
+            routing_reason: reason.to_string(),
+            adapters_applied: Vec::new(),
+            model_mapped: None,
+            model_requested: None,
+            served_context_window: None,
+            remote: None,
+        });
+        if route.provider != provider {
+            route.provider.clear();
+            route.provider.push_str(provider);
+        }
+        route.is_local = is_local;
+        route
+    }
 }
 
 /// Provider health status
@@ -787,6 +835,42 @@ impl Default for HealthStatus {
 mod tests {
     use super::*;
 
+    // what this catches: command/module route stamping used to reconstruct the
+    // route and discard the serving window, model mapping and remote receipt.
+    #[test]
+    fn route_stamping_preserves_serving_metadata_and_legacy_wire_shape() {
+        let mut routing = Some(
+            serde_json::from_value::<RoutingInfo>(serde_json::json!({
+                "provider": "llama", "isLocal": true, "routingReason": "served",
+                "adaptersApplied": ["genome"], "modelMapped": "served-model",
+                "modelRequested": "requested-model", "servedContextWindow": 26112
+            }))
+            .unwrap(),
+        );
+        assert!(routing.as_ref().unwrap().remote.is_none());
+        let receipt = RemoteInferenceReceipt {
+            requested_peer: "alias".into(),
+            responding_peer: "actual-peer".into(),
+            correlation_id: "wire-id".into(),
+            elapsed_ms: 42,
+        };
+        routing.as_mut().unwrap().remote = Some(receipt.clone());
+        for reason in ["remote_inference", "adapter_selected", "generate_text_call"] {
+            let route = RoutingInfo::stamp(&mut routing, "airc-remote", false, reason);
+            assert!(!route.is_local);
+            assert_eq!(route.provider, "airc-remote");
+            assert_eq!(route.routing_reason, "served");
+            assert_eq!(route.served_context_window, Some(26112));
+            assert_eq!(route.adapters_applied, ["genome"]);
+            assert_eq!(route.model_mapped.as_deref(), Some("served-model"));
+            assert_eq!(route.model_requested.as_deref(), Some("requested-model"));
+            assert_eq!(route.remote.as_ref(), Some(&receipt));
+        }
+        let encoded = serde_json::to_value(routing.unwrap()).unwrap();
+        assert_eq!(encoded["remote"]["respondingPeer"], "actual-peer");
+        assert_eq!(encoded["remote"]["elapsedMs"], 42);
+    }
+
     #[test]
     fn export_ai_types() {
         // These tests trigger ts-rs to generate TypeScript types
@@ -809,6 +893,7 @@ mod tests {
         FinishReason::export(&cfg).expect("export FinishReason");
         UsageMetrics::export(&cfg).expect("export UsageMetrics");
         RoutingInfo::export(&cfg).expect("export RoutingInfo");
+        RemoteInferenceReceipt::export(&cfg).expect("export RemoteInferenceReceipt");
         HealthStatus::export(&cfg).expect("export HealthStatus");
         HealthState::export(&cfg).expect("export HealthState");
         ModelInfo::export(&cfg).expect("export ModelInfo");

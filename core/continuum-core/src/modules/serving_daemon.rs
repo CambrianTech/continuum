@@ -2385,6 +2385,7 @@ impl ServingDaemonModule {
         // is zero flap surface (Law 2 — capacity follows measurement, structure
         // does not).
         let host_prompt_cache_mib = derived_prompt_cache_mib(
+            &model.id,
             footprint_for(&model).as_ref(),
             served_ctx,
             lanes,
@@ -3707,18 +3708,16 @@ fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
 ///
 /// Cold start (no demand ever measured — fresh install) and a missing
 /// footprint both return the declared prior [`lane_args::CACHE_RAM_MIB`]:
-/// "cold start is a real state, not a missing measurement". The clamp means
-/// this can only ever hand the lane RAM the resident plan was not using —
-/// never RAM the weights, live KV or OS needed.
+/// "cold start is a real state, not a missing measurement". Those prior paths
+/// bypass affordability, and the existing hard floor can exceed a tiny grant.
+/// The diagnostic record preserves these facts; it does not fix the sizing law.
 fn derived_prompt_cache_mib(
+    model_id: &str,
     fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
     served_ctx: u32,
     lanes: u32,
     physical_bytes: u64,
 ) -> u32 {
-    let Some(fp) = fp else {
-        return crate::inference::lane_args::CACHE_RAM_MIB;
-    };
     // LIVE citizens only. The WorkingSetRegistry persists every persona that
     // EVER recorded demand — measured 2026-08-28, first live fire: citizens=332
     // (weeks of rotated identities), a fictional want that only the
@@ -3737,33 +3736,107 @@ fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| d.peak_tokens)
         .collect();
-    if demands.is_empty() || physical_bytes == 0 {
-        return crate::inference::lane_args::CACHE_RAM_MIB;
-    }
-    let afford = physical_bytes
-        .saturating_sub(fp.peak_resident_bytes(served_ctx, lanes))
-        .saturating_sub(host_os_floor_bytes(physical_bytes));
-    let derived = crate::inference::lane_args::host_prompt_cache_mib(
-        &demands,
-        fp.kv_per_token,
-        afford,
-    );
-    // Probe ON CHANGE only: this fn runs inside the serve reconciler's pass
-    // (measured post-deploy: one row every ~5-15s, saying the same number),
-    // and a probe that repeats an unchanged value is noise wearing telemetry's
-    // coat. The atomic carries the last spoken value; first fire always speaks.
-    static LAST_SPOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
-    if LAST_SPOKEN.swap(derived, std::sync::atomic::Ordering::Relaxed) != derived {
+    let decision = prompt_cache_decision(fp, &demands, served_ctx, lanes, physical_bytes);
+    // Deduplicate the decision, not just its MiB: a different model or a prior
+    // becoming measured can yield the same limit and still needs a receipt.
+    static LAST_SPOKEN: parking_lot::Mutex<Option<(String, PromptCacheDecision)>> =
+        parking_lot::Mutex::new(None);
+    let changed = {
+        let mut last = LAST_SPOKEN.lock();
+        if last
+            .as_ref()
+            .is_some_and(|(id, previous)| id == model_id && previous == &decision)
+        {
+            false
+        } else {
+            *last = Some((model_id.to_owned(), decision.clone()));
+            true
+        }
+    };
+    if changed {
+        let afford_mib = decision.affordable_bytes.map(|bytes| bytes / (1024 * 1024));
+        // Preserve the existing numeric field when known; Empty is not recorded
+        // by tracing visitors, so a prior does not fabricate zero affordability.
+        let afford_field: &dyn tracing::field::Value = match afford_mib.as_ref() {
+            Some(value) => value,
+            None => &tracing::field::Empty,
+        };
         crate::probe!(
             class = "serving.prompt_cache.derived",
+            model = model_id,
+            reason = decision.reason,
+            derived_mib = decision.desired_mib as u64,
+            afford_mib = afford_field,
+            desired_mib = decision.desired_mib as u64,
+            applied_mib = "unobserved",
+            served_ctx = served_ctx as u64,
+            lanes = lanes as u64,
             citizens = demands.len() as u64,
-            derived_mib = derived as u64,
-            afford_mib = (afford / (1024 * 1024)) as u64,
-            "host prompt cache sized from per-citizen measured demand — the lane and \
-             the host-cache lease read this SAME number"
+            physical_bytes = physical_bytes,
+            kv_per_token = ?decision.kv_per_token,
+            estimated_kv_bytes = ?decision.estimated_kv_bytes,
+            affordable_bytes = ?decision.affordable_bytes,
+            serialized_state_bytes = "unobserved",
+            "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
     }
-    derived
+    decision.desired_mib
+}
+
+/// Diagnostic record of the existing sizing law. This deliberately does not
+/// change its priors or affordability policy; neither is an engine measurement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PromptCacheDecision {
+    reason: &'static str,
+    desired_mib: u32,
+    served_ctx: u32,
+    lanes: u32,
+    physical_bytes: u64,
+    citizens: usize,
+    kv_per_token: Option<u64>,
+    estimated_kv_bytes: Option<u64>,
+    affordable_bytes: Option<u64>,
+}
+
+fn prompt_cache_decision(
+    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    demands: &[u32],
+    served_ctx: u32,
+    lanes: u32,
+    physical_bytes: u64,
+) -> PromptCacheDecision {
+    let mut decision = PromptCacheDecision {
+        reason: "prior_missing_footprint",
+        desired_mib: crate::inference::lane_args::CACHE_RAM_MIB,
+        served_ctx,
+        lanes,
+        physical_bytes,
+        citizens: demands.len(),
+        kv_per_token: fp.map(|f| f.kv_per_token),
+        estimated_kv_bytes: fp.map(|f| {
+            demands.iter().fold(0u64, |n, t| {
+                n.saturating_add(f.kv_per_token.saturating_mul(*t as u64))
+            })
+        }),
+        affordable_bytes: None,
+    };
+    let Some(fp) = fp else {
+        return decision;
+    };
+    if demands.is_empty() {
+        decision.reason = "prior_no_resident_demand";
+    } else if physical_bytes == 0 {
+        decision.reason = "prior_unknown_physical_memory";
+    } else {
+        let afford = physical_bytes
+            .saturating_sub(fp.peak_resident_bytes(served_ctx, lanes))
+            .saturating_sub(host_os_floor_bytes(physical_bytes));
+        decision.reason = "resident_demand_kv_estimate";
+        decision.affordable_bytes = Some(afford);
+        decision.desired_mib =
+            crate::inference::lane_args::host_prompt_cache_mib(demands, fp.kv_per_token, afford);
+    }
+    decision
 }
 
 fn host_os_floor_bytes(physical_bytes: u64) -> u64 {
@@ -4500,6 +4573,58 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
+    // and treated a desired KV estimate as observed serialized cache capacity.
+    #[test]
+    fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
+        use super::*;
+        let fp = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "cache-fixture".into(),
+            weights_bytes: 1024 * 1024 * 1024,
+            kv_per_token: 65536,
+            context_window: 65536,
+            capability_rank: 1,
+        };
+        let missing = prompt_cache_decision(None, &[60000], 65536, 1, 32 << 30);
+        assert_eq!(missing.reason, "prior_missing_footprint");
+        assert_eq!(missing.estimated_kv_bytes, None);
+        assert_eq!(missing.affordable_bytes, None);
+        let empty = prompt_cache_decision(Some(&fp), &[], 65536, 1, 32 << 30);
+        assert_eq!(empty.reason, "prior_no_resident_demand");
+        let unknown = prompt_cache_decision(Some(&fp), &[60000], 65536, 1, 0);
+        assert_eq!(unknown.reason, "prior_unknown_physical_memory");
+        for prior in [&missing, &empty, &unknown] {
+            assert_eq!(
+                prior.desired_mib,
+                crate::inference::lane_args::CACHE_RAM_MIB
+            );
+            assert_eq!(prior.affordable_bytes, None);
+        }
+        let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 65536, 1, 32 << 30);
+        // Same 4096 MiB result as the prior, but materially different evidence.
+        assert_eq!(measured.desired_mib, missing.desired_mib);
+        assert_ne!(measured, missing);
+        assert_eq!(measured.estimated_kv_bytes, Some(4 << 30));
+        assert_eq!(measured.reason, "resident_demand_kv_estimate");
+        let afford =
+            (32u64 << 30) - fp.peak_resident_bytes(65536, 1) - host_os_floor_bytes(32 << 30);
+        assert_eq!(measured.affordable_bytes, Some(afford));
+        assert_eq!(
+            measured.desired_mib,
+            crate::inference::lane_args::host_prompt_cache_mib(
+                &[32768, 32768],
+                fp.kv_per_token,
+                afford
+            )
+        );
+        let squeezed = prompt_cache_decision(Some(&fp), &[60000], 65536, 1, 1);
+        assert_eq!(squeezed.affordable_bytes, Some(0));
+        assert_eq!(
+            squeezed.desired_mib,
+            crate::inference::lane_args::host_prompt_cache_mib(&[60000], fp.kv_per_token, 0)
+        );
+    }
+
     // what this catches: #3751 threw this throttle at `rehome_streak` — the
     // RE-HOME GAIN counter — which is stored to 0 for exactly as long as the lane
     // is below plan with no qualifying gain. `streak <= 1` was therefore true on

@@ -448,7 +448,8 @@ mod tests {
     #[test]
     fn a_generic_repo_card_is_never_answered_with_a_bench_checkout_that_its_title_names() {
         let home = tempfile::tempdir().unwrap(); // test: temp dir creation
-        let restore = std::env::var("CONTINUUM_HOME").ok();
+        // Under the one crate-wide home lock (#4082); restored by the guard's drop.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = Uuid::new_v4();
@@ -481,10 +482,6 @@ mod tests {
              — it must resolve by CARD ID through airc's per-card worktree"
         );
 
-        match restore {
-            Some(v) => std::env::set_var("CONTINUUM_HOME", v),
-            None => std::env::remove_var("CONTINUUM_HOME"),
-        }
     }
 
     // what this catches: a re-dispatched, already-settled instance staged onto the

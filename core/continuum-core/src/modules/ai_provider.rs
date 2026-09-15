@@ -1248,20 +1248,12 @@ pub async fn generate_text(
 
     let mut response = adapter.generate_text(request).await?;
 
-    // Add routing info
-    response.routing = Some(RoutingInfo {
-        provider: provider_id.to_string(),
-        is_local: adapter.capabilities().is_local,
-        routing_reason: "generate_text_call".to_string(),
-        adapters_applied: vec![],
-        model_mapped: None,
-        model_requested: response
-            .routing
-            .as_ref()
-            .and_then(|r| r.model_requested.clone()),
-        served_context_window: None,
-    });
-
+    RoutingInfo::stamp(
+        &mut response.routing,
+        provider_id,
+        adapter.capabilities().is_local,
+        "generate_text_call",
+    );
     Ok(response)
 }
 

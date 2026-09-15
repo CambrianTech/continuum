@@ -78,6 +78,7 @@ async fn spawn_ai_generate_responder(
     peer_a: Arc<airc_lib::Airc>,
     canned: TextGenerationResponse,
     ready: Arc<tokio::sync::Notify>,
+    inject_non_response: bool,
 ) -> tokio::task::JoinHandle<()> {
     let self_id = peer_a.peer_id();
     tokio::spawn(async move {
@@ -163,6 +164,22 @@ async fn spawn_ai_generate_responder(
             let response_value =
                 serde_json::to_value(&canned).expect("serialize TextGenerationResponse");
             let response = AircCommandResponse::ok(response_value);
+            if inject_non_response {
+                // A correlated event is not necessarily a command answer.
+                // Exercise the live rejection -> durable recovery path with
+                // a real signed event, followed by the valid response.
+                peer_a
+                    .reply_in(
+                        parsed.request_channel,
+                        parsed.request_channel_name.as_deref(),
+                        parsed.reply_to,
+                        parsed.correlation_id,
+                        airc_core::Headers::new(),
+                        airc_core::Body::text("not an inference response"),
+                    )
+                    .await
+                    .expect("correlated non-response");
+            }
             handler
                 .send_reply(&parsed, &response)
                 .await
@@ -181,7 +198,7 @@ async fn spawn_ai_generate_responder(
 async fn spawn_reply_header_sniffer(
     peer_b: Arc<airc_lib::Airc>,
     ready: Arc<tokio::sync::Notify>,
-) -> tokio::task::JoinHandle<(Option<String>, Option<String>)> {
+) -> tokio::task::JoinHandle<(Option<String>, Option<String>, Option<String>)> {
     let self_id = peer_b.peer_id();
     tokio::spawn(async move {
         let mut stream = peer_b.subscribe().await.expect("peer_b subscribe");
@@ -206,15 +223,33 @@ async fn spawn_reply_header_sniffer(
             // (None, ...) not by hanging — early-exit on first
             // inbound to make the failure mode visible.
             let hint = event.headers.get(HEADER_CONTINUUM_BODY_HINT).cloned();
+            if hint.as_deref() != Some(COMMAND_RESPONSE_BODY_HINT) {
+                continue;
+            }
             let status = event.headers.get(HEADER_COMMAND_STATUS).cloned();
-            return (hint, status);
+            let correlation = event
+                .headers
+                .get(airc_protocol::HEADER_AIRC_CORRELATION_ID)
+                .cloned();
+            return (hint, status, correlation);
         }
-        (None, None)
+        (None, None, None)
     })
 }
 
 #[tokio::test]
 async fn airc_remote_inference_adapter_round_trips_against_substrate() {
+    round_trip(false).await;
+}
+
+// what this catches: correlation-only matching accepts a non-response and
+// fails payload decoding instead of recovering the actual command answer.
+#[tokio::test]
+async fn correlated_non_response_does_not_replace_the_inference_answer() {
+    round_trip(true).await;
+}
+
+async fn round_trip(inject_non_response: bool) {
     let loop_back = TwoAircLoopback::new()
         .await
         .expect("fixture setup should succeed");
@@ -250,6 +285,7 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         Arc::clone(loop_back.peer_a()),
         canned.clone(),
         Arc::clone(&responder_ready),
+        inject_non_response,
     )
     .await;
 
@@ -284,6 +320,7 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         ..Default::default()
     };
 
+    let started = std::time::Instant::now();
     let response: TextGenerationResponse = adapter
         .generate_text(request)
         .await
@@ -299,6 +336,15 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
     assert_eq!(response.usage.total_tokens, canned.usage.total_tokens);
     assert_eq!(response.request_id, canned.request_id);
     assert_eq!(response.finish_reason, FinishReason::Stop);
+    let routing = response
+        .routing
+        .as_ref()
+        .expect("remote routing receipt survives adapter");
+    assert!(!routing.is_local);
+    let receipt = routing.remote.as_ref().expect("live transport receipt");
+    assert_eq!(receipt.requested_peer, loop_back.peer_a_id().to_string());
+    assert_eq!(receipt.responding_peer, loop_back.peer_a_id().to_string());
+    assert!(receipt.elapsed_ms <= started.elapsed().as_millis() as u64);
 
     responder.await.expect("responder task joined");
 
@@ -306,7 +352,12 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
     // COMMAND_RESPONSE_BODY_HINT + HEADER_COMMAND_STATUS=ok on the
     // reply. If a refactor drops them, this assertion fails — drift
     // gets caught even though the body-level decode succeeded.
-    let (hint, status) = sniffer.await.expect("sniffer task joined");
+    let (hint, status, correlation) = sniffer.await.expect("sniffer task joined");
+    assert_eq!(
+        correlation.as_deref(),
+        Some(receipt.correlation_id.as_str()),
+        "receipt uses wire correlation, not the adapter's unrelated internal id"
+    );
     assert_eq!(
         hint.as_deref(),
         Some(COMMAND_RESPONSE_BODY_HINT),

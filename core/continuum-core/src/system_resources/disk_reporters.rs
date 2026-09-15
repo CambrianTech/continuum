@@ -403,9 +403,12 @@ mod tests {
     fn hf_hub_class_follows_a_relocated_cache_root() {
         let relocated = tempfile::tempdir().expect("tempdir");
         let home = tempfile::tempdir().expect("home");
-        // SAFETY: single-threaded test; the var is restored below.
-        let prev = std::env::var("HF_HOME").ok();
-        unsafe { std::env::set_var("HF_HOME", relocated.path()) };
+        // Under the one crate-wide home lock (#4082): an ordinary #[test] is concurrent
+        // with the rest of libtest, and every HomeGuard writes HF_HOME. The guard pins
+        // the four home variables to `home`; the relocated HF_HOME override sits on top
+        // and the guard's drop restores everything.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        std::env::set_var("HF_HOME", relocated.path());
 
         let dirs = standard_tracked_dirs(home.path());
         let hf = dirs
@@ -422,10 +425,6 @@ mod tests {
             "tracking a path under home while HF_HOME points elsewhere is the false-zero bug"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("HF_HOME", v) },
-            None => unsafe { std::env::remove_var("HF_HOME") },
-        }
     }
 
     // what this catches: the reporter half of the seam — a TrackedDir

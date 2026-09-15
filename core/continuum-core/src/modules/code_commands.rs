@@ -468,6 +468,12 @@ fn is_local_who(who: &str) -> bool {
 /// same root the caller's hands are rooted at (`card_root_of`) and the same env the
 /// [env] fact names (`instance_python`); `None` = no held card, no checkout, or no
 /// prepared env, and the caller falls back to the PATH interpreter, named.
+/// The caller's HELD checkout root — where her hands stand — for a snippet to run in.
+pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let who = caller_id(ctx);
+    card_root_of(&who).await
+}
+
 pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
     let who = caller_id(ctx);
     let root = card_root_of(&who).await?;
@@ -2400,6 +2406,9 @@ mod tests {
             assert!(ok);
         }
         let home = tempfile::tempdir().expect("home");
+        // Under the one crate-wide home lock (#4082): this unlocked CONTINUUM_HOME write
+        // raced every other test that resolves the citizen layer.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
@@ -2453,6 +2462,6 @@ mod tests {
             "the peer's divergence is durable"
         );
 
-        std::env::remove_var("CONTINUUM_HOME");
+        // (CONTINUUM_HOME is restored by the guard's drop)
     }
 }

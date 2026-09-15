@@ -833,6 +833,7 @@ pub async fn apply_act(
         "acted and observed the result"
     );
     crate::modules::citizen_health::note_act(wrote);
+    crate::modules::citizen_health::note_act_of(body.persona_id, wrote);
 
     ActOutcome::Acted { acts }
 }

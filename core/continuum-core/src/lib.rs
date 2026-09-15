@@ -75,6 +75,8 @@ pub mod sensory;
 pub mod shell_portable;
 pub mod source_hygiene;
 pub mod system_resources;
+#[cfg(test)]
+pub(crate) mod test_env;
 pub mod tool_parsing;
 pub mod utils;
 pub mod vdd;
