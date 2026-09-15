@@ -395,3 +395,12 @@ jobs:
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         shell: powershell
         run: ./tools/scripts/tests/windows-service.test.ps1
+      - name: Windows native toolchain cache regression
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        shell: powershell
+        run: |
+          $helperTest = Join-Path $env:RUNNER_TEMP 'continuum-msvc-cache-test.exe'
+          rustc --edition 2021 --test core/llama/msvc_cache.rs -o $helperTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $helperTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
