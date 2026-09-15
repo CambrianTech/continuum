@@ -63,14 +63,20 @@ resolve_core_bin() {
   return 1
 }
 
-ort_dylib() { case "$(uname -s)" in Darwin) echo "/opt/homebrew/lib/libonnxruntime.dylib";; *) echo "$DATA/lib/libonnxruntime.so";; esac; }
+ort_dylib() {
+  case "$(uname -s)" in
+    Darwin) echo "/opt/homebrew/lib/libonnxruntime.dylib" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) cygpath -w "$DATA/lib/onnxruntime.dll" ;;
+    *) echo "$DATA/lib/libonnxruntime.so" ;;
+  esac
+}
 
 # The wrapper command the supervisor runs: airc + toolchain on PATH so the core
 # finds airc at boot (no blocking install), config.env sourced, ORT set, core
 # exec'd in the FOREGROUND so the supervisor owns its lifecycle.
 core_wrapper() {
   # if/then/fi (not `&&`) so the string is valid XML unescaped inside the plist.
-  echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then set -a; . \"$DATA/config.env\"; set +a; fi; export ORT_DYLIB_PATH=\"$(ort_dylib)\"; exec \"$1\" \"$SOCKET\""
+  echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then set -a; . \"$DATA/config.env\"; set +a; fi; export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$(ort_dylib)}\"; exec \"$1\" \"$SOCKET\""
 }
 
 # ════════════════════════ macOS ════════════════════════
