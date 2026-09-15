@@ -41,15 +41,22 @@ Note also that `CONTINUUM_PERSONA_FLOOR` is precisely the "env-var-tuned substra
 threshold" the concurrency style guide lists as a forbidden move. Replacing it
 with a derived value is doctrine-correct independent of this feature.
 
-## 2. The invariant that shapes the whole design: NEVER A POOL
+## 2. The single-node placement invariant: NEVER A POOL
+
+**2026-09-15 clarification:** this invariant applies to whole-model placement on
+one node. It does not prohibit an explicit distributed execution plan whose
+per-stage memory, communication and latency are independently validated. See
+[Adaptive grid intelligence](ADAPTIVE-GRID-INTELLIGENCE.md) for the measured
+extension, including layer pipelines, expert execution and concurrent requests.
 
 `provisioning/placement_planner.rs:366` asserts it directly:
 
 > two 20GiB peers must **NOT** fit a 40GiB model — never a pool
 
-So "more capable as the grid grows" can **never** mean summing memory across
-nodes to host one bigger model. That is the exo approach and it is explicitly
-rejected: sharding a model to make it fit trades a working mind for a slow one.
+The existing single-node planner cannot sum memory across nodes and pretend a
+whole model fits on one device. Hosting a larger model across devices requires
+an explicit partitioned plan and evidence that it meets the activity's latency
+budget; aggregate memory alone establishes neither feasibility nor responsiveness.
 
 What growth *may* buy is therefore constrained to three honest levers:
 
