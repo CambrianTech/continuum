@@ -123,6 +123,14 @@ pub const EVICTION_WINDOW_MS: u64 = 12 * PUBLISH_INTERVAL_MS;
 /// pressure-relevant bandwidth (one tiny coalesced envelope per beat).
 pub const PUBLISH_INTERVAL_MS: u64 = 10_000;
 
+/// Minds seated on OTHER fresh nodes right now — [`GridCapacityLedger::residents_elsewhere`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RosterHeard {
+    pub peers: usize,
+    pub residents: u32,
+    pub newest_heard_at_ms: u64,
+}
+
 /// Process-global ledger of heard capacity offers, keyed by the WIRE's peer id.
 #[derive(Default)]
 pub struct GridCapacityLedger {
@@ -170,6 +178,31 @@ impl GridCapacityLedger {
         // Deterministic order (DashMap iteration isn't): stable placement traces.
         peers.sort_by_key(|p| p.peer.as_uuid());
         GridSnapshot { local, peers }
+    }
+
+    /// What the grid says about minds seated ELSEWHERE, now: fresh peers (heard
+    /// within [`FRESHNESS_WINDOW_MS`]) other than `own_peer` whose beacon reports
+    /// residents. The one-roster rule's input (card b3b922c0, Joel 2026-09-15:
+    /// "start on one computer and add more later … holistically like one machine"):
+    /// an empty node that hears a team offers lanes and mints no team of its own.
+    /// Own peer unknown (`None`) counts nobody as self — a caller that cannot name
+    /// itself must not read its own echoed beacon as a team elsewhere, so it passes
+    /// `None` only when the ledger cannot hold its echo.
+    pub fn residents_elsewhere(&self, own_peer: Option<Uuid>, now_ms: u64) -> RosterHeard {
+        let mut heard = RosterHeard::default();
+        for r in self.heard.iter() {
+            if Some(*r.key()) == own_peer {
+                continue;
+            }
+            let at = r.value().heard_at_ms;
+            if now_ms.saturating_sub(at) > FRESHNESS_WINDOW_MS || r.value().offer.residents == 0 {
+                continue;
+            }
+            heard.peers += 1;
+            heard.residents += r.value().offer.residents;
+            heard.newest_heard_at_ms = heard.newest_heard_at_ms.max(at);
+        }
+        heard
     }
 
     /// Number of peers currently on the ledger (self included if echoed) — probe surface.
@@ -322,5 +355,35 @@ mod tests {
         );
         let back: CapacityOffer = serde_json::from_value(json).unwrap();
         assert_eq!(back, o);
+    }
+
+    // what this catches: the one-roster rule's input — a fresh peer with residents
+    // counts, our own echoed beacon never does, a stale peer's team is not "elsewhere"
+    // (its node may be rebooting; the durable memory covers that horizon), and a
+    // fresh peer that only offers lanes (residents 0) is capacity, not a team.
+    #[test]
+    fn residents_elsewhere_counts_fresh_peers_with_minds_and_never_ourselves() {
+        let ledger = GridCapacityLedger::default();
+        let me = Uuid::from_u128(1);
+        let m5 = Uuid::from_u128(2);
+        let intel = Uuid::from_u128(3);
+        let lanes_only = Uuid::from_u128(4);
+        let now = 1_000_000;
+        let with = |residents: u32, at: u64| {
+            let mut o = offer(10, at);
+            o.residents = residents;
+            o
+        };
+        ledger.hear(me, with(16, now), now);
+        ledger.hear(m5, with(16, now - 5_000), now - 5_000);
+        ledger.hear(intel, with(2, now - FRESHNESS_WINDOW_MS - 1), now - FRESHNESS_WINDOW_MS - 1);
+        ledger.hear(lanes_only, with(0, now), now);
+        let heard = ledger.residents_elsewhere(Some(me), now);
+        assert_eq!(heard, RosterHeard { peers: 1, residents: 16, newest_heard_at_ms: now - 5_000 });
+        assert_eq!(
+            ledger.residents_elsewhere(Some(me), now + FRESHNESS_WINDOW_MS + 1),
+            RosterHeard::default(),
+            "once every peer is silent past the window, nobody is elsewhere"
+        );
     }
 }
