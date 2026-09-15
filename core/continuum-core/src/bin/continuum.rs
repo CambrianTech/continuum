@@ -38,6 +38,10 @@ use continuum_core::runtime::deploy_provenance::{
 };
 use serde_json::Value;
 
+#[path = "continuum/owned_engines.rs"]
+mod owned_engines;
+use owned_engines::owned_engine_candidate;
+
 #[cfg(windows)]
 #[path = "continuum/windows_launch.rs"]
 mod windows_launch;
@@ -2745,12 +2749,13 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     // live table inside the walk would let a process exiting mid-scan change
     // the answer halfway through.
     let parents = process_parents(&sys);
+    let caller = std::process::id();
 
     sys.processes()
         .values()
         .filter(|p| {
             p.exe()
-                .map(|exe| exe.starts_with(&owned_root))
+                .map(|exe| owned_engine_candidate(exe, &owned_root, p.pid().as_u32(), caller))
                 .unwrap_or(false)
         })
         .filter(|p| !descends_from(&parents, p.pid().as_u32() as i32, keep))
