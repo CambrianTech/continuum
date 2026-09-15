@@ -176,6 +176,29 @@ fn is_narrated_pass(text: &str) -> bool {
         return false;
     }
     let normalized = text.to_lowercase().replace('\u{2019}', "'");
+    // A BARE CANNED REFUSAL as the whole message — "I'm sorry, but I can't assist
+    // with that request." and nothing else (Paige, Intel Mac, 2026-09-15 07:4xZ) — is
+    // an assistant reflex fired at a room, not a contribution; it re-wakes every
+    // peer and says nothing. Whole message only: a refusal WITH a reason ("I can't
+    // assist with that: the card names no repo") is speech.
+    {
+        let whole = normalized
+            .trim()
+            .trim_end_matches(|c: char| c == '.' || c == '!' || c.is_whitespace());
+        const CANNED_REFUSALS: [&str; 8] = [
+            "i'm sorry, but i can't assist with that request",
+            "i'm sorry, but i can't assist with this request",
+            "i'm sorry, but i can't help with that request",
+            "i'm sorry, but i can't help with this request",
+            "i'm sorry, but i can't assist with that",
+            "i'm sorry, but i can't help with that",
+            "i can't assist with that request",
+            "i cannot assist with that request",
+        ];
+        if CANNED_REFUSALS.iter().any(|c| whole == *c) {
+            return true;
+        }
+    }
     // Tier 1: unambiguous closure declarations — no real answer contains
     // these, so length never vetoes the lift (the fence guard still does).
     const STRONG_CLOSURES: [&str; 9] = [
@@ -641,5 +664,15 @@ mod tests {
             Decision::Speak { .. } => {}
             other => panic!("long substantive message silenced: {other:?}"),
         }
+    }
+
+    // what this catches (2026-09-15): a bare canned refusal posted as the whole message
+    // is a pass; a refusal that carries a reason is speech.
+    #[test]
+    fn a_bare_canned_refusal_is_a_pass_and_a_reasoned_one_is_speech() {
+        assert!(is_narrated_pass("I'm sorry, but I can't assist with that request."));
+        assert!(is_narrated_pass("I’m sorry, but I can’t help with this request"));
+        assert!(!is_narrated_pass("I can't assist with that request: the card names no repository, and I will not guess one."));
+        assert!(!is_narrated_pass("I'm sorry, but I can't assist with that request — the file it names does not exist; here is what does: src/lib.rs"));
     }
 }
