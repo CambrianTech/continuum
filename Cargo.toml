@@ -185,18 +185,21 @@ members = [
 # room is still its default under either verb. This is what continuum's
 # room/join needs (task #65, Joel: a persona is first-class and can subscribe to
 # many rooms). Also fixes `RoomJoinedBody.is_default`, previously hardcoded true.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
+# Adopt AIRC #1427/#1428 together: directed reply identity checks and exact
+# correlation subscriptions must run in this SDK, not only in the daemon.
+# The same revision across all AIRC crates preserves one shared wire contract.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "6c7c56fab" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "e59cd0469b0098e9b6295da98a7ceb0f032ab47c" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
