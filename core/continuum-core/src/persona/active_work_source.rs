@@ -275,6 +275,16 @@ pub(crate) fn renders_held_in_progress(active_work_content: &str) -> bool {
     active_work_content.contains("[InProgress]")
 }
 
+/// True when the content names a card this persona HOLDS in either held state —
+/// `[Claimed]` or `[InProgress]` (the two states `card_holder` treats as held).
+/// Measured 2026-09-15 06:33Z on the M5: 11 held cards read Claimed and 3
+/// InProgress, so a predicate keyed on InProgress alone saw no work at all — every
+/// non-directed lane grant in 25 minutes was Ambient (#4058's receipt). The lane
+/// gate keys on THIS; the working-presence contract keeps its InProgress key.
+pub(crate) fn renders_held_card(active_work_content: &str) -> bool {
+    active_work_content.contains("[InProgress]") || active_work_content.contains("[Claimed]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +304,10 @@ mod tests {
         let lost = ActiveWorkSource::lost_claim_item(&Uuid::new_v4(), "some card");
         assert!(!renders_held_in_progress(&lost.content));
         assert!(!renders_held_in_progress(""));
+        // The lane gate's key: a CLAIMED card is held work too (2026-09-15).
+        assert!(renders_held_card("card feadd5dc [Claimed] \"PROJECT [swe] psf__requests-2148\" (priority P1)"));
+        assert!(renders_held_card("card feadd5dc [InProgress] \"x\""));
+        assert!(!renders_held_card(&lost.content));
     }
 
     struct StubWork {
