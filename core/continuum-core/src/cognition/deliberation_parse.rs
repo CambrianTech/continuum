@@ -54,9 +54,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>) -> Decision {
             chars = trimmed.chars().count() as u64,
             "response reflected the turn's own framing — a pass, never posted"
         );
-        return Decision::Pass {
-            reason: Some(format!("framing echo ({marker}): the response reflects the turn's own prompt")),
-        };
+        return Decision::gate_refused("framing_echo", marker, "the response reflects the turn's own prompt");
     }
     // A reply that is not speech at all — a raw tool envelope, or another peer's
     // transcript line worn as her own — is a PASS for the same reason and at the same
@@ -79,11 +77,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>) -> Decision {
             chars = trimmed.chars().count() as u64,
             "response was not first-person prose addressed to the room — a pass, never posted"
         );
-        return Decision::Pass {
-            reason: Some(format!(
-                "not speech ({marker}): the response is a tool envelope or another peer's voice"
-            )),
-        };
+        return Decision::gate_refused("not_speech", marker, "the response is a tool envelope or another peer's voice");
     }
     if trimmed.is_empty()
         || looks_like_silence_token(trimmed)
@@ -375,13 +369,12 @@ mod tests {
             r#"[code/read,{"file_path":"src/main.rs"}]"#,
             "b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion here.",
         ] {
-            match decision_from_response(envelope, Some("Paige")) {
-                Decision::Pass { reason } => assert!(
-                    reason.unwrap_or_default().starts_with("not speech ("),
-                    "{envelope:?} must pass with the not-speech reason kept"
-                ),
-                other => panic!("expected a pass for {envelope:?}, got {other:?}"),
-            }
+            let d = decision_from_response(envelope, Some("Paige"));
+            assert_eq!(
+                d.gate_refusal().map(|(g, _)| g),
+                Some("not_speech"),
+                "{envelope:?} must pass as a TYPED not-speech refusal, got {d:?}"
+            );
         }
         match decision_from_response(
             "I ran [code/run] and it refused the lang — worth a look.",
@@ -396,10 +389,10 @@ mod tests {
     // live seam (never a Speak), while a peer-agreeing "You are right" still speaks.
     #[test]
     fn a_reflected_wake_prompt_is_a_reasoned_pass_at_the_live_seam() {
-        match decision_from_response("[wake] You are Paige, awake on the continuum grid.", Some("Paige")) {
-            Decision::Pass { reason } => assert!(reason.unwrap_or_default().starts_with("framing echo (wake_tag)")),
-            other => panic!("expected a pass, got {other:?}"),
-        }
+        let d = decision_from_response("[wake] You are Paige, awake on the continuum grid.", Some("Paige"));
+        assert_eq!(d.gate_refusal(), Some(("framing_echo", "wake_tag")), "typed: {d:?}");
+        // and her OWN pass is never a gate refusal
+        assert_eq!(decision_from_response("PASS: blocked — no env", Some("Paige")).gate_refusal(), None);
         match decision_from_response("You are right, Kimi — the lane is up.", Some("Paige")) {
             Decision::Speak { text } => assert_eq!(text, "You are right, Kimi — the lane is up."),
             other => panic!("expected speech, got {other:?}"),
