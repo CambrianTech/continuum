@@ -463,6 +463,17 @@ fn is_local_who(who: &str) -> bool {
 /// live claims on every provisioning (the same read a persona's held-work turn makes),
 /// never a note taken at claim time: a note dies with the process while the claim lives
 /// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
+/// The prepared instance environment's python for the caller's HELD checkout, if
+/// both exist — the interpreter `code/run` runs a snippet with (card 533c2d78). The
+/// same root the caller's hands are rooted at (`card_root_of`) and the same env the
+/// [env] fact names (`instance_python`); `None` = no held card, no checkout, or no
+/// prepared env, and the caller falls back to the PATH interpreter, named.
+pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let who = caller_id(ctx);
+    let root = card_root_of(&who).await?;
+    crate::persona::instance_env_fact::instance_python(&root)
+}
+
 async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
     use crate::persona::active_work_source::AircWorkReader as _;
     let peer = uuid::Uuid::parse_str(who).ok()?;
