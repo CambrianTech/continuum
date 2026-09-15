@@ -38,6 +38,29 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     None
 }
 
+/// The PERCEPTION-side twin of the speak gate: a transcript line that
+/// [`is_not_speech`] or [`super::framing_echo::echoes_turn_framing`] would have refused
+/// at the Speak seam is not a contribution, and no citizen's burst carries it.
+///
+/// Why (card 169eb543, Cormac's measurement 2026-09-15): every malformed shape that
+/// reaches a room SPREADS — the fenced `code/shell({…})` envelope went from one citizen
+/// to six over 20 hours, the bare `[code/run]` from one to five, each a staggered
+/// adoption curve, never a simultaneous onset. The carrier is the transcript: a
+/// citizen emits it, it lands in the room, every roommate reads it and adopts it. A
+/// gate at the Speak seam is quarantine for lines minted on THIS node from now on; it
+/// does nothing for the thousands already in the store, nor for lines from a node
+/// that has not deployed it (the 5090's and the Intel Mac's citizens post into the
+/// same rooms). The same predicate at the perception seam closes both: what the gate
+/// refuses to say, the burst refuses to show. One definition of "not a contribution",
+/// two seams — the speak seam adds only the own-name markers, which are hers alone.
+///
+/// Lorcan's rule holds here as it does there: a line DISCUSSING an envelope or a
+/// framing sentence is speech and stays ([`is_not_speech`]'s namespace rule and the
+/// anchored framing markers already encode it).
+pub fn is_not_a_contribution(text: &str) -> Option<&'static str> {
+    is_not_speech(text).or_else(|| super::framing_echo::echoes_turn_framing(text, None))
+}
+
 /// A tool call emitted where prose belongs. Three shapes reach the room: two
 /// bracketed dialects (`[code/read,{…}]`, `[code/read] {…}`), the OBJECTLESS
 /// bracket (`[code/run]` with tool output after it, or nothing at all), and the
