@@ -19,7 +19,8 @@ use async_trait::async_trait;
 
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::types::{
-    HealthState, HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
+    HealthState, HealthStatus, ModelInfo, RoutingInfo, TextGenerationRequest,
+    TextGenerationResponse,
 };
 
 use super::protocol::{RemoteInferenceError, RemoteInferenceRequest};
@@ -85,7 +86,7 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(u64::MAX)  // unwrap_or: a broken clock FAILS OPEN — `now < until` is false at MAX, so the lane reads warm and requests still go out; 0 would read every tripped lane cold forever (BigMama's review of #3814)
+        .unwrap_or(u64::MAX) // unwrap_or: a broken clock FAILS OPEN — `now < until` is false at MAX, so the lane reads warm and requests still go out; 0 would read every tripped lane cold forever (BigMama's review of #3814)
 }
 
 impl AircRemoteInferenceAdapter {
@@ -193,7 +194,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     fn default_model(&self) -> &str {
         self.default_model
             .as_deref()
-            .unwrap_or(AIRC_REMOTE_DEFAULT_MODEL)  // unwrap_or: the trait wants a name; the wire request itself is stamped only when with_model was set, never this placeholder
+            .unwrap_or(AIRC_REMOTE_DEFAULT_MODEL) // unwrap_or: the trait wants a name; the wire request itself is stamped only when with_model was set, never this placeholder
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
@@ -289,13 +290,18 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // Relaxed is fine: a stale Unknown -> Healthy transition is
         // a one-way edge; readers tolerate either value.
         self.has_observed_success.store(true, Ordering::Relaxed);
-        // Surface the peer that served the request as routing
-        // info on the response so the caller can audit which
-        // peer's local adapter produced the output.
+        // The transport stamps the wire receipt; preserve it and the serving
+        // metadata while identifying this caller's route as remote.
         let mut text = response.text_response;
         // Preserve whatever routing info the peer's adapter set;
         // we add ours on top.
         text.provider = AIRC_REMOTE_PROVIDER_ID.to_string();
+        RoutingInfo::stamp(
+            &mut text.routing,
+            AIRC_REMOTE_PROVIDER_ID,
+            false,
+            "remote_inference",
+        );
         Ok(text)
     }
 
@@ -369,7 +375,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // accepts any name: the peer's own catalog decides.
         self.default_model
             .as_deref()
-            .map_or(true, |lane| lane == model)
+            .is_none_or(|lane| lane == model)
     }
 }
 
@@ -453,9 +459,8 @@ mod tests {
     // rewritten in flight. Unpinned stays open (the peer's catalog decides).
     #[tokio::test]
     async fn a_pinned_lane_advertises_only_its_model() {
-        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
-            elapsed_ms: 1,
-        });
+        let transport =
+            StubInferenceTransport::always_failing(RemoteInferenceError::Timeout { elapsed_ms: 1 });
         let pinned = AircRemoteInferenceAdapter::new(transport.clone()).with_model("qwen3.8-27b");
         assert!(pinned.supports_model("qwen3.8-27b"));
         assert!(!pinned.supports_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF"));
@@ -599,7 +604,11 @@ mod tests {
                 text_response: crate::ai::types::TextGenerationResponse {
                     text: "ok".to_string(),
                     finish_reason: FinishReason::Stop,
-                    model: req.text_request.model.clone().unwrap_or_else(|| "ABSENT".to_string()),
+                    model: req
+                        .text_request
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "ABSENT".to_string()),
                     provider: HEURISTIC_PROVIDER_ID.to_string(),
                     usage: Default::default(),
                     response_time_ms: 0,
@@ -615,14 +624,20 @@ mod tests {
         });
         let adapter = AircRemoteInferenceAdapter::new(transport).with_model("qwen3.8-27b");
         let out = adapter.generate_text(req("hi")).await.unwrap();
-        assert_eq!(out.model, "qwen3.8-27b", "the override's model must ride the wire");
+        assert_eq!(
+            out.model, "qwen3.8-27b",
+            "the override's model must ride the wire"
+        );
         // A caller naming its LOCAL model (the persona's node serves Ornith,
         // her lane serves the 27B) is refused by the peer after the whole
         // wait; the lane's model wins and the difference is a probe row.
         let mut named = req("hi");
         named.model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
         let out = adapter.generate_text(named).await.unwrap();
-        assert_eq!(out.model, "qwen3.8-27b", "the lane's model is the truth for every request on it");
+        assert_eq!(
+            out.model, "qwen3.8-27b",
+            "the lane's model is the truth for every request on it"
+        );
     }
 
     #[tokio::test]
@@ -769,10 +784,16 @@ mod tests {
                         provider: "llama".to_string(),
                         is_local: true,
                         routing_reason: "adapter_selected".to_string(),
-                        adapters_applied: vec![],
-                        model_mapped: None,
-                        model_requested: None,
+                        adapters_applied: vec!["served-adapter".to_string()],
+                        model_mapped: Some("served-model".to_string()),
+                        model_requested: Some("requested-model".to_string()),
                         served_context_window: Some(26_112),
+                        remote: Some(crate::ai::types::RemoteInferenceReceipt {
+                            requested_peer: "peer-alias".to_string(),
+                            responding_peer: "peer".to_string(),
+                            correlation_id: "wire-correlation".to_string(),
+                            elapsed_ms: 42,
+                        }),
                     }),
                     error: None,
                     timing: None,
@@ -784,9 +805,21 @@ mod tests {
         let adapter = AircRemoteInferenceAdapter::new(transport)
             .with_model("qwen3.8-27b")
             .with_window_sink(Arc::new(move |w| {
-                *sink_seen.lock().unwrap() = Some(w);  // unwrap_or: test mutex — a poisoned lock is a failed test
+                *sink_seen.lock().unwrap() = Some(w); // unwrap_or: test mutex — a poisoned lock is a failed test
             }));
-        adapter.generate_text(req("hi")).await.unwrap();
+        let response = adapter.generate_text(req("hi")).await.unwrap();
         assert_eq!(*seen.lock().unwrap(), Some(26_112));
+        let route = response.routing.unwrap();
+        assert!(!route.is_local);
+        assert_eq!(route.provider, AIRC_REMOTE_PROVIDER_ID);
+        assert_eq!(route.served_context_window, Some(26_112));
+        assert_eq!(route.adapters_applied, ["served-adapter"]);
+        assert_eq!(route.model_mapped.as_deref(), Some("served-model"));
+        assert_eq!(route.model_requested.as_deref(), Some("requested-model"));
+        let receipt = route.remote.unwrap();
+        assert_eq!(receipt.requested_peer, "peer-alias");
+        assert_eq!(receipt.responding_peer, "peer");
+        assert_eq!(receipt.correlation_id, "wire-correlation");
+        assert_eq!(receipt.elapsed_ms, 42);
     }
 }
