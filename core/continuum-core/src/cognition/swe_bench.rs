@@ -5005,8 +5005,9 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
     fn a_real_verdict_persists_and_gold_or_errored_ones_never_do() {
         let home = tempfile::tempdir().expect("tmp");
         // `verdict_dir` derives from CONTINUUM_HOME via swe_cache_dir; isolate this test's
-        // writes rather than touching the operator's real benchmarks root.
-        let prev = std::env::var("CONTINUUM_HOME").ok();
+        // writes rather than touching the operator's real benchmarks root — under the one
+        // crate-wide home lock (#4082), restored by the guard's drop.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let real = SweVerdict {
@@ -5089,10 +5090,6 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             "the board's enumerator sees SWE and gym rows in one store — one projection,              not a parallel gym board"
         );
 
-        match prev {
-            Some(v) => std::env::set_var("CONTINUUM_HOME", v),
-            None => std::env::remove_var("CONTINUUM_HOME"),
-        }
     }
 
     // what this catches: the run-id parse must accept the name the writer emits and reject

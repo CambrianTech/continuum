@@ -38,19 +38,45 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     None
 }
 
-/// A tool call emitted where prose belongs. Two shapes reach the room: the
-/// bracketed dialect (`[code/read,{…}]`) and the canonical JSON envelope
-/// (`{"tool_call": …}`). Both are the adapter's business, never a spoken line.
+/// The PERCEPTION-side twin of the speak gate: a transcript line that
+/// [`is_not_speech`] or [`super::framing_echo::echoes_turn_framing`] would have refused
+/// at the Speak seam is not a contribution, and no citizen's burst carries it.
+///
+/// Why (card 169eb543, Cormac's measurement 2026-09-15): every malformed shape that
+/// reaches a room SPREADS — the fenced `code/shell({…})` envelope went from one citizen
+/// to six over 20 hours, the bare `[code/run]` from one to five, each a staggered
+/// adoption curve, never a simultaneous onset. The carrier is the transcript: a
+/// citizen emits it, it lands in the room, every roommate reads it and adopts it. A
+/// gate at the Speak seam is quarantine for lines minted on THIS node from now on; it
+/// does nothing for the thousands already in the store, nor for lines from a node
+/// that has not deployed it (the 5090's and the Intel Mac's citizens post into the
+/// same rooms). The same predicate at the perception seam closes both: what the gate
+/// refuses to say, the burst refuses to show. One definition of "not a contribution",
+/// two seams — the speak seam adds only the own-name markers, which are hers alone.
+///
+/// Lorcan's rule holds here as it does there: a line DISCUSSING an envelope or a
+/// framing sentence is speech and stays ([`is_not_speech`]'s namespace rule and the
+/// anchored framing markers already encode it).
+pub fn is_not_a_contribution(text: &str) -> Option<&'static str> {
+    is_not_speech(text).or_else(|| super::framing_echo::echoes_turn_framing(text, None))
+}
+
+/// A tool call emitted where prose belongs. Three shapes reach the room: two
+/// bracketed dialects (`[code/read,{…}]`, `[code/read] {…}`), the OBJECTLESS
+/// bracket (`[code/run]` with tool output after it, or nothing at all), and the
+/// canonical JSON envelope (`{"tool_call": …}`). All are the adapter's business,
+/// never a spoken line.
 fn opens_with_tool_envelope(t: &str) -> bool {
     if let Some(rest) = t.strip_prefix('[') {
-        // Two bracket dialects reach the room, and the SECOND was found the hard way:
-        // while the first version of this gate was compiling, a citizen posted
-        // `[code/read] {"file_path":"src/main.rs"}` — verb closed by `]`, object after a
-        // space — which the comma form below does not match. A predicate that catches one
-        // spelling of a two-spelling failure is a gate with a hole in it, so both:
+        // Three bracket dialects reach the room, and each was found the hard way.
+        // The SECOND: while the first version of this gate was compiling, a citizen
+        // posted `[code/read] {"file_path":"src/main.rs"}` — verb closed by `]`, object
+        // after a space — which the comma form below does not match. A predicate that
+        // catches one spelling of a two-spelling failure is a gate with a hole in it:
         //
         //   [verb,{…}]     the verb runs to a comma, object follows
         //   [verb] {…}     the verb is closed by `]`, object follows the bracket
+        //   [verb]         NO object at all — see below
         let verb_ok = |v: &str| {
             !v.is_empty()
                 && v.len() <= 64
@@ -66,11 +92,98 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             if verb_ok(verb) && after.trim_start().starts_with('{') {
                 return true;
             }
+            // THE THIRD DIALECT, and by 2026-09-15 the DOMINANT one: no object
+            // follows at all. Measured over 24h across the 8 citizens on IntelMac —
+            // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
+            // object-bearing forms above caught 16. The other 32 open like this:
+            //
+            //   [code/run]
+            //   [work/list]
+            //   [code/run]\n[invalid] command_run: unsupported lang '…' — supported: rust, python.
+            //   [code/run]\n\n# Code executed successfully. …
+            //
+            // A bare verb cannot be matched on SHAPE alone, because the same shape
+            // carries things that ARE speech and must survive: `[answer]`, `[pass]`,
+            // and `[repetition] your last message and …` (the perception brick) all
+            // satisfy `verb_ok`. What separates them is the NAMESPACE — every command
+            // in this system is `namespace/verb`, which is what the command system IS,
+            // so the slash is a property of the command surface and not a phrase list.
+            // Of the 48 bracket-openers, this takes the gate 16 → 33; the 15 it still
+            // leaves alone are exactly the verdict dialect and the brick, which are
+            // other gates' business (#4067) and must not be silenced here.
+            //
+            // I audited all 17 lines this newly catches before writing it: code/run
+            // ×14, work/list ×2, command/run ×1, every one a tool envelope posted where
+            // prose belongs, no false positive among them. Still ANCHORED — only a
+            // LEADING bracket counts, so a citizen writing about a tool mid-sentence is
+            // untouched, which is the `framing_echo` lesson (un-anchoring silences the
+            // citizens who REPORT the problem).
+            if verb_ok(verb) && verb.contains('/') {
+                return true;
+            }
         }
+    }
+    // THE FOURTH DIALECT: the call serialized inside a MARKDOWN FENCE. Measured the
+    // same 24h window — 85 of 243 spoken lines open with a fence, a third of everything
+    // the citizens said, and it dwarfs the bracket family above:
+    //
+    //   ```python\n# Mark this room's activity concluded (o); code/shell({\"cmd\":\"# Mark o\",
+    //    "timeoutSecs": null, "wait_ms": null, "max_results": null})\n```
+    //
+    // A fence alone can NEVER be the test: `” ```rust\nfn main() { … }` ” is a citizen
+    // posting a snippet to the room, which is speech and one of the more useful things
+    // she does. What separates them is a namespaced verb CALLED with an object —
+    // `ns/verb({`. I scored that against all 85 before writing it, and audited every
+    // line it fires on rather than a sample: 53 of 85, collapsing to 5 distinct shapes,
+    // all of them `code/shell({…})` — one verb, one failure mode, no false positive. An
+    // escaped-quote test (`\"cmd\"`) that looked promising turned out to fire on 47 and
+    // catch NOTHING this does not, so it is not here: one predicate, not two.
+    //
+    // The 32 it leaves alone are the real snippets (`from itertools import product`,
+    // `fn main()`) and the collapse-marker form, which belongs to #4065.
+    //
+    // ANCHORED on the fence OPENING the message, not on the call appearing anywhere —
+    // otherwise a citizen TEACHING the call ("you'd write code/shell({…})") is silenced
+    // for explaining it, the same report-vs-do line the bracket clause and framing_echo
+    // hold. The residual risk this leaves, stated because it is real: a citizen who
+    // OPENS with a fence to demonstrate a call is caught. Zero such lines in the
+    // measured window — all 53 were the citizen calling it on herself — but one node
+    // and 24h is not proof it cannot happen, and a line that demonstrates a call while
+    // opening with a fence is what would refute this.
+    if t.starts_with("```") && has_namespaced_call_with_object(t) {
+        return true;
     }
     // The canonical envelope, with or without leading whitespace inside the object.
     let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
     compact.starts_with("{\"tool_call\"")
+}
+
+/// A namespaced command invoked with an object — `code/shell({…})` — anywhere in `t`.
+/// The `namespace/verb` shape is what makes it a COMMAND rather than prose containing a
+/// slash, and the `({` is what makes it a CALL rather than a mention.
+fn has_namespaced_call_with_object(t: &str) -> bool {
+    let bytes = t.as_bytes();
+    let seg_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_-.".contains(&c);
+    for (i, _) in t.match_indices('/') {
+        // a namespace segment immediately before the slash
+        let before = bytes[..i].iter().rev().take_while(|c| seg_char(**c)).count();
+        if before == 0 {
+            continue;
+        }
+        // a verb segment after it, then `(` and `{` with only spaces between
+        let after = bytes[i + 1..].iter().take_while(|c| seg_char(**c)).count();
+        if after == 0 {
+            continue;
+        }
+        let rest = &t[i + 1 + after..];
+        let rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix('(') {
+            if r.trim_start().starts_with('{') {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Another peer's voice: a transcript line (`<uuid>: …`) reproduced as this
@@ -117,6 +230,79 @@ mod tests {
     fn the_space_separated_bracket_dialect_is_also_not_speech() {
         let observed = r#"[code/read] {"file_path":"src/main.rs"}"#;
         assert_eq!(is_not_speech(observed), Some("tool_envelope"));
+    }
+
+    // what this catches: the OBJECTLESS bracket — by 2026-09-15 the dialect actually
+    // reaching rooms, and the one the two object-bearing forms above miss entirely.
+    // Over 24h on IntelMac the gate caught 16 of 48 bracket-openers; these are four of
+    // the 32 it missed, fixtured verbatim from `bus_events`. Whichever spelling the tier
+    // produces next, a gate measured against ONE of them reads as working while the
+    // failure keeps shipping.
+    #[test]
+    fn a_bare_namespaced_verb_with_no_object_is_also_not_speech() {
+        for observed in [
+            "[code/run]",
+            "[work/list]",
+            "[command/run]",
+            "[code/run]\n[invalid] command_run: unsupported lang '<replace_with_string>' \
+             — supported: rust, python.",
+        ] {
+            assert_eq!(
+                is_not_speech(observed),
+                Some("tool_envelope"),
+                "{observed:?} is a tool envelope posted where prose belongs"
+            );
+        }
+    }
+
+    // what this catches: the FENCED dialect — 53 of the 85 fenced lines in the measured
+    // 24h window, the largest single shape reaching rooms. Fixtured verbatim. The
+    // negatives are the point: a real snippet posted to the room must survive, because
+    // silencing those to stop the envelopes would cost more than the envelopes do.
+    #[test]
+    fn a_command_called_inside_a_fence_is_not_speech_but_a_real_snippet_is() {
+        let observed = "```python\n# Mark this room's activity concluded (o); \
+                        code/shell({\"cmd\":\"# Mark o\", \"timeoutSecs\": null})\n```";
+        assert_eq!(is_not_speech(observed), Some("tool_envelope"));
+
+        for speech in [
+            "```rust\nfn main() {\n    let a = 5;\n    println!(\"{}\", a);\n}\n```",
+            "```python\nfrom itertools import product\n\n# simulate the read\n```",
+            "```python\n# Mark this room's activity concluded in 420cfe24.\n```",
+        ] {
+            assert_eq!(
+                is_not_speech(speech),
+                None,
+                "{speech:?} is a citizen posting code to the room — speech"
+            );
+        }
+        // ANCHORED: explaining the call is not making it.
+        assert_eq!(
+            is_not_speech("To run it you'd write code/shell({\"cmd\":\"ls\"}) — note the braces."),
+            None
+        );
+    }
+
+    // what this catches: the false positive the bare-verb clause above would create if
+    // it matched on SHAPE instead of on the command NAMESPACE. `[answer]`, `[pass]` and
+    // the `[repetition]` perception brick all satisfy `verb_ok` and all open with a
+    // bracket — 15 such lines in the same measured window — but none is a tool envelope,
+    // and silencing them here would hide problems that belong to other gates (#4067)
+    // behind a "not speech" verdict. The slash is what makes a verb a COMMAND.
+    #[test]
+    fn a_bracketed_word_that_is_not_a_command_is_still_speech() {
+        for observed in [
+            "[answer]\n\nThe system has been claimed on this workspace.",
+            "[pass]\n\nI have nothing to add to this.",
+            "[repetition] your last message and cf6b4df6's message are nearly identical.",
+            "[investigation] my acts this concern so far: code/run x8",
+        ] {
+            assert_eq!(
+                is_not_speech(observed),
+                None,
+                "{observed:?} is prose addressed to the room, whatever else is wrong with it"
+            );
+        }
     }
 
     // what this catches: the exact reply Paige posted on 2026-09-05 — Saoirse's peer

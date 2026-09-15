@@ -760,7 +760,17 @@ mod tests {
         let reader = CitizenLayerWorkspaceLayoutReader {
             peer: peer.to_string(),
         };
-        let layout = reader.layout().expect("reader provisions the layer");
+        // OWN HOME, UNDER THE ENV LOCK (CI red on #4062 and #4078, 2026-09-15): the
+        // layer is provisioned under `$HOME/.continuum/citizens/peers/<peer>`, and
+        // this test read whatever HOME a concurrent `with_test_home` caller had set —
+        // a tempdir that vanished mid-clone ("could not open …/objects/pack/tmp_pack_…
+        // No such file"). Holding the same lock with a home of its own makes the
+        // clone land in a dir this test keeps alive, and never in the developer's real
+        // `~/.continuum/citizens/`.
+        let home = tempfile::tempdir().expect("tempdir");
+        let layout = crate::test_env::with_test_home(home.path(), || {
+            reader.layout().expect("reader provisions the layer")
+        });
         let cwd = std::env::current_dir().expect("cwd");
         assert_ne!(
             layout.root, cwd,
@@ -775,9 +785,11 @@ mod tests {
             !layout.top_level_dirs.is_empty(),
             "the provisioned layer clones the base layout — never empty"
         );
-        // Clean up the throwaway peer's provisioned layer (CoW, but still dirs).
-        if let Some(peer_dir) = layout.root.parent() {
-            let _ = std::fs::remove_dir_all(peer_dir);
-        }
+        // The throwaway peer's layer lives under this test's temp home; `home` drops it.
+        assert!(
+            layout.root.starts_with(home.path()),
+            "the layer was provisioned under the test's own home: {}",
+            layout.root.display()
+        );
     }
 }

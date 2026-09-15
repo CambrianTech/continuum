@@ -402,3 +402,50 @@ as a gimmick (Joel, 2026-08-21 — "it made more sense when cloud was included")
 grid's currency is capability-per-watt and lease terms, not simulated dollars.
 
 Ref: github.com/FlashML-org/FreeToken
+
+## Prompt-cache decision evidence (2026-09-15, c8a8829b)
+
+A running Qwen3.8-27B lane requested `--cache-ram 4096` while the engine
+rejected individual prompt states of 4509–5080 MiB. This is a capacity rejection,
+not evidence that the GPU is too slow. The engine's `server_prompt_cache::alloc`
+counts target serialized state **plus draft state plus checkpoints**. The current
+core estimator counts demand tokens times target KV bytes/token. These are
+different quantities; this diagnostic change does not alter cache sizing.
+
+Inspect the existing structured ledger through the public command:
+
+```sh
+continuum debug/probes/query --class=serving.prompt_cache --limit=50
+```
+
+`serving.prompt_cache.derived` retains its existing class and numeric `derived_mib`
+field and records the model, desired geometry, resident
+demand count, physical memory, estimated KV bytes, affordability and selected
+limit. Its reason distinguishes missing footprint, no resident demand, unknown
+physical memory and the demand-derived KV estimate. Prior paths have unknown
+affordability, not an observed zero; the legacy numeric `afford_mib` field is
+omitted when unknown. Decision changes are emitted even if the
+resulting MiB limit stays the same. `desired_mib` is not an applied-engine value:
+the reconciler can adopt an already-running engine with different arguments.
+
+`serving.prompt_cache.launch` records the actual invocation's requested limit,
+artifact/engine paths, child PID, context, lane count, explicit KV flags, checkpoint settings
+and draft artifact. It is emitted after a successful spawn; it neither claims
+readiness nor appears on adoption. Omitted KV flags mean an unobserved engine
+default, not a verified KV type. Both probes explicitly mark applied capacity
+and serialized-state measurements as unobserved. No recent rows can also mean
+unchanged decisions, an older binary or absent capture; it does not prove health.
+
+The current engine HTTP props/metrics surface does not expose host prompt-cache
+limit, serialized-state sizes or rejection counts. Token-cache hit statistics are
+not substitutes. The minimal engine follow-up is to expose the already-computed
+target/draft/checkpoint byte components, configured limit and rejected-entry count
+from `server_slot::prompt_save` / `server_prompt_cache::alloc` through its existing
+serialized diagnostics response. Consume that typed evidence in the existing
+serving diagnostics path; do not build a stderr parser or another polling loop.
+An older engine must report this capability as unavailable, never zero rejections.
+
+Sizing follow-up must also distinguish host allocation from discrete GPU residency,
+retain host/commit safety accounting, and reconcile desired versus read-back limits
+under the existing governor. This slice introduces no multiplier, RAM growth,
+cache resizing or engine restart, and claims no latency improvement.

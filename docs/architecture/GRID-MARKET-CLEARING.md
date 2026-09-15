@@ -1,5 +1,10 @@
 # Grid Market Clearing — nested λ-pricing from the pager to the N-node mesh
 
+Algorithm and measurement companion:
+[Adaptive grid intelligence](ADAPTIVE-GRID-INTELLIGENCE.md) specifies contextual
+metric vectors, budgeted escalation, zero-spend continuity, distribution units,
+larger-model execution experiments and evidence for learning the allocation policy.
+
 **Status:** design, agreed 2026-08-08 (Joel's ruling + BigMama's Lagrangian
 formalization, same conversation). Mechanism companion to
 [GRID-ECONOMICS-AND-AFFINITY-ROUTING.md](GRID-ECONOMICS-AND-AFFINITY-ROUTING.md)

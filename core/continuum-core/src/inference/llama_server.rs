@@ -3342,6 +3342,29 @@ impl LlamaServerControl for LlamaServerProcess {
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
         let child_pid = child.id();
+        // Launch arguments are evidence of what we requested, not a readback of
+        // cache capacity or occupancy. Adopted engines do not pass this seam.
+        crate::probe!(
+            class = "serving.prompt_cache.launch",
+            model = target.model.id.as_str(),
+            artifact = %gguf.display(),
+            engine = %self.bin,
+            pid = ?child_pid,
+            port = port,
+            requested_mib = target.host_prompt_cache_mib as u64,
+            applied_mib = "unobserved",
+            total_ctx = total_ctx as u64,
+            lanes = lanes as u64,
+            requested_cache_type_k = ?invocation.value_of("--cache-type-k"),
+            requested_cache_type_v = ?invocation.value_of("--cache-type-v"),
+            omitted_cache_type_source = "engine_default_unobserved",
+            checkpoints = ?invocation.value_of("--ctx-checkpoints"),
+            checkpoint_min_step = ?invocation.value_of("--checkpoint-min-step"),
+            draft_model = ?invocation.value_of("--spec-draft-model"),
+            serialized_state_bytes = "unobserved",
+            rejection_count = "unobserved",
+            "spawned engine with requested cache limit; applied limit and serialized-state telemetry are not exposed by current engine API"
+        );
         // Hand stderr to the capped sink. If either the handle or the path is missing the
         // child still serves — unlogged, and the pipe drains to close so it cannot block.
         // The sink reads every line to keep the file capped, so it is also the cheapest
