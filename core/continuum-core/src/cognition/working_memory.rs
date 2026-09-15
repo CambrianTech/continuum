@@ -1484,9 +1484,9 @@ impl Faculty for WorkingMemoryFaculty {
         // instruction — she still decides what any notice means.
         if !notices.is_empty() {
             sections.push(format!(
-                "Notices my substrate posted into my window (status observations \
-                 about my situation — not a message from anyone, and not my own \
-                 words):\n{}",
+                "{} (status observations about my situation — not a message from \
+                 anyone, and not my own words):\n{}",
+                crate::cognition::framing_echo::NOTICES_HEADER,
                 notices
                     .iter()
                     .map(|f| format!("- {f}"))
