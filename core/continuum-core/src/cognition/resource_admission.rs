@@ -642,13 +642,17 @@ impl LaneAdmission {
             probe_class = "serving.lane.nondirected_waiting",
             "held-work model call waiting — a lane is reserved for directed turns (#139)"
         );
-        self.work_waiting.fetch_add(1, Ordering::AcqRel);
-        let permit = sem
-            .acquire_owned()
+        // COUNTED BY A GUARD, NOT BY HAND (2026-09-15, 20:35Z: sixteen minds idle for 50
+        // minutes with all seven lanes free). A parked work wait is CANCELLED whenever
+        // the turn's future is dropped — `delib.gate.yielded_to_directed` selects away
+        // from it, the settle deadline ends the drive, a despawn aborts the loop — and a
+        // by-hand `fetch_sub` after the await never ran, so `work_waiting` read 1 for
+        // the rest of the process and every ambient caller parked forever on a pool
+        // that was empty. Cancellation is a normal exit here; the guard makes it one.
+        let _counted = WorkWaiting::enter(&self.work_waiting);
+        sem.acquire_owned()
             .await
-            .expect("non-directed-lane semaphore is never closed");
-        self.work_waiting.fetch_sub(1, Ordering::AcqRel);
-        permit
+            .expect("non-directed-lane semaphore is never closed")
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
@@ -683,6 +687,24 @@ impl LaneAdmission {
     /// Held-work callers queued right now — a gauge for the gate probes.
     pub fn work_waiting(&self) -> usize {
         self.work_waiting.load(Ordering::Acquire)
+    }
+}
+
+/// RAII count of a held-work caller waiting for the non-directed budget: incremented
+/// on entry, decremented on drop — so a wait that is cancelled mid-await (the only way
+/// a parked future ever leaves without a permit) is uncounted the instant it goes.
+struct WorkWaiting<'a>(&'a AtomicUsize);
+
+impl<'a> WorkWaiting<'a> {
+    fn enter(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for WorkWaiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -1229,6 +1251,32 @@ mod tests {
         assert!(starving_since(Some(boot + 60_000), boot + 60_000 + IDLE_STARVATION_MS, boot), "fifteen minutes: starving");
         assert!(starving_since(None, boot + IDLE_STARVATION_MS, boot), "never had a turn: counted from boot");
         assert!(!starving_since(None, boot + 1_000, boot), "just booted: not starving");
+    }
+
+    // what this catches (2026-09-15 20:35Z, the IDLE hour): a parked WORK wait that is
+    // CANCELLED (the turn's future dropped — a yield to a directed line, the settle
+    // deadline, a despawn) must leave `work_waiting` at zero, or every ambient caller
+    // parks forever on a pool with free lanes. Sixteen minds sat idle for fifty
+    // minutes with all seven lanes free on exactly this.
+    #[tokio::test]
+    async fn a_cancelled_work_wait_is_uncounted_and_ambient_turns_flow_again() {
+        use std::time::Duration;
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2); // non-directed budget = 1
+        let held = gate.acquire_serving_lane(LanePriority::Ambient).await;
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(gate.work_waiting(), 1);
+        work.abort(); // the cancellation every real exit takes
+        let _ = work.await;
+        assert_eq!(gate.work_waiting(), 0, "a cancelled wait is uncounted by its guard");
+        drop(held);
+        let ambient = tokio::time::timeout(
+            Duration::from_millis(1500),
+            gate.acquire_serving_lane(LanePriority::Ambient),
+        )
+        .await;
+        assert!(ambient.is_ok(), "with no work waiting, the ambient turn takes the free lane");
     }
 
     // what this catches (2026-09-15, the READING hour): a mind holding a card mid-edit
