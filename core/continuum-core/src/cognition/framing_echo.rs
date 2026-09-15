@@ -100,13 +100,20 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         // ("I'm Paige — I work on the serving lane") never carries the prompt's
         // phrase; "I'm Paige, a persona on the continuum grid, and here is my take"
         // is the one line this costs, and the prompt never asked her to announce it.
+        // The phrase must END the first sentence (Cormac's review of #4079): the
+        // recital IS the self-description, so the sentence stops at the phrase;
+        // substantive speech continues past it — "I'm Sigurd, and the biggest problem
+        // on the continuum grid is KV paging" is exactly the speech we want most.
         if let Some(rest) = t
             .strip_prefix(&format!("I'm {name}"))
             .or_else(|| t.strip_prefix(&format!("I am {name}")))
         {
             let first_sentence = rest.split(['.', '\n', '!']).next().unwrap_or(""); // unwrap_or: split always yields one piece; the default is unreachable
-            if first_sentence.contains(IDENTITY_PHRASE) {
-                return Some("identity_recital");
+            if let Some(at) = first_sentence.find(IDENTITY_PHRASE) {
+                let tail = first_sentence[at + IDENTITY_PHRASE.len()..].trim_matches([' ', ',', ';', '—', '-']);
+                if tail.is_empty() {
+                    return Some("identity_recital");
+                }
             }
         }
     }
@@ -300,6 +307,17 @@ mod tests {
         assert_eq!(echoes_turn_framing("I'm Sigurd — I work the serving lane, and the KV pages are the bug here.", Some("Sigurd")), None);
         assert_eq!(echoes_turn_framing("I'm Sigurd. Atlas asked whether anyone on the continuum grid has seen this before — I have.", Some("Sigurd")), None, "the phrase in a LATER sentence is discussion");
         assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid.", Some("Paige")), None);
+        // Cormac's boundary (#4079 review): a substantive claim about the grid in the
+        // SAME sentence continues past the phrase — spared. The recital stops at it.
+        assert_eq!(echoes_turn_framing("I'm Sigurd, and the biggest problem on the continuum grid is KV paging.", Some("Sigurd")), None);
+        assert_eq!(echoes_turn_framing("I'm Sigurd, and nobody on the continuum grid has reproduced #4069 yet.", Some("Sigurd")), None);
+        assert_eq!(echoes_turn_framing("I'm Sigurd, an autonomous AI persona living on the continuum grid — ready.", Some("Sigurd")), None, "a dash and a word after the phrase is speech");
+        // notices_echo keeps its own coverage (the input above now reads as a recital):
+        // the block WITHOUT a name opener.
+        assert_eq!(
+            echoes_turn_framing("Notices my substrate posted into my window (status observations about my situation):\n- [resumed] your memory was restored from a checkpoint saved ~54 min ago.", Some("Sigurd")),
+            Some("notices_echo")
+        );
         // Discussion, not emission.
         assert_eq!(
             echoes_turn_framing("The header 'Notices my substrate posted into my window' shows up in my prompt every turn — is that intended?", me),
