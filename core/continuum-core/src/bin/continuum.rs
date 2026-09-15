@@ -1203,7 +1203,7 @@ impl PreparedCoreService {
         use base64::Engine;
         use std::os::windows::process::CommandExt;
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // PowerShell -EncodedCommand requires UTF-16LE base64 at this process boundary.
         let mut command = std::process::Command::new(Self::shell()?);
         command
             .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
