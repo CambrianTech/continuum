@@ -468,6 +468,12 @@ fn is_local_who(who: &str) -> bool {
 /// same root the caller's hands are rooted at (`card_root_of`) and the same env the
 /// [env] fact names (`instance_python`); `None` = no held card, no checkout, or no
 /// prepared env, and the caller falls back to the PATH interpreter, named.
+/// The caller's HELD checkout root — where her hands stand — for a snippet to run in.
+pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let who = caller_id(ctx);
+    card_root_of(&who).await
+}
+
 pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
     let who = caller_id(ctx);
     let root = card_root_of(&who).await?;
