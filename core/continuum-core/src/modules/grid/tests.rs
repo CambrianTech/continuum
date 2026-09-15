@@ -417,6 +417,11 @@ mod registry_integration {
                 last_seen: 1000000,
                 latency_ms: Some(47),
                 peer_id: None,
+                build_sha: None,
+                build_number: 0,
+                silent_secs: 0,
+                stale: false,
+                behind: false,
             });
             registry.save_to_disk().unwrap();
         }
@@ -452,6 +457,11 @@ mod registry_integration {
             last_seen: 0,
             latency_ms: None,
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         // Storage node
@@ -466,6 +476,11 @@ mod registry_integration {
             last_seen: 0,
             latency_ms: None,
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         let compute_nodes = registry.nodes_with_capability("compute");
@@ -496,6 +511,11 @@ mod registry_integration {
             last_seen: 0,
             latency_ms: None,
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         assert_eq!(
@@ -531,6 +551,11 @@ mod registry_integration {
             last_seen: 0,
             latency_ms: None,
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         assert!(registry.get("removeme").is_some());
@@ -629,6 +654,11 @@ mod router_integration {
                 .as_millis() as u64,
             latency_ms: Some(47),
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         // Router: Mac with no GPU

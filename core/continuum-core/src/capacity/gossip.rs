@@ -56,6 +56,30 @@ pub struct CapacityOffer {
     /// Sender's clock when the reading was taken (ms since epoch). Displayed, not
     /// trusted: freshness is judged by RECEIVER clock at hear-time.
     pub at_ms: u64,
+    /// The sender's running build (the 9-hex git sha as an integer; 0 = unknown, a
+    /// beacon from a core older than this field). FLEET DRIFT IS A RECEIPT
+    /// (2026-09-14, Joel: "it has probably been days and you never noticed" — a node ran
+    /// a nine-day-old core and nothing said so): every beacon carries the build, so
+    /// every node knows who is behind tip without anyone reading a room.
+    #[serde(default)]
+    pub build: u64,
+    /// The sender's monotonic build number (CONTINUUM_BUILD_NUMBER; 0 = unknown).
+    /// "Behind" is a comparison of NUMBERS, never of shas: the first cross-node fold
+    /// (2026-09-14 16:5xZ) had both nodes call each other "behind tip" because their
+    /// shas differed, and the M5 was the one ahead.
+    #[serde(default)]
+    pub build_number: u64,
+}
+
+/// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
+pub fn build_from_sha(sha: &str) -> u64 {
+    let hex: String = sha.chars().take(9).collect();
+    u64::from_str_radix(&hex, 16).unwrap_or(0) // JUSTIFIED unwrap_or: a non-hex build string beacons as "unknown", never a fake sha
+}
+
+/// The beacon's build back as the 9-hex prefix operators recognise.
+pub fn build_hex(build: u64) -> Option<String> {
+    (build != 0).then(|| format!("{build:09x}"))
 }
 
 impl CapacityOffer {
@@ -149,6 +173,14 @@ impl GridCapacityLedger {
     /// with no manual pairing (#2228). A read, not a sweep: staleness is applied by
     /// [`snapshot`](Self::snapshot)'s reachability window, so a briefly-silent peer is not
     /// deregistered here.
+    /// Every heard offer with WHEN it was heard — the liveness fold's input.
+    pub fn heard_offers_with_age(&self) -> Vec<(Uuid, CapacityOffer, u64)> {
+        self.heard
+            .iter()
+            .map(|r| (*r.key(), r.value().offer, r.value().heard_at_ms))
+            .collect()
+    }
+
     pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
         self.heard
             .iter()
@@ -169,6 +201,8 @@ mod tests {
             gpu_free_bytes_live: free_gb * GB,
             system_ram_free_bytes: 16 * GB,
             at_ms,
+                    build: 0,
+                    build_number: 0,
         }
     }
     fn local() -> DeviceCapacity {

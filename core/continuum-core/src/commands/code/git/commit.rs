@@ -47,7 +47,7 @@ crate::action_command! {
                 "code/git/commit: 'message' is required".into(),
             ));
         }
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let hash = blocking_git(move || git_bridge::git_commit(&root, &p.message))
             .await?
             .map_err(CommandError::Internal)?;

@@ -229,6 +229,8 @@ pub struct PersonaAircRuntime {
     /// heartbeat window. `None` on `from_attached` (tests/demo). Held for the
     /// persona's lifetime; aborted on drop, like the heartbeat pump.
     identity_republish: Option<JoinHandle<()>>,
+    /// Tasks whose life ends with this runtime (see `AircCitizen::own_task`).
+    owned_tasks: std::sync::Mutex<Vec<JoinHandle<()>>>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -808,19 +810,29 @@ impl PersonaAircRuntime {
                                 c.owner == Some(me)
                                     && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
                             });
-                            for card in snapshot.cards.iter().filter(|c| {
-                                !holds_live
-                                    && c.owner == Some(me)
-                                    && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
-                                    && crate::cognition::bench_round::card_round_is_working(
-                                        c.card_id.as_uuid(),
-                                    )
-                                    && matches!(
-                                        c.state,
-                                        airc_work::model::CardState::Claimed
-                                            | airc_work::model::CardState::InProgress
-                                    )
-                            }) {
+                            // ONE card per citizen holds through the recovery too: of
+                            // several lapsed holds, only the most recently touched comes
+                            // back; the rest stay on the deck for anyone (2026-09-12: a
+                            // coder recovered four at one boot and pulled nothing for an
+                            // hour behind the lane cap).
+                            let recoverable = snapshot
+                                .cards
+                                .iter()
+                                .filter(|c| {
+                                    !holds_live
+                                        && c.owner == Some(me)
+                                        && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
+                                        && crate::cognition::bench_round::card_round_is_working(
+                                            c.card_id.as_uuid(),
+                                        )
+                                        && matches!(
+                                            c.state,
+                                            airc_work::model::CardState::Claimed
+                                                | airc_work::model::CardState::InProgress
+                                        )
+                                })
+                                .max_by_key(|c| c.updated_at_ms);
+                            for card in recoverable {
                                 match hb_airc
                                     .claim_work_card(airc_lib::ClaimWorkCard {
                                         card_id: card.card_id,
@@ -845,18 +857,11 @@ impl PersonaAircRuntime {
                             }
                         }
                     }
-                    match hb_airc
-                        .work_roster_status(airc_lib::WorkRosterQuery::default())
-                        .await
-                    {
-                        Ok(status) => {
-                            let me = hb_airc.peer_id();
-                            let mine = status
-                                .rows
-                                .into_iter()
-                                .find(|r| r.peer == me)
-                                .map(|r| r.active_claims)
-                                .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
+                    // Renew what the BOARD says she holds (board_held_by) — the roster
+                    // reads empty right after a boot, and a lease not renewed in that
+                    // window lapses out from under her.
+                    match board_held_by(hb_airc.as_ref()).await {
+                        Ok(mine) => {
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
                             for card in &mine {
@@ -1036,6 +1041,7 @@ impl PersonaAircRuntime {
             executor: Some(executor_for_acts),
             heartbeat,
             identity_republish,
+            owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         })
     }
@@ -1138,6 +1144,7 @@ impl PersonaAircRuntime {
             // from_attached is sync; the periodic card re-publisher (async spawn)
             // is a bootstrap-path concern. Test/demo callers don't need it.
             identity_republish: None,
+            owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         }
     }
@@ -1321,18 +1328,23 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
 impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
     /// This persona's claimed cards, read from airc's work roster and filtered to
     /// its own peer — grounding reflects what IT owns, board-wide (all rooms).
+    /// Her live claims, BOARD-TRUE. The roster projection lists every claim whose
+    /// lease has not expired — including one on a card an operator moved back to
+    /// Open, or that a pause returned to the deck. 2026-09-12 09:58–12:24Z: three
+    /// coders kept working cards that read Open/no-owner on the board for two and a
+    /// half hours (78 acts) because this read still called them held. A claim is a
+    /// hold only while the board's own card says so (`hold_of` = Held); the rest are
+    /// history, not work.
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
-        let status = self
-            .airc
-            .work_roster_status(airc_lib::WorkRosterQuery::default())
-            .await?;
-        let me = self.airc.peer_id();
-        Ok(status
-            .rows
-            .into_iter()
-            .find(|r| r.peer == me)
-            .map(|r| r.active_claims)
-            .unwrap_or_default())
+        // THE BOARD IS THE TRUTH ABOUT WHO HOLDS WHAT. This read used to start from the
+        // work ROSTER (the scope's claim ledger) and intersect it with the board. The
+        // roster is rebuilt after a boot, so for the first seconds of a fresh runtime it
+        // listed nothing — 2026-09-13 08:40:50Z, 13 s after the core answered: Atlas's
+        // `persona.work.gate held=0` while the board showed her live claim on
+        // django-15467, so the pull took her a SECOND card (matplotlib-21568) while a
+        // teammate sat with none. The board carries owner, lease and claim id; nothing
+        // the roster adds is needed to know her held work.
+        board_held_by(self.airc.as_ref()).await
     }
 }
 
@@ -1364,6 +1376,13 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
 
 #[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
+    fn own_task(&self, handle: JoinHandle<()>) {
+        match self.owned_tasks.lock() {
+            Ok(mut owned) => owned.push(handle),
+            Err(_) => handle.abort(), // a poisoned list cannot own; never leave the task running
+        }
+    }
+
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()
     }
@@ -1474,10 +1493,24 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         )
         .await?;
         let me = self.airc.peer_id();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
         Ok(board
             .cards
             .iter()
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .filter(|c| {
+                let owner_resident = c
+                    .owner
+                    .is_some_and(|o| registry.as_ref().is_some_and(|r| r.get(o.as_uuid()).is_some()));
+                crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
+            })
+            // A card whose instance carries a STANDING ENV refusal on this box (the
+            // harness cannot grade it: era-pinned pytest, repo will not install,
+            // pristine-tree f2p passes) is never offered to a pull. Import withholds
+            // such instances from new rounds (#4001/#4003); this is the same rule for
+            // cards already on a board — psf__requests-1766 (2026-09-13): refused
+            // ungradeable at 09:36, closed, reopened by its closer at 16:27, pulled by
+            // Kira at 17:15 → a lane spent on work no grade can ever score.
+            .filter(|c| !crate::persona::card_holder::refused_on_this_box(&c.title))
             // A review card is never offered to the owner of the card it reviews:
             // the reviewer is the fresh pair of eyes by construction.
             .filter(|c| {
@@ -1493,6 +1526,73 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .map(|c| c.card_id.as_uuid())
             .collect())
     }
+
+    async fn in_flight_cards_in(&self, room: Uuid, now_ms: u64) -> Result<usize, AircError> {
+        let board = crate::persona::room_board_source::RoomBoardReader::work_board(
+            self.airc.as_ref(),
+            Some(room),
+        )
+        .await?;
+        Ok(board
+            .cards
+            .iter()
+            .filter(|c| crate::persona::card_holder::in_flight_now(c, now_ms))
+            .count())
+    }
+}
+
+/// The cards `airc`'s peer HOLDS right now, by the board alone: owner = her, lease live,
+/// not claimable. The one source for "her held work" — the pull's WIP=1 guard, the
+/// renewal loop, anything that asks. Never the work roster: it is rebuilt after a boot
+/// and reads empty for its first seconds (2026-09-13 08:40:50Z, a second pull).
+pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+    // EVERY ROOM SHE STANDS IN, never "the board". airc's `work_board_complete` folds
+    // the scope's CURRENT room only — right after a boot that is her home room, so a
+    // card held in a run room read as not held: 2026-09-13 09:29:01Z, 13 s after the
+    // core answered, Atlas's gate read held=0 against her live django claim and the
+    // pull took her matplotlib as a second card (the same shape the roster read had).
+    // The per-room projection is what the pull itself reads; held work folds the same.
+    let me = airc.peer_id();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
+    let rooms: Vec<Uuid> = airc
+        .subscription_set()
+        .await?
+        .all()
+        .map(|sub| sub.as_room().channel.as_uuid())
+        .collect();
+    let mut held = Vec::new();
+    for room in rooms {
+        // ONE unreadable room must not erase every hold: this fold feeds the renewal loop,
+        // and a `?` here made a single bad room read lapse every card she held elsewhere.
+        let board = match crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await {
+            Ok(board) => board,
+            Err(error) => {
+                crate::probe!(
+                    class = "persona.claim.board_room_unreadable",
+                    room = %room,
+                    error = %error,
+                    "a subscribed room's board did not read — her holds elsewhere still count"
+                );
+                continue;
+            }
+        };
+        held.extend(board.cards.into_iter().filter(|card| {
+            // A settled card is nobody's work, whatever its lease says: a closed card
+            // whose claim fields outlive the close read as HELD, focused her ticks on a
+            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+            !matches!(
+                card.state,
+                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
+            ) && card.owner == Some(me)
+                && crate::persona::card_holder::hold_of(card, now_ms)
+                    == crate::persona::card_holder::Hold::Held
+                && !crate::persona::card_holder::claimable_now(card, now_ms)
+        }));
+    }
+    Ok(held)
 }
 
 impl Drop for PersonaAircRuntime {
@@ -1510,6 +1610,11 @@ impl Drop for PersonaAircRuntime {
         if let Some(handle) = self.identity_republish.take() {
             // Stop re-emitting the identity card once the persona leaves the grid.
             handle.abort();
+        }
+        if let Ok(mut owned) = self.owned_tasks.lock() {
+            for handle in owned.drain(..) {
+                handle.abort();
+            }
         }
         // Arc<Airc> drops alongside the runtime; airc-lib handles
         // its own cleanup (daemon connection close, identity state

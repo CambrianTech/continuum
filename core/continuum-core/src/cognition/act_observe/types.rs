@@ -10,6 +10,12 @@ use crate::cognition::workspace::{Decision, TurnMetrics};
 
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
+    /// EVERY act this turn made, in order: (the intent she stated, the exact calls). The
+    /// learning loop lifts this chain against her held card at the turn's END — acts run
+    /// mid-turn inside the act loop, so the final `decision` is rarely an `Act`
+    /// (2026-09-14: 24 holder acts in 45 min, zero staged credit while only the final
+    /// step was inspected).
+    pub turn_acts: Vec<(String, Vec<ToolCall>)>,
     /// The verdict the mind settled on: `Speak`/`RaiseUnprompted`/`Pass` when it
     /// settled, or the final un-driven `Act` if the external budget ran out
     /// mid-action (the grader grades that as "did not finish" — honest, never a
@@ -82,6 +88,7 @@ impl SettleOutcome {
     /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
     pub fn infra_failure(room: uuid::Uuid, cause: impl Into<String>) -> Self {
         Self {
+            turn_acts: Vec::new(),
             decision: Decision::pass(),
             spoken: None,
             acts: 0,
@@ -221,6 +228,7 @@ mod tests {
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
             generation_receipts: Vec::new(),
+            turn_acts: Vec::new(),
         }
     }
 

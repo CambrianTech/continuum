@@ -29,6 +29,7 @@ pub mod identity_discipline;
 pub mod production_reachability;
 pub mod tenant_neutrality;
 pub mod test_mod_singularity;
+pub mod subprocess_spawn;
 pub mod unwrap_justification;
 
 use std::path::{Path, PathBuf};
@@ -365,3 +366,4 @@ mod tests {
         assert!(scan(&[&Collect]).is_empty());
     }
 }
+pub mod vendor_pin;

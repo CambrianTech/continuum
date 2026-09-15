@@ -36,6 +36,7 @@ pub mod base_model_policy;
 pub mod cached_source;
 pub mod card;
 pub mod card_holder;
+pub mod card_ledger_fact;
 pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
@@ -68,6 +69,7 @@ pub mod media_policy;
 pub mod message_cache;
 pub mod mission_source;
 pub mod model_override;
+pub mod placement_switch;
 pub mod remote_lane_factory;
 pub mod model_selection;
 pub mod name_generator;
@@ -91,6 +93,7 @@ pub mod roster_hold;
 pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
+pub mod identity_card_cache;
 pub mod room_roster_source;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod scripted_adapter_factory;
@@ -201,6 +204,15 @@ pub use unified::PersonaCognition;
 ///
 /// Production boot:
 ///   `register_substrate_orm_entities(OrmEntityRegistry::global())?;`
+/// Every collection [`register_substrate_orm_entities`] registers — the boot
+/// receipt and the regression test count against this list.
+pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
+    <hw_tier_descriptor::HwTierDescriptor as crate::orm::OrmEntity>::COLLECTION,
+    <role_template::RoleTemplate as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCredit as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCreditGeneration as crate::orm::OrmEntity>::COLLECTION,
+];
+
 pub fn register_substrate_orm_entities(
     registry: &crate::orm::OrmEntityRegistry,
 ) -> Result<(), crate::orm::RegistrationError> {

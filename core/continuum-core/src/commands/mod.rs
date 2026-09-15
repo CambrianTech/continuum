@@ -19,6 +19,7 @@ pub mod avatar;
 pub mod benchmark;
 pub mod benchmark_pause;
 pub mod benchmark_round;
+pub mod benchmark_import;
 pub mod benchmark_round_report;
 pub mod benchmark_verify;
 pub mod genome_recall;

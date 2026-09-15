@@ -71,8 +71,21 @@ pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64)
 /// digest) and takes no lane. Measured 2026-09-05: 34 of Joaquin's last 60
 /// turns were message turns on BigMama's and IntelMac's walls in the project
 /// room; her held card had zero edits in eight hours (card ae4bb4fd).
-pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool) -> bool {
-    priority || sender_is_citizen
+pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool, is_receipt: bool) -> bool {
+    priority || (sender_is_citizen && !is_receipt)
+}
+
+/// A RECEIPT is a citizen's own trace — her 💭 thought line or her ⚙ act line — written
+/// for the human and the HUD, not addressed to anyone. It reaches the digest (perception)
+/// and never wakes a turn. Measured 2026-09-13 10:00–14:00Z: every holder in the seed-4
+/// room took a lane every ~4 min on a teammate's receipt (57–86 admitted inputs each,
+/// from_peer = a citizen), re-orienting ("let me take stock") instead of working; the room
+/// read "spinning" to the citizens themselves. A plain citizen line (a question, one line
+/// of help) still wakes; a human's or a mention always does (priority).
+pub(crate) fn is_receipt(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with(crate::persona::presence_glyph::THOUGHT)
+        || t.starts_with(crate::persona::presence_glyph::ACT)
 }
 
 /// The trigger for ONE turn over the drained backlog: the newest priority line
@@ -116,6 +129,20 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
 mod tests {
     use super::*;
 
+    // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every
+    // holder in a five-coder room took a lane per teammate trace and re-oriented instead
+    // of working. A citizen's plain line still wakes; a human's line always does.
+    #[test]
+    fn a_teammates_receipt_is_perceived_never_served() {
+        assert!(is_receipt("💭 Let me take stock honestly. I'm Kira…"));
+        assert!(is_receipt("  ⚙ code/read  ✓"));
+        assert!(!is_receipt("Kira, the fix is in sinks.py line 40 — try the mtime path"));
+        assert!(!triggers_a_turn(false, true, true), "a citizen's receipt never wakes a turn");
+        assert!(triggers_a_turn(false, true, false), "a citizen's plain line still wakes");
+        assert!(triggers_a_turn(true, false, true), "a priority line (human, mention) always wakes");
+        assert!(!triggers_a_turn(false, false, false), "an undirected agent line never wakes");
+    }
+
     fn line(peer: u8, lamport: u64, text: &str) -> IncomingMessage {
         IncomingMessage {
             event_id: Uuid::new_v4(),
@@ -131,15 +158,15 @@ mod tests {
     #[test]
     fn an_undirected_agent_line_never_triggers_a_turn() {
         assert!(
-            !triggers_a_turn(false, false),
+            !triggers_a_turn(false, false, false),
             "agent wall, no mention: perceived only"
         );
-        assert!(triggers_a_turn(true, false), "agent naming her: a turn");
+        assert!(triggers_a_turn(true, false, false), "agent naming her: a turn");
         assert!(
-            triggers_a_turn(false, true),
+            triggers_a_turn(false, true, false),
             "citizen chatter: conversation, a turn"
         );
-        assert!(triggers_a_turn(true, true));
+        assert!(triggers_a_turn(true, true, false));
     }
 
     // what this catches: the per-publisher lamport read a human line as stale

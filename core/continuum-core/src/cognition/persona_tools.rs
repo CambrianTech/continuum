@@ -1,7 +1,7 @@
 //! Dynamic persona tool surface — discovered, never hardcoded.
 //!
 //! A persona's hands are the registry's `AiSafe` commands. The tool list is a
-//! PURE FUNCTION of `command_registry() × access_level`: every command that
+//! PURE FUNCTION of `command_registry_live() × access_level`: every command that
 //! declares [`AccessLevel::AiSafe`] becomes a tool the persona can call, and a
 //! new ai-safe command appears → the persona can use it with zero code change.
 //! There is NO hardcoded tool list and NO parallel allow-table — the command's
@@ -11,7 +11,7 @@
 //! ## The bug this shape refuses to ship (Joel 2026-06-21)
 //! "The tool's gone and no one knows why — RAG says it has it, some smell
 //! somewhere restricted it." Because the surface is exactly
-//! `command_registry().filter(AiSafe)`, "why isn't tool X here?" has ONE answer:
+//! `command_registry_live().filter(AiSafe)`, "why isn't tool X here?" has ONE answer:
 //! its `access_level` isn't `AiSafe`. [`tool_surface_report`] makes that a
 //! one-look diagnosis (included / excluded + the reason), never a hunt.
 //!
@@ -32,6 +32,7 @@ use crate::commands::help::CommandsHelp;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
+use crate::sdk_codegen::ext::command_registry_live;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -58,7 +59,7 @@ use crate::cognition::context_budget::ContextBudget;
 /// the two can't drift, and opening a command to a trust level auto-adds it here.
 /// Dynamic from the live [`command_registry`]; nothing hardcoded.
 pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
-    command_registry()
+    command_registry_live()
         .iter()
         .filter(|d| is_command_authorized(d.name, trust))
         .map(descriptor_to_tool_spec)
@@ -75,7 +76,7 @@ pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
 /// (descriptor → spec) against the registry in tests.
 #[cfg(test)]
 pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
-    command_registry()
+    command_registry_live()
         .iter()
         .filter(|d| d.access_level == AccessLevel::AiSafe)
         .map(descriptor_to_tool_spec)
@@ -140,7 +141,7 @@ pub struct ToolCatalogEntry {
 /// persona browses; the full call format for any one tool comes from
 /// [`TOOL_HELP_NAME`] on demand.
 pub fn authorized_tool_catalog(trust: TrustLevel) -> Vec<ToolCatalogEntry> {
-    command_registry()
+    command_registry_live()
         .iter()
         .filter(|d| is_command_authorized(d.name, trust))
         .map(|d| ToolCatalogEntry {
@@ -396,7 +397,7 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
     // NATIVE while the long tail stays reachable BY NAME through the compact catalog +
     // `commands/help`. The `native` flag is per-command; this projection just collects it.
     // [[adaptive-tool-surface-meets-you-in-the-middle]] [[local-first-tool-call-robustness-is-the-differentiator]]
-    command_registry()
+    command_registry_live()
         .iter()
         .filter(|d| d.native)
         .map(descriptor_to_tool_spec)
@@ -481,7 +482,7 @@ pub fn is_yield_turn(name: &str) -> bool {
 /// `None` when no such command is registered (the caller reports that, never
 /// fabricates a schema — [[fallbacks-are-illegal-fail-loud]]).
 pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
-    command_registry()
+    command_registry_live()
         .iter()
         .find(|d| d.name == name)
         .map(descriptor_to_tool_spec)
@@ -688,7 +689,7 @@ fn sanitize_schema_booleans(v: serde_json::Value) -> serde_json::Value {
 pub fn tool_surface_report() -> ToolSurfaceReport {
     let mut included = Vec::new();
     let mut excluded = Vec::new();
-    for d in command_registry() {
+    for d in command_registry_live() {
         match d.access_level {
             AccessLevel::AiSafe => included.push(d.name.to_string()),
             other => excluded.push((d.name.to_string(), other)),
@@ -992,7 +993,7 @@ mod tests {
 
         // Every spec corresponds to an AiSafe command; counts agree with the
         // registry's own AiSafe count — no hidden inclusion/exclusion.
-        let registry_ai_safe = command_registry()
+        let registry_ai_safe = command_registry_live()
             .iter()
             .filter(|d| d.access_level == AccessLevel::AiSafe)
             .count();
@@ -1005,7 +1006,7 @@ mod tests {
 
         // Included and excluded partition the WHOLE registry — every command is
         // accounted for, so "why isn't X here" always has an answer.
-        let total = command_registry().len();
+        let total = command_registry_live().len();
         assert_eq!(
             report.included.len() + report.excluded.len(),
             total,
@@ -1015,7 +1016,7 @@ mod tests {
         // The spec names ARE command names (the executor maps them straight back).
         for spec in &specs {
             assert!(
-                command_registry().iter().any(|d| d.name == spec.name),
+                command_registry_live().iter().any(|d| d.name == spec.name),
                 "tool {} must be a real command",
                 spec.name
             );
@@ -1028,7 +1029,7 @@ mod tests {
     #[test]
     fn projection_preserves_command_name_and_emits_open_schema() {
         // Pick any real AiSafe descriptor from the registry (don't hardcode one).
-        let registry = command_registry();
+        let registry = command_registry_live();
         let Some(d) = registry
             .iter()
             .find(|d| d.access_level == AccessLevel::AiSafe)
@@ -1056,7 +1057,7 @@ mod tests {
         // Find any registered command whose derived params schema has a
         // `definitions`/`$defs` map (code/edit, data/list, rag/load, …). If none
         // is compiled into this build, there is nothing to assert.
-        let registry = command_registry();
+        let registry = command_registry_live();
         let Some(d) = registry.iter().find(|d| {
             d.params_schema.get("definitions").is_some() || d.params_schema.get("$defs").is_some()
         }) else {

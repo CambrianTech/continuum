@@ -49,7 +49,7 @@ crate::action_command! {
     params: GitPushParams,
     output: GitPushResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let remote = p.remote.unwrap_or_default();
         let branch = p.branch.unwrap_or_default();
         let output = blocking_git(move || git_bridge::git_push(&root, &remote, &branch))

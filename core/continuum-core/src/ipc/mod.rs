@@ -1095,6 +1095,13 @@ pub fn start_server(
     // on the airc bus (nav slice 3). Command in, Event out; the write half of the
     // dual-consumer atom — one (user, room) cursor, read by the human unread badge AND
     // the persona's RAG grounding. Captures the bus in initialize (like vision).
+    // Phase C (S7): authored commands — a verb is a manifest in <continuum_root>/commands.
+    // Loaded FIRST so the live catalogue carries them before any reader memoizes
+    // (the ACL's command sets, the tool dialect index). A refused manifest is probed by
+    // file and reason; the boot never refuses over one bad file.
+    runtime.register(Arc::new(crate::modules::ext_commands::ExtCommandsModule::new(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+    )));
     runtime.register(Arc::new(crate::modules::nav::NavModule::new()));
 
     // ai/should-respond — the kernel command that runs a persona's WorkspaceCycle
@@ -1407,9 +1414,14 @@ pub fn start_server(
     // construction sites. Observer-only in PR-1: no commands routed
     // here yet. PR-2 of #1299 adds `system/pressure-broker-state` IPC;
     // PR-3 wires the chat-substrate alert sink.
-    runtime.register(Arc::new(
-        crate::modules::pressure_broker_module::PressureBrokerModule::new(),
+    let pressure_broker = Arc::new(crate::modules::pressure_broker_module::PressureBrokerModule::new());
+    // The descriptor table has an owner: the `process-fds` tier restarts the daemon
+    // this core spawned when the broker turns to it (2026-09-12: the gauge fired,
+    // nothing followed, a human ran lsof).
+    pressure_broker.broker().register(Arc::new(
+        crate::system_resources::fd_pressure::FdPressurePool::with_daemon_relief(),
     ));
+    runtime.register(pressure_broker);
     // InferenceCoordinatorModule — stands up the multi-persona-one-model
     // lane coordinator. Registered before the broker block below so its
     // CoordinatorResourcePool can be attached to the broker in the same
@@ -2454,6 +2466,10 @@ pub fn start_server(
         runtime.register(Arc::new(
             crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
         ));
+        // CITIZEN HEALTH IS A SUBSTRATE RECEIPT (2026-09-14): the hour's acts, writes,
+        // lane grants and settles beside residency and lanes, judged and said in the
+        // org room by the core itself — never a hand read again.
+        runtime.register(Arc::new(crate::modules::citizen_health::CitizenHealthModule::new()));
         // The STANDING ROUND — benchmarks dispatch themselves when none is
         // working (the last hand-managed act, retired 2026-09-02). Off until
         // `benchmark/standing --enabled true`; ticks on the runtime cadence.
@@ -3037,6 +3053,18 @@ pub fn start_server(
                         );
                     } else if !booted {
                         attempt += 1;
+                        if attempt > 1 {
+                            // Every attempt draws from the ONE provider built at boot; a
+                            // failed attempt leaves its cursor at the end. Nothing was hosted
+                            // (booted is false), so start the draw over.
+                            provider.rewind();
+                            crate::probe!(
+                                class = "persona.host.provider_rewound",
+                                attempt,
+                                population = provider.identities_available(),
+                                "hosting retry: the identity draw starts over — nothing was hosted last time"
+                            );
+                        }
                         let summary = supervisor
                             .spawn_all(&mut provider, Some(tool_executor.clone()))
                             .await;
@@ -3096,8 +3124,8 @@ pub fn start_server(
                             tracing::warn!(
                                 persona_id = ?failure.persona_id,
                                 reason = %failure.reason,
-                                "hosting reconciler: slot failed — will retry on the \
-                                 next serving-plan edge"
+                                "hosting reconciler: slot failed — retried after its backoff \
+                                 (persona.host.slot_backoff names the wait)"
                             );
                         }
                     }
@@ -3857,6 +3885,36 @@ pub fn start_server(
                         }
                         None => crate::ipc::room_purpose::default_source(),
                     };
+
+                // S1: the SAME recipe registry the projection resolves from, handed
+                // to the persona spawn path — so a room's authored affordances select
+                // the citizen's tool surface, not only what the renderer draws. One
+                // registry, two readers. The overlay refusal arm mirrors
+                // positron_source::spawn: a malformed authored recipe is named, and
+                // the embedded floor keeps every room resolvable.
+                {
+                    use crate::experience::source::RecipeExperienceSource;
+                    let overlay_dir = RecipeExperienceSource::overlay_dir(
+                        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                    );
+                    let source = match RecipeExperienceSource::builtins_with_overlay(
+                        room_purpose.clone(),
+                        &overlay_dir,
+                    ) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                dir = %overlay_dir.display(),
+                                "recipe overlay REFUSED for the persona experience source — \
+                                 citizens see EMBEDDED recipes' affordances only until the \
+                                 named file is fixed or removed (#432)"
+                            );
+                            RecipeExperienceSource::builtins(room_purpose.clone())
+                        }
+                    };
+                    crate::experience::source::install_node_experience_source(Arc::new(source));
+                }
 
                 positron_source::spawn(
                     &state.rt_handle,

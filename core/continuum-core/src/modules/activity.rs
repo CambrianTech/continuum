@@ -170,6 +170,24 @@ pub struct ActivitySpawnResult {
     /// a choice.
     #[ts(type = "string")]
     pub binding_post_id: uuid::Uuid,
+    /// What the recipe's PIPELINE did when this room was born (S3), or `None` when
+    /// the recipe declares none — the ordinary page. A held run (`held_at`) is a
+    /// human's turn, not a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pipeline: Option<ActivityPipelineReceipt>,
+}
+
+/// The birth-time pipeline receipt, in the spawn result's own shape.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityPipelineReceipt {
+    pub steps_run: u32,
+    pub steps_skipped: u32,
+    #[ts(optional)]
+    pub held_at: Option<u32>,
+    /// Step-indexed one-line outcomes — what a human reads to see what happened.
+    pub trace: Vec<String>,
 }
 
 /// Translate a benchmark activity's OWN params into the `benchmark/dispatch` call that
@@ -271,6 +289,7 @@ async fn dispatch_benchmark_activity(
         name: result.room,
         recipe: p.recipe,
         binding_post_id: result.binding_post_id,
+        pipeline: None,
     })
 }
 
@@ -336,6 +355,8 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
+        // The pipeline acts as the same identity that joins the room — one resolver.
+        let caller = crate::persona::operator_peer::acting_caller(&self.registry, ctx, "activity verbs")?;
         // A BENCHMARK ACTIVITY ROOTS ITSELF THROUGH ITS RUN.
         //
         // We work activities, period — so this verb does not get to hand back a
@@ -352,10 +373,31 @@ impl ActionCommand for ActivitySpawn {
         // this path RUNS it, through the universal primitive, instead of refusing and
         // making the caller know which of two doors to use. One door; the recipe decides
         // what walking through it means.
-        if p.recipe.starts_with("benchmark/") {
+        // S4: a recipe that DECLARES ITS BEHAVIOUR drives itself through the one birth
+        // path — the pipeline is the round. Only a benchmark recipe with NO pipeline
+        // (the Rust-driven `benchmark/hard-rs` door, still beside it during S4) is
+        // routed to dispatch. When dispatch is deleted, so is this branch.
+        let declares_pipeline = resolve_recipe(
+            &p.recipe,
+            &crate::experience::source::RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            ),
+        )
+        .map(|def| !def.pipeline.is_empty())
+        .unwrap_or(false); // unwrap_or: an unresolvable recipe is refused by spawn_activity_room below, by name
+        if p.recipe.starts_with("benchmark/") && !declares_pipeline {
             return dispatch_benchmark_activity(&self.executor_slot, p).await;
         }
-        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
+        spawn_activity_room(
+            &airc,
+            &p.name,
+            &p.recipe,
+            p.parent,
+            &p.params,
+            self.executor_slot.get().cloned(),
+            Some(caller),
+        )
+        .await
     }
 }
 
@@ -449,6 +491,10 @@ pub struct RecipeCatalogEntry {
     /// The recipe's declared parameter knobs, each as `name (type: doc)` —
     /// render-ready, the same wording the param refusal uses.
     pub params: Vec<String>,
+    /// Everything wrong with the recipe's pipeline against THIS node's command
+    /// schemas — empty means spawnable. A recipe with issues is listed (an author
+    /// must be able to see it) and refused at spawn (it must never half-run).
+    pub issues: Vec<crate::recipe::PipelineIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -503,6 +549,9 @@ impl ActionCommand for ActivityRecipes {
                     .iter()
                     .map(|(k, d)| format!("{k} ({})", d.doc))
                     .collect(),
+                issues: crate::recipe::pipeline_issues(r, |name| {
+                    crate::recipe::registry_lookup().get(name).cloned()
+                }),
             })
             .collect();
         Ok(ActivityRecipesResult {
@@ -636,6 +685,10 @@ pub async fn spawn_activity_room(
     recipe: &str,
     parent: Option<RoomId>,
     params: &std::collections::BTreeMap<String, serde_json::Value>,
+    executor: Option<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>>,
+    // The identity the pipeline's steps act as — the spawner's (`acting_caller`);
+    // `None` only for a recipe with no pipeline or a substrate-internal birth.
+    caller: Option<crate::routing::CallerIdentity>,
 ) -> Result<ActivitySpawnResult, CommandError> {
     let recipe_def = resolve_recipe(
         recipe,
@@ -643,7 +696,25 @@ pub async fn spawn_activity_room(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
         ),
     )?;
+    // THE SCHEMA GATE: a pipeline is checked against the command registry's own
+    // schemas BEFORE a room is born, like a request against an API spec. A recipe
+    // with an issue never half-runs; the refusal names every step. Cheap and off
+    // every hot path: once per spawn, over a lookup built once per process.
+    let issues = crate::recipe::pipeline_issues(&recipe_def, |name| {
+        crate::recipe::registry_lookup().get(name).cloned()
+    });
+    if !issues.is_empty() {
+        let lines: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        return Err(CommandError::Invalid(format!(
+            "recipe {recipe:?} has a pipeline this node cannot run — fix the file, then retry:\n  {}",
+            lines.join("\n  ")
+        )));
+    }
     let resolved_params = resolve_params(&recipe_def, params)?;
+    // The pipeline reads the SAME resolved params the binding records (`$args.*`).
+    let pipeline_args = serde_json::Value::Object(
+        resolved_params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    );
     // Read before `resolved_params` moves into the binding below.
     let child_driver = resolved_params
         .get("driver")
@@ -802,11 +873,94 @@ pub async fn spawn_activity_room(
                 ),
             }
         }
+        // THE ACTIVITY DOES WHAT ITS RECIPE SAYS (S3). Until now a recipe could
+        // describe a room and nothing else; every activity with behaviour was Rust.
+        // The pipeline runs here, in the one birth path, so every caller gets it —
+        // with the room seeded (`$room.id`, `$room.name`) and the resolved params as
+        // `$args`. A caller with no executor at hand and a recipe that declares a
+        // pipeline is a WIRING fact, probed by name, never a silent no-op.
+        let pipeline = if recipe_def.pipeline.is_empty() {
+            None
+        } else {
+            match executor {
+                Some(exec) => {
+                    let seed = vec![(
+                        "room".to_string(),
+                        serde_json::json!({
+                            "id": room.channel.as_uuid().to_string(),
+                            "name": name,
+                            "recipe": recipe,
+                        }),
+                    )];
+                    // THE BUNDLE SINK: every `saves` in this recipe lands on THIS room
+                    // as its activity-state record (kind = the recipe purpose), so
+                    // whoever resumes the activity reads the bundle, not a process map.
+                    let sink: std::sync::Arc<dyn crate::experience::activity_state::StepStateSink> =
+                        std::sync::Arc::new(crate::experience::activity_state::BoundStateSink::new(
+                            std::sync::Arc::new(crate::experience::activity_state::WallActivityStateStore::new(std::sync::Arc::new(airc.clone()))),
+                            room.clone(),
+                            recipe_def.purpose.clone(),
+                        ));
+                    let receipt = match crate::recipe::PipelineExecutor::new(exec)
+                        .with_caller(caller.clone())
+                        .with_state_sink(sink)
+                        .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // A FAILED BIRTH IS ARCHIVED, never left as a bound, empty room the
+                            // rail lists and the reconciler reseats (2026-09-12: three Rust rounds
+                            // and a seed-4 round born with zero cards, card 5f36ce37).
+                            let note = format!("birth failed: {e}");
+                            let standing = RoomStanding { archived: true, protected: false, note: Some(note.clone()) };
+                            match serde_json::to_string(&standing) { // boundary: the standing wall record — airc's wire + store
+                                Ok(body) => {
+                                    let _ = airc
+                                        .publish_wall_post_in(&room, STANDING_WALL_CATEGORY.to_string(), body, None)
+                                        .await;
+                                }
+                                Err(_) => {}
+                            }
+                            crate::probe!(
+                                class = "activity.birth_failed_archived",
+                                room = %room.channel,
+                                error = %e,
+                                "the recipe's pipeline failed after the room was bound — archived, not left half-born"
+                            );
+                            return Err(CommandError::Internal(format!(
+                                "room {} was created and bound, but its recipe's pipeline \
+                                 failed: {e} — the room is archived",
+                                room.channel
+                            )));
+                        }
+                    };
+                    Some(ActivityPipelineReceipt {
+                        steps_run: receipt.steps_run,
+                        steps_skipped: receipt.steps_skipped,
+                        held_at: receipt.held_at,
+                        trace: receipt.trace,
+                    })
+                }
+                None => {
+                    crate::probe!(
+                        class = "activity.pipeline.unrun",
+                        room = %name,
+                        recipe = %recipe,
+                        steps = recipe_def.pipeline.len() as u64,
+                        "the recipe declares a pipeline but this spawn seam has no command \
+                         executor — the room exists, its behaviour did not run"
+                    );
+                    None
+                }
+            }
+        };
         Ok(ActivitySpawnResult {
             room_id: room.channel,
             name: room.name,
             recipe: recipe.to_string(),
             binding_post_id: post_id,
+            pipeline,
         })
     }
 }
@@ -993,7 +1147,87 @@ impl ActionCommand for ActivityProtect {
 // is exactly how `activity/spawn` — the verb that mints every room, benchmark rooms
 // included — became undiscoverable while the catalog promised "Listed == callable".
 // `ModuleRegistry::register` now refuses to boot on the omission.
+// ─────────────────────────── activity/state ───────────────────────────
+
+/// Read an activity's saved bundle — the state its recipe and its tracker saved on
+/// the room (card c9ddb911). The same pipe a resuming node reads; a human or a
+/// citizen standing in the room sees exactly what a resume would restore.
+pub struct ActivityState {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/ActivityStateParams.ts")]
+pub struct ActivityStateParams {
+    /// Room name or id; the caller's current room when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
+    /// One recipe kind (`benchmark/round`); every kind's newest bundle when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/experience/ActivityStateResult.ts")]
+pub struct ActivityStateResult {
+    #[ts(type = "string")]
+    pub room_id: uuid::Uuid,
+    pub room: String,
+    /// Newest bundle per kind (one entry when `kind` was given).
+    pub bundles: Vec<crate::experience::activity_state::ActivityStateRecord>,
+}
+
+#[async_trait]
+impl ActionCommand for ActivityState {
+    const NAME: &'static str = "activity/state";
+    const ALIASES: &'static [&'static str] = &["activity_state"];
+    // NOT native: a read of the bundle is a resume-time/operator verb, not a per-turn
+    // act — offering it to every persona would grow the agentic tool surface past
+    // its ceiling (llm_deliberation_faculty: shrink first, #333). Discoverable via
+    // commands/list; callable by name.
+    const NATIVE: bool = false;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Read the room's saved activity state — what its recipe and tracker saved on the \
+         room (the bundle a resume restores from). Newest per recipe kind.";
+    type Params = ActivityStateParams;
+    type Output = ActivityStateResult;
+
+    async fn run(&self, ctx: &Ctx, p: ActivityStateParams) -> Result<ActivityStateResult, CommandError> {
+        use crate::experience::activity_state::{project_activity_state, ACTIVITY_STATE_WALL_CATEGORY};
+        let airc = caller_airc(&self.registry, ctx)?;
+        let room = resolve_room(&airc, p.room.as_deref()).await?;
+        let posts = airc
+            .wall_posts_in(&room, Some(ACTIVITY_STATE_WALL_CATEGORY))
+            .await
+            .map_err(|e| CommandError::Internal(format!("activity-state wall read failed: {e}")))?;
+        let kinds: Vec<String> = match &p.kind {
+            Some(k) => vec![k.clone()],
+            None => {
+                let mut seen = Vec::new();
+                for post in posts.iter().rev() {
+                    if let Ok(rec) = serde_json::from_str::<crate::experience::activity_state::ActivityStateRecord>(&post.body) { // ORM boundary: a record another writer could not encode is not a bundle
+                        if !seen.contains(&rec.kind) {
+                            seen.push(rec.kind);
+                        }
+                    }
+                }
+                seen
+            }
+        };
+        let bundles = kinds
+            .iter()
+            .filter_map(|k| project_activity_state(&posts, k))
+            .collect();
+        Ok(ActivityStateResult { room_id: room.channel.as_uuid(), room: room.name.clone(), bundles })
+    }
+}
+
 crate::register_command!(ActivitySpawn);
+crate::register_command!(ActivityState);
 crate::register_command!(ActivityRecipes);
 crate::register_command!(ActivityInvite);
 crate::register_command!(ActivityArchive);
@@ -1067,6 +1301,9 @@ impl ServiceModule for ActivityModule {
             Arc::new(ActivityProtect {
                 registry: self.registry.clone(),
             }),
+            Arc::new(ActivityState {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
@@ -1094,6 +1331,7 @@ mod tests {
     #[test]
     fn start_a_project_verbs_are_aisafe_under_their_wire_names() {
         assert_eq!(ActivityRecipes::NAME, "activity/recipes");
+        assert_eq!(ActivityState::NAME, "activity/state");
         assert_eq!(ActivityRecipes::ACCESS, AccessLevel::AiSafe);
         assert_eq!(ActivityInvite::NAME, "activity/invite");
         assert_eq!(ActivityInvite::ACCESS, AccessLevel::AiSafe);

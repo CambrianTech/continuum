@@ -133,7 +133,12 @@ case "$(uname -sm)" in
     ;;
   "Darwin arm64")
     CONTINUUM_FEATURES="--features metal,accelerate"
-    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
+    # ONE library compile per deploy (2026-09-13): a CLI feature set that differs from the
+    # core's makes cargo compile continuum-core TWICE per deploy (measured: the "pure
+    # relaunch" spent ~10 min in a second full lib build). On Apple silicon the featured
+    # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
+    # runtime) does not apply here. Same features → the CLI shares the core's lib.
+    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
     ;;
   *)
     # Source the existing detector for Linux/Windows.
@@ -923,6 +928,29 @@ if core_bin_is_stale; then
     exit 1
   fi
   echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
+fi
+
+# ── Build-only: the warm deploy ────────────────────────────────────────
+# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 BEFORE it stops the
+# running core, when the machine has headroom: the core keeps serving through the
+# minutes of compile, and the launch that follows the stop finds the binary fresh
+# (its own build is a warm no-op), so the dark window is the stop plus the start —
+# seconds, not ten minutes (eight deploys on 2026-09-13 = 80 minutes dark, every
+# citizen's turns dropped and leases unrenewed each time). One build definition:
+# this script's, with the same manifest, profile and features.
+# THIS NODE FOLLOWS A BRANCH (opt-in, for every install — not an operator's shell chain):
+# `CONTINUUM_TRACK_BRANCH=canary` in ~/.continuum/config.env installs the tracker agent
+# (launchd / systemd user timer) on every start, idempotently. The agent deploys a green
+# tip by itself, refuses red/pending ones, self-checks each deploy, and holds itself on a
+# failure. Unset = this node deploys only when told to (`continuum reboot`).
+if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then
+  CONTINUUM_TRACK_INTERVAL="${CONTINUUM_TRACK_INTERVAL:-300}" bash "$SCRIPT_DIR/track-canary.sh" --install >&2 \
+    || echo "⚠ track-canary install failed — this node will not follow $CONTINUUM_TRACK_BRANCH by itself" >&2
+fi
+
+if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
+  exit 0
 fi
 
 # ── LiveKit avatar rail (voice/video calls) ──────────────────────────

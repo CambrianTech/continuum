@@ -1,7 +1,7 @@
 //! `commands/list` — the live command catalog, from the ONE registry.
 //!
 //! Discovery is dynamic and single-source: this returns a snapshot of
-//! `command_registry()` (the inventory-assembled descriptor list every other
+//! `command_registry_live()` (the inventory-assembled descriptor list every other
 //! surface reads). No client, tray, or CLI hardcodes a command list — they call
 //! `commands/list` and adapt. Removing/renaming a command updates its one file and
 //! this output follows automatically.
@@ -17,6 +17,7 @@ use ts_rs::TS;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::routing::caller_trust;
 use crate::sdk_codegen::{command_registry, ActionCommand, CommandError, Ctx, WireShape};
+use crate::sdk_codegen::ext::command_registry_live;
 
 /// Params for `commands/list` — an optional case-insensitive name substring to
 /// filter by (so a tray can ask "what `data/*` commands exist?"). Empty ⇒ all.
@@ -108,7 +109,7 @@ impl ActionCommand for CommandsList {
         // trust rule the executor's gate uses (`caller_trust`), so list and call
         // can't drift — no separate allow-table.
         let trust = caller_trust(ctx.caller.as_ref());
-        let commands = command_registry()
+        let commands = command_registry_live()
             .iter()
             .filter(|d| is_command_authorized(d.name, trust))
             .filter(|d| match &needle {

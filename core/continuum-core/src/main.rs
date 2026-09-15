@@ -582,6 +582,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // it never timed out the actual Bevy init, only this task's patience.
     // The node says when it was suspended (card 94a95a98) — one row per hole in the ledger.
     continuum_core::system_resources::absence_watch::spawn();
+    // The transport daemon has an owner that acts while the core runs (2026-09-12: the
+    // updater stopped it, failed the install, and the node was dark for 100 minutes).
+    continuum_core::airc::daemon_liveness::spawn();
 
     let pm_clone = pressure_monitor.clone();
     tokio::spawn(async move {

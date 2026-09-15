@@ -848,6 +848,35 @@ impl LaneDemandState {
 /// quiesce lease stays pure and daemon-free-testable.
 /// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
 static LANE_DEMAND: std::sync::OnceLock<LaneDemandState> = std::sync::OnceLock::new();
+/// Whether a measurement lease (`quiesce_*`) currently holds the lane demand down.
+/// While one does, the demand is the lease's ACTIVE count and the live roster must
+/// not raise it back — that is the lease's whole purpose.
+pub fn lane_demand_overridden() -> bool {
+    LANE_DEMAND
+        .get()
+        .map(|state| {
+            !state
+                .overrides
+                .lock()
+                .expect("lane-demand overrides lock poisoned")
+                .is_empty()
+        })
+        .unwrap_or(false) // JUSTIFIED unwrap_or: before boot registers the state there is no lease to honour
+}
+
+/// THE LANE DEMAND IS THE LIVE ROSTER (2026-09-14). `set_lane_demand` runs once at
+/// boot with the persona floor and is a no-op afterwards, so a roster that grows to 16
+/// after the decode-ready edge kept planning for the floor: measured 16 resident minds
+/// on 3 lanes (2 + scratch) with 40 GB of KV budget idle, a lane every ~20 min per
+/// mind, and the "let me take stock" loops that come from re-orienting every turn.
+/// The roster is the demand; the boot floor is only its lower bound; a measurement
+/// lease still wins while it is held.
+pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
+    if overridden {
+        return boot_floor.max(1);
+    }
+    boot_floor.max(live_residents as u32).max(1)
+}
 
 /// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
 /// need a warm slot now; floored at 1 — a measurement still needs one lane) until released.
@@ -932,7 +961,10 @@ impl ServingDaemonModule {
     /// assembled yet on this host, and [`ServingDemand::new`] names the cold-start
     /// decision in one place.
     fn serving_demand(&self) -> ServingDemand {
-        let residents = self.lane_demand();
+        let live_count = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas().len())
+            .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no residents = the floor stands
+        let residents = resident_lane_demand(self.lane_demand(), live_count, lane_demand_overridden());
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -945,7 +977,24 @@ impl ServingDaemonModule {
         // residents < 2 keeps the old shape (the adapter reserves nothing
         // below n_slots 3, so asking for the extra lane would waste it).
         let lanes = if residents >= 2 { residents + 1 } else { residents };
-        ServingDemand::new(lanes, self.working_set.ceiling())
+        // Both ceilings are over the RESIDENTS, never the whole persisted registry
+        // (490 entries: every test fixture and departed mind); the sent ceiling is what
+        // the window follows, the untrimmed one only bounds it.
+        let live: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas())
+            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no residents measured = cold-start prior
+        let (demand, sent, median) = if live.is_empty() {
+            (self.working_set.ceiling(), None, None)
+        } else {
+            (
+                self.working_set.ceiling_of(&live),
+                self.working_set.sent_ceiling_of(&live),
+                self.working_set.sent_median_of(&live),
+            )
+        };
+        ServingDemand::new(lanes, demand)
+            .with_sent_tokens(sent)
+            .with_sent_median(median)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -2892,7 +2941,13 @@ impl ServingDaemonModule {
                 .map(|p| p.base_model.model_id.clone()),
             (self.inherited_lane)().as_ref(),
         );
-        let demand = self.serving_demand();
+        // The window this host served the incumbent at last time (across runs) is
+        // the plan's first choice — the KV page geometry holds still (card 6e8214e8).
+        let demand = self.serving_demand().with_sticky_window(
+            incumbent
+                .as_deref()
+                .and_then(crate::modules::served_window_store::load_for),
+        );
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
@@ -4677,6 +4732,19 @@ mod tests {
     // FIRST lease's override — leaving the fleet's warm-slot demand stuck at the
     // measurement value with nobody quiesced. The authority must recompute from what
     // remains: any-order release, base restored only when the LAST override lifts.
+    #[test]
+    // what this catches: 16 resident minds planned for a boot floor of 2 (3 lanes with
+    // 40 GB idle, 2026-09-14) — the roster IS the demand; the floor only bounds it
+    // from below; a measurement lease still holds it down while held.
+    #[test]
+    fn the_lane_demand_follows_the_live_roster_above_the_boot_floor() {
+        assert_eq!(resident_lane_demand(2, 16, false), 16);
+        assert_eq!(resident_lane_demand(16, 5, false), 16, "the floor is a lower bound");
+        assert_eq!(resident_lane_demand(2, 0, false), 2, "no residents yet = the floor");
+        assert_eq!(resident_lane_demand(2, 16, true), 2, "a held quiesce lease wins");
+        assert_eq!(resident_lane_demand(0, 0, false), 1);
+    }
+
     #[test]
     fn overlapping_demand_overrides_release_in_any_order() {
         let cell = Arc::new(AtomicU32::new(0));

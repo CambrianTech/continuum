@@ -139,6 +139,23 @@ pub trait RoomBoardReader: Send + Sync {
 /// the trait is ours. Reads the complete board and snapshots it into the plain
 /// [`BoardSnapshot`] this source renders. Same call the desktop-app projector
 /// makes; the shared truth is airc's fold, not a shared continuum trait.
+/// A board read slower than this is always marked (the pair of durations is the
+/// distribution a stalled tick is measured against); faster reads mark once per room
+/// per minute, enough to notice a hang without flooding the ledger.
+const SLOW_BOARD_READ_MS: u64 = 100;
+
+fn board_read_mark_due(room: uuid::Uuid) -> bool {
+    static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let now = crate::modules::chat::now_ms();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    let due = last.get(&room).is_none_or(|t| now.saturating_sub(*t) >= 60_000);
+    if due {
+        last.insert(room, now);
+    }
+    due
+}
+
 #[async_trait]
 impl RoomBoardReader for airc_lib::Airc {
     async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
@@ -164,12 +181,19 @@ impl RoomBoardReader for airc_lib::Airc {
                 // branch is not stalling in this branch. Keep the marks: they are cheap,
                 // and "which projection did the tick actually spend itself in" is a
                 // question two sources with confusable names will raise again.
-                crate::probe!(
-                    class = "board.read.phase",
-                    room = %id,
-                    phase = "resolve_room",
-                    "entering room_by_channel — if no project_board mark follows for this                      room, room resolution is where the read hung"
-                );
+                // ONE MARK PER ROOM PER MINUTE unless the read is slow: the enter/complete
+                // pair is a hang detector, and at three board reads a second (2026-09-13
+                // 15:0xZ: 1,700 reads in ten minutes across five citizens) an unconditional
+                // mark drowned the ledger in nothing.
+                let mark_due = board_read_mark_due(id);
+                if mark_due {
+                    crate::probe!(
+                        class = "board.read.phase",
+                        room = %id,
+                        phase = "resolve_room",
+                        "entering room_by_channel — if no project_board mark follows for this                      room, room resolution is where the read hung"
+                    );
+                }
                 let resolve_started = std::time::Instant::now();
                 let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
                     return Err(AircError::NotSubscribed(format!(
@@ -177,13 +201,15 @@ impl RoomBoardReader for airc_lib::Airc {
                     )));
                 };
                 let resolve_ms = resolve_started.elapsed().as_millis() as u64;
-                crate::probe!(
-                    class = "board.read.phase",
-                    room = %id,
-                    phase = "project_board",
-                    resolve_ms,
-                    "room resolved; entering project_room_work_board — a missing complete                      mark for this room means the projection hung"
-                );
+                if mark_due || resolve_ms > SLOW_BOARD_READ_MS {
+                    crate::probe!(
+                        class = "board.read.phase",
+                        room = %id,
+                        phase = "project_board",
+                        resolve_ms,
+                        "room resolved; entering project_room_work_board — a missing complete                      mark for this room means the projection hung"
+                    );
+                }
                 let project_started = std::time::Instant::now();
                 let projection = airc_lib::Airc::project_room_work_board(
                     self,
@@ -191,14 +217,17 @@ impl RoomBoardReader for airc_lib::Airc {
                     airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
                 )
                 .await?;
+                let project_ms = project_started.elapsed().as_millis() as u64;
+                if mark_due || resolve_ms + project_ms > SLOW_BOARD_READ_MS {
                 crate::probe!(
                     class = "board.read.phase",
                     room = %id,
                     phase = "complete",
                     resolve_ms,
-                    project_ms = project_started.elapsed().as_millis() as u64,
+                    project_ms,
                     "both halves finished — the pair of durations is the distribution a                      stalled tick is measured against"
                 );
+                }
                 projection
             }
             // UNBOUND: the caller genuinely means "my current room" (the CLI's
@@ -806,6 +835,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         }
     }
 

@@ -46,9 +46,9 @@ use status::CodeGitStatus;
 /// Resolve the caller's workspace root, provisioning the engine on first use.
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller runs blocking git work — never a lock held across a shell-out.
-pub(crate) fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
+pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
     let who = caller_id(ctx);
-    ensure_engine(state, &who)?;
+    ensure_engine(state, &who).await?;
     let engine = state
         .file_engines
         .get(&who)

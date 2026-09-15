@@ -850,6 +850,11 @@ Today TS calls Rust via the command-daemon socket. The reverse — Rust calling 
 
 ### Violation 5: `recipes` collection in the data layer overlaps with `system/recipes/*.json` files
 
+> **Resolved 2026-09-11 (S2 of [RECIPE-CONVERGENCE-PLAN](../planning/RECIPE-CONVERGENCE-PLAN.md)):**
+> the collection store is gone. `recipe/run` resolves a purpose through the node's one
+> `ExperienceSource` — the recipe files (embedded floor + `<continuum_root>/recipes` overlay)
+> are the only store, and `ExperienceRecipe.pipeline` is the only pipeline shape.
+
 Recipes live in BOTH places: as JSON files on disk AND as ORM entities in the database (per `RecipeEntity` doc comment: "JSON files on disk are seed data. At runtime, recipes live in the database").
 
 **Migration**: respect the existing pattern — JSON is seed, runtime is DB. The Rust executor reads from the DB at runtime (via the data layer's existing IPC commands), falling back to JSON files if the DB doesn't have the recipe. Runtime registration of new recipes (via `cognition/recipe/define`) writes to the DB, persists across restarts.

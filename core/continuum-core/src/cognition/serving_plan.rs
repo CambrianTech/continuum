@@ -169,7 +169,27 @@ pub struct ServingDemand {
     /// more" from "the measured demand did not ask for more". A bootstrap prior wearing
     /// the `demand` label defeats exactly that.
     pub measured: bool,
+    /// The per-slot window this host served this model at LAST time (the
+    /// served-window store). When it still fits, the plan serves it VERBATIM so the
+    /// KV page geometry — `<model>--c<window>` — is the same across boots and the
+    /// citizens' pages carry over. `None` = no memory (first serve of this model).
+    pub sticky_window: Option<u32>,
+    /// The largest prompt any resident actually SENT (post-fit), when measured. The
+    /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
+    /// `window_tokens` (which is the whole assembled context and saturates at
+    /// 225k–505k): a 25k working set provisions ~32k per slot, leaving the host RAM
+    /// for more lanes and the prompt-cache tier instead of a 137k slot nobody fills.
+    pub sent_tokens: Option<u32>,
+    /// The residents' TYPICAL sent prompt (median of sent peaks). The per-lane floor
+    /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
+    /// still shapes the window target when it fits.
+    pub sent_median: Option<u32>,
 }
+
+/// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
+/// so a window sized from what-was-sent must GROW past it to escape the clamp — 25%
+/// per plan, geometric, until the demand is met. The untrimmed demand still caps it.
+pub const SENT_HEADROOM: f64 = 1.25;
 
 /// The pinned solve-class window floor (see `ServingDemand::window_floor_tokens`).
 /// ONE writer — the benchmark lease (`benchmark_resume`) — sets it to the
@@ -203,8 +223,57 @@ impl ServingDemand {
             window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
             window_floor_tokens: solve_window_floor(),
+            sticky_window: None,
+            sent_tokens: None,
+            sent_median: None,
         }
     }
+    pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
+        self.sent_median = median.filter(|m| *m > 0);
+        self
+    }
+    /// The per-lane floor the residents actually need: their typical sent prompt with
+    /// headroom. `None` until a turn has been sent — the bootstrap prior stands then.
+    pub fn typical_prompt_floor(&self) -> Option<u32> {
+        self.sent_median
+            .map(|m| ((m as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX))
+    }
+
+    /// The largest SENT prompt among residents (see `sent_tokens`).
+    pub fn with_sent_tokens(mut self, sent: Option<u32>) -> Self {
+        self.sent_tokens = sent.filter(|s| *s > 0);
+        self
+    }
+
+    /// The window a plan should TARGET per slot: the sent prompt with headroom when
+    /// measured (capped by the untrimmed demand, which is an upper bound by
+    /// construction), else the untrimmed demand as before.
+    pub fn window_target(&self) -> u32 {
+        match self.sent_tokens {
+            Some(sent) => ((sent as f64 * SENT_HEADROOM) as u32).min(self.window_tokens).max(MIN_SERVE_CTX),
+            None => self.window_tokens,
+        }
+    }
+
+    /// Remember last serve's per-slot window for this model (see `sticky_window`).
+    pub fn with_sticky_window(mut self, w: Option<u32>) -> Self {
+        self.sticky_window = w.filter(|w| *w >= MIN_SERVE_CTX);
+        self
+    }
+}
+
+/// The served per-slot window: the window this host served LAST time when it
+/// still fits AND still covers the measured demand — the KV page geometry then
+/// holds across boots — else the demand itself (the law above: provision for what
+/// the minds use, never for what RAM allows), clamped to what fits and the
+/// runnable floor. A demand that outgrows the remembered window re-keys the pages
+/// once and is remembered in turn. Pure.
+pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) -> u32 {
+    let wanted = match sticky {
+        Some(s) if s <= fits && s >= demand_tokens => s,
+        _ => demand_tokens,
+    };
+    wanted.min(fits).max(MIN_SERVE_CTX)
 }
 
 /// Hysteresis margin for switching UP to a more capable model: it must fit
@@ -634,7 +703,13 @@ pub fn plan_serving(
     // Per-lane floor: the stable bootstrap, RAISED by a pinned regime floor when
     // one stands (solve-class work). Lanes multiply only while EVERY lane still
     // fits the floor — parallel to the max, starvation to none.
-    let per_lane_floor = BOOTSTRAP_WORKING_SET.max(demand.window_floor_tokens);
+    // LANES FOLLOW THE ROSTER AT THE TYPICAL PROMPT (2026-09-14). The floor is the
+    // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
+    // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
+    // The outlier is reconciled down to the served window; the roster gets its lanes.
+    let per_lane_floor = BOOTSTRAP_WORKING_SET
+        .max(demand.window_floor_tokens)
+        .max(demand.typical_prompt_floor().unwrap_or(0)); // JUSTIFIED unwrap_or: no sent prompt measured yet = no floor from it, the bootstrap prior stands
     let lanes = (1..=lane_cap)
         .rev()
         .find(|&l| window_for(l as u64) >= per_lane_floor)
@@ -674,9 +749,13 @@ pub fn plan_serving(
     // already ≤ the model's trained ceiling AND ≤ what the host fits, so `.min` never
     // forces UP past either, and `.max(MIN_SERVE_CTX)` keeps the lane runnable. A
     // citizen who demands more than the machine has simply receives what fits.
-    let served_context_window = window_for(lanes as u64)
-        .min(demand.window_tokens)
-        .max(MIN_SERVE_CTX);
+    // STICKY + STEPPED (2026-09-13): the same host + model served 83,968 → 102,656 →
+    // 126,464 → 138,240 across four boots as the measured demand moved, and every
+    // boot re-keyed the KV page geometry and swept the previous pages. The window
+    // now holds still: last serve's window while it still fits and still covers the
+    // demand, else the demand. See `choose_served_window`.
+    let served_context_window =
+        choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -952,6 +1031,34 @@ mod tests {
     // healthy. Parallelism is capability; selection maximizes achievable lanes
     // toward demand FIRST, capability second. Degrade honesty is pinned too:
     // when demand is one lane, the capability order stands unchanged.
+    // what this catches: 16 residents planned onto 3 lanes because ONE mind's 96k
+    // sent prompt became every lane's size (2026-09-14, 40 GB of KV idle). With the
+    // floor at the residents' TYPICAL prompt the same host multiplies lanes toward
+    // the roster; the ceiling shapes the window only when it still fits.
+    #[test]
+    fn lanes_multiply_to_the_roster_at_the_typical_prompt_not_the_outlier() {
+        let host = HostBudget { usable_bytes: 61 * GB, perf_cores: 12 };
+        let ornith = fp("ornith", 21, 41_984, 262_144, 200);
+        let c = vec![ornith];
+        let outlier_only = ServingDemand::new(17, Some(120_000)).with_sent_tokens(Some(96_000));
+        let typical = ServingDemand::new(17, Some(120_000))
+            .with_sent_tokens(Some(96_000))
+            .with_sent_median(Some(40_000));
+        let a = plan_serving(host, &c, outlier_only).expect("plan");
+        let b = plan_serving(host, &c, typical).expect("plan");
+        assert!(b.lanes >= 5, "the roster gets its lanes at the typical prompt: {}", b.lanes);
+        assert!(
+            b.served_context_window >= 50_000,
+            "each lane holds a typical turn with headroom (40k × 1.25): {}",
+            b.served_context_window
+        );
+        // Without the median the planner packs the most lanes at the bootstrap floor —
+        // more lanes, each too small for a real turn. The floor trades at most a lane or
+        // two for windows the roster can actually use.
+        assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
+        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
+    }
+
     #[test]
     fn a_one_lane_giant_never_outranks_a_model_that_serves_the_fleet() {
         // 60GB budget. "giant" rank 5 fits ONE bootstrap lane and no more;
@@ -2133,4 +2240,39 @@ mod tests {
             "a better model with no headroom left is refused — the credit is not a blank cheque"
         );
     }
+    // what this catches: the served window re-keying the KV page geometry every boot
+    // (2026-09-13: four windows in four boots on one host + model; no page survived a
+    // reboot). A remembered window that fits and covers the demand is served verbatim;
+    // one the demand has outgrown, or that no longer fits, gives way to the demand.
+    #[test]
+    fn the_served_window_holds_still_across_boots_while_it_covers_the_demand() {
+        assert_eq!(choose_served_window(138_240, 90_000, Some(102_656)), 102_656, "sticky fits and covers: served verbatim");
+        assert_eq!(choose_served_window(65_536, 90_000, Some(102_656)), 65_536, "sticky no longer fits: the fit bounds the demand");
+        assert_eq!(choose_served_window(138_240, 110_000, Some(102_656)), 110_000, "demand outgrew the sticky window: serve the demand (pages re-key once)");
+        assert_eq!(choose_served_window(138_240, 90_000, None), 90_000, "no memory: the demand, as before");
+        assert_eq!(choose_served_window(138_240, 100, None), MIN_SERVE_CTX, "never below the runnable floor");
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let m = fp("m", 14, 112 * 1024, 131_072, 3);
+        let first = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(40_000))).unwrap();
+        let again = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(33_000)).with_sticky_window(Some(first.served_context_window))).unwrap();
+        assert_eq!(again.served_context_window, first.served_context_window, "the next boot, with demand drifted DOWN, serves the SAME window — the pages carry over");
+    }
+
+    // what this catches: the window sized from the untrimmed context (225k–505k measured
+    // 2026-09-13) instead of what turns actually send — a 25k working set provisioned a
+    // 137k slot, starving the lane count and the RAM prompt-cache tier, and the sticky
+    // window could never "cover" a demand that large.
+    #[test]
+    fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
+        let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
+        assert_eq!(d.window_target(), 37_500, "sent × 1.25, not the untrimmed 505k");
+        assert_eq!(ServingDemand::new(4, Some(505_342)).window_target(), 505_342, "unmeasured sent: the untrimmed demand, as before");
+        assert_eq!(ServingDemand::new(4, Some(20_000)).with_sent_tokens(Some(30_000)).window_target(), 20_000, "the untrimmed demand is the upper bound");
+        assert_eq!(choose_served_window(137_222, 37_500, Some(47_280)), 47_280, "the remembered 47k window covers a 37.5k target: served verbatim — pages carry over");
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let m = fp("m", 14, 112 * 1024, 131_072, 3);
+        let plan = plan_serving(host, std::slice::from_ref(&m), d).unwrap();
+        assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
+    }
+
 }

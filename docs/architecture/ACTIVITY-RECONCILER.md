@@ -64,6 +64,19 @@ was inconsistent, and nobody owned repairing it.
    `acting_card_of` → `room_for_card`). Next: presence-class traffic on its own channel class so
    the message plane never carries it.
 
+9. **A hold nobody holds returns to the deck.** A card in `Claimed`/`InProgress` with
+   `owner: None`, or a lapsed claim whose owner is not resident and who left no artifact, is
+   held by no one — and nothing else can offer it again: `claimable_now` takes an unclaimed
+   card only when it is `Open`, the pull reads that, and the grade sweep skipped owner-less
+   cards outright. Measured 2026-09-11: five citizens on five warm lanes, ~55 acts and ~10
+   writes an hour, **zero card transitions in six hours** — three cards sat `in_progress`
+   with no owner for days after the roster went 12→5, the deck held one Open card grid-wide,
+   and four citizens spent 3-minute lanes running tests in stale checkouts with nothing held.
+   The sweep now returns such a card to `Open` with a probe (`benchmark_grade.sweep_reopened`)
+   and a provenance line in the run room; a resident owner's lapsed hold stays hers (rule 2).
+   *Shipped:* `modules/benchmark_grade.rs::sweep_verdict` — one typed decision
+   (`Leave | Close | Reopen`) replacing the bool, truth-tabled.
+
 ## Concurrency the reconciler enforces
 
 - **WIP = lanes, board-true.** The roster holds no more claimed/in-progress cards than the

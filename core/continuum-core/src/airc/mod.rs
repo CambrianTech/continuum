@@ -7,6 +7,8 @@
 pub mod bridge_protocol;
 pub mod client;
 pub mod daemon_endpoint;
+pub mod daemon_liveness;
+pub mod daemon_supervisor;
 pub mod daemon_transport;
 pub mod discovery;
 pub mod reresolving_client;

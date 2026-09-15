@@ -48,12 +48,30 @@ pub async fn discover() -> AircDiscovery {
             partial.peer_id = Some(p);
             p
         }
-        Err(e) => {
-            return AircDiscovery::Degraded {
-                reason: stale_socket_from_status_err(&socket, e),
-                partial,
-            };
-        }
+        // A DEAD DAEMON IS RECOVERED HERE, ONCE — never printed as a remediation for a
+        // human to type (2026-09-14: the airc daemon died on the M5 twice; each time the
+        // core's own start printed "remove the stale socket and restart airc", refused,
+        // and the node sat dark until an operator did exactly that — 03:33 and 06:53).
+        Err(first) => match recover_stale_daemon(&socket).await {
+            true => match discover_peer_id(&socket).await {
+                Ok(p) => {
+                    partial.peer_id = Some(p);
+                    p
+                }
+                Err(e) => {
+                    return AircDiscovery::Degraded {
+                        reason: stale_socket_from_status_err(&socket, e),
+                        partial,
+                    };
+                }
+            },
+            false => {
+                return AircDiscovery::Degraded {
+                    reason: stale_socket_from_status_err(&socket, first),
+                    partial,
+                };
+            }
+        },
     };
 
     let room_name = match discover_default_room_name().await {
@@ -185,6 +203,55 @@ impl From<DiscoveryError> for DiscoveryFailure {
             }
         }
     }
+}
+
+/// Recover a daemon whose socket nobody holds: remove the stale file, start a daemon by
+/// the same path `airc status` uses (it starts one when none answers), and wait — bounded
+/// — for the new socket to answer. Returns `true` when a retry is worth making. A socket
+/// some process still holds is NOT stale (a wedged daemon is a different fault) and is
+/// left alone. Every outcome is a probe: `airc.daemon.recovered`.
+async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
+    use tokio::process::Command;
+    let bound = std::time::Duration::from_secs(5);
+    let held = tokio::time::timeout(bound, Command::new("lsof").arg("-t").arg(socket).output())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false); // JUSTIFIED unwrap_or: lsof absent or hung = cannot prove a holder; treat as unheld and try (the retry is bounded and harmless)
+    if held {
+        crate::probe!(
+            class = "airc.daemon.recovered",
+            socket = %socket.display(),
+            outcome = "held_not_stale",
+            "a process still holds the daemon socket — not a stale file; no recovery attempted"
+        );
+        return false;
+    }
+    let existed = socket.exists();
+    if existed {
+        let _ = std::fs::remove_file(socket);
+    }
+    let started = std::time::Instant::now();
+    let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
+    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
+    let mut answered = false;
+    while started.elapsed() < std::time::Duration::from_secs(25) {
+        if socket.exists() && discover_peer_id(socket).await.is_ok() {
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    crate::probe!(
+        class = "airc.daemon.recovered",
+        socket = %socket.display(),
+        outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
+        stale_file_removed = existed,
+        waited_ms = started.elapsed().as_millis() as u64,
+        "dead airc daemon: stale socket cleared and a daemon started by the core itself"
+    );
+    answered
 }
 
 /// Status RPC failure → typed `StaleSocket` carrying the path AND

@@ -22,6 +22,18 @@ impl ExecutionState {
         s
     }
 
+    /// As [`Self::with_args`], plus caller-supplied bindings a pipeline may read
+    /// before any step has run — the ROOM an activity's pipeline runs in
+    /// (`$room.id`, `$room.name`, S3) is the first. Seeds bind after `args`, so a
+    /// seed named `args` would shadow it; the executor never seeds that name.
+    pub fn seeded(args: Value, seed: impl IntoIterator<Item = (String, Value)>) -> Self {
+        let mut s = Self::with_args(args);
+        for (name, value) in seed {
+            s.bind(name, value);
+        }
+        s
+    }
+
     /// Bind (or rebind — last write wins, probed by the executor) a value.
     pub fn bind(&mut self, name: impl Into<String>, value: Value) {
         self.bindings.insert(name.into(), value);
@@ -49,6 +61,20 @@ impl ExecutionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_seeded_room_is_readable_before_any_step_runs() {
+        // what this catches: S3 — an activity's pipeline runs IN a room, and the
+        // first step must be able to name it (`$room.id`) without a prior step
+        // having bound it. If seeding regresses, every `work/create` step in an
+        // authored activity posts to nowhere.
+        let s = ExecutionState::seeded(
+            serde_json::json!({"suite": "swe"}),
+            [("room".to_string(), serde_json::json!({"id": "r-1", "name": "job-search"}))],
+        );
+        assert_eq!(s.lookup("room.id").and_then(|v| v.as_str()), Some("r-1"));
+        assert_eq!(s.lookup("args.suite").and_then(|v| v.as_str()), Some("swe"));
+    }
 
     #[test]
     fn lookup_walks_objects_and_arrays() {

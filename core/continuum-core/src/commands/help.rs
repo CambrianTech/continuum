@@ -3,7 +3,7 @@
 //!
 //! Symmetry with the CLI: `continuum <command> --help` renders the SAME single schema as
 //! bash flags ("the manual matches the paradigm"); this renders it as the canonical
-//! tool-call envelope a persona emits. One source (`command_registry()` + the
+//! tool-call envelope a persona emits. One source (`command_registry_live()` + the
 //! command's `params_schema`), two paradigms. So when a persona is unsure HOW to
 //! call a tool, it asks `commands/help` and gets back a fill-in-the-blanks example —
 //! and because that example IS the canonical format, it teaches the model toward the
@@ -24,6 +24,7 @@ use ts_rs::TS;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::routing::grid_trust_policy::caller_trust;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
+use crate::sdk_codegen::ext::command_registry_live;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
@@ -205,7 +206,8 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
 
     format!(
         "{name} — {description}\n\n\
-         To call it, emit exactly this (fill in the values):\n{envelope_str}\n\n\
+         To call it, emit this SHAPE — every `<replace-with-…>` below is a blank you fill \
+         in, not a value to send:\n{envelope_str}\n\n\
          Arguments:\n{args_block}"
     )
 }
@@ -231,7 +233,7 @@ fn resolve_ref<'a>(spec: &'a Value, root: &'a Value) -> &'a Value {
 }
 
 /// Describe a parameter's shape for help: a human type hint + a concrete placeholder
-/// example. Scalars → `("string", "<string>")`. Externally-tagged enums (`oneOf`/`anyOf`,
+/// example. Scalars → `("string", "<replace-with-string>")`. Externally-tagged enums (`oneOf`/`anyOf`,
 /// possibly behind a `$ref`) → `("one of: A{fields} | B{fields}", <first-variant example>)`
 /// so a model SEES the variants instead of a blind `"any"` (the invisible-contract bug that
 /// left `code/edit`'s `edit_mode` uncallable). Graceful `any` fallback on any unknown shape.
@@ -260,13 +262,27 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
         // boolean`). A typed placeholder still reads as fill-me-in, and a literal copy
         // now fails on MEANING (wrong path, missing field) instead of on SHAPE — an
         // error the caller can act on.
+        //
+        // THAT WAS NOT ENOUGH, and the eight days after it say so. `<string>` is what a
+        // TYPE ANNOTATION looks like, so a caller reading "emit exactly this" over a
+        // block containing `"card_id": "<string>"` sent exactly that — measured on
+        // 2026-09-14, one citizen issuing `work/release({"card_id":"<string>",
+        // "claim_id":"<string>"})` TWELVE times in a turn, and a second peer showing the
+        // same signature in the event store since 09-05. She was not guessing; the
+        // example told her to. Two words of prose ("fill in") cannot outvote a concrete,
+        // authoritative, copyable block — the example always wins.
+        //
+        // So the placeholder must read as an IMPERATIVE rather than a type. It still
+        // deserializes (the property won above), and a literal copy still fails on
+        // meaning — but `<replace-with-string>` cannot be mistaken for a value the way
+        // `<string>` can. See card 6c55f7a7.
         let placeholder = match ty {
             "boolean" => json!(true),
             "integer" | "number" => json!(0),
             "array" => json!([]),
             "object" => json!({}),
             // A string placeholder IS a valid string: it parses, then fails on content.
-            _ => json!(format!("<{ty}>")),
+            _ => json!(format!("<replace-with-{ty}>")),
         };
         return (ty.to_string(), placeholder);
     }
@@ -417,6 +433,36 @@ mod param_shape_tests {
         assert!(out.contains("p (string, required)"), "{out}");
     }
 
+    // what this catches: regression for card 6c55f7a7 — a string placeholder that reads
+    // as a TYPE ANNOTATION rather than as a blank. `<string>` is exactly what a type
+    // looks like, so citizens sent it as a value: measured 2026-09-14, one issuing
+    // `work/release({"card_id":"<string>","claim_id":"<string>"})` twelve times in a
+    // single turn, and a second peer showing the same signature since 09-05. The manual
+    // must not contain a token a caller can mistake for a value, and must not instruct
+    // literal emission of the block that holds it.
+    #[test]
+    fn the_example_never_offers_a_token_that_reads_as_a_value() {
+        let schema = json!({
+            "type": "object",
+            "required": ["card_id"],
+            "properties": {"card_id": {"type": "string"}}
+        });
+        let out = render_ai_help("work/release", "release a claim", &schema);
+        assert!(
+            !out.contains("\"<string>\""),
+            "a bare `<string>` reads as a type annotation and gets sent as a value: {out}"
+        );
+        assert!(
+            out.contains("<replace-with-string>"),
+            "the blank must read as an imperative: {out}"
+        );
+        assert!(
+            !out.contains("emit exactly this"),
+            "instructing literal emission over a block of blanks is the defect — the \
+             concrete example outvotes the prose every time: {out}"
+        );
+    }
+
     // what this catches: a placeholder that is invalid for its OWN type, so a caller
     // copying the example verbatim — which the manual instructs — cannot possibly
     // succeed. Observed 2026-09-05: `code/edit` refused with
@@ -514,7 +560,7 @@ impl ActionCommand for CommandsHelp {
         let trust = caller_trust(ctx.caller.as_ref());
         // Everything THIS caller could actually run — the universe for both the index
         // and did-you-mean (never leak commands above the caller's access).
-        let authorized: Vec<_> = command_registry()
+        let authorized: Vec<_> = command_registry_live()
             .into_iter()
             .filter(|d| is_command_authorized(d.name, trust))
             .collect();

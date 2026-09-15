@@ -27,8 +27,22 @@ pub(crate) fn governor_releases(acts_without_write: usize) -> bool {
 /// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
 /// the count; a card with no edit ever counts every act. Pure.
 pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> usize {
-    let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
-        rows.iter().filter(|r| r.sender == me).collect();
+    acts_since_last_write_since(rows, me, 0)
+}
+
+/// [`acts_since_last_write`] counting only rows at or after `since_ms` — THIS hold's acts.
+/// 2026-09-12 21:30Z: a citizen re-pulled a card after a reboot and was released 28 s later
+/// at "22 acts without a write" — every one of them from her previous hold, whose pull
+/// left no ⚙ receipt to reset the count. The pull's own clock is the boundary.
+pub(crate) fn acts_since_last_write_since(
+    rows: &[crate::persona::durable_history::RoomRow],
+    me: Uuid,
+    since_ms: u64,
+) -> usize {
+    let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
+        .iter()
+        .filter(|r| r.sender == me && r.occurred_at_ms >= since_ms)
+        .collect();
     mine.sort_by_key(|r| r.occurred_at_ms);
     let mut n = 0usize;
     for r in mine {
@@ -41,7 +55,11 @@ pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::Roo
             // the acceptance verb reads `persona.act.observed wrote=true`. If the
             // receipt shape moves, this counter reads zero and the gate silently
             // stops — read the act probe stream here when it is queryable per card.
-            if is_write_verb(verb) {
+            // A claim or a release is a HOLD BOUNDARY and resets the count too
+            // (measured 2026-09-11 23:55Z: 7 pulls / 6 governor releases in 25 min —
+            // a citizen released at 12 write-less acts pulled a fresh card and was
+            // released again at once, because the count spanned her previous hold).
+            if is_write_verb(verb) || is_hold_boundary(verb) {
                 n = 0;
             } else {
                 n += 1;
@@ -162,8 +180,17 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
 /// The one list of write-capable hands, shared by the write-or-release count and
 /// the progress note (review on #3790: `code/write` finished the only card
 /// completion that night and was not on the list).
+/// A claim or a release starts or ends a hold; the write-or-release count is a
+/// per-hold number, so either verb restarts it. The pull rides `work/claim` (one
+/// claim path), so a governor release followed by a pull reads as a fresh hold.
+fn is_hold_boundary(verb: &str) -> bool {
+    verb.starts_with("work/claim") || verb.starts_with("work/release")
+}
+
 fn is_write_verb(verb: &str) -> bool {
-    verb.starts_with("code/edit")
+    // The ledger is the mind's deliverable: writing it is progress, not orientation.
+    verb.starts_with("work/note")
+        || verb.starts_with("code/edit")
         || verb.starts_with("code/write")
         || verb.starts_with("code/create-workspace")
         || verb.starts_with("git_apply")

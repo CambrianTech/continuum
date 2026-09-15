@@ -721,7 +721,11 @@ async fn serve_persona_loop_inner(
         qualifying.retain(|m| {
             let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .is_some_and(|r| r.get(m.peer_id).is_some());
-            crate::persona::wake_backlog::triggers_a_turn(priority_line(m), sender_is_citizen)
+            crate::persona::wake_backlog::triggers_a_turn(
+                priority_line(m),
+                sender_is_citizen,
+                crate::persona::wake_backlog::is_receipt(&m.text),
+            )
         });
         let perceived_only = before - qualifying.len();
         if perceived_only > 0 {
@@ -863,6 +867,7 @@ async fn serve_persona_loop_inner(
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
+        crate::cognition::resource_admission::note_turn_started(ctx.identity.peer_id.as_uuid(), crate::persona::trace::now_ms());
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
@@ -1151,6 +1156,13 @@ async fn serve_persona_loop_inner(
         // nothing to say about. Assigned unconditionally on the one path that
         // reaches `produce`; every other path `continue`s before it.
         let mut turn_credit: Option<crate::persona::training_producer::CapturedCredit> = None;
+        // THE ACT CHAIN OF A DIRECTED TURN LEARNS TOO (2026-09-14): a holder answering a
+        // human line acts on her card mid-turn and often PASSES (no spoken text), so
+        // the spoke-path `produce` below never ran for her — 25 holder acts in 30 min,
+        // 0 credits staged, on the build that had just made staging possible (#4032).
+        // The chain is staged against the card the moment the settle returns, whatever
+        // the turn's final step was (the same rule as the held-work turn, #4021).
+        let mut turn_acts: Vec<(String, Vec<crate::ai::types::ToolCall>)> = Vec::new();
         let mut turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
             Vec::new();
         let response_text = match crate::cognition::persona_workspace::global()
@@ -1325,6 +1337,7 @@ async fn serve_persona_loop_inner(
                     // self-tick and held-work paths settle turns through the same driver
                     // and got no record, so nothing on disk ever described a lived turn.
                     // The driver stays a driver: no learning policy at any call site.
+                    turn_acts = outcome.turn_acts.clone();
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Captured HERE, where both facts still exist. The credit is read off
@@ -1337,6 +1350,26 @@ async fn serve_persona_loop_inner(
                 // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
                 turn_credit = held_card.credit.clone();
                 turn_generation_receipts = settled_receipts;
+                crate::probe!(
+                    class = "training.hook.directed_turn",
+                    persona = %ctx.identity.agent_name,
+                    acts = turn_acts.len() as u64,
+                    card_linked = turn_credit.as_ref().map(|c| c.is_card_linked()).unwrap_or(false), // JUSTIFIED unwrap_or: no credit = not card-linked, a legible false
+                    "directed turn settled — what the learning hook sees"
+                );
+                if !turn_acts.is_empty() {
+                    if let Some(credit) = turn_credit.as_ref().filter(|c| c.is_card_linked()) {
+                        crate::persona::training_producer::produce(
+                            ctx.identity.peer_id.as_uuid(),
+                            ctx.identity.agent_name.clone(),
+                            ctx.profile.model_id.clone(),
+                            msg.text.clone(),
+                            crate::persona::training_producer::acted_chain(&turn_acts),
+                            Some(credit.clone()),
+                            turn_generation_receipts.clone(),
+                        );
+                    }
+                }
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
@@ -2500,6 +2533,33 @@ async fn run_self_cycle(
     // concludes it (`PASS: done`) — the autonomous loop the architecture always
     // promised ("the heartbeat advances my thread, not just reacts to pokes").
     // Returns early so she never ALSO spends a musing turn the same tick.
+    // NO CARD IN HAND → THE DECK FIRST. The act question below lets an idle citizen
+    // muse (read, run, look around) and, when she does, this tick returns before the
+    // pull — so a citizen who always finds something to look at never takes a card.
+    // Measured 2026-09-13 08:41–09:20Z: Joaquin, holding nothing, acted in her home
+    // room every tick (code/shell, code/read) while a seed-4 card sat open for 40
+    // minutes; not one pull attempt. Held work keeps its order (a holder's tick is
+    // her work turn; she pulls review cards after it, below).
+    if focus_room.is_none() {
+        match try_pull_next_card(ctx, conversation).await {
+            PullOutcome::Pulled => {
+                crate::probe!(
+                    class = "persona.selftick.pulled_before_musing",
+                    persona = %ctx.identity.agent_name,
+                    "idle citizen took a card from the deck before the act question"
+                );
+                return true;
+            }
+            outcome @ (PullOutcome::DeferredWip | PullOutcome::Nothing) => {
+                crate::probe!(
+                    class = "persona.selftick.deck_first",
+                    persona = %ctx.identity.agent_name,
+                    outcome = ?outcome,
+                    "idle citizen asked the deck first — nothing taken; on to the act question"
+                );
+            }
+        }
+    }
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
     if crate::persona::act_question::ask_the_act_question(
         ctx,
@@ -2542,7 +2602,11 @@ async fn run_self_cycle(
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
     // needed one.
-    let Some(_ambient_permit) = crate::cognition::resource_admission::try_hold_ambient_turn()
+    let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
+        ctx.identity.peer_id.as_uuid(),
+        now_ms,
+    )
+    .await
     else {
         return true;
     };
@@ -2999,6 +3063,16 @@ mod tests {
             1,
             "an edit resets the count"
         );
+        // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
+        // governor release starts a fresh count, so the new hold is not released at once.
+        let mut reclaimed = looping.clone();
+        reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
+        reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
+        assert_eq!(
+            acts_since_last_write(&reclaimed, me),
+            1,
+            "a claim is a hold boundary: only the act after it counts"
+        );
         let text = held_work_burst_gated(
             &[],
             &[],
@@ -3136,6 +3210,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let burst = held_work_burst(&[&card], &[]);
@@ -5088,6 +5164,7 @@ mod tests {
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
+            experience: None,
             context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             defer_recall: false,
             defer_grounding: false,
@@ -5116,6 +5193,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         };
         let card_id = card.card_id;
         let stub = StubAircCitizen::new(persona_peer).with_claims(vec![card]);
@@ -5178,6 +5257,7 @@ mod tests {
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,
+                experience: None,
                 context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
                 defer_recall: false,
                 defer_grounding: false,
@@ -5258,6 +5338,8 @@ mod tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
         }
     }
 

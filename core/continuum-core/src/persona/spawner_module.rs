@@ -330,13 +330,16 @@ impl PersonaSpawnerModule {
         roster
     }
 
-    /// How many citizens this node seats: the configured population, capped at the
-    /// served lane count once a real serving plan is known. ≥1.
+    /// How many citizens this node seats: the configured population, ≥1. The served
+    /// lane count is NOT a cap (Joel, 2026-09-13: "it's for no reason … this is
+    /// temporary disk space"): N minds over M slots is the design — a citizen whose
+    /// slot is taken pages her KV to disk and restores it on return, registers-style.
+    /// The reasonable limit is the KV page store's disk budget, owned by the page
+    /// sweeper, never the slot count. (#3798's lane cap was a compensation for a
+    /// restore that came back cold — fixed at the server: checkpoints ride with the
+    /// slot state.)
     pub fn seats(&self) -> usize {
-        match self.serving_base_model {
-            Some(_) => self.population.min(self.serving_lanes as usize).max(1),
-            None => self.population.max(1),
-        }
+        seats_under(self.population, crate::persona::roster_hold::active().as_ref())
     }
 }
 
@@ -512,13 +515,21 @@ async fn draw_intents(
                 source,
             })?;
         let Some(intent) = next else {
-            if hold.is_some() && !intents.is_empty() {
+            // A SHORTFALL IS A PARTIAL ROSTER, NEVER A DRAIN (2026-09-13): with the
+            // roster no longer capped at lanes, a plan can ask for more seats than the
+            // provider holds identities (or than a hold allows). Returning Err here made
+            // the host drain the already-registered minds as "partially registered" and
+            // retry every second — zero residents until an operator intervened. The
+            // identities the provider yielded ARE the roster; the plan's surplus seats are
+            // the plan's business (a probe names the shortfall), not a boot failure.
+            if !intents.is_empty() {
                 crate::probe!(
-                    class = "persona.host.hold_filled_fewer_seats",
+                    class = "persona.host.provider_filled_fewer_seats",
                     seats = required,
                     filled = intents.len(),
                     drawn,
-                    "the provider ran out of identities the hold allows — seating fewer, not failing"
+                    held = hold.is_some(),
+                    "the provider ran out of identities (or the hold allows no more) — seating fewer, not failing"
                 );
                 break;
             }
@@ -530,7 +541,9 @@ async fn draw_intents(
             });
         };
         drawn += 1;
-        if let Some(h) = hold.as_ref() {
+        // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
+        // orders the roster — team first — but seats the whole population (below).
+        if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
             if !h.allows(&intent.agent_name) {
                 crate::probe!(
                     class = "persona.host.held_out",
@@ -543,6 +556,12 @@ async fn draw_intents(
         }
         intents.push(intent);
     }
+    // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
+    // after — never fewer minds. Stable: the provider's order is kept within each half.
+    if let Some(h) = hold.as_ref().filter(|h| !h.exclusive) {
+        let (team, rest): (Vec<_>, Vec<_>) = intents.into_iter().partition(|i| h.allows(&i.agent_name));
+        intents = team.into_iter().chain(rest).collect();
+    }
     Ok(intents)
 }
 
@@ -552,6 +571,21 @@ async fn draw_intents(
 /// cap computed there seats one citizen; when the pin brings five lanes the
 /// reconciler must draw the four missing seats on that edge, never wait for a
 /// reboot (M5 2026-09-06 18:0xZ: one citizen on a five-lane node).
+/// The seat count under an operator hold: a hold DEFINES the roster — only its
+/// names may sit — so it also bounds how many seats there are to fill. Without
+/// this (2026-09-13, first boot after the lane cap left the roster): population 12,
+/// hold of 5 → draw_intents filled 5 and returned; the reconciler then asked for
+/// the 7 "missing" every second, the exhausted provider yielded none, the Err path
+/// drained the five as partially registered, and the node sat at ZERO residents
+/// until the operator moved the hold file aside. Pure.
+pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
+    let seats = population.max(1);
+    match hold {
+        Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
+        _ => seats,
+    }
+}
+
 pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
     let mut plan = module.plan();
     let missing = plan.len().saturating_sub(already_hosted);
@@ -716,15 +750,17 @@ mod tests {
             only: ["Delta", "Foxtrot", "Alpha"].iter().map(|s| s.to_string()).collect(),
             until_ms: u64::MAX,
             reason: "test".to_string(),
+            exclusive: true,
         };
         let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
 
-    // what this catches (2026-09-06 18:0xZ): a roster that never grows past the boot
-    // plan's lanes. Five seats with three already hosted draws two; a full roster draws
-    // none; more hosted than seats draws none (the shrink is the reconciler's, not a draw).
+    // what this catches (2026-09-06, re-pinned 2026-09-13): the missing plan is the seats
+    // not yet filled — and the seats are the POPULATION, never the lanes (minds page over
+    // slots). Twelve seats with three hosted draws nine; a full roster draws none; more
+    // hosted than seats draws none (the shrink is the reconciler's, not a draw).
     #[test]
     fn the_missing_plan_is_the_seats_not_yet_filled() {
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
@@ -732,22 +768,22 @@ mod tests {
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 5;
         let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
-        assert_eq!(missing_plan(&spawner, 3).len(), 2 * per_seat);
-        assert_eq!(missing_plan(&spawner, 5).len(), 0);
-        assert_eq!(missing_plan(&spawner, 7).len(), 0);
-        assert_eq!(missing_plan(&spawner, 0).len(), 5 * per_seat);
+        assert_eq!(missing_plan(&spawner, 3).len(), 9 * per_seat, "lanes (5) do not cap the seats (12)");
+        assert_eq!(missing_plan(&spawner, 12).len(), 0);
+        assert_eq!(missing_plan(&spawner, 14).len(), 0);
+        assert_eq!(missing_plan(&spawner, 0).len(), 12 * per_seat);
     }
 
     #[test]
-    fn the_roster_never_exceeds_the_warm_lanes() {
+    fn the_roster_is_the_population_and_lanes_are_never_a_cap() {
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         assert_eq!(spawner.seats(), 12, "no plan yet: the configured population stands");
         spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
         spawner.serving_lanes = 4;
-        assert_eq!(spawner.seats(), 4, "a real plan caps the roster at its lanes");
-        assert_eq!(spawner.plan().len(), 4 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
-        spawner.serving_lanes = 0;
+        assert_eq!(spawner.seats(), 12, "a real plan does not cap the roster: minds page over slots");
+        assert_eq!(spawner.plan().len(), 12 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
+        spawner.set_population(0);
         assert_eq!(spawner.seats(), 1, "never zero");
     }
 
@@ -760,9 +796,9 @@ mod tests {
         spawner.set_population(6);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
-        assert_eq!(spawner.seats(), 2);
+        assert_eq!(spawner.seats(), 6, "lanes never cap the roster");
         spawner.set_serving(None);
-        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands, no stale cap");
+        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands");
         assert!(spawner.serving_base_model.is_none());
     }
 
@@ -947,4 +983,63 @@ mod tests {
         let back: DesiredRole = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, role);
     }
+    // what this catches: a hold smaller than the population turning the boot into a
+    // drain loop (2026-09-13: 12 seats, 5 allowed, zero residents for four minutes).
+    // A hold defines the roster, so it bounds the seats; no hold, population stands.
+    #[test]
+    fn a_roster_hold_bounds_the_seats_to_the_names_it_allows() {
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
+            until_ms: u64::MAX,
+            reason: "test".to_string(),
+            exclusive: true,
+        };
+        assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
+        assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
+        assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
+        assert_eq!(seats_under(0, None), 1, "never zero");
+    }
+
+    // what this catches (2026-09-13): a plan larger than the provider's identities turning
+    // the boot into a drain loop — zero residents until an operator moved a file. The
+    // identities the provider yields ARE the roster; the surplus seats are a probe.
+    #[tokio::test]
+    async fn a_provider_shortfall_seats_what_it_has_and_never_fails_the_boot() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
+        let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
+        let intents = draw_intents(&mut provider, &plan, None).await.expect("a shortfall is not an error");
+        let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
+        let mut empty = Yield(std::collections::VecDeque::new());
+        assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+    }
+
+    // what this catches (2026-09-14): a working round's team hold shrinking the roster —
+    // seven of twelve minds held out on a sixteen-seat node because the derived hold read
+    // as exclusive. A derived hold orders (team first); only an operator hold excludes.
+    #[test]
+    fn a_derived_team_hold_seats_the_team_first_and_never_fewer_minds() {
+        let derived = crate::persona::roster_hold::from_team_names(vec!["Delta".into(), "Alpha".into()], 0).expect("hold");
+        assert!(!derived.exclusive);
+        assert_eq!(seats_under(12, Some(&derived)), 12, "a team hold never bounds the seats");
+        let operator = crate::persona::roster_hold::RosterHold { only: vec!["Alpha".into()], until_ms: u64::MAX, reason: "op".into(), exclusive: true };
+        assert_eq!(seats_under(12, Some(&operator)), 1, "an operator hold does");
+    }
+
 }

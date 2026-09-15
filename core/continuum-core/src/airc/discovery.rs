@@ -9,14 +9,51 @@ use uuid::Uuid;
 /// Timeout for discovery subprocesses.
 const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
 
-#[derive(thiserror::Error, Debug)]
-enum DiscoveryError {
-    #[error("Failed to discover room: {0}")]
-    RoomDiscoveryFailed(String),
-    #[error("Channel {0} is not a valid UUID: {1}")]
-    UnparseableChannel(String, uuid::UuidError),
-    #[error("No channel found for room name")]
-    NoChannelFound,
+/// Deadline for the auto-install path. Generous because the install
+/// script runs `curl` + `bash` and on a cold install can clone +
+/// build airc — minutes, legitimately. 120s catches a truly stuck
+/// install; it now bounds the **detached background task**
+/// (`discover_airc_socket` spawns the install and fails fast), so boot
+/// NEVER waits on it — below this we trust the installer's own progress.
+const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Canonical installer URL. Same one printed at the top of airc's
+/// `install.sh` and in airc's README. Pinning here keeps the curl-pipe-
+/// bash idempotent + transparent — readers see exactly where the
+/// bootstrap downloads from.
+const AIRC_INSTALL_URL: &str =
+    "https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh";
+
+/// Opt-out env var. Set to `1` to suppress auto-install (CI, hermetic
+/// builds, distros that vendor airc themselves). When set, discovery
+/// returns an error instead of running the installer.
+const AIRC_DISABLE_AUTOINSTALL: &str = "CONTINUUM_DISABLE_AIRC_AUTOINSTALL";
+
+/// Explicit socket-path override. Honored unconditionally — when set,
+/// no discovery, no install, no PATH probe. For tests pointing at
+/// ephemeral daemons, and for operators with non-standard airc deploys.
+pub(crate) const AIRC_DAEMON_SOCKET_ENV: &str = "AIRC_DAEMON_SOCKET";
+
+#[derive(Debug, thiserror::Error)]
+pub enum DiscoveryError {
+    #[error("airc binary not found on PATH and auto-install failed: {0}")]
+    InstallFailed(String),
+    #[error("auto-install suppressed via {AIRC_DISABLE_AUTOINSTALL}=1 — install airc manually: curl -fsSL {AIRC_INSTALL_URL} | bash")]
+    AutoInstallDisabled,
+    #[error("airc not on PATH — bootstrapping it in the background; the node is UP (local commands work) but not yet a grid peer. Restart the core once the install completes to join airc (self-healing re-attach without restart is a follow-up).")]
+    AutoInstallInProgress,
+    #[error("`airc ipc-endpoint` failed: {0}")]
+    EndpointCommandFailed(String),
+    #[error("`airc ipc-endpoint` returned an empty path — airc binary may be from before #1095 (add the command or upgrade airc)")]
+    EmptyPath,
+    #[error("`airc room` failed: {0}")]
+    RoomCommandFailed(String),
+    #[error("`airc room` output did not contain a parseable `channel: <uuid>` line: {0}")]
+    UnparseableChannel(String),
+    #[error("daemon Status RPC failed: {0}")]
+    PeerStatusFailed(String),
+    #[error("daemon Status returned an unparseable peer_id ({0:?}): {1}")]
+    UnparseablePeerId(String, uuid::Error),
 }
 
 struct TokioCommand {

@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Continuum command manifest",
+  "description": "An authored command: a verb backed by a process on this machine. Drop the file in <continuum_root>/commands/ — it is live on the next boot, no deploy, no repo change.",
+  "type": "object",
+  "required": [
+    "exec",
+    "name"
+  ],
+  "properties": {
+    "access": {
+      "description": "`ai_safe` (a citizen may call it; the ACL maps it to Provisional trust) or `privileged` (operator and substrate only).",
+      "default": "ai_safe",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ManifestAccess"
+        }
+      ]
+    },
+    "cwd": {
+      "default": "root",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ManifestCwd"
+        }
+      ]
+    },
+    "description": {
+      "description": "One line, model-facing: what the persona's tool surface shows the reasoner.",
+      "default": "",
+      "type": "string"
+    },
+    "exec": {
+      "description": "argv. The first element resolves on PATH or as a path relative to the manifest.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "name": {
+      "description": "The verb, e.g. `ext/proof-check`. Must not collide with a shipped command.",
+      "type": "string"
+    },
+    "native": {
+      "description": "Opt into the persona's NATIVE tool surface (offered as a tool schema, not merely reachable by name). Keep the native set small; see `native_tool_specs`.",
+      "default": false,
+      "type": "boolean"
+    },
+    "params": {
+      "description": "JSON Schema for the params object. The recipe gate validates steps against it and `commands/help` renders it — declare it, or the verb is untyped.",
+      "default": null
+    },
+    "timeoutMs": {
+      "description": "Every process call is bounded and named. Default 60 000 ms.",
+      "default": 60000,
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "wire": {
+      "default": "json_stdio",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ManifestWire"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "ManifestAccess": {
+      "type": "string",
+      "enum": [
+        "ai_safe",
+        "privileged"
+      ]
+    },
+    "ManifestCwd": {
+      "description": "Where an authored command's process runs.",
+      "oneOf": [
+        {
+          "description": "The continuum root (`~/.continuum`). The default.",
+          "type": "string",
+          "enum": [
+            "root"
+          ]
+        },
+        {
+          "description": "The calling citizen's workspace when known, else the root.",
+          "type": "string",
+          "enum": [
+            "workspace"
+          ]
+        }
+      ]
+    },
+    "ManifestWire": {
+      "description": "How params reach the process and the result comes back.",
+      "oneOf": [
+        {
+          "description": "Params as one JSON document on stdin; stdout is the JSON result. The default.",
+          "type": "string",
+          "enum": [
+            "json_stdio"
+          ]
+        },
+        {
+          "description": "A long-lived process holding one connection. Declared, not yet built: a manifest naming it is refused at load with that reason.",
+          "type": "string",
+          "enum": [
+            "socket"
+          ]
+        }
+      ]
+    }
+  }
+}

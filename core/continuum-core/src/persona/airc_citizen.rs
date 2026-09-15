@@ -82,6 +82,13 @@ pub trait AircCitizen:
     + crate::persona::wall_source::WallReader
     + crate::persona::room_board_source::RoomBoardReader
 {
+    /// Take ownership of a task whose life must end with this citizen's (an
+    /// invalidator holding daemon streams, a watcher). The default ABORTS it at
+    /// once — a citizen that cannot own tasks must not leave them running.
+    fn own_task(&self, handle: tokio::task::JoinHandle<()>) {
+        handle.abort();
+    }
+
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
     /// it as part of the persona's tracing span.
@@ -236,6 +243,14 @@ pub trait AircCitizen:
     /// empty (nothing offered); the production runtime folds the room's board.
     async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
         Ok(Vec::new())
+    }
+
+    /// How many cards on `room`'s board are IN FLIGHT — live holds in a holder's
+    /// column, per the ONE predicate ([`crate::persona::card_holder::in_flight_now`]).
+    /// The WIP = lanes gate counts this, never a tracker arithmetic. Fixture default:
+    /// nothing in flight; the production runtime folds the room's board.
+    async fn in_flight_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<usize, AircError> {
+        Ok(0)
     }
 }
 

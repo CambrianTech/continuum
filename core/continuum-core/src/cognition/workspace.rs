@@ -1052,6 +1052,14 @@ pub struct Workspace {
     /// such a turn: 37 tool schemas were 8.5k of a ~22k-token prefill per act
     /// with zero KV reuse (measured 2026-09-05), and a work turn needs a dozen.
     pub workspace_deliverable: bool,
+    /// The verbs this turn's ROOM authorizes, by command name, as its recipe declares
+    /// them (`affordances[].command`). Stamped by the cycle from the node's experience
+    /// source on every tick (S1). Empty = the recipe declares none, and the
+    /// deliberation faculty offers the pre-S1 surface unchanged; non-empty = the
+    /// surface is selected from these (plus the discovery pair, so a withheld verb
+    /// stays one `commands/list` away). This is how "recipe = content-type + RULES"
+    /// stops being half true: the rules reach her hands, not only the renderer.
+    pub room_affordances: Vec<String>,
     /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
     /// [now …] line in the system prompt so time is a fact she can perceive (#125).
     pub now_ms: Option<u64>,
@@ -1107,6 +1115,7 @@ impl Workspace {
             receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
+            room_affordances: Vec::new(),
             now_ms: burst_now,
             token_sink: None,
         }
@@ -1164,6 +1173,14 @@ impl Workspace {
 
     pub fn workspace_deliverable(mut self, workspace_deliverable: bool) -> Self {
         self.workspace_deliverable = workspace_deliverable;
+        self
+    }
+
+    /// Stamp the room's authorized verbs (builder form; see
+    /// [`room_affordances`](Self::room_affordances)). The cycle calls this once
+    /// per tick from the node's experience source.
+    pub fn room_affordances(mut self, commands: Vec<String>) -> Self {
+        self.room_affordances = commands;
         self
     }
 
@@ -1594,6 +1611,10 @@ pub struct WorkspaceCycle {
     /// re-home is then a benign no-op). Mirrors `genome`/`decoding`: one handle, two
     /// holders. See [`ModelBinding`] + [[seamless-persona-failover-model-and-genome]].
     model_binding: Option<ModelBindingHandle>,
+    /// Where a room's authored manifest comes from (S1). Read once per tick to stamp
+    /// [`Workspace::room_affordances`]. `None` = no recipe registry was shared in (a
+    /// pure-cognition / test cycle): nothing is stamped and the surface is pre-S1.
+    experience: Option<crate::experience::source::SharedExperienceSource>,
     /// Monotonic service-tick counter — the source of each [`Workspace::cycle`]
     /// frame index. Interior-mutable because `run` takes `&self` (the living
     /// mind is shared, not owned per tick); bumped once per `run_in_room`.
@@ -1745,6 +1766,7 @@ impl WorkspaceCycle {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             model_binding: None,
+            experience: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
             token_sink: std::sync::Mutex::new(None),
             faculty_pulse: Arc::new(super::faculty_pulse::FacultyPulse::new()),
@@ -1867,6 +1889,29 @@ impl WorkspaceCycle {
     pub fn with_model_binding(mut self, binding: ModelBindingHandle) -> Self {
         self.model_binding = Some(binding);
         self
+    }
+
+    /// Share the node's experience source so each tick can read the room's recipe
+    /// and stamp its affordances onto the turn (S1). `None` keeps the pre-S1
+    /// behaviour: no stamp, global surface.
+    pub fn with_experience_source(
+        mut self,
+        experience: Option<crate::experience::source::SharedExperienceSource>,
+    ) -> Self {
+        self.experience = experience;
+        self
+    }
+
+    /// The command names the room's recipe authorizes — `affordances[].command` of
+    /// the resolved manifest. Empty when no source is shared in, when the source has
+    /// no recipe for the room (never a fabricated manifest), or when the recipe
+    /// declares none: all three mean "the surface is not room-selected this turn".
+    fn room_affordances_for(&self, room: Uuid) -> Vec<String> {
+        self.experience
+            .as_ref()
+            .and_then(|source| source.experience_for(room))
+            .map(|manifest| manifest.affordances.into_iter().map(|a| a.command).collect())
+            .unwrap_or_default()
     }
 
     /// Re-home the persona's deliberation onto a newly served model — swap the
@@ -2200,11 +2245,14 @@ impl WorkspaceCycle {
         // and the `world_state` text projection (every other reader) and takes the
         // ROOM from the burst itself. Framing carries prompt and scheduling facts;
         // it never touches the conversation turns.
+        // S1: what the ROOM's recipe lets her do, read before the burst is consumed.
+        let room_affordances = self.room_affordances_for(burst.room.as_uuid());
         let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .with_attention(framing.attention)
             .self_initiated(framing.self_initiated)
             .workspace_deliverable(framing.workspace_deliverable)
+            .room_affordances(room_affordances)
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());

@@ -169,6 +169,11 @@ pub struct BenchRound {
     /// converting a team round to solo — the review event could never fire).
     #[serde(default)]
     team: Vec<Uuid>,
+    /// The team BY NAME — what a recipe or a dispatch named. The hosting reconciler seats
+    /// the union of every WORKING citizen-driven round's team when no operator hold stands
+    /// (`roster_hold::active`), so a round staffs itself; an old round file reads empty.
+    #[serde(default)]
+    team_names: Vec<String>,
     /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
     /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
     /// and the boot resume know WHO works a card that has never run.
@@ -191,6 +196,12 @@ pub struct BenchRound {
     /// is read-the-saved-state, never re-derive.
     #[serde(default)]
     card_last_act_ms: HashMap<Uuid, u64>,
+    /// THE IDLE CLOCK (card deb26770's kin; Joel 2026-09-14: "waiting three hours for
+    /// something to fix itself is insane"): when a claimed card was first seen with
+    /// no act, by which holder. Persisted with the round (file + room bundle) so a
+    /// reboot never restarts it; an act clears it; a new holder restarts it.
+    #[serde(default)]
+    card_idle_since: HashMap<Uuid, IdleMark>,
     /// THE REVIEW GATE (team-recipe Arm 2, 2026-09-03): when set, an owner's `done`
     /// on a card of this round becomes `review` + a sibling review card that a
     /// NON-owner pulls; only the reviewer's `done` closes the parent (and fires its
@@ -245,10 +256,12 @@ impl BenchRound {
             card_assignees: HashMap::new(),
             card_instances: HashMap::new(),
             card_last_act_ms: HashMap::new(),
+            card_idle_since: HashMap::new(),
             review_gate: false,
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
             team: Vec::new(),
+            team_names: Vec::new(),
         }
     }
 
@@ -270,6 +283,21 @@ impl BenchRound {
     /// ([`observe_card_event`]) turns the outcome into probes. A card outside the set is
     /// `NotOurs`; a duplicate settle is `AlreadySettled` (never double-counted); the
     /// settle that empties the set transitions the round to `Done` exactly once.
+    /// Undo a settle: the card's slot returns to unsettled and a round the settle
+    /// finished returns to Working. True when the tracker held it settled.
+    fn reopen_card(&mut self, card: Uuid) -> bool {
+        match self.cards.get_mut(&card) {
+            Some(slot @ Some(_)) => {
+                *slot = None;
+                if self.stage == RoundStage::Done {
+                    self.stage = RoundStage::Working;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn settle_card(&mut self, card: Uuid, state: &str) -> SettleOutcome {
         match self.cards.get_mut(&card) {
             None => SettleOutcome::NotOurs,
@@ -305,16 +333,71 @@ static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
 /// from the held-work turn boundary so `enrich_rounds` can see Citizen progress.
 /// Persisted with the round: freshness survives the seam. A card outside any live
 /// round records nothing (there is no round to read it back for).
+/// When a holder's actless claim was first seen (persisted on the round).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdleMark {
+    pub holder: Uuid,
+    pub since_ms: u64,
+}
+
+/// The instant an idle claim's clock runs from: the holder's last act on the card
+/// when there is one; else the first pass that saw THIS holder's claim actless —
+/// recorded on the round and persisted, so a reboot does not restart it and a new
+/// holder gets a fresh clock. Never the board row's `updated_at_ms`, which lease
+/// heartbeats refresh.
+pub fn idle_clock_for(card_id: Uuid, holder: Uuid, now_ms: u64) -> u64 {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) else {
+        return now_ms;
+    };
+    if let Some(act) = round.card_last_act_ms.get(&card_id).copied() {
+        if round.card_idle_since.remove(&card_id).is_some() {
+            persist_round_in(&rounds_state_dir(), round);
+        }
+        return act;
+    }
+    match round.card_idle_since.get(&card_id).copied() {
+        Some(mark) if mark.holder == holder => mark.since_ms,
+        _ => {
+            round.card_idle_since.insert(card_id, IdleMark { holder, since_ms: now_ms });
+            persist_round_in(&rounds_state_dir(), round);
+            now_ms
+        }
+    }
+}
+
 pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
         round.card_last_act_ms.insert(card_id, now_ms);
+        round.card_idle_since.remove(&card_id);
         persist_round_in(&rounds_state_dir(), round);
     }
 }
 
 /// The epoch-ms of the latest held-work turn on `card_id`, if any — the Citizen
 /// freshness [`enrich_rounds`] merges beside the detached run ledger.
+/// Every card of a WORKING round the tracker still counts unsettled: (round id —
+/// which IS the run room id — card, instance). The reconciler reads the board for
+/// each and settles what the board already settled (a close the tracker missed
+/// across a seam) or returns idle claims to the deck.
+pub fn unsettled_cards() -> Vec<(Uuid, Uuid, String)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, settled) in &r.cards {
+            if settled.is_none() {
+                let instance = r.card_instances.get(card).cloned().unwrap_or_default(); // JUSTIFIED unwrap_or_default: a card dispatched before instances were recorded has no name, only an id
+                out.push((r.round_id, *card, instance));
+            }
+        }
+    }
+    out
+}
+
 pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
     ROUNDS
         .lock()
@@ -350,7 +433,105 @@ fn rounds_state_dir() -> std::path::PathBuf {
 
 /// Persist one round. Failure degrades to the pre-2026-08-21 behaviour (the round
 /// forgets on reboot) and WARNS — durability must never make a live dispatch fail.
+/// THE BUNDLE (card c9ddb911, slice 2): every persisted change to a round also marks
+/// it dirty for the ACTIVITY BUNDLE — the round's saved instance state on its own
+/// room (`experience::activity_state`, kind `benchmark/round`, key
+/// [`ROUND_BUNDLE_KEY`]). The reconciler drains the set each pass and publishes;
+/// a node that never held the round restores it from the room alone
+/// ([`restore_round_from_bundle`]). The file under `state/bench-rounds/` stays as
+/// this process's fast path; the room is the truth that crosses a seam.
+static BUNDLE_DIRTY: LazyLock<Mutex<std::collections::HashSet<Uuid>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// The bundle key the round's serialized state lives under.
+pub const ROUND_BUNDLE_KEY: &str = "round";
+
+/// A round whose bundle is behind its state — what the reconciler publishes.
+pub struct DirtyRound {
+    pub round_id: Uuid,
+    pub run_room_name: String,
+    pub json: Value,
+}
+
+fn mark_bundle_dirty(round_id: Uuid) {
+    BUNDLE_DIRTY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned set still marks — same policy as every ROUNDS lock
+        .insert(round_id);
+}
+
+/// Put a round back on the dirty set (its publish failed; the next pass retries).
+pub fn requeue_bundle_dirty(round_id: Uuid) {
+    mark_bundle_dirty(round_id);
+}
+
+/// Drain the dirty set and serialize each round under the tracker lock. Lock order
+/// is DIRTY (dropped) then ROUNDS — the marker holds ROUNDS while taking DIRTY, so
+/// never the reverse here. A round with no run room yet stays dirty (nowhere to
+/// publish); a round the tracker no longer knows is dropped.
+pub fn take_dirty_bundles() -> Vec<DirtyRound> {
+    let ids: Vec<Uuid> = {
+        let mut set = BUNDLE_DIRTY.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: a poisoned set drains what it has
+        set.drain().collect()
+    };
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut homeless = Vec::new();
+    {
+        let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+        for id in ids {
+            let Some(round) = rounds.get(&id) else { continue };
+            if round.run_room_name.is_empty() {
+                homeless.push(id);
+                continue;
+            }
+            match serde_json::to_value(round) {
+                Ok(json) => out.push(DirtyRound { round_id: id, run_room_name: round.run_room_name.clone(), json }),
+                Err(e) => tracing::warn!(round = %id, error = %e, "bench round not serializable — its bundle stays behind"),
+            }
+        }
+    }
+    for id in homeless {
+        mark_bundle_dirty(id);
+    }
+    out
+}
+
+/// Restore a round from its bundle (the value under [`ROUND_BUNDLE_KEY`]). Returns
+/// `Ok(Some(id))` when the tracker learned a round it did not know, `Ok(None)` when
+/// it already knew it (this process's own state wins — it is newer or equal), `Err`
+/// for a bundle that is not a round.
+pub fn restore_round_from_bundle(bundle: &Value) -> Result<Option<Uuid>, String> {
+    let round: BenchRound = serde_json::from_value(bundle.clone()).map_err(|e| format!("bundle is not a round: {e}"))?; // ORM boundary: the bundle is the round's own serialization, read back across a seam
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    if rounds.contains_key(&round.round_id) {
+        return Ok(None);
+    }
+    let id = round.round_id;
+    crate::probe!(
+        class = "activity.state.restored",
+        kind = "benchmark/round",
+        round_id = %id,
+        room = %round.run_room_name,
+        stage = ?round.stage,
+        remaining = round.remaining(),
+        "round restored from its room's bundle — this node never held it"
+    );
+    persist_file_only(&rounds_state_dir(), &round);
+    rounds.insert(id, round);
+    Ok(Some(id))
+}
+
 fn persist_round_in(dir: &Path, round: &BenchRound) {
+    mark_bundle_dirty(round.round_id);
+    persist_file_only(dir, round);
+}
+
+/// The file half alone — what a restore writes (a restored bundle is already
+/// published; marking it dirty would republish it unchanged).
+fn persist_file_only(dir: &Path, round: &BenchRound) {
     let _ = std::fs::create_dir_all(dir);
     let path = dir.join(format!("{}.json", round.round_id));
     match serde_json::to_string(round) {
@@ -512,6 +693,56 @@ pub fn set_run_room_name(round_id: Uuid, name: &str) {
     }
 }
 
+/// The instances with an OPEN card (not yet settled in the tracker) in any WORKING round
+/// on this node. A new round must not draw them again: staging reuses the checkout by
+/// instance, so two rounds would work one tree and grade one verdict (2026-09-13:
+/// pytest-7236 and astropy-13453 sat in seed-4 and in a paused duplicate round at once).
+pub fn instances_open_in_working_rounds() -> std::collections::HashSet<String> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = std::collections::HashSet::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, state) in &r.cards {
+            if state.is_none() {
+                if let Some(inst) = r.card_instances.get(card) {
+                    out.insert(inst.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Record the team a round was born with, by name (see `team_names`).
+pub fn set_round_team_names(round_id: Uuid, names: Vec<String>) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    if let Some(r) = rounds.get_mut(&round_id) {
+        r.team_names = names;
+        persist_round_in(&rounds_state_dir(), r);
+    }
+}
+
+/// The union of every WORKING citizen-driven round's named team, deduplicated, in the
+/// order first named. Empty when no working round names a team — the host then seats
+/// the roster as before.
+pub fn working_round_team_names() -> Vec<String> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out: Vec<String> = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working || r.driver != WorkDriver::Citizen {
+            continue;
+        }
+        for n in &r.team_names {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(n)) {
+                out.push(n.clone());
+            }
+        }
+    }
+    out
+}
+
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {
@@ -561,6 +792,39 @@ pub fn review_parent(card: Uuid) -> Option<Uuid> {
 
 /// The reviewer's verdict landed: the review card retires; a pass unlocks the
 /// parent's `done`. Returns the parent.
+/// The review card opened for `parent`, if the gate opened one and it is still pending.
+pub fn review_card_of(parent: Uuid) -> Option<Uuid> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    rounds
+        .values()
+        .find_map(|r| r.review_cards.iter().find(|(_, p)| **p == parent).map(|(rv, _)| *rv))
+}
+
+/// THE VERDICT LAW (card 52842311): a verdict settles every card of its instance.
+/// Cards the tracker still counts as unsettled whose instance already HAS a verdict
+/// (`lookup`), with that verdict — the ones a board move never reached (a parent
+/// parked in REVIEW when the grade landed, a review card nobody pulled, a duplicate
+/// in another round). The reconciler closes them each pass until the board agrees.
+pub fn unsettled_cards_with<V>(lookup: impl Fn(&str) -> Option<V>) -> Vec<(Uuid, String, V)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: poisoned lock = read the last state, same policy as every ROUNDS lock
+    let mut out = Vec::new();
+    for r in rounds.values() {
+        if r.stage != RoundStage::Working {
+            continue;
+        }
+        for (card, settled) in &r.cards {
+            if settled.is_some() {
+                continue;
+            }
+            let Some(instance) = r.card_instances.get(card) else { continue };
+            if let Some(v) = lookup(instance) {
+                out.push((*card, instance.clone(), v));
+            }
+        }
+    }
+    out
+}
+
 pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.values_mut().find(|r| r.review_cards.contains_key(&review))?;
@@ -901,6 +1165,16 @@ pub fn total_unworked_cards() -> usize {
         .sum()
 }
 
+/// Is any Working round NOT citizen-driven — the only shape whose queued cards are a
+/// lane demand of their own (a detached solve holds exclusive lanes). Citizen rounds
+/// are worked by the resident roster, which is already the demand.
+pub fn any_working_detached_round() -> bool {
+    ROUNDS
+        .lock()
+        .expect("bench rounds mutex")
+        .values()
+        .any(|r| r.stage == RoundStage::Working && !matches!(r.driver, WorkDriver::Citizen))
+}
 /// Are any Working rounds tracked at all — the boot resume's cheap early-exit.
 pub fn any_working_round() -> bool {
     ROUNDS
@@ -1079,6 +1353,32 @@ pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
 /// longer offered, every attempt honestly aborting "not on the board"). Routes
 /// through the SAME payload-shaped observer so probes and the Done transition
 /// stay single-sourced.
+/// A BOARD REOPEN REOPENS THE TRACKER. `work/state open` on a settled card moved the
+/// board column back to Open, but the tracker kept its settled mark — so the pull,
+/// which offers `tracker-unsettled ∩ board-claimable`, never offered it again
+/// (2026-09-13 08:0xZ: matplotlib-21568 reopened after an ungradeable "no patch"
+/// refusal; two idle coders read `dd712faf:1` claimable and `none_claimable`). One
+/// truth per card: the board's column is the state, the tracker follows it.
+pub fn reopen_card(card: Uuid) -> bool {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card)) else {
+        return false;
+    };
+    if !round.reopen_card(card) {
+        return false;
+    }
+    persist_round_in(&rounds_state_dir(), round);
+    crate::probe!(
+        class = "bench.round.card_reopened",
+        round_id = %round.round_id,
+        card_id = %card,
+        remaining = round.remaining(),
+        stage = ?round.stage,
+        "a settled card returned to the deck — the board reopened it, the tracker follows"
+    );
+    true
+}
+
 pub fn settle_card_direct(card: Uuid, state: &str) {
     observe_card_event(&serde_json::json!({
         "card_id": card.to_string(),
@@ -1112,6 +1412,7 @@ pub fn observe_card_event(payload: &Value) {
     match round.settle_card(card, state) {
         SettleOutcome::NotOurs | SettleOutcome::AlreadySettled => {}
         SettleOutcome::Settled { remaining } => {
+            crate::modules::citizen_health::note_settle();
             persist_round_in(&rounds_state_dir(), round);
             crate::probe!(
                 class = "bench.round.card_settled",
@@ -1123,6 +1424,7 @@ pub fn observe_card_event(payload: &Value) {
             );
         }
         SettleOutcome::RoundDone => {
+            crate::modules::citizen_health::note_settle();
             let (dispatched, benchmark) = (round.dispatched(), round.benchmark.clone());
             crate::probe!(
                 class = "bench.round.card_settled",
@@ -1865,10 +2167,12 @@ mod tests {
                 card_assignees: cards.iter().copied().collect(),
                 card_instances: Default::default(),
                 card_last_act_ms: HashMap::new(),
+                card_idle_since: HashMap::new(),
             review_gate: false,
             review_cards: HashMap::new(),
             reviews_passed: Default::default(),
                 team: Vec::new(),
+            team_names: Vec::new(),
             }
         }
         let live = std::collections::HashSet::new();
@@ -1903,6 +2207,86 @@ mod tests {
 
     use super::*;
 
+
+    /// what this catches: an idle claim's clock restarting at every boot (a card
+    /// claimed 11 h with zero acts waited 3 h more after a deploy), or surviving a
+    /// change of hands.
+    #[test]
+    fn the_idle_clock_is_on_the_round_clears_on_an_act_and_restarts_for_a_new_holder() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let card = Uuid::new_v4();
+        add_card(round, card);
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(idle_clock_for(card, a, 1_000), 1_000, "first sight starts the clock");
+        assert_eq!(idle_clock_for(card, a, 5_000), 1_000, "later passes keep it (persisted on the round)");
+        assert_eq!(idle_clock_for(card, b, 6_000), 6_000, "a new holder restarts it");
+        record_card_worked(card, 7_000);
+        assert_eq!(idle_clock_for(card, b, 8_000), 7_000, "an act is the clock and clears the mark");
+    }
+    /// what this catches: a resolved instance whose board card sat in REVIEW (or whose
+    /// review card nobody pulled) counting as unsettled forever — the round never
+    /// settles, the standing autopilot never advances (2026-09-14: django-12663 resolved
+    /// 18 h earlier, round 7/8, standing skipped every tick).
+    #[test]
+    fn a_verdicted_card_the_board_never_closed_is_named_for_the_reconciler() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        add_card(round, a);
+        add_card(round, b);
+        record_card_instance(a, "django__django-12663");
+        record_card_instance(b, "django__django-11211");
+        let review = Uuid::new_v4();
+        register_review_card(a, review);
+        assert_eq!(review_card_of(a), Some(review));
+        assert_eq!(review_card_of(b), None);
+        let hits = unsettled_cards_with(|i| (i == "django__django-12663").then_some(true));
+        assert_eq!(hits.iter().filter(|(c, _, _)| *c == a).count(), 1, "the verdicted, unsettled card is named");
+        assert!(hits.iter().all(|(c, _, _)| *c != b), "no verdict, not named");
+        settle_card_direct(a, "closed");
+        assert!(unsettled_cards_with(|_| Some(true)).iter().all(|(c, _, _)| *c != a), "settled = not named again");
+    }
+
+
+    /// what this catches: a working round's open card missing from the reconciler's
+    /// list (it would never be settled from the board), or a settled one still on it.
+    #[test]
+    fn unsettled_cards_lists_exactly_the_open_cards_of_working_rounds() {
+        let round = Uuid::new_v4();
+        open_round(round, "swe-bench-verified", WorkDriver::Citizen);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        add_card(round, a);
+        add_card(round, b);
+        record_card_instance(a, "sympy__sympy-1");
+        settle_card_direct(b, "closed");
+        let mine: Vec<_> = unsettled_cards().into_iter().filter(|(r, _, _)| *r == round).collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].1, a);
+        assert_eq!(mine[0].2, "sympy__sympy-1");
+    }
+
+    /// what this catches: a round change that never reaches the bundle (the
+    /// tracker's second copy shadowing the room, card c9ddb911), and a restore
+    /// that overwrites this process's own state with an older bundle.
+    #[test]
+    fn a_persisted_change_is_dirty_for_the_bundle_and_a_restore_never_overwrites_a_known_round() {
+        let id = Uuid::new_v4();
+        open_round(id, "swe-bench-verified", WorkDriver::Citizen);
+        set_run_room_name(id, "bench-test-bundle");
+        let dirty = take_dirty_bundles();
+        let mine = dirty.iter().find(|d| d.round_id == id).expect("the opened round is dirty"); // JUSTIFIED: the test opened it
+        assert_eq!(mine.run_room_name, "bench-test-bundle");
+        assert_eq!(mine.json["run_room_name"], "bench-test-bundle");
+        assert!(take_dirty_bundles().iter().all(|d| d.round_id != id), "drained");
+        assert_eq!(restore_round_from_bundle(&mine.json).expect("a round"), None, "known round: own state wins"); // JUSTIFIED: the value came from this tracker
+        let mut foreign = mine.json.clone();
+        let other = Uuid::new_v4();
+        foreign["round_id"] = Value::String(other.to_string());
+        assert_eq!(restore_round_from_bundle(&foreign).expect("a round"), Some(other)); // JUSTIFIED: a copy of a value this tracker produced
+        assert!(live_rounds().iter().any(|r| r.round_id == other.to_string()), "restored round is live");
+        assert!(restore_round_from_bundle(&serde_json::json!({"not": "a round"})).is_err());
+    }
     fn cards(n: usize) -> Vec<Uuid> {
         (0..n).map(|_| Uuid::new_v4()).collect()
     }
@@ -2131,6 +2515,33 @@ mod tests {
     // "settled" count that drifts from the round's own card map is worse than no query at
     // all, because a driver would BELIEVE it. Also pins that progress is legible mid-round:
     // the whole point of #371 is answering "how far along" without reading a log.
+    // what this catches (2026-09-13): a card the board reopened staying settled in the
+    // tracker, so the pull never offers it again and a finished round never resumes.
+    #[test]
+    fn a_board_reopen_returns_a_settled_card_to_the_deck() {
+        let round_id = Uuid::new_v4();
+        let ids = cards(2);
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        for id in &ids {
+            add_card(round_id, *id);
+        }
+        // Settle ONE card: the round stays Working (a finished round leaves the tracker,
+        // and a card of a finished round is a new dispatch, not a reopen).
+        settle_card_direct(ids[0], "closed");
+        let mid = live_rounds().into_iter().find(|r| r.round_id == round_id.to_string()).expect("tracked");
+        assert_eq!((mid.settled, mid.remaining), (1, 1));
+        assert!(reopen_card(ids[0]), "the tracker held it settled");
+        assert!(!reopen_card(ids[0]), "already unsettled: nothing to undo");
+        let again = live_rounds().into_iter().find(|r| r.round_id == round_id.to_string()).expect("tracked");
+        assert_eq!((again.stage.as_str(), again.settled, again.remaining), ("working", 0, 2));
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        assert!(
+            pullable_cards(Uuid::new_v4(), &resident).iter().any(|c| c.card == ids[0]),
+            "the reopened card is offered by the pull again"
+        );
+        ROUNDS.lock().unwrap().remove(&round_id); // test: cleanup of the round opened above
+    }
+
     #[test]
     fn a_round_in_flight_reports_its_own_progress_honestly() {
         let round_id = Uuid::new_v4();

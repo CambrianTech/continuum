@@ -114,6 +114,7 @@ async fn settle_to_outcome(
     // so the drive can no longer disagree with the rendered header (#425).
     let room_id: Uuid = burst.room.as_uuid();
     let mut acts = 0usize;
+    let mut turn_acts: Vec<(String, Vec<crate::ai::types::ToolCall>)> = Vec::new();
     // Rolling act-duration sum for the inline pace verdict below.
     let mut pace_sum_secs: f64 = 0.0;
     // This turn's causal thread: each admitted act observation becomes the
@@ -308,6 +309,7 @@ async fn settle_to_outcome(
                         generation_receipts: generation_receipts.clone(),
                         inference_error: Some(error),
                         touched_paths: touched,
+                        turn_acts: turn_acts.clone(),
                     };
                 }
             }
@@ -586,10 +588,12 @@ async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
                 };
             }
-            SettleStep::Acted { calls, .. } => {
+            SettleStep::Acted { calls, intent } => {
                 acts += 1;
+                turn_acts.push((intent.clone(), calls.clone()));
                 narrations_since_act = 0;
                 collect_touched_paths(&mut touched, &calls);
                 // Latch the #390 discovery gate OPEN on the first workspace mutation:
@@ -682,6 +686,7 @@ async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
                 };
             }
             SettleStep::Passed { reason } => {
@@ -696,6 +701,7 @@ async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
                     touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
                 };
             }
             // The model call FAILED — no verdict this task. Return LOUD: carry the
@@ -736,6 +742,7 @@ async fn settle_to_outcome(
                     generation_receipts: generation_receipts.clone(),
                     inference_error: Some(error),
                     touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
                 };
             }
         }

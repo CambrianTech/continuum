@@ -55,20 +55,7 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        let board = self.resource_daemon.board();
-        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram)?;
-        let ram_free = board
-            .kinds
-            .iter()
-            .find(|k| k.kind == ResourceKind::Ram)
-            .map(|k| k.available_bytes)
-            .unwrap_or(0);
-        Some(CapacityOffer {
-            gpu_total_bytes: vram.capacity_bytes,
-            gpu_free_bytes_live: vram.available_bytes,
-            system_ram_free_bytes: ram_free,
-            at_ms: now_ms(),
-        })
+        offer_from_board(&self.resource_daemon.board(), now_ms())
     }
 }
 
@@ -122,7 +109,7 @@ impl ServiceModule for GridCapacityModule {
             {
                 crate::probe!(
                     class = "grid.capacity.ungoverned",
-                    "VRAM ungoverned on this node — no capacity offer published",
+                    "no governed memory on this node (neither VRAM nor RAM) — no capacity offer published",
                 );
             }
             return Ok(());
@@ -168,5 +155,47 @@ impl ServiceModule for GridCapacityModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// The offer a node can honestly make from its resource board. A GOVERNED VRAM kind
+/// makes an accelerator offer; a governed RAM kind alone makes a CPU offer (gpu
+/// bytes 0). Neither governed = no offer (a guess would be the fabricated-capacity
+/// lie the grid's per-node-fit honesty exists to prevent). Before 2026-09-14 a
+/// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
+/// invisible to grid/nodes, the fleet fold and placement (card deb26770).
+pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+    let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
+    let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
+    if vram.is_none() && ram.is_none() {
+        return None;
+    }
+    Some(CapacityOffer {
+        gpu_total_bytes: vram.map(|k| k.capacity_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: no VRAM kind = a CPU node offers 0 accelerator bytes, which is the truth
+        gpu_free_bytes_live: vram.map(|k| k.available_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: same — absence of an accelerator is 0 bytes of it
+        system_ram_free_bytes: ram.map(|k| k.available_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: a VRAM-only board (no RAM kind governed) offers 0 RAM rather than a guess
+        at_ms,
+        build: crate::capacity::gossip::build_from_sha(env!("CONTINUUM_BUILD_GIT_SHA")),
+        build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: a build with no number beacons 0 = unknown, never a fake ordering
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// what this catches: a RAM-only node never beaconing (invisible to the grid).
+    #[test]
+    fn a_ram_only_board_offers_cpu_capacity_and_an_empty_board_offers_nothing() {
+        use crate::resources::{KindLedger, LeaseBoard};
+        let ram_only = LeaseBoard {
+            kinds: vec![KindLedger { kind: ResourceKind::Ram, capacity_bytes: 16 << 30, granted_bytes: 0, available_bytes: 8 << 30, measured_bytes: 0, physical_used_bytes: 0, external_bytes: 0, lease_count: 0 }],
+            leases: Vec::new(),
+            attributions: Vec::new(),
+        };
+        let o = offer_from_board(&ram_only, 7).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
+        assert_eq!(o.gpu_total_bytes, 0);
+        assert_eq!(o.system_ram_free_bytes, 8 << 30);
+        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7).is_none(), "nothing governed = no offer");
     }
 }

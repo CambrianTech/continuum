@@ -33,6 +33,17 @@ pub struct RosterHold {
     pub until_ms: u64,
     /// Why — travels into every skip probe so a held-down fleet explains itself.
     pub reason: String,
+    /// `true` = the operator's file: ONLY these names sit and they bound the seats.
+    /// `false` = derived from working rounds' teams: these names sit FIRST, the rest
+    /// of the population fills the remaining seats (2026-09-14: the seed-5 team hold
+    /// read as exclusive held out seven of twelve minds on a sixteen-seat node; a
+    /// team round must never shrink the roster — Joel: push the mind count).
+    #[serde(default = "exclusive_default")]
+    pub exclusive: bool,
+}
+
+fn exclusive_default() -> bool {
+    true
 }
 
 impl RosterHold {
@@ -58,8 +69,31 @@ fn now_ms() -> u64 {
 /// The active hold, or `None` when absent, expired, or unreadable. An expired
 /// or corrupt file is REMOVED on read — the hold is self-cleaning, so a stale
 /// file can never quietly gate next week's boot.
+/// The hold that stands right now: the OPERATOR's (a persisted, expiring allow-list),
+/// else the union of every working citizen-driven round's named team. A round staffs
+/// itself; the operator's hold is the override, never the default. (2026-09-13: the five
+/// coders were seated by a 1440-minute hold an operator re-issued by hand after it lapsed
+/// silently and the seats went alphabetical.)
 pub fn active() -> Option<RosterHold> {
-    active_at(&hold_path()?, now_ms())
+    let now = now_ms();
+    if let Some(hold) = hold_path().and_then(|p| active_at(&p, now)) {
+        return Some(hold);
+    }
+    from_team_names(crate::cognition::bench_round::working_round_team_names(), now)
+}
+
+/// A hold derived from the working rounds' teams: stands while they do (re-derived on
+/// every read, so it never lapses on its own); empty teams = no hold.
+pub fn from_team_names(names: Vec<String>, now_ms: u64) -> Option<RosterHold> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(RosterHold {
+        reason: format!("the working rounds' team ({} named) seats itself", names.len()),
+        only: names,
+        until_ms: now_ms.saturating_add(60 * 60 * 1000),
+        exclusive: false,
+    })
 }
 
 /// Testable core of [`active`] — explicit path + clock.
@@ -100,6 +134,7 @@ pub fn set(only: Vec<String>, minutes: u64, reason: String) -> Result<RosterHold
         only,
         until_ms: now_ms() + minutes * 60_000,
         reason,
+        exclusive: true,
     };
     let path = hold_path().ok_or_else(|| "no home directory".to_string())?;
     if let Some(parent) = path.parent() {
@@ -121,6 +156,17 @@ pub fn clear() -> bool {
 mod tests {
     use super::*;
 
+    // what this catches (2026-09-13): a round's team NOT seating itself — an operator hold
+    // lapsed silently and the seats went alphabetical, three of five coders unseated.
+    #[test]
+    fn a_working_rounds_team_is_a_hold_of_its_own() {
+        let hold = from_team_names(vec!["Atlas".into(), "Kira".into()], 1_000).expect("a named team holds");
+        assert!(hold.allows("atlas") && hold.allows("Kira"));
+        assert!(!hold.allows("Cyrus"), "not on the team = not seated while the round works");
+        assert!(!hold.expired(1_000 + 59 * 60 * 1000), "stands for the hour it was derived for");
+        assert!(from_team_names(vec![], 1_000).is_none(), "no team named = no hold, the roster seats as before");
+    }
+
     // what this catches: the whole contract in one pass — a hold gates by name
     // (case-insensitive), lapses at until_ms with self-cleaning, and a corrupt
     // file fails OPEN (removed, fleet hosts) rather than becoming a standing
@@ -134,6 +180,7 @@ mod tests {
             only: vec!["Atlas".into()],
             until_ms: 10_000,
             reason: "exam".into(),
+            exclusive: true,
         };
         std::fs::write(&path, serde_json::to_vec(&hold).expect("ser")).expect("write");
 

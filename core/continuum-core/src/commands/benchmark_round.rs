@@ -387,6 +387,8 @@ impl ActionCommand for BenchmarkRound {
                     &recipe,
                     None,
                     &std::collections::BTreeMap::new(),
+                    None,
+                    None, // no pipeline on this recipe
                 )
                 .await
                 {

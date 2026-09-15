@@ -99,68 +99,19 @@ fn step_adopt_lanes() -> Outcome {
 /// The airc transport daemon — the one service whose absence makes the whole
 /// system inert (no rooms → no residency → nothing to resume into).
 fn step_airc_daemon() -> Outcome {
-    let probe = std::process::Command::new("airc")
-        .arg("ipc-endpoint")
-        .output();
-    match probe {
-        Ok(out) if out.status.success() => Outcome::Ok("daemon answering".into()),
-        Ok(_) => {
-            // Present but not answering: start it detached, bounded wait.
-            //
-            // CWD = the OS home dir, NEVER the repo. `airc daemon` derives its
-            // scope from the working directory; spawned from a continuum
-            // checkout it derives the REPO scope, and airc's ownership guard
-            // (their #1347/#1352/#1353 family) then rightly refuses to serve
-            // the machine-account socket under a foreign identity:
-            //
-            //   airc: refusing to serve a socket this scope does not own.
-            //
-            // Measured on the 5090 node 2026-09-04: `continuum reboot` died
-            // exactly here — core built, then "no transport: no rooms, no
-            // resident citizens". This is the THIRD spawn-site instance of
-            // that bug class; airc made it a compile error internally with a
-            // newtype, but this call site lives outside airc where the type
-            // cannot reach, so the rule is enforced the only way available
-            // here: spawn from the home that owns the socket. Refusing to
-            // spawn at all when no home dir is resolvable is deliberate — a
-            // daemon under the wrong identity gives every caller the wrong
-            // peer_id, which is strictly worse than no daemon.
-            let Some(home) =
-                std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
-            else {
-                return Outcome::Failed(
-                    "cannot spawn airc daemon: neither USERPROFILE nor HOME is set, \
-                     so the machine-account scope is unresolvable — a daemon spawned \
-                     from the repo CWD would serve the socket under the WRONG identity \
-                     and airc's ownership guard refuses it"
-                        .into(),
-                );
-            };
-            let spawned = std::process::Command::new("airc")
-                .arg("daemon")
-                .current_dir(&home)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            match spawned {
-                Ok(_) => {
-                    for _ in 0..20 {
-                        std::thread::sleep(std::time::Duration::from_millis(250));
-                        if std::process::Command::new("airc")
-                            .arg("ipc-endpoint")
-                            .output()
-                            .map(|o| o.status.success())
-                            .unwrap_or(false) // safe: a probe error reads as not-ready; the loop retries
-                        {
-                            return Outcome::Ok("daemon started".into());
-                        }
-                    }
-                    Outcome::Failed("airc daemon spawned but never answered (5s)".into())
-                }
-                Err(e) => Outcome::Failed(format!("airc daemon spawn: {e}")),
-            }
-        }
-        Err(_) => Outcome::Skipped("airc binary absent — transportless box (CI/fresh)".into()),
+    use crate::airc::daemon_supervisor::{spawn, Spawned};
+    match spawn() {
+        Spawned::Answering => Outcome::Ok("daemon answering".into()),
+        Spawned::Started { pid } => Outcome::Ok(format!("daemon started (pid {pid}, owned)")),
+        Spawned::BinaryAbsent => Outcome::Skipped("airc binary absent — transportless box (CI/fresh)".into()),
+        Spawned::NoHome => Outcome::Failed(
+            "cannot spawn airc daemon: neither USERPROFILE nor HOME is set, so the \
+             machine-account scope is unresolvable — a daemon spawned from the repo CWD \
+             would serve the socket under the WRONG identity and airc's ownership guard \
+             refuses it"
+                .into(),
+        ),
+        Spawned::Failed(e) => Outcome::Failed(e),
     }
 }
 

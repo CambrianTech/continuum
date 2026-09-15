@@ -42,7 +42,7 @@ crate::action_command! {
     params: GitLogParams,
     output: GitLogResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let count = p.limit.unwrap_or(10);
         let log = blocking_git(move || git_bridge::git_log(&root, count))
             .await?

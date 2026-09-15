@@ -221,9 +221,12 @@ pub(crate) async fn ask_the_act_question(
                     let acts_without_write = page
                         .as_ref()
                         .map(|rows| {
-                            crate::persona::work_burst::acts_since_last_write(
+                            crate::persona::work_burst::acts_since_last_write_since(
                                 rows,
                                 ctx.identity.peer_id.as_uuid(),
+                                crate::persona::work_pull::last_pull_ms(
+                                    ctx.identity.peer_id.as_uuid(),
+                                ),
                             )
                         })
                         .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence
@@ -392,6 +395,19 @@ pub(crate) async fn ask_the_act_question(
                                                 &ws,
                                             ),
                                         );
+                                        // THE LEDGER, as the fact her turn opens with: the
+                                        // saved state of the thought — hers from the last
+                                        // turn, the previous holder's, or the owner's for a
+                                        // review card. Absence is named with the instruction
+                                        // (2026-09-12: 78 acts of re-orientation on worked cards).
+                                        body.working_memory.pin_fact(
+                                            "ledger",
+                                            &crate::persona::card_ledger_fact::ledger_fact_for(
+                                                ctx.identity.peer_id.as_uuid(),
+                                                &held,
+                                            )
+                                            .await,
+                                        );
                                     }
                                     crate::probe!(
                                         class = "persona.work.hands_rooted",
@@ -462,8 +478,33 @@ pub(crate) async fn ask_the_act_question(
                     // OTHER produce call site. Bound rather than dropped so the
                     // card-linked staging path can carry the same provenance the
                     // directed path does (card 0d51573a).
+                    // THE WHOLE ACT CHAIN LEARNS (2026-09-14): every act of this work turn,
+                    // in order, staged against the held card whatever the turn's final step
+                    // was — acts run mid-turn, so inspecting only the last step staged
+                    // nothing (24 holder acts, 0 staged). The card's verdict stamps the chain.
+                    let turn_acts = work.turn_acts.clone();
                     let (work_step, _, work_generation_receipts) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
+                    crate::probe!(
+                        class = "training.hook.work_turn",
+                        persona = %ctx.identity.agent_name,
+                        acts = turn_acts.len() as u64,
+                        held = held.len() as u64,
+                        "held-work turn settled — what the learning hook sees"
+                    );
+                    if !turn_acts.is_empty() {
+                        if let Some(card) = held.first() {
+                            crate::persona::training_producer::produce(
+                                ctx.identity.peer_id.as_uuid(),
+                                ctx.identity.agent_name.clone(),
+                                ctx.profile.model_id.clone(),
+                                work_context.clone(),
+                                crate::persona::training_producer::acted_chain(&turn_acts),
+                                Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
+                                work_generation_receipts.clone(),
+                            );
+                        }
+                    }
                     match work_step {
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —

@@ -77,6 +77,14 @@ pub struct SweInstance {
         deserialize_with = "test_list_string"
     )]
     pub pass_to_pass: String,
+    /// SWE-bench Multilingual ships its harness AS DATA per instance: an eval script
+    /// (test files at base, test patch applied, ONE marked test command, restore)
+    /// and the name of the log parser that reads that command's output. Absent on
+    /// the Python family, which runs through our own venv + pytest runner.
+    #[serde(default)]
+    pub eval_script: Option<String>,
+    #[serde(default)]
+    pub log_parser: Option<String>,
 }
 
 /// The SWE-instance family speaks THREE dialects for the same two fields
@@ -634,6 +642,9 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
         return Ok(None);
     }
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // The verdict is the OUTCOME every staged work turn on this instance's cards
+    // was waiting for: PASS lifts them into the makers' curricula, FAIL discards.
+    crate::persona::training_producer::settle_instance_credit(&verdict.instance_id, verdict.resolved);
     Ok(Some(path))
 }
 
@@ -1232,6 +1243,10 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     }
     shield_workspace_excludes(repo_dir);
     era_checkout_fixups(instance, repo_dir);
+    // Record the staged base so "work" can be measured against it later — a committed fix on
+    // a clean tree is work (staged_workspace::work_mtime_of). Best effort: an unwritable
+    // record falls back to the reflog read.
+    let _ = std::fs::write(repo_dir.join(".git").join("continuum-base"), &instance.base_commit);
     Ok(())
 }
 
@@ -1705,9 +1720,18 @@ fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
         // clean, 2026-08-27).
         return &["numpy==1.21.6", "cython<3"];
     }
+    if repo == "scikit-learn/scikit-learn" && year >= 2022 {
+        // scikit-learn 1.x: SWE-bench's own spec installs pandas and matplotlib beside
+        // numpy/scipy/cython — the set_output tests and many others `importorskip("pandas")`.
+        // 2026-09-12: 26323's only FAIL_TO_PASS test skipped on a pandas-less env and the
+        // verdict voided a correct fix. Pins have py3.11 arm64 wheels; cython<3 for the
+        // era's .pyx.
+        return &["numpy==1.24.4", "cython==0.29.36", "scipy==1.10.1", "pandas==2.0.3", "matplotlib==3.7.3"];
+    }
     if repo == "scikit-learn/scikit-learn" && year >= 2020 {
-        // Modern eras resolve their own numpy/cython fine — no reality pins.
-        return &["numpy", "cython"];
+        // Modern eras resolve their own numpy/cython fine — no reality pins; pandas rides
+        // along because the suite skips without it.
+        return &["numpy", "cython", "pandas"];
     }
     match repo {
         // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
@@ -1912,6 +1936,12 @@ async fn assert_harness_floor(uv: &str, py: &str) -> Result<(), String> {
 }
 
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
+    if let Some(name) = instance.log_parser.as_deref() {
+        let Some(parser) = LogParser::from_name(name) else {
+            return Err(unsupported_harness(instance, name));
+        };
+        return toolchain_on_path(parser.toolchain()).await;
+    }
     // PER-INSTANCE SERIALIZATION — this function used to rely on "solve/grade
     // run serially per instance"; the dispatch-time env PRE-WARM broke that
     // assumption, and two concurrent builders writing one venv is a corrupt
@@ -2606,6 +2636,223 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
     }
 }
 
+/// A named log parser from SWE-bench Multilingual's `log_parser` column. Each
+/// variant reads ONE test framework's output into (test id → passed). The 19
+/// names in the dataset map to languages below; the two that run here are the
+/// Rust and Go slices (85 of 300 instances) — the rest refuse BY NAME until their
+/// parser lands, never by a silent zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogParser {
+    Cargo,
+    GoTest,
+}
+
+impl LogParser {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "parse_log_cargo" => Some(Self::Cargo),
+            "parse_log_gotest" => Some(Self::GoTest),
+            _ => None,
+        }
+    }
+
+    /// The toolchain binary the marked command needs on PATH.
+    pub fn toolchain(self) -> &'static str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::GoTest => "go",
+        }
+    }
+
+    pub fn parse(self, log: &str) -> HashMap<String, bool> {
+        match self {
+            Self::Cargo => parse_log_cargo(log),
+            Self::GoTest => parse_log_gotest(log),
+        }
+    }
+}
+
+/// The language a parser name implies — the `language` filter on `benchmark/import`
+/// reads this, so a round asks for `rust` without knowing parser names. Names this
+/// grader does not run yet still map: the filter is catalogue knowledge, and the
+/// grader refuses those instances by name.
+pub fn language_of_parser(name: &str) -> &'static str {
+    match name {
+        "parse_log_cargo" => "rust",
+        "parse_log_gotest" => "go",
+        "parse_log_phpunit" => "php",
+        "parse_log_rspec_transformed_json" | "parse_log_ruby_unit" | "parse_log_jekyll" => "ruby",
+        "parse_log_karma" | "parse_log_jest" | "parse_log_tap" | "parse_log_vitest"
+        | "parse_log_immutable_js" => "javascript",
+        "parse_log_ant" | "parse_log_maven" | "parse_log_gradle_custom" => "java",
+        "parse_log_googletest" | "parse_log_doctest" | "parse_log_redis" | "parse_log_jq"
+        | "parse_log_micropython_test" => "c",
+        _ => "unknown",
+    }
+}
+
+impl SweInstance {
+    /// `python` for the SWE-bench family; the parser's language for Multilingual.
+    pub fn language(&self) -> &'static str {
+        self.log_parser.as_deref().map_or("python", language_of_parser)
+    }
+}
+
+/// The ONE test command inside an eval script: the line between the
+/// `>>>>> Start Test Output` and `>>>>> End Test Output` markers, minus the
+/// `( … ) | cat` wrapper the docker harness adds. Everything else the script does
+/// (checkout at base, test-patch apply, restore) `grade()` already does itself.
+pub fn test_command_from_eval_script(script: &str) -> Option<String> {
+    let start = script.find(">>>>> Start Test Output")?;
+    let end = script[start..].find(">>>>> End Test Output")? + start;
+    let line = script[start..end]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with(':'))?;
+    let line = line.strip_suffix("| cat").map(str::trim).unwrap_or(line); // unwrap_or: no `| cat` wrapper means the line IS the command
+    let line = line
+        .strip_prefix('(')
+        .and_then(|l| l.strip_suffix(')'))
+        .unwrap_or(line); // unwrap_or: an unparenthesised command is already bare
+    Some(line.trim().to_string())
+}
+
+/// How an instance's tests run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Harness {
+    /// Our venv + the repo era's runner (the Python SWE-bench family).
+    Native { venv_py: PathBuf, runner: TestRunner },
+    /// The instance's own marked command and named parser (SWE-bench Multilingual).
+    Script { command: String, parser: LogParser },
+}
+
+impl Harness {
+    /// Script when the instance carries a harness, Native otherwise. A script
+    /// harness this grader cannot read refuses by parser name and language.
+    pub fn for_instance(
+        instance: &SweInstance,
+        venv_py: PathBuf,
+        runner: TestRunner,
+    ) -> Result<Self, String> {
+        let Some(script) = instance.eval_script.as_deref() else {
+            return Ok(Self::Native { venv_py, runner });
+        };
+        let name = instance.log_parser.as_deref().unwrap_or(""); // unwrap_or: a script with no parser name refuses below as unsupported
+        let parser = LogParser::from_name(name).ok_or_else(|| unsupported_harness(instance, name))?;
+        let command = test_command_from_eval_script(script).ok_or_else(|| {
+            format!(
+                "MALFORMED HARNESS — {}'s eval script has no marked test command",
+                instance.instance_id
+            )
+        })?;
+        Ok(Self::Script { command, parser })
+    }
+}
+
+fn unsupported_harness(instance: &SweInstance, name: &str) -> String {
+    format!(
+        "UNSUPPORTED HARNESS — {} ships log parser '{name}' ({}); this grader reads \
+         parse_log_cargo (rust) and parse_log_gotest (go) so far",
+        instance.instance_id,
+        language_of_parser(name)
+    )
+}
+
+/// `run_tests` for either harness. A script harness runs the marked command in the
+/// checkout (bounded by `SUBPROCESS_CEILING`) and reads stdout+stderr with the
+/// named parser; an id the log never names reads as failed.
+pub async fn run_harness(
+    repo_dir: &Path,
+    harness: &Harness,
+    ids: &[String],
+    test_files: &[String],
+) -> (HashMap<String, bool>, String) {
+    match harness {
+        Harness::Native { venv_py, runner } => {
+            run_tests(repo_dir, venv_py, ids, test_files, *runner).await
+        }
+        Harness::Script { command, parser } => {
+            if ids.is_empty() {
+                return (HashMap::new(), String::new());
+            }
+            let Ok(out) = run("bash", &["-c", command.as_str()], Some(repo_dir)).await else {
+                return (
+                    ids.iter().map(|i| (i.clone(), false)).collect(),
+                    String::new(),
+                );
+            };
+            let report = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let seen = parser.parse(&report);
+            (
+                ids.iter()
+                    .map(|i| (i.clone(), seen.get(i).copied().unwrap_or(false))) // unwrap_or: an id the log never names did not pass
+                    .collect(),
+                report,
+            )
+        }
+    }
+}
+
+/// `test <name> ... ok|FAILED|ignored` — cargo's libtest lines. A `- should panic`
+/// suffix is the name's display, not its id; `ignored` is neither pass nor fail.
+pub fn parse_log_cargo(log: &str) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    for line in log.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("test ") else {
+            continue;
+        };
+        let Some((name, status)) = rest.rsplit_once(" ... ") else {
+            continue;
+        };
+        let name = name.split(" - ").next().unwrap_or(name).trim(); // unwrap_or: split always yields a head; the name itself
+        let status = status.trim();
+        let passed = status.starts_with("ok");
+        if passed || status.starts_with("FAILED") {
+            out.insert(name.to_string(), passed);
+        }
+    }
+    out
+}
+
+/// `--- PASS: TestName (0.01s)` / `--- FAIL: TestName` — go test's verbose lines,
+/// subtests included (`TestA/sub`).
+pub fn parse_log_gotest(log: &str) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    for line in log.lines() {
+        let l = line.trim_start();
+        let (passed, rest) = if let Some(r) = l.strip_prefix("--- PASS: ") {
+            (true, r)
+        } else if let Some(r) = l.strip_prefix("--- FAIL: ") {
+            (false, r)
+        } else {
+            continue;
+        };
+        if let Some(name) = rest.split_whitespace().next() {
+            out.insert(name.to_string(), passed);
+        }
+    }
+    out
+}
+
+/// A script-harness instance has no venv: its "env" is the language toolchain the
+/// marked command needs. Absent = COULD_NOT_LOOK by name, never a python venv.
+async fn toolchain_on_path(tool: &str) -> Result<PathBuf, String> {
+    match run("which", &[tool], None).await {
+        Ok(out) if out.status.success() => {
+            Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+        }
+        _ => Err(format!(
+            "TOOLCHAIN ABSENT — `{tool}` is not on PATH on this node; install it or route \
+             this card to a node that has it"
+        )),
+    }
+}
+
 /// The exact argv (after the venv's `python`) that runs an instance's test scope.
 /// Pure so the per-repo command shape is table-testable without a venv.
 /// The module name of the JSON runner dropped into django's `tests/` directory.
@@ -2653,6 +2900,7 @@ class _ContinuumResult(unittest.TextTestResult):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.continuum_rows = {}
+        self.continuum_skipped = set()
     def _record(self, test, ok):
         # shortDescription() is the docstring's first line — the SAME string unittest
         # renders on its own output line, and therefore the id SWE-bench's own log parser
@@ -2670,7 +2918,7 @@ class _ContinuumResult(unittest.TextTestResult):
     def addFailure(self, test, err):
         super().addFailure(test, err); self._record(test, False)
     def addSkip(self, test, reason):
-        super().addSkip(test, reason); self._record(test, True)
+        super().addSkip(test, reason); self._record(test, True); self.continuum_skipped.add(test.id())
     def addExpectedFailure(self, test, err):
         super().addExpectedFailure(test, err); self._record(test, True)
     def addUnexpectedSuccess(self, test):
@@ -2683,6 +2931,8 @@ class JsonRunner(DiscoverRunner):
         result = super().run_suite(suite, **kwargs)
         for tid, (ok, desc) in getattr(result, "continuum_rows", {}).items():
             row = {"id": tid, "ok": ok}
+            if tid in getattr(result, "continuum_skipped", set()):
+                row["skipped"] = True
             if desc:
                 row["desc"] = desc
             sys.stderr.write("CONTINUUM_TEST " + json.dumps(row) + "\n")
@@ -3320,13 +3570,97 @@ fn compose_failure_excerpt(
     // This is what turns "test_issue_24062 failed" into
     // "AssertionError: Dimension(impedance*capacitance/time) != 1".
     if f2p_still_failing && !f2p_report.trim().is_empty() {
-        sections.push(report_tail(f2p_report));
+        // THE FAILING TEST'S OWN OUTPUT, not the report's tail. 2026-09-12: a 1/2 verdict's
+        // excerpt was a wall of `CONTINUUM_TEST {"ok": true}` rows — the one assertion that
+        // mattered never reached the holder. The tail stays as the fallback when no section
+        // for a named test can be found.
+        sections.push(failing_test_excerpt(f2p_report).unwrap_or_else(|| report_tail(f2p_report))); // unwrap_or_else: no per-test section in this report shape = the tail, as before
     }
     if sections.is_empty() {
         None
     } else {
         Some(sections.join("\n\n"))
     }
+}
+
+/// The failing tests' OWN output from a harness report: pytest's `_____ test_name _____`
+/// sections and its `FAILED node - reason` summary lines; unittest/Django's `FAIL:` / `ERROR:`
+/// blocks up to their closing rule. Capped per test and in count so the excerpt is read. `None`
+/// when the report carries no such section (a shape the tail must cover).
+fn failing_test_excerpt(report: &str) -> Option<String> {
+    const MAX_TESTS: usize = 3;
+    const MAX_LINES: usize = 40;
+    let clean = strip_ansi(report);
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut sections: Vec<String> = Vec::new();
+    let is_pytest_head = |l: &str| l.starts_with("____") && l.ends_with("____") && l.trim_matches('_').trim().len() > 0;
+    let is_unittest_head = |l: &str| l.starts_with("FAIL: ") || l.starts_with("ERROR: ");
+    let mut i = 0;
+    while i < lines.len() && sections.len() < MAX_TESTS {
+        let l = lines[i].trim_end();
+        if is_pytest_head(l) || is_unittest_head(l) {
+            let mut block: Vec<&str> = vec![l];
+            let mut j = i + 1;
+            while j < lines.len() && block.len() < MAX_LINES {
+                let m = lines[j].trim_end();
+                if is_pytest_head(m) || is_unittest_head(m) || m.starts_with("=====") || m.starts_with("- generated") {
+                    break;
+                }
+                block.push(m);
+                j += 1;
+            }
+            if block.len() >= MAX_LINES {
+                block.push("…");
+            }
+            sections.push(block.join("\n"));
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    if sections.is_empty() {
+        // pytest's short summary is the last resort: one line per failed test with its reason.
+        let summary: Vec<&str> = lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("FAILED ") || l.starts_with("ERROR "))
+            .take(MAX_TESTS)
+            .collect();
+        if summary.is_empty() {
+            return None;
+        }
+        return Some(summary.join("\n"));
+    }
+    Some(sections.join("\n\n"))
+}
+
+/// The compiler's account of a build that failed, from a harness report — or `None` when
+/// the report is a test run. Cargo: from the first `error[E…]` / `error: could not compile`
+/// line, the block up to its next blank line (the diagnostic with its `-->` location and
+/// `help:`), capped. Go: the `# package` header and the `undefined:` / `cannot use` lines
+/// that follow it. Pure so the shape is pinned by a test against the real rustc text.
+fn build_failure_excerpt(report: &str) -> Option<String> {
+    const MAX_LINES: usize = 14;
+    let lines: Vec<&str> = report.lines().collect();
+    let go_build_failed = report.contains("undefined:") || report.contains("cannot use");
+    let start = lines.iter().position(|l| {
+        let l = l.trim_start();
+        l.starts_with("error[E")
+            || l.starts_with("error: could not compile")
+            || (go_build_failed && l.starts_with("# "))
+    })?;
+    let mut block: Vec<&str> = Vec::new();
+    for l in &lines[start..] {
+        if block.len() >= MAX_LINES {
+            block.push("…");
+            break;
+        }
+        if l.trim().is_empty() && !block.is_empty() {
+            break;
+        }
+        block.push(l);
+    }
+    Some(block.join("\n"))
 }
 
 /// THE GOLD GATE: grade the instance's OWN gold patch and require it to resolve.
@@ -3417,6 +3751,52 @@ pub enum PristineGate {
     Holds { pristine_green: Vec<String> },
 }
 
+/// The tests a harness report says were SKIPPED — pytest's `SKIPPED` verdict lines and the
+/// Django runner's `"skipped": true` rows. A skipped FAIL_TO_PASS test is neither a pass nor a
+/// fail: the environment could not run it (`pytest.importorskip("pandas")` on a box without
+/// pandas), so any score from that run is an ENV fault. 2026-09-12: scikit-learn-26323's only
+/// f2p test skipped on the pristine tree, the parser counted the skip as green, the gate said
+/// "already passes", and a correct fix was voided. Pure; pinned by a test on both shapes.
+pub fn skipped_in_report(report: &str) -> Vec<String> {
+    let clean = strip_ansi(report);
+    let mut out = Vec::new();
+    for line in clean.lines() {
+        let line = line.trim();
+        if let Some(payload) = line.strip_prefix("CONTINUUM_TEST ") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+                if v.get("skipped").and_then(|x| x.as_bool()) == Some(true) {
+                    if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                        out.push(id.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some((node, verdict)) = split_node_outcome(line) {
+            if node.contains("::") && verdict.starts_with("SKIPPED") {
+                out.push(node.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Which of `wanted` (FAIL_TO_PASS ids, in any id shape the parsers accept) were skipped —
+/// the ids a verdict names in its env fault.
+pub fn skipped_of<'a>(wanted: &'a [String], skipped: &[String]) -> Vec<&'a String> {
+    wanted
+        .iter()
+        .filter(|w| {
+            skipped.iter().any(|s| {
+                s == *w
+                    || s.ends_with(w.as_str())
+                    || w.ends_with(s.as_str())
+                    || s.rsplit("::").next() == w.rsplit("::").next().filter(|f| !f.is_empty())
+            })
+        })
+        .collect()
+}
+
 /// THE GATE, decided. Voids only when NOTHING is left to fix.
 ///
 /// Before 2026-09-07 one pristine-green FAIL_TO_PASS test voided the whole instance: ten of
@@ -3464,6 +3844,13 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
             return verdict;
         }
     };
+    let harness = match Harness::for_instance(instance, venv_py, runner) {
+        Ok(h) => h,
+        Err(e) => {
+            verdict.error = Some(e);
+            return verdict;
+        }
+    };
 
     // THE GATE, on a pristine tree: FAIL_TO_PASS must FAIL. That failure IS the bug. If it
     // passes here the checkout does not contain the bug, and nothing measured against it can
@@ -3472,7 +3859,20 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         verdict.error = Some(e);
         return verdict;
     }
-    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
+    let (pre, pre_report) = run_harness(repo_dir, &harness, &f2p, &test_files).await;
+    // A SKIPPED FAIL_TO_PASS test is an ENV fault, decided before the gate can read the skip
+    // as green (2026-09-12, scikit-learn-26323 on a pandas-less env).
+    let skipped_pre = skipped_of(&f2p, &skipped_in_report(&pre_report));
+    if !skipped_pre.is_empty() {
+        verdict.gate_ok = false;
+        verdict.error = Some(format!(
+            "UNGRADEABLE — FAIL_TO_PASS test(s) SKIPPED on the pristine tree ({skipped_pre:?}): \
+             the environment cannot run them (an import the suite skips on, a missing fixture), \
+             so no score from this tree measures the fix. Fix the environment spec for this \
+             instance's version, then re-grade."
+        ));
+        return verdict;
+    }
     // Sorted so the receipt names tests in one order run after run.
     let pre_sorted: Vec<(String, bool)> = {
         let mut v: Vec<(String, bool)> = pre.iter().map(|(id, ok)| (id.clone(), *ok)).collect();
@@ -3541,8 +3941,16 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         return verdict;
     }
 
-    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
-    let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
+    let (f2p_res, f2p_report) = run_harness(repo_dir, &harness, &f2p, &test_files).await;
+    let skipped_after = skipped_of(&f2p, &skipped_in_report(&f2p_report));
+    if !skipped_after.is_empty() {
+        verdict.error = Some(format!(
+            "UNGRADEABLE — FAIL_TO_PASS test(s) SKIPPED after the patch ({skipped_after:?}): the \
+             environment cannot run them; this is an env fault, not a failed fix."
+        ));
+        return verdict;
+    }
+    let (p2p_res, p2p_report) = run_harness(repo_dir, &harness, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
 
@@ -3563,7 +3971,7 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
             return verdict;
         }
         let (pristine_p2p, pristine_report) =
-            run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
+            run_harness(repo_dir, &harness, &p2p, &test_files).await;
         if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
             verdict.gate_ok = false;
             // CARRY THE REPORT. This verdict is the ONLY artifact of the pristine run, and
@@ -3610,12 +4018,26 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         .map(|(id, _)| id.clone())
         .collect();
     p2p_broken.sort();
-    verdict.failure_excerpt = compose_failure_excerpt(
-        &p2p_broken,
-        &p2p_report,
-        verdict.f2p_passed < verdict.f2p_total,
-        &f2p_report,
-    );
+    // A TREE THAT DOES NOT COMPILE IS TOLD SO. Every test "fails" when the test binary never
+    // built, and the old composition read that as "REGRESSION — you broke N tests that passed
+    // before" with the one actionable compiler line buried three thousand characters into a
+    // tail of unrelated warnings, twice (2026-09-12, astral-sh__ruff-15309: `.args` for
+    // `.arguments.args`; the holder re-read her diff for a regression that did not exist).
+    // The compiler's own first error leads; the regression story is not told about a build.
+    verdict.failure_excerpt = match build_failure_excerpt(&p2p_report)
+        .or_else(|| build_failure_excerpt(&f2p_report))
+    {
+        Some(compile) => Some(format!(
+            "DOES NOT COMPILE — the test build failed, so no test ran; nothing here is a \
+             regression or a wrong answer yet. Fix the build first. Compiler:\n{compile}"
+        )),
+        None => compose_failure_excerpt(
+            &p2p_broken,
+            &p2p_report,
+            verdict.f2p_passed < verdict.f2p_total,
+            &f2p_report,
+        ),
+    };
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;
@@ -3624,6 +4046,68 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the Multilingual harness misread — the marked command not
+    // lifted (wrapper kept, the marker comment taken as the command), a cargo/go log
+    // read into the wrong verdict, or a Python-family instance routed through a
+    // script it does not have. Fixtures are the real ruff-15309 / tokio-4384 tails.
+    #[test]
+    fn a_multilingual_instance_runs_its_own_harness_and_the_python_family_stays_native() {
+        use super::{
+            language_of_parser, parse_log_cargo, parse_log_gotest,
+            test_command_from_eval_script, Harness, LogParser, TestRunner,
+        };
+        let ruff = "git apply -v - <<'EOF_1'\n+x\nEOF_1\n: '>>>>> Start Test Output'\n(cargo test --package ruff_linter 'f52') | cat\n: '>>>>> End Test Output'\ngit checkout 75a2 a.py\n";
+        assert_eq!(
+            test_command_from_eval_script(ruff).as_deref(),
+            Some("cargo test --package ruff_linter 'f52'")
+        );
+        let tokio = ": '>>>>> Start Test Output'\n(RUSTFLAGS=-Awarnings cargo test --package tokio --test net_types_unwind --features full --no-fail-fast) | cat\n: '>>>>> End Test Output'\n";
+        assert_eq!(
+            test_command_from_eval_script(tokio).as_deref(),
+            Some("RUSTFLAGS=-Awarnings cargo test --package tokio --test net_types_unwind --features full --no-fail-fast")
+        );
+        assert_eq!(test_command_from_eval_script("no markers here"), None);
+
+        let cargo_log = "running 3 tests\ntest rules::pyflakes::tests::rule_f523 ... ok\ntest io::write_all_buf_vectored ... FAILED\ntest slow::one - should panic ... ok\ntest skipped::x ... ignored\n\nfailures:\n";
+        let seen = parse_log_cargo(cargo_log);
+        assert_eq!(seen.get("rules::pyflakes::tests::rule_f523"), Some(&true));
+        assert_eq!(seen.get("io::write_all_buf_vectored"), Some(&false));
+        assert_eq!(seen.get("slow::one"), Some(&true), "the display suffix is not the id");
+        assert_eq!(seen.get("skipped::x"), None, "ignored is neither verdict");
+
+        let go_log = "=== RUN   TestServer\n--- PASS: TestServer (0.01s)\n=== RUN   TestRoute/sub\n    --- FAIL: TestRoute/sub (0.00s)\nFAIL\n";
+        let seen = parse_log_gotest(go_log);
+        assert_eq!(seen.get("TestServer"), Some(&true));
+        assert_eq!(seen.get("TestRoute/sub"), Some(&false));
+
+        let mut inst: super::SweInstance = serde_json::from_value(serde_json::json!({
+            "instance_id": "tokio-rs__tokio-4384", "repo": "tokio-rs/tokio", "base_commit": "abc",
+            "patch": "", "test_patch": "", "problem_statement": "",
+            "FAIL_TO_PASS": "[\"net_types_are_unwind_safe\"]", "PASS_TO_PASS": "[]",
+            "eval_script": tokio, "log_parser": "parse_log_cargo"
+        }))
+        .expect("a multilingual row decodes");
+        assert_eq!(inst.language(), "rust");
+        match Harness::for_instance(&inst, "unused".into(), TestRunner::Pytest) {
+            Ok(Harness::Script { parser: LogParser::Cargo, command }) => {
+                assert!(command.starts_with("RUSTFLAGS="), "{command}")
+            }
+            other => panic!("expected the script harness, got {other:?}"),
+        }
+        inst.log_parser = Some("parse_log_phpunit".into());
+        let err = Harness::for_instance(&inst, "unused".into(), TestRunner::Pytest).unwrap_err();
+        assert!(err.contains("UNSUPPORTED HARNESS") && err.contains("php"), "{err}");
+        assert_eq!(language_of_parser("parse_log_rspec_transformed_json"), "ruby");
+
+        inst.eval_script = None;
+        inst.log_parser = None;
+        assert_eq!(inst.language(), "python");
+        assert_eq!(
+            Harness::for_instance(&inst, "venv/bin/python".into(), TestRunner::Pytest),
+            Ok(Harness::Native { venv_py: "venv/bin/python".into(), runner: TestRunner::Pytest })
+        );
+    }
+
     // what this catches: a verdict that cannot say which harness scored it.
     // Measured 2026-08-28 — 19 of 32 verdicts on this box had been written
     // across ten days by three different harness builds, and regrading ONE from
@@ -3717,6 +4201,8 @@ mod tests {
             pass_to_pass: serde_json::json!(["[", "[100%]", "testing/test_x.py::test_real"])
                 .to_string(),
             fail_to_pass: serde_json::json!(["testing/test_x.py::test_target"]).to_string(),
+            eval_script: None,
+            log_parser: None,
         };
         assert_eq!(inst.p2p(), vec!["testing/test_x.py::test_real".to_string()]);
         assert_eq!(inst.f2p(), vec!["testing/test_x.py::test_target".to_string()]);
@@ -4180,6 +4666,47 @@ diff --git a/odd name.py b/odd name.py
     // alone, so she resubmitted the identical broken patch twice. The REGRESSION
     // section must lead the excerpt whenever p2p broke, name the broken tests, and
     // still carry the f2p tail after it; no-breakage keeps the old f2p-only shape.
+    // what this catches (2026-09-12, ruff-15309): a test build that never ran reported as
+    // "REGRESSION — you broke 4 tests", the compiler's line buried in a warning tail.
+    // what this catches (2026-09-12, sklearn-26323): a skipped FAIL_TO_PASS test read as green
+    // (pytest `SKIPPED`) or as a pass (Django's row), voiding or failing a correct fix.
+    #[test]
+    fn a_skipped_test_is_named_in_both_report_shapes() {
+        let pytest = "sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output SKIPPED (could not import 'pandas')\nsklearn/compose/tests/test_a.py::test_ok PASSED\n";
+        assert_eq!(skipped_in_report(pytest), vec!["sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output".to_string()]);
+        let django = "CONTINUUM_TEST {\"id\": \"a.B.test_x\", \"ok\": true, \"skipped\": true}\nCONTINUUM_TEST {\"id\": \"a.B.test_y\", \"ok\": true}\n";
+        assert_eq!(skipped_in_report(django), vec!["a.B.test_x".to_string()]);
+        let wanted = vec!["sklearn/compose/tests/test_column_transformer.py::test_remainder_set_output".to_string(), "a.B.test_y".to_string()];
+        assert_eq!(skipped_of(&wanted, &skipped_in_report(pytest)).len(), 1);
+    }
+
+    // what this catches (2026-09-12, django-16667): a near-miss verdict's excerpt showing the
+    // report's tail of `ok` rows instead of the failing test's assertion.
+    #[test]
+    fn a_near_miss_excerpt_quotes_the_failing_tests_own_section() {
+        let pytest = "tests/a.py::test_ok PASSED\n=================================== FAILURES ===================================\n_____________________ test_remainder_set_output _____________________\n\n    def test_remainder_set_output():\n>       assert isinstance(out, pd.DataFrame)\nE       AssertionError: assert False\n\ntests/a.py:12: AssertionError\n=========================== short test summary info ============================\nFAILED tests/a.py::test_remainder_set_output - AssertionError: assert False\n";
+        let e = failing_test_excerpt(pytest).expect("a section exists");
+        assert!(e.starts_with("_____"), "{e}");
+        assert!(e.contains("AssertionError: assert False"));
+        assert!(!e.contains("test_ok PASSED"), "passing rows are not excerpt material");
+        let unittest = "CONTINUUM_TEST {\"id\": \"a.B.test_y\", \"ok\": true}\nFAIL: test_x (a.B)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"a.py\", line 3, in test_x\nAssertionError: 1 != 2\n\n----------------------------------------------------------------------\nRan 2 tests\n";
+        let e = failing_test_excerpt(unittest).expect("unittest block");
+        assert!(e.starts_with("FAIL: test_x"));
+        assert!(e.contains("AssertionError: 1 != 2"));
+        assert!(!e.contains("\"ok\": true"));
+        assert_eq!(failing_test_excerpt("nothing here\n"), None);
+    }
+
+    #[test]
+    fn a_tree_that_does_not_compile_is_told_so_with_the_compilers_first_error_leading() {
+        let report = "warning: hiding a lifetime that's elided elsewhere is confusing\n  --> crates/x.rs:60:23\n\n   Compiling ruff_linter v0.8.6\nerror[E0609]: no field `args` on type `&ruff_python_ast::ExprCall`\n  --> crates/ruff_linter/src/rules/pyflakes/fixes.rs:99:10\n   |\n99 |         .args\n   |          ^^^^ unknown field\nhelp: one of the expressions' fields has a field of the same name\n\nerror: could not compile `ruff_linter` (lib test) due to 2 previous errors\n";
+        let excerpt = build_failure_excerpt(report).expect("a build failure is named");
+        assert!(excerpt.starts_with("error[E0609]: no field `args`"), "{excerpt}");
+        assert!(excerpt.contains("fixes.rs:99:10"), "the location rides along: {excerpt}");
+        assert!(!excerpt.contains("hiding a lifetime"), "warnings before the error are not the story");
+        assert_eq!(build_failure_excerpt("test a::b ... ok\ntest a::c ... FAILED\n"), None, "a test run is not a build failure");
+    }
+
     #[test]
     fn regression_breakage_leads_the_failure_excerpt() {
         let broken: Vec<String> = (0..12).map(|i| format!("test_p2p_{i}")).collect();
@@ -4608,6 +5135,8 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             created_at: "2021-05-01T00:00:00Z".into(),
             fail_to_pass: "[\"test_a\", \"test_b\"]".into(),
             pass_to_pass: String::new(),
+            eval_script: None,
+            log_parser: None,
         };
         assert_eq!(inst.f2p(), vec!["test_a".to_string(), "test_b".to_string()]);
         assert!(inst.p2p().is_empty(), "a blank list must not panic the run");

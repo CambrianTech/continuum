@@ -386,6 +386,11 @@ mod tests {
                 .as_millis() as u64,
             latency_ms: Some(47),
             peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         };
         registry.register_node(node);
         (registry, dir.to_string_lossy().into())
@@ -420,6 +425,11 @@ mod tests {
                 // only by transport identity — which is the honest state for a node
                 // the registry learned before any beacon correlated it.
                 peer_id: None,
+                build_sha: None,
+                build_number: 0,
+                silent_secs: 0,
+                stale: false,
+                behind: false,
             }
         }
 

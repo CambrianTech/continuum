@@ -321,3 +321,42 @@ After this, you know enough to add a new concurrent concern without reinventing 
 Written 2026-06-08 after a session where the model — having lost cache — started rebuilding `runtime/disk_guard.rs` as a synchronous main-thread probe with env-tunable thresholds, after the substrate already had `MemoryPressureMonitor` + `PressureBroker` shipped for exactly this purpose. Joel: *"we wrote this before / hope it is in similar locations / only bringing this up because of recent slop / not telling you to delete, just think about long term intentional design."* And: *"yes we need the whole Rtos of cointinuum to be efficient NON blocking threads that are efficient and mostly sleeping like cbar."*
 
 This guide is the disk-guard slop's tombstone. The next session that touches concurrency starts here.
+
+## Process boundaries are resources (added 2026-09-12)
+
+Everything above stops at the process edge today. The airc daemon is reached over a unix
+socket, and the substrate treats those connections as free: **one connection per channel
+per subscriber** (`airc-daemon/src/server.rs::stream_attach` — "attach requires a channel in
+the owner-core model") and **one connection per request** (`airc-ipc/src/client.rs::call_inner`).
+On the M5 a *healthy* node holds ~400 live daemon connections at rest (17 scopes × ~24
+channels). Any loop that re-attaches multiplies from there: on 2026-09-12 a reseat pass that
+re-joined every resident every 10 s (an "idempotent" join that bumped a membership epoch that
+re-opened a stream that never released its sockets) took the core to 37k descriptors, the
+daemon to 49k, and the host to `ENFILE` — every process on the machine failing to open a
+file. Every fix that night (a hold, a cooldown, a restart-on-pressure, `chflags uchg` on a
+binary) was a mitigation. Joel: *"the storm shouldn't even happen — don't mitigate a flaw in
+design or order."*
+
+**The rule:** a connection across a process boundary is a resource exactly like a page of
+memory or a serving lane, and it gets the same shape as everything else in this guide:
+
+| Concern | Internal shape (above) | Across the daemon socket |
+|---|---|---|
+| Owner | one task per resource | **one session per scope**, owned by one task; nobody else opens sockets |
+| Multiplexing | one `watch` snapshot, N readers | **channels multiplexed** over the session; events tagged by channel; the client demultiplexes |
+| Budget | `PagedResourcePool` capacity | a **bounded outstanding-request budget** per session; requests ride the session or a bounded pool, never connect-per-call |
+| Backpressure | bounded channels, `try_send` | the session applies backpressure to subscribers; a slow consumer lags, it does not spawn connections |
+| Reconnect | quarantine + backoff on the owner | **one reconnect owner** per scope with backoff; everyone rides it; an epoch bump never re-opens anything unless the SET changed |
+| Order | initialize before tick | a client attaches only after the daemon answers a readiness probe; the daemon **never swaps itself under attached hosts** (auto-update defers while sessions exist) |
+| Gauge with an actor | `PressureBroker` tiers | the process descriptor table is a tier (`process-fds`) with an owner that acts, and a `high` probe that names it before the host goes dark |
+
+**Forbidden moves (the 2026-09-12 set):** calling a membership verb in a periodic pass without
+reading membership first ("idempotent on the daemon" is not "free for the citizen"); re-opening a
+stream on an epoch counter instead of on a changed set; a probe (`process.open_fds.high`) with no
+owner; measuring a component while its partner sits at a resource ceiling (every reader lies at
+the wall — restart the pair together, settle, then measure); a daemon that updates itself on a
+timer under a hosting core.
+
+**Acceptance for the fix:** 17 scopes × 24 channels hold < 60 daemon sockets at rest; a daemon
+restart under a live core returns to that count within 60 s; 1,000 re-attach requests in a minute
+change the count by 0.

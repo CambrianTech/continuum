@@ -32,6 +32,7 @@ Sentinels are smart OS-level processes — narrowly focused, disposable, like da
 | [AI-ALIGNMENT-PHILOSOPHY.md](AI-ALIGNMENT-PHILOSOPHY.md) | Why evolutionary citizenship works and constraints fail — the runtime alignment thesis |
 | [MORALITY-LAYER.md](MORALITY-LAYER.md) | The weights-side complement to evolutionary alignment — deliberate value-calibration baked into the model at forge time. Parenting, not poisoning |
 | [ETHICAL-AI-ATTRIBUTION.md](ETHICAL-AI-ATTRIBUTION.md) | Provenance-aware architecture — tracking training data influence for fair compensation |
+| [THE-WORK-STAYS-WITH-ITS-MAKERS.md](THE-WORK-STAYS-WITH-ITS-MAKERS.md) | Collaboration provenance as substrate facts: credit on the card, verdicts as artifacts, learned methods with lineage, nothing leaves your hardware unless shared. Written the day of the Fields Medalists' letter. |
 
 ### Implementation
 

@@ -31,7 +31,7 @@ crate::action_command! {
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {
-        let root = workspace_root_for(&this.state, ctx)?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         blocking_git(move || git_bridge::git_status(&root)).await
     }
 }

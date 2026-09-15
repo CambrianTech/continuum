@@ -52,10 +52,22 @@ def load_rows():
         except Exception as e:  # a corrupt verdict is a loud skip, never silent
             print(f"SKIP {p}: {e}", file=sys.stderr)
             continue
+        instance = os.path.basename(p)[:-5]
         rows.append(
             {
-                "instance": os.path.basename(p)[:-5],
+                "instance": instance,
+                # SWE-bench ids are "<project>__<repo>-<number>"; the project is the
+                # part a reader recognizes, and grouping by it is what shows BREADTH.
+                "project": instance.split("__")[0],
                 "resolved": bool(v.get("resolved")),
+                # Partial credit the binary verdict hides: an attempt that moved 0/2 -> 1/2
+                # did real work. Charting only `resolved` throws that away.
+                "f2p_passed": int(v.get("f2p_passed") or 0),
+                "f2p_total": int(v.get("f2p_total") or 0),
+                # Regression safety: did the patch keep everything that already worked?
+                # This is the number a reader should trust most and the one nobody shows.
+                "p2p_passed": int(v.get("p2p_passed") or 0),
+                "p2p_total": int(v.get("p2p_total") or 0),
                 "served_model": v.get("served_model", ""),
                 "harness_build": v.get("harness_build", ""),
                 "graded_at": datetime.fromtimestamp(
@@ -77,61 +89,115 @@ def _ungradeable_note() -> str:
     """Refusals are stated on the chart itself, never quietly dropped: a reader deserves
     to know how many instances this box could not score at all."""
     n = globals().get("UNGRADEABLE_COUNT", 0)
-    return f" · {n} instance(s) ungradeable on this box (environment, not capability)" if n else ""
+    return f" · {n} ungradeable on this box (environment, not capability)" if n else ""
 
 
-def improvement_curve_svg(rows, w=720, h=360):
-    pad_l, pad_r, pad_t, pad_b = 56, 16, 44, 40
-    plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
-    n = len(rows)
-    if n == 0:
-        raise SystemExit("no verdicts on disk — nothing to chart")
-    cum_attempts = list(range(1, n + 1))
-    cum_resolved = []
-    r = 0
-    for row in rows:
-        r += 1 if row["resolved"] else 0
-        cum_resolved.append(r)
-    y_max = n
+PARTIAL = "#d29922"   # amber: real progress the binary verdict hides
 
-    def x(i):
-        return pad_l + plot_w * i / max(n - 1, 1)
+def receipts_by_project_svg(rows, w=760):
+    """Every graded instance as ONE CELL, grouped by the project it came from.
 
-    def y(v):
-        return pad_t + plot_h * (1 - v / y_max)
+    Why this replaced the cumulative curve (2026-09-11): two cumulative lines over a
+    fixed attempt order are near-parallel by construction — the shape carries no
+    information a single fraction doesn't, and it occupied the strongest slot on the
+    README. It also threw away three things the verdicts already hold and a reader
+    actually wants:
 
-    def polyline(vals, color, width):
-        pts = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(vals))
-        return (
-            f'<polyline fill="none" stroke="{color}" stroke-width="{width}" '
-            f'stroke-linejoin="round" stroke-linecap="round" points="{pts}"/>'
+      * BREADTH — these are ten real OSS codebases, not one toy repo. A per-project
+        row makes that visible, including the projects we do BADLY on. Showing the
+        0/4 is the point; a chart that can only go up is an advertisement.
+      * PARTIAL CREDIT — an attempt that takes 1 of 2 fail-to-pass tests did real
+        work. Binary `resolved` scores it identically to writing nothing.
+      * REGRESSION SAFETY — whether the patch kept everything that already passed.
+        It is the number that separates a fix from a bulldozer, and it is in every
+        verdict file already.
+
+    One cell = one verdict file on disk. Nothing here is authored.
+    """
+    projects = {}
+    for r in rows:
+        projects.setdefault(r["project"], []).append(r)
+    # most-attempted first; a project we tried once should not lead the chart
+    order = sorted(projects, key=lambda k: (-len(projects[k]), k))
+
+    cell, gap, row_h = 13, 3, 24
+    label_w, pad_l, pad_t = 104, 16, 52
+    grid_x = pad_l + label_w
+    widest = max(len(v) for v in projects.values())
+    h = pad_t + row_h * len(order) + 96
+
+    resolved = sum(1 for r in rows if r["resolved"])
+    p2p_rows = [r for r in rows if r["p2p_total"]]
+    intact = sum(1 for r in p2p_rows if r["p2p_passed"] == r["p2p_total"])
+    p2p_pass = sum(r["p2p_passed"] for r in p2p_rows)
+    p2p_all = sum(r["p2p_total"] for r in p2p_rows)
+    partial = sum(1 for r in rows if not r["resolved"] and r["f2p_passed"])
+
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" '
+        f'height="{h}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">',
+        f'<text x="{pad_l}" y="24" font-size="14" font-weight="600" fill="{INK}">'
+        f'SWE-bench Verified receipts — every cell is a verdict file on disk</text>',
+        f'<text x="{pad_l}" y="42" font-size="12" fill="{INK}">'
+        f'{resolved} of {len(rows)} resolved across {len(order)} real codebases'
+        f'{_ungradeable_note()}</text>',
+    ]
+
+    for i, proj in enumerate(order):
+        items = sorted(projects[proj], key=lambda r: r["instance"])
+        y = pad_t + i * row_h
+        got = sum(1 for r in items if r["resolved"])
+        out.append(
+            f'<text x="{grid_x - 10}" y="{y + 11:.0f}" text-anchor="end" font-size="11.5" '
+            f'fill="{INK}">{proj}</text>'
+        )
+        for j, r in enumerate(items):
+            cx = grid_x + j * (cell + gap)
+            if r["resolved"]:
+                fill, stroke = ACCENT, ACCENT
+            elif r["f2p_passed"]:
+                fill, stroke = PARTIAL, PARTIAL      # moved some tests, did not finish
+            else:
+                fill, stroke = "none", FRAME
+            out.append(
+                f'<rect x="{cx}" y="{y}" width="{cell}" height="{cell}" rx="2.5" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="1"><title>'
+                f'{r["instance"]} — f2p {r["f2p_passed"]}/{r["f2p_total"]}, '
+                f'p2p {r["p2p_passed"]}/{r["p2p_total"]}</title></rect>'
+            )
+        tx = grid_x + widest * (cell + gap) + 8
+        out.append(
+            f'<text x="{tx}" y="{y + 11:.0f}" font-size="11.5" fill="{INK}" '
+            f'font-variant-numeric="tabular-nums">{got}/{len(items)}</text>'
         )
 
-    rate = cum_resolved[-1] / n
-    gridlines = []
-    for frac in (0.25, 0.5, 0.75, 1.0):
-        gy = y(y_max * frac)
-        gridlines.append(
-            f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{w - pad_r}" y2="{gy:.1f}" '
-            f'stroke="{FRAME}" stroke-width="1" stroke-dasharray="3,5"/>'
-            f'<text x="{pad_l - 8}" y="{gy + 4:.1f}" text-anchor="end" '
-            f'font-size="12" fill="{INK}">{int(y_max * frac)}</text>'
+    fy = pad_t + row_h * len(order) + 22
+    out.append(
+        f'<line x1="{pad_l}" y1="{fy - 12}" x2="{w - pad_l}" y2="{fy - 12}" '
+        f'stroke="{FRAME}" stroke-width="1"/>'
+    )
+    legend = [(ACCENT, ACCENT, "resolved"), (PARTIAL, PARTIAL, f"partial ({partial})"),
+              ("none", FRAME, "not resolved")]
+    lx = pad_l
+    for fill, stroke, text in legend:
+        out.append(
+            f'<rect x="{lx}" y="{fy - 1}" width="10" height="10" rx="2" fill="{fill}" '
+            f'stroke="{stroke}" stroke-width="1"/>'
+            f'<text x="{lx + 15}" y="{fy + 8}" font-size="11" fill="{INK}">{text}</text>'
         )
-
-    end_x, end_y = x(n - 1), y(cum_resolved[-1])
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" font-family="ui-sans-serif, system-ui, sans-serif">
-  <title>SWE-bench verdicts: cumulative attempts vs resolved (receipts-generated)</title>
-  <text x="{pad_l}" y="24" font-size="16" font-weight="600" fill="{INK}">SWE-bench receipts — cumulative graded attempts vs resolved</text>
-  <text x="{pad_l}" y="{h - 10}" font-size="11" fill="{MUTED}">generated from verdict artifacts; every point cites a JSON on disk · resolved {cum_resolved[-1]}/{n} ({rate:.0%}){_ungradeable_note()}</text>
-  {''.join(gridlines)}
-  {polyline(cum_attempts, MUTED, 2)}
-  {polyline(cum_resolved, ACCENT, 3)}
-  <circle cx="{end_x:.1f}" cy="{end_y:.1f}" r="4.5" fill="{ACCENT}"/>
-  <text x="{end_x - 6:.1f}" y="{end_y - 10:.1f}" text-anchor="end" font-size="13" font-weight="600" fill="{ACCENT}">{cum_resolved[-1]} resolved</text>
-  <text x="{x(n - 1) - 6:.1f}" y="{y(cum_attempts[-1]) + 16:.1f}" text-anchor="end" font-size="12" fill="{MUTED}">{n} graded attempts</text>
-</svg>
-"""
-    return svg
+        lx += 22 + len(text) * 6.2
+    out.append(
+        f'<text x="{pad_l}" y="{fy + 30}" font-size="11.5" fill="{INK}">'
+        f'Regression safety: {intact} of {len(p2p_rows)} patched suites left every '
+        f'previously-passing test passing ({p2p_pass}/{p2p_all} tests).</text>'
+    )
+    out.append(
+        f'<text x="{pad_l}" y="{fy + 48}" font-size="11" fill="{INK}" opacity="0.8">'
+        f'Regenerated from ~/.continuum/benchmarks/swe/verdicts by '
+        f'tools/scripts/generate_receipt_charts.py — never hand-edited.</text>'
+    )
+    out.append("</svg>")
+    return "\n".join(out)
 
 
 def main():
@@ -139,11 +205,11 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(os.path.join(OUT_DIR, "receipts-snapshot.json"), "w") as f:
         json.dump(rows, f, indent=2)
-    with open(os.path.join(OUT_DIR, "improvement-curve.svg"), "w") as f:
-        f.write(improvement_curve_svg(rows))
+    with open(os.path.join(OUT_DIR, "receipts-by-project.svg"), "w") as f:
+        f.write(receipts_by_project_svg(rows))
     resolved = sum(1 for r in rows if r["resolved"])
     print(f"charts written: {len(rows)} verdicts, {resolved} resolved ({resolved/len(rows):.0%})")
-    print(f"  -> {os.path.join(OUT_DIR, 'improvement-curve.svg')}")
+    print(f"  -> {os.path.join(OUT_DIR, 'receipts-by-project.svg')}")
 
 
 if __name__ == "__main__":

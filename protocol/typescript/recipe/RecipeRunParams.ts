@@ -2,7 +2,8 @@
 
 export type RecipeRunParams = { 
 /**
- * The recipe row's `name` in the `recipes` collection.
+ * The recipe's PURPOSE (`activity/recipes` lists them) — the same string
+ * `activity/spawn --recipe` accepts.
  */
 name: string, 
 /**
