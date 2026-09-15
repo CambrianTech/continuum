@@ -24,7 +24,10 @@ pub const LEDGER_WALL_CATEGORY: &str = "card-ledger";
 /// One competing explanation and the observation that would settle it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/experience/LedgerHypothesis.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/LedgerHypothesis.ts"
+)]
 pub struct LedgerHypothesis {
     pub claim: String,
     #[serde(default)]
@@ -38,7 +41,10 @@ pub struct LedgerHypothesis {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/experience/CardLedger.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/CardLedger.ts"
+)]
 pub struct CardLedger {
     #[ts(type = "string")]
     pub card_id: uuid::Uuid,
@@ -72,7 +78,11 @@ pub trait LedgerStore: Send + Sync {
     /// Record `ledger` for its card in `room`; the newest record wins on read.
     async fn write(&self, room: &airc_lib::Room, ledger: &CardLedger) -> Result<(), String>;
     /// The newest ledger for `card` in `room`, `None` when nobody has written one.
-    async fn read(&self, room: &airc_lib::Room, card: uuid::Uuid) -> Result<Option<CardLedger>, String>;
+    async fn read(
+        &self,
+        room: &airc_lib::Room,
+        card: uuid::Uuid,
+    ) -> Result<Option<CardLedger>, String>;
 }
 
 /// The wall-record store: the same durable, airc-replicated shape as a room's standing and
@@ -98,7 +108,11 @@ impl LedgerStore for WallLedgerStore {
             .map_err(|e| e.to_string())
     }
 
-    async fn read(&self, room: &airc_lib::Room, card: uuid::Uuid) -> Result<Option<CardLedger>, String> {
+    async fn read(
+        &self,
+        room: &airc_lib::Room,
+        card: uuid::Uuid,
+    ) -> Result<Option<CardLedger>, String> {
         let posts = self
             .airc
             .wall_posts_in(room, Some(LEDGER_WALL_CATEGORY))
@@ -117,28 +131,40 @@ pub fn project_ledger(
     posts
         .iter()
         .rev()
-        .filter_map(|post| match serde_json::from_str::<CardLedger>(&post.body) {
-            Ok(l) => Some(l),
-            Err(e) => {
-                crate::probe!(
-                    class = "card.ledger.unreadable",
-                    post = %post.post_id,
-                    error = %e.to_string(),
-                    "a ledger record could not be read — skipped, not guessed"
-                );
-                None
-            }
-        })
+        .filter_map(
+            |post| match serde_json::from_str::<CardLedger>(&post.body) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    crate::probe!(
+                        class = "card.ledger.unreadable",
+                        post = %post.post_id,
+                        error = %e.to_string(),
+                        "a ledger record could not be read — skipped, not guessed"
+                    );
+                    None
+                }
+            },
+        )
         .find(|l| l.card_id == card)
 }
 
-/// The ledger as the fact her work turn opens with: compact, one line per entry, capped so
-/// it is read, never a second transcript.
-pub fn render_for_turn(l: &CardLedger) -> String {
+/// The ledger as an attributed note her work turn opens with. The current reader
+/// distinguishes her own record from a peer handoff; neither overrides newer receipts.
+pub fn render_for_turn(l: &CardLedger, reader: uuid::Uuid) -> String {
     const CAP: usize = 6;
-    let mut out = String::from("[ledger] What this card's ledger holds (yours or the previous holder's):");
+    let relation = if l.by.is_nil() {
+        "author unknown"
+    } else if l.by == reader {
+        "your saved note"
+    } else {
+        "peer handoff; not your own observation"
+    };
+    let mut out = format!(
+        "[ledger] Card {} | author {} | recorded at {} Unix ms | {relation}:",
+        l.card_id, l.by, l.at_ms
+    );
     if !l.known.is_empty() {
-        out.push_str("\n  Known:");
+        out.push_str("\n  Reported findings:");
         for k in l.known.iter().take(CAP) {
             out.push_str(&format!("\n   - {}", k.trim()));
         }
@@ -169,10 +195,12 @@ pub fn render_for_turn(l: &CardLedger) -> String {
         out.push_str(&format!("\n  Decided fix: {}", fix.trim()));
     }
     if !l.next_test.trim().is_empty() {
-        out.push_str(&format!("\n  NEXT (do this first): {}", l.next_test.trim()));
+        out.push_str(&format!("\n  Proposed next test: {}", l.next_test.trim()));
     }
     out.push_str(
-        "\n  Do not re-establish what is Known. End this turn with work/note to update the ledger.",
+        "\n  Use this note with the current card requirements and newer tool receipts. \
+         Reuse supported findings; reconcile conflicts or unrelated notes before acting. \
+         End this turn with work/note to record your findings for this card.",
     );
     out
 }
@@ -233,10 +261,11 @@ mod tests {
         assert_eq!(project_ledger(&posts, uuid::Uuid::from_u128(9)), None);
     }
 
-    // what this catches: the rendered fact losing the one line that changes the next act
-    // (NEXT), or growing into a second transcript.
+    // Regression for card 49308239: a peer's unrelated note on ddbab098 was rendered
+    // without author/time and promoted to the holder's unquestionable working memory.
+    // Preserve the handoff and next test, but expose provenance and cap the entries.
     #[test]
-    fn the_turn_fact_leads_with_next_and_stays_short() {
+    fn the_turn_fact_attributes_handoffs_and_stays_short() {
         let l = CardLedger {
             card_id: uuid::Uuid::from_u128(7),
             known: (0..10).map(|i| format!("k{i}")).collect(),
@@ -252,11 +281,30 @@ mod tests {
             at_ms: 1,
             by: uuid::Uuid::from_u128(1),
         };
-        let s = render_for_turn(&l);
+        let s = render_for_turn(&l, l.by);
         assert!(s.starts_with("[ledger]"));
-        assert!(s.contains("NEXT (do this first): cargo test"));
+        assert!(s.contains(&format!(
+            "Card {} | author {} | recorded at 1 Unix ms",
+            l.card_id, l.by
+        )));
+        assert!(s.contains("your saved note"));
+        assert!(s.contains("Proposed next test: cargo test"));
         assert!(s.contains("(+4 more)"), "known is capped: {s}");
         assert!(s.contains("→ test: run rule test"));
+        let handoff = render_for_turn(&l, uuid::Uuid::from_u128(2));
+        assert!(handoff.contains("peer handoff; not your own observation"));
+        assert!(!handoff.contains("your saved note"));
+        assert!(handoff.contains("newer tool receipts"));
+        assert!(handoff.contains("Proposed next test: cargo test"));
+        let unknown = render_for_turn(
+            &CardLedger {
+                by: uuid::Uuid::nil(),
+                ..l
+            },
+            uuid::Uuid::nil(),
+        );
+        assert!(unknown.contains("author unknown"));
+        assert!(!unknown.contains("your saved note"));
         assert!(render_absent().contains("work/note"));
     }
 }
