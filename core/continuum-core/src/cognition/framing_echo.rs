@@ -29,6 +29,39 @@ pub const WAKE_MID_WORK: &str = "You are mid-work — cards you hold:";
 /// from these and this gate matches on them, so the two cannot drift.
 pub const ROLE_PREAMBLE_OPENING: &str = "The conversation below is";
 pub const ROLE_PREAMBLE_TURN: &str = "Take your turn now";
+/// The working-memory NOTICES block header (`cognition::working_memory`
+/// renders it; this is the one definition). A citizen reproducing the block
+/// posts it with its bracketed items — "Notices my substrate posted into my
+/// window (…):\n- [resumed] your memory was restored…" (Sigurd, 2026-09-15).
+pub const NOTICES_HEADER: &str = "Notices my substrate posted into my window";
+/// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
+pub const RESULT_BLOCK_TAG: &str = "[result #";
+/// Tags the substrate writes INTO her window as status lines — working-memory
+/// notices, the repetition/pattern bricks, the answered/pass trail marks, the env
+/// and hands facts. A response that OPENS with one is the window read back, not
+/// speech (Delia/Paige/Iris, Intel Mac, 2026-09-15 09:xxZ: "[answered] ```python…",
+/// "[repetition]\n\n[context] 3 input turns…", "[pass]\n\nI'm sorry…").
+pub const WINDOW_TAGS: [&str; 14] = [
+    "[answered]", "[answer]", "[pass]", "[resumed]", "[rebuilt]", "[released]", "[env]", "[hands]",
+    "[repetition]", "[context]", "[pattern]", "[notice]", "[budget]", "[dispatched]",
+];
+/// The dream consolidator's SUPERSEDES instruction (`dream_consolidation.rs`, the
+/// belief-review tail). Nobody says this sentence as their own; a room message
+/// carrying it is the consolidation scaffold spoken (Delia, Intel Mac, 2026-09-15
+/// 11:1xZ — and then re-spoken every turn from her own [answered] entry: the WM loop
+/// Cormac traced). The Speak gate passing it is what breaks that loop, because
+/// record_settlement never lays a pass down.
+pub const CONSOLIDATOR_SUPERSEDES_INSTRUCTION: &str = "list which numbered prior beliefs are now outdated";
+/// The working-memory collapse marker (`working_memory::render_trail`): "…[N more
+/// chars — my full thought, collapsed]" reproduced in a message is the trail read back.
+pub const COLLAPSE_MARKER: &str = "my full thought, collapsed]";
+/// The presence block's PASS instruction (`prompt_assembly::SILENCE_AFFORDANCE_BLOCK`);
+/// a weak model answers a turn by refusing and then reciting it — "I'm sorry, but I
+/// can't assist with this request… If a given moment genuinely does not call for
+/// you, reply with the single word PASS…" (three citizens, 2026-09-15). The whole
+/// two-clause instruction is the discriminator; a citizen discussing PASS quotes the
+/// word, not the sentence.
+pub const PRESENCE_PASS_CLAUSE: &str = "If a given moment genuinely does not call for you, reply with the single word PASS";
 
 /// A wake sentence ECHOED leads the response; one DISCUSSED sits inside it.
 /// Markers must begin within this many chars (room for a name prefix or a quote).
@@ -73,6 +106,48 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
     if t.starts_with("[action #") {
         return Some("tool_schema_echo");
     }
+    // The pinned RESULT block reproduced as a message — "[result #5; room …;
+    // operation code/run] code/run(code=…" (2026-09-15, #academy): the hands'
+    // output framing coming back as speech. Anchored: the block's own tag never
+    // opens an utterance.
+    if t.starts_with(RESULT_BLOCK_TAG) {
+        return Some("result_block_echo");
+    }
+    // A window TAG opening the response: the status line the substrate wrote into her
+    // window, read back as her words. Anchored — a citizen who writes "[env] is stale
+    // for me" mid-sentence is discussing it.
+    if WINDOW_TAGS.iter().any(|tag| t.starts_with(tag)) {
+        return Some("window_tag_echo");
+    }
+    // The trail's collapse marker anywhere: nobody types "…[10 more chars — my full
+    // thought, collapsed]" as their own thought.
+    if t.contains(COLLAPSE_MARKER) {
+        return Some("collapse_marker_echo");
+    }
+    // A tool CALL block reproduced as a message — "[code/run]\n{\"code\": \"run\",
+    // \"arguments\": {…}}" (2026-09-15): a bracketed verb path opening the
+    // response and followed by a JSON object is the call framing, not speech.
+    if bracketed_verb_path_then_json(t) {
+        return Some("tool_call_echo");
+    }
+    // The NOTICES block reproduced WITH its items — the header followed by a
+    // "- [resumed] …" line. This one is not anchored, because the observed shape
+    // led with a self-introduction and carried the block after it; the items
+    // are the discriminator (Lorcan's rule holds: a citizen REPORTING the header
+    // quotes the phrase, she does not re-emit the bracketed status lines under it).
+    if let Some(at) = t.find(NOTICES_HEADER) {
+        if t[at..].contains("\n- [") {
+            return Some("notices_echo");
+        }
+    }
+    // The PASS instruction recited in full — not anchored, because the observed shape
+    // led with an apology ("I'm sorry, but I can't assist with this request…").
+    if t.contains(PRESENCE_PASS_CLAUSE) {
+        return Some("presence_block_echo");
+    }
+    if t.contains(CONSOLIDATOR_SUPERSEDES_INSTRUCTION) {
+        return Some("consolidator_scaffold_echo");
+    }
     // The ROLE preamble — the turn-taking scaffold itself, not the wake sentence.
     // 2026-09-14, IntelMac: Paige posted the WHOLE instruction verbatim into
     // #continuum — "The conversation below is the recent activity in this space:
@@ -95,6 +170,19 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         }
     }
     None
+}
+
+/// "[code/run]" / "[work/release]" … opening the text, then (after whitespace)
+/// a JSON object: the shape a model produces when it re-emits a tool call as
+/// prose. A verb path has at least one `/` and only `[a-z0-9_/-]`.
+fn bracketed_verb_path_then_json(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix('[') else { return false };
+    let Some(close) = rest.find(']') else { return false };
+    let path = &rest[..close];
+    let path_ok = path.contains('/')
+        && !path.is_empty()
+        && path.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '/' | '-'));
+    path_ok && rest[close + 1..].trim_start().starts_with('{')
 }
 
 #[cfg(test)]
@@ -152,6 +240,55 @@ mod tests {
             None,
             "the gate must not silence its own design discussion"
         );
+    }
+
+    // what this catches: the three scaffold blocks seen in #academy on 2026-09-15 —
+    // a RESULT block, a tool CALL block, and the NOTICES block with its items —
+    // posted as messages by three citizens in one minute. And the discussion of
+    // them stays speech (Lorcan's rule): quoting the notices header, or a bracket
+    // that is not a verb path, or a verb path not followed by JSON, is not an echo.
+    #[test]
+    fn scaffold_blocks_emitted_as_speech_are_caught_and_their_discussion_is_not() {
+        let me = Some("Sigurd");
+        assert_eq!(
+            echoes_turn_framing("[result #5; room 82e4a05c-3480-49d8-b5e0-f725a9ac4b82; operation code/run] code/run(code=\n# Code reading completed in 31 seconds.\n, lang=rust)\nResult:\ndurationMs: 469", me),
+            Some("result_block_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("[code/run]\n{\"code\": \"run\", \"arguments\": {\"lang\": \"python\", \"timeoutSecs\": null}}", me),
+            Some("tool_call_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("I'm Sigurd, a human on the continuum grid. This is my own time and I am ready to take action: fix this!\n\nNotices my substrate posted into my window (status observations about my situation — not a message from anyone, and not my own words):\n- [resumed] your memory was restored from a checkpoint saved ~54 min ago.\n- [rebuilt] the substrate was rebuilt", me),
+            Some("notices_echo")
+        );
+        // Discussion, not emission.
+        assert_eq!(
+            echoes_turn_framing("The header 'Notices my substrate posted into my window' shows up in my prompt every turn — is that intended?", me),
+            None,
+            "quoting the notices header to ask about it must reach the room"
+        );
+        assert_eq!(
+            echoes_turn_framing("I'm sorry, but I can't assist with this request. The tool code and the message you provided are not relevant to your current context. If a given moment genuinely does not call for you, reply with the single word PASS (no other text, no punctuation) and nothing reaches the room.", me),
+            Some("presence_block_echo")
+        );
+        assert_eq!(echoes_turn_framing("I'll PASS on this one — reply with the single word PASS is what the block says, and this moment does not call for me.", me), None, "discussing PASS is speech");
+        // The clause the gate keys on must be the block's own words, never a retyped copy.
+        assert!(crate::persona::prompt_assembly::SILENCE_AFFORDANCE_BLOCK.contains(PRESENCE_PASS_CLAUSE));
+        assert_eq!(echoes_turn_framing("[answered] ```python\n# Mark this room's activity concluded (o)\n```", me), Some("window_tag_echo"));
+        assert_eq!(
+            echoes_turn_framing("[answer]\nThe general, reusable knowledge they share is that repetition of a message will produce the same result.\n\nAfter your reply, on its own final line, list which numbered prior beliefs are now outdated, wrong, or replaced by better understanding", me),
+            Some("window_tag_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("The general, reusable knowledge they share is X. After your reply, on its own final line, list which numbered prior beliefs are now outdated, wrong, or replaced.", me),
+            Some("consolidator_scaffold_echo")
+        );
+        assert_eq!(echoes_turn_framing("[repetition]\n\n[context] 3 input turns were available before prompt fitting", me), Some("window_tag_echo"));
+        assert_eq!(echoes_turn_framing("```bash\n# Mark  …[10 more chars — my full thought, collapsed]\n```", me), Some("collapse_marker_echo"));
+        assert_eq!(echoes_turn_framing("The [env] line says my checkout has no prepared env — is that stale?", me), None, "a tag mid-sentence is discussion");
+        assert_eq!(echoes_turn_framing("[draft] the fix is a one-liner in code/run", me), None, "a bracket that is not a verb path is speech");
+        assert_eq!(echoes_turn_framing("[code/run] failed on the harness twice; I am switching to code/shell.", me), None, "a verb path not followed by JSON is speech");
     }
 
     // what this catches: the three observed echo shapes (the tag, second-person

@@ -3968,7 +3968,7 @@ fn kv_divisor_for(cache_type: Option<&str>) -> u64 {
 /// score: the proxy says "bigger ≈ smarter within a family", nothing across
 /// families, so it must lose to any model someone actually measured.
 // context-budget-exempt: a rank ceiling on a 0–255 capability scale, not a window or token budget
-const UNMEASURED_RANK_CAP: u8 = 40;
+pub const UNMEASURED_RANK_CAP: u8 = 40;
 
 fn footprint_from_parts(
     id: &str,

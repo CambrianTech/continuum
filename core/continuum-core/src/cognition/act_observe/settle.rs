@@ -594,6 +594,13 @@ async fn settle_to_outcome(
             SettleStep::Acted { calls, intent } => {
                 acts += 1;
                 turn_acts.push((intent.clone(), calls.clone()));
+                // A seam, not policy: the turn's owner decides what an act batch means
+                // (card 6de7f57a — long turns stage their chain before they end).
+                if crate::persona::training_producer::is_stage_point(turn_acts.len()) {
+                    if let Some(body) = cycle.acting() {
+                        crate::persona::training_producer::on_act_batch(body.persona_id, &turn_acts);
+                    }
+                }
                 narrations_since_act = 0;
                 collect_touched_paths(&mut touched, &calls);
                 // Latch the #390 discovery gate OPEN on the first workspace mutation:

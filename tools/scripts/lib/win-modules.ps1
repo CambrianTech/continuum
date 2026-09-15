@@ -464,6 +464,64 @@ function Mod-AircFirewall {
     }
 }
 
+function Mod-Airc {
+    # Existing AIRC installations keep their selected channel and live daemon.
+    # A fresh box uses AIRC's own supported installer, not a parallel bootstrap.
+    $airc = Get-Command airc -ErrorAction SilentlyContinue
+    $userBin = Join-Path $env:USERPROFILE '.local\bin'
+    $canonicalBin = if ($env:BIN_TARGET) { $env:BIN_TARGET } else { Join-Path $env:USERPROFILE 'AppData\Local\Programs\airc' }
+    $candidates = @((Join-Path $canonicalBin 'airc.exe'), (Join-Path $userBin 'airc.exe'))
+    $installed = if ($airc) { $airc.Source } else { $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+    if (-not $installed) {
+        $source = (Get-ManifestModule 'airc').source
+        $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        try {
+            Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
+            & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath
+            if ($LASTEXITCODE -ne 0) { throw 'AIRC installation failed; the core was not restarted.' }
+        } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
+        $installed = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $installed) { throw 'AIRC installer did not produce its configured CLI.' }
+    }
+    # A child installer cannot refresh this process's environment. Preserve the
+    # toolchain additions already made here while exposing its actual bin dir.
+    $aircDirectory = Split-Path $installed
+    if (@($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -eq $aircDirectory }).Count -eq 0) { $env:PATH = $aircDirectory + ';' + $env:PATH }
+}
+
+function Mod-OrtRuntime {
+    # DirectML builds obtain their runtime through ort at build time. CUDA's
+    # load-dynamic-ort build needs this explicit runtime provision before launch.
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return }
+    if ($env:ORT_DYLIB_PATH) {
+        if (-not (Test-Path -LiteralPath $env:ORT_DYLIB_PATH)) { throw 'Configured ORT_DYLIB_PATH does not exist.' }
+        return
+    }
+    $lib = Join-Path $env:USERPROFILE '.continuum\lib'
+    if (Test-Path (Join-Path $lib 'onnxruntime.dll')) { Module-Skip 'onnxruntime' 'installed runtime present'; return }
+    $source = (Get-ManifestModule 'onnxruntime').source
+    $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-ort-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    try {
+        $archive = Join-Path $scratch 'runtime.zip'
+        Invoke-WebRequest -Uri $source.url -OutFile $archive -UseBasicParsing
+        Assert-Sha256 -Path $archive -Expected $source.sha256 -Name 'onnxruntime'
+        Expand-Archive -LiteralPath $archive -DestinationPath $scratch
+        $library = @(Get-ChildItem -LiteralPath $scratch -Filter onnxruntime.dll -Recurse)
+        if ($library.Count -ne 1) { throw 'ONNX Runtime archive has no unique runtime DLL.' }
+        New-Item -ItemType Directory -Force -Path $lib | Out-Null
+        Get-ChildItem -LiteralPath $library[0].DirectoryName -Filter '*.dll' |
+            Copy-Item -Destination $lib -Force -ErrorAction Stop
+        Module-Done 'onnxruntime'
+    } finally {
+        $resolved = [IO.Path]::GetFullPath($scratch)
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            (Split-Path $resolved -Leaf) -notlike 'continuum-ort-*') { throw 'Unsafe runtime download cleanup path.' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}
+
 function Mod-BuildCore {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $core = Join-Path $RepoRoot 'core\continuum-core'
@@ -478,6 +536,7 @@ function Mod-BuildCore {
         $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.continuum\cache\cargo-target'
     }
     New-Item -ItemType Directory -Force -Path $env:CARGO_TARGET_DIR | Out-Null
+    Protect-CoreBuildOutput -TargetDirectory $env:CARGO_TARGET_DIR
 
     # No-compromise GPU build (docs/architecture/GPU-CONTRACT.md): KEEP default
     # features (livekit + bevy stay on the GPU) and ADD the GPU features. NEVER
@@ -514,10 +573,16 @@ function Mod-BuildCore {
         # (The CLI bin was `cu`; renamed to `continuum` in #2010 to kill the Unix
         # UUCP `cu` collision -- keep this arg in lockstep with the [[bin]] name.)
         $buildArgs = @('build', '-p', 'continuum-core',
-            '--bin', 'continuum-core-server', '--bin', 'continuum',
+            '--bin', 'continuum-core-server',
             '--release', '--features', $features)
         & cargo @buildArgs
         $code = $LASTEXITCODE
+        if ($code -eq 0) {
+            # The client does not serve models or render frames. Keep its launch
+            # independent of GPU DLLs, including while repairing the service.
+            & cargo build -p continuum-core --bin continuum --release --no-default-features
+            $code = $LASTEXITCODE
+        }
     } finally { Pop-Location }
 
     if ($code -ne 0) {
@@ -538,11 +603,14 @@ function Mod-LlamaServer {
     # The daemon probes $USERPROFILE/.continuum/bin/llama-server.exe (server_bin(),
     # airc/continuum serving fix 4d4c463fb) -> the BINARY lands there (system drive,
     # tiny). The heavy CUDA build tree goes to cold storage so it doesn't bloat C:.
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$InstallDirectory = (Join-Path $env:USERPROFILE '.continuum\bin')
+    )
 
     $submodule   = Join-Path $RepoRoot 'core\vendor\llama.cpp'
     $serverCMake = Join-Path $submodule 'tools\server\CMakeLists.txt'
-    $installDir  = Join-Path $env:USERPROFILE '.continuum\bin'
+    $installDir  = $InstallDirectory
     $installBin  = Join-Path $installDir 'llama-server.exe'
     $stampFile   = Join-Path $installDir '.llama-server.stamp'
     # Build tree on the cold drive when cold-storage routed one (else system cache).
@@ -576,6 +644,25 @@ function Mod-LlamaServer {
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
         Module-Skip 'llama-server' "already current at $installBin ($stampWant)"
         return
+    }
+
+    # A new core slot does not require recompiling an unchanged engine. Reuse
+    # only a stamped matching build and verify its copy before publishing stamp.
+    $engineRoot = Join-Path $env:USERPROFILE '.continuum\bin'
+    foreach ($sourceDir in @($engineRoot, (Join-Path $engineRoot 'engine-a'),
+        (Join-Path $engineRoot 'engine-b'), (Join-Path $engineRoot 'engine-c'))) {
+        if ([IO.Path]::GetFullPath($sourceDir) -eq [IO.Path]::GetFullPath($installDir)) { continue }
+        $sourceBin = Join-Path $sourceDir 'llama-server.exe'
+        $sourceStamp = Join-Path $sourceDir '.llama-server.stamp'
+        if ((Test-Path $sourceBin) -and (Test-Path $sourceStamp) -and
+            (Get-Content $sourceStamp -Raw).Trim() -eq $stampWant) {
+            New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+            Copy-Item -LiteralPath $sourceBin -Destination $installBin -Force -ErrorAction Stop
+            if ((Get-FileHash $sourceBin).Hash -ne (Get-FileHash $installBin).Hash) { throw 'Staged inference engine hash mismatch.' }
+            Set-Content -LiteralPath $stampFile -Value $stampWant -Encoding ASCII
+            Module-Skip 'llama-server' "staged matching engine ($stampWant) without rebuilding"
+            return
+        }
     }
 
     Module-Start 'llama-server' "building llama-server ($backend, llama.cpp@$head) -- the serving-lane child"
@@ -636,15 +723,4 @@ function Mod-LlamaServer {
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII
     Module-Done 'llama-server'
     Write-Ok "llama-server -> $installBin ($stampWant) -- the serving daemon spawns this"
-}
-
-function Mod-Run {
-    $bin = Join-Path $env:CARGO_TARGET_DIR 'release\continuum-core-server.exe'
-    if (Test-Path $bin) {
-        Module-Done 'run'
-        Write-Ok "continuum-core-server.exe ready: $bin"
-        Write-Host '    Start the full system with:  .\start.ps1  (headless rust; ensures grid inbound, then launches)'
-    } else {
-        Write-Warn2 "serving binary not found at $bin -- the build step may not have completed."
-    }
 }

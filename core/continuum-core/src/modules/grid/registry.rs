@@ -30,6 +30,9 @@ pub struct FleetTransition {
     pub kind: FleetChange,
     pub silent_secs: u64,
     pub build_sha: Option<String>,
+    /// The peer's beaconed build number (0 = never beaconed one) — the value the
+    /// behind/caught-up verdict was computed from, so the line can say it.
+    pub build_number: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +120,9 @@ impl NodeRegistry {
                 peer_id: None, // learned later via set_peer_id (pairing/gossip correlation, #2228)
                 build_sha: None,
                 build_number: 0,
+                served_model: None,
+                lanes: 0,
+                residents: 0,
                 silent_secs: 0,
                 stale: false,
                 behind: false,
@@ -150,6 +156,21 @@ impl NodeRegistry {
     /// offer so the router can weigh it. Returns true when a node was newly created.
     /// Record the build a peer's beacon reported (and that it was just heard).
     pub fn note_peer_build(&self, peer: &PeerId, build_sha: Option<String>, build_number: u64, heard_at_ms: u64) {
+        self.note_peer_beacon(peer, build_sha, build_number, None, 0, 0, heard_at_ms);
+    }
+
+    /// Fold one heard beacon into the node: build, and what the node serves.
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_peer_beacon(
+        &self,
+        peer: &PeerId,
+        build_sha: Option<String>,
+        build_number: u64,
+        served_model: Option<String>,
+        lanes: u32,
+        residents: u32,
+        heard_at_ms: u64,
+    ) {
         for mut r in self.nodes.iter_mut() {
             if r.value().peer_id.as_ref() == Some(peer) {
                 let n = r.value_mut();
@@ -158,6 +179,11 @@ impl NodeRegistry {
                 }
                 if build_number != 0 {
                     n.build_number = build_number;
+                }
+                if served_model.is_some() {
+                    n.served_model = served_model.clone();
+                    n.lanes = lanes;
+                    n.residents = residents;
                 }
                 n.last_seen = n.last_seen.max(heard_at_ms);
             }
@@ -188,11 +214,11 @@ impl NodeRegistry {
             let behind = n.build_number != 0 && local_build_number != 0 && n.build_number < local_build_number;
             let label = n.node_name.clone().unwrap_or_else(|| n.node_id.clone()); // JUSTIFIED unwrap_or_else: an unnamed node is named by its id
             if stale != n.stale {
-                out.push(FleetTransition { node: label.clone(), kind: if stale { FleetChange::WentStale } else { FleetChange::BackFresh }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                out.push(FleetTransition { node: label.clone(), kind: if stale { FleetChange::WentStale } else { FleetChange::BackFresh }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone(), build_number: n.build_number });
                 n.stale = stale;
             }
             if behind != n.behind {
-                out.push(FleetTransition { node: label, kind: if behind { FleetChange::FellBehind } else { FleetChange::CaughtUp }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                out.push(FleetTransition { node: label, kind: if behind { FleetChange::FellBehind } else { FleetChange::CaughtUp }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone(), build_number: n.build_number });
                 n.behind = behind;
             }
         }
@@ -225,6 +251,9 @@ impl NodeRegistry {
                 peer_id: Some(peer),
                 build_sha: None,
                 build_number: 0,
+                served_model: None,
+                lanes: 0,
+                residents: 0,
                 silent_secs: 0,
                 stale: false,
                 behind: false,
@@ -375,6 +404,24 @@ mod tests {
         assert!(reg.fold_liveness(t0 + six_h * 200, six_h, 5309).is_empty(), "no beacon, no address: not a fleet member");
         reg.note_peer_build(&peer, Some("8d1282271".into()), 5249, t0);
         assert_eq!(reg.fold_liveness(t0 + 1000, six_h, 5309).len(), 1, "once it beacons, it is judged");
+    }
+
+    // what this catches: automatic placement's input — a beacon's served model, lanes and
+    // residents land on the node (grid/nodes shows them), and an older beacon without
+    // them leaves the last known values alone.
+    #[test]
+    fn a_beacon_reports_what_the_node_serves() {
+        let dir = std::env::temp_dir().join(format!("grid-serves-{}", uuid::Uuid::new_v4()));
+        let reg = NodeRegistry::new(&dir);
+        let peer = PeerId::from_uuid(uuid::Uuid::from_u128(21));
+        assert!(reg.ensure_peer_node(peer, None));
+        let t0 = now_millis();
+        reg.note_peer_beacon(&peer, Some("269cefdec".into()), 5322, Some("Qwen3.8-27B".into()), 2, 0, t0);
+        let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
+        assert_eq!((n.served_model.as_deref(), n.lanes, n.residents), (Some("Qwen3.8-27B"), 2, 0));
+        reg.note_peer_build(&peer, Some("269cefdec".into()), 5322, t0 + 1000);
+        let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
+        assert_eq!(n.lanes, 2, "an older beacon shape leaves the served facts alone");
     }
 
     /// what this catches: a peer on a NEWER build called "behind" because its sha

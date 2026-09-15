@@ -12,6 +12,8 @@
 use std::env;
 use std::path::PathBuf;
 
+mod msvc_cache;
+
 fn main() {
     // Resolve the manifest dir AT RUNTIME, not compile time. `env!(...)
     // expands when build.rs itself is compiled and bakes ONE checkout's
@@ -29,6 +31,7 @@ fn main() {
     let submodule = manifest_dir.join("..").join("vendor").join("llama.cpp");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=msvc_cache.rs");
 
     let mut cfg = cmake::Config::new(&submodule);
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
@@ -183,7 +186,21 @@ fn main() {
         cfg.define("GGML_VULKAN", "OFF");
     }
 
+    // cmake-rs reads compiler-selection environment without telling Cargo to
+    // track it. A CLI built with newer MSVC must not reuse those native objects
+    // when the installer selects the older CUDA-compatible toolchain (#4056).
+    let native_identity = if target_env == "msvc" {
+        let identity = msvc_cache::environment_identity();
+        let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+        msvc_cache::prepare(&out, &identity).expect("cannot prepare MSVC native cache");
+        Some((out, identity))
+    } else {
+        None
+    };
     let dst = cfg.build();
+    if let Some((out, identity)) = native_identity {
+        msvc_cache::record(&out, &identity).expect("cannot record MSVC native cache identity");
+    }
 
     // Link the static libraries cmake produced. cmake's MULTI-config generators
     // (Visual Studio / windows-msvc) nest libs under a per-config subdir as

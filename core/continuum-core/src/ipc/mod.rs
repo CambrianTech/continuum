@@ -2890,7 +2890,7 @@ pub fn start_server(
             // `persona_floor` (read once above) floors the provider's mint count
             // to the SAME value that sized the spawner's plan via with_population
             // — so plan-slots and minted identities stay 1:1.
-            let mut provider =
+            let provider =
                 match ResumeOrMintProvider::new(&continuum_root_for_boot, persona_floor).await {
                     Ok(p) => p,
                     Err(e) => {
@@ -2911,6 +2911,20 @@ pub fn start_server(
             // floor remains a MINT floor only ([[benchmarks-use-our-citizens-never-spawn-disposable-solvers]]:
             // the durable population is the asset — leaving members unhosted
             // on disk breaks the contract).
+            // THE ONE-ROSTER RULE (card b3b922c0): the provider consults the grid before
+            // minting — a node that arrives empty into a grid already seating a team
+            // mints none and offers lanes. Read lazily at each draw, so a team heard
+            // after boot still counts, and remembered across the first computer's reboots.
+            let mut provider = provider.with_grid_view({
+                let home = continuum_root_for_boot.clone();
+                std::sync::Arc::new(move || {
+                    crate::persona::grid_roster_memory::team_elsewhere_at(
+                        &home,
+                        crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid()),
+                        crate::modules::grid::frame::now_millis(),
+                    )
+                })
+            });
             let mut supervisor = supervisor;
             let population = provider.identities_available();
             if population > persona_floor {

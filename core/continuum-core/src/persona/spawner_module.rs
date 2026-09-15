@@ -238,7 +238,7 @@ impl PersonaSpawnerModule {
     /// ≥1. Wired from `CONTINUUM_PERSONA_FLOOR` at boot. See the `population`
     /// field doc for why replicating a homogeneous role is boot-2-safe.
     pub fn with_population(mut self, population: usize) -> Self {
-        self.population = population.max(1);
+        self.population = population;
         self
     }
 
@@ -248,7 +248,7 @@ impl PersonaSpawnerModule {
     /// yield — every resumed citizen — not to the mint floor alone). Same
     /// ≥1 clamp; same homogeneous-replication safety as the builder form.
     pub fn set_population(&mut self, population: usize) {
-        self.population = population.max(1);
+        self.population = population;
     }
 
     /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
@@ -579,7 +579,12 @@ async fn draw_intents(
 /// drained the five as partially registered, and the node sat at ZERO residents
 /// until the operator moved the hold file aside. Pure.
 pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
-    let seats = population.max(1);
+    // ZERO IS DELIBERATE (2026-09-15, the one-roster rule): the population is what the
+    // identity provider WILL yield, and an empty node that hears a team seated elsewhere
+    // on the grid yields none — it offers lanes. A ≥1 clamp here would draw a seat the
+    // provider cannot fill, the "identity provider exhausted at slot 0" retry every
+    // second (the 2026-09-12 shape).
+    let seats = population;
     match hold {
         Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
         _ => seats,
@@ -714,7 +719,7 @@ mod tests {
         spawner.set_population(3);
         assert_eq!(spawner.plan().len(), 3);
         spawner.set_population(0);
-        assert_eq!(spawner.plan().len(), 1, "clamped to >=1, same as the builder");
+        assert_eq!(spawner.plan().len(), 0, "zero is deliberate: the provider will yield none (a team is seated elsewhere)");
     }
 
     // what this catches (2026-09-06): a roster larger than the warm lanes. With a real
@@ -784,7 +789,7 @@ mod tests {
         assert_eq!(spawner.seats(), 12, "a real plan does not cap the roster: minds page over slots");
         assert_eq!(spawner.plan().len(), 12 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
         spawner.set_population(0);
-        assert_eq!(spawner.seats(), 1, "never zero");
+        assert_eq!(spawner.seats(), 0, "zero is deliberate: the provider will yield none while a team is seated elsewhere on the grid");
     }
 
     // what this catches (IntelMac on #3798): a runtime plan that no longer fits the GPU
@@ -997,7 +1002,7 @@ mod tests {
         assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
         assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
         assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
-        assert_eq!(seats_under(0, None), 1, "never zero");
+        assert_eq!(seats_under(0, None), 0, "zero is deliberate — the grid holds the roster, this node offers lanes");
     }
 
     // what this catches (2026-09-13): a plan larger than the provider's identities turning

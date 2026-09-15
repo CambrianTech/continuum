@@ -227,6 +227,14 @@ pub struct GridNode {
     #[serde(default)]
     #[ts(type = "number")]
     pub build_number: u64,
+    /// What the node serves, as its last beacon reported it (automatic placement stage A).
+    #[serde(default)]
+    #[ts(optional)]
+    pub served_model: Option<String>,
+    #[serde(default)]
+    pub lanes: u32,
+    #[serde(default)]
+    pub residents: u32,
     /// Seconds since this node was last heard (a beacon, a discovery, a frame).
     #[serde(default)]
     #[ts(type = "number")]

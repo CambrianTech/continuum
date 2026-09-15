@@ -62,7 +62,15 @@ pub struct ResumeOrMintProvider {
     min_personas: usize,
     /// Counter of fresh personas yielded.
     minted_count: usize,
+    /// The grid's answer to "is a team already seated elsewhere?" — the one-roster
+    /// rule (`grid_roster_memory`). `None` = no view wired (tests, single-node
+    /// builds): the floor stands.
+    grid_view: Option<GridView>,
+    /// The deferral is said once per draw (rewind resets it), not once per slot.
+    deferral_said: bool,
 }
+
+type GridView = std::sync::Arc<dyn Fn() -> Option<crate::persona::grid_roster_memory::GridRosterFact> + Send + Sync>;
 
 impl ResumeOrMintProvider {
     /// Construct by scanning `<continuum_root>/personas/` for existing
@@ -108,7 +116,26 @@ impl ResumeOrMintProvider {
             resumed_cursor: 0,
             min_personas,
             minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
         })
+    }
+
+    /// Wire the grid's view of teams seated elsewhere. With it, an EMPTY node that
+    /// hears a team mints none (its resumed citizens still seat); without it the
+    /// mint floor stands as configured.
+    pub fn with_grid_view(mut self, view: GridView) -> Self {
+        self.grid_view = Some(view);
+        self
+    }
+
+    /// The mint floor NOW: the configured floor, or zero while the grid already
+    /// seats a team elsewhere (returned alongside, for the receipt).
+    fn mint_floor(&self) -> (usize, Option<crate::persona::grid_roster_memory::GridRosterFact>) {
+        match self.grid_view.as_ref().and_then(|v| v()) {
+            Some(team) => (0, Some(team)),
+            None => (self.min_personas, None),
+        }
     }
 
     /// How many identities this provider WILL yield: every resumed citizen on
@@ -120,7 +147,7 @@ impl ResumeOrMintProvider {
     /// stays a MINT floor (how many to create when the disk is emptier than
     /// it); it must never CAP how many existing citizens resume.
     pub fn identities_available(&self) -> usize {
-        self.resumed.len().max(self.min_personas)
+        self.resumed.len().max(self.mint_floor().0)
     }
 
     /// Start the draw over. The provider is built ONCE at boot and every hosting
@@ -132,6 +159,7 @@ impl ResumeOrMintProvider {
     pub fn rewind(&mut self) {
         self.resumed_cursor = 0;
         self.minted_count = 0;
+        self.deferral_said = false;
     }
 }
 
@@ -151,12 +179,29 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
             return Ok(Some(intent));
         }
 
-        // Phase 2: floor-mint up to min_personas total.
+        // Phase 2: floor-mint up to the mint floor — the configured floor, or ZERO
+        // while a team is already seated elsewhere on the grid (the one-roster rule,
+        // card b3b922c0): this node offers lanes instead of minting a second team.
         let total_yielded = self.resumed.len() + self.minted_count;
-        if total_yielded < self.min_personas {
+        let (floor, team_elsewhere) = self.mint_floor();
+        if total_yielded < floor {
             let intent = mint_fresh_intent();
             self.minted_count += 1;
             return Ok(Some(intent));
+        }
+        if let Some(team) = team_elsewhere {
+            if total_yielded < self.min_personas && !self.deferral_said {
+                self.deferral_said = true;
+                crate::probe!(
+                    class = "persona.host.mint_deferred_to_grid",
+                    residents_elsewhere = u64::from(team.residents),
+                    peers_elsewhere = team.peers as u64,
+                    heard_at_ms = team.heard_at_ms,
+                    resumed = self.resumed.len() as u64,
+                    mint_floor = self.min_personas as u64,
+                    "a team is already seated on the grid — this node mints none and offers lanes"
+                );
+            }
         }
 
         // Phase 3: exhausted.
@@ -284,6 +329,8 @@ mod tests {
             resumed_cursor: 0,
             min_personas: 3,
             minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
         };
         let mut first = Vec::new();
         while let Some(i) = p.next_persona().await.expect("draw") {
@@ -472,5 +519,37 @@ mod tests {
         let intent = mint_fresh_intent();
         let derived = agent_name_from_identity(&intent.persona_id.to_string());
         assert_eq!(intent.agent_name, derived);
+    }
+
+    // what this catches: the one-roster rule at the provider — an EMPTY node that hears a
+    // team seated elsewhere yields nothing (plan sized to zero, no mint), a node WITH
+    // homes still resumes every one of them and mints no top-up, and with no team
+    // elsewhere the configured floor mints as before.
+    #[tokio::test]
+    async fn an_empty_node_that_hears_a_team_mints_none_and_resumed_homes_still_seat() {
+        use crate::persona::grid_roster_memory::GridRosterFact;
+        let team: GridView = std::sync::Arc::new(|| Some(GridRosterFact { peers: 1, residents: 16, heard_at_ms: 1 }));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut empty = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(team.clone());
+        assert_eq!(empty.identities_available(), 0, "the plan is sized to what will be yielded: nothing");
+        assert!(empty.next_persona().await.unwrap().is_none(), "no mint while a team is seated elsewhere");
+
+        let dir = crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+        for id in ["9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7", "1c1d7cc2-7b4a-4f2e-9f7a-1c1d7cc27b4a"] {
+            let pid = Uuid::parse_str(id).unwrap();
+            let seed = PersonaSeedFile::V1 { persona_id: pid, agent_name: format!("R{}", &id[..2]), created_at_ms: 1, avatar_vrm: None };
+            let seed_path = dir.join(id).join("seed.json");
+            tokio::fs::create_dir_all(seed_path.parent().unwrap()).await.unwrap();
+            write_seed_atomic(&seed_path, &seed).await.unwrap();
+        }
+        let mut homed = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(team);
+        assert_eq!(homed.identities_available(), 2, "every home on disk seats; the top-up mint is deferred");
+        assert!(homed.next_persona().await.unwrap().is_some());
+        assert!(homed.next_persona().await.unwrap().is_some());
+        assert!(homed.next_persona().await.unwrap().is_none());
+
+        let alone: GridView = std::sync::Arc::new(|| None);
+        let lone = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(alone);
+        assert_eq!(lone.identities_available(), 3, "nobody elsewhere: the floor mints as before");
     }
 }

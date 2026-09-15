@@ -120,6 +120,15 @@ pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
 /// Examples (false): `"Pass on the bread please"`, `"I'll pass"` (the
 /// substrate wants the exact token so the brain's intent is
 /// unambiguous), `""` (empty isn't silence — it's a malformed turn).
+/// Bare inflections of the reserved token a small model produces in its place. Whole
+/// message only — see [`looks_like_silence_token`].
+const SILENCE_INFLECTIONS: [&str; 8] = [
+    "passed", "passing", "silence", "silent",
+    // the yield forms (a 5090 citizen posted "yield_turn" bare, 2026-09-15 09:2xZ) and the
+    // narrated stop ("I'm stopping now." — Delia, Intel Mac, 09:4xZ)
+    "yield", "yield_turn", "yielding", "i'm stopping now",
+];
+
 pub fn looks_like_silence_token(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -128,6 +137,15 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     // Allow one trailing `.` for LCD-tier punctuation habit.
     let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
     if core.eq_ignore_ascii_case(SILENCE_TOKEN) {
+        return true;
+    }
+    // A bare INFLECTION of the token as the WHOLE message — "Passed", "Silence." —
+    // is the same choice from a small model that conjugated the reserved word
+    // (2026-09-15: "Silence." from the 5090, "Passed" from the Intel Mac, each posted
+    // to a room as a message and each re-waking every peer). Whole-message only,
+    // decorated like the token; "Passed the command…" is still speech.
+    let bare = core.trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
+    if SILENCE_INFLECTIONS.iter().any(|w| bare.eq_ignore_ascii_case(w)) {
         return true;
     }
     // A bare PASS on the FINAL line also counts (glass-boxed live 2026-07-09: Asha
@@ -1538,5 +1556,22 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].content, "first message");
+    }
+
+    // what this catches (2026-09-15): a bare inflection of the token posted as a whole
+    // message — "Silence." (5090), "Passed" (Intel Mac) — is silence; the same word
+    // opening a sentence is speech.
+    #[test]
+    fn a_bare_inflection_of_the_token_is_silence_and_a_sentence_is_not() {
+        for s in ["Passed", "Silence.", "(silence)", "  passing  ", "*Silent*", "yield_turn", "I'm stopping now."] {
+            assert!(looks_like_silence_token(s), "{s:?}");
+        }
+        for s in [
+            "Passed the command for marking the room concluded, but no action was taken.",
+            "I'll stay silent on this one until the tests pass.",
+            "Silence is not the answer here — the test still fails.",
+        ] {
+            assert!(!looks_like_silence_token(s), "{s:?}");
+        }
     }
 }

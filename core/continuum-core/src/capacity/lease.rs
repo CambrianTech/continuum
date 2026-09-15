@@ -200,6 +200,9 @@ mod tests {
             at_ms: 0,
             build: 0,
             build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
         }
         .capacity()
     }
