@@ -131,6 +131,15 @@ impl ActionCommand for CodeRun {
                 std::fs::create_dir_all(&dir).map_err(|e| {
                     CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
                 })?;
+                // WHERE IT RUNS: her held checkout when she holds one (the same root her
+                // shell and file hands use), else the scratch dir. Measured on the M5
+                // 11:38–14:00Z (Joel: "rust > cpp > nodejs > python > shell"): 47 of 90 acts
+                // were code/run, and every snippet walked the tree with ABSOLUTE paths
+                // (`os.walk("/Users/…/workspace")`, `subprocess.run(["grep", …])`) — because
+                // the snippet ran in a temp dir, relative paths meant nothing, and some
+                // walked OTHER citizens' workspaces. Python is the right scratch language;
+                // it must run where her hands stand.
+                let cwd = crate::modules::code_commands::held_root_for(ctx).await;
                 // THE HELD CHECKOUT'S ENVIRONMENT, NOT THE PATH's python3 (card 533c2d78,
                 // finder Mara 2026-09-15): two citizens spent ~79-act loops on
                 // matplotlib-24177 whose repro scripts died on "no module named numpy" —
@@ -140,9 +149,33 @@ impl ActionCommand for CodeRun {
                 let interpreter = crate::modules::code_commands::held_env_python_for(ctx)
                     .await
                     .unwrap_or_else(|| std::path::PathBuf::from("python3")); // unwrap_or_else: no held checkout or no prepared env = the PATH interpreter, named in the result
-                let result = run_python(&dir, &params.code, timeout, &interpreter).await;
+                let shape = script_shape(&params.code);
+                crate::probe!(
+                    class = "code.run.shape",
+                    shape = shape.unwrap_or("program"),
+                    rooted = cwd.is_some(),
+                    chars = params.code.chars().count() as u64,
+                    "what a python snippet is — a program, or the tree walked / a shell called from python"
+                );
+                let result = run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter).await;
                 let _ = std::fs::remove_dir_all(&dir);
-                return result;
+                // THE FASTER HAND, NAMED IN THE RESULT (never a refusal — Joel 2026-09-15:
+                // python over shell for anything cross-OS; the Rust hands over both). A
+                // snippet that shells out or walks the tree is exploration, and the
+                // in-process Rust hands do that in one act, rooted, through the repeat
+                // guard: code/search (text/symbols), code/read (a file/range), code/list.
+                return result.map(|mut r| {
+                    if let Some(m) = shape {
+                        r.stderr = format!(
+                            "[hands] this snippet used `{m}` to explore the tree — your Rust hands do that in \
+                             ONE act, rooted at your repo: code/search (text or a symbol), code/read (a file or \
+                             range), code/list (a directory), code/shell (git, pytest). Keep code/run for a \
+                             program you wrote: a repro, a small test.\n{}",
+                            r.stderr
+                        );
+                    }
+                    r
+                });
             }
             other => return Err(CommandError::Invalid(format!(
                 "code/run: unsupported lang '{other}' — supported: rust, python. \
@@ -235,8 +268,22 @@ fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
 /// contract as the Rust path. Same ground-truth shape: a traceback is the run
 /// result (ok=false), never hidden; `Err` is reserved for a missing
 /// interpreter. python3 resolves from PATH like rustc does.
+/// The marker that makes a python snippet tree exploration rather than a program, if
+/// any: `subprocess` / `os.system` / `os.popen` (a shell called from python), `os.walk`
+/// / `os.listdir` / `os.scandir` / `glob.glob` / `os.path.exists` / pathlib's
+/// `rglob` / `iterdir` (walking the tree). Reading a file with `open()` is a program
+/// (a repro reads its fixture). Informational: the result names the faster hand.
+pub(crate) fn script_shape(code: &str) -> Option<&'static str> {
+    const MARKERS: [&str; 10] = [
+        "subprocess", "os.system(", "os.popen(", "os.walk(", "os.listdir(", "os.scandir(",
+        "glob.glob(", "os.path.exists(", ".rglob(", ".iterdir(",
+    ];
+    MARKERS.iter().copied().find(|m| code.contains(m))
+}
+
 async fn run_python(
     dir: &std::path::Path,
+    cwd: Option<&std::path::Path>,
     code: &str,
     timeout: std::time::Duration,
     interpreter: &std::path::Path,
@@ -248,7 +295,7 @@ async fn run_python(
     let mut cmd = tokio::process::Command::new(interpreter);
     crate::code::shell_session::strip_secret_env(&mut cmd);
     cmd.arg(&src)
-        .current_dir(dir)
+        .current_dir(cwd.unwrap_or(dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -619,6 +666,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
         let out = run_python(
             &dir,
+            None,
             "import sys, time\nprint('partial-evidence', flush=True)\nsys.stderr.write('warming\\n'); sys.stderr.flush()\ntime.sleep(30)\nprint('never')\n",
             std::time::Duration::from_secs(1),
             std::path::Path::new("python3"),
@@ -648,12 +696,32 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); // JUSTIFIED unwrap: test scaffolding
         }
-        let out = run_python(&dir, "print('never')", std::time::Duration::from_secs(5), &fake)
+        let out = run_python(&dir, None, "print('never')", std::time::Duration::from_secs(5), &fake)
             .await
             .expect("fake interpreter spawns");
         assert!(out.ok);
         assert_eq!(out.stdout.trim(), "from-the-prepared-env");
         assert_eq!(out.interpreter, fake.display().to_string());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches (2026-09-15, 47 of 90 acts on the M5): a snippet runs WHERE her
+    // hands stand (relative paths resolve in the given cwd), and one that shells out or
+    // walks the tree still runs but its result leads with the one-act Rust hand.
+    #[tokio::test]
+    async fn a_snippet_runs_in_the_given_root_and_tree_walking_is_named_not_refused() {
+        assert_eq!(script_shape("import subprocess\nsubprocess.run(['grep','-r','x','.'])"), Some("subprocess"));
+        assert_eq!(script_shape("for r,d,f in os.walk('.'): print(f)"), Some("os.walk("));
+        assert_eq!(script_shape("src = open('a.py').read()\nassert 'def f' in src"), None, "reading a fixture is a program");
+        let root = std::env::temp_dir().join(format!("code-run-root-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        std::fs::write(root.join("marker.txt"), b"here").unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let dir = root.join("scratch");
+        std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let out = run_python(&dir, Some(&root), "print(open('marker.txt').read())", std::time::Duration::from_secs(10), std::path::Path::new("python3"))
+            .await
+            .expect("python3 on PATH");
+        assert_eq!(out.stdout.trim(), "here", "relative paths resolve at the given root");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
