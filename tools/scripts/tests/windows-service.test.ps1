@@ -135,3 +135,6 @@ public class SupervisorFixture {
         (Split-Path $resolved -Leaf) -notlike 'continuum-service-test-*') { throw 'Unsafe test cleanup path' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
+# Expected child failures deliberately set LASTEXITCODE to 7. Report the test
+# suite's success explicitly so a dot-sourcing CI shell does not inherit it.
+exit 0
