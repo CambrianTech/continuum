@@ -1403,8 +1403,26 @@ impl LlmDeliberationFaculty {
         // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal
         // — the substrate silencing a framing echo or a not-speech envelope — counts
         // against her; the hour's share decides whether her seat rests.
-        let gate_refused = matches!(&decision, Decision::Pass { reason: Some(r) } if is_gate_refusal(r));
-        crate::modules::citizen_health::note_verdict_of(self.persona_id, &self.persona_name, gate_refused);
+        let gate_marker = match &decision {
+            Decision::Pass { reason: Some(r) } => gate_lesson_marker(r),
+            _ => None,
+        };
+        crate::modules::citizen_health::note_verdict_of(self.persona_id, &self.persona_name, gate_marker.is_some());
+        // THE GATE BECOMES A LESSON (card 657e74de): a framing-echo / not-speech pass
+        // on an UNDIRECTED, LIVED turn stages {burst → PASS} as a speech-discipline
+        // example. A directed turn never trains silence (a human's question is not
+        // a "nothing to say"), and a synthetic burst is not her experience.
+        if let Some(marker) = gate_marker {
+            if !ws.directed_at_self() && ws.cause != super::workspace::Cause::Synthetic {
+                crate::persona::training_producer::produce_speech_discipline(
+                    self.persona_id,
+                    self.persona_name.clone(),
+                    self.binding.load().model.clone().unwrap_or_default(), // unwrap_or_default: an unbound faculty stages under an empty base — the trigger keys buckets by base and files it honestly under ""
+                    ws.world_state.clone(),
+                    marker,
+                );
+            }
+        }
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
@@ -4228,10 +4246,19 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
         .collect()
 }
 
-/// A pass the SUBSTRATE decided, not her: the two mechanical gates at the Speak seam
-/// (`framing_echo`, `not_speech`) name their reason with these prefixes.
-fn is_gate_refusal(reason: &str) -> bool {
-    reason.starts_with("framing echo") || reason.starts_with("not speech")
+/// Which gate passes are LESSONS (card 657e74de): the two mechanical gates at the
+/// Speak seam — a framing echo and a not-speech envelope — whose correct completion
+/// is known to be the silence token. Every other pass reason (her own `PASS`, a
+/// narrated blocker, a parroted draft) is her decision or a different defect, and
+/// trains nothing here. Returns the marker for provenance.
+fn gate_lesson_marker(reason: &str) -> Option<&'static str> {
+    if reason.starts_with("framing echo") {
+        Some("framing_echo")
+    } else if reason.starts_with("not speech") {
+        Some("not_speech")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

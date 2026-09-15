@@ -758,6 +758,81 @@ pub fn plan_received(classifier: &DomainClassifier, topic: &str, lesson: &str) -
     }
 }
 
+/// THE GATE BECOMES A LESSON (card 657e74de; Joel: "ideally they learn too"). Every
+/// echo shape gated at the Speak seam (`framing_echo`, `not_speech`) returns a Pass
+/// the citizen never sees — the substrate silences her and she learns nothing, so
+/// the same tier produces the same echo next turn. The corpus is `{prompt,
+/// completion}` SFT only (no chosen/rejected schema), so a gate verdict cannot be a
+/// NEGATIVE; but for the echo class the correct completion IS known and fits the
+/// schema: the silence token. This is the one place a gate verdict turns into an
+/// example.
+///
+/// Rules that keep this from teaching muteness, each load-bearing:
+/// - only an UNDIRECTED, LIVED turn (the caller checks): a directed question must
+///   never train `PASS`, and a synthetic burst is not experience;
+/// - its own bucket, [`SPEECH_DISCIPLINE_TRAIT`], never the conversation domain, so
+///   no chat gene's set is diluted with silence; and the bucket's gene is adoptable
+///   only through its gym (`docs/genome/speech-discipline.jsonl`), which measures
+///   BOTH halves — a quiet burst that must end in silence and a real ask that must
+///   be answered — so a gene that learned to pass everything fails the gym and is
+///   never paged in ([[fallbacks-are-illegal-fail-loud]]);
+/// - `quality = 1.0`: a curated domain with its own floor — a 4-char completion
+///   scores below [`MIN_TRAINING_QUALITY`] by construction, and the chat score was
+///   built for a different shape.
+pub const SPEECH_DISCIPLINE_TRAIT: &str = "speech-discipline";
+
+/// The silence token, exactly as [`crate::cognition::deliberation_parse`] reads it.
+pub const SILENCE_COMPLETION: &str = "PASS";
+
+/// The pure plan for a gated echo: the burst she was handed → the silence token.
+pub fn plan_speech_discipline(burst: &str) -> SubmitPlan {
+    SubmitPlan {
+        trait_kind: SPEECH_DISCIPLINE_TRAIT.to_string(),
+        prompt: burst.to_string(),
+        completion: SILENCE_COMPLETION.to_string(),
+        quality: 1.0,
+        stamp: None,
+    }
+}
+
+/// Stage one gated echo as a speech-discipline example. Best-effort and non-blocking
+/// (mirrors [`produce_received`]); quietly a no-op before the executor is installed.
+/// `marker` names which gate rule tripped (probe provenance only).
+pub fn produce_speech_discipline(
+    persona_id: Uuid,
+    persona_name: String,
+    base_model: String,
+    burst: String,
+    marker: &'static str,
+) {
+    let Some(executor) = EXECUTOR.cloned() else {
+        tracing::debug!(
+            persona = %persona_id,
+            "training_producer: executor not installed yet — skipping speech-discipline capture"
+        );
+        return;
+    };
+    crate::probe!(
+        class = "training.example.speech_discipline",
+        persona = %persona_name,
+        marker = marker,
+        burst_chars = burst.chars().count() as u64,
+        "a gated echo staged as {{burst → PASS}} — the gate becomes a lesson"
+    );
+    tokio::spawn(async move {
+        let plan = plan_speech_discipline(&burst);
+        submit_plan(
+            persona_id,
+            persona_name,
+            base_model,
+            executor,
+            plan,
+            "speech-discipline",
+        )
+        .await;
+    });
+}
+
 /// Submit ONE received lesson into the live training flywheel — the being-loop going
 /// live for the received axis. Best-effort and non-blocking (mirrors [`produce`]): a
 /// lesson one agent learned becomes another's trained-in capability, gated per-consolidation
@@ -1270,6 +1345,27 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 657e74de): the speech-discipline plan is exactly {burst →
+    // PASS} in its OWN bucket at the curated floor — never the chat domain, never a
+    // stamp, never a completion other than the silence token the parser reads.
+    #[test]
+    fn a_gated_echo_plans_as_burst_to_pass_in_its_own_bucket() {
+        let plan = plan_speech_discipline("[wake] You are Paige, awake on the continuum grid.");
+        assert_eq!(plan.trait_kind, SPEECH_DISCIPLINE_TRAIT);
+        assert_eq!(plan.bucket_key(), SPEECH_DISCIPLINE_TRAIT, "unstamped: the bare bucket");
+        assert_eq!(plan.completion, SILENCE_COMPLETION);
+        assert!(plan.prompt.starts_with("[wake]"));
+        assert!(plan.quality >= MIN_TRAINING_QUALITY, "curated floor clears the chat gate");
+        assert!(plan.stamp.is_none());
+        // and the token is the one the Speak seam decides silence on
+        assert_eq!(
+            crate::cognition::deliberation_parse::decision_from_response(SILENCE_COMPLETION, None),
+            crate::cognition::workspace::Decision::pass()
+        );
+        // the bucket is measurable: its gym exists, so the sentinel can adopt or refuse
+        assert!(crate::cognition::gym::gym_for_trait(SPEECH_DISCIPLINE_TRAIT).is_some());
+    }
 
     // what this catches: the stage points a long work turn hits (every 4th act), and
     // that a registered sink sees the chain-so-far while an unregistered persona

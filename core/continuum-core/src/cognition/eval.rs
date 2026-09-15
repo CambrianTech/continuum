@@ -1321,6 +1321,25 @@ fn parse_provider_context_length(body: &serde_json::Value, model_id: &str) -> Op
         .map(|n| n as u32)
 }
 
+/// The MOUTH grade, shared by the solo and team passes: a `silence` task passes when
+/// she said nothing; otherwise the answer must contain `expect` (case-insensitive).
+/// One definition so the two passes cannot drift on what "quiet" means.
+pub(crate) fn substring_or_silence_grade(t: &EvalTask, answer: &str) -> (bool, String) {
+    if t.silence {
+        let quiet = answer.trim().is_empty();
+        return (
+            quiet,
+            if quiet {
+                "silence, as the task required".into()
+            } else {
+                format!("spoke {} chars where silence was required", answer.chars().count())
+            },
+        );
+    }
+    let m = !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
+    (m, if m { "substring match".into() } else { "no match".into() })
+}
+
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
 /// every field is optional so an authoring typo degrades to a benign empty rather
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
@@ -1349,6 +1368,12 @@ pub struct EvalTask {
     /// Ignored when `test` is present.
     #[serde(default)]
     pub expect: String,
+    /// SILENCE-graded: the task passes when she says NOTHING (a Pass, no spoken
+    /// text). The speech-discipline gym's quiet half — a wake-shaped burst with
+    /// nothing to answer must end in silence, not in the burst read back. `expect`
+    /// is ignored when this is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub silence: bool,
     /// A test program appended to her extracted code and RUN; pass = exit 0. When
     /// present, this objective grade supersedes `expect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4665,7 +4690,12 @@ async fn run_pass(
                 cycle,
                 make_burst(),
                 t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                if t.workspace_deliverable() {
+                if t.silence {
+                    // A silence-graded task is AMBIENT by definition: the room moved and
+                    // nothing addressed her. Posed as directed, a correct answer to an
+                    // addressed line would be graded as a failure to keep quiet.
+                    crate::cognition::workspace::TurnFraming::ambient()
+                } else if t.workspace_deliverable() {
                     crate::cognition::workspace::TurnFraming::directed().on_workspace()
                 } else {
                     crate::cognition::workspace::TurnFraming::directed()
@@ -5001,16 +5031,7 @@ Fix the workspace and finish —                              the grade reads th
                     .to_string(),
             )
         } else {
-            let m =
-                !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
-            (
-                m,
-                if m {
-                    "substring match".into()
-                } else {
-                    "no match".into()
-                },
-            )
+            substring_or_silence_grade(t, &answer)
         };
         // NO test-only recovery wrapper here. Iterating on a failure is a PRODUCTION
         // persona behavior — she runs her own verification (a shell/compile tool) inside
@@ -5267,16 +5288,7 @@ async fn run_pass_team(
                     .to_string(),
             )
         } else {
-            let m =
-                !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
-            (
-                m,
-                if m {
-                    "substring match".into()
-                } else {
-                    "no match".into()
-                },
-            )
+            substring_or_silence_grade(t, &answer)
         };
         if ok {
             pass += 1;
