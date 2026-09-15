@@ -835,10 +835,11 @@ pub fn kv_pages_root() -> PathBuf {
 /// geometry is gone), so the spawn — the one place that knows the new truth —
 /// deletes them. This is the eviction story `disk_eviction` records for
 /// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
-pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
+pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usize {
+    let mut swept = 0usize;
     let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
     else {
-        return;
+        return 0;
     };
     // Protected dirs are siblings in this same root by construction, so compare the
     // DIRECTORY NAME, never the full path: a registry path deserialized from an older
@@ -848,10 +849,10 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
     // review of #4069, finding 1).
     let protected_names: Vec<&std::ffi::OsStr> = protect.iter().filter_map(|p| p.file_name()).collect();
     let Some((model_prefix, _)) = name.rsplit_once("--c") else {
-        return;
+        return 0;
     };
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return;
+        return 0;
     };
     for entry in entries.flatten() {
         let entry_name = entry.file_name();
@@ -869,6 +870,7 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
                 continue;
             }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
+            swept += usize::from(removed);
             crate::probe!(
                 class = "inference.kv_page.generation_swept",
                 dir = %stale.display(),
@@ -878,58 +880,83 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
             );
         }
     }
+    swept
 }
 
-/// PENDING page dirs: reserved the instant a spawn decides its dir, released when
-/// the lane's registry record is written (or the spawn fails). The sweep consults
-/// records ∪ reservations ATOMICALLY at sweep time, so a lane that starts between
-/// another lane's spawn and its readiness — live or ephemeral, there is no shared
-/// gate between them — can never have its dir swept before its record exists
-/// (Astra's block on #4069: the interleaving A-snapshots / B-starts / A-sweeps).
-/// Process-local: two CORES spawning the same model at once is the split-brain
-/// class (card 27fd5870), not this seam.
-static RESERVED_PAGE_DIRS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// THE PAGE-DIR GUARD (Astra's re-review of #4069): one mutex owns the reservation
+/// list AND is held across the sweep's census + deletion AND across the
+/// reservation→record handoff. So, for any two lanes A (sweeping) and B (starting):
+///   - B's reservation insert and A's census+delete are mutually exclusive — B is
+///     either fully in the census or fully after the deletion (in which case the
+///     dir A deleted was unowned by definition, and B creates it fresh);
+///   - B's "write the record, then drop the reservation" is one critical section,
+///     so a census never lands between the two and finds B in neither list.
+/// A cloned list outside the lock was the time-of-check/time-of-use hole. Held
+/// briefly, never across an await; `parking_lot` so a panic never poisons it.
+/// Process-local by design: two CORES spawning the same model at once is the
+/// split-brain class (card 27fd5870), not this seam.
+static PAGE_DIR_GUARD: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
 
-/// RAII reservation of a page dir for a spawn in flight. Dropped (released) once
-/// the lane's registry record carries the dir, or when the spawn fails.
-pub struct PageDirReservation(PathBuf);
+/// RAII reservation of a page dir for a spawn in flight, taken the instant the dir is
+/// decided (before it is created or used). Released by [`Self::handoff`] once the
+/// lane's registry record carries the dir, or on drop if the spawn unwinds first —
+/// and a lane whose record write FAILED keeps its reservation for its lifetime, so
+/// registry persistence failing never unprotects a running lane.
+struct PageDirReservation(Option<PathBuf>);
 
 impl PageDirReservation {
-    pub fn take(dir: &Path) -> Self {
-        RESERVED_PAGE_DIRS
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned reservation list still lists; bookkeeping only
-            .push(dir.to_path_buf());
-        Self(dir.to_path_buf())
+    fn take(dir: &Path) -> Self {
+        PAGE_DIR_GUARD.lock().push(dir.to_path_buf());
+        Self(Some(dir.to_path_buf()))
+    }
+
+    /// Write the record and release the reservation under ONE guard: a census in
+    /// another lane sees the reservation or the record, never neither. A failed
+    /// record write keeps the reservation (returned `Err`, reservation intact).
+    fn handoff(
+        &mut self,
+        rec: &crate::inference::lane_registry::LaneRecord,
+    ) -> std::io::Result<()> {
+        let mut guard = PAGE_DIR_GUARD.lock();
+        crate::inference::lane_registry::record(rec)?;
+        if let Some(dir) = self.0.take() {
+            if let Some(i) = guard.iter().position(|d| d == &dir) {
+                guard.swap_remove(i);
+            }
+        }
+        Ok(())
     }
 }
 
 impl Drop for PageDirReservation {
     fn drop(&mut self) {
-        let mut r = RESERVED_PAGE_DIRS.lock().unwrap_or_else(|p| p.into_inner()); // JUSTIFIED unwrap_or_else: same policy as take
-        if let Some(i) = r.iter().position(|d| d == &self.0) {
-            r.swap_remove(i);
+        if let Some(dir) = self.0.take() {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            if let Some(i) = guard.iter().position(|d| d == &dir) {
+                guard.swap_remove(i);
+            }
         }
     }
 }
 
-fn reserved_page_dirs() -> Vec<PathBuf> {
-    RESERVED_PAGE_DIRS.lock().unwrap_or_else(|p| p.into_inner()).clone() // JUSTIFIED unwrap_or_else: same policy as take
-}
-
-/// Every page dir a still-alive recorded llama-server was launched with, and whether
-/// that inventory is COMPLETE (every live record carries its dir). Reads the durable
-/// lane registry, so a core that adopted a warm predecessor knows its dir too.
-pub fn live_page_dirs() -> (Vec<PathBuf>, bool) {
-    let (mut dirs, complete) = page_dirs_of(
+/// Census + destructive sweep under the guard: the protected set (live records ∪
+/// reservations) is computed and consumed while no reservation can be inserted or
+/// handed off. `None` = nothing swept because the inventory was incomplete.
+fn sweep_stale_page_generations_guarded(current: &Path) -> Option<usize> {
+    let guard = PAGE_DIR_GUARD.lock();
+    let (mut protect, complete) = page_dirs_of(
         crate::inference::lane_registry::records(),
         crate::inference::lane_process::is_llama_server,
     );
-    dirs.extend(reserved_page_dirs());
-    (dirs, complete)
+    protect.extend(guard.iter().cloned());
+    if !complete {
+        return None;
+    }
+    Some(sweep_stale_page_generations(current, &protect))
 }
 
-/// The pure half of [`live_page_dirs`]: of `records`, those `alive` contribute their
+
+/// The pure half of the guarded census: of `records`, those `alive` contribute their
 /// dir; a live record WITHOUT one makes the inventory incomplete; dead records are
 /// ignored whether or not they carry a dir.
 pub fn page_dirs_of(
@@ -3233,7 +3260,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // Reserve NOW — before the child exists, before the record is written — so a
         // sibling spawn's sweep (live or ephemeral; they share no gate) sees this dir
         // in the inventory from this instant. Released after the record carries it.
-        let page_dir_reservation = PageDirReservation::take(&slot_save_dir);
+        let mut page_dir_reservation = PageDirReservation::take(&slot_save_dir);
         let page_dir_ready = std::fs::metadata(&slot_save_dir).is_ok_and(|m| m.is_dir());
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
@@ -3544,12 +3571,9 @@ match (child.stderr.take(), log_path) {
                 lanes: target.lanes,
                 page_dir: Some(slot_save_dir.clone()),
             };
-            let recorded = crate::inference::lane_registry::record(&rec);
-            if recorded.is_ok() {
-                // The record now carries the dir; the reservation has done its job.
-                drop(page_dir_reservation);
-            }
-            if let Err(e) = recorded {
+            // Record + release under the page-dir guard (one critical section); a
+            // failed write keeps the reservation for the lane's lifetime.
+            if let Err(e) = page_dir_reservation.handoff(&rec) {
                 crate::probe!(
                     class = "serving.lane_registry",
                     port = port,
@@ -3588,14 +3612,13 @@ match (child.stderr.take(), log_path) {
         // predecessor's directory is unknown"). Then publish the dir for the
         // save-side trim — after the gates, and only if the dir exists (mkdir failed
         // = the paging tier is amputated for this serve; nothing to trim).
-        // The inventory is taken HERE, at sweep time, never at spawn time: records ∪
-        // reservations as they stand this instant (Astra's block on #4069).
-        let (protected_page_dirs, inventory_complete) = live_page_dirs();
+        // Census + sweep under ONE guard (Astra's re-review of #4069): no reservation
+        // can be inserted or handed off between the census and the deletion.
         if !page_dir_ready {
             // No dir of our own (mkdir failed): the paging tier is amputated for this
             // serve — neither trim nor the destructive half runs (Cormac: symmetry).
-        } else if inventory_complete {
-            sweep_stale_page_generations(&slot_save_dir, &protected_page_dirs);
+        } else if sweep_stale_page_generations_guarded(&slot_save_dir).is_some() {
+            // swept (possibly zero) with a complete inventory
         } else {
             crate::probe!(
                 class = "inference.kv_page.sweep_skipped",
@@ -5070,36 +5093,98 @@ mod tests {
         assert!(current.exists());
     }
 
-    // what this catches (Astra's block on #4069): lane B starts AFTER lane A took its
-    // inventory and BEFORE B's registry record exists; A reaches its sweep. With the
-    // reservation taken at B's spawn decision and the inventory read at A's sweep
-    // time, B's dir survives; once B's reservation is released (its record written)
-    // and B is gone, the same sweep removes it as stale.
+    // what this catches (Astra's block + re-block on #4069), both interleavings, with
+    // deterministic barriers:
+    //  (a) B tries to RESERVE while A holds the guard mid-sweep (after census, before
+    //      deletion): B blocks until A's sweep is done, so B's insert can never land
+    //      between A's census and A's deletion. Either B's dir was unowned at A's
+    //      census (deleted; B then creates it fresh) or B reserved first (kept).
+    //  (b) B hands off (record written + reservation dropped) as one critical section:
+    //      a census taken under the guard at ANY instant sees B in the reservations
+    //      or in the records, never in neither.
     #[test]
-    fn a_dir_reserved_by_a_lane_still_loading_survives_a_sibling_sweep() {
+    fn a_reservation_cannot_slip_between_a_siblings_census_and_deletion() {
+        use std::sync::{mpsc, Arc, Barrier};
         let root = tempfile::tempdir().expect("tempdir");
-        let mk = |k: &str| {
-            let d = root.path().join(format!("race-model--c{k}"));
-            std::fs::create_dir_all(&d).unwrap(); // JUSTIFIED unwrap: test scaffolding
-            std::fs::write(d.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
-            d
-        };
-        let b_dir = mk("32768");
+        let b_dir = root.path().join("race-model--c32768");
+        std::fs::create_dir_all(&b_dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        std::fs::write(b_dir.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
         let a_dir = root.path().join("race-model--c49152");
         std::fs::create_dir_all(&a_dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
-        // B decided its dir and is loading; its record is not written yet.
-        let b_reservation = PageDirReservation::take(&b_dir);
-        // A sweeps with the inventory as it stands NOW (records ∪ reservations).
-        let (protected, _) = live_page_dirs();
-        assert!(protected.iter().any(|p| p == &b_dir), "the reservation is in the inventory");
-        sweep_stale_page_generations(&a_dir, &protected);
-        assert!(b_dir.join("a-page.bin").exists(), "B's pages survive A's sweep while B loads");
-        // B's record is written → reservation released; B later gone → stale.
-        drop(b_reservation);
-        let (protected, _) = live_page_dirs();
-        assert!(!protected.iter().any(|p| p == &b_dir));
-        sweep_stale_page_generations(&a_dir, &protected);
-        assert!(!b_dir.exists(), "an unreserved, unrecorded generation is stale");
+
+        // A: take the guard (= mid-sweep, after census), signal B to try to reserve, hold
+        // the guard long enough to prove B is blocked, then delete under the guard.
+        let at_census = Arc::new(Barrier::new(2));
+        let (b_reserved_tx, b_reserved_rx) = mpsc::channel::<()>();
+        let b_dir2 = b_dir.clone();
+        let at_census_b = Arc::clone(&at_census);
+        let b = std::thread::spawn(move || {
+            at_census_b.wait(); // A is mid-sweep now
+            let r = PageDirReservation::take(&b_dir2); // must BLOCK until A releases
+            let _ = b_reserved_tx.send(());
+            r
+        });
+        {
+            let guard = PAGE_DIR_GUARD.lock(); // A's census+deletion critical section
+            at_census.wait();
+            assert!(
+                b_reserved_rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+                "B's reservation must not land while A holds the guard"
+            );
+            // A's census saw no reservation for B's dir → A deletes it under the guard.
+            let protect: Vec<PathBuf> = guard.iter().cloned().collect();
+            assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 1);
+            assert!(!b_dir.exists());
+        }
+        // Guard released → B's reservation lands; B then creates its dir fresh.
+        let _b_res = b.join().expect("B joins");
+        b_reserved_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("B reserved after A released");
+        assert!(PAGE_DIR_GUARD.lock().iter().any(|d| d == &b_dir), "B is protected from here on");
+    }
+
+    #[test]
+    fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        let root = tempfile::tempdir().expect("tempdir");
+        let b_dir = root.path().join("handoff-model--c32768");
+        let mut res = PageDirReservation::take(&b_dir);
+        let rec = LaneRecord {
+            pid: std::process::id(), // alive: this very test process
+            port: 8123,
+            role: LaneRole::Ephemeral,
+            model: "handoff-model".into(),
+            context_window: 32768,
+            lanes: 1,
+            page_dir: Some(b_dir.clone()),
+        };
+        // Census under the guard BEFORE the handoff: B is in the reservations.
+        {
+            let g = PAGE_DIR_GUARD.lock();
+            assert!(g.iter().any(|d| d == &b_dir));
+        }
+        // The handoff itself runs under the guard: write the record, drop the reservation.
+        // A concurrent census blocks for its whole duration, so it observes the world
+        // strictly before (reservation) or strictly after (record) — never between.
+        let (written_tx, written_rx) = std::sync::mpsc::channel::<bool>();
+        let handoff = std::thread::spawn(move || {
+            let r = res.handoff(&rec).is_ok();
+            let _ = written_tx.send(r);
+            res
+        });
+        let ok = written_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("handoff completes");
+        let _res = handoff.join().expect("join");
+        let g = PAGE_DIR_GUARD.lock();
+        let in_reservations = g.iter().any(|d| d == &b_dir);
+        let in_records = ok
+            && crate::inference::lane_registry::records()
+                .into_iter()
+                .any(|r| r.page_dir.as_deref() == Some(b_dir.as_path()));
+        assert!(
+            in_reservations || in_records,
+            "after a handoff the lane is in the records (write ok) or still reserved (write failed) — never neither"
+        );
+        // Cleanup: the record names this test process; remove it so other tests' census stays true.
+        if ok { crate::inference::lane_registry::remove(std::process::id()); }
     }
 
     // what this catches: the live-lane inventory — a live record contributes its dir, a
