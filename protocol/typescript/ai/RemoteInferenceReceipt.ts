@@ -2,10 +2,10 @@
 
 /**
  * Caller-observed wire receipt. The responding peer identifies the authenticated
- * reply author; model/provider details remain responder-reported, including any
+ * reply author; model/serving details remain responder-reported, including any
  * inference the responder delegated onward.
  */
-export type RemoteInferenceReceipt = { requestedPeer: string, respondingPeer: string, correlationId: string,
+export type RemoteInferenceReceipt = { requestedPeer: string, respondingPeer: string, correlationId: string, 
 /**
  * Caller elapsed time across the remote request, in milliseconds.
  */
