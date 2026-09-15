@@ -14,6 +14,7 @@
 #   # From a checkout:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1          # local-only
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Grid    # + GitHub login for grid
+#   powershell -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update # update the selected tracking branch
 #
 # Docker remains available as a RUNTIME for grid nodes (docker compose up); it is
 # NOT a second install path. COUNTERPART: tools/scripts/install.sh (Unix). A
@@ -21,10 +22,36 @@
 
 [CmdletBinding()]
 param(
-    [switch]$Grid
+    [switch]$Grid,
+    [switch]$Update
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Enter-ContinuumInstallLease {
+    $state = Join-Path $env:USERPROFILE '.continuum'
+    New-Item -ItemType Directory -Force -Path $state | Out-Null
+    try {
+        return [IO.File]::Open((Join-Path $state 'install.lock'),
+            [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] { throw 'Another installer holds the install lease. Let it finish before rerunning.' }
+}
+
+function Update-ContinuumCheckout {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    $lease = Enter-ContinuumInstallLease
+    try {
+    # Never reset, stash, switch branches, or discard a developer's changes.
+    # Pull the selected branch's configured upstream, not an invented channel.
+    $dirty = @(& git -C $RepoRoot status --porcelain --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect checkout before update.' }
+    if ($dirty.Count -ne 0) { throw 'Update refused: tracked checkout changes must be committed or resolved first.' }
+    & git -C $RepoRoot rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
+    if ($LASTEXITCODE -ne 0) { throw 'Update refused: the selected branch has no upstream. Configure its intended tracking branch first.' }
+    & git -C $RepoRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) { throw 'Update did not fast-forward. Resolve the upstream/network error without discarding local work, then rerun the same installer.' }
+    } finally { $lease.Dispose() }
+}
 
 #  Bootstrap: make the remote `irm | iex` one-liner work for the native build 
 # When piped, $PSScriptRoot is empty and there is no repo yet. Inline the minimum
@@ -47,9 +74,11 @@ if (-not $PSScriptRoot) {
     $target = Join-Path $env:USERPROFILE 'continuum'
     if (-not (Test-Path (Join-Path $target '.git'))) {
         & git clone https://github.com/CambrianTech/continuum.git $target
+        if ($LASTEXITCODE -ne 0) { throw 'Repository clone failed; the installer did not run.' }
     }
     $bootArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $target 'install.ps1'))
     if ($Grid) { $bootArgs += '-Grid' }
+    if ($Update) { Update-ContinuumCheckout -RepoRoot $target }
     & (Get-Process -Id $PID).Path @bootArgs
     exit $LASTEXITCODE
 }
@@ -57,8 +86,21 @@ if (-not $PSScriptRoot) {
 #  From-checkout path 
 $RepoRoot = $PSScriptRoot
 $LibDir = Join-Path $RepoRoot 'tools\scripts\lib'
+if ($Update) {
+    # Reload the installer after updating: the currently parsed script and its
+    # modules still contain the previous checkout's instructions.
+    Update-ContinuumCheckout -RepoRoot $RepoRoot
+    $updatedArgs = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', (Join-Path $RepoRoot 'install.ps1'))
+    if ($Grid) { $updatedArgs += '-Grid' }
+    & (Get-Process -Id $PID).Path @updatedArgs
+    exit $LASTEXITCODE
+}
+
+$installLease = Enter-ContinuumInstallLease
+try {
 . (Join-Path $LibDir 'install-common.ps1')
 . (Join-Path $LibDir 'win-modules.ps1')
+. (Join-Path $LibDir 'windows-service.ps1')
 
 $WantsGrid = $Grid -or ($env:CONTINUUM_GRID -eq '1')
 
@@ -78,7 +120,10 @@ try {
         -TestCmd { Get-Command git -ErrorAction SilentlyContinue } -UserScope
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Push-Location $RepoRoot
-        try { & git submodule update --init --recursive } finally { Pop-Location }
+        try {
+            & git submodule update --init --recursive
+            if ($LASTEXITCODE -ne 0) { throw 'Required submodule initialization failed; refusing to build an incomplete checkout.' }
+        } finally { Pop-Location }
     }
 
     # Toolchain. Per-user tools first (rustup -- no prompt); machine-scope tools
@@ -89,6 +134,8 @@ try {
     Mod-LLVM
     Mod-CUDA
     Mod-GhAuth -WantsGrid:$WantsGrid
+    Mod-Airc
+    Mod-OrtRuntime
 
     # Grid transport reachability: Windows Firewall silently drops inbound peer
     # dials to the airc daemon unless it's allowed -- an asymmetric route failure
@@ -104,14 +151,16 @@ try {
     # Build + run as the invoking user (never elevated -- keeps the cargo cache
     # user-owned so a later non-elevated `npm start` can rebuild).
     Mod-BuildCore -RepoRoot $RepoRoot
+    $release = New-CoreServiceRelease -RepoRoot $RepoRoot
 
     # Build llama-server.exe (the serving daemon's GPU-backend child) from the same
     # vendored llama.cpp. Windows twin of install-llama-server.sh. Without this the
     # serving daemon has no binary to spawn -> no local inference -> no persona can
     # speak. Needs CUDA + MSVC env (already provisioned above).
-    Mod-LlamaServer -RepoRoot $RepoRoot
+    Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory (Split-Path $release.engine)
 
-    Mod-Run
+    Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
+    Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
 }
 finally {
     # Always drop the cached elevation so an admin session never outlives install.
@@ -119,7 +168,8 @@ finally {
 }
 
 Write-Host ''
+} finally { $installLease.Dispose() }
 Write-Ok 'Continuum native install complete.'
-Write-Host '  Start:  .\start.ps1     (ensures grid inbound every start, then launches)'
-Write-Host '  Test:   cu ping'
+Write-Host '  Update: .\install.ps1 -Update  (fast-forward this checkout, build, verify, and hand over)'
+Write-Host '  Test:   continuum ping'
 Write-Host ''

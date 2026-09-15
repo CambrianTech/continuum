@@ -925,7 +925,17 @@ cd continuum
 irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
 ```
 
-One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-toggles the Docker Desktop AI settings (no manual GPU + TCP toggle anymore), drops a `continuum.cmd` on PATH, then hands off to `bootstrap.sh` inside WSL. Works from the default Windows PowerShell 5.1 (it bootstraps pwsh 7 only if needed).
+The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. It runs with Windows PowerShell 5.1; administrative steps share one elevation session. Native source compilation takes longer than installing a prebuilt release.
+
+From your existing Windows checkout, use the same installer for updates:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update
+```
+
+This fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`. Tracked edits or divergent history stop the update without discarding your work. Add `-Grid` to provision grid access. The registered service restarts after crashes and at your next login; it does not run through logout.
+
+Core updates preserve warm inference lanes. The staged inference engine is used when a lane next starts; an already running engine is retained rather than interrupted merely to refresh its executable.
 
 `setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See the **[per-OS walkthrough](docs/SETUP.md)** with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
@@ -960,12 +970,9 @@ bash tools/scripts/install-service.sh status
 ```
 
 ```powershell
-# Windows — from an ADMINISTRATOR PowerShell. Creating a scheduled task needs
-# elevation (deleting one does not, which is a trap: tooling can tear the
-# supervisor down and then be unable to put it back).
-# Use Git Bash BY FULL PATH — a bare `bash` in PowerShell is the WSL shim and
-# fails with "execvpe(/bin/bash) failed".
-& "C:\Program Files\Git\bin\bash.exe" tools/scripts/install-service.sh install
+# Windows — the normal installer registers startup and performs a guarded
+# handoff. It requests elevation for registration when necessary.
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
