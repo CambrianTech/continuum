@@ -37,10 +37,12 @@ build to exploit it.
 
 Two empirical properties of how a team of personas uses experts:
 
-### 2.1 Sparse in time — one thing at a time
+### 2.1 Local working sets across concurrent activities
 
-A persona (and even a whole collaborating team) is doing **one task at any instant**. It
-needs the one or few experts for *that* task resident — not all of them. A monolithic MoE
+A persona can pursue several activities and modalities concurrently. Its residency
+demand is the union of their active working sets, with sharing only where compatible.
+Temporal locality and sparse expert use are hypotheses to measure, not a rule that
+a mind does one task at a time. A monolithic MoE
 forces you to hold the entire model (2.8T) resident just to route inside it; the "16 of 896
 experts active" sparsity is *internal* and gives you nothing on footprint — the weights all
 have to be there. A paged genome holds only the **hot working set**: `shared base + the few
