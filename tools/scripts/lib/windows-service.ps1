@@ -1,8 +1,21 @@
 # Native installer lifecycle. Two installed slots bound disk usage and keep
 # running images out of Cargo's output directory. Never overwrite an active slot.
+function ConvertTo-CoreImagePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Windows process inspection can report the same image with an extended
+    # path prefix while installer paths use the ordinary drive/UNC spelling.
+    $normalized = $Path.Replace('/', '\')
+    if ($normalized.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = '\\' + $normalized.Substring(8)
+    } elseif ($normalized.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = $normalized.Substring(4)
+    }
+    return [IO.Path]::GetFullPath($normalized)
+}
+
 function Protect-CoreBuildOutput {
     param([Parameter(Mandatory = $true)][string]$TargetDirectory)
-    $TargetDirectory = [IO.Path]::GetFullPath($TargetDirectory)
+    $TargetDirectory = ConvertTo-CoreImagePath $TargetDirectory
     $artifact = Join-Path $TargetDirectory 'release\continuum-core-server.exe'
     if (-not (Test-Path -LiteralPath $artifact)) { return }
     $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -10,7 +23,7 @@ function Protect-CoreBuildOutput {
     if (@($processes | Where-Object { -not $_.ExecutablePath }).Count) {
         throw 'Cannot inspect running core image paths before building.'
     }
-    if (-not @($processes | Where-Object { $_.ExecutablePath -eq $artifact }).Count) { return }
+    if (-not @($processes | Where-Object { (ConvertTo-CoreImagePath $_.ExecutablePath) -eq $artifact }).Count) { return }
     # CIM keeps the original image path after a rename. A later retry may see
     # that stale path while the newly linked output is already writable.
     try {
@@ -25,7 +38,8 @@ function Protect-CoreBuildOutput {
     # image alive under a bounded sibling name while Cargo writes its replacement.
     $previous = Join-Path $TargetDirectory 'release\continuum-core-server.previous.exe'
     if (@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-        $_.Name -eq 'continuum-core-server.previous.exe' -or $_.ExecutablePath -eq $previous
+        $_.Name -eq 'continuum-core-server.previous.exe' -or
+        ($_.ExecutablePath -and (ConvertTo-CoreImagePath $_.ExecutablePath) -eq $previous)
     }).Count) { throw 'A previous Cargo core image is still running; refusing to replace it.' }
     if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Force -ErrorAction Stop }
     Move-Item -LiteralPath $artifact -Destination $previous -ErrorAction Stop
@@ -38,13 +52,13 @@ function New-CoreServiceRelease {
         [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
         [string]$TargetDirectory = $env:CARGO_TARGET_DIR
     )
-    $root = Join-Path $InstallRoot 'bin'
+    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })
     if (@($liveProcesses | Where-Object { -not $_.ExecutablePath }).Count) {
         throw 'Cannot inspect all live Continuum image paths; refusing to overwrite an installed slot.'
     }
-    $liveImages = @($liveProcesses | ForEach-Object { $_.ExecutablePath })
+    $liveImages = @($liveProcesses | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
     $descriptor = $null
     $registered = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     if ($registered) {
@@ -59,7 +73,7 @@ function New-CoreServiceRelease {
         }
         if ($descriptor.artifact) {
             # Preserve rollback/startup files even while the service is stopped.
-            $liveImages += [IO.Path]::GetFullPath($descriptor.artifact)
+            $liveImages += ConvertTo-CoreImagePath $descriptor.artifact
         } elseif (($registered.Actions.Arguments -join ' ') -match 'service-[ab][\\/]') {
             throw 'Existing ContinuumCore task references a release slot without an artifact descriptor.'
         }
@@ -75,8 +89,8 @@ function New-CoreServiceRelease {
     # Keep room for that mapped engine, the registered release, and a candidate.
     $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
     if (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'Cannot inspect running inference engine paths.' }
-    $enginePaths = @($engines | ForEach-Object { $_.ExecutablePath })
-    if ($descriptor.engine) { $enginePaths += $descriptor.engine }
+    $enginePaths = @($engines | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+    if ($descriptor.engine) { $enginePaths += ConvertTo-CoreImagePath $descriptor.engine }
     $engineSlot = $null
     foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
         $candidate = Join-Path $root $name
