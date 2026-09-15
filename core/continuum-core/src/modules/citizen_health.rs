@@ -102,6 +102,12 @@ pub enum Verdict {
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
     Slow { writes: u64, resident: u64 },
+    /// No residents at the tick. Not a health verdict — a legible absence: a
+    /// lane-donor node under the one-roster rule reads EMPTY with lanes offered; a
+    /// node that lost its roster reads EMPTY with the grants it made before it did.
+    /// It never reads "healthy" (Intel Mac 2026-09-15 10:2xZ: "resident 0 · lanes 0
+    /// · lane grants 41 — healthy" after five despawns).
+    Empty { lanes: u64, lanes_granted: u64 },
 }
 
 impl Verdict {
@@ -112,6 +118,7 @@ impl Verdict {
             Verdict::Reading { .. } => "reading",
             Verdict::Idle { .. } => "idle",
             Verdict::Slow { .. } => "slow",
+            Verdict::Empty { .. } => "empty",
         }
     }
 }
@@ -128,7 +135,7 @@ pub const RESIDENTS_PER_WRITE_HOUR: u64 = 4;
 /// The rule. Pure so the five shapes are hand-computed tests.
 pub fn verdict(h: &CitizenHealth) -> Verdict {
     if h.resident == 0 {
-        return Verdict::Healthy;
+        return Verdict::Empty { lanes: h.lanes, lanes_granted: h.lanes_granted };
     }
     if h.acts == 0 {
         return Verdict::Idle { resident: h.resident };
@@ -156,6 +163,9 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
         Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts"),
+        Verdict::Empty { lanes, lanes_granted } => format!(
+            "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
+        ),
         Verdict::Slow { writes, resident } => format!(
             "SLOW: {writes} writes for {resident} residents — below one write per {RESIDENTS_PER_WRITE_HOUR} minds an hour"
         ),
@@ -320,7 +330,7 @@ mod tests {
         // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
         assert_eq!(verdict(&h(16, 6, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
         assert_eq!(verdict(&h(4, 2, 10, 1)), Verdict::Healthy, "one write per four minds is the floor, inclusive");
-        assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Healthy, "an empty node has nothing to be unhealthy");
+        assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Empty { lanes: 0, lanes_granted: 0 }, "an empty node is EMPTY, never 'healthy'");
     }
 
     // what this catches: the line carries every number and ends with the verdict, so a
