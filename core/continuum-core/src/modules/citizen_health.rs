@@ -90,6 +90,9 @@ pub enum Verdict {
     Reading { acts: u64 },
     /// Residents, no acts at all.
     Idle { resident: u64 },
+    /// Writes happen, but too few for the roster: fewer than one write per
+    /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
+    Slow { writes: u64, resident: u64 },
 }
 
 impl Verdict {
@@ -99,6 +102,7 @@ impl Verdict {
             Verdict::Starved { .. } => "starved",
             Verdict::Reading { .. } => "reading",
             Verdict::Idle { .. } => "idle",
+            Verdict::Slow { .. } => "slow",
         }
     }
 }
@@ -107,7 +111,12 @@ impl Verdict {
 /// turns, three minds per lane is a lane every ~12 minutes each — the edge of useful.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 3;
 
-/// The rule. Pure so the four shapes are hand-computed tests.
+/// A roster is SLOW below one write per this many residents in an hour: 16 minds that
+/// write twice in an hour (00:01Z 2026-09-15, the first receipt the core posted) are not
+/// healthy, whatever the lanes say. Four residents per write-hour is a floor, not a goal.
+pub const RESIDENTS_PER_WRITE_HOUR: u64 = 4;
+
+/// The rule. Pure so the five shapes are hand-computed tests.
 pub fn verdict(h: &CitizenHealth) -> Verdict {
     if h.resident == 0 {
         return Verdict::Healthy;
@@ -120,6 +129,9 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
     }
     if h.writes == 0 {
         return Verdict::Reading { acts: h.acts };
+    }
+    if h.writes.saturating_mul(RESIDENTS_PER_WRITE_HOUR) < h.resident {
+        return Verdict::Slow { writes: h.writes, resident: h.resident };
     }
     Verdict::Healthy
 }
@@ -135,6 +147,9 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
         Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts"),
+        Verdict::Slow { writes, resident } => format!(
+            "SLOW: {writes} writes for {resident} residents — below one write per {RESIDENTS_PER_WRITE_HOUR} minds an hour"
+        ),
     };
     format!(
         "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled — {}",
@@ -291,6 +306,10 @@ mod tests {
         assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(verdict(&h(16, 6, 0, 0)), Verdict::Idle { resident: 16 });
         assert_eq!(verdict(&h(16, 6, 39, 4)), Verdict::Healthy);
+        // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
+        // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
+        assert_eq!(verdict(&h(16, 6, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
+        assert_eq!(verdict(&h(4, 2, 10, 1)), Verdict::Healthy, "one write per four minds is the floor, inclusive");
         assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Healthy, "an empty node has nothing to be unhealthy");
     }
 
