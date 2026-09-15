@@ -58,6 +58,33 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>) -> Decision {
             reason: Some(format!("framing echo ({marker}): the response reflects the turn's own prompt")),
         };
     }
+    // A reply that is not speech at all — a raw tool envelope, or another peer's
+    // transcript line worn as her own — is a PASS for the same reason and at the same
+    // seam. `not_speech` was written, tested and MERGED on 2026-09-05 (card b88df1c1)
+    // and then never ran once: its only caller was `response_validator::clean_and_validate`,
+    // which has no production call site on canary — the sole mentions are the re-export
+    // in `cognition/mod.rs` and a line of PROSE in `persona/service_loop.rs` listing it
+    // as a step of the cognition cycle. The board read Merged, the file had tests, and
+    // 11 tool envelopes reached rooms in one 24h window. (#3760 found the same shape.)
+    //
+    // Its own module doc already named this the right home — "Sibling of
+    // [`super::framing_echo`]: same shape (a marker naming WHICH rule tripped), same
+    // remedy (a pass, never a post)" — and framing_echo is silenced HERE. One seam, one
+    // decision: every path that turns model text into a Speak inherits it, which is why
+    // it does not go at the faculty's verdict (my first draft, the shallow call site).
+    if let Some(marker) = super::not_speech::is_not_speech(trimmed) {
+        crate::probe!(
+            class = "cognition.not_speech",
+            marker = marker,
+            chars = trimmed.chars().count() as u64,
+            "response was not first-person prose addressed to the room — a pass, never posted"
+        );
+        return Decision::Pass {
+            reason: Some(format!(
+                "not speech ({marker}): the response is a tool envelope or another peer's voice"
+            )),
+        };
+    }
     if trimmed.is_empty()
         || looks_like_silence_token(trimmed)
         || starts_with_silence_token(trimmed)
@@ -332,6 +359,39 @@ mod tests {
     // what this catches: the PASS silence token maps to Decision::Pass (with or
     // without trailing punctuation); real content maps to Speak. One silence
     // contract, reused from prompt_assembly.
+    // what this catches: the WIRING, not the predicate. `not_speech` was merged with
+    // full unit tests on 2026-09-05 and never ran once, because its only caller
+    // (`clean_and_validate`) has no production call site — a gate can be green in its
+    // own file and dead in the system. This test exercises the LIVE seam, so deleting
+    // the `is_not_speech` call from `decision_from_response` fails it even though every
+    // test in `not_speech.rs` still passes. Fixtured from what IntelMac's citizens
+    // actually posted on 2026-09-15; the last case pins that a citizen TALKING about a
+    // tool still speaks, which is what anchoring buys.
+    #[test]
+    fn a_tool_envelope_is_a_reasoned_pass_at_the_live_seam() {
+        for envelope in [
+            "[code/run]",
+            "[code/run]\n[invalid] command_run: unsupported lang 'x' — supported: rust, python.",
+            r#"[code/read,{"file_path":"src/main.rs"}]"#,
+            "b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion here.",
+        ] {
+            match decision_from_response(envelope, Some("Paige")) {
+                Decision::Pass { reason } => assert!(
+                    reason.unwrap_or_default().starts_with("not speech ("),
+                    "{envelope:?} must pass with the not-speech reason kept"
+                ),
+                other => panic!("expected a pass for {envelope:?}, got {other:?}"),
+            }
+        }
+        match decision_from_response(
+            "I ran [code/run] and it refused the lang — worth a look.",
+            Some("Paige"),
+        ) {
+            Decision::Speak { .. } => {}
+            other => panic!("a citizen REPORTING a tool envelope still speaks, got {other:?}"),
+        }
+    }
+
     // what this catches: a reflected wake prompt becomes a REASONED PASS at the
     // live seam (never a Speak), while a peer-agreeing "You are right" still speaks.
     #[test]
