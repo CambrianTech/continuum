@@ -280,7 +280,7 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
   <Actions Context="Author">
     <Exec>
       <Command>$(xml_text "${SYSTEMROOT:-C:\\Windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")</Command>
-      <Arguments>$(xml_text "-NoProfile -NonInteractive -WindowStyle Hidden -File \"$(win_path "$DATA/bin/run-service-hidden.ps1")\" -BashPath \"$bash_exe\" -WrapperPath \"$(win_path "$DATA/bin/core-service.sh")\" -LogDirectory \"$(win_path "$LOG_DIR")\"")</Arguments>
+      <Arguments>$(xml_text "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"$(win_path "$DATA/bin/run-service-hidden.ps1")\" -BashPath \"$bash_exe\" -WrapperPath \"$(win_path "$DATA/bin/core-service.sh")\" -LogDirectory \"$(win_path "$LOG_DIR")\"")</Arguments>
       <WorkingDirectory>$(xml_text "$(win_path "$DATA")")</WorkingDirectory>
     </Exec>
   </Actions>
