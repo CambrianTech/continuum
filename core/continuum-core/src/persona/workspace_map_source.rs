@@ -768,7 +768,7 @@ mod tests {
         // clone land in a dir this test keeps alive, and never in the developer's real
         // `~/.continuum/citizens/`.
         let home = tempfile::tempdir().expect("tempdir");
-        let layout = crate::model_registry::artifacts::with_test_home(home.path(), || {
+        let layout = crate::test_env::with_test_home(home.path(), || {
             reader.layout().expect("reader provisions the layer")
         });
         let cwd = std::env::current_dir().expect("cwd");
