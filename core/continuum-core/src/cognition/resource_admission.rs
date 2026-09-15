@@ -255,8 +255,9 @@ pub const IDLE_STARVATION_MS: u64 = 15 * 60 * 1000;
 /// How long a starving mind waits for an ambient permit before yielding again.
 pub const IDLE_SHARE_WAIT_MS: u64 = 30_000;
 
-static LAST_TURN_MS: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
-    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static LAST_TURN_MS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, u64>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
     std::time::SystemTime::now()
@@ -272,13 +273,17 @@ pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
 
 /// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
 pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
-    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
+    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS
+    // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
 }
 
 /// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
 /// then a bounded wait, so the pool is still the pool but the race is not rigged against
 /// the idle forever. Probe `admission.lane.idle_share` names every granted wait.
-pub async fn hold_ambient_turn_for(persona: uuid::Uuid, now_ms: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
+pub async fn hold_ambient_turn_for(
+    persona: uuid::Uuid,
+    now_ms: u64,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
     if let Some(p) = LANES.try_hold_ambient_turn() {
         return Some(p);
     }
@@ -289,11 +294,15 @@ pub async fn hold_ambient_turn_for(persona: uuid::Uuid, now_ms: u64) -> Option<t
     let started = std::time::Instant::now();
     match tokio::time::timeout(
         std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS),
-        LANES.ambient_semaphore().acquire_owned(),
+        LANES.acquire_resized(
+            &LANES.ambient_semaphore(),
+            &LANES.ambient_installed,
+            LaneBudget::NonDirected,
+        ),
     )
     .await
     {
-        Ok(Ok(permit)) => {
+        Ok(permit) => {
             crate::probe!(
                 class = "admission.lane.idle_share",
                 persona = %persona,
@@ -358,13 +367,9 @@ pub async fn hold_ambient_turn_for(persona: uuid::Uuid, now_ms: u64) -> Option<t
 /// reached one of three cases. This applies it to the other two, and to the sibling
 /// [`crate::cognition::prefill_throttle`] the same day.
 ///
-/// The semaphores stay LAZY (`OnceLock` per field, not eager construction) and that is
-/// load-bearing, not incidental: they must capture the lane count at FIRST USE, once
-/// serving is up. Sizing them eagerly at struct construction would bake in the
-/// `MAX_LANES` boot ceiling, and a later `set_served_lane_count` to a SMALLER real count
-/// only ever GROWS — so an eager version would sit permanently over-admitted. On a weak
-/// box that is not a slow tick; it is admitting more concurrent decodes than the machine
-/// can hold.
+/// Lazy semaphores capture the latest lane count on first use. If first use precedes
+/// serving, a later publication collects surplus boot permits without interrupting
+/// running work. Subsequent serving ticks retry any held shrink debt.
 pub struct LaneAdmission {
     /// LIVE `--parallel` count; 0 until serving publishes one.
     served: AtomicUsize,
@@ -383,6 +388,19 @@ pub struct LaneAdmission {
     work_waiting: AtomicUsize,
     /// Fires on every permit release so a parked ambient caller re-checks.
     released: tokio::sync::Notify,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LaneBudget {
+    Physical,
+    NonDirected,
+}
+
+struct WorkWaiter<'a>(&'a AtomicUsize);
+impl Drop for WorkWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Who is asking for a lane, priced by what the grid gets back for it.
@@ -425,27 +443,30 @@ static LANES: LaneAdmission = LaneAdmission::new();
 /// Publish the running serving target's live lane count (the plan's `--parallel`). The
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
-/// demand lanes) GROWS the live semaphores via `add_permits` — instant and safe. A
-/// DECREASE is not forced onto live semaphores (evicting held permits would block); it
-/// takes effect on the next process start. Over-admitting by a lane until then only means
-/// a call queues at llama, never an OOM — the fit math already guards residency.
+/// demand lanes) grows the live semaphores via `add_permits`. Decreases collect idle
+/// permits immediately, as in `PrefillThrottle`; held permits become shrink debt.
+/// The serving daemon retries idle debt every tick; acquisition also retires debt
+/// before granting a transferred permit, so queued demand cannot defeat shrink.
+/// No running permit is revoked or awaited by the publisher.
 pub fn set_served_lane_count(lanes: usize) {
     LANES.set_served_lane_count(lanes);
 }
 
-/// Grow a live semaphore to `target` total permits (no-op if already ≥). Never shrinks —
-/// see [`set_served_lane_count`]. `installed` tracks the total permits ever added so the
-/// delta is computed correctly (a Semaphore only exposes AVAILABLE, not total).
-fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, target: usize) {
+/// Reconcile installed permits without waiting for running calls. The difference
+/// between installed and a smaller target is debt retried on the next serving tick.
+/// Caller holds the owner resize lock, matching `PrefillThrottle`'s accounting.
+fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, target: usize) {
     let cur = installed.load(Ordering::Acquire);
     if target > cur {
         sem.add_permits(target - cur);
         installed.store(target, Ordering::Release);
+    } else if target < cur {
+        let forgotten = sem.forget_permits(cur - target);
+        installed.store(cur - forgotten, Ordering::Release);
     }
 }
 
-/// Total permits installed into each lane semaphore — the grow-delta bookkeeping for
-/// [`grow_semaphore_to`], set at lazy-init and bumped on each live grow.
+/// Total permits installed into each lane semaphore, including held shrink debt.
 
 /// The lane count a sibling gate should boot with before any plan publishes — the same
 /// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
@@ -491,6 +512,73 @@ impl Drop for ServingLanePermit {
 }
 
 impl LaneAdmission {
+    // A released semaphore permit may transfer directly to a queued waiter,
+    // leaving nothing idle for the periodic resize to collect. Retire that debt
+    // before granting new work, under the same lock as target publication.
+    fn permit_or_retire(
+        &self,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        installed: &AtomicUsize,
+        budget: LaneBudget,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let _guard = self
+            .resize_lock
+            .lock()
+            .expect("lane-resize lock never poisoned");
+        let target = match budget {
+            LaneBudget::Physical => self.lane_count(),
+            LaneBudget::NonDirected => self.nondirected_budget(),
+        };
+        let count = installed.load(Ordering::Acquire);
+        if count > target {
+            permit.forget();
+            installed.store(count - 1, Ordering::Release);
+            drop(_guard);
+            crate::probe!(
+                class = "admission.lane.shrink_debt",
+                pool = ?budget,
+                desired = target as u64,
+                installed = (count - 1) as u64,
+                debt = (count - 1 - target) as u64,
+                "retired a transferred permit before admitting queued work"
+            );
+            None
+        } else {
+            Some(permit)
+        }
+    }
+
+    fn try_acquire_resized(
+        &self,
+        sem: &std::sync::Arc<tokio::sync::Semaphore>,
+        installed: &AtomicUsize,
+        budget: LaneBudget,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        loop {
+            let permit = sem.clone().try_acquire_owned().ok()?;
+            if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
+                return Some(permit);
+            }
+        }
+    }
+
+    async fn acquire_resized(
+        &self,
+        sem: &std::sync::Arc<tokio::sync::Semaphore>,
+        installed: &AtomicUsize,
+        budget: LaneBudget,
+    ) -> tokio::sync::OwnedSemaphorePermit {
+        loop {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("lane semaphore never closed");
+            if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
+                return permit;
+            }
+        }
+    }
     /// A fresh, INDEPENDENT admission gate. `const` so the process-global can be a `static`;
     /// tests call it to get their own and therefore run order-independently and in parallel.
     pub const fn new() -> Self {
@@ -526,16 +614,22 @@ impl LaneAdmission {
     /// See [`set_served_lane_count`].
     pub fn set_served_lane_count(&self, lanes: usize) {
         let lanes = lanes.max(1);
-        self.served.store(lanes, Ordering::Release);
         let _guard = self
             .resize_lock
             .lock()
             .expect("lane-resize lock never poisoned");
+        let before = (
+            self.served.load(Ordering::Acquire),
+            self.serving_installed.load(Ordering::Acquire),
+            self.nondirected_installed.load(Ordering::Acquire),
+            self.ambient_installed.load(Ordering::Acquire),
+        );
+        self.served.store(lanes, Ordering::Release);
         if let Some(sem) = self.serving.get() {
-            grow_semaphore_to(sem, &self.serving_installed, lanes);
+            resize_semaphore_to(sem, &self.serving_installed, lanes);
         }
         if let Some(sem) = self.nondirected.get() {
-            grow_semaphore_to(
+            resize_semaphore_to(
                 sem,
                 &self.nondirected_installed,
                 lanes.saturating_sub(1).max(1),
@@ -545,7 +639,25 @@ impl LaneAdmission {
         // Missing this is how a pool installed at the boot floor would stay there for the
         // process's life while serving grew underneath it.
         if let Some(sem) = self.ambient.get() {
-            grow_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+        }
+        let after = (
+            lanes,
+            self.serving_installed.load(Ordering::Acquire),
+            self.nondirected_installed.load(Ordering::Acquire),
+            self.ambient_installed.load(Ordering::Acquire),
+        );
+        drop(_guard);
+        if after != before {
+            crate::probe!(
+                class = "admission.lane.resized",
+                desired = lanes as u64,
+                installed = after.1 as u64,
+                debt = after.1.saturating_sub(lanes) as u64,
+                nondirected_installed = after.2 as u64,
+                ambient_installed = after.3 as u64,
+                "lane admission reconciled; installed includes held shrink debt, zero means uninitialized"
+            );
         }
     }
 
@@ -580,20 +692,16 @@ impl LaneAdmission {
     }
 
     pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        self.ambient
-            .get_or_init(|| {
-                let n = self.nondirected_budget();
-                self.ambient_installed.store(n, Ordering::Release);
-                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-            })
-            .clone()
-            .try_acquire_owned()
-            .ok()
-            .or_else(|| {
-                // Count the miss. The permit is non-blocking, so a None here IS the yield.
-                AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
-                None
-            })
+        self.try_acquire_resized(
+            &self.ambient_semaphore(),
+            &self.ambient_installed,
+            LaneBudget::NonDirected,
+        )
+        .or_else(|| {
+            // Count the miss. The permit is non-blocking, so a None here IS the yield.
+            AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
+            None
+        })
     }
 
     /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
@@ -608,11 +716,12 @@ impl LaneAdmission {
             LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
         };
         let lane = self
-            .serving_lanes()
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("serving-lane semaphore is never closed");
+            .acquire_resized(
+                self.serving_lanes(),
+                &self.serving_installed,
+                LaneBudget::Physical,
+            )
+            .await;
         crate::probe!(
             class = "admission.lane.granted",
             directed,
@@ -635,7 +744,9 @@ impl LaneAdmission {
     /// is COUNTED while it waits so ambient callers stand aside.
     async fn acquire_nondirected_as_work(&self) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
-        if let Ok(p) = sem.clone().try_acquire_owned() {
+        if let Some(p) =
+            self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
+        {
             return p;
         }
         tracing::info!(
@@ -643,12 +754,9 @@ impl LaneAdmission {
             "held-work model call waiting — a lane is reserved for directed turns (#139)"
         );
         self.work_waiting.fetch_add(1, Ordering::AcqRel);
-        let permit = sem
-            .acquire_owned()
+        let _waiting = WorkWaiter(&self.work_waiting);
+        self.acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
             .await
-            .expect("non-directed-lane semaphore is never closed");
-        self.work_waiting.fetch_sub(1, Ordering::AcqRel);
-        permit
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
@@ -661,7 +769,11 @@ impl LaneAdmission {
         let mut yielded = false;
         loop {
             if self.work_waiting.load(Ordering::Acquire) == 0 {
-                if let Ok(p) = sem.clone().try_acquire_owned() {
+                if let Some(p) = self.try_acquire_resized(
+                    &sem,
+                    &self.nondirected_installed,
+                    LaneBudget::NonDirected,
+                ) {
                     return p;
                 }
             } else if !yielded {
@@ -672,11 +784,9 @@ impl LaneAdmission {
                     "an ambient turn stands aside — a held card is waiting for the lane"
                 );
             }
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                self.released.notified(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(1), self.released.notified())
+                    .await;
         }
     }
 
@@ -983,7 +1093,10 @@ mod tests {
         // exactly how the starvation ceiling stayed invisible.
         gate.set_served_lane_count(4);
         let budget = gate.nondirected_budget();
-        assert_eq!(budget, 3, "4 served lanes → 3 non-directed, 1 reserved directed");
+        assert_eq!(
+            budget, 3,
+            "4 served lanes → 3 non-directed, 1 reserved directed"
+        );
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
         // Exactly `budget` win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
@@ -1058,17 +1171,23 @@ mod tests {
         // wrapper now actually does (the wrapper itself touches process globals, so the
         // contract that broke is pinned here at the argument boundary).
         let first = ambient_yield_report_due(135, 0, 60_000, 0).expect("first window reports");
-        assert_eq!(first, 135, "first window is total-so-far — nothing preceded it");
+        assert_eq!(
+            first, 135,
+            "first window is total-so-far — nothing preceded it"
+        );
 
         // Second window: watermark advanced to 135, total climbed to 197.
-        let second = ambient_yield_report_due(197, 135, 120_000, 60_000)
-            .expect("second window reports");
+        let second =
+            ambient_yield_report_due(197, 135, 120_000, 60_000).expect("second window reports");
         assert_eq!(
             second, 62,
             "the SECOND window must be the delta (197-135), not the cumulative 197 — \
              passing 0 here is the bug that shipped"
         );
-        assert_ne!(second, 197, "reporting cumulative under a per-window name is the lie");
+        assert_ne!(
+            second, 197,
+            "reporting cumulative under a per-window name is the lie"
+        );
     }
 
     // what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
@@ -1109,7 +1228,10 @@ mod tests {
         let gate = LaneAdmission::new();
         gate.set_served_lane_count(1); // cold boot: one lane
         let first = gate.try_hold_ambient_turn().expect("the one slot");
-        assert!(gate.try_hold_ambient_turn().is_none(), "1 lane → 1 ambient slot");
+        assert!(
+            gate.try_hold_ambient_turn().is_none(),
+            "1 lane → 1 ambient slot"
+        );
 
         gate.set_served_lane_count(4); // serving warms up and reports its real width
         let second = gate
@@ -1146,9 +1268,11 @@ mod tests {
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
         // acquires immediately — it is not blocked by the saturated non-directed budget.
         if gate.lane_count() > 1 {
-            let directed =
-                tokio::time::timeout(Duration::from_millis(250), gate.acquire_serving_lane(LanePriority::Directed))
-                    .await;
+            let directed = tokio::time::timeout(
+                Duration::from_millis(250),
+                gate.acquire_serving_lane(LanePriority::Directed),
+            )
+            .await;
             assert!(
                 directed.is_ok(),
                 "a directed turn must get a reserved lane, never queue behind non-directed work"
@@ -1156,9 +1280,11 @@ mod tests {
 
             // And a FURTHER non-directed call must now WAIT (its budget is full) — it
             // times out rather than stealing the lane the directed turn is using.
-            let extra_nondirected =
-                tokio::time::timeout(Duration::from_millis(150), gate.acquire_serving_lane(LanePriority::Ambient))
-                    .await;
+            let extra_nondirected = tokio::time::timeout(
+                Duration::from_millis(150),
+                gate.acquire_serving_lane(LanePriority::Ambient),
+            )
+            .await;
             assert!(
                 extra_nondirected.is_err(),
                 "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
@@ -1169,32 +1295,147 @@ mod tests {
         drop(nondirected); // release (nothing else can observe this gate anyway)
     }
 
-    // what this catches: the grow-delta bookkeeping behind live lane resizing (#139
-    // follow-up). A Semaphore only exposes AVAILABLE permits, so growing to a target
-    // must track the TOTAL ever installed and add only the difference — and a repeat
-    // to the same/smaller target must be a no-op, never a double-add. Uses a LOCAL
-    // semaphore so it never touches the process-global lane statics other tests share.
+    // what this catches: boot-created pools must shrink when the first real plan
+    // serves one lane, including the ambient and non-directed reservations.
     #[test]
-    fn grow_semaphore_to_adds_only_the_delta_and_never_shrinks() {
-        let sem = tokio::sync::Semaphore::new(2);
-        let installed = AtomicUsize::new(2);
-
-        // Grow 2 → 4: adds exactly 2.
-        grow_semaphore_to(&sem, &installed, 4);
-        assert_eq!(sem.available_permits(), 4);
-        assert_eq!(installed.load(Ordering::Acquire), 4);
-
-        // Re-assert the same target: no-op (the double-count bug this guards).
-        grow_semaphore_to(&sem, &installed, 4);
-        assert_eq!(sem.available_permits(), 4, "same target must not add again");
-
-        // A SMALLER target never shrinks a live semaphore (evicting held permits would
-        // block; over-admit is safe — the fit math guards residency).
-        grow_semaphore_to(&sem, &installed, 3);
-        assert_eq!(sem.available_permits(), 4, "never shrinks live");
-        assert_eq!(installed.load(Ordering::Acquire), 4);
+    fn boot_ceiling_pools_shrink_to_the_first_served_count() {
+        let gate = LaneAdmission::new();
+        let serving = gate.serving_lanes();
+        let nondirected = gate.nondirected_lanes();
+        drop(gate.try_hold_ambient_turn().expect("boot ambient permit"));
+        gate.set_served_lane_count(1);
+        assert_eq!(serving.available_permits(), 1);
+        assert_eq!(nondirected.available_permits(), 1);
+        let ambient = gate.try_hold_ambient_turn().expect("one ambient permit");
+        assert!(gate.try_hold_ambient_turn().is_none());
+        drop(ambient);
     }
 
+    // what this catches: shrink never revokes held permits; the unchanged-plan
+    // publication on the existing serving tick drains debt, and a newer target
+    // replaces the old debt without double-adding or losing capacity.
+    #[test]
+    fn held_shrink_debt_reconciles_to_the_latest_plan() {
+        let gate = LaneAdmission::new();
+        gate.set_served_lane_count(4);
+        let serving = gate.serving_lanes();
+        let nondirected = gate.nondirected_lanes();
+        let held = serving.try_acquire_many(4).expect("four serving lanes");
+        let nonheld = nondirected
+            .try_acquire_many(3)
+            .expect("three non-directed lanes");
+        let ambient: Vec<_> = (0..3)
+            .map(|_| gate.try_hold_ambient_turn().expect("ambient lane"))
+            .collect();
+        gate.set_served_lane_count(1);
+        assert_eq!(gate.serving_installed.load(Ordering::Acquire), 4);
+        assert_eq!(serving.available_permits(), 0);
+        drop(held);
+        drop(nonheld);
+        drop(ambient);
+        // This call is unconditional on every existing serving-daemon tick,
+        // outside the plan-fingerprint/probe-change guard.
+        gate.set_served_lane_count(1);
+        assert_eq!(serving.available_permits(), 1);
+        assert_eq!(nondirected.available_permits(), 1);
+        gate.set_served_lane_count(4);
+        let held = serving.try_acquire_many(4).expect("regrown lanes");
+        gate.set_served_lane_count(1);
+        gate.set_served_lane_count(3); // supersedes the older shrink while held
+        drop(held);
+        gate.set_served_lane_count(3);
+        gate.set_served_lane_count(3); // repeated stable plan is idempotent
+        assert_eq!(serving.available_permits(), 3);
+        assert_eq!(gate.serving_installed.load(Ordering::Acquire), 3);
+        assert_eq!(nondirected.available_permits(), 2);
+        let ambient: Vec<_> = (0..2)
+            .map(|_| gate.try_hold_ambient_turn().expect("latest ambient budget"))
+            .collect();
+        assert!(gate.try_hold_ambient_turn().is_none());
+        drop(ambient);
+    }
+
+    // what this catches: queued semaphore waiters receive released permits
+    // directly, so periodic forget_permits alone can never see idle capacity.
+    // Drive the production acquisition seam without sleeps or another tick.
+    #[tokio::test]
+    async fn queued_acquirers_retire_shrink_debt_before_granting() {
+        for pool in 0..3 {
+            let gate = LaneAdmission::new();
+            gate.set_served_lane_count(4);
+            let (sem, installed, budget) = match pool {
+                0 => (
+                    gate.serving_lanes().clone(),
+                    &gate.serving_installed,
+                    LaneBudget::Physical,
+                ),
+                1 => (
+                    gate.nondirected_lanes().clone(),
+                    &gate.nondirected_installed,
+                    LaneBudget::NonDirected,
+                ),
+                _ => (
+                    gate.ambient_semaphore(),
+                    &gate.ambient_installed,
+                    LaneBudget::NonDirected,
+                ),
+            };
+            let count = sem.available_permits();
+            let mut holders: Vec<_> = (0..count)
+                .map(|_| sem.clone().try_acquire_owned().unwrap())
+                .collect();
+            let mut waiters: Vec<_> = (0..count)
+                .map(|_| Box::pin(gate.acquire_resized(&sem, installed, budget)))
+                .collect();
+            for waiter in &mut waiters {
+                assert!(futures::poll!(waiter.as_mut()).is_pending());
+            }
+            gate.set_served_lane_count(1);
+            for _ in 1..count {
+                drop(holders.pop());
+                for waiter in &mut waiters {
+                    assert!(
+                        futures::poll!(waiter.as_mut()).is_pending(),
+                        "surplus must retire, not admit"
+                    );
+                }
+            }
+            assert_eq!(installed.load(Ordering::Acquire), 1);
+            drop(holders.pop());
+            let mut granted = Vec::new();
+            for waiter in &mut waiters {
+                if let std::task::Poll::Ready(permit) = futures::poll!(waiter.as_mut()) {
+                    granted.push(permit);
+                }
+            }
+            assert_eq!(granted.len(), 1, "only the final target capacity may run");
+            drop(waiters); // cancellation must release queued reservations
+            drop(granted);
+            assert_eq!(sem.available_permits(), 1);
+        }
+    }
+
+    // what this catches: canceling a work waiter while shrink retires permits
+    // must not leave a phantom work count that permanently excludes ambient work.
+    #[tokio::test]
+    async fn cancelled_work_waiter_clears_its_priority_reservation() {
+        let gate = LaneAdmission::new();
+        gate.set_served_lane_count(2);
+        let held = gate
+            .nondirected_lanes()
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        let mut waiting = Box::pin(gate.acquire_nondirected_as_work());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(gate.work_waiting(), 1);
+        gate.set_served_lane_count(1);
+        drop(waiting);
+        assert_eq!(gate.work_waiting(), 0);
+        drop(held);
+        let mut ambient = Box::pin(gate.acquire_nondirected_as_ambient());
+        assert!(futures::poll!(ambient.as_mut()).is_ready());
+    }
     // what this catches: serving_lane_count reads the LIVE published count when serving is
     // up, and only falls back to the MAX_LANES ceiling when nothing has published yet —
     // the exact fix so the admission reservation sizes by what's SERVED (e.g. 4), not the
@@ -1225,10 +1466,26 @@ mod tests {
     #[test]
     fn a_mind_with_no_turn_for_fifteen_minutes_is_starving_and_a_recent_one_is_not() {
         let boot = 1_000_000;
-        assert!(!starving_since(Some(boot + 60_000), boot + 600_000, boot), "ten minutes idle: not yet");
-        assert!(starving_since(Some(boot + 60_000), boot + 60_000 + IDLE_STARVATION_MS, boot), "fifteen minutes: starving");
-        assert!(starving_since(None, boot + IDLE_STARVATION_MS, boot), "never had a turn: counted from boot");
-        assert!(!starving_since(None, boot + 1_000, boot), "just booted: not starving");
+        assert!(
+            !starving_since(Some(boot + 60_000), boot + 600_000, boot),
+            "ten minutes idle: not yet"
+        );
+        assert!(
+            starving_since(
+                Some(boot + 60_000),
+                boot + 60_000 + IDLE_STARVATION_MS,
+                boot
+            ),
+            "fifteen minutes: starving"
+        );
+        assert!(
+            starving_since(None, boot + IDLE_STARVATION_MS, boot),
+            "never had a turn: counted from boot"
+        );
+        assert!(
+            !starving_since(None, boot + 1_000, boot),
+            "just booted: not starving"
+        );
     }
 
     // what this catches (2026-09-15, the READING hour): a mind holding a card mid-edit
@@ -1246,8 +1503,13 @@ mod tests {
 
         let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(gate.work_waiting(), 1, "the work caller is counted while it waits");
-        let ambient = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient).await });
+        assert_eq!(
+            gate.work_waiting(),
+            1,
+            "the work caller is counted while it waits"
+        );
+        let ambient =
+            tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!ambient.is_finished(), "ambient parks while work waits");
 
@@ -1257,7 +1519,10 @@ mod tests {
             .expect("work gets the freed lane")
             .expect("join");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!ambient.is_finished(), "ambient is still parked: the work caller holds the only non-directed lane");
+        assert!(
+            !ambient.is_finished(),
+            "ambient is still parked: the work caller holds the only non-directed lane"
+        );
         assert_eq!(gate.work_waiting(), 0);
 
         drop(work_permit);
