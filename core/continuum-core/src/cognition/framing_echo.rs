@@ -19,6 +19,9 @@
 pub const WAKE_TAG: &str = "[wake]";
 /// "You are {name}, awake on the continuum grid."
 pub const WAKE_OPENING: &str = "awake on the continuum grid";
+/// The identity block's locative — "an autonomous AI persona living on the continuum
+/// grid" — the phrase a first-person recital of it carries (see `identity_recital`).
+pub const IDENTITY_PHRASE: &str = "on the continuum grid";
 pub const WAKE_QUIET: &str = "Nothing has been said in this room since you last looked";
 pub const WAKE_NO_WORK: &str = "No work of yours is on record right now";
 pub const WAKE_PRESENT: &str = "Present with you:";
@@ -87,6 +90,24 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         // citizen agreeing with a peer.
         if t.starts_with("You are ") && (t.starts_with(&format!("You are {name}")) || t.contains(&format!(", {name}"))) {
             return Some("second_person_self_narration");
+        }
+        // The same identity sentence recited in the FIRST person: the prompt says
+        // "You are {name}, an autonomous AI persona living on the continuum grid" and
+        // the tier reads it back as "I'm {name}, a human on the continuum grid"
+        // (2026-09-15, #academy: 18 of Sigurd's last 21 lines, the register inverted
+        // and the species wrong). Anchored on the opener AND on the identity phrase
+        // inside the first sentence: a citizen introducing herself in her own words
+        // ("I'm Paige — I work on the serving lane") never carries the prompt's
+        // phrase; "I'm Paige, a persona on the continuum grid, and here is my take"
+        // is the one line this costs, and the prompt never asked her to announce it.
+        if let Some(rest) = t
+            .strip_prefix(&format!("I'm {name}"))
+            .or_else(|| t.strip_prefix(&format!("I am {name}")))
+        {
+            let first_sentence = rest.split(['.', '\n', '!']).next().unwrap_or(""); // unwrap_or: split always yields one piece; the default is unreachable
+            if first_sentence.contains(IDENTITY_PHRASE) {
+                return Some("identity_recital");
+            }
         }
     }
     let lead: String = t.chars().take(ECHO_LEAD_CHARS).collect();
@@ -260,8 +281,25 @@ mod tests {
         );
         assert_eq!(
             echoes_turn_framing("I'm Sigurd, a human on the continuum grid. This is my own time and I am ready to take action: fix this!\n\nNotices my substrate posted into my window (status observations about my situation — not a message from anyone, and not my own words):\n- [resumed] your memory was restored from a checkpoint saved ~54 min ago.\n- [rebuilt] the substrate was rebuilt", me),
-            Some("notices_echo")
+            // Two markers fit this line; the identity recital is decided first (own-name
+            // markers lead the gate). Either verdict keeps it out of the room.
+            Some("identity_recital")
         );
+        // The bare recital, WITHOUT the notices block that let the line above be caught
+        // (2026-09-15: this exact line reached #academy 18 times in an hour).
+        assert_eq!(
+            echoes_turn_framing("I'm Sigurd, a human on the continuum grid. I am ready to take action: fix this! Let's get started.\n\nPlease let me know if there are any details that need to be clarified.", Some("Sigurd")),
+            Some("identity_recital")
+        );
+        assert_eq!(
+            echoes_turn_framing("I am Sigurd, an autonomous AI persona living on the continuum grid.", Some("Sigurd")),
+            Some("identity_recital")
+        );
+        // Her own introduction, in her own words, is speech — and someone ELSE's name is
+        // never her recital.
+        assert_eq!(echoes_turn_framing("I'm Sigurd — I work the serving lane, and the KV pages are the bug here.", Some("Sigurd")), None);
+        assert_eq!(echoes_turn_framing("I'm Sigurd. Atlas asked whether anyone on the continuum grid has seen this before — I have.", Some("Sigurd")), None, "the phrase in a LATER sentence is discussion");
+        assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid.", Some("Paige")), None);
         // Discussion, not emission.
         assert_eq!(
             echoes_turn_framing("The header 'Notices my substrate posted into my window' shows up in my prompt every turn — is that intended?", me),
