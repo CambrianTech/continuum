@@ -350,10 +350,13 @@ impl ServiceModule for GridModule {
         // the org room — so "a node ran a nine-day-old core" is said by the substrate,
         // not noticed by whoever happens to be reading.
         for (peer_uuid, offer, heard_at_ms) in crate::capacity::gossip::global_ledger().heard_offers_with_age() {
-            self.state.registry.note_peer_build(
+            self.state.registry.note_peer_beacon(
                 &crate::identity::PeerId::from_uuid(peer_uuid),
                 crate::capacity::gossip::build_hex(offer.build),
                 offer.build_number,
+                offer.served_model.clone(),
+                offer.lanes,
+                offer.residents,
                 heard_at_ms,
             );
         }

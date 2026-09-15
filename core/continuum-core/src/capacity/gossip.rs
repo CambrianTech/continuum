@@ -44,7 +44,7 @@ use crate::identity::PeerId;
 
 /// One node's broadcast capacity reading — the wire payload (inline JSON in the
 /// `grid_capacity` realtime envelope). Numbers only; identity comes from the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityOffer {
     /// Total GPU / UMA-serving-slice bytes on the offering device.
@@ -69,6 +69,16 @@ pub struct CapacityOffer {
     /// shas differed, and the M5 was the one ahead.
     #[serde(default)]
     pub build_number: u64,
+    /// WHAT THIS NODE SERVES (2026-09-15, automatic placement stage A): the served
+    /// base model, the warm lanes, and the minds resident here. A starved node reads
+    /// these to place its tail minds on a peer with lanes to spare — no ids typed.
+    /// Absent on an older beacon (defaults): the peer offers nothing placeable.
+    #[serde(default)]
+    pub served_model: Option<String>,
+    #[serde(default)]
+    pub lanes: u32,
+    #[serde(default)]
+    pub residents: u32,
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -93,7 +103,7 @@ impl CapacityOffer {
 }
 
 /// A heard offer + the receiver-clock instant it arrived (the freshness anchor).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct HeardOffer {
     offer: CapacityOffer,
     heard_at_ms: u64,
@@ -177,7 +187,7 @@ impl GridCapacityLedger {
     pub fn heard_offers_with_age(&self) -> Vec<(Uuid, CapacityOffer, u64)> {
         self.heard
             .iter()
-            .map(|r| (*r.key(), r.value().offer, r.value().heard_at_ms))
+            .map(|r| (*r.key(), r.value().offer.clone(), r.value().heard_at_ms))
             .collect()
     }
 
@@ -193,6 +203,15 @@ impl GridCapacityLedger {
 mod tests {
     use super::*;
 
+    // what this catches: a beacon from an older core (no served fields) still parses,
+    // and reads as offering nothing placeable — a mixed fleet keeps folding.
+    #[test]
+    fn an_older_beacon_without_served_fields_still_parses() {
+        let old = serde_json::json!({"gpuTotalBytes": 1, "gpuFreeBytesLive": 1, "systemRamFreeBytes": 1, "atMs": 5, "build": 7, "buildNumber": 9});
+        let o: CapacityOffer = serde_json::from_value(old).expect("parses");
+        assert_eq!((o.served_model, o.lanes, o.residents), (None, 0, 0));
+    }
+
     const GB: u64 = 1024 * 1024 * 1024;
 
     fn offer(free_gb: u64, at_ms: u64) -> CapacityOffer {
@@ -203,6 +222,9 @@ mod tests {
             at_ms,
                     build: 0,
                     build_number: 0,
+                    served_model: None,
+                    lanes: 0,
+                    residents: 0,
         }
     }
     fn local() -> DeviceCapacity {
@@ -293,7 +315,7 @@ mod tests {
     #[test]
     fn offer_round_trips_through_json() {
         let o = offer(7, 123_456);
-        let json = serde_json::to_value(o).unwrap();
+        let json = serde_json::to_value(&o).unwrap();
         assert!(
             json.get("gpuFreeBytesLive").is_some(),
             "camelCase wire naming: {json}"
