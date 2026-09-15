@@ -1064,11 +1064,21 @@ impl LlmDeliberationFaculty {
             // the park held no lane, so abandoning it costs nothing, and the loop
             // head drains the line next (`cognition::directed_pending`). A `None`
             // here is her CHOICE to answer first, named by the probe — not a fault.
+            // A held card outranks a musing turn for the non-directed budget
+            // (`LanePriority::Work`): the lane goes to the mind that will write.
             let _lane = if ws.attention.requires_priority() {
-                crate::cognition::resource_admission::acquire_serving_lane(true).await
+                crate::cognition::resource_admission::acquire_serving_lane(
+                    crate::cognition::resource_admission::LanePriority::Directed,
+                )
+                .await
             } else {
+                let priority = if Self::holds_live_work(ws) {
+                    crate::cognition::resource_admission::LanePriority::Work
+                } else {
+                    crate::cognition::resource_admission::LanePriority::Ambient
+                };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(false) => lane,
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority) => lane,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
                             class = "delib.gate.yielded_to_directed",

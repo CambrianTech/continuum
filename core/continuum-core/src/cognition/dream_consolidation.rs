@@ -429,7 +429,10 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
-        let _lane = crate::cognition::resource_admission::acquire_serving_lane(false).await;
+        let _lane = crate::cognition::resource_admission::acquire_serving_lane(
+            crate::cognition::resource_admission::LanePriority::Ambient,
+        )
+        .await;
         let response = self
             .adapter
             .generate_text(request)
