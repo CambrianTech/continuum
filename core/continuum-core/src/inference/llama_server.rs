@@ -840,6 +840,13 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
     else {
         return;
     };
+    // Protected dirs are siblings in this same root by construction, so compare the
+    // DIRECTORY NAME, never the full path: a registry path deserialized from an older
+    // core (a different HOME resolution, macOS `/Users` vs `/private/var`, a trailing
+    // component) would miss on PathBuf equality and the miss would look exactly like a
+    // correct sweep — the five-hour silent failure this fix exists to end (Cormac's
+    // review of #4069, finding 1).
+    let protected_names: Vec<&std::ffi::OsStr> = protect.iter().filter_map(|p| p.file_name()).collect();
     let Some((model_prefix, _)) = name.rsplit_once("--c") else {
         return;
     };
@@ -856,7 +863,7 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
             && entry_name[model_prefix.len()..].starts_with("--c")
         {
             let stale = entry.path();
-            if protect.iter().any(|p| p == &stale) {
+            if protected_names.iter().any(|p| *p == entry.file_name().as_os_str()) {
                 // Another live lane's pages: a relaunch that later fails leaves that
                 // lane serving, and its residents restoring from here.
                 continue;
@@ -866,6 +873,7 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
                 class = "inference.kv_page.generation_swept",
                 dir = %stale.display(),
                 removed,
+                protected = protected_names.len() as u64,
                 "stale KV page generation removed — its geometry no longer exists to restore into",
             );
         }
@@ -876,10 +884,23 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
 /// that inventory is COMPLETE (every live record carries its dir). Reads the durable
 /// lane registry, so a core that adopted a warm predecessor knows its dir too.
 pub fn live_page_dirs() -> (Vec<PathBuf>, bool) {
+    page_dirs_of(
+        crate::inference::lane_registry::records(),
+        crate::inference::lane_process::is_llama_server,
+    )
+}
+
+/// The pure half of [`live_page_dirs`]: of `records`, those `alive` contribute their
+/// dir; a live record WITHOUT one makes the inventory incomplete; dead records are
+/// ignored whether or not they carry a dir.
+pub fn page_dirs_of(
+    records: Vec<crate::inference::lane_registry::LaneRecord>,
+    alive: impl Fn(u32) -> bool,
+) -> (Vec<PathBuf>, bool) {
     let mut dirs = Vec::new();
     let mut complete = true;
-    for rec in crate::inference::lane_registry::records() {
-        if !crate::inference::lane_process::is_llama_server(rec.pid) {
+    for rec in records {
+        if !alive(rec.pid) {
             continue;
         }
         match rec.page_dir {
@@ -3520,7 +3541,10 @@ match (child.stderr.take(), log_path) {
         // predecessor's directory is unknown"). Then publish the dir for the
         // save-side trim — after the gates, and only if the dir exists (mkdir failed
         // = the paging tier is amputated for this serve; nothing to trim).
-        if inventory_complete {
+        if !page_dir_ready {
+            // No dir of our own (mkdir failed): the paging tier is amputated for this
+            // serve — neither trim nor the destructive half runs (Cormac: symmetry).
+        } else if inventory_complete {
             sweep_stale_page_generations(&slot_save_dir, &protected_page_dirs);
         } else {
             crate::probe!(
@@ -4985,10 +5009,38 @@ mod tests {
         let current = root.path().join("some-model--c61440");
         std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
 
-        sweep_stale_page_generations(&current, &[live_previous.clone()]);
+        // The registry's copy of the path may differ textually from what read_dir yields
+        // (an older core's HOME resolution, /Users vs /private/var on macOS, `./`) —
+        // protection is by directory NAME (Cormac, finding 1).
+        let other_form = PathBuf::from("/some/other/root/./").join(live_previous.file_name().unwrap()); // JUSTIFIED unwrap: a dir we just made has a name
+        sweep_stale_page_generations(&current, &[other_form]);
         assert!(live_previous.join("a-page.bin").exists(), "the previous live lane's pages survive");
         assert!(!stale.exists(), "an unprotected stale generation is swept");
         assert!(other_model.exists(), "another model's dir is not this lane's to sweep");
         assert!(current.exists());
+    }
+
+    // what this catches: the live-lane inventory — a live record contributes its dir, a
+    // live record without one (written before the field existed) makes the inventory
+    // INCOMPLETE so the sweep stays its hand, and a dead record is ignored either way.
+    #[test]
+    fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        let rec = |pid: u32, page_dir: Option<&str>| LaneRecord {
+            pid,
+            port: 8000 + pid as u16,
+            role: LaneRole::Live,
+            model: "m".into(),
+            context_window: 4096,
+            lanes: 1,
+            page_dir: page_dir.map(PathBuf::from),
+        };
+        let alive = |pid: u32| pid != 3;
+        let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);
+        assert_eq!(dirs, vec![PathBuf::from("/p/a"), PathBuf::from("/p/b")]);
+        assert!(complete, "a DEAD record without a dir does not spoil the inventory");
+        let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, None)], alive);
+        assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
+        assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
     }
 }

@@ -235,12 +235,6 @@ pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
 }
 
-/// The live geometry dir as last registered — the spawn protects it from the
-/// stale-generation sweep until the replacement lane is ready.
-pub fn current_page_dir() -> Option<std::path::PathBuf> {
-    PAGE_DIR.lock().clone()
-}
-
 /// After a successful save of `just_saved` (a page filename), keep the live
 /// geometry dir under [`KV_PAGE_STORE_MAX_BYTES`]. Never touches the page just
 /// written. Cheap: one `read_dir` per save, a few files.
