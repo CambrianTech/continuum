@@ -25,7 +25,8 @@ use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
 use airc_lib::Airc;
 use airc_protocol::HEADER_AIRC_CORRELATION_ID;
 use continuum_airc_protocol::{
-    AircCommandRequest, AircCommandResponse, DEFAULT_COMMAND_DEADLINE, KIND_PEER,
+    AircCommandRequest, AircCommandResponse, COMMAND_RESPONSE_BODY_HINT, DEFAULT_COMMAND_DEADLINE,
+    HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
 };
 use uuid::Uuid;
 
@@ -201,6 +202,29 @@ const REPLY_RECOVERY_POLL: Duration = Duration::from_secs(2);
 /// construction: they postdate a request we sent moments ago.
 const REPLY_RECOVERY_PAGE: usize = 300;
 
+/// Validate routing metadata before decoding an inference payload. A correlation
+/// alone is not a receipt: another room member can observe it on the request.
+struct ReplyExpectation {
+    responder: PeerId,
+    requester: PeerId,
+    room: airc_core::RoomId,
+    correlation: String,
+}
+
+impl ReplyExpectation {
+    fn matches(&self, event: &TranscriptEvent) -> bool {
+        event.peer_id == self.responder
+            && event.room_id == self.room
+            && event.target == MentionTarget::Peer(self.requester)
+            && event.headers.get(HEADER_AIRC_CORRELATION_ID) == Some(&self.correlation)
+            && event
+                .headers
+                .get(HEADER_CONTINUUM_BODY_HINT)
+                .map(String::as_str)
+                == Some(COMMAND_RESPONSE_BODY_HINT)
+    }
+}
+
 impl AircLiveTransport {
     /// Build the live transport. `default_target_peer` is the peer
     /// every request flows to unless the inbound
@@ -232,33 +256,36 @@ impl AircLiveTransport {
     /// open when it arrived.
     async fn recover_reply_from_store(
         &self,
-        correlation: Uuid,
+        room: &airc_lib::Room,
+        expected: &ReplyExpectation,
         start: std::time::Instant,
         deadline: Duration,
     ) -> Option<TranscriptEvent> {
-        let wanted = correlation.to_string();
-        let me = self.airc.peer_id();
-        let mut polls: u32 = 0;
-        while start.elapsed() < deadline {
-            polls += 1;
-            if let Ok(page) = self.airc.page_recent(REPLY_RECOVERY_PAGE).await {
-                if let Some(reply) = page.into_iter().find(|e| {
-                    e.peer_id != me
-                        && e.headers.get(HEADER_AIRC_CORRELATION_ID) == Some(&wanted)
-                }) {
-                    crate::probe!(
-                        class = "remote_lane.reply_recovered",
-                        correlation = %correlation,
-                        polls = polls,
-                        elapsed_ms = start.elapsed().as_millis() as u64,
-                        "reply recovered from the store after the live stream closed"
-                    );
-                    return Some(reply);
+        let remaining = deadline.checked_sub(start.elapsed())?;
+        let recovery = async {
+            let mut polls: u32 = 0;
+            let mut tick = tokio::time::interval(REPLY_RECOVERY_POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                polls += 1;
+                if let Ok(page) = self.airc.page_recent_in(room, REPLY_RECOVERY_PAGE).await {
+                    if let Some(reply) = page.into_iter().find(|e| expected.matches(e)) {
+                        crate::probe!(
+                            class = "remote_lane.reply_recovered",
+                            correlation = %expected.correlation,
+                            polls = polls,
+                            elapsed_ms = start.elapsed().as_millis() as u64,
+                            "reply recovered from the durable store"
+                        );
+                        return reply;
+                    }
                 }
             }
-            tokio::time::sleep(REPLY_RECOVERY_POLL).await;
-        }
-        None
+        };
+        // Bound both the cadence and a stalled store call by the original
+        // deadline; recovery must not acquire a second inference-sized wait.
+        tokio::time::timeout(remaining, recovery).await.ok()
     }
 
     /// Resolve the wire-side target peer for a given envelope.
@@ -344,11 +371,24 @@ impl AircInferenceTransport for AircLiveTransport {
         // Anything else lands in `Transport { message }` per
         // [[strong-typing-across-boundaries]]: match the variant,
         // not the Display string.
-        let pending = match self
-            .airc
-            .request(MentionTarget::Peer(target), headers, body, self.deadline)
-            .await
-        {
+        // Capture one room for dispatch AND recovery. A default-room change
+        // during a long generation must not strand its durable answer.
+        let dispatch = async {
+            let room = self.airc.current_room().await?;
+            let pending = self
+                .airc
+                .request_in(
+                    &room,
+                    MentionTarget::Peer(target),
+                    headers,
+                    body,
+                    self.deadline,
+                )
+                .await?;
+            Ok::<_, airc_lib::AircError>((room, pending))
+        }
+        .await;
+        let (room, pending) = match dispatch {
             Ok(p) => p,
             Err(airc_lib::AircError::NoCurrentRoom)
             | Err(airc_lib::AircError::NotSubscribed(_))
@@ -398,8 +438,22 @@ impl AircInferenceTransport for AircLiveTransport {
         // get classified as Transport when NoPeerReachable would
         // be more semantically accurate).
         let pending_correlation = pending.correlation_id;
+        let expected = ReplyExpectation {
+            responder: target,
+            requester: self.airc.peer_id(),
+            room: room.channel,
+            correlation: pending_correlation.to_string(),
+        };
         let reply = match self.airc.await_reply(pending).await {
-            Ok(reply) => reply,
+            Ok(reply) if expected.matches(&reply) => reply,
+            // The generic bus can return the first correlated event. Never
+            // accept an unrelated responder; recover the intended answer.
+            Ok(_) => self
+                .recover_reply_from_store(&room, &expected, start, self.deadline)
+                .await
+                .ok_or_else(|| RemoteInferenceError::Timeout {
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                })?,
             Err(airc_lib::AircError::CommandDeadline { .. })
                 if reply_stream_ended_early(start.elapsed(), self.deadline) =>
             {
@@ -418,7 +472,7 @@ impl AircInferenceTransport for AircLiveTransport {
                     "reply stream closed before the deadline; recovering the reply from the store"
                 );
                 match self
-                    .recover_reply_from_store(pending_correlation, start, self.deadline)
+                    .recover_reply_from_store(&room, &expected, start, self.deadline)
                     .await
                 {
                     Some(reply) => reply,
@@ -441,6 +495,7 @@ impl AircInferenceTransport for AircLiveTransport {
             }
         };
 
+        let responding_peer = reply.peer_id.0.to_string();
         let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
             message: "remote replied with no body".to_string(),
         })?;
@@ -462,14 +517,26 @@ impl AircInferenceTransport for AircLiveTransport {
             .into_result()
             .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
 
-        let text_response =
+        let mut text_response: crate::ai::types::TextGenerationResponse =
             serde_json::from_value(result_value).map_err(|e| RemoteInferenceError::Transport {
                 message: format!("decode TextGenerationResponse: {e}"),
             })?;
 
+        let routing = crate::ai::types::RoutingInfo::stamp(
+            &mut text_response.routing,
+            "airc-remote",
+            false,
+            "remote_inference",
+        );
+        routing.remote = Some(crate::ai::types::RemoteInferenceReceipt {
+            requested_peer: target.0.to_string(),
+            responding_peer: responding_peer.clone(),
+            correlation_id: pending_correlation.to_string(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        });
         Ok(RemoteInferenceResponse {
             correlation_id,
-            served_by: target.0.to_string(),
+            served_by: responding_peer,
             text_response,
         })
     }
@@ -478,6 +545,61 @@ impl AircInferenceTransport for AircLiveTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: an observed correlation is not authorization to answer
+    // for another peer; recovery must enforce the same boundary as live replies.
+    #[test]
+    fn reply_identity_room_address_and_framing_are_all_required() {
+        let expected = ReplyExpectation {
+            responder: PeerId(Uuid::new_v4()),
+            requester: PeerId(Uuid::new_v4()),
+            room: airc_core::RoomId::new(),
+            correlation: Uuid::new_v4().to_string(),
+        };
+        let mut event = TranscriptEvent {
+            event_id: airc_core::EventId::new(),
+            room_id: expected.room,
+            peer_id: expected.responder,
+            client_id: airc_core::ClientId::new(),
+            kind: airc_core::TranscriptKind::Message,
+            occurred_at_ms: 0,
+            lamport: 0,
+            target: MentionTarget::Peer(expected.requester),
+            headers: airc_core::Headers::from([
+                (
+                    HEADER_AIRC_CORRELATION_ID.to_string(),
+                    expected.correlation.clone(),
+                ),
+                (
+                    HEADER_CONTINUUM_BODY_HINT.to_string(),
+                    COMMAND_RESPONSE_BODY_HINT.to_string(),
+                ),
+            ]),
+            // No body required to reject an unrelated event: no payload decode.
+            body: None,
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        };
+        assert!(expected.matches(&event));
+        event.peer_id = PeerId(Uuid::new_v4());
+        assert!(!expected.matches(&event));
+        event.peer_id = expected.responder;
+        event.room_id = airc_core::RoomId::new();
+        assert!(!expected.matches(&event));
+        event.room_id = expected.room;
+        event.target = MentionTarget::All;
+        assert!(!expected.matches(&event));
+        event.target = MentionTarget::Peer(expected.requester);
+        event.headers.remove(HEADER_AIRC_CORRELATION_ID);
+        assert!(!expected.matches(&event));
+        event.headers.insert(
+            HEADER_AIRC_CORRELATION_ID.to_string(),
+            expected.correlation.clone(),
+        );
+        event.headers.remove(HEADER_CONTINUUM_BODY_HINT);
+        assert!(!expected.matches(&event));
+    }
 
     // what this catches: the two failures must stay distinguishable. A
     // CommandDeadline at 3 s under a 600 s deadline is a closed stream (recover
