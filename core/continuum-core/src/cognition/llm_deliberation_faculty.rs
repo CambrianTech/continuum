@@ -1072,7 +1072,7 @@ impl LlmDeliberationFaculty {
                 )
                 .await
             } else {
-                let priority = if Self::holds_live_work(ws) {
+                let priority = if Self::holds_work_card(ws) {
                     crate::cognition::resource_admission::LanePriority::Work
                 } else {
                     crate::cognition::resource_admission::LanePriority::Ambient
@@ -1876,6 +1876,17 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && !c.trailing)
             .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
             .any(|c| crate::persona::active_work_source::renders_held_in_progress(&c.content))
+    }
+
+    /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
+    /// gate's key for `LanePriority::Work` — wider than `holds_live_work`, which keys
+    /// the working-presence contract on InProgress only.
+    fn holds_work_card(ws: &Workspace) -> bool {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
+            .any(|c| crate::persona::active_work_source::renders_held_card(&c.content))
     }
 
     /// The EXACT prompt this faculty sends the model this tick — the system
