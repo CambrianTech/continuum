@@ -193,7 +193,17 @@ jobs:
       - name: cargo test -p continuum-core --lib
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
-          cargo test -p continuum-core --lib -- \
+          # Compile once; the Postgres step reuses this exact test executable.
+          # Human compiler diagnostics remain on stderr with this JSON format.
+          python3 tools/scripts/tests/test_ci_lib_test_artifact.py
+          cargo test -p continuum-core --lib --no-run --message-format=json-render-diagnostics > lib-artifacts.jsonl
+          python3 tools/scripts/ci-lib-test-artifact.py lib-artifacts.jsonl \
+            core/continuum-core "$(rustc --print target-libdir)" > lib-test.env
+          cat lib-test.env >> "$GITHUB_ENV"
+          # Read only the validated environment assignments emitted above.
+          while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
+          cd core/continuum-core
+          LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
@@ -221,7 +231,8 @@ jobs:
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           set -o pipefail
-          cargo test -p continuum-core --lib orm::postgres -- --ignored --test-threads=1 2>&1 | tee pg.log
+          (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
+            "$CONTINUUM_LIB_TEST" orm::postgres --ignored --test-threads=1) 2>&1 | tee pg.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
           echo "postgres tests passed: ${passed:-0}"
           if [ "${passed:-0}" -lt 1 ]; then
