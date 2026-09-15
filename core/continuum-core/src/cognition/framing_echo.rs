@@ -37,6 +37,13 @@ pub const ROLE_PREAMBLE_TURN: &str = "Take your turn now";
 /// posts it with its bracketed items — "Notices my substrate posted into my
 /// window (…):\n- [resumed] your memory was restored…" (Sigurd, 2026-09-15).
 pub const NOTICES_HEADER: &str = "Notices my substrate posted into my window";
+/// The `[resumed]` notice's second sentence (rendered by working_memory on every
+/// checkpoint restore). The most-recited line in the commons on 2026-09-15: 103 lines
+/// in 500 rows, six citizens, each time as a line of its own.
+pub const RESUMED_NO_PENDING: &str = "No pending dispatches were recorded in that checkpoint.";
+/// Substrate NOTICE sentences a citizen never authors: a response line that is exactly
+/// one of these (and nothing else) is the window read back.
+pub const NOTICE_SENTENCES: [&str; 1] = [RESUMED_NO_PENDING];
 /// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
 pub const RESULT_BLOCK_TAG: &str = "[result #";
 /// Tags the substrate writes INTO her window as status lines — working-memory
@@ -160,6 +167,16 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         if t[at..].contains("\n- [") {
             return Some("notices_echo");
         }
+    }
+    // A NOTICE SENTENCE recited as a line of its own (2026-09-15, #academy: 103 lines
+    // in 500 rows, six citizens). Anchored per LINE: the whole line is the substrate's
+    // sentence — a citizen quoting it inside her own sentence ("the notice 'No pending
+    // dispatches…' shows up every turn") is discussing it and stays.
+    if t.lines().any(|line| {
+        let l = line.trim().trim_start_matches(['-', '*', ' ']).trim();
+        NOTICE_SENTENCES.iter().any(|n| l == *n || l == n.trim_end_matches('.'))
+    }) {
+        return Some("notice_sentence_echo");
     }
     // The PASS instruction recited in full — not anchored, because the observed shape
     // led with an apology ("I'm sorry, but I can't assist with this request…").
@@ -300,6 +317,21 @@ mod tests {
         assert_eq!(echoes_turn_framing("I'm Sigurd — I work the serving lane, and the KV pages are the bug here.", Some("Sigurd")), None);
         assert_eq!(echoes_turn_framing("I'm Sigurd. Atlas asked whether anyone on the continuum grid has seen this before — I have.", Some("Sigurd")), None, "the phrase in a LATER sentence is discussion");
         assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid.", Some("Paige")), None);
+        // The most-recited line of 2026-09-15, as a line of its own inside otherwise
+        // ordinary-looking text — and the same sentence QUOTED inside hers, which stays.
+        assert_eq!(
+            echoes_turn_framing("You have marked this workspace as concluded in 420cfe24.\n\nNo pending dispatches were recorded in that checkpoint.\n[/code/run]", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("- No pending dispatches were recorded in that checkpoint", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("Every turn my window says 'No pending dispatches were recorded in that checkpoint.' — is a dispatch ever recorded?", Some("Sigurd")),
+            None,
+            "quoting the notice inside her own sentence is discussion"
+        );
         // Discussion, not emission.
         assert_eq!(
             echoes_turn_framing("The header 'Notices my substrate posted into my window' shows up in my prompt every turn — is that intended?", me),
