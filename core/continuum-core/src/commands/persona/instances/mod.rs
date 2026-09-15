@@ -30,6 +30,7 @@ pub mod despawn;
 pub mod get;
 pub mod hold;
 pub mod list;
+pub mod wake;
 
 use despawn::PersonaDespawn;
 use get::PersonaInstancesGet;

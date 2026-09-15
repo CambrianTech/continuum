@@ -1400,6 +1400,11 @@ impl LlmDeliberationFaculty {
             decision_from_response(&resp.text, Some(&self.persona_name)),
             ws,
         );
+        // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal
+        // — the substrate silencing a framing echo or a not-speech envelope — counts
+        // against her; the hour's share decides whether her seat rests.
+        let gate_refused = matches!(&decision, Decision::Pass { reason: Some(r) } if is_gate_refusal(r));
+        crate::modules::citizen_health::note_verdict_of(self.persona_id, &self.persona_name, gate_refused);
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
@@ -4221,6 +4226,12 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
         })
         .cloned()
         .collect()
+}
+
+/// A pass the SUBSTRATE decided, not her: the two mechanical gates at the Speak seam
+/// (`framing_echo`, `not_speech`) name their reason with these prefixes.
+fn is_gate_refusal(reason: &str) -> bool {
+    reason.starts_with("framing echo") || reason.starts_with("not speech")
 }
 
 #[cfg(test)]

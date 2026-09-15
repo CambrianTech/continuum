@@ -410,12 +410,26 @@ impl AircRagSource {
     /// citizens adopted one envelope over 20 hours, by reading it). Returns the
     /// units and how many lines were kept out, so the packer can say so.
     fn collapse_work_receipts(digest: &ChannelDigest, working: bool) -> (Vec<PackUnit>, usize) {
-        let quarantined = digest
+        // ONE pass decides both (Cormac's review of #4076): which elements contribute,
+        // and how many were kept out — counted only among lines the branch would
+        // otherwise have shown (in the working branch the presence plane is dropped
+        // anyway, so a receipt-shaped envelope there is not "quarantined").
+        let mut quarantined = 0usize;
+        let contributes: Vec<bool> = digest
             .elements
             .iter()
-            .filter(|el| el.text().is_some_and(is_not_a_contribution))
-            .count();
-        let contributes = |el: &ChannelElement| !el.text().is_some_and(is_not_a_contribution);
+            .map(|el| {
+                let Some(text) = el.text() else { return true };
+                if working && is_work_receipt(text) {
+                    return true; // dropped below as presence, not as quarantine
+                }
+                let ok = !is_not_a_contribution(text);
+                if !ok {
+                    quarantined += 1;
+                }
+                ok
+            })
+            .collect();
         // WORKING (hands rooted at a card): the PRESENCE plane — every citizen's 💭
         // thought broadcast and ⚙ receipt, hers included (her newest thoughts lead
         // the turn from working memory) — is not packed at all: it is state, not a
@@ -427,7 +441,7 @@ impl AircRagSource {
                 .elements
                 .iter()
                 .enumerate()
-                .filter(|(_, el)| contributes(el) && !el.text().is_some_and(is_work_receipt))
+                .filter(|(idx, el)| contributes[*idx] && !el.text().is_some_and(is_work_receipt))
                 .map(|(idx, _)| PackUnit { last_idx: idx, collapsed: None })
                 .collect();
             return (units, quarantined);
@@ -444,7 +458,7 @@ impl AircRagSource {
         }
         let mut units: Vec<PackUnit> = Vec::new();
         for (idx, el) in digest.elements.iter().enumerate() {
-            if !contributes(el) {
+            if !contributes[idx] {
                 continue; // refused at the speak seam → never shown at the perception seam
             }
             let is_receipt = el.text().is_some_and(is_work_receipt);
