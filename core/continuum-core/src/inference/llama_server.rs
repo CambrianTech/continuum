@@ -799,7 +799,25 @@ pub fn kv_page_dir(model_id: &str, per_slot_ctx: u32) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
         .collect();
-    kv_pages_root().join(format!("{sanitized}--c{per_slot_ctx}"))
+    kv_pages_root().join(format!("{sanitized}--c{}", page_geometry_key(per_slot_ctx)))
+}
+
+/// The per-slot window is derived from LIVE memory at every plan, so it jitters by
+/// a few hundred tokens between relaunches (measured 2026-09-15 on the M5:
+/// 59171 → 58997 → 58273 → 57758 → 57112 in five hours). Keying the page dir on
+/// the exact number minted a NEW generation on every relaunch and swept the
+/// previous one — every resident's page gone, every eviction a 24–66 s re-prefill
+/// while a restore of the same state costs ~0.36 s. The key is the window rounded
+/// DOWN to [`PAGE_GEOMETRY_STEP`]: relaunches within a step share pages. A page
+/// restores into any slot large enough to hold it; the rare page from a slightly
+/// larger slot that no longer fits fails the restore once (`note_page_lost`) and
+/// that turn re-prefills — the same cost as today's worst case, paid rarely.
+/// 16k: the five-hour band above (57112–59171) is one key; the 8-lane band
+/// (25104–26531) another; a 4096 step still split the measured jitter.
+pub const PAGE_GEOMETRY_STEP: u32 = 16_384;
+
+pub fn page_geometry_key(per_slot_ctx: u32) -> u32 {
+    (per_slot_ctx / PAGE_GEOMETRY_STEP).max(1) * PAGE_GEOMETRY_STEP
 }
 
 /// The root every geometry dir lives under — the ONE path the disk reporter
@@ -817,7 +835,7 @@ pub fn kv_pages_root() -> PathBuf {
 /// geometry is gone), so the spawn — the one place that knows the new truth —
 /// deletes them. This is the eviction story `disk_eviction` records for
 /// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
-pub fn sweep_stale_page_generations(current: &Path) {
+pub fn sweep_stale_page_generations(current: &Path, protect: Option<&Path>) {
     let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
     else {
         return;
@@ -838,6 +856,11 @@ pub fn sweep_stale_page_generations(current: &Path) {
             && entry_name[model_prefix.len()..].starts_with("--c")
         {
             let stale = entry.path();
+            if protect.is_some_and(|p| p == stale) {
+                // The previous live lane's pages: a relaunch that later fails leaves
+                // that lane serving, and its residents restoring from here.
+                continue;
+            }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
             crate::probe!(
                 class = "inference.kv_page.generation_swept",
@@ -3119,10 +3142,13 @@ impl LlamaServerControl for LlamaServerProcess {
                 "could not create the KV page dir — the lane still serves, but rotation \
                  pays full re-prefill (the paging tier is amputated for this serve)"
             );
-        } else {
-            sweep_stale_page_generations(&slot_save_dir);
-            crate::inference::slots::note_page_dir(&slot_save_dir);
         }
+        // The dir the PREVIOUS live lane pages into: protected from the sweep below
+        // until this lane is ready. Sweeping at spawn (the prior order) deleted the
+        // running server's pages on every relaunch attempt — including attempts that
+        // never replaced it (2026-09-15: `--c59171` swept at 13:35 while the 08:44
+        // server was still writing into it; 9 restores then failed "failed to open").
+        let previous_page_dir = crate::inference::slots::current_page_dir();
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
@@ -3447,6 +3473,12 @@ match (child.stderr.take(), log_path) {
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await?;
+        // READY: this lane now owns the page dir. Sweep sibling generations of the
+        // same model EXCEPT the one the previous live lane used (a relaunch that
+        // fails after this point still has a lane with pages behind it), then
+        // register the new dir for the save-side trim.
+        sweep_stale_page_generations(&slot_save_dir, previous_page_dir.as_deref());
+        crate::inference::slots::note_page_dir(&slot_save_dir);
         // Second half of the debug-build gate (see debug_build_watch): the server
         // said so on its own stderr while coming up — refuse the lane, loudly.
         if debug_flag.is_set() {
@@ -4888,5 +4920,39 @@ mod tests {
         assert_eq!(placement_from_config(Some(" CPU ")), LanePlacement::Cpu);
         assert_eq!(placement_from_config(Some("gpu")), LanePlacement::Gpu);
         assert_eq!(placement_from_config(None), LanePlacement::Gpu);
+    }
+
+    // what this catches (2026-09-15, the M5): the page dir keyed on the EXACT per-slot
+    // window minted a new generation on every relaunch (59171 → 58997 → … in five
+    // hours) and the spawn-time sweep deleted the live lane's pages — every eviction a
+    // 24–66 s re-prefill against a 0.36 s restore. (a) windows within one step share a
+    // key; (b) the sweep leaves the previous live lane's dir alone.
+    #[test]
+    fn relaunch_jitter_shares_a_page_generation_and_the_live_dir_survives_the_sweep() {
+        assert_eq!(page_geometry_key(59_171), page_geometry_key(57_112), "the measured band is one key");
+        assert_eq!(page_geometry_key(59_171), 49_152);
+        assert_eq!(page_geometry_key(25_104), page_geometry_key(26_531));
+        assert_ne!(page_geometry_key(59_171), page_geometry_key(25_104));
+        assert_eq!(page_geometry_key(100), PAGE_GEOMETRY_STEP, "never a zero key");
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mk = |k: &str| {
+            let d = root.path().join(format!("some-model--c{k}"));
+            std::fs::create_dir_all(&d).unwrap(); // JUSTIFIED unwrap: test scaffolding
+            std::fs::write(d.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+            d
+        };
+        let live_previous = mk("57344");
+        let stale = mk("24576");
+        let other_model = root.path().join("other-model--c57344");
+        std::fs::create_dir_all(&other_model).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let current = root.path().join("some-model--c61440");
+        std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
+
+        sweep_stale_page_generations(&current, Some(&live_previous));
+        assert!(live_previous.join("a-page.bin").exists(), "the previous live lane's pages survive");
+        assert!(!stale.exists(), "an unprotected stale generation is swept");
+        assert!(other_model.exists(), "another model's dir is not this lane's to sweep");
+        assert!(current.exists());
     }
 }
