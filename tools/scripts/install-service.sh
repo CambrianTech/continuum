@@ -33,6 +33,10 @@ done
 
 LABEL="com.continuum.core"
 SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    SOCKET="${CONTINUUM_SOCKET:-$(cygpath -w "${TEMP:-/tmp}")\\continuum-core.sock}" ;;
+esac
 DATA="$HOME/.continuum"
 LOG_DIR="$DATA/logs"
 SVC_USER="$(id -un)"
@@ -217,6 +221,14 @@ schtasks_raw() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks "$@"; }
 
 win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
 
+xml_text() {
+  local value="$1"
+  value="${value//&/\&amp;}"
+  value="${value//</\&lt;}"
+  value="${value//>/\&gt;}"
+  printf '%s' "$value"
+}
+
 win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
   local bin="$1" bash_exe who trigger principal
   # `<UserId>` is REQUIRED: Register-ScheduledTask -Xml with an InteractiveToken
@@ -261,9 +273,9 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$bash_exe</Command>
-      <Arguments>-lc "$(core_wrapper "$bin")"</Arguments>
-      <WorkingDirectory>$(win_path "$DATA")</WorkingDirectory>
+      <Command>$(xml_text "${SYSTEMROOT:-C:\\Windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")</Command>
+      <Arguments>$(xml_text "-NoProfile -NonInteractive -WindowStyle Hidden -File \"$(win_path "$DATA/bin/run-service-hidden.ps1")\" -BashPath \"$bash_exe\" -WrapperPath \"$(win_path "$DATA/bin/core-service.sh")\" -LogDirectory \"$(win_path "$LOG_DIR")\"")</Arguments>
+      <WorkingDirectory>$(xml_text "$(win_path "$DATA")")</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>
@@ -272,7 +284,9 @@ XML
 
 win_install() {
   local bin; bin="$(resolve_core_bin)" || { echo "✗ no continuum-core-server binary — build it (continuum reboot) or set CONTINUUM_CORE_BIN." >&2; exit 1; }
-  mkdir -p "$LOG_DIR"
+  mkdir -p "$LOG_DIR" "$DATA/bin"
+  cp "$(dirname "${BASH_SOURCE[0]}")/run-service-hidden.ps1" "$DATA/bin/run-service-hidden.ps1" || return 1
+  { echo '#!/usr/bin/env bash'; core_wrapper "$bin"; } > "$DATA/bin/core-service.sh" || return 1
   local xml u16; xml="$(mktemp)"; u16="$(mktemp)"
   win_write_task_xml "$bin" > "$xml"
   # Task Scheduler's /xml demands UTF-16 WITH A BOM, and reports any encoding
@@ -281,14 +295,15 @@ win_install() {
   # dependable about which variant/BOM it emits across platforms, so write the
   # little-endian BOM explicitly and convert to UTF-16LE. (Verified 2026-09-06:
   # with the explicit BOM the document parses; without it, it never does.)
-  { printf 'ÿþ'; iconv -f UTF-8 -t UTF-16LE < "$xml"; } > "$u16"
-  if ! schtasks_raw /create /tn "$WIN_TASK" /xml "$(win_path "$u16")" /f >/dev/null 2>&1; then
+  { printf '\377\376'; iconv -f UTF-8 -t UTF-16LE < "$xml"; } > "$u16"
+  local registration_error
+  if ! registration_error="$(schtasks_raw /create /tn "$WIN_TASK" /xml "$(win_path "$u16")" /f 2>&1)"; then
     # Creating a scheduled task needs an ELEVATED shell on most Windows hosts.
     # Modifying or deleting an existing task does not, which is a trap: tooling
     # can happily tear the supervisor down and then be unable to put it back.
     # Fail loud with the exact command instead of leaving the node unsupervised.
-    echo "✗ could not register Scheduled Task '$WIN_TASK': Access is denied." >&2
-    echo "  Creating a task requires an ELEVATED shell. Run this once, in an" >&2
+    echo "✗ could not register Scheduled Task '$WIN_TASK': $registration_error" >&2
+    echo "  If access was denied, run this once in an" >&2
     echo "  Administrator terminal, from this checkout:" >&2
     echo "" >&2
     # Name GIT BASH BY FULL PATH, and give the PowerShell form. A bare `bash` in
