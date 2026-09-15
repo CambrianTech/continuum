@@ -161,7 +161,20 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         })?;
 
         let Some(over) = over.filter(|o| o.is_remote()) else {
-            return self.inner.build_adapter(profile).await;
+            // STAGE B: every persona runs on a switch, born at HOME, so the placement pass
+            // can offload her to a peer's free lane later with no ids typed by anyone.
+            let local = self.inner.build_adapter(profile).await?;
+            let switch = Arc::new(crate::persona::placement_switch::PlacementSwitch::home(
+                profile.persona_id,
+                profile.persona_name.clone(),
+                Some(local),
+                Arc::clone(&self.inner),
+                profile.clone(),
+                Some(Arc::clone(&self.airc)),
+                Some(home.clone()),
+            ));
+            crate::persona::placement_switch::register(Arc::clone(&switch));
+            return Ok(switch);
         };
 
         // From here she is explicitly assigned to a peer. Every failure below is an
@@ -243,6 +256,8 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             Arc::new(adapter),
             Arc::clone(&self.inner),
             profile.clone(),
+            Some(Arc::clone(&self.airc)),
+            Some(home),
         ));
         crate::persona::placement_switch::register(Arc::clone(&switch));
         Ok(switch)
