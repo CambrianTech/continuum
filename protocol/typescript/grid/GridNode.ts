@@ -58,6 +58,10 @@ build_sha?: string,
  */
 build_number: number, 
 /**
+ * What the node serves, as its last beacon reported it (automatic placement stage A).
+ */
+served_model?: string, lanes: number, residents: number, 
+/**
  * Seconds since this node was last heard (a beacon, a discovery, a frame).
  */
 silent_secs: number, 

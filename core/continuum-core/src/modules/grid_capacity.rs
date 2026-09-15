@@ -125,7 +125,7 @@ impl ServiceModule for GridCapacityModule {
                 "kind": "existing_schema",
                 "payload": {
                     "schema": "grid_capacity",
-                    "inline": serde_json::to_value(offer)
+                    "inline": serde_json::to_value(&offer)
                         .map_err(|e| format!("capacity offer encode failed: {e}"))?,
                 }
             },
@@ -165,6 +165,7 @@ impl ServiceModule for GridCapacityModule {
 /// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
 /// invisible to grid/nodes, the fleet fold and placement (card deb26770).
 pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+    let serving = crate::inference::llama_server::current_serving();
     let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
     let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
     if vram.is_none() && ram.is_none() {
@@ -177,6 +178,11 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         at_ms,
         build: crate::capacity::gossip::build_from_sha(env!("CONTINUUM_BUILD_GIT_SHA")),
         build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: a build with no number beacons 0 = unknown, never a fake ordering
+        served_model: serving.active_model.clone(),
+        lanes: serving.lanes,
+        residents: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas().len() as u32)
+            .unwrap_or(0), // JUSTIFIED unwrap_or: no registry yet = no residents, the truth at boot
     })
 }
 
