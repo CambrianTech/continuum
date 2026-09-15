@@ -1064,13 +1064,16 @@ pub(crate) fn dispatch_swe_card_body(
     // already carried, below the cut.
     format!(
         "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\
-         DEFINITION OF DONE: these tests pass — {}. Do not edit the tests; your DIFF is graded \
-         against the repo's held-out suite.\n\n{}\n\n\
+         DEFINITION OF DONE: these tests pass — {}. THOSE TESTS ARE NOT IN YOUR CHECKOUT: the \
+         grader adds them from a held-out test patch at verdict time, so do not search the tree \
+         for them or try to run them by name — write your own repro from the issue text, and use \
+         the tests that already exist in that file/module as the regression set. Do not edit \
+         existing tests; your DIFF is graded against the repo's held-out suite.\n\n{}\n\n\
          This is a REAL open-source issue. When you CLAIM this card, the repo is staged in \
          your workspace at `swe/{}/` (checked out at the buggy commit), and while you hold the \
          card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
          and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
-         your tools, then run the tests named above. END EVERY WORK TURN with work/note (the \
+         your tools and prove it with your own repro. END EVERY WORK TURN with work/note (the \
          card's ledger: what you established, the competing hypotheses with the test that settles \
          each, the one unknown, the next test) — your next turn opens from it instead of \
          re-orienting.",

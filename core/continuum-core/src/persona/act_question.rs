@@ -395,6 +395,14 @@ pub(crate) async fn ask_the_act_question(
                                                 &ws,
                                             ),
                                         );
+                                        // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
+                                        // tests that grade her are not in the checkout.
+                                        if let Some(instance) = ws.file_name().and_then(|n| n.to_str()) {
+                                            body.working_memory.pin_fact(
+                                                "grading",
+                                                &crate::persona::instance_env_fact::grading_fact(instance),
+                                            );
+                                        }
                                         // THE LEDGER, as the fact her turn opens with: the
                                         // saved state of the thought — hers from the last
                                         // turn, the previous holder's, or the owner's for a
