@@ -193,6 +193,7 @@ jobs:
       - name: cargo test -p continuum-core --lib
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
+          bash tools/scripts/tests/start-server-build-only.test.sh
           # Compile once; the Postgres step reuses this exact test executable.
           # Human compiler diagnostics remain on stderr with this JSON format.
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
@@ -406,6 +407,10 @@ jobs:
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         shell: powershell
         run: ./tools/scripts/tests/windows-service.test.ps1
+      - name: Warm builds preserve live services
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        shell: bash
+        run: bash tools/scripts/tests/start-server-build-only.test.sh
       - name: Windows native cache and engine ownership regressions
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         shell: powershell
