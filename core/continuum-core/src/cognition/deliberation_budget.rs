@@ -607,8 +607,11 @@ pub(crate) fn draft_peer_echo(draft: &str, turns: &[BurstTurn]) -> Option<String
         // Sense, not steer — same contract as own_repetition_fact.
         .map(|t| {
             format!(
-                "[echo] the message I just sent repeats what {} already said.",
-                t.author
+                "{} the message I {} {} {}.",
+                crate::cognition::framing_echo::ECHO_FACT_TAG,
+                crate::cognition::framing_echo::ECHO_FACT_MIDDLE,
+                t.author,
+                crate::cognition::framing_echo::ECHO_FACT_END
             )
         })
 }
