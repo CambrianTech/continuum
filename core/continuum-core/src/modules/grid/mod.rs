@@ -368,12 +368,39 @@ impl ServiceModule for GridModule {
         // PLACEMENT FOLLOWS THE FLEET (2026-09-14): remote-bound minds fall home when
         // their seat goes dark and return when it beacons again — the two hand moves of
         // 2026-09-07, now the substrate's, once per tick, receipted in the org room.
-        for line in crate::persona::placement_switch::follow_the_fleet(
-            crate::modules::grid::frame::now_millis(),
-        )
-        .await
         {
-            say_in_org_room(&line).await;
+            let now = crate::modules::grid::frame::now_millis();
+            let self_peer = crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid());
+            let peers: Vec<crate::persona::placement_switch::PeerOffer> = crate::capacity::gossip::global_ledger()
+                .heard_offers_with_age()
+                .into_iter()
+                .filter(|(p, _, _)| Some(*p) != self_peer)
+                .map(|(peer, offer, heard_at_ms)| crate::persona::placement_switch::PeerOffer {
+                    peer,
+                    served_model: offer.served_model.clone(),
+                    lanes: offer.lanes,
+                    residents: offer.residents,
+                    beacon_age_ms: now.saturating_sub(heard_at_ms),
+                })
+                .collect();
+            let serving = crate::inference::llama_server::current_serving();
+            let rank_of = |id: &str| -> Option<u8> {
+                crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
+            };
+            let local = crate::persona::placement_switch::LocalShape {
+                resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .map(|r| r.live_personas().len() as u32)
+                    .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents = nothing to place
+                lanes: serving.lanes,
+                rank: serving
+                    .active_model
+                    .as_deref()
+                    .and_then(rank_of)
+                    .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+            };
+            for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
+                say_in_org_room(&line).await;
+            }
         }
         for t in transitions {
             crate::probe!(

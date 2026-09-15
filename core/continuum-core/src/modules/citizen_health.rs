@@ -53,6 +53,15 @@ pub fn note_act(wrote: bool) {
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
 }
+/// Per-mind lane grants this hour — the placement chooser's "least served" order.
+static GRANTS_BY_MIND: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+pub fn note_lane_granted_to(persona: uuid::Uuid) {
+    note_lane_granted();
+    *GRANTS_BY_MIND.entry(persona).or_insert(0) += 1;
+}
+pub fn lane_grants_of(persona: uuid::Uuid) -> u64 {
+    GRANTS_BY_MIND.get(&persona).map(|v| *v).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
+}
 /// A round card settled (the `bench.round.card_settled` seam).
 pub fn note_settle() {
     LEDGER.settles.fetch_add(1, Ordering::Relaxed);
@@ -168,6 +177,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
 }
 
 fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
+    GRANTS_BY_MIND.clear();
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
