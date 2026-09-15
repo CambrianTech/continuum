@@ -81,6 +81,12 @@ pub struct CodeRunResult {
     pub duration_ms: u64,
     /// True if the run was killed by the safety timeout rather than exiting on its own.
     pub timed_out: bool,
+    /// The interpreter / toolchain that ran the code, as a path or PATH name — so a
+    /// "no module named numpy" is read against the environment it actually ran in
+    /// (card 533c2d78: a held checkout's prepared env python when there is one, else
+    /// the PATH `python3`; `rustc` for Rust).
+    #[serde(default)]
+    pub interpreter: String,
 }
 
 /// `code/run` — run a snippet, report stdout/stderr/exit/duration. Stateless, AiSafe.
@@ -103,7 +109,7 @@ impl ActionCommand for CodeRun {
     type Params = CodeRunParams;
     type Output = CodeRunResult;
 
-    async fn run(&self, _ctx: &Ctx, params: CodeRunParams) -> Result<CodeRunResult, CommandError> {
+    async fn run(&self, ctx: &Ctx, params: CodeRunParams) -> Result<CodeRunResult, CommandError> {
         let timeout = std::time::Duration::from_secs(
             params
                 .timeout_secs
@@ -125,7 +131,16 @@ impl ActionCommand for CodeRun {
                 std::fs::create_dir_all(&dir).map_err(|e| {
                     CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
                 })?;
-                let result = run_python(&dir, &params.code, timeout).await;
+                // THE HELD CHECKOUT'S ENVIRONMENT, NOT THE PATH's python3 (card 533c2d78,
+                // finder Mara 2026-09-15): two citizens spent ~79-act loops on
+                // matplotlib-24177 whose repro scripts died on "no module named numpy" —
+                // the interpreter, not the bug. code/shell already runs in the prepared
+                // env; the snippet runner ran the system python. Same resolver as the
+                // [env] fact: the caller's rooted card checkout → its prepared env.
+                let interpreter = crate::modules::code_commands::held_env_python_for(ctx)
+                    .await
+                    .unwrap_or_else(|| std::path::PathBuf::from("python3")); // unwrap_or_else: no held checkout or no prepared env = the PATH interpreter, named in the result
+                let result = run_python(&dir, &params.code, timeout, &interpreter).await;
                 let _ = std::fs::remove_dir_all(&dir);
                 return result;
             }
@@ -224,11 +239,13 @@ async fn run_python(
     dir: &std::path::Path,
     code: &str,
     timeout: std::time::Duration,
+    interpreter: &std::path::Path,
 ) -> Result<CodeRunResult, CommandError> {
     let src = dir.join("main.py");
     std::fs::write(&src, code)
         .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
-    let mut cmd = tokio::process::Command::new("python3");
+    let interpreter_label = interpreter.display().to_string();
+    let mut cmd = tokio::process::Command::new(interpreter);
     crate::code::shell_session::strip_secret_env(&mut cmd);
     cmd.arg(&src)
         .current_dir(dir)
@@ -237,7 +254,7 @@ async fn run_python(
         .kill_on_drop(true);
     let child = cmd
         .spawn()
-        .map_err(|e| CommandError::Internal(format!("code/run: python3 spawn failed: {e}")))?;
+        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}")))?;
     let started = std::time::Instant::now();
     let out = run_bounded(child, timeout)
         .await
@@ -261,6 +278,7 @@ async fn run_python(
             exit_code: None,
             duration_ms,
             timed_out: true,
+            interpreter: interpreter_label.clone(),
         }),
         Some(status) => Ok(CodeRunResult {
             ok: status.success(),
@@ -269,6 +287,7 @@ async fn run_python(
             exit_code: status.code(),
             duration_ms,
             timed_out: false,
+            interpreter: interpreter_label.clone(),
         }),
     }
 }
@@ -306,6 +325,7 @@ async fn compile_and_run_rust(
                 stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
+                interpreter: "rustc".to_string(),
             })
         }
         Ok(Err(e)) => {
@@ -324,6 +344,7 @@ async fn compile_and_run_rust(
                 ),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
+                interpreter: "rustc".to_string(),
             })
         }
     }
@@ -357,6 +378,7 @@ async fn compile_and_run_rust(
                 stderr,
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
+                interpreter: "rustc".to_string(),
             })
         }
         // Safety timeout fired — a RESULT, not an error: a hung run IS information
@@ -368,6 +390,7 @@ async fn compile_and_run_rust(
             stderr: timeout_note(&stderr, timeout.as_secs(), ""),
             duration_ms: started.elapsed().as_millis() as u64,
             timed_out: true,
+            interpreter: "rustc".to_string(),
         }),
     }
 }
@@ -598,14 +621,39 @@ mod tests {
             &dir,
             "import sys, time\nprint('partial-evidence', flush=True)\nsys.stderr.write('warming\\n'); sys.stderr.flush()\ntime.sleep(30)\nprint('never')\n",
             std::time::Duration::from_secs(1),
+            std::path::Path::new("python3"),
         )
         .await
         .expect("python3 on PATH");
         assert!(out.timed_out, "the run must report the kill");
+        assert_eq!(out.interpreter, "python3", "the result names the interpreter that ran");
         assert!(out.stdout.contains("partial-evidence"), "partial stdout survives: {:?}", out.stdout);
         assert!(!out.stdout.contains("never"));
         assert!(out.stderr.contains("warming") && out.stderr.contains("killed: exceeded the 1s"), "stderr keeps the partial text AND the verdict: {:?}", out.stderr);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // what this catches (card 533c2d78, finder Mara): the snippet runner ran the PATH
+    // python3 whatever checkout the caller held, so a repro in a held SWE checkout died
+    // on "no module named numpy" — the interpreter, not the bug. With an interpreter
+    // resolved for the run, THAT program runs and the result names it.
+    #[tokio::test]
+    async fn a_snippet_runs_under_the_interpreter_it_was_given_and_names_it() {
+        let dir = std::env::temp_dir().join(format!("code-run-interp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let fake = dir.join("env-python");
+        std::fs::write(&fake, "#!/bin/sh\necho from-the-prepared-env\n").unwrap(); // JUSTIFIED unwrap: test scaffolding
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        }
+        let out = run_python(&dir, "print('never')", std::time::Duration::from_secs(5), &fake)
+            .await
+            .expect("fake interpreter spawns");
+        assert!(out.ok);
+        assert_eq!(out.stdout.trim(), "from-the-prepared-env");
+        assert_eq!(out.interpreter, fake.display().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
