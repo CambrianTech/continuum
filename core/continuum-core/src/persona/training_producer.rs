@@ -23,12 +23,11 @@
 //! cycle with the SAME `persona_id` and write the SAME `<id>.jsonl`, so sweeping
 //! captures would fold measurement sims into the training set.
 //!
-//! ## Best-effort, never on the turn's critical path
+//! ## Capture and submission have different ownership
 //!
-//! Production runs on a spawned task: a failure (or absence) of training capture
-//! must never break or delay the persona's reply. This mirrors
-//! [`crate::persona::recorder`] and the prompt-capture sink — side-channel
-//! observability that degrades quietly, NOT a fallback on the answer path. The
+//! Unlinked speech submission runs on a spawned task. Card-linked live work awaits
+//! its periodic and final atomic snapshots so revision order follows the turn;
+//! storage failure is reported without changing the persona's decision. The
 //! command executor is late-bound (post-#224 [`LateBound`], installed at boot in
 //! `ipc/mod.rs`); before install (tests, early boot) production is a logged no-op.
 //!
@@ -425,8 +424,9 @@ pub struct StagedCredit {
     #[entity(json)]
     pub receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 
-    /// What ACTUALLY served the generation, attached once the response returns.
-    /// `None` until then. Never overwrites a selection field.
+    /// Representative served request when all usable generations agree on their
+    /// model and provider. Mixed/all-faulted turns have no scalar summary; the
+    /// complete ordered receipts above preserve every lane and fault.
     #[entity(json)]
     pub served: Option<ServedProvenance>,
 
@@ -557,47 +557,205 @@ pub fn install_executor(executor: Arc<CommandExecutor>) {
     EXECUTOR.install(executor);
 }
 
-/// Turn one completed live turn into one buffered training example.
-///
-/// Best-effort and non-blocking: it spawns the scoring/classify/submit work so the
-/// caller's turn latency is untouched, and quietly does nothing if the executor
-/// isn't installed yet (tests / early boot) or the turn is gated out. NEVER call
-/// this from an eval/measurement path — only the live `Spoke` completion, so the
-/// training set stays uncontaminated by simulations.
-/// STAGE THE CHAIN EVERY K ACTS, NOT ONLY AT TURN END (card 6de7f57a, 2026-09-15).
-/// Measured: the Intel Mac staged 8 credits an hour from short turns; the M5 staged 0
-/// from 37 acts because a work turn there spans many lane waits and rarely ENDS, and
-/// the end of the turn was the only place the chain was staged. The driver announces
-/// every [`STAGE_EVERY_ACTS`]th act through [`on_act_batch`]; the held-work turn
-/// registers a sink for its persona that stages the chain-so-far as a PARTIAL
-/// submission, each replacing the previous partial; the end-of-turn stage replaces
-/// the last partial. The verdict still stamps at grade time.
+/// Persist a continuing work turn at the existing four-act boundary.
 pub const STAGE_EVERY_ACTS: usize = 4;
 
-/// Is `acts` (the turn's act count so far) a point to stage the chain?
 pub fn is_stage_point(acts: usize) -> bool {
     acts > 0 && acts % STAGE_EVERY_ACTS == 0
 }
 
-pub type ActBatchSink = Arc<dyn Fn(&[(String, Vec<crate::ai::types::ToolCall>)]) + Send + Sync>;
-static ACT_BATCH_SINKS: std::sync::LazyLock<dashmap::DashMap<Uuid, ActBatchSink>> =
-    std::sync::LazyLock::new(dashmap::DashMap::new);
+/// The selected card and staged revisions belong to THIS turn, not a persona
+/// global. The shared driver borrows this owner while it runs. Writes are awaited
+/// serially through the existing async data command; cancelling the driver cannot
+/// leave a callback attached to another room or eval fork.
+/// An in-flight transaction may finish, but it can only replace this turn's rows.
+pub(crate) struct TurnCreditCapture {
+    conn: Connection<InProcessTransport>,
+    persona_name: String,
+    prompt: String,
+    credit: CapturedCredit,
+    snapshot: Option<(Uuid, [u8; 32])>,
+    superseded: Vec<Uuid>,
+}
 
-/// The held-work turn registers where its acts go while it runs.
-pub fn set_act_batch_sink(persona: Uuid, sink: ActBatchSink) {
-    ACT_BATCH_SINKS.insert(persona, sink);
-}
-pub fn clear_act_batch_sink(persona: Uuid) {
-    ACT_BATCH_SINKS.remove(&persona);
-}
-/// The driver's seam: called at every stage point with the chain so far. No policy
-/// here — a persona with no registered sink stages nothing mid-turn.
-pub fn on_act_batch(persona: Uuid, turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) {
-    if let Some(sink) = ACT_BATCH_SINKS.get(&persona).map(|s| Arc::clone(s.value())) {
-        sink(turn_acts);
+impl TurnCreditCapture {
+    pub(crate) fn for_turn(
+        persona_id: Uuid,
+        persona_name: &str,
+        prompt: &str,
+        credit: Option<&CapturedCredit>,
+    ) -> Option<Self> {
+        let credit = credit.filter(|credit| credit.is_card_linked())?;
+        let Some(executor) = EXECUTOR.cloned() else {
+            crate::probe!(
+                class = "training.credit.stage_unavailable",
+                persona = %persona_id,
+                card = %credit.card_id,
+                "card credit capture unavailable: command executor is not installed"
+            );
+            return None;
+        };
+        Some(Self::with_executor(
+            executor,
+            persona_id,
+            persona_name.to_owned(),
+            prompt.to_owned(),
+            credit.clone(),
+        ))
+    }
+
+    fn with_executor(
+        executor: Arc<CommandExecutor>,
+        persona_id: Uuid,
+        persona_name: String,
+        prompt: String,
+        credit: CapturedCredit,
+    ) -> Self {
+        Self {
+            conn: Connection::new(InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona_id),
+                )),
+            )),
+            persona_name,
+            prompt,
+            credit,
+            snapshot: None,
+            superseded: Vec::new(),
+        }
+    }
+
+    /// Snapshot only at a completed-act boundary, or once at the shared driver's
+    /// final return. A faulted final generation still belongs in the receipt list.
+    /// A failed replacement leaves the previous whole snapshot intact; the next
+    /// boundary retries identical content with the SAME identity. Changed content
+    /// gets a new revision so a stale settlement cannot delete its successor.
+    pub(crate) async fn record(
+        &mut self,
+        acts: &[(String, Vec<crate::ai::types::ToolCall>)],
+        receipts: &[crate::cognition::provenance::GenerationReceipt],
+        report: Option<&str>,
+        final_snapshot: bool,
+    ) -> bool {
+        if (!final_snapshot && !is_stage_point(acts.len()))
+            || (acts.is_empty() && report.is_none() && receipts.is_empty())
+        {
+            return false;
+        }
+        let started = std::time::Instant::now();
+        let mut completion = acted_chain(acts);
+        if let Some(report) = report {
+            completion.push_str(report);
+        }
+        let digest = snapshot_digest(&completion, receipts);
+        let submission_id = match self.snapshot {
+            Some((id, prior)) if prior == digest => id,
+            previous => {
+                if let Some((id, _)) = previous {
+                    self.superseded.push(id);
+                }
+                let id = Uuid::new_v4();
+                // Record the attempt before awaiting: an acknowledgement can be
+                // lost after commit. The next revision removes every possible
+                // predecessor in its own atomic write, never a successor.
+                self.snapshot = Some((id, digest));
+                id
+            }
+        };
+        let result = stage_credit(
+            &self.conn,
+            &self.persona_name,
+            &self.credit,
+            receipts.to_vec(),
+            self.prompt.clone(),
+            completion,
+            submission_id,
+            &self.superseded,
+        )
+        .await;
+        match result {
+            Ok(_) => {
+                self.superseded.clear();
+                crate::modules::citizen_health::note_credit_staged();
+                crate::probe!(
+                    class = "training.credit.staged",
+                    persona = %self.persona_name,
+                    card = %self.credit.card_id,
+                    submission = %submission_id,
+                    acts = acts.len() as u64,
+                    generations = receipts.len() as u64,
+                    final_snapshot,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "card-linked turn snapshot persisted; outcome remains unverified"
+                );
+                true
+            }
+            Err(error) => {
+                crate::probe!(
+                    class = "training.credit.stage_failed",
+                    persona = %self.persona_name,
+                    card = %self.credit.card_id,
+                    submission = %submission_id,
+                    error = %error,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "turn snapshot refused; prior staged snapshot retained for retry"
+                );
+                false
+            }
+        }
     }
 }
 
+/// Compare immutable snapshot payloads without retaining another full copy or
+/// serializing them. Prompt/card are fixed on the turn owner; these are its only
+/// changing fields. Tags and length framing distinguish optional/adjacent strings.
+fn snapshot_digest(
+    completion: &str,
+    receipts: &[crate::cognition::provenance::GenerationReceipt],
+) -> [u8; 32] {
+    use crate::cognition::provenance::GenerationOutcome;
+    use sha2::{Digest, Sha256};
+    fn field(hash: &mut Sha256, value: Option<&str>) {
+        hash.update([u8::from(value.is_some())]);
+        if let Some(value) = value {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        }
+    }
+    let mut hash = Sha256::new();
+    field(&mut hash, Some(completion));
+    for receipt in receipts {
+        field(&mut hash, Some(&receipt.submitted_request_id));
+        match &receipt.outcome {
+            GenerationOutcome::Served {
+                model,
+                provider,
+                provider_request_id,
+            } => {
+                hash.update([0]);
+                field(&mut hash, Some(model));
+                field(&mut hash, Some(provider));
+                field(&mut hash, provider_request_id.as_deref());
+            }
+            GenerationOutcome::Faulted {
+                detail,
+                model,
+                provider,
+            } => {
+                hash.update([1]);
+                field(&mut hash, Some(detail));
+                field(&mut hash, model.as_deref());
+                field(&mut hash, provider.as_deref());
+            }
+        }
+    }
+    hash.finalize().into()
+}
+
+/// Turn a completed live turn into a buffered training example. Unlinked speech
+/// is scored and submitted by the existing best-effort background operation;
+/// linked work is retained for a later verified outcome. Never call from eval.
 pub fn produce(
     persona_id: Uuid,
     persona_name: String,
@@ -607,7 +765,17 @@ pub fn produce(
     credit: Option<CapturedCredit>,
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
 ) {
-    produce_with_id(persona_id, persona_name, base_model, prompt, completion, credit, generation_receipts, Uuid::new_v4(), None);
+    produce_with_id(
+        persona_id,
+        persona_name,
+        base_model,
+        prompt,
+        completion,
+        credit,
+        generation_receipts,
+        Uuid::new_v4(),
+        None,
+    );
 }
 
 /// [`produce`] with the submission id chosen by the caller and, for a re-stage of the
@@ -667,7 +835,7 @@ pub fn produce_with_id(
                 prompt,
                 completion,
                 submission_id,
-                replaces,
+                replaces.as_slice(),
             )
             .await
             {
@@ -695,7 +863,7 @@ pub fn produce_with_id(
         }
 
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-    crate::modules::citizen_health::note_credit_staged();
+        crate::modules::citizen_health::note_credit_staged();
         // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
         // is the pre-cc34ac0f path, byte-identical.
         //
@@ -977,13 +1145,14 @@ async fn stage_credit<T: Transport>(
     prompt: String,
     completion: String,
     submission_id: Uuid,
-    replaces: Option<Uuid>,
+    replaces: &[Uuid],
 ) -> Result<Uuid, ClientError> {
     // Her OWN store, not the shared main DB: a citizen's staged credit is her
     // record of her own turns.
     let handle = format!("@persona:{persona_name}");
-    // `submission_id` is the caller's: a re-stage of the same turn keeps replacing its
-    // previous partial (deleted first, children cascade by the FK) so a turn is one row.
+    // `submission_id` identifies immutable payload, not mutable turn content. A
+    // retry replaces only that identical revision; a new revision removes known
+    // and uncertain predecessors. Children cascade in the same transaction.
 
     for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
         let result = conn
@@ -1003,16 +1172,17 @@ async fn stage_credit<T: Transport>(
         storage_ok(&result, "data/ensure-schema", collection)?;
     }
 
+    // The ordered receipts remain authoritative. A single scalar is meaningful
+    // only if all usable generations agree on the model AND provider.
+    let served = served_provenance(&generation_receipts);
     let parent = StagedCredit {
         id: submission_id,
         card_id: credit.card_id,
         claim_id: credit.claim.as_ref().map(|c| c.claim_id),
         owner: credit.claim.as_ref().map(|c| c.owner.as_uuid()),
         role: credit.claim.as_ref().map(|c| c.role),
-        receipts: generation_receipts.clone(),
-        // Attached later from the response that actually served — never guessed at
-        // stage time.
-        served: None,
+        receipts: generation_receipts,
+        served,
         prompt,
         completion,
         // Same clock the rest of this file already uses. `now_unix_ms` exists as a
@@ -1022,7 +1192,11 @@ async fn stage_credit<T: Transport>(
     };
 
     let mut operations = Vec::new();
-    if let Some(prev) = replaces {
+    for prev in replaces
+        .iter()
+        .filter(|id| **id != submission_id)
+        .chain(std::iter::once(&submission_id))
+    {
         operations.push(BatchOperation {
             operation_type: BatchOperationType::Delete,
             collection: StagedCredit::COLLECTION.to_string(),
@@ -1039,7 +1213,7 @@ async fn stage_credit<T: Transport>(
     // One correlation row per generation, faults included: the receipts themselves
     // ride on the parent as an opaque JSON column (the ORM has no collection
     // FieldType), so these child rows ARE the index that column cannot carry.
-    for receipt in &generation_receipts {
+    for receipt in &parent.receipts {
         let child = StagedCreditGeneration {
             id: Uuid::new_v4(),
             staged_credit_id: submission_id,
@@ -1064,6 +1238,40 @@ async fn stage_credit<T: Transport>(
         .await?;
     storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
     Ok(submission_id)
+}
+
+/// Summarize a homogeneous served lane using a real representative request. Mixed
+/// models/providers and all-faulted turns retain their full receipts without a
+/// fabricated scalar base model. Fault receipts never become successful output.
+fn served_provenance(
+    receipts: &[crate::cognition::provenance::GenerationReceipt],
+) -> Option<ServedProvenance> {
+    use crate::cognition::provenance::GenerationOutcome;
+    let mut first: Option<(&str, &str, &str)> = None;
+    for receipt in receipts {
+        if let GenerationOutcome::Served {
+            model,
+            provider,
+            provider_request_id,
+        } = &receipt.outcome
+        {
+            if first.is_some_and(|(m, p, _)| m != model || p != provider) {
+                return None;
+            }
+            first.get_or_insert((
+                model,
+                provider,
+                provider_request_id
+                    .as_deref()
+                    .unwrap_or(&receipt.submitted_request_id), // Equal provider/submitted IDs are stored once in the receipt.
+            ));
+        }
+    }
+    first.map(|(model, provider, request_id)| ServedProvenance {
+        model: model.to_owned(),
+        provider: provider.to_owned(),
+        request_id: request_id.to_owned(),
+    })
 }
 
 /// Fail on a command that SUCCEEDED AS A CALL and FAILED AS AN OPERATION.
@@ -1117,7 +1325,6 @@ pub(crate) async fn submit_training<T: Transport>(
     Ok(serde_json::from_value(receipt)?) // Decode the Value-native command response once; producers share this typed receipt.
 }
 
-
 /// The COMPLETION a work turn that ended in acts is lifted as: the intent she
 /// stated plus the exact calls she made, rendered deterministically. This is the
 /// ACTED chain the learning loop never saw (2026-09-13: every work turn ends
@@ -1143,12 +1350,16 @@ pub fn acted_completion(intent: &str, calls: &[crate::ai::types::ToolCall]) -> S
 
 /// The whole turn's act chain, rendered in order — one `acted_completion` per act.
 pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> String {
-    turn_acts.iter().map(|(intent, calls)| acted_completion(intent, calls)).collect::<Vec<_>>().join("")
+    turn_acts
+        .iter()
+        .map(|(intent, calls)| acted_completion(intent, calls))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
-/// SETTLE a card's staged credit: every citizen's staged turns on `card_id` become
-/// examples when the card PASSED (stamped with role + outcome, through the same
-/// quality gate as live turns) and are discarded when it failed. Reads each
+/// Settle a card's staged credit: eligible claimed turns on `card_id` may transfer
+/// after a passing verdict, through the same quality gate as live turns. Failed,
+/// unknown and incompatible evidence remains staged. Reads each
 /// resident's own staged store, the mirror of `stage_credit`. Best-effort and
 /// receipted: a store that cannot be read names itself; nothing here can fail the
 /// verdict that triggered it.
@@ -1159,11 +1370,17 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
     let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() else {
         return;
     };
-    let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
     for (persona_name, persona_id) in registry.roster_snapshot() {
         let handle = format!("@persona:{persona_name}");
-        let listed = match executor
-            .execute_json(
+        let conn = Connection::new(InProcessTransport::new(
+            executor.clone(),
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona_id),
+            )),
+        ));
+        let listed = match conn
+            .commands()
+            .execute_value(
                 "data/list",
                 json!({
                     "collection": StagedCredit::COLLECTION,
@@ -1173,7 +1390,11 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             )
             .await
         {
-            Ok(v) => v,
+            Ok(v) => staged_credit_from_list(v),
+            Err(e) => Err(e),
+        };
+        let rows = match listed {
+            Ok(rows) => rows,
             Err(e) => {
                 crate::probe!(
                     class = "training.credit.settle_unreadable",
@@ -1185,46 +1406,23 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 continue;
             }
         };
-        let rows: Vec<StagedCredit> = listed
-            .get("items")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect()) // ORM boundary: her own staged_credit rows, decoded as the typed entity; a malformed row is skipped, not fatal
-            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no items key = nothing staged
         if rows.is_empty() {
             continue;
         }
-        // The base model is what ANSWERED those turns (served provenance), never what
-        // is configured now — a persona re-homed onto another model since would
-        // otherwise mis-file the examples.
-        let base_model = rows
-            .iter()
-            .find_map(|r| r.served.as_ref().map(|s| s.model.clone()))
-            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no served provenance on any row = the empty string, named honestly on the submission
         let mut submitted = 0usize;
         for row in &rows {
-            let stamp = OutcomeStamp {
-                card_id,
-                role: row.role.unwrap_or(CreditRole::Owner), // JUSTIFIED unwrap_or: a claimless stage was hers to author
-                outcome: passed,
-            };
-            if let Some(plan) = plan(classifier, &row.prompt, &row.completion, Some(stamp)) {
-                submit_plan(
-                    persona_id,
-                    persona_name.clone(),
-                    base_model.clone(),
-                    executor.clone(),
-                    plan,
-                    "card-credit",
-                )
-                .await;
-                submitted += 1;
+            match settle_staged_row(&conn, persona_id, &persona_name, row, passed).await {
+                Ok(true) => submitted += 1,
+                Ok(false) => {}
+                Err(error) => crate::probe!(
+                    class = "training.credit.settle_failed",
+                    persona = %persona_name,
+                    card = %card_id,
+                    submission = %row.id,
+                    error = %error,
+                    "staged revision retained; settlement has no completed ownership transfer"
+                ),
             }
-            let _ = executor
-                .execute_json(
-                    "data/delete",
-                    json!({ "collection": StagedCredit::COLLECTION, "id": row.id, "dbPath": handle }),
-                )
-                .await;
         }
         // The card is a boundary for its maker: one bounded consolidation pass, now.
         if let Some(region) = crate::cognition::dream_consolidation::global() {
@@ -1240,10 +1438,110 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             passed,
             staged = rows.len() as u64,
             submitted = submitted as u64,
-            "a settled card stamped its staged turns — PASS lifts them into her curriculum, FAIL discards them"
+            "card verdict checked staged revisions; only acknowledged transfers were removed"
         );
-    crate::modules::citizen_health::note_credit_settled();
+        crate::modules::citizen_health::note_credit_settled();
     }
+}
+
+/// `data/list` returns DataRecord envelopes, not bare entities. Validate the
+/// complete response before transferring any row; malformed evidence stays put.
+fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
+    let listed: crate::modules::data::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
+    if listed.items.len() != listed.total as usize {
+        return Err(ClientError::Transport(format!(
+            "staged-credit list is incomplete: {} of {} rows",
+            listed.items.len(),
+            listed.total,
+        )));
+    }
+    listed
+        .items
+        .into_iter()
+        .map(|item| {
+            let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
+            Ok(serde_json::from_value(record.data)?) // Decode one staged-credit entity from its typed storage envelope.
+        })
+        .collect()
+}
+
+/// Transfer one immutable revision using the destination's existing idempotency
+/// key. The accepted receipt proves ownership independently of training dispatch;
+/// a refusal, failed outcome, missing claim or incompatible lane keeps evidence.
+/// The current verdict can arrive during a continuing turn. A later verdict may
+/// accept its cumulative successor and repeat earlier acts; revision idempotency
+/// does not deduplicate across that activity-lifecycle boundary. The ordered
+/// request receipts retain the evidence needed to identify such overlap.
+async fn settle_staged_row<T: Transport>(
+    conn: &Connection<T>,
+    persona_id: Uuid,
+    persona_name: &str,
+    row: &StagedCredit,
+    passed: bool,
+) -> Result<bool, ClientError> {
+    let eligible_role = match (passed, row.claim_id, row.owner, row.role) {
+        (true, Some(_), Some(owner), Some(role)) if owner == persona_id => role,
+        _ => return Ok(false),
+    };
+    // The full receipts are authoritative, including records written before the
+    // scalar served summary existed. Never borrow another row's model.
+    let Some(served) = served_provenance(&row.receipts)
+        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())
+    else {
+        return Ok(false);
+    };
+    let stamp = OutcomeStamp {
+        card_id: row.card_id,
+        role: eligible_role,
+        outcome: passed,
+    };
+    let Some(plan) = plan(
+        CLASSIFIER.get_or_init(DomainClassifier::new),
+        &row.prompt,
+        &row.completion,
+        Some(stamp),
+    ) else {
+        return Ok(false);
+    };
+    let mut params = build_submit_params(
+        persona_id,
+        persona_name,
+        &served.model,
+        &plan,
+        "card-credit",
+    );
+    params["submissionId"] = json!(row.id);
+    let receipt = submit_training(conn, params).await?;
+    if receipt
+        .acceptance
+        .as_ref()
+        .is_none_or(|accepted| accepted.submission_id != row.id)
+    {
+        crate::probe!(
+            class = "training.credit.settle_deferred",
+            persona = %persona_name,
+            card = %row.card_id,
+            submission = %row.id,
+            error_kind = ?receipt.error_kind,
+            "training destination did not acknowledge this revision; evidence retained"
+        );
+        return Ok(false);
+    }
+    let deleted = conn.commands().execute_value(
+        "data/delete",
+        json!({ "collection": StagedCredit::COLLECTION, "id": row.id, "dbPath": format!("@persona:{persona_name}") }),
+    ).await?;
+    storage_ok(&deleted, "data/delete", StagedCredit::COLLECTION)?;
+    crate::probe!(
+        class = "training.credit.transferred",
+        persona = %persona_name,
+        card = %row.card_id,
+        submission = %row.id,
+        replayed = receipt.acceptance.as_ref().is_some_and(|accepted| accepted.replayed),
+        dispatch_success = receipt.success,
+        "destination durably accepted this staged revision; training is a separate outcome"
+    );
+    Ok(true)
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
@@ -1268,29 +1566,8 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-
-    // what this catches: the stage points a long work turn hits (every 4th act), and
-    // that a registered sink sees the chain-so-far while an unregistered persona
-    // stages nothing mid-turn.
-    #[test]
-    fn the_chain_is_staged_every_fourth_act_through_the_registered_sink() {
-        assert!(!is_stage_point(0) && !is_stage_point(1) && !is_stage_point(3));
-        assert!(is_stage_point(4) && is_stage_point(8));
-        let persona = Uuid::from_u128(0x5eed);
-        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let s2 = Arc::clone(&seen);
-        set_act_batch_sink(persona, Arc::new(move |acts| { s2.store(acts.len(), std::sync::atomic::Ordering::SeqCst); }));
-        let chain: Vec<(String, Vec<crate::ai::types::ToolCall>)> = (0..4).map(|i| (format!("act {i}"), Vec::new())).collect();
-        on_act_batch(persona, &chain);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4);
-        on_act_batch(Uuid::from_u128(0x9999), &chain);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4, "another persona's acts never reach this sink");
-        clear_act_batch_sink(persona);
-        on_act_batch(persona, &chain[..2]);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4, "a cleared sink is silent");
-    }
 
     // what this catches: card 3eaabbc6 — a successful transport can carry a
     // refused submit; absent/malformed receipts must never look like acceptance.
@@ -1411,19 +1688,27 @@ mod tests {
         let receipt = CapturedCredit::from_selected_card(&claimed)
             .claim
             .expect("a real owner+claim pair must produce a receipt");
-        assert_eq!(receipt.owner, owner, "the receipt carries the store's own owner");
+        assert_eq!(
+            receipt.owner, owner,
+            "the receipt carries the store's own owner"
+        );
         assert_eq!(receipt.role, CreditRole::Owner, "a claim yields Owner");
 
         // HALF A PAIR IS NOT A PAIR: an owner with no claim is not an accepted
         // claim, and a claim with no owner names nobody.
         assert!(
-            CapturedCredit::from_selected_card(&card(Some(owner), None)).claim.is_none(),
+            CapturedCredit::from_selected_card(&card(Some(owner), None))
+                .claim
+                .is_none(),
             "an owner without a claim is not an accepted claim"
         );
         assert!(
-            CapturedCredit::from_selected_card(&card(None, Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))))
-                .claim
-                .is_none(),
+            CapturedCredit::from_selected_card(&card(
+                None,
+                Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))
+            ))
+            .claim
+            .is_none(),
             "a claim without an owner names nobody"
         );
     }
@@ -1519,11 +1804,21 @@ mod tests {
         // A PASSING verdict stamps and buckets on domain x role.
         let passed = captured
             .clone()
-            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")))
+            .settle(SettlementVerdict::from_activity(
+                &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"),
+            ))
             .expect("test: a captured claim receipt can be stamped");
-        assert!(passed.outcome, "settle must carry a PASSING verdict through");
-        let planned = plan(&classifier, "How do I pool websockets?", substantial, Some(passed))
-            .expect("test: a passing stamped turn clears the gate and plans a bucket");
+        assert!(
+            passed.outcome,
+            "settle must carry a PASSING verdict through"
+        );
+        let planned = plan(
+            &classifier,
+            "How do I pool websockets?",
+            substantial,
+            Some(passed),
+        )
+        .expect("test: a passing stamped turn clears the gate and plans a bucket");
         assert_eq!(
             planned.bucket_key(),
             format!("{}/owner", planned.trait_kind),
@@ -1534,14 +1829,22 @@ mod tests {
         // must then be refused by the evidence floor. If `settle` hardcoded `true`,
         // this plans a bucket and the assertion below fails — that is the mutation.
         let failed = captured
-            .settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::fail("the patch did not apply")))
+            .settle(SettlementVerdict::from_activity(
+                &crate::cognition::activity::Verdict::fail("the patch did not apply"),
+            ))
             .expect("test: a receipt stamps regardless of which way the verdict went");
         assert!(
             !failed.outcome,
             "settle must carry a FAILING verdict through rather than defaulting to success"
         );
         assert!(
-            plan(&classifier, "How do I pool websockets?", substantial, Some(failed)).is_none(),
+            plan(
+                &classifier,
+                "How do I pool websockets?",
+                substantial,
+                Some(failed)
+            )
+            .is_none(),
             "a turn credited to a FAILED card submits nothing — same text plans fine \
              when the verdict passes, so this None can only come from the evidence floor"
         );
@@ -1562,7 +1865,11 @@ mod tests {
              because her edits landed in that checkout either way"
         );
         assert!(
-            claimless.settle(SettlementVerdict::from_activity(&crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"))).is_none(),
+            claimless
+                .settle(SettlementVerdict::from_activity(
+                    &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")
+                ))
+                .is_none(),
             "no receipt captured at selection means no stamp is constructible later — \
              a settlement cannot retroactively invent accountability"
         );
@@ -1673,7 +1980,8 @@ mod tests {
         assert_eq!(meta["role"], json!("owner"));
         assert_eq!(meta["outcome"], json!(true));
         assert_eq!(
-            meta["domain"], json!(stamped.trait_kind),
+            meta["domain"],
+            json!(stamped.trait_kind),
             "metadata keeps the BARE domain so a stamped example stays queryable \
              alongside its unstamped siblings"
         );
@@ -1730,8 +2038,13 @@ mod tests {
              the lookup has to use the bare domain",
             code_stamped.bucket_key()
         );
-        let code_params =
-            build_submit_params(Uuid::from_u128(7), "Cass", "qwen", &code_stamped, "live-turn");
+        let code_params = build_submit_params(
+            Uuid::from_u128(7),
+            "Cass",
+            "qwen",
+            &code_stamped,
+            "live-turn",
+        );
         assert_eq!(
             code_params["evalSet"],
             json!("docs/genome/coder-eval.jsonl"),
@@ -1781,8 +2094,13 @@ mod tests {
             script. Add an `if let Some(x) = opt` guard before the `.unwrap()`, return \
             an `Err` with the missing-field name, and the async function compiles and \
             the test passes against the typescript interface.";
-        let p = plan(&classifier, "Why does my Rust function panic?", code_reply, None)
-            .expect("a substantive code reply must clear the quality gate");
+        let p = plan(
+            &classifier,
+            "Why does my Rust function panic?",
+            code_reply,
+            None,
+        )
+        .expect("a substantive code reply must clear the quality gate");
         assert_eq!(
             p.trait_kind, "code",
             "a code turn must bucket as the code trait"
@@ -1837,10 +2155,17 @@ mod tests {
         executor
     }
 
-    fn conn_as(
-        executor: Arc<CommandExecutor>,
-        persona: Uuid,
-    ) -> Connection<InProcessTransport> {
+    /// Shared real SQLite fixture for the production turn-driver regression.
+    pub(crate) fn turn_capture(
+        persona_id: Uuid,
+        persona_name: String,
+        prompt: String,
+        credit: CapturedCredit,
+    ) -> TurnCreditCapture {
+        TurnCreditCapture::with_executor(data_runtime(), persona_id, persona_name, prompt, credit)
+    }
+
+    fn conn_as(executor: Arc<CommandExecutor>, persona: Uuid) -> Connection<InProcessTransport> {
         Connection::new(InProcessTransport::new(
             executor,
             Some(CallerIdentity::local_persona(
@@ -1851,6 +2176,47 @@ mod tests {
 
     fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {
         crate::cognition::provenance::GenerationReceipt::faulted(id, "irrelevant to staging")
+    }
+
+    // what this catches: 41f4e3ef — a turn can change serving lanes; a scalar
+    // summary must never attribute all its generations to the first model.
+    #[test]
+    fn served_summary_requires_one_actual_lane_and_retains_request_identity() {
+        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        let mut receipts = vec![receipt("failed-before-serving")];
+        assert!(served_provenance(&receipts).is_none());
+        receipts.push(GenerationReceipt {
+            submitted_request_id: "submitted-a".into(),
+            outcome: GenerationOutcome::Served {
+                model: "actual-a".into(),
+                provider: "provider-a".into(),
+                provider_request_id: Some("provider-request-a".into()),
+            },
+        });
+        receipts.push(receipt("failed-after-serving"));
+        let homogeneous = served_provenance(&receipts).unwrap();
+        assert_eq!(homogeneous.model, "actual-a");
+        assert_eq!(homogeneous.request_id, "provider-request-a");
+        receipts.push(GenerationReceipt {
+            submitted_request_id: "submitted-b".into(),
+            outcome: GenerationOutcome::Served {
+                model: "actual-b".into(),
+                provider: "provider-a".into(),
+                provider_request_id: None,
+            },
+        });
+        assert!(served_provenance(&receipts).is_none());
+        let last = receipts.last_mut().unwrap();
+        last.outcome = GenerationOutcome::Served {
+            model: "actual-a".into(),
+            provider: "provider-b".into(),
+            provider_request_id: None,
+        };
+        assert!(served_provenance(&receipts).is_none());
+        assert_eq!(
+            served_provenance(&receipts[3..]).unwrap().request_id,
+            "submitted-b"
+        );
     }
 
     // what this catches: Astra/S6 on 799b8fe9 — `stage_credit` DISCARDED the results of
@@ -1891,7 +2257,7 @@ mod tests {
             "prompt".to_string(),
             "completion".to_string(),
             Uuid::new_v4(),
-            None,
+            &[],
         )
         .await;
         let submission = ok.expect("two DISTINCT receipts stage cleanly");
@@ -1907,11 +2273,11 @@ mod tests {
             "prompt".to_string(),
             "completion".to_string(),
             Uuid::new_v4(),
-            None,
+            &[],
         )
         .await;
-        let err = rolled_back
-            .expect_err("a rolled-back batch must NOT be reported as staged credit");
+        let err =
+            rolled_back.expect_err("a rolled-back batch must NOT be reported as staged credit");
         assert_ne!(
             format!("{err}"),
             String::new(),
@@ -1919,7 +2285,10 @@ mod tests {
         );
 
         // And the two runs are distinguishable: the control produced a real id.
-        assert!(!submission.is_nil(), "the clean stage returned a real submission id");
+        assert!(
+            !submission.is_nil(),
+            "the clean stage returned a real submission id"
+        );
     }
 
     // what this catches: the ACTED chain rendering non-deterministically or dropping
@@ -1927,8 +2296,16 @@ mod tests {
     #[test]
     fn the_acted_chain_renders_intent_then_every_call_in_order() {
         let calls = vec![
-            crate::ai::types::ToolCall { id: "a".into(), name: "code/read".into(), input: json!({"path": "x.py"}) },
-            crate::ai::types::ToolCall { id: "b".into(), name: "code/edit".into(), input: json!({"path": "x.py", "mode": "replace"}) },
+            crate::ai::types::ToolCall {
+                id: "a".into(),
+                name: "code/read".into(),
+                input: json!({"path": "x.py"}),
+            },
+            crate::ai::types::ToolCall {
+                id: "b".into(),
+                name: "code/edit".into(),
+                input: json!({"path": "x.py", "mode": "replace"}),
+            },
         ];
         let c = acted_completion("  fix the qop quoting  ", &calls);
         assert_eq!(c, "fix the qop quoting\ncode/read({\"path\":\"x.py\"})\ncode/edit({\"mode\":\"replace\",\"path\":\"x.py\"})\n");
@@ -1939,9 +2316,413 @@ mod tests {
     // passed card lifts must be the turn as she took it.
     #[test]
     fn the_act_chain_keeps_every_act_in_order() {
-        let c = |n: &str| crate::ai::types::ToolCall { id: n.into(), name: n.into(), input: json!({}) };
-        let chain = acted_chain(&[("look".into(), vec![c("code/read")]), ("fix".into(), vec![c("code/edit"), c("code/run")])]);
-        assert_eq!(chain, "look\ncode/read({})\nfix\ncode/edit({})\ncode/run({})\n");
+        let c = |n: &str| crate::ai::types::ToolCall {
+            id: n.into(),
+            name: n.into(),
+            input: json!({}),
+        };
+        let chain = acted_chain(&[
+            ("look".into(), vec![c("code/read")]),
+            ("fix".into(), vec![c("code/edit"), c("code/run")]),
+        ]);
+        assert_eq!(
+            chain,
+            "look\ncode/read({})\nfix\ncode/edit({})\ncode/run({})\n"
+        );
     }
 
+    /// Storage stays on the real SQLite command route. Only the destination's
+    /// reply is scripted, with an optional pause at the ownership transfer.
+    struct SettlementTransport {
+        data: InProcessTransport,
+        submit: continuum_client::mock::MockTransport,
+        pause: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for SettlementTransport {
+        async fn execute(
+            &self,
+            command: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, ClientError> {
+            if command == "genome/training-trigger/submit" {
+                if let Some((entered, release)) = &self.pause {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+                self.submit.execute(command, params).await
+            } else {
+                self.data.execute(command, params).await
+            }
+        }
+
+        async fn subscribe(
+            &self,
+            class: &str,
+        ) -> Result<continuum_client::event::EventStream, ClientError> {
+            self.data.subscribe(class).await
+        }
+
+        async fn emit(&self, class: &str, payload: serde_json::Value) -> Result<(), ClientError> {
+            self.data.emit(class, payload).await
+        }
+
+        async fn provide(
+            &self,
+            command: &str,
+            handler: Arc<dyn continuum_client::ServeHandler>,
+        ) -> Result<(), ClientError> {
+            self.data.provide(command, handler).await
+        }
+
+        async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+            self.data.revoke(command).await
+        }
+
+        async fn close(&self) -> Result<(), ClientError> {
+            self.data.close().await
+        }
+    }
+
+    fn settlement_connection(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+        submit: continuum_client::mock::MockTransport,
+        pause: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    ) -> Connection<SettlementTransport> {
+        Connection::new(SettlementTransport {
+            data: InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona),
+                )),
+            ),
+            submit,
+            pause,
+        })
+    }
+
+    async fn stored_credit_rows(
+        conn: &Connection<InProcessTransport>,
+        name: &str,
+    ) -> Vec<StagedCredit> {
+        let listed = conn.commands().execute_value(
+            "data/list",
+            json!({"collection": StagedCredit::COLLECTION, "dbPath": format!("@persona:{name}")}),
+        ).await.unwrap();
+        staged_credit_from_list(listed).unwrap()
+    }
+
+    fn settlement_acts(count: usize) -> Vec<(String, Vec<crate::ai::types::ToolCall>)> {
+        (0..count)
+            .map(|n| {
+                (
+                    format!(
+                        "Inspect source file {n} and verify its behavior against the regression."
+                    ),
+                    vec![crate::ai::types::ToolCall {
+                        id: format!("read-{n}"),
+                        name: "code/read".into(),
+                        input: json!({"path":format!("src/file_{n}.rs")}),
+                    }],
+                )
+            })
+            .collect()
+    }
+
+    fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
+        crate::cognition::provenance::GenerationReceipt {
+            submitted_request_id: id.into(),
+            outcome: crate::cognition::provenance::GenerationOutcome::Served {
+                model: model.into(),
+                provider: "fixture-provider".into(),
+                provider_request_id: None,
+            },
+        }
+    }
+
+    async fn stage_settlement_fixture(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+        name: &str,
+        card: Uuid,
+        receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    ) -> (TurnCreditCapture, StagedCredit) {
+        let mut capture = TurnCreditCapture::with_executor(
+            executor.clone(),
+            persona,
+            name.into(),
+            "Inspect the Rust source and report the verified regression behavior.".into(),
+            CapturedCredit {
+                card_id: card,
+                claim: Some(ClaimReceipt {
+                    claim_id: Uuid::new_v4(),
+                    owner: airc_core::PeerId::from_uuid(persona),
+                    role: CreditRole::Owner,
+                }),
+            },
+        );
+        assert!(
+            capture
+                .record(&settlement_acts(4), &receipts, None, false)
+                .await
+        );
+        let row = stored_credit_rows(&conn_as(executor, persona), name)
+            .await
+            .into_iter()
+            .find(|row| row.receipts == receipts)
+            .unwrap();
+        (capture, row)
+    }
+
+    fn script_settlement_reply(
+        submit: &continuum_client::mock::MockTransport,
+        row: &StagedCredit,
+        reply: Option<serde_json::Value>,
+    ) {
+        let id = row.id;
+        let model = row.served.as_ref().unwrap().model.clone();
+        let completion = row.completion.clone();
+        submit.respond_to("genome/training-trigger/submit", move |params| {
+            assert_eq!(
+                params["submissionId"],
+                json!(id),
+                "retry carries this immutable snapshot's identity"
+            );
+            assert_eq!(
+                params["baseModel"],
+                json!(model),
+                "each row supplies its actual serving model"
+            );
+            assert_eq!(params["examples"][0]["completion"], json!(completion));
+            match &reply {
+                Some(value) => Ok(value.clone()),
+                None => Err(ClientError::Transport(
+                    "acceptance acknowledgement was lost".into(),
+                )),
+            }
+        });
+    }
+
+    // what this catches: 41f4e3ef — an older verdict drain must never delete a
+    // newer snapshot while waiting for the trigger's ownership receipt.
+    #[tokio::test]
+    async fn settlement_of_an_older_snapshot_cannot_delete_newer_progress() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        let name = "overlapping-settlement";
+        let receipts: Vec<_> = (0..4)
+            .map(|n| served_receipt(&format!("generation-{n}"), "model-a"))
+            .collect();
+        let (mut capture, older) =
+            stage_settlement_fixture(executor.clone(), persona, name, card, receipts.clone()).await;
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &older,
+            Some(json!({
+                "success":true, "outcome":"BatchAppended",
+                "acceptance":{"submissionId":older.id,"replayed":false}
+            })),
+        );
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let conn = settlement_connection(
+            executor.clone(),
+            persona,
+            submit,
+            Some((entered.clone(), release.clone())),
+        );
+        let mut drain = Box::pin(settle_staged_row(&conn, persona, name, &older, true));
+        tokio::select! {
+            _ = entered.notified() => {},
+            result = &mut drain => panic!("drain settled before its paused receipt: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("drain never submitted"),
+        }
+        let mut later_receipts = receipts;
+        later_receipts
+            .extend((4..8).map(|n| served_receipt(&format!("generation-{n}"), "model-a")));
+        assert!(
+            capture
+                .record(
+                    &settlement_acts(8),
+                    &later_receipts,
+                    Some("The final source review is complete."),
+                    true
+                )
+                .await
+        );
+        let data = conn_as(executor.clone(), persona);
+        let before = stored_credit_rows(&data, name).await;
+        assert_eq!(before.len(), 1);
+        let newer = before.into_iter().next().unwrap();
+        assert_ne!(
+            newer.id, older.id,
+            "changed content is a new immutable snapshot"
+        );
+        release.notify_one();
+        assert!(drain.await.unwrap());
+        let remaining = stored_credit_rows(&data, name).await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, newer.id);
+        assert_eq!(remaining[0].receipts, later_receipts);
+        let children = data
+            .commands()
+            .execute_value(
+                "data/list",
+                json!({
+                    "collection":StagedCreditGeneration::COLLECTION,
+                    "dbPath":format!("@persona:{name}")
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(children["items"].as_array().unwrap().len(), 8);
+
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &newer,
+            Some(json!({
+                "success":false,"errorKind":"DispatchFailed","error":"provider unavailable",
+                "acceptance":{"submissionId":newer.id,"replayed":false}
+            })),
+        );
+        let conn = settlement_connection(executor, persona, submit, None);
+        assert!(
+            settle_staged_row(&conn, persona, name, &newer, true)
+                .await
+                .unwrap(),
+            "durable destination ownership survives later dispatch failure"
+        );
+        assert!(stored_credit_rows(&data, name).await.is_empty());
+    }
+
+    // what this catches: 41f4e3ef — one row's served model cannot label its
+    // siblings, and neither a refusal nor unknown attribution transfers ownership.
+    #[tokio::test]
+    async fn settlement_retains_unaccepted_rows_and_uses_each_rows_actual_model() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        let name = "settlement-models";
+        let (_, a) = stage_settlement_fixture(
+            executor.clone(),
+            persona,
+            name,
+            card,
+            vec![served_receipt("a", "model-a")],
+        )
+        .await;
+        let (_, b) = stage_settlement_fixture(
+            executor.clone(),
+            persona,
+            name,
+            card,
+            vec![served_receipt("b", "model-b")],
+        )
+        .await;
+        let (_, mixed) = stage_settlement_fixture(
+            executor.clone(),
+            persona,
+            name,
+            card,
+            vec![
+                served_receipt("mixed-a", "model-a"),
+                served_receipt("mixed-b", "model-b"),
+            ],
+        )
+        .await;
+        let (_, faulted) = stage_settlement_fixture(
+            executor.clone(),
+            persona,
+            name,
+            card,
+            vec![receipt("all-faulted")],
+        )
+        .await;
+        assert!(mixed.served.is_none() && faulted.served.is_none());
+        let data = conn_as(executor.clone(), persona);
+        let submit = continuum_client::mock::MockTransport::new();
+        for reply in [
+            Some(
+                json!({"success":false,"errorKind":"PersistenceFailed","error":"disk unavailable"}),
+            ),
+            Some(json!({"success":true,"outcome":"BatchAppended"})),
+            Some(
+                json!({"success":true,"acceptance":{"submissionId":Uuid::new_v4(),"replayed":false}}),
+            ),
+            None,
+        ] {
+            script_settlement_reply(&submit, &a, reply);
+        }
+        let conn = settlement_connection(executor.clone(), persona, submit.clone(), None);
+        for _ in 0..4 {
+            assert!(!matches!(
+                settle_staged_row(&conn, persona, name, &a, true).await,
+                Ok(true)
+            ));
+            assert_eq!(stored_credit_rows(&data, name).await.len(), 4,
+                "refusal, missing/mismatched receipt, or unknown acknowledgement preserves staged ownership");
+        }
+        // This response must remain queued until A is eligible. A deferred row
+        // reaching submit either mismatches A's identity or consumes its receipt.
+        script_settlement_reply(
+            &submit,
+            &a,
+            Some(json!({
+                "success":true,"outcome":"AlreadyAccepted",
+                "acceptance":{"submissionId":a.id,"replayed":true}
+            })),
+        );
+        assert!(!settle_staged_row(&conn, persona, name, &mixed, true)
+            .await
+            .unwrap());
+        assert!(!settle_staged_row(&conn, persona, name, &faulted, true)
+            .await
+            .unwrap());
+        assert!(!settle_staged_row(&conn, persona, name, &a, false)
+            .await
+            .unwrap());
+        let mut claimless = a.clone();
+        claimless.claim_id = None;
+        claimless.owner = None;
+        assert!(!settle_staged_row(&conn, persona, name, &claimless, true)
+            .await
+            .unwrap());
+        let mut foreign = a.clone();
+        foreign.owner = Some(Uuid::new_v4());
+        assert!(!settle_staged_row(&conn, persona, name, &foreign, true)
+            .await
+            .unwrap());
+        assert_eq!(stored_credit_rows(&data, name).await.len(), 4);
+        assert!(settle_staged_row(&conn, persona, name, &a, true)
+            .await
+            .unwrap());
+        script_settlement_reply(
+            &submit,
+            &b,
+            Some(json!({
+                "success":true,"outcome":"AlreadyAccepted",
+                "acceptance":{"submissionId":b.id,"replayed":true}
+            })),
+        );
+        assert!(settle_staged_row(&conn, persona, name, &b, true)
+            .await
+            .unwrap());
+        let remaining = stored_credit_rows(&data, name).await;
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.iter().any(|row| row.id == mixed.id));
+        assert!(remaining.iter().any(|row| row.id == faulted.id));
+    }
 }

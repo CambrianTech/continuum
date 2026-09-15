@@ -943,6 +943,7 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
+        receipts: &mut Vec<super::provenance::GenerationReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
         // remain separate, and one workspace can issue several calls.
@@ -954,7 +955,7 @@ impl LlmDeliberationFaculty {
             super::prompt_capture::CaptureLease::start(
                 Arc::clone(sink),
                 &super::prompt_capture::PromptCall {
-                    request_id,
+                    request_id: request_id.clone(),
                     persona_id: self.persona_id,
                     room_id: ws.room_id,
                     context_window,
@@ -1125,6 +1126,17 @@ impl LlmDeliberationFaculty {
                 binding.adapter.generate_stream_checked(request, sink).await
             }
         };
+        // The actual submitted identity survives a provider-owned response ID.
+        // Record every completed attempt, including a corrective capacity refusal,
+        // independently of whether optional disk capture is installed.
+        receipts.push(match &gen_result {
+            Ok(response) => {
+                super::provenance::GenerationReceipt::from_response(request_id, response)
+            }
+            Err(error) => {
+                super::provenance::GenerationReceipt::faulted(request_id, error.to_string())
+            }
+        });
         if let Some(lease) = &mut capture {
             match &gen_result {
                 Ok(response) => lease.finish(Some(response), None),
@@ -1403,8 +1415,13 @@ impl LlmDeliberationFaculty {
         // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal
         // — the substrate silencing a framing echo or a not-speech envelope — counts
         // against her; the hour's share decides whether her seat rests.
-        let gate_refused = matches!(&decision, Decision::Pass { reason: Some(r) } if is_gate_refusal(r));
-        crate::modules::citizen_health::note_verdict_of(self.persona_id, &self.persona_name, gate_refused);
+        let gate_refused =
+            matches!(&decision, Decision::Pass { reason: Some(r) } if is_gate_refusal(r));
+        crate::modules::citizen_health::note_verdict_of(
+            self.persona_id,
+            &self.persona_name,
+            gate_refused,
+        );
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
@@ -3437,6 +3454,26 @@ impl Faculty for LlmDeliberationFaculty {
     }
 
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let mut receipts = Vec::new();
+        let contribution = self.contribute_with_receipts(ws, &mut receipts).await;
+        let mut contribution = match contribution {
+            Some(contribution) => contribution,
+            None if receipts.is_empty() => return None,
+            // A corrective retry may yield before dispatch. Keep its earlier
+            // attempt's evidence without inventing a decision or another call.
+            None => Contribution::context(FacultyId::Deliberation, "", 0.0, ""),
+        };
+        contribution.receipts = receipts;
+        Some(contribution)
+    }
+}
+
+impl LlmDeliberationFaculty {
+    async fn contribute_with_receipts(
+        &self,
+        ws: &Workspace,
+        receipts: &mut Vec<super::provenance::GenerationReceipt>,
+    ) -> Option<Contribution> {
         // ONE atomic snapshot of the model binding for the whole turn — the
         // adapter we generate through, the model we request, and the served window
         // we size the prompt to all come from the same {adapter, model, window}
@@ -3688,7 +3725,7 @@ impl Faculty for LlmDeliberationFaculty {
             }
             let started = std::time::Instant::now();
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request)
+                .generate_for_workspace(ws, &binding, fit_window, request, receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -4269,7 +4306,10 @@ mod tests {
             .map(|(raw, _)| raw.as_str())
             .collect();
         for must in ["web/fetch", "web/search", "commands/list", "commands/help"] {
-            assert!(names.contains(&must), "room-selected surface must carry {must}: {names:?}");
+            assert!(
+                names.contains(&must),
+                "room-selected surface must carry {must}: {names:?}"
+            );
         }
         assert!(
             !names.iter().any(|n| n.starts_with("code/")),
@@ -4302,7 +4342,10 @@ mod tests {
             (Workspace::new("anything open?"), SurfaceReason::Full),
             (work, SurfaceReason::HandsForWork),
         ] {
-            assert!(ws.room_affordances.is_empty(), "the ordinary room declares none");
+            assert!(
+                ws.room_affordances.is_empty(),
+                "the ordinary room declares none"
+            );
             let selected = faculty.select_tool_surface(&ws, 65_536);
             assert_eq!(selected.reason, want);
             let expected: &[NativeToolSpec] = match want {
@@ -4330,8 +4373,15 @@ mod tests {
         let mut ws = Workspace::new("chase the recruiter");
         ws.room_affordances = vec!["mail/send".to_string()];
         let selected = faculty.select_tool_surface(&ws, 65_536);
-        assert_eq!(selected.reason, SurfaceReason::Full, "fell through to the pre-S1 arm");
-        assert_eq!(selected.specs.as_deref(), Some(faculty.native_specs.as_slice()));
+        assert_eq!(
+            selected.reason,
+            SurfaceReason::Full,
+            "fell through to the pre-S1 arm"
+        );
+        assert_eq!(
+            selected.specs.as_deref(),
+            Some(faculty.native_specs.as_slice())
+        );
     }
 
     // what this catches: the shipped benchmark recipe is now the RULE for every
@@ -4343,19 +4393,31 @@ mod tests {
     fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
         let raw = persona_tools::native_tool_specs();
         for (file, json) in [
-            ("benchmark.json", include_str!("../experience/recipes/benchmark.json")),
-            ("benchmark-round.json", include_str!("../experience/recipes/benchmark-round.json")),
+            (
+                "benchmark.json",
+                include_str!("../experience/recipes/benchmark.json"),
+            ),
+            (
+                "benchmark-round.json",
+                include_str!("../experience/recipes/benchmark-round.json"),
+            ),
         ] {
             let recipe = crate::experience::recipe::ExperienceRecipe::from_json(json)
                 .expect("shipped benchmark recipe parses");
-            let authorized: std::collections::HashSet<&str> =
-                recipe.affordances.iter().map(|a| a.command.as_str()).collect();
+            let authorized: std::collections::HashSet<&str> = recipe
+                .affordances
+                .iter()
+                .map(|a| a.command.as_str())
+                .collect();
             let missing: Vec<String> = hands_surface(&raw)
                 .iter()
                 .map(|s| s.name.clone())
                 .filter(|n| !authorized.contains(n.as_str()))
                 .collect();
-            assert!(missing.is_empty(), "{file} must authorize every hand; missing: {missing:?}");
+            assert!(
+                missing.is_empty(),
+                "{file} must authorize every hand; missing: {missing:?}"
+            );
         }
     }
 
@@ -4464,8 +4526,12 @@ mod tests {
             fn an_oversized_result_is_split_not_swallowed_whole() {
                 let faculty = faculty_with_window(4_096);
                 let huge: String = (0..4_000)
-                    .map(|i| format!("line {i} of a very large tool result
-"))
+                    .map(|i| {
+                        format!(
+                            "line {i} of a very large tool result
+"
+                        )
+                    })
                     .collect();
                 // (required, demoted) = (the result's ENDING, its earlier part). The ending
                 // is what stays required so the wire reads in the original order — see
@@ -4507,8 +4573,12 @@ mod tests {
                 // A tool result several times the whole window — an ordinary `code/read`
                 // of a large file.
                 let huge: String = (0..6_000)
-                    .map(|i| format!("line {i} of a very large tool result
-"))
+                    .map(|i| {
+                        format!(
+                            "line {i} of a very large tool result
+"
+                        )
+                    })
                     .collect();
                 wm.record_receipt(&huge);
 
@@ -4541,7 +4611,8 @@ mod tests {
             fn a_result_that_fits_is_untouched() {
                 let faculty = faculty_with_window(32_768);
                 let small = "ok: wrote 3 lines
-".to_string();
+"
+                .to_string();
                 let (required, demoted) = faculty.split_action_result(small.clone());
                 assert!(demoted.is_none(), "a small result has nothing to demote");
                 assert_eq!(required.content_text(), small);
@@ -4555,8 +4626,11 @@ mod tests {
             #[test]
             fn the_first_line_is_required_even_when_it_alone_exceeds_the_share() {
                 let faculty = faculty_with_window(1_024);
-                let one_giant_line = format!("{}
-", "x".repeat(20_000));
+                let one_giant_line = format!(
+                    "{}
+",
+                    "x".repeat(20_000)
+                );
                 let (required, demoted) = faculty.split_action_result(one_giant_line.clone());
                 assert!(
                     !required.content_text().is_empty(),
@@ -4564,7 +4638,10 @@ mod tests {
                 );
                 let rebuilt = format!(
                     "{}{}",
-                    demoted.as_ref().map(|d| d.content_text()).unwrap_or_default(),
+                    demoted
+                        .as_ref()
+                        .map(|d| d.content_text())
+                        .unwrap_or_default(),
                     required.content_text()
                 );
                 assert_eq!(rebuilt, one_giant_line, "still nothing discarded");
@@ -4578,13 +4655,20 @@ mod tests {
             fn splitting_never_cuts_a_multibyte_sequence() {
                 let faculty = faculty_with_window(2_048);
                 let multibyte: String = (0..2_000)
-                    .map(|i| format!("строка {i} — ✅ 日本語テキスト
-"))
+                    .map(|i| {
+                        format!(
+                            "строка {i} — ✅ 日本語テキスト
+"
+                        )
+                    })
                     .collect();
                 let (required, demoted) = faculty.split_action_result(multibyte.clone());
                 let rebuilt = format!(
                     "{}{}",
-                    demoted.as_ref().map(|d| d.content_text()).unwrap_or_default(),
+                    demoted
+                        .as_ref()
+                        .map(|d| d.content_text())
+                        .unwrap_or_default(),
                     required.content_text()
                 );
                 assert_eq!(rebuilt, multibyte, "multibyte content survives the split");
@@ -4664,7 +4748,10 @@ mod tests {
                 );
                 let whole = GroundingPlan::minimum(&ws);
                 let wanted_tokens = whole.system_reserve() + whole.trailing_tokens();
-                assert!(wanted_tokens > 0, "the fixture must actually want something");
+                assert!(
+                    wanted_tokens > 0,
+                    "the fixture must actually want something"
+                );
 
                 match GroundingPlan::within_budget(&ws, 0) {
                     Fitted::Whole(_) => panic!("a zero budget cannot afford this fixture"),
@@ -4721,13 +4808,9 @@ mod tests {
             ws.room_updates = Arc::new(updates);
             ws.now_ms = Some(1);
 
-            let faculty = LlmDeliberationFaculty::new(
-                Uuid::new_v4(),
-                "Ivar",
-                "You are Ivar.",
-                adapter,
-            )
-            .with_context_window(window);
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                    .with_context_window(window);
 
             let view = faculty.prompt_view(&ws);
             assert!(
@@ -5851,7 +5934,10 @@ mod tests {
                 ] {
                     let faculty = faculty_with_the_real_registry(window);
                     let selected = faculty.select_tool_surface(&ws, window);
-                    let specs = selected.specs.as_deref().expect("a tool surface was offered");
+                    let specs = selected
+                        .specs
+                        .as_deref()
+                        .expect("a tool surface was offered");
                     assert_eq!(
                         selected.tokens,
                         LlmDeliberationFaculty::tool_surface_tokens_of(specs),
@@ -7653,6 +7739,28 @@ mod tests {
                 {
                     let seen = adapter.seen.lock().expect("actual requests");
                     assert_eq!(seen.len(), 2);
+                    assert_eq!(outcome.receipts.len(), seen.len());
+                    for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
+                        assert_eq!(
+                            Some(&receipt.submitted_request_id),
+                            request.request_id.as_ref()
+                        );
+                    }
+                    assert!(matches!(
+                        outcome.receipts[0].outcome,
+                        crate::cognition::provenance::GenerationOutcome::Faulted {
+                            model: None,
+                            provider: None,
+                            ..
+                        }
+                    ));
+                    assert_eq!(
+                        matches!(
+                            outcome.receipts[1].outcome,
+                            crate::cognition::provenance::GenerationOutcome::Faulted { .. }
+                        ),
+                        failed_response
+                    );
                     let first = &seen[0];
                     let second = &seen[1];
                     assert_ne!(first.request_id, second.request_id);
@@ -7741,6 +7849,15 @@ mod tests {
             ws.now_ms = Some(1_000);
             let outcome = faculty.contribute(&ws).await.expect("fault contribution");
             assert!(outcome.fault.is_some());
+            assert_eq!(
+                outcome.receipts.len(),
+                1,
+                "dispatch evidence exists without disk capture"
+            );
+            assert!(matches!(
+                outcome.receipts[0].outcome,
+                crate::cognition::provenance::GenerationOutcome::Faulted { .. }
+            ));
             ws.now_ms = Some(180_000); // Clock and diagnostic churn do not replace the pending work.
             wm.record_fact(
                 "The provider refused the previous prompt; the artifact remains pending.",
@@ -7756,6 +7873,10 @@ mod tests {
                 .await
                 .expect("retained capacity refusal");
             assert!(next.fault.is_some());
+            assert!(
+                next.receipts.is_empty(),
+                "pre-dispatch refusal invents no generation"
+            );
             assert!(
                 registry
                     .demand_of(persona)
@@ -8404,11 +8525,13 @@ mod tests {
                 // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
                 // Parts 3-4 shed their enrichment and go on to think, so they need a real
                 // response — reaching the model is the outcome those cases assert.
-                let adapter = Arc::new(ScriptedAdapter::new(if oversized_part >= 3 || oversized_part == 1 {
-                    vec![make_response(FinishReason::Stop, "PASS", None)]
-                } else {
-                    vec![]
-                }));
+                let adapter = Arc::new(ScriptedAdapter::new(
+                    if oversized_part >= 3 || oversized_part == 1 {
+                        vec![make_response(FinishReason::Stop, "PASS", None)]
+                    } else {
+                        vec![]
+                    },
+                ));
                 let registry = WorkingSetRegistry::new();
                 let wm = Arc::new(WorkingMemory::new(8));
                 wm.set_served_window(window);
