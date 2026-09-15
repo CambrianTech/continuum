@@ -2406,6 +2406,9 @@ mod tests {
             assert!(ok);
         }
         let home = tempfile::tempdir().expect("home");
+        // Under the one crate-wide home lock (#4082): this unlocked CONTINUUM_HOME write
+        // raced every other test that resolves the citizen layer.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
@@ -2459,6 +2462,6 @@ mod tests {
             "the peer's divergence is durable"
         );
 
-        std::env::remove_var("CONTINUUM_HOME");
+        // (CONTINUUM_HOME is restored by the guard's drop)
     }
 }

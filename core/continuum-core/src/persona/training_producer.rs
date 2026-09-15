@@ -1823,36 +1823,9 @@ mod tests {
         );
     }
 
-    /// HOME is process-global, so the override must be EXCLUSIVE and restored even on
-    /// panic. Same shape as the guards in commands/memory/mod.rs and
-    /// model_registry/artifacts.rs — this is the third copy in the tree, which is a
-    /// small argument for a shared test primitive, but not one this card widens to.
-    struct HomeGuard {
-        prior: Option<String>,
-        _lock: tokio::sync::OwnedMutexGuard<()>,
-    }
-    impl HomeGuard {
-        async fn set(home: &std::path::Path) -> Self {
-            use std::sync::OnceLock;
-            static ENV_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
-            let lock = ENV_LOCK
-                .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-                .lock_owned()
-                .await;
-            let prior = std::env::var("HOME").ok();
-            std::env::set_var("HOME", home);
-            Self { prior, _lock: lock }
-        }
-    }
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.prior {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
+    /// The one crate-wide home lock (`crate::test_env`, #4082) — pins HOME, USERPROFILE,
+    /// HF_HOME and CONTINUUM_HOME together and restores them on drop.
+    use crate::test_env::HomeGuard;
 
     /// A real `DataModule` over a real SQLite adapter, reached through the SAME
     /// dispatch path production uses — `stage_credit` gets no special seam.
