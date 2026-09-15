@@ -414,8 +414,12 @@ impl ServiceModule for GridModule {
             let line = match t.kind {
                 registry::FleetChange::WentStale => format!("[fleet] {} has been silent {} h — treat as DOWN until it beacons again", t.node, t.silent_secs / 3600),
                 registry::FleetChange::BackFresh => format!("[fleet] {} is back (heard {} s ago)", t.node, t.silent_secs),
-                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
-                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up to build {}", t.node, env!("CONTINUUM_BUILD_GIT_SHA")),
+                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} (#{}) while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                // The PEER's build, never this node's: the old line printed the local sha
+                // after "caught up to", and a peer read it as "the M5 runs my local-only
+                // commit" (Cormac, 2026-09-15 — an hour of two nodes chasing a leak that
+                // was a pronoun).
+                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up: runs build {} (#{}) — this node runs {} (#{})", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
             };
             say_in_org_room(&line).await;
         }

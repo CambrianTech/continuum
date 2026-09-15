@@ -30,6 +30,9 @@ pub struct FleetTransition {
     pub kind: FleetChange,
     pub silent_secs: u64,
     pub build_sha: Option<String>,
+    /// The peer's beaconed build number (0 = never beaconed one) — the value the
+    /// behind/caught-up verdict was computed from, so the line can say it.
+    pub build_number: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,11 +214,11 @@ impl NodeRegistry {
             let behind = n.build_number != 0 && local_build_number != 0 && n.build_number < local_build_number;
             let label = n.node_name.clone().unwrap_or_else(|| n.node_id.clone()); // JUSTIFIED unwrap_or_else: an unnamed node is named by its id
             if stale != n.stale {
-                out.push(FleetTransition { node: label.clone(), kind: if stale { FleetChange::WentStale } else { FleetChange::BackFresh }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                out.push(FleetTransition { node: label.clone(), kind: if stale { FleetChange::WentStale } else { FleetChange::BackFresh }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone(), build_number: n.build_number });
                 n.stale = stale;
             }
             if behind != n.behind {
-                out.push(FleetTransition { node: label, kind: if behind { FleetChange::FellBehind } else { FleetChange::CaughtUp }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone() });
+                out.push(FleetTransition { node: label, kind: if behind { FleetChange::FellBehind } else { FleetChange::CaughtUp }, silent_secs: n.silent_secs, build_sha: n.build_sha.clone(), build_number: n.build_number });
                 n.behind = behind;
             }
         }
