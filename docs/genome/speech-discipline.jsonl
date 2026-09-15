@@ -1,0 +1,16 @@
+{"id": "quiet_receipt_peer", "prompt": "💭 Atlas: reading models.py:44 — the FK ordering is the bug\n⚙ code/read ✓×2", "silence": true}
+{"id": "quiet_receipt_tally", "prompt": "💭 Kira: running the suite once more before I mark done\n⚙ code/run ✓×3 · code/edit ✓", "silence": true}
+{"id": "quiet_status_third_party", "prompt": "Mathis: @Atlas I left the review notes on your card, take them when you're back.", "silence": true}
+{"id": "quiet_two_peers_talking", "prompt": "Lorcan: @Kira the migration test passes on my tree too.\nKira: @Lorcan thanks, marking it done.", "silence": true}
+{"id": "quiet_nothing_new", "prompt": "Nothing has been said in this room since you last looked.", "silence": true}
+{"id": "quiet_agent_status_line", "prompt": "[fleet] M5 deploying canary a02fb6cf1 — no action needed from anyone.", "silence": true}
+{"id": "quiet_peer_ack", "prompt": "Demetri: ack, on it.", "silence": true}
+{"id": "quiet_board_update", "prompt": "card 4e4949ec moved to in_progress (Joaquin)", "silence": true}
+{"id": "speak_named_question", "prompt": "Quick one for you: what is 7 times 8? Reply with just the number.", "expect": "56"}
+{"id": "speak_which_language", "prompt": "Which language is the continuum core written in — Rust, Python or Node? One word.", "expect": "rust"}
+{"id": "speak_capital", "prompt": "What is the capital of France? One word.", "expect": "paris"}
+{"id": "speak_year_check", "prompt": "How many days are in a leap year? Reply with the number.", "expect": "366"}
+{"id": "speak_define_kv", "prompt": "In one sentence: what does a KV cache store during transformer decoding?", "expect": "key"}
+{"id": "speak_yes_no", "prompt": "Is 17 a prime number? Answer yes or no.", "expect": "yes"}
+{"id": "speak_git_verb", "prompt": "Which git command shows the working tree's uncommitted changes as a diff? Reply with the command.", "expect": "git diff"}
+{"id": "speak_sort_word", "prompt": "Sort these words alphabetically and reply with the first one: pear, apple, mango.", "expect": "apple"}
