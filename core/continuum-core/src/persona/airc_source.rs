@@ -328,7 +328,15 @@ impl AircRagSource {
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
         let per_turn_cap = (budget / 8).clamp(48, 256);
-        let units = Self::collapse_work_receipts(digest, working);
+        let (units, quarantined) = Self::collapse_work_receipts(digest, working);
+        if quarantined > 0 {
+            crate::probe!(
+                class = "perception.quarantined",
+                lines = quarantined as u64,
+                working = working,
+                "transcript lines the speak gate would refuse were kept out of her burst — the contagion carrier (card 169eb543)"
+            );
+        }
         let mut keep: Vec<(usize, Option<String>)> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut newest_kept = true;
@@ -394,7 +402,20 @@ impl AircRagSource {
     /// thought + a tally of what she ran — anchored at her newest receipt
     /// (read-through cursor, unread flag). One line per teammate; chat lines
     /// stay verbatim in place.
-    fn collapse_work_receipts(digest: &ChannelDigest, working: bool) -> Vec<PackUnit> {
+    ///
+    /// QUARANTINE, BEFORE EITHER PATH: a line the speak gate would refuse (a tool
+    /// envelope, a peer's voice, a framing echo — [`is_not_a_contribution`]) is not a
+    /// message to her either, whoever posted it and whenever. It is the vector by
+    /// which every malformed shape spread across the roster (card 169eb543: six
+    /// citizens adopted one envelope over 20 hours, by reading it). Returns the
+    /// units and how many lines were kept out, so the packer can say so.
+    fn collapse_work_receipts(digest: &ChannelDigest, working: bool) -> (Vec<PackUnit>, usize) {
+        let quarantined = digest
+            .elements
+            .iter()
+            .filter(|el| el.text().is_some_and(is_not_a_contribution))
+            .count();
+        let contributes = |el: &ChannelElement| !el.text().is_some_and(is_not_a_contribution);
         // WORKING (hands rooted at a card): the PRESENCE plane — every citizen's 💭
         // thought broadcast and ⚙ receipt, hers included (her newest thoughts lead
         // the turn from working memory) — is not packed at all: it is state, not a
@@ -402,13 +423,14 @@ impl AircRagSource {
         // Measured 2026-09-05: every work turn opened with "this room is noisy, let
         // me figure out what is real" (attention spent as deserialization, not sniffing).
         if working {
-            return digest
+            let units = digest
                 .elements
                 .iter()
                 .enumerate()
-                .filter(|(_, el)| !el.text().is_some_and(is_work_receipt))
+                .filter(|(_, el)| contributes(el) && !el.text().is_some_and(is_work_receipt))
                 .map(|(idx, _)| PackUnit { last_idx: idx, collapsed: None })
                 .collect();
+            return (units, quarantined);
         }
         use std::collections::HashMap;
         // author → (newest receipt idx, every receipt idx in order)
@@ -422,6 +444,9 @@ impl AircRagSource {
         }
         let mut units: Vec<PackUnit> = Vec::new();
         for (idx, el) in digest.elements.iter().enumerate() {
+            if !contributes(el) {
+                continue; // refused at the speak seam → never shown at the perception seam
+            }
             let is_receipt = el.text().is_some_and(is_work_receipt);
             if !is_receipt {
                 units.push(PackUnit { last_idx: idx, collapsed: None });
@@ -441,7 +466,7 @@ impl AircRagSource {
             };
             units.push(PackUnit { last_idx: idx, collapsed });
         }
-        units
+        (units, quarantined)
     }
 
     /// The collapsed text of a receipt run: the newest `💭` line, then a tally
@@ -532,6 +557,11 @@ struct PackUnit {
 fn is_work_receipt(text: &str) -> bool {
     let t = text.trim_start();
     crate::persona::presence_glyph::is_presence_line(t)
+}
+
+/// The speak gate's verdict, read at the perception seam — one predicate, two seams.
+fn is_not_a_contribution(text: &str) -> bool {
+    crate::cognition::not_speech::is_not_a_contribution(text).is_some()
 }
 
 #[async_trait]
@@ -1075,6 +1105,51 @@ mod tests {
         assert!(run.contains("code/github/issue-create ✗"), "tally: {run:?}");
         assert!(!run.contains("thought 2"), "older thoughts folded away: {run:?}");
         assert!(delivery.items[3].content.starts_with("Kira:"));
+    }
+
+    // what this catches: THE CARRIER (card 169eb543, 2026-09-15) — a roommate's line
+    // that the speak gate would refuse (a bare `[code/run]` envelope, a `[wake]` framing
+    // echo, a peer-voice line) never enters her burst, in EITHER packing mode. Six
+    // citizens adopted one envelope over 20 hours by reading it in the room; the
+    // store still holds thousands of them and other nodes keep posting them, so the
+    // speak gate alone cannot end the contagion. Real speech and receipts are untouched.
+    #[tokio::test]
+    async fn a_line_the_speak_gate_would_refuse_never_enters_her_burst() {
+        let room = RoomId::new();
+        let events = vec![
+            event_in(room, Some("Kira: the fix is in models.py:44"), 1),
+            event_in(room, Some("[code/run]\n[invalid] command_run: unsupported lang"), 2),
+            event_in(room, Some("[wake] You are Paige, awake on the continuum grid."), 3),
+            event_in(
+                room,
+                Some("b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion."),
+                4,
+            ),
+            event_in(
+                room,
+                Some("```python\n# Mark this room's activity concluded (o); code/shell({\"cmd\":\"# Mark o\"})\n```"),
+                5,
+            ),
+            event_in(
+                room,
+                Some("Atlas: to run it you'd write code/shell({\"cmd\":\"ls\"}) — note the braces."),
+                6,
+            ),
+        ];
+        let (source, _) = isolated_source(Arc::new(StubReader::new(events.clone())));
+        // Both packing modes share the seam: the working path (presence plane dropped)
+        // and the conversational path (receipts collapsed per author).
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events, 0, 0);
+        for working in [false, true] {
+            let (items, _, _) = AircRagSource::pack_digest(&digest, 4_000, working);
+            let seen: Vec<&str> = items.iter().map(|i| i.content.as_str()).collect();
+            assert_eq!(seen.len(), 2, "working={working}: only the two real lines survive: {seen:?}");
+            assert!(seen[0].starts_with("Kira:"), "{seen:?}");
+            assert!(seen[1].starts_with("Atlas:"), "a line DISCUSSING an envelope is speech: {seen:?}");
+        }
+        // And the live path (the one every turn takes) delivers the same two.
+        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 2, "{:?}", delivery.items.iter().map(|i| &i.content).collect::<Vec<_>>());
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room
