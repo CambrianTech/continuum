@@ -1060,11 +1060,12 @@ async fn serve_persona_loop_inner(
             // the composed thread's `airc` delivery can lag the wake, and a
             // directed turn that reasons over a stale thread emits an empty
             // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
-            // its roster name inside; `now_ms` is the wake time.
+            // its roster name inside. IncomingMessage does not carry occurrence
+            // time; the turn's `now_ms` must not be passed off as the event's time.
             Some(TriggerTurn {
                 peer_id: &msg.peer_id.to_string(),
                 content: &msg.text,
-                occurred_at_ms: now_ms,
+                occurred_at_ms: 0,
             }),
         );
         // #301 anchor-starvation fix: the in-window escalation counter loses its
@@ -1766,8 +1767,8 @@ pub(crate) struct TriggerTurn<'a> {
     pub peer_id: &'a str,
     /// The message body that triggered the turn.
     pub content: &'a str,
-    /// When it arrived (airc `occurred_at_ms` / wake `now_ms`) — drives the
-    /// `[t=…]` prefix so an anchored trigger renders identically to a threaded one.
+    /// Event occurrence time when measured; zero means unknown. Never substitute
+    /// the wake/turn clock for an event timestamp missing from the source.
     pub occurred_at_ms: u64,
 }
 
@@ -4155,7 +4156,7 @@ mod tests {
             let trigger = super::super::TriggerTurn {
                 peer_id: joel,
                 content: "run commands/list and tell me the count",
-                occurred_at_ms: 42,
+                occurred_at_ms: 0,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
 
@@ -4166,6 +4167,11 @@ mod tests {
                     && last.content == "run commands/list and tell me the count",
                 "the waking message must be anchored as the final peer turn (roster \
                  name resolved), got {last:?}"
+            );
+            assert_eq!(
+                last.occurred_at_ms,
+                Some(0),
+                "unknown event time stays unknown"
             );
             assert_eq!(turns.len(), 3, "two threaded turns + the anchored trigger");
         }
@@ -4193,7 +4199,7 @@ mod tests {
             let trigger = super::super::TriggerTurn {
                 peer_id: joel,
                 content: question,
-                occurred_at_ms: 42,
+                occurred_at_ms: 0,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
             assert_eq!(
@@ -4202,6 +4208,11 @@ mod tests {
                 "already-threaded trigger must not be doubled, got {turns:?}"
             );
             assert_eq!(turns.last().unwrap().content, question);
+            assert_eq!(
+                turns.last().unwrap().occurred_at_ms,
+                Some(1),
+                "the caught-up source retains its measured event time"
+            );
         }
 
         // Deterministic reproduction of the live 2026-07-24 four-persona echo

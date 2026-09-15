@@ -9,7 +9,9 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
     let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() else {
         return render_absent();
     };
-    let Some(rt) = registry.get(peer) else { return render_absent() };
+    let Some(rt) = registry.get(peer) else {
+        return render_absent();
+    };
     // The card whose ledger matters: a review card reads its parent's, else the first work
     // card held (WIP = 1 makes that the card).
     let target = held.iter().find_map(|c| {
@@ -19,13 +21,21 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
     let (card, room) = match target {
         Some(parent) => (parent, room_of_card(rt.airc(), parent).await),
         None => match held.first() {
-            Some(c) => (c.card_id.as_uuid(), room_of_card(rt.airc(), c.card_id.as_uuid()).await),
+            Some(c) => (
+                c.card_id.as_uuid(),
+                room_of_card(rt.airc(), c.card_id.as_uuid()).await,
+            ),
             None => return render_absent(),
         },
     };
-    let Some(room) = room else { return render_absent() };
-    match WallLedgerStore::new(rt.airc().clone()).read(&room, card).await {
-        Ok(Some(l)) => render_for_turn(&l),
+    let Some(room) = room else {
+        return render_absent();
+    };
+    match WallLedgerStore::new(rt.airc().clone())
+        .read(&room, card)
+        .await
+    {
+        Ok(Some(l)) => render_for_turn(&l, peer),
         Ok(None) => render_absent(),
         Err(e) => {
             crate::probe!(
@@ -39,7 +49,10 @@ pub async fn ledger_fact_for(peer: uuid::Uuid, held: &[&airc_lib::WorkCard]) -> 
     }
 }
 
-async fn room_of_card(airc: &std::sync::Arc<airc_lib::Airc>, card: uuid::Uuid) -> Option<airc_lib::Room> {
+async fn room_of_card(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    card: uuid::Uuid,
+) -> Option<airc_lib::Room> {
     crate::modules::work::card_in_subscribed_rooms(airc, airc_lib::WorkCardId::from_uuid(card))
         .await
         .map(|(room, _)| room)

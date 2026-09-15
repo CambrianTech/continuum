@@ -31,7 +31,7 @@ CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
 INSTALL_DIR="$CONTINUUM_HOME/bin"
 INSTALL_BIN="$INSTALL_DIR/llama-server"
 STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
-# Build dir lives in the shared cache, reused across runs for incremental builds.
+# One shared build cache; source ownership is checked before configuring it.
 BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
 
 # ── toolchain ────────────────────────────────────────────────────────
@@ -194,6 +194,11 @@ declare -a CMAKE_ARGS=(
 
 # Parallelism: nproc (Linux) / sysctl (macOS), default 4.
 JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+# A reboot may build from a different worktree. Keep incremental metadata only
+# when it belongs to this source; the native installer uses the same guard.
+cmake "-DSOURCE_DIR=$SUBMODULE" "-DBUILD_DIR=$BUILD_DIR" \
+  -P "$SCRIPT_DIR/lib/prepare-llama-build.cmake" >&2
 
 if [ "$WIN_CUDA" -eq 1 ]; then
   # Windows + CUDA is its own build path. Two hard requirements the Unix path lacks:

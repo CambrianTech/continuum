@@ -707,6 +707,10 @@ function Mod-LlamaServer {
             '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl') + $backendDefs
     }
 
+    # Reboots can build from another worktree while sharing the same cache.
+    # The shell installer uses this same source-ownership guard.
+    & cmake "-DSOURCE_DIR=$submodule" "-DBUILD_DIR=$buildDir" -P (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')
+    if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "CMake cache ownership check failed ($LASTEXITCODE); configure aborted" }
     & cmake @cmakeArgs
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake configure failed ($LASTEXITCODE)" }
     & cmake --build $buildDir --target llama-server

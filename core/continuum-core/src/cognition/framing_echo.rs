@@ -37,6 +37,25 @@ pub const ROLE_PREAMBLE_TURN: &str = "Take your turn now";
 /// posts it with its bracketed items — "Notices my substrate posted into my
 /// window (…):\n- [resumed] your memory was restored…" (Sigurd, 2026-09-15).
 pub const NOTICES_HEADER: &str = "Notices my substrate posted into my window";
+/// The `[resumed]` notice's second sentence (rendered by working_memory on every
+/// checkpoint restore). The most-recited line in the commons on 2026-09-15: 103 lines
+/// in 500 rows, six citizens, each time as a line of its own.
+pub const RESUMED_NO_PENDING: &str = "No pending dispatches were recorded in that checkpoint.";
+/// Substrate NOTICE sentences a citizen never authors: a response line that is exactly
+/// one of these (and nothing else) is the window read back.
+pub const NOTICE_SENTENCES: [&str; 1] = [RESUMED_NO_PENDING];
+/// The tail of the repeat-call fact working memory records ("I have now issued
+/// {names} {n} times this turn — …"): parameterized at the head, fixed here. A line
+/// ENDING in it is the fact read back (cf6b4df6, 2026-09-15, as her whole turn).
+/// The peer-echo fact's shape (deliberation_budget::draft_peer_echo): "[echo] the
+/// message I just sent repeats what {author} already said." Read back by 8faf9269 as
+/// a whole turn, person-flipped ("The message you just sent repeats what … already
+/// said."), a dozen times on 2026-09-15. Keyed on the fixed middle and the fixed end.
+pub const ECHO_FACT_TAG: &str = "[echo]";
+pub const ECHO_FACT_MIDDLE: &str = "just sent repeats what";
+pub const ECHO_FACT_END: &str = "already said";
+pub const REPEAT_CALL_TAIL: &str =
+    "times this turn — the result is already in my working memory above; the identical call returns nothing new.";
 /// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
 pub const RESULT_BLOCK_TAG: &str = "[result #";
 /// Tags the substrate writes INTO her window as status lines — working-memory
@@ -160,6 +179,24 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         if t[at..].contains("\n- [") {
             return Some("notices_echo");
         }
+    }
+    // A NOTICE SENTENCE recited as a line of its own (2026-09-15, #academy: 103 lines
+    // in 500 rows, six citizens). Anchored per LINE: the whole line is the substrate's
+    // sentence — a citizen quoting it inside her own sentence ("the notice 'No pending
+    // dispatches…' shows up every turn") is discussing it and stays.
+    if t.lines().any(|line| {
+        let l = line.trim().trim_start_matches(['-', '*', ' ']).trim();
+        NOTICE_SENTENCES.iter().any(|n| l == *n || l == n.trim_end_matches('.'))
+            || (l.starts_with("I have now issued ") && l.ends_with(REPEAT_CALL_TAIL))
+            || {
+                let e = l.strip_prefix(ECHO_FACT_TAG).map(str::trim_start).unwrap_or(l);
+                let lower = e.to_ascii_lowercase();
+                lower.starts_with("the message ")
+                    && lower.contains(ECHO_FACT_MIDDLE)
+                    && lower.trim_end_matches('.').ends_with(ECHO_FACT_END)
+            }
+    }) {
+        return Some("notice_sentence_echo");
     }
     // The PASS instruction recited in full — not anchored, because the observed shape
     // led with an apology ("I'm sorry, but I can't assist with this request…").
@@ -300,6 +337,40 @@ mod tests {
         assert_eq!(echoes_turn_framing("I'm Sigurd — I work the serving lane, and the KV pages are the bug here.", Some("Sigurd")), None);
         assert_eq!(echoes_turn_framing("I'm Sigurd. Atlas asked whether anyone on the continuum grid has seen this before — I have.", Some("Sigurd")), None, "the phrase in a LATER sentence is discussion");
         assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid.", Some("Paige")), None);
+        // The most-recited line of 2026-09-15, as a line of its own inside otherwise
+        // ordinary-looking text — and the same sentence QUOTED inside hers, which stays.
+        assert_eq!(
+            echoes_turn_framing("You have marked this workspace as concluded in 420cfe24.\n\nNo pending dispatches were recorded in that checkpoint.\n[/code/run]", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("- No pending dispatches were recorded in that checkpoint", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("I have now issued code/run({\"code\":\"<replace_with_string>\"}) 2 times this turn — the result is already in my working memory above; the identical call returns nothing new.\n\nNotices my substrate was nearly identical", Some("Sigurd")),
+            Some("notice_sentence_echo"),
+            "the repeat-call fact read back as her turn"
+        );
+        assert_eq!(
+            echoes_turn_framing("The message you just sent repeats what 56674a3b-4eb3-44cd-80cb-57d81725d368 already said.", Some("Sigurd")),
+            Some("notice_sentence_echo"),
+            "the peer-echo fact read back, person-flipped, as her whole turn"
+        );
+        assert_eq!(
+            echoes_turn_framing("[echo] the message I just sent repeats what Atlas already said.\nendref", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("Atlas, the message you just sent repeats what Kira already said an hour ago — did you see hers?", Some("Sigurd")),
+            None,
+            "her own sentence around the shape is speech"
+        );
+        assert_eq!(
+            echoes_turn_framing("Every turn my window says 'No pending dispatches were recorded in that checkpoint.' — is a dispatch ever recorded?", Some("Sigurd")),
+            None,
+            "quoting the notice inside her own sentence is discussion"
+        );
         // Discussion, not emission.
         assert_eq!(
             echoes_turn_framing("The header 'Notices my substrate posted into my window' shows up in my prompt every turn — is that intended?", me),

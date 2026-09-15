@@ -89,6 +89,12 @@ pub struct LaneRecord {
     /// was launched with. `0` is UNKNOWN — see [`Self::context_window`].
     #[serde(default)]
     pub lanes: u32,
+    /// The KV page directory this lane was launched with (`--slot-save-path`) — the
+    /// live-lane inventory the stale-generation sweep protects. `None` for lanes
+    /// recorded before this field existed (their dir is unknown → the sweep stays
+    /// its hand, see `sweep_stale_page_generations`).
+    #[serde(default)]
+    pub page_dir: Option<PathBuf>,
 }
 
 /// The LIVE-role lane left behind by a previous generation of this core, if one
@@ -234,7 +240,7 @@ fn record_path(dir: &Path, pid: u32) -> PathBuf {
 
 /// Write `rec` as JSON to `<pid>.lane`, creating the directory if needed. Pure:
 /// the caller owns the dir so tests never touch the real registry.
-fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
+pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     // A LIVE lane is SINGULAR by nature — one persona lane on the canonical port.
     // Recording a new live lane therefore SUPERSEDES any prior live record, which
@@ -276,7 +282,7 @@ fn clear_live_records_in(dir: &Path) {
 }
 
 /// Remove `<pid>.lane` under `dir` if present. Idempotent.
-fn remove_in(dir: &Path, pid: u32) {
+pub(crate) fn remove_in(dir: &Path, pid: u32) {
     let _ = std::fs::remove_file(record_path(dir, pid));
 }
 
@@ -289,6 +295,46 @@ fn remove_in(dir: &Path, pid: u32) {
 /// job (it owns the never-blind-kill identity check), so this stays a plain read.
 pub fn records() -> Vec<LaneRecord> {
     lanes_dir().map(|d| records_in(&d)).unwrap_or_default() // unwrap_or_default: no home dir ⇒ no registry ⇒ an empty census is the honest answer
+}
+
+/// The census a DESTRUCTIVE decision reads — fail-closed. [`records`] is the right
+/// read for an admission count (an unreadable record is one fewer lane to worry
+/// about); it is the wrong read for a sweep that deletes what it does not find:
+/// a `.lane` file that fails to read or parse is a lane whose page dir the sweep
+/// would then not protect (Astra's review of #4069). Missing directory = `Ok(empty)`
+/// (the normal first-run state); any entry that cannot be read or parsed = `Err`,
+/// and the caller must not delete on it.
+pub fn records_checked() -> std::io::Result<Vec<LaneRecord>> {
+    match lanes_dir() {
+        Some(d) => records_checked_in(&d),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The fail-closed enumeration against an explicit `dir` (see [`records_checked`]).
+pub(crate) fn records_checked_in(dir: &Path) -> std::io::Result<Vec<LaneRecord>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("lane") {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let rec: LaneRecord = serde_json::from_str(&raw).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: {e}", path.display()),
+            )
+        })?;
+        out.push(rec);
+    }
+    Ok(out)
 }
 
 /// The pure enumeration against an explicit `dir`, so tests read a temp registry and
@@ -384,6 +430,31 @@ fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
 mod tests {
     use super::*;
 
+    // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
+    // file that does not parse is a lane the lenient read silently drops — and a sweep
+    // reading that inventory would delete the page dir of a lane it never saw. The
+    // lenient read stays lenient (admission counts); the checked read refuses.
+    #[test]
+    fn a_malformed_record_fails_the_checked_census_and_only_that_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let good = LaneRecord {
+            pid: 1,
+            port: 1,
+            role: LaneRole::Ephemeral,
+            model: "m".into(),
+            context_window: 1,
+            lanes: 1,
+            page_dir: None,
+        };
+        record_in(dir.path(), &good).expect("write");
+        assert_eq!(records_checked_in(dir.path()).expect("clean registry").len(), 1);
+        std::fs::write(dir.path().join("garbage.lane"), "{not json").expect("write");
+        assert_eq!(records_in(dir.path()).len(), 1, "the lenient read drops it");
+        assert!(records_checked_in(dir.path()).is_err(), "the checked read refuses");
+        let missing = dir.path().join("never-made");
+        assert!(records_checked_in(&missing).expect("missing dir is empty, not an error").is_empty());
+    }
+
     /// A unique temp lanes dir per test — NEVER the real `~/.continuum/run/lanes/`,
     /// so a live core's registry is untouched and parallel tests don't collide (#7
     /// isolation rule).
@@ -404,6 +475,7 @@ mod tests {
             // real shape is what production writes, so the fixture matches it.
             context_window: 16_384,
             lanes: 4,
+            page_dir: None,
         }
     }
 
@@ -629,6 +701,7 @@ mod tests {
                         model: "some/model".into(),
                         context_window: 8192,
                         lanes: 1,
+                        page_dir: None,
                     },
                 )
                 .expect("record");
@@ -670,6 +743,7 @@ mod tests {
                     model: "some/model".into(),
                     context_window: 8192,
                     lanes: 1,
+                    page_dir: None,
                 },
             )
             .expect("record");
