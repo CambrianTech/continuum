@@ -466,8 +466,6 @@ fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, ta
     }
 }
 
-/// Total permits installed into each lane semaphore, including held shrink debt.
-
 /// The lane count a sibling gate should boot with before any plan publishes — the same
 /// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
 /// throttle (#56) so both gates start from the ONE number.
