@@ -469,7 +469,10 @@ function Mod-Airc {
     # A fresh box uses AIRC's own supported installer, not a parallel bootstrap.
     $airc = Get-Command airc -ErrorAction SilentlyContinue
     $userBin = Join-Path $env:USERPROFILE '.local\bin'
-    if (-not $airc -and -not (Test-Path (Join-Path $userBin 'airc.exe'))) {
+    $canonicalBin = if ($env:BIN_TARGET) { $env:BIN_TARGET } else { Join-Path $env:USERPROFILE 'AppData\Local\Programs\airc' }
+    $candidates = @((Join-Path $canonicalBin 'airc.exe'), (Join-Path $userBin 'airc.exe'))
+    $installed = if ($airc) { $airc.Source } else { $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+    if (-not $installed) {
         $source = (Get-ManifestModule 'airc').source
         $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
         try {
@@ -477,9 +480,13 @@ function Mod-Airc {
             & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath
             if ($LASTEXITCODE -ne 0) { throw 'AIRC installation failed; the core was not restarted.' }
         } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
-        if (-not (Test-Path (Join-Path $userBin 'airc.exe'))) { throw 'AIRC installer did not produce its expected CLI.' }
+        $installed = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $installed) { throw 'AIRC installer did not produce its configured CLI.' }
     }
-    if (@($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -eq $userBin }).Count -eq 0) { $env:PATH = $userBin + ';' + $env:PATH }
+    # A child installer cannot refresh this process's environment. Preserve the
+    # toolchain additions already made here while exposing its actual bin dir.
+    $aircDirectory = Split-Path $installed
+    if (@($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -eq $aircDirectory }).Count -eq 0) { $env:PATH = $aircDirectory + ';' + $env:PATH }
 }
 
 function Mod-OrtRuntime {
