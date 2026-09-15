@@ -564,7 +564,56 @@ pub fn install_executor(executor: Arc<CommandExecutor>) {
 /// isn't installed yet (tests / early boot) or the turn is gated out. NEVER call
 /// this from an eval/measurement path — only the live `Spoke` completion, so the
 /// training set stays uncontaminated by simulations.
+/// STAGE THE CHAIN EVERY K ACTS, NOT ONLY AT TURN END (card 6de7f57a, 2026-09-15).
+/// Measured: the Intel Mac staged 8 credits an hour from short turns; the M5 staged 0
+/// from 37 acts because a work turn there spans many lane waits and rarely ENDS, and
+/// the end of the turn was the only place the chain was staged. The driver announces
+/// every [`STAGE_EVERY_ACTS`]th act through [`on_act_batch`]; the held-work turn
+/// registers a sink for its persona that stages the chain-so-far as a PARTIAL
+/// submission, each replacing the previous partial; the end-of-turn stage replaces
+/// the last partial. The verdict still stamps at grade time.
+pub const STAGE_EVERY_ACTS: usize = 4;
+
+/// Is `acts` (the turn's act count so far) a point to stage the chain?
+pub fn is_stage_point(acts: usize) -> bool {
+    acts > 0 && acts % STAGE_EVERY_ACTS == 0
+}
+
+pub type ActBatchSink = Arc<dyn Fn(&[(String, Vec<crate::ai::types::ToolCall>)]) + Send + Sync>;
+static ACT_BATCH_SINKS: std::sync::LazyLock<dashmap::DashMap<Uuid, ActBatchSink>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// The held-work turn registers where its acts go while it runs.
+pub fn set_act_batch_sink(persona: Uuid, sink: ActBatchSink) {
+    ACT_BATCH_SINKS.insert(persona, sink);
+}
+pub fn clear_act_batch_sink(persona: Uuid) {
+    ACT_BATCH_SINKS.remove(&persona);
+}
+/// The driver's seam: called at every stage point with the chain so far. No policy
+/// here — a persona with no registered sink stages nothing mid-turn.
+pub fn on_act_batch(persona: Uuid, turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) {
+    if let Some(sink) = ACT_BATCH_SINKS.get(&persona).map(|s| Arc::clone(s.value())) {
+        sink(turn_acts);
+    }
+}
+
 pub fn produce(
+    persona_id: Uuid,
+    persona_name: String,
+    base_model: String,
+    prompt: String,
+    completion: String,
+    credit: Option<CapturedCredit>,
+    generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+) {
+    produce_with_id(persona_id, persona_name, base_model, prompt, completion, credit, generation_receipts, Uuid::new_v4(), None);
+}
+
+/// [`produce`] with the submission id chosen by the caller and, for a re-stage of the
+/// same turn, the partial submission it REPLACES (deleted in the same batch).
+#[allow(clippy::too_many_arguments)]
+pub fn produce_with_id(
     persona_id: Uuid,
     persona_name: String,
     base_model: String,
@@ -576,6 +625,8 @@ pub fn produce(
     credit: Option<CapturedCredit>,
     // Every generation this turn dispatched, in order, faults included.
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+    submission_id: Uuid,
+    replaces: Option<Uuid>,
 ) {
     let Some(executor) = EXECUTOR.cloned() else {
         // Expected during tests / before boot installs the executor. Named, not
@@ -615,11 +666,14 @@ pub fn produce(
                 generation_receipts,
                 prompt,
                 completion,
+                submission_id,
+                replaces,
             )
             .await
             {
                 Ok(submission_id) => crate::probe!(
                     class = "training.credit.staged",
+                    replaced_partial = replaces.is_some(),
                     persona = %persona_name,
                     card = %credit.card_id,
                     submission = %submission_id,
@@ -914,6 +968,7 @@ async fn submit_plan(
 /// The whole write is ONE `data/batch`, which is atomic on both adapters — a parent
 /// surviving its rolled-back children would be a credit record asserting provenance
 /// it cannot produce.
+#[allow(clippy::too_many_arguments)]
 async fn stage_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
@@ -921,11 +976,14 @@ async fn stage_credit<T: Transport>(
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     prompt: String,
     completion: String,
+    submission_id: Uuid,
+    replaces: Option<Uuid>,
 ) -> Result<Uuid, ClientError> {
     // Her OWN store, not the shared main DB: a citizen's staged credit is her
     // record of her own turns.
     let handle = format!("@persona:{persona_name}");
-    let submission_id = Uuid::new_v4();
+    // `submission_id` is the caller's: a re-stage of the same turn keeps replacing its
+    // previous partial (deleted first, children cascade by the FK) so a turn is one row.
 
     for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
         let result = conn
@@ -963,12 +1021,21 @@ async fn stage_credit<T: Transport>(
         staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
     };
 
-    let mut operations = vec![BatchOperation {
+    let mut operations = Vec::new();
+    if let Some(prev) = replaces {
+        operations.push(BatchOperation {
+            operation_type: BatchOperationType::Delete,
+            collection: StagedCredit::COLLECTION.to_string(),
+            id: Some(prev.to_string()),
+            data: None,
+        });
+    }
+    operations.push(BatchOperation {
         operation_type: BatchOperationType::Create,
         collection: StagedCredit::COLLECTION.to_string(),
         id: Some(submission_id.to_string()),
         data: Some(serde_json::to_value(&parent)?), // ORM batch boundary: BatchOperation.data is Value by contract
-    }];
+    });
     // One correlation row per generation, faults included: the receipts themselves
     // ride on the parent as an opaque JSON column (the ORM has no collection
     // FieldType), so these child rows ARE the index that column cannot carry.
@@ -1203,6 +1270,27 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the stage points a long work turn hits (every 4th act), and
+    // that a registered sink sees the chain-so-far while an unregistered persona
+    // stages nothing mid-turn.
+    #[test]
+    fn the_chain_is_staged_every_fourth_act_through_the_registered_sink() {
+        assert!(!is_stage_point(0) && !is_stage_point(1) && !is_stage_point(3));
+        assert!(is_stage_point(4) && is_stage_point(8));
+        let persona = Uuid::from_u128(0x5eed);
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let s2 = Arc::clone(&seen);
+        set_act_batch_sink(persona, Arc::new(move |acts| { s2.store(acts.len(), std::sync::atomic::Ordering::SeqCst); }));
+        let chain: Vec<(String, Vec<crate::ai::types::ToolCall>)> = (0..4).map(|i| (format!("act {i}"), Vec::new())).collect();
+        on_act_batch(persona, &chain);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4);
+        on_act_batch(Uuid::from_u128(0x9999), &chain);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4, "another persona's acts never reach this sink");
+        clear_act_batch_sink(persona);
+        on_act_batch(persona, &chain[..2]);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 4, "a cleared sink is silent");
+    }
 
     // what this catches: card 3eaabbc6 — a successful transport can carry a
     // refused submit; absent/malformed receipts must never look like acceptance.
@@ -1829,6 +1917,8 @@ mod tests {
             vec![receipt("req-a"), receipt("req-b")],
             "prompt".to_string(),
             "completion".to_string(),
+            Uuid::new_v4(),
+            None,
         )
         .await;
         let submission = ok.expect("two DISTINCT receipts stage cleanly");
@@ -1843,6 +1933,8 @@ mod tests {
             vec![receipt("req-dup"), receipt("req-dup")],
             "prompt".to_string(),
             "completion".to_string(),
+            Uuid::new_v4(),
+            None,
         )
         .await;
         let err = rolled_back

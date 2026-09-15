@@ -395,6 +395,14 @@ pub(crate) async fn ask_the_act_question(
                                                 &ws,
                                             ),
                                         );
+                                        // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
+                                        // tests that grade her are not in the checkout.
+                                        if let Some(instance) = ws.file_name().and_then(|n| n.to_str()) {
+                                            body.working_memory.pin_fact(
+                                                "grading",
+                                                &crate::persona::instance_env_fact::grading_fact(instance),
+                                            );
+                                        }
                                         // THE LEDGER, as the fact her turn opens with: the
                                         // saved state of the thought — hers from the last
                                         // turn, the previous holder's, or the owner's for a
@@ -441,6 +449,42 @@ pub(crate) async fn ask_the_act_question(
                         }
                         None => None,
                     };
+                    // Card 6de7f57a: while this turn runs, every 4th act stages the
+                    // chain-so-far against the held card (a partial that replaces the
+                    // previous one); the end-of-turn stage below replaces the last.
+                    let partial_submission: std::sync::Arc<std::sync::Mutex<Option<uuid::Uuid>>> =
+                        std::sync::Arc::new(std::sync::Mutex::new(None));
+                    let sink_persona = ctx.identity.peer_id.as_uuid();
+                    if let Some(card) = held.first() {
+                        let credit = crate::persona::training_producer::CapturedCredit::from_selected_card(card);
+                        let (name, model, prompt) = (
+                            ctx.identity.agent_name.clone(),
+                            ctx.profile.model_id.clone(),
+                            work_context.clone(),
+                        );
+                        let slot = std::sync::Arc::clone(&partial_submission);
+                        crate::persona::training_producer::set_act_batch_sink(
+                            sink_persona,
+                            std::sync::Arc::new(move |acts| {
+                                let new_id = uuid::Uuid::new_v4();
+                                let prev = slot
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned slot still holds the last id; bookkeeping only
+                                    .replace(new_id);
+                                crate::persona::training_producer::produce_with_id(
+                                    sink_persona,
+                                    name.clone(),
+                                    model.clone(),
+                                    prompt.clone(),
+                                    crate::persona::training_producer::acted_chain(acts),
+                                    Some(credit.clone()),
+                                    Vec::new(),
+                                    new_id,
+                                    prev,
+                                );
+                            }),
+                        );
+                    }
                     let work = crate::cognition::act_observe::drive_to_settle_with_input(
                         &cycle,
                         burst,
@@ -482,6 +526,11 @@ pub(crate) async fn ask_the_act_question(
                     // in order, staged against the held card whatever the turn's final step
                     // was — acts run mid-turn, so inspecting only the last step staged
                     // nothing (24 holder acts, 0 staged). The card's verdict stamps the chain.
+                    crate::persona::training_producer::clear_act_batch_sink(sink_persona);
+                    let last_partial = partial_submission
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned slot still holds the last id; bookkeeping only
+                        .take();
                     let turn_acts = work.turn_acts.clone();
                     let (work_step, _, work_generation_receipts) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
@@ -494,7 +543,7 @@ pub(crate) async fn ask_the_act_question(
                     );
                     if !turn_acts.is_empty() {
                         if let Some(card) = held.first() {
-                            crate::persona::training_producer::produce(
+                            crate::persona::training_producer::produce_with_id(
                                 ctx.identity.peer_id.as_uuid(),
                                 ctx.identity.agent_name.clone(),
                                 ctx.profile.model_id.clone(),
@@ -502,6 +551,8 @@ pub(crate) async fn ask_the_act_question(
                                 crate::persona::training_producer::acted_chain(&turn_acts),
                                 Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
                                 work_generation_receipts.clone(),
+                                uuid::Uuid::new_v4(),
+                                last_partial,
                             );
                         }
                     }

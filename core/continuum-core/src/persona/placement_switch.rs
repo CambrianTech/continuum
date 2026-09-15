@@ -21,6 +21,14 @@
 //! breaker warm is the admission; her next real turn is the proof, and if it dies at
 //! the deadline three times the breaker trips and she falls home again after the
 //! cooldown. Hysteresis: one move per persona per [`MOVE_COOLDOWN_MS`].
+//!
+//! STAGE B (2026-09-15, Joel via Astra: "placement must work automatically through
+//! the airc design, not manual binding IDs"): EVERY persona runs on a switch, Home
+//! first. Once per grid tick the pass reads the peers' beacons (what each serves, its
+//! lanes, its residents) and, when this node has more minds than lanes, moves the
+//! least-served minds onto a peer's free lanes whose served model ranks at least as
+//! high ([`choose_offloads`], pure). The move is a bound remote lane + a persisted
+//! override, so a reboot keeps it; the fall-home/return rule above then owns it.
 
 use crate::ai::adapter::{
     AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, InferenceDevice,
@@ -33,6 +41,9 @@ use crate::ai::types::{
 use crate::inference::airc_remote::AircRemoteInferenceAdapter;
 use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::supervisor::PersonaAdapterFactory;
+use crate::persona::home::PersonaHome;
+use crate::persona::model_override::PersonaModelOverride;
+use airc_lib::Airc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -114,16 +125,27 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
 pub struct PlacementSwitch {
     persona_id: Uuid,
     persona_name: String,
-    peer: Uuid,
-    remote: Arc<AircRemoteInferenceAdapter>,
+    /// The remote seat, when one is bound (an override at build, or an offload).
+    peer: std::sync::RwLock<Option<Uuid>>,
+    remote: std::sync::RwLock<Option<Arc<AircRemoteInferenceAdapter>>>,
     local: tokio::sync::OnceCell<Option<Arc<dyn AIProviderAdapter>>>,
     local_factory: Arc<dyn PersonaAdapterFactory>,
     profile: PersonaInferenceProfile,
+    /// The wire a remote lane rides; absent = this node cannot offload (tests, no airc).
+    airc: Option<Arc<tokio::sync::OnceCell<Arc<Airc>>>>,
+    /// Her home dir, for persisting an offload as her override.
+    home: Option<PersonaHome>,
     seat: AtomicU8,
     moved_at_ms: AtomicU64,
+    /// Fixed strings the adapter trait hands out by reference.
+    provider_label: String,
+    name_label: String,
+    home_model: String,
 }
 
 impl PlacementSwitch {
+    /// A switch born on a REMOTE seat (her durable override named a peer at build).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         persona_id: Uuid,
         persona_name: String,
@@ -131,16 +153,45 @@ impl PlacementSwitch {
         remote: Arc<AircRemoteInferenceAdapter>,
         local_factory: Arc<dyn PersonaAdapterFactory>,
         profile: PersonaInferenceProfile,
+        airc: Option<Arc<tokio::sync::OnceCell<Arc<Airc>>>>,
+        home: Option<PersonaHome>,
     ) -> Self {
+        let mut me = Self::home(persona_id, persona_name, None, local_factory, profile, airc, home);
+        *me.peer.get_mut().unwrap_or_else(|p| p.into_inner()) = Some(peer); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        *me.remote.get_mut().unwrap_or_else(|p| p.into_inner()) = Some(remote); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        me.seat = AtomicU8::new(Seat::Remote as u8);
+        me
+    }
+
+    /// A switch born at HOME — every persona gets one (stage B). `local` = her local
+    /// adapter when already built; `None` = built on first need from the factory.
+    pub fn home(
+        persona_id: Uuid,
+        persona_name: String,
+        local: Option<Arc<dyn AIProviderAdapter>>,
+        local_factory: Arc<dyn PersonaAdapterFactory>,
+        profile: PersonaInferenceProfile,
+        airc: Option<Arc<tokio::sync::OnceCell<Arc<Airc>>>>,
+        home: Option<PersonaHome>,
+    ) -> Self {
+        let cell = tokio::sync::OnceCell::new();
+        if let Some(l) = local {
+            let _ = cell.set(Some(l));
+        }
         Self {
             persona_id,
+            provider_label: "placement-switch".to_string(),
+            name_label: format!("placement switch for {persona_name}"),
+            home_model: profile.model_id.clone(),
             persona_name,
-            peer,
-            remote,
-            local: tokio::sync::OnceCell::new(),
+            peer: std::sync::RwLock::new(None),
+            remote: std::sync::RwLock::new(None),
+            local: cell,
             local_factory,
             profile,
-            seat: AtomicU8::new(Seat::Remote as u8),
+            airc,
+            home,
+            seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
         }
     }
@@ -148,8 +199,14 @@ impl PlacementSwitch {
     pub fn seat(&self) -> Seat {
         if self.seat.load(Ordering::Relaxed) == Seat::Home as u8 { Seat::Home } else { Seat::Remote }
     }
-    pub fn peer(&self) -> Uuid {
-        self.peer
+    pub fn peer(&self) -> Option<Uuid> {
+        *self.peer.read().unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+    }
+    pub fn persona_id(&self) -> Uuid {
+        self.persona_id
+    }
+    fn remote_adapter(&self) -> Option<Arc<AircRemoteInferenceAdapter>> {
+        self.remote.read().unwrap_or_else(|p| p.into_inner()).clone() // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
     }
     pub fn persona_name(&self) -> &str {
         &self.persona_name
@@ -158,7 +215,38 @@ impl PlacementSwitch {
         self.moved_at_ms.load(Ordering::Relaxed)
     }
     pub fn lane_cold(&self) -> bool {
-        self.remote.is_cold()
+        self.remote_adapter().map(|r| r.is_cold()).unwrap_or(false) // JUSTIFIED unwrap_or: no remote lane = nothing to be cold
+    }
+
+    /// Bind a remote lane on `peer` serving `model` and move there (stage B). Persists
+    /// the move as her override so a reboot keeps it. Fails loudly without a wire.
+    pub fn go_remote(&self, peer: Uuid, model: &str, now_ms: u64) -> Result<(), String> {
+        let airc = self
+            .airc
+            .as_ref()
+            .and_then(|c| c.get().cloned())
+            .ok_or_else(|| "no airc handle on this node — cannot bind a remote lane".to_string())?;
+        let transport = crate::inference::airc_remote::AircLiveTransport::new(airc, peer);
+        let adapter = Arc::new(
+            AircRemoteInferenceAdapter::new(transport)
+                .with_target_peer(peer.to_string())
+                .with_model(model.to_string()),
+        );
+        *self.remote.write().unwrap_or_else(|p| p.into_inner()) = Some(adapter); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        *self.peer.write().unwrap_or_else(|p| p.into_inner()) = Some(peer); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        self.set_seat(Seat::Remote, now_ms);
+        if let Some(home) = &self.home {
+            let over = PersonaModelOverride::new_remote(model, Some("placement:fleet".to_string()), now_ms, &peer.to_string());
+            if let Err(e) = over.write(home) {
+                crate::probe!(
+                    class = "persona.placement.override_unpersisted",
+                    persona = %self.persona_name,
+                    error = %e,
+                    "offload is live this session but not recorded — a reboot brings her home"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Build (once) or fetch her home adapter. `None` = this node cannot host her.
@@ -187,14 +275,14 @@ impl PlacementSwitch {
         self.local().await.is_some()
     }
 
-    fn current(&self) -> &dyn AIProviderAdapter {
+    fn current(&self) -> Arc<dyn AIProviderAdapter> {
+        let home = || self.local.get().and_then(|l| l.clone());
+        let remote = || self.remote_adapter().map(|r| r as Arc<dyn AIProviderAdapter>);
         match self.seat() {
-            Seat::Home => match self.local.get().and_then(|l| l.as_ref()) {
-                Some(l) => l.as_ref(),
-                None => self.remote.as_ref(),
-            },
-            Seat::Remote => self.remote.as_ref(),
+            Seat::Home => home().or_else(remote),
+            Seat::Remote => remote().or_else(home),
         }
+        .unwrap_or_else(|| Arc::new(NoSeat(self.persona_name.clone()))) // JUSTIFIED unwrap_or_else: no seat at all answers by NAME on every generation, never silently
     }
 
     fn set_seat(&self, seat: Seat, now_ms: u64) {
@@ -211,7 +299,8 @@ impl PlacementSwitch {
                 crate::probe!(
                     class = "persona.placement.parked",
                     persona = %self.persona_name,
-                    peer = %self.peer,
+                    peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
+
                     reason = *reason,
                     "her remote seat is dark and this node has no lane for her — parked, not downgraded"
                 );
@@ -225,13 +314,16 @@ impl PlacementSwitch {
                 crate::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
-                    peer = %self.peer,
+                    peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
+
                     reason = *reason,
                     "her remote seat went dark — her brain runs on this node until the seat beacons again"
                 );
                 Some(format!(
                     "[placement] {} fell home from {} ({}) — runs here until the seat beacons again",
-                    self.persona_name, self.peer, reason
+                    self.persona_name,
+                    self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: line text only
+                    reason
                 ))
             }
             PlacementMove::ReturnRemote => {
@@ -239,25 +331,47 @@ impl PlacementSwitch {
                 crate::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
-                    peer = %self.peer,
+                    peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
+
                     "her remote seat is beaconing again — her brain goes back off-box; her next turn is the proof"
                 );
                 Some(format!(
                     "[placement] {} returned to {} — the seat beacons again; her next turn is the proof",
-                    self.persona_name, self.peer
+                    self.persona_name,
+                    self.peer().map(|p| p.to_string()).unwrap_or_default() // JUSTIFIED unwrap_or_default: line text only
                 ))
             }
         }
     }
 }
 
+/// The adapter a switch answers with when it has NEITHER seat yet (a home adapter
+/// that could not be built and no remote bound). Every generation fails by name.
+struct NoSeat(String);
+
+#[async_trait]
+impl AIProviderAdapter for NoSeat {
+    fn provider_id(&self) -> &str {
+        "placement-switch/no-seat"
+    }
+    fn name(&self) -> &str {
+        "no seat"
+    }
+    fn default_model(&self) -> &str {
+        ""
+    }
+    async fn generate_text(&self, _request: TextGenerationRequest) -> Result<TextGenerationResponse, String> {
+        Err(format!("{}: no seat — her home adapter could not be built and no remote lane is bound", self.0))
+    }
+}
+
 #[async_trait]
 impl AIProviderAdapter for PlacementSwitch {
     fn provider_id(&self) -> &str {
-        self.current().provider_id()
+        &self.provider_label
     }
     fn name(&self) -> &str {
-        self.current().name()
+        &self.name_label
     }
     fn capabilities(&self) -> AdapterCapabilities {
         self.current().capabilities()
@@ -271,8 +385,9 @@ impl AIProviderAdapter for PlacementSwitch {
     fn live_served_window(&self) -> Option<u32> {
         self.current().live_served_window()
     }
+    /// Her home model: the request carries the lane's model on the wire when remote.
     fn default_model(&self) -> &str {
-        self.current().default_model()
+        &self.home_model
     }
     fn served_model_ids(&self) -> Vec<String> {
         self.current().served_model_ids()
@@ -345,22 +460,92 @@ pub fn switches() -> Vec<Arc<PlacementSwitch>> {
     SWITCHES.iter().map(|r| Arc::clone(r.value())).collect()
 }
 
-/// One pass: read beacon ages, decide per switch, apply, return the org-room lines.
-/// Called from the grid module's tick (60 s) — no task of its own.
-pub async fn follow_the_fleet(now_ms: u64) -> Vec<String> {
-    let heard: std::collections::HashMap<Uuid, u64> = crate::capacity::gossip::global_ledger()
-        .heard_offers_with_age()
-        .into_iter()
-        .map(|(peer, _offer, heard_at_ms)| (peer, now_ms.saturating_sub(heard_at_ms)))
-        .collect();
+/// What a peer's beacon says it can host (stage B input, from `CapacityOffer`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerOffer {
+    pub peer: Uuid,
+    pub served_model: Option<String>,
+    pub lanes: u32,
+    pub residents: u32,
+    pub beacon_age_ms: u64,
+}
+
+/// This node's own shape for the chooser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalShape {
+    pub resident: u32,
+    pub lanes: u32,
+    /// Measured capability of the local served model, or the planner's unmeasured proxy cap.
+    pub rank: u8,
+}
+
+/// The pure chooser: which minds move to which peer. `candidates` = minds at Home with
+/// their lane grants this hour (fewest first = most starved). A node with more minds than
+/// lanes borrows a fresh peer's FREE lanes (lanes − its residents) when that peer's served
+/// model ranks at least as high; never more minds than the node is over by.
+pub fn choose_offloads(
+    local: LocalShape,
+    peers: &[PeerOffer],
+    rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
+    candidates: &[(Uuid, u64)],
+) -> Vec<(Uuid, Uuid, String)> {
+    let mut over = local.resident.saturating_sub(local.lanes) as usize;
+    if over == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut minds: Vec<(Uuid, u64)> = candidates.to_vec();
+    minds.sort_by_key(|(_, grants)| *grants);
+    let mut next = minds.into_iter();
+    let mut out = Vec::new();
+    for p in peers {
+        if over == 0 {
+            break;
+        }
+        if p.beacon_age_ms > REMOTE_SEAT_FRESH_MS {
+            continue;
+        }
+        let Some(model) = p.served_model.as_deref() else { continue };
+        let Some(rank) = rank_of(model) else { continue };
+        if rank < local.rank {
+            continue;
+        }
+        let mut free = p.lanes.saturating_sub(p.residents) as usize;
+        while free > 0 && over > 0 {
+            let Some((mind, _)) = next.next() else { return out };
+            out.push((mind, p.peer, model.to_string()));
+            free -= 1;
+            over -= 1;
+        }
+    }
+    out
+}
+
+/// One pass: read beacon ages, decide per switch (fall home / return), then offload a
+/// starved node's tail minds onto peers' free lanes. Returns the org-room lines. Called
+/// from the grid module's tick (60 s) — no task of its own.
+pub async fn follow_the_fleet(
+    now_ms: u64,
+    peers: Vec<PeerOffer>,
+    local: LocalShape,
+    rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
+) -> Vec<String> {
+    let heard: std::collections::HashMap<Uuid, u64> =
+        peers.iter().map(|p| (p.peer, p.beacon_age_ms)).collect();
     let mut lines = Vec::new();
+    let mut at_home: Vec<(Uuid, u64)> = Vec::new();
     for sw in switches() {
+        let Some(peer) = sw.peer() else {
+            // Home-born, never bound: a candidate for an offload when eligible.
+            if now_ms.saturating_sub(sw.moved_at_ms()) >= MOVE_COOLDOWN_MS {
+                at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
+            }
+            continue;
+        };
         let inputs = PlacementInputs {
             seat: sw.seat(),
-            beacon_age_ms: heard.get(&sw.peer()).copied(),
+            beacon_age_ms: heard.get(&peer).copied(),
             lane_cold: sw.lane_cold(),
             local_available: match sw.seat() {
-                // Only ask (and build) when a fall-home is actually on the table.
                 Seat::Remote => sw.local_available().await,
                 Seat::Home => true,
             },
@@ -369,6 +554,38 @@ pub async fn follow_the_fleet(now_ms: u64) -> Vec<String> {
         let mv = decide(inputs);
         if let Some(line) = sw.apply(&mv, now_ms).await {
             lines.push(line);
+        }
+    }
+    let moves = choose_offloads(local, &peers, rank_of, &at_home);
+    if !moves.is_empty() {
+        let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
+            switches().into_iter().map(|s| (s.persona_id(), s)).collect();
+        for (mind, peer, model) in moves {
+            let Some(sw) = by_id.get(&mind) else { continue };
+            match sw.go_remote(peer, &model, now_ms) {
+                Ok(()) => {
+                    crate::probe!(
+                        class = "persona.placement.offloaded",
+                        persona = %sw.persona_name(),
+                        peer = %peer,
+                        model = %model,
+                        local_resident = local.resident,
+                        local_lanes = local.lanes,
+                        "more minds than lanes here — her brain moved to a peer's free lane"
+                    );
+                    lines.push(format!(
+                        "[placement] {} → {} ({}): this node has {} minds on {} lanes; the peer had a lane free",
+                        sw.persona_name(), peer, model, local.resident, local.lanes
+                    ));
+                }
+                Err(e) => crate::probe!(
+                    class = "persona.placement.offload_failed",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    error = %e,
+                    "could not bind the remote lane — she stays home"
+                ),
+            }
         }
     }
     lines
@@ -411,6 +628,29 @@ mod tests {
             decide(inputs(Seat::Remote, None, false, false, MOVE_COOLDOWN_MS)),
             PlacementMove::Park { reason: "seat silent: no capacity beacon" }
         );
+    }
+
+    // what this catches: the pooled-demand rule — 16 minds on 7 lanes borrow a fresh
+    // peer's two free lanes (27B measured 42 ≥ local proxy 40) for the two least-served
+    // minds; a stale beacon, a lower-ranked model, or a full peer lends nothing; and a
+    // node with lanes to spare moves nobody.
+    #[test]
+    fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
+        let gpu = Uuid::from_u128(0x5090);
+        let rank = |m: &str| -> Option<u8> { match m { "qwen-27b" => Some(42), "tiny" => Some(10), _ => None } };
+        let peers = vec![
+            PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000 },
+            PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000 },
+            PeerOffer { peer: Uuid::from_u128(2), served_model: Some("qwen-27b".into()), lanes: 2, residents: 2, beacon_age_ms: 5_000 },
+            PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1 },
+        ];
+        let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
+        let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40 }, &peers, &rank, &minds);
+        assert_eq!(moves.len(), 2, "two free lanes on the only eligible peer: {moves:?}");
+        assert!(moves.iter().all(|(_, p, m)| *p == gpu && m == "qwen-27b"));
+        let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
+        assert_eq!(moves[0].0, least, "the least-served mind goes first");
+        assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40 }, &peers, &rank, &minds).is_empty());
     }
 
     // what this catches: a flapping tower cannot move her twice inside the cooldown, and

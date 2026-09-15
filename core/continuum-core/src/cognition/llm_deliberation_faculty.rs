@@ -1064,11 +1064,26 @@ impl LlmDeliberationFaculty {
             // the park held no lane, so abandoning it costs nothing, and the loop
             // head drains the line next (`cognition::directed_pending`). A `None`
             // here is her CHOICE to answer first, named by the probe — not a fault.
+            // A held card outranks a musing turn for the non-directed budget
+            // (`LanePriority::Work`): the lane goes to the mind that will write.
             let _lane = if ws.attention.requires_priority() {
-                crate::cognition::resource_admission::acquire_serving_lane(true).await
+                crate::cognition::resource_admission::acquire_serving_lane(
+                    crate::cognition::resource_admission::LanePriority::Directed,
+                )
+                .await
             } else {
+                // The faculty's own work-turn key (`is_work_turn`: the workspace is
+                // deliverable and her hands are offered — the same key that caps act
+                // output) OR a held card in the window. #4060's receipt on 5333: 0 Work
+                // grants in 20 min with 14 held cards — the rendered block alone is not
+                // a reliable key at the gate; the turn shape is.
+                let priority = if self.is_work_turn(ws) || Self::holds_work_card(ws) {
+                    crate::cognition::resource_admission::LanePriority::Work
+                } else {
+                    crate::cognition::resource_admission::LanePriority::Ambient
+                };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(false) => lane,
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority) => lane,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
                             class = "delib.gate.yielded_to_directed",
@@ -1088,7 +1103,7 @@ impl LlmDeliberationFaculty {
                 persona = %self.persona_name,
                 "lane admission granted — prefill slot next"
             );
-            crate::modules::citizen_health::note_lane_granted();
+            crate::modules::citizen_health::note_lane_granted_to(self.persona_id);
             // #56 prefill throttle: under live external GPU pressure (a game, the browser)
             // fewer than the served lane count may PREFILL concurrently — the instant valve
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
@@ -1866,6 +1881,17 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && !c.trailing)
             .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
             .any(|c| crate::persona::active_work_source::renders_held_in_progress(&c.content))
+    }
+
+    /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
+    /// gate's key for `LanePriority::Work` — wider than `holds_live_work`, which keys
+    /// the working-presence contract on InProgress only.
+    fn holds_work_card(ws: &Workspace) -> bool {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
+            .any(|c| crate::persona::active_work_source::renders_held_card(&c.content))
     }
 
     /// The EXACT prompt this faculty sends the model this tick — the system

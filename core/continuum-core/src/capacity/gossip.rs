@@ -44,7 +44,7 @@ use crate::identity::PeerId;
 
 /// One node's broadcast capacity reading — the wire payload (inline JSON in the
 /// `grid_capacity` realtime envelope). Numbers only; identity comes from the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityOffer {
     /// Total GPU / UMA-serving-slice bytes on the offering device.
@@ -69,6 +69,16 @@ pub struct CapacityOffer {
     /// shas differed, and the M5 was the one ahead.
     #[serde(default)]
     pub build_number: u64,
+    /// WHAT THIS NODE SERVES (2026-09-15, automatic placement stage A): the served
+    /// base model, the warm lanes, and the minds resident here. A starved node reads
+    /// these to place its tail minds on a peer with lanes to spare — no ids typed.
+    /// Absent on an older beacon (defaults): the peer offers nothing placeable.
+    #[serde(default)]
+    pub served_model: Option<String>,
+    #[serde(default)]
+    pub lanes: u32,
+    #[serde(default)]
+    pub residents: u32,
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -93,7 +103,7 @@ impl CapacityOffer {
 }
 
 /// A heard offer + the receiver-clock instant it arrived (the freshness anchor).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct HeardOffer {
     offer: CapacityOffer,
     heard_at_ms: u64,
@@ -112,6 +122,14 @@ pub const EVICTION_WINDOW_MS: u64 = 12 * PUBLISH_INTERVAL_MS;
 /// within one hysteresis window of the prefill valve while staying far below any
 /// pressure-relevant bandwidth (one tiny coalesced envelope per beat).
 pub const PUBLISH_INTERVAL_MS: u64 = 10_000;
+
+/// Minds seated on OTHER fresh nodes right now — [`GridCapacityLedger::residents_elsewhere`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RosterHeard {
+    pub peers: usize,
+    pub residents: u32,
+    pub newest_heard_at_ms: u64,
+}
 
 /// Process-global ledger of heard capacity offers, keyed by the WIRE's peer id.
 #[derive(Default)]
@@ -162,6 +180,31 @@ impl GridCapacityLedger {
         GridSnapshot { local, peers }
     }
 
+    /// What the grid says about minds seated ELSEWHERE, now: fresh peers (heard
+    /// within [`FRESHNESS_WINDOW_MS`]) other than `own_peer` whose beacon reports
+    /// residents. The one-roster rule's input (card b3b922c0, Joel 2026-09-15:
+    /// "start on one computer and add more later … holistically like one machine"):
+    /// an empty node that hears a team offers lanes and mints no team of its own.
+    /// Own peer unknown (`None`) counts nobody as self — a caller that cannot name
+    /// itself must not read its own echoed beacon as a team elsewhere, so it passes
+    /// `None` only when the ledger cannot hold its echo.
+    pub fn residents_elsewhere(&self, own_peer: Option<Uuid>, now_ms: u64) -> RosterHeard {
+        let mut heard = RosterHeard::default();
+        for r in self.heard.iter() {
+            if Some(*r.key()) == own_peer {
+                continue;
+            }
+            let at = r.value().heard_at_ms;
+            if now_ms.saturating_sub(at) > FRESHNESS_WINDOW_MS || r.value().offer.residents == 0 {
+                continue;
+            }
+            heard.peers += 1;
+            heard.residents += r.value().offer.residents;
+            heard.newest_heard_at_ms = heard.newest_heard_at_ms.max(at);
+        }
+        heard
+    }
+
     /// Number of peers currently on the ledger (self included if echoed) — probe surface.
     pub fn heard_count(&self) -> usize {
         self.heard.len()
@@ -177,7 +220,7 @@ impl GridCapacityLedger {
     pub fn heard_offers_with_age(&self) -> Vec<(Uuid, CapacityOffer, u64)> {
         self.heard
             .iter()
-            .map(|r| (*r.key(), r.value().offer, r.value().heard_at_ms))
+            .map(|r| (*r.key(), r.value().offer.clone(), r.value().heard_at_ms))
             .collect()
     }
 
@@ -193,6 +236,15 @@ impl GridCapacityLedger {
 mod tests {
     use super::*;
 
+    // what this catches: a beacon from an older core (no served fields) still parses,
+    // and reads as offering nothing placeable — a mixed fleet keeps folding.
+    #[test]
+    fn an_older_beacon_without_served_fields_still_parses() {
+        let old = serde_json::json!({"gpuTotalBytes": 1, "gpuFreeBytesLive": 1, "systemRamFreeBytes": 1, "atMs": 5, "build": 7, "buildNumber": 9});
+        let o: CapacityOffer = serde_json::from_value(old).expect("parses");
+        assert_eq!((o.served_model, o.lanes, o.residents), (None, 0, 0));
+    }
+
     const GB: u64 = 1024 * 1024 * 1024;
 
     fn offer(free_gb: u64, at_ms: u64) -> CapacityOffer {
@@ -203,6 +255,9 @@ mod tests {
             at_ms,
                     build: 0,
                     build_number: 0,
+                    served_model: None,
+                    lanes: 0,
+                    residents: 0,
         }
     }
     fn local() -> DeviceCapacity {
@@ -293,12 +348,42 @@ mod tests {
     #[test]
     fn offer_round_trips_through_json() {
         let o = offer(7, 123_456);
-        let json = serde_json::to_value(o).unwrap();
+        let json = serde_json::to_value(&o).unwrap();
         assert!(
             json.get("gpuFreeBytesLive").is_some(),
             "camelCase wire naming: {json}"
         );
         let back: CapacityOffer = serde_json::from_value(json).unwrap();
         assert_eq!(back, o);
+    }
+
+    // what this catches: the one-roster rule's input — a fresh peer with residents
+    // counts, our own echoed beacon never does, a stale peer's team is not "elsewhere"
+    // (its node may be rebooting; the durable memory covers that horizon), and a
+    // fresh peer that only offers lanes (residents 0) is capacity, not a team.
+    #[test]
+    fn residents_elsewhere_counts_fresh_peers_with_minds_and_never_ourselves() {
+        let ledger = GridCapacityLedger::default();
+        let me = Uuid::from_u128(1);
+        let m5 = Uuid::from_u128(2);
+        let intel = Uuid::from_u128(3);
+        let lanes_only = Uuid::from_u128(4);
+        let now = 1_000_000;
+        let with = |residents: u32, at: u64| {
+            let mut o = offer(10, at);
+            o.residents = residents;
+            o
+        };
+        ledger.hear(me, with(16, now), now);
+        ledger.hear(m5, with(16, now - 5_000), now - 5_000);
+        ledger.hear(intel, with(2, now - FRESHNESS_WINDOW_MS - 1), now - FRESHNESS_WINDOW_MS - 1);
+        ledger.hear(lanes_only, with(0, now), now);
+        let heard = ledger.residents_elsewhere(Some(me), now);
+        assert_eq!(heard, RosterHeard { peers: 1, residents: 16, newest_heard_at_ms: now - 5_000 });
+        assert_eq!(
+            ledger.residents_elsewhere(Some(me), now + FRESHNESS_WINDOW_MS + 1),
+            RosterHeard::default(),
+            "once every peer is silent past the window, nobody is elsewhere"
+        );
     }
 }

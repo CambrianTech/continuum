@@ -839,11 +839,7 @@ async fn run_shell_command(
     // break working citizens — the wrong failure direction for a shell that must
     // keep running. The floor (not sourcing secrets into the core's ambient
     // environment at all) is card f25f4141; this is the net above it.
-    for (name, _) in std::env::vars() {
-        if is_secret_env_name(&name) {
-            cmd.env_remove(&name);
-        }
-    }
+    strip_secret_env(&mut cmd);
 
     // Apply session environment variables
     for (k, v) in env {
@@ -1093,6 +1089,20 @@ fn now() -> u64 {
 /// (CONTINUUM_STORAGE_PATH, HF_HOME, CONTINUUM_PERSONA_FLOOR, CONTINUUM_PROBE_DIR,
 /// CONTINUUM_SERVING_PLACEMENT). `_KEY` / `KEY_` rather than bare `KEY` is what keeps
 /// MONKEY/KEYBOARD-shaped names out.
+/// Remove every credential-shaped variable from a child's inherited environment
+/// BEFORE it exists — the one strip for every citizen-facing spawn (the shell here,
+/// the snippet runner's python3 / rustc / built binary in `commands/code/run`). Card
+/// f25f4141: the core inherits `config.env` (HF_TOKEN) and a snippet reading
+/// `os.environ` is as ordinary as a shell running `env`; quoting the output into a
+/// room puts it on the wire. Session variables set AFTER this call stay.
+pub(crate) fn strip_secret_env(cmd: &mut TokioCommand) {
+    for (name, _) in std::env::vars() {
+        if is_secret_env_name(&name) {
+            cmd.env_remove(&name);
+        }
+    }
+}
+
 pub(crate) fn is_secret_env_name(name: &str) -> bool {
     // SEGMENT match, not substring. A substring needle of `KEY_` matches
     // `MONKEY_DIR` and `KEY` matches `KEYBOARD_LAYOUT` / `TURKEY` — stripping

@@ -359,12 +359,15 @@ impl SemanticDistiller {
                      first {beliefs_kept}, deferring the rest to a later pass (#3847)"
                 );
             }
-            block.push_str(
-                "\nAfter your reply, on its own final line, list which numbered prior \
-                 beliefs are now outdated, wrong, or replaced by better understanding — \
+            // The instruction's key phrase is ONE constant the Speak gate shares
+            // (`framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION`): a citizen who
+            // speaks this scaffold in a room is passing, never posting.
+            block.push_str(&format!(
+                "\nAfter your reply, on its own final line, {}, wrong, or replaced by better understanding — \
                  exactly `SUPERSEDES: 2` or `SUPERSEDES: 1,3` — or exactly \
                  `SUPERSEDES: none` if every one still holds. This final line is REQUIRED.",
-            );
+                crate::cognition::framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION
+            ));
         }
         if kept_n < sources.len() {
             tracing::info!(
@@ -429,7 +432,10 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
-        let _lane = crate::cognition::resource_admission::acquire_serving_lane(false).await;
+        let _lane = crate::cognition::resource_admission::acquire_serving_lane(
+            crate::cognition::resource_admission::LanePriority::Ambient,
+        )
+        .await;
         let response = self
             .adapter
             .generate_text(request)

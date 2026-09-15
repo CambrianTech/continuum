@@ -377,6 +377,40 @@ pub struct LaneAdmission {
     resize_lock: Mutex<()>,
     ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
     ambient_installed: AtomicUsize,
+    /// Held-work callers queued for the non-directed budget right now. While it is
+    /// non-zero an AMBIENT caller (a mind with no card in hand) does not enter the
+    /// queue — work first (2026-09-15, [`LanePriority`]).
+    work_waiting: AtomicUsize,
+    /// Fires on every permit release so a parked ambient caller re-checks.
+    released: tokio::sync::Notify,
+}
+
+/// Who is asking for a lane, priced by what the grid gets back for it.
+///
+/// Measured 2026-09-15 04:20–05:00Z on the M5 (16 minds, 4 lanes @58k): 33 lane holds
+/// at 302 s p50 / 617 s p90, 14 acts, 0 writes, and only 5 of them message turns —
+/// the rest were self-cycle turns, and a mind musing with no card queued for the same
+/// non-directed budget as a mind holding a card mid-edit. The health receipt read
+/// READING for the hour. A lane is the scarce thing; it goes to the mind that will
+/// write first.
+///
+/// - `Directed` — a human or a mention named her: the full pool, one lane always reserved.
+/// - `Work` — she holds a card in progress (`holds_live_work`): the non-directed budget,
+///   ahead of every ambient caller.
+/// - `Ambient` — an undirected turn with no card in hand (musing, wandering, a dream):
+///   the non-directed budget only while no `Work` caller is queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanePriority {
+    Directed,
+    Work,
+    Ambient,
+}
+
+impl LanePriority {
+    /// The prior two-class policy's flag, for the probes and the reserved-lane rule.
+    pub fn is_directed(self) -> bool {
+        matches!(self, Self::Directed)
+    }
 }
 
 /// The process-global admission gate — ONE INSTANCE of [`LaneAdmission`], not a separate
@@ -436,6 +470,9 @@ pub struct ServingLanePermit {
     /// vanished with no probe naming the taker, so the permit itself speaks.
     granted_at: std::time::Instant,
     directed: bool,
+    priority: LanePriority,
+    /// The gate this permit came from — its release wakes parked ambient callers.
+    released: &'static tokio::sync::Notify,
 }
 
 impl Drop for ServingLanePermit {
@@ -443,9 +480,13 @@ impl Drop for ServingLanePermit {
         crate::probe!(
             class = "admission.lane.released",
             directed = self.directed,
+            priority = ?self.priority,
             held_ms = self.granted_at.elapsed().as_millis() as u64,
             "serving-lane permit released"
         );
+        // Permits drop AFTER this body (field order), so wake on the next poll: the
+        // parked caller's try_acquire runs after the semaphore permit has returned.
+        self.released.notify_waiters();
     }
 }
 
@@ -462,6 +503,8 @@ impl LaneAdmission {
             resize_lock: Mutex::new(()),
             ambient: std::sync::OnceLock::new(),
             ambient_installed: AtomicUsize::new(0),
+            work_waiting: AtomicUsize::new(0),
+            released: tokio::sync::Notify::const_new(),
         }
     }
 
@@ -555,26 +598,14 @@ impl LaneAdmission {
 
     /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
     /// test instance can never drift into two different policies.
-    pub async fn acquire_serving_lane(&self, directed: bool) -> ServingLanePermit {
+    pub async fn acquire_serving_lane(&'static self, priority: LanePriority) -> ServingLanePermit {
+        let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
         // acquire below can never let non-directed work starve a directed caller.
-        let nondirected = if directed {
-            None
-        } else {
-            let sem = self.nondirected_lanes().clone();
-            let permit = match sem.clone().try_acquire_owned() {
-                Ok(p) => p,
-                Err(_) => {
-                    tracing::info!(
-                        probe_class = "serving.lane.nondirected_waiting",
-                        "non-directed model call waiting — a lane is reserved for directed turns (#139)"
-                    );
-                    sem.acquire_owned()
-                        .await
-                        .expect("non-directed-lane semaphore is never closed")
-                }
-            };
-            Some(permit)
+        let nondirected = match priority {
+            LanePriority::Directed => None,
+            LanePriority::Work => Some(self.acquire_nondirected_as_work().await),
+            LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
         };
         let lane = self
             .serving_lanes()
@@ -585,6 +616,7 @@ impl LaneAdmission {
         crate::probe!(
             class = "admission.lane.granted",
             directed,
+            priority = ?priority,
             now_available = self.serving_lanes().available_permits() as u64,
             "serving-lane permit granted"
         );
@@ -594,7 +626,63 @@ impl LaneAdmission {
             _inflight: InflightModelCall::enter(),
             granted_at: std::time::Instant::now(),
             directed,
+            priority,
+            released: &self.released,
         }
+    }
+
+    /// A held-work caller queues in the non-directed semaphore in arrival order, and
+    /// is COUNTED while it waits so ambient callers stand aside.
+    async fn acquire_nondirected_as_work(&self) -> tokio::sync::OwnedSemaphorePermit {
+        let sem = self.nondirected_lanes().clone();
+        if let Ok(p) = sem.clone().try_acquire_owned() {
+            return p;
+        }
+        tracing::info!(
+            probe_class = "serving.lane.nondirected_waiting",
+            "held-work model call waiting — a lane is reserved for directed turns (#139)"
+        );
+        self.work_waiting.fetch_add(1, Ordering::AcqRel);
+        let permit = sem
+            .acquire_owned()
+            .await
+            .expect("non-directed-lane semaphore is never closed");
+        self.work_waiting.fetch_sub(1, Ordering::AcqRel);
+        permit
+    }
+
+    /// An ambient caller never enters the semaphore's queue: it takes a permit only when
+    /// one is free AND no held-work caller is waiting, otherwise it parks on the release
+    /// signal (a 1 s tick guards against a missed wake). Bounded fairness comes from the
+    /// work queue draining: every release re-checks, and work waiters are counted down
+    /// as they are served.
+    async fn acquire_nondirected_as_ambient(&self) -> tokio::sync::OwnedSemaphorePermit {
+        let sem = self.nondirected_lanes().clone();
+        let mut yielded = false;
+        loop {
+            if self.work_waiting.load(Ordering::Acquire) == 0 {
+                if let Ok(p) = sem.clone().try_acquire_owned() {
+                    return p;
+                }
+            } else if !yielded {
+                yielded = true;
+                crate::probe!(
+                    class = "admission.lane.ambient_yielded_to_work",
+                    work_waiting = self.work_waiting.load(Ordering::Acquire) as u64,
+                    "an ambient turn stands aside — a held card is waiting for the lane"
+                );
+            }
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                self.released.notified(),
+            )
+            .await;
+        }
+    }
+
+    /// Held-work callers queued right now — a gauge for the gate probes.
+    pub fn work_waiting(&self) -> usize {
+        self.work_waiting.load(Ordering::Acquire)
     }
 }
 
@@ -615,8 +703,8 @@ pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
 }
 
-pub async fn acquire_serving_lane(directed: bool) -> ServingLanePermit {
-    LANES.acquire_serving_lane(directed).await
+pub async fn acquire_serving_lane(priority: LanePriority) -> ServingLanePermit {
+    LANES.acquire_serving_lane(priority).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -1045,21 +1133,21 @@ mod tests {
     // touches the process-global serving-lane semaphores, so it starts all-free.
     #[tokio::test]
     async fn directed_turn_always_finds_a_reserved_lane() {
-        let gate = LaneAdmission::new();
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         use std::time::Duration;
         let budget = gate.nondirected_budget();
 
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(gate.acquire_serving_lane(false).await);
+            nondirected.push(gate.acquire_serving_lane(LanePriority::Ambient).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
         // acquires immediately — it is not blocked by the saturated non-directed budget.
         if gate.lane_count() > 1 {
             let directed =
-                tokio::time::timeout(Duration::from_millis(250), gate.acquire_serving_lane(true))
+                tokio::time::timeout(Duration::from_millis(250), gate.acquire_serving_lane(LanePriority::Directed))
                     .await;
             assert!(
                 directed.is_ok(),
@@ -1069,7 +1157,7 @@ mod tests {
             // And a FURTHER non-directed call must now WAIT (its budget is full) — it
             // times out rather than stealing the lane the directed turn is using.
             let extra_nondirected =
-                tokio::time::timeout(Duration::from_millis(150), gate.acquire_serving_lane(false))
+                tokio::time::timeout(Duration::from_millis(150), gate.acquire_serving_lane(LanePriority::Ambient))
                     .await;
             assert!(
                 extra_nondirected.is_err(),
@@ -1143,4 +1231,40 @@ mod tests {
         assert!(!starving_since(None, boot + 1_000, boot), "just booted: not starving");
     }
 
+    // what this catches (2026-09-15, the READING hour): a mind holding a card mid-edit
+    // queued for the non-directed budget behind a mind musing with no card. With one
+    // non-directed lane taken, a WORK caller and an AMBIENT caller both arrive; when the
+    // lane frees, the work caller gets it and the ambient caller is still parked. And
+    // once no work waits, the ambient caller takes the next free lane — parked, not
+    // starved.
+    #[tokio::test]
+    async fn a_held_card_takes_the_lane_before_a_musing_turn() {
+        use std::time::Duration;
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(2); // non-directed budget = 1
+        let held = gate.acquire_serving_lane(LanePriority::Ambient).await;
+
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(gate.work_waiting(), 1, "the work caller is counted while it waits");
+        let ambient = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!ambient.is_finished(), "ambient parks while work waits");
+
+        drop(held);
+        let work_permit = tokio::time::timeout(Duration::from_millis(500), work)
+            .await
+            .expect("work gets the freed lane")
+            .expect("join");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!ambient.is_finished(), "ambient is still parked: the work caller holds the only non-directed lane");
+        assert_eq!(gate.work_waiting(), 0);
+
+        drop(work_permit);
+        let ambient_permit = tokio::time::timeout(Duration::from_millis(1500), ambient)
+            .await
+            .expect("ambient takes the lane once no work waits")
+            .expect("join");
+        drop(ambient_permit);
+    }
 }

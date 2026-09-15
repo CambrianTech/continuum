@@ -53,6 +53,15 @@ pub fn note_act(wrote: bool) {
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
 }
+/// Per-mind lane grants this hour — the placement chooser's "least served" order.
+static GRANTS_BY_MIND: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+pub fn note_lane_granted_to(persona: uuid::Uuid) {
+    note_lane_granted();
+    *GRANTS_BY_MIND.entry(persona).or_insert(0) += 1;
+}
+pub fn lane_grants_of(persona: uuid::Uuid) -> u64 {
+    GRANTS_BY_MIND.get(&persona).map(|v| *v).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
+}
 /// A round card settled (the `bench.round.card_settled` seam).
 pub fn note_settle() {
     LEDGER.settles.fetch_add(1, Ordering::Relaxed);
@@ -90,6 +99,15 @@ pub enum Verdict {
     Reading { acts: u64 },
     /// Residents, no acts at all.
     Idle { resident: u64 },
+    /// Writes happen, but too few for the roster: fewer than one write per
+    /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
+    Slow { writes: u64, resident: u64 },
+    /// No residents at the tick. Not a health verdict — a legible absence: a
+    /// lane-donor node under the one-roster rule reads EMPTY with lanes offered; a
+    /// node that lost its roster reads EMPTY with the grants it made before it did.
+    /// It never reads "healthy" (Intel Mac 2026-09-15 10:2xZ: "resident 0 · lanes 0
+    /// · lane grants 41 — healthy" after five despawns).
+    Empty { lanes: u64, lanes_granted: u64 },
 }
 
 impl Verdict {
@@ -99,6 +117,8 @@ impl Verdict {
             Verdict::Starved { .. } => "starved",
             Verdict::Reading { .. } => "reading",
             Verdict::Idle { .. } => "idle",
+            Verdict::Slow { .. } => "slow",
+            Verdict::Empty { .. } => "empty",
         }
     }
 }
@@ -107,10 +127,15 @@ impl Verdict {
 /// turns, three minds per lane is a lane every ~12 minutes each — the edge of useful.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 3;
 
-/// The rule. Pure so the four shapes are hand-computed tests.
+/// A roster is SLOW below one write per this many residents in an hour: 16 minds that
+/// write twice in an hour (00:01Z 2026-09-15, the first receipt the core posted) are not
+/// healthy, whatever the lanes say. Four residents per write-hour is a floor, not a goal.
+pub const RESIDENTS_PER_WRITE_HOUR: u64 = 4;
+
+/// The rule. Pure so the five shapes are hand-computed tests.
 pub fn verdict(h: &CitizenHealth) -> Verdict {
     if h.resident == 0 {
-        return Verdict::Healthy;
+        return Verdict::Empty { lanes: h.lanes, lanes_granted: h.lanes_granted };
     }
     if h.acts == 0 {
         return Verdict::Idle { resident: h.resident };
@@ -120,6 +145,9 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
     }
     if h.writes == 0 {
         return Verdict::Reading { acts: h.acts };
+    }
+    if h.writes.saturating_mul(RESIDENTS_PER_WRITE_HOUR) < h.resident {
+        return Verdict::Slow { writes: h.writes, resident: h.resident };
     }
     Verdict::Healthy
 }
@@ -135,6 +163,12 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
         Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts"),
+        Verdict::Empty { lanes, lanes_granted } => format!(
+            "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
+        ),
+        Verdict::Slow { writes, resident } => format!(
+            "SLOW: {writes} writes for {resident} residents — below one write per {RESIDENTS_PER_WRITE_HOUR} minds an hour"
+        ),
     };
     format!(
         "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled — {}",
@@ -153,6 +187,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
 }
 
 fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
+    GRANTS_BY_MIND.clear();
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -291,7 +326,11 @@ mod tests {
         assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(verdict(&h(16, 6, 0, 0)), Verdict::Idle { resident: 16 });
         assert_eq!(verdict(&h(16, 6, 39, 4)), Verdict::Healthy);
-        assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Healthy, "an empty node has nothing to be unhealthy");
+        // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
+        // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
+        assert_eq!(verdict(&h(16, 6, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
+        assert_eq!(verdict(&h(4, 2, 10, 1)), Verdict::Healthy, "one write per four minds is the floor, inclusive");
+        assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Empty { lanes: 0, lanes_granted: 0 }, "an empty node is EMPTY, never 'healthy'");
     }
 
     // what this catches: the line carries every number and ends with the verdict, so a

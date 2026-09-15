@@ -49,6 +49,22 @@ pub fn instance_env_fact(checkout: &Path) -> String {
     }
 }
 
+/// The GRADING contract as a fact for the held-card turn (card 2bb8ae13, finder Cyrus,
+/// 2026-09-15): the tests that grade a SWE card are added by the grader's held-out test
+/// patch at verdict time and are NOT in the checkout. Holders spent act batches hunting
+/// them by name and re-running suites that pass (Esme: 17 acts, 16 `code/run`, in one
+/// hour). Rendered for every benchmark card; the card body says it for cards dispatched
+/// after this fact existed, the pin says it for every card held now.
+pub fn grading_fact(instance_id: &str) -> String {
+    format!(
+        "[grading] The tests that grade `{instance_id}` are ADDED by the grader from a held-out \
+         test patch at verdict time — they are not in this checkout, so do not search for them \
+         or run them by name. Write your own repro from the issue text; the tests that already \
+         exist in the touched module are your regression set. A verdict runs only when you mark \
+         the card done."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +84,15 @@ mod tests {
         let absent = instance_env_fact(&tmp.path().join("swe").join("absent"));
         assert!(absent.contains("No prepared environment"));
         assert!(!absent.contains("swe-venv"), "never a guessed interpreter");
+    }
+
+    // what this catches: the grading fact must say the two things a holder needs and
+    // name the instance — not in the checkout; write your own repro.
+    #[test]
+    fn the_grading_fact_names_the_instance_and_the_held_out_rule() {
+        let f = grading_fact("django__django-16139");
+        assert!(f.starts_with("[grading]"));
+        assert!(f.contains("django__django-16139"));
+        assert!(f.contains("not in this checkout") && f.contains("own repro"));
     }
 }
