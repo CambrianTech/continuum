@@ -24,7 +24,8 @@ const VARS: [&str; 4] = ["HOME", "USERPROFILE", "HF_HOME", "CONTINUUM_HOME"];
 
 /// Exclusive ownership of the process home for a test's lifetime.
 pub(crate) struct HomeGuard {
-    prior: Vec<(&'static str, Option<String>)>,
+    /// Captured with `var_os` — a present non-Unicode path is restored, never removed.
+    prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
     _lock: tokio::sync::OwnedMutexGuard<()>,
 }
 
@@ -43,7 +44,7 @@ impl HomeGuard {
     }
 
     fn pin(home: &Path, lock: tokio::sync::OwnedMutexGuard<()>) -> Self {
-        let prior = VARS.iter().map(|v| (*v, std::env::var(v).ok())).collect();
+        let prior = VARS.iter().map(|v| (*v, std::env::var_os(v))).collect();
         std::env::set_var("HOME", home);
         std::env::set_var("USERPROFILE", home);
         std::env::set_var("HF_HOME", home.join(".cache").join("huggingface"));
@@ -92,5 +93,16 @@ mod tests {
         // they were.
         let second = HomeGuard::set_blocking(dir.path());
         assert_eq!(second.prior, prior, "every variable restored");
+        drop(second);
+        // And an UNWIND restores too: a panic inside the closure drops the guard.
+        let unwound = std::panic::catch_unwind(|| {
+            with_test_home(dir.path(), || {
+                assert_eq!(std::env::var("HOME").ok().as_deref(), dir.path().to_str());
+                panic!("the fixture failed mid-clone");
+            })
+        });
+        assert!(unwound.is_err());
+        let third = HomeGuard::set_blocking(dir.path());
+        assert_eq!(third.prior, prior, "restored on unwind as well");
     }
 }
