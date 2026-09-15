@@ -325,6 +325,7 @@ mod tests {
             max_acts: None,
             prompt: "write a function that reverses a string".to_string(),
             expect: String::new(),
+            silence: false,
             test: with_test.then(|| "assert_eq!(rev(\"ab\"), \"ba\");".to_string()),
             lang: Some("rust".to_string()),
             dod_shell: None,
