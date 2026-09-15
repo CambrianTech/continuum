@@ -122,7 +122,12 @@ pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
 /// unambiguous), `""` (empty isn't silence — it's a malformed turn).
 /// Bare inflections of the reserved token a small model produces in its place. Whole
 /// message only — see [`looks_like_silence_token`].
-const SILENCE_INFLECTIONS: [&str; 4] = ["passed", "passing", "silence", "silent"];
+const SILENCE_INFLECTIONS: [&str; 8] = [
+    "passed", "passing", "silence", "silent",
+    // the yield forms (a 5090 citizen posted "yield_turn" bare, 2026-09-15 09:2xZ) and the
+    // narrated stop ("I'm stopping now." — Delia, Intel Mac, 09:4xZ)
+    "yield", "yield_turn", "yielding", "i'm stopping now",
+];
 
 pub fn looks_like_silence_token(text: &str) -> bool {
     let trimmed = text.trim();
@@ -1558,7 +1563,7 @@ mod tests {
     // opening a sentence is speech.
     #[test]
     fn a_bare_inflection_of_the_token_is_silence_and_a_sentence_is_not() {
-        for s in ["Passed", "Silence.", "(silence)", "  passing  ", "*Silent*"] {
+        for s in ["Passed", "Silence.", "(silence)", "  passing  ", "*Silent*", "yield_turn", "I'm stopping now."] {
             assert!(looks_like_silence_token(s), "{s:?}");
         }
         for s in [

@@ -36,6 +36,18 @@ pub const ROLE_PREAMBLE_TURN: &str = "Take your turn now";
 pub const NOTICES_HEADER: &str = "Notices my substrate posted into my window";
 /// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
 pub const RESULT_BLOCK_TAG: &str = "[result #";
+/// Tags the substrate writes INTO her window as status lines — working-memory
+/// notices, the repetition/pattern bricks, the answered/pass trail marks, the env
+/// and hands facts. A response that OPENS with one is the window read back, not
+/// speech (Delia/Paige/Iris, Intel Mac, 2026-09-15 09:xxZ: "[answered] ```python…",
+/// "[repetition]\n\n[context] 3 input turns…", "[pass]\n\nI'm sorry…").
+pub const WINDOW_TAGS: [&str; 13] = [
+    "[answered]", "[pass]", "[resumed]", "[rebuilt]", "[released]", "[env]", "[hands]",
+    "[repetition]", "[context]", "[pattern]", "[notice]", "[budget]", "[dispatched]",
+];
+/// The working-memory collapse marker (`working_memory::render_trail`): "…[N more
+/// chars — my full thought, collapsed]" reproduced in a message is the trail read back.
+pub const COLLAPSE_MARKER: &str = "my full thought, collapsed]";
 /// The presence block's PASS instruction (`prompt_assembly::SILENCE_AFFORDANCE_BLOCK`);
 /// a weak model answers a turn by refusing and then reciting it — "I'm sorry, but I
 /// can't assist with this request… If a given moment genuinely does not call for
@@ -93,6 +105,17 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
     // opens an utterance.
     if t.starts_with(RESULT_BLOCK_TAG) {
         return Some("result_block_echo");
+    }
+    // A window TAG opening the response: the status line the substrate wrote into her
+    // window, read back as her words. Anchored — a citizen who writes "[env] is stale
+    // for me" mid-sentence is discussing it.
+    if WINDOW_TAGS.iter().any(|tag| t.starts_with(tag)) {
+        return Some("window_tag_echo");
+    }
+    // The trail's collapse marker anywhere: nobody types "…[10 more chars — my full
+    // thought, collapsed]" as their own thought.
+    if t.contains(COLLAPSE_MARKER) {
+        return Some("collapse_marker_echo");
     }
     // A tool CALL block reproduced as a message — "[code/run]\n{\"code\": \"run\",
     // \"arguments\": {…}}" (2026-09-15): a bracketed verb path opening the
@@ -242,6 +265,10 @@ mod tests {
         assert_eq!(echoes_turn_framing("I'll PASS on this one — reply with the single word PASS is what the block says, and this moment does not call for me.", me), None, "discussing PASS is speech");
         // The clause the gate keys on must be the block's own words, never a retyped copy.
         assert!(crate::persona::prompt_assembly::SILENCE_AFFORDANCE_BLOCK.contains(PRESENCE_PASS_CLAUSE));
+        assert_eq!(echoes_turn_framing("[answered] ```python\n# Mark this room's activity concluded (o)\n```", me), Some("window_tag_echo"));
+        assert_eq!(echoes_turn_framing("[repetition]\n\n[context] 3 input turns were available before prompt fitting", me), Some("window_tag_echo"));
+        assert_eq!(echoes_turn_framing("```bash\n# Mark  …[10 more chars — my full thought, collapsed]\n```", me), Some("collapse_marker_echo"));
+        assert_eq!(echoes_turn_framing("The [env] line says my checkout has no prepared env — is that stale?", me), None, "a tag mid-sentence is discussion");
         assert_eq!(echoes_turn_framing("[draft] the fix is a one-liner in code/run", me), None, "a bracket that is not a verb path is speech");
         assert_eq!(echoes_turn_framing("[code/run] failed on the harness twice; I am switching to code/shell.", me), None, "a verb path not followed by JSON is speech");
     }
