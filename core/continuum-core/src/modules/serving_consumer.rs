@@ -988,6 +988,7 @@ mod tests {
             model: "ggml-org/Qwen3.8-27B-GGUF".into(),
             context_window: window,
             lanes,
+            page_dir: None,
         }
     }
 

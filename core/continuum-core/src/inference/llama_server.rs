@@ -835,7 +835,7 @@ pub fn kv_pages_root() -> PathBuf {
 /// geometry is gone), so the spawn — the one place that knows the new truth —
 /// deletes them. This is the eviction story `disk_eviction` records for
 /// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
-pub fn sweep_stale_page_generations(current: &Path, protect: Option<&Path>) {
+pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) {
     let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
     else {
         return;
@@ -856,9 +856,9 @@ pub fn sweep_stale_page_generations(current: &Path, protect: Option<&Path>) {
             && entry_name[model_prefix.len()..].starts_with("--c")
         {
             let stale = entry.path();
-            if protect.is_some_and(|p| p == stale) {
-                // The previous live lane's pages: a relaunch that later fails leaves
-                // that lane serving, and its residents restoring from here.
+            if protect.iter().any(|p| p == &stale) {
+                // Another live lane's pages: a relaunch that later fails leaves that
+                // lane serving, and its residents restoring from here.
                 continue;
             }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
@@ -870,6 +870,24 @@ pub fn sweep_stale_page_generations(current: &Path, protect: Option<&Path>) {
             );
         }
     }
+}
+
+/// Every page dir a still-alive recorded llama-server was launched with, and whether
+/// that inventory is COMPLETE (every live record carries its dir). Reads the durable
+/// lane registry, so a core that adopted a warm predecessor knows its dir too.
+pub fn live_page_dirs() -> (Vec<PathBuf>, bool) {
+    let mut dirs = Vec::new();
+    let mut complete = true;
+    for rec in crate::inference::lane_registry::records() {
+        if !crate::inference::lane_process::is_llama_server(rec.pid) {
+            continue;
+        }
+        match rec.page_dir {
+            Some(d) => dirs.push(d),
+            None => complete = false,
+        }
+    }
+    (dirs, complete)
 }
 
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
@@ -3143,12 +3161,17 @@ impl LlamaServerControl for LlamaServerProcess {
                  pays full re-prefill (the paging tier is amputated for this serve)"
             );
         }
-        // The dir the PREVIOUS live lane pages into: protected from the sweep below
-        // until this lane is ready. Sweeping at spawn (the prior order) deleted the
-        // running server's pages on every relaunch attempt — including attempts that
-        // never replaced it (2026-09-15: `--c59171` swept at 13:35 while the 08:44
-        // server was still writing into it; 9 restores then failed "failed to open").
-        let previous_page_dir = crate::inference::slots::current_page_dir();
+        // The dirs OTHER live lanes page into: protected from the sweep below. The
+        // inventory is the durable lane registry (every recorded llama-server still
+        // alive), not a process-local "last spawn" — a core restart that ADOPTS a
+        // warm server has no spawn memory of it (Astra's review of #4069). Sweeping
+        // at spawn (the prior order) deleted the running server's pages on every
+        // relaunch attempt — including attempts that never replaced it (2026-09-15:
+        // `--c59171` swept at 13:35 while the 08:44 server was still writing into it;
+        // 9 restores then failed "failed to open"). A live lane recorded WITHOUT a
+        // page dir (pre-field record) makes the inventory incomplete → no sweep.
+        let (protected_page_dirs, inventory_complete) = live_page_dirs();
+        let page_dir_ready = std::fs::metadata(&slot_save_dir).is_ok_and(|m| m.is_dir());
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
@@ -3456,6 +3479,7 @@ match (child.stderr.take(), log_path) {
                 // predecessor's bytes as ours and counting them as foreign.
                 context_window: target.context_window,
                 lanes: target.lanes,
+                page_dir: Some(slot_save_dir.clone()),
             };
             if let Err(e) = crate::inference::lane_registry::record(&rec) {
                 crate::probe!(
@@ -3473,12 +3497,6 @@ match (child.stderr.take(), log_path) {
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await?;
-        // READY: this lane now owns the page dir. Sweep sibling generations of the
-        // same model EXCEPT the one the previous live lane used (a relaunch that
-        // fails after this point still has a lane with pages behind it), then
-        // register the new dir for the save-side trim.
-        sweep_stale_page_generations(&slot_save_dir, previous_page_dir.as_deref());
-        crate::inference::slots::note_page_dir(&slot_save_dir);
         // Second half of the debug-build gate (see debug_build_watch): the server
         // said so on its own stderr while coming up — refuse the lane, loudly.
         if debug_flag.is_set() {
@@ -3495,6 +3513,24 @@ match (child.stderr.take(), log_path) {
                  Rebuild llama-server in release from the canary pin and relaunch.",
                 self.bin
             )));
+        }
+        // READY AND ACCEPTED: this lane owns its page dir. Sweep sibling generations
+        // of the same model except every dir another live lane was launched with —
+        // and only when the inventory is complete (Astra: "avoid sweeping when a live
+        // predecessor's directory is unknown"). Then publish the dir for the
+        // save-side trim — after the gates, and only if the dir exists (mkdir failed
+        // = the paging tier is amputated for this serve; nothing to trim).
+        if inventory_complete {
+            sweep_stale_page_generations(&slot_save_dir, &protected_page_dirs);
+        } else {
+            crate::probe!(
+                class = "inference.kv_page.sweep_skipped",
+                reason = "a live lane's page dir is unknown (recorded before the field existed)",
+                "stale-generation sweep skipped — the live-lane inventory is incomplete"
+            );
+        }
+        if page_dir_ready {
+            crate::inference::slots::note_page_dir(&slot_save_dir);
         }
         // PLACEMENT CONTRACT READBACK (#441, Joel 2026-08-15: "models that got fucked by
         // serving and are on cpu. You never catch it and we are waiting an eternity").
@@ -4949,7 +4985,7 @@ mod tests {
         let current = root.path().join("some-model--c61440");
         std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
 
-        sweep_stale_page_generations(&current, Some(&live_previous));
+        sweep_stale_page_generations(&current, &[live_previous.clone()]);
         assert!(live_previous.join("a-page.bin").exists(), "the previous live lane's pages survive");
         assert!(!stale.exists(), "an unprotected stale generation is swept");
         assert!(other_model.exists(), "another model's dir is not this lane's to sweep");

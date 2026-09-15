@@ -89,6 +89,12 @@ pub struct LaneRecord {
     /// was launched with. `0` is UNKNOWN — see [`Self::context_window`].
     #[serde(default)]
     pub lanes: u32,
+    /// The KV page directory this lane was launched with (`--slot-save-path`) — the
+    /// live-lane inventory the stale-generation sweep protects. `None` for lanes
+    /// recorded before this field existed (their dir is unknown → the sweep stays
+    /// its hand, see `sweep_stale_page_generations`).
+    #[serde(default)]
+    pub page_dir: Option<PathBuf>,
 }
 
 /// The LIVE-role lane left behind by a previous generation of this core, if one
@@ -404,6 +410,7 @@ mod tests {
             // real shape is what production writes, so the fixture matches it.
             context_window: 16_384,
             lanes: 4,
+            page_dir: None,
         }
     }
 
@@ -629,6 +636,7 @@ mod tests {
                         model: "some/model".into(),
                         context_window: 8192,
                         lanes: 1,
+                        page_dir: None,
                     },
                 )
                 .expect("record");
@@ -670,6 +678,7 @@ mod tests {
                     model: "some/model".into(),
                     context_window: 8192,
                     lanes: 1,
+                    page_dir: None,
                 },
             )
             .expect("record");
