@@ -47,6 +47,13 @@ pub const NOTICE_SENTENCES: [&str; 1] = [RESUMED_NO_PENDING];
 /// The tail of the repeat-call fact working memory records ("I have now issued
 /// {names} {n} times this turn — …"): parameterized at the head, fixed here. A line
 /// ENDING in it is the fact read back (cf6b4df6, 2026-09-15, as her whole turn).
+/// The peer-echo fact's shape (deliberation_budget::draft_peer_echo): "[echo] the
+/// message I just sent repeats what {author} already said." Read back by 8faf9269 as
+/// a whole turn, person-flipped ("The message you just sent repeats what … already
+/// said."), a dozen times on 2026-09-15. Keyed on the fixed middle and the fixed end.
+pub const ECHO_FACT_TAG: &str = "[echo]";
+pub const ECHO_FACT_MIDDLE: &str = "just sent repeats what";
+pub const ECHO_FACT_END: &str = "already said";
 pub const REPEAT_CALL_TAIL: &str =
     "times this turn — the result is already in my working memory above; the identical call returns nothing new.";
 /// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
@@ -181,6 +188,13 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         let l = line.trim().trim_start_matches(['-', '*', ' ']).trim();
         NOTICE_SENTENCES.iter().any(|n| l == *n || l == n.trim_end_matches('.'))
             || (l.starts_with("I have now issued ") && l.ends_with(REPEAT_CALL_TAIL))
+            || {
+                let e = l.strip_prefix(ECHO_FACT_TAG).map(str::trim_start).unwrap_or(l);
+                let lower = e.to_ascii_lowercase();
+                lower.starts_with("the message ")
+                    && lower.contains(ECHO_FACT_MIDDLE)
+                    && lower.trim_end_matches('.').ends_with(ECHO_FACT_END)
+            }
     }) {
         return Some("notice_sentence_echo");
     }
@@ -337,6 +351,20 @@ mod tests {
             echoes_turn_framing("I have now issued code/run({\"code\":\"<replace_with_string>\"}) 2 times this turn — the result is already in my working memory above; the identical call returns nothing new.\n\nNotices my substrate was nearly identical", Some("Sigurd")),
             Some("notice_sentence_echo"),
             "the repeat-call fact read back as her turn"
+        );
+        assert_eq!(
+            echoes_turn_framing("The message you just sent repeats what 56674a3b-4eb3-44cd-80cb-57d81725d368 already said.", Some("Sigurd")),
+            Some("notice_sentence_echo"),
+            "the peer-echo fact read back, person-flipped, as her whole turn"
+        );
+        assert_eq!(
+            echoes_turn_framing("[echo] the message I just sent repeats what Atlas already said.\nendref", Some("Sigurd")),
+            Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("Atlas, the message you just sent repeats what Kira already said an hour ago — did you see hers?", Some("Sigurd")),
+            None,
+            "her own sentence around the shape is speech"
         );
         assert_eq!(
             echoes_turn_framing("Every turn my window says 'No pending dispatches were recorded in that checkpoint.' — is a dispatch ever recorded?", Some("Sigurd")),
