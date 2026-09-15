@@ -23,9 +23,10 @@ pub(super) fn est_tokens(s: &str) -> usize {
 }
 
 /// Render ONE burst turn as the body line for its chat message. The persona's own
-/// turns and opaque (authorless) turns render verbatim — her own voice carries no
-/// name prefix (the system prompt forbids self-prefixing), and an opaque burst is
-/// reproduced byte-for-byte so the eval/test/replay paths are unchanged. A peer's
+/// turns carry no name prefix (the system prompt forbids self-prefixing), and an
+/// opaque (authorless) burst is reproduced byte-for-byte. Attributed turns carry
+/// their absolute occurrence time, or an explicit unknown; never a changing age.
+/// This keeps historical status reports dated without churning the KV prefix. A peer's
 /// turn is prefixed `{author}: ` so several speakers stay distinguishable inside a
 /// merged `user` message — and when the message's first line carries a vocative
 /// naming another participant, the prefix carries the addressee too:
@@ -50,8 +51,21 @@ pub(super) fn turn_message_line_addressed(
     participants: &[String],
     self_name: &str,
 ) -> String {
-    if turn.is_self || turn.author.is_empty() {
+    if turn.author.is_empty() {
         return turn.content.clone();
+    }
+    let time = turn
+        .occurred_at_ms
+        .filter(|ms| *ms != 0)
+        .and_then(|ms| i64::try_from(ms).ok())
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let prefix = match time {
+        Some(time) => format!("[occurred {time}] "),
+        None => "[occurrence time unknown] ".to_string(),
+    };
+    if turn.is_self {
+        return format!("{prefix}{}", turn.content);
     }
     // Vocatives naming someone OTHER than the speaker → annotate. (A vocative
     // matching the author is a self-reference/appositive — "I'm Anwen, the one
@@ -63,7 +77,7 @@ pub(super) fn turn_message_line_addressed(
         .filter(|a| !a.eq_ignore_ascii_case(&turn.author))
         .collect();
     if addrs.is_empty() {
-        return format!("{}: {}", turn.author, turn.content);
+        return format!("{prefix}{}: {}", turn.author, turn.content);
     }
     let rendered: Vec<&str> = addrs
         .iter()
@@ -76,7 +90,7 @@ pub(super) fn turn_message_line_addressed(
         })
         .collect();
     format!(
-        "{} (to {}): {}",
+        "{prefix}{} (to {}): {}",
         turn.author,
         rendered.join(", "),
         turn.content
@@ -1339,7 +1353,7 @@ mod tests {
         );
         let line = turn_message_line_addressed(&asha_to_anwen, &names, SPEAKER_TESTER);
         assert!(
-            line.starts_with("Asha (to Anwen): Sure, Anwen."),
+            line.starts_with("[occurrence time unknown] Asha (to Anwen): Sure, Anwen."),
             "greeting vocative annotated: {line:?}"
         );
 
@@ -1353,7 +1367,7 @@ mod tests {
         );
         let line = turn_message_line_addressed(&anwen_to_atlas, &names, SPEAKER_TESTER);
         assert!(
-            line.starts_with("Anwen (to you): Atlas,"),
+            line.starts_with("[occurrence time unknown] Anwen (to you): Atlas,"),
             "self-addressed vocative renders as 'you': {line:?}"
         );
 
@@ -1367,10 +1381,10 @@ mod tests {
         );
         assert_eq!(
             turn_message_line_addressed(&mention, &names, SPEAKER_TESTER),
-            "Asha: I agree with Anwen's plan for the parser."
+            "[occurrence time unknown] Asha: I agree with Anwen's plan for the parser."
         );
 
-        // Self turns and opaque turns render verbatim — annotation is peer-only.
+        // Self turns retain time without a name; opaque input stays verbatim.
         let own = BurstTurn::attributed(
             true,
             SPEAKER_TESTER,
@@ -1379,7 +1393,7 @@ mod tests {
         );
         assert_eq!(
             turn_message_line_addressed(&own, &names, SPEAKER_TESTER),
-            "Anwen, here are the test results."
+            "[occurrence time unknown] Anwen, here are the test results."
         );
         let opaque = BurstTurn::opaque("Anwen, do the thing.");
         assert_eq!(
@@ -1397,7 +1411,7 @@ mod tests {
         );
         assert_eq!(
             turn_message_line_addressed(&self_named, &names, SPEAKER_TESTER),
-            "Asha: Asha, reporting in: review done."
+            "[occurrence time unknown] Asha: Asha, reporting in: review done."
         );
 
         // @-mention form.
@@ -1409,7 +1423,7 @@ mod tests {
         );
         let line = turn_message_line_addressed(&at_form, &names, SPEAKER_TESTER);
         assert!(
-            line.starts_with("Asha (to you): @Atlas"),
+            line.starts_with("[occurrence time unknown] Asha (to you): @Atlas"),
             "@-form: {line:?}"
         );
 
@@ -1428,7 +1442,7 @@ mod tests {
         let t = BurstTurn::attributed(false, "Zephyr", "Sure, Kestrel. Your move.", None);
         assert!(
             turn_message_line_addressed(&t, &generated, "Nobody")
-                .starts_with("Zephyr (to Kestrel):"),
+                .starts_with("[occurrence time unknown] Zephyr (to Kestrel):"),
             "works for arbitrary generated names"
         );
 
@@ -1449,13 +1463,53 @@ mod tests {
         );
         let line = turn_message_line_addressed(&coordinator, &names, SPEAKER_REVIEWER);
         assert!(
-            line.starts_with(&format!("{SPEAKER_LEAD} (to you, Atlas): ")),
+            line.starts_with(&format!(
+                "[occurrence time unknown] {SPEAKER_LEAD} (to you, Atlas): "
+            )),
             "reviewer's seat: she is 'you' (line-leading), Atlas named (sentence-leading): {line}"
         );
         let line = turn_message_line_addressed(&coordinator, &names, SPEAKER_TESTER);
         assert!(
-            line.starts_with(&format!("{SPEAKER_LEAD} (to Asha, you): ")),
+            line.starts_with(&format!(
+                "[occurrence time unknown] {SPEAKER_LEAD} (to Asha, you): "
+            )),
             "tester's seat: line-leading Asha + sentence-leading Atlas-as-you both render: {line}"
+        );
+    }
+
+    // what this catches: 7a519f86 — live history dropped measured event times,
+    // making old status reports undated. Unknown is never epoch zero or now.
+    #[test]
+    fn occurrence_time_preserves_sender_boundaries_and_unknowns() {
+        let participants = vec!["Zephyr".to_string(), "Kestrel".to_string()];
+        for is_self in [false, true] {
+            for (time, prefix) in [
+                (
+                    Some(1_700_000_000_123),
+                    "[occurred 2023-11-14T22:13:20.123Z] ",
+                ),
+                (None, "[occurrence time unknown] "),
+                (Some(0), "[occurrence time unknown] "),
+                (Some(u64::MAX), "[occurrence time unknown] "),
+            ] {
+                let turn = BurstTurn::attributed(is_self, "Zephyr", "Kestrel, ready.", time);
+                let body = if is_self {
+                    "Kestrel, ready."
+                } else {
+                    "Zephyr (to you): Kestrel, ready."
+                };
+                assert_eq!(
+                    turn_message_line_addressed(&turn, &participants, "Kestrel"),
+                    format!("{prefix}{body}")
+                );
+            }
+        }
+        let mut opaque = BurstTurn::opaque("Unattributed replay input.");
+        opaque.occurred_at_ms = Some(1_700_000_000_123);
+        assert_eq!(
+            turn_message_line_addressed(&opaque, &participants, "Kestrel"),
+            opaque.content,
+            "opaque input keeps its existing framing contract"
         );
     }
 }
