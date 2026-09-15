@@ -1072,7 +1072,12 @@ impl LlmDeliberationFaculty {
                 )
                 .await
             } else {
-                let priority = if Self::holds_work_card(ws) {
+                // The faculty's own work-turn key (`is_work_turn`: the workspace is
+                // deliverable and her hands are offered — the same key that caps act
+                // output) OR a held card in the window. #4060's receipt on 5333: 0 Work
+                // grants in 20 min with 14 held cards — the rendered block alone is not
+                // a reliable key at the gate; the turn shape is.
+                let priority = if self.is_work_turn(ws) || Self::holds_work_card(ws) {
                     crate::cognition::resource_admission::LanePriority::Work
                 } else {
                     crate::cognition::resource_admission::LanePriority::Ambient
