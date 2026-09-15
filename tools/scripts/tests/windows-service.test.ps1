@@ -22,6 +22,10 @@ try {
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $first.artifact })
     $second = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($first.artifact -eq $second.artifact) { throw 'Overwrote a live slot' }
+    $script:liveProcesses[0].ExecutablePath = '\\?\' + $first.artifact
+    $extended = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
+    if ($extended.artifact -ne $second.artifact) { throw 'Extended Windows process path was not recognized as a live slot' }
+    if ((ConvertTo-CoreImagePath '\\?\UNC\server\share\core.exe') -ne '\\server\share\core.exe') { throw 'Extended UNC image path normalization failed' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
     $script:liveProcesses = @()
     $stopped = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
@@ -32,9 +36,9 @@ try {
     if ($withEngine.artifact -ne $second.artifact) { throw 'An adopted engine blocked reuse of its core slot' }
     $savedProcesses = $script:liveProcesses
     $registeredRelease = $first | ConvertTo-Json | ConvertFrom-Json
-    $registeredRelease.engine = Join-Path $installed 'bin\engine-b\llama-server.exe'
+    $registeredRelease.engine = '\\?\' + (Join-Path $installed 'bin\engine-b\llama-server.exe')
     $script:registeredTask = [pscustomobject]@{ Description = ($registeredRelease | ConvertTo-Json -Compress) }
-    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed 'bin\engine-a\llama-server.exe') })
+    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = ('\\?\' + (Join-Path $installed 'bin\engine-a\llama-server.exe')) })
     $candidate = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($candidate.engine -ne (Join-Path $installed 'bin\engine-c\llama-server.exe')) { throw 'Candidate overwrote a warm or registered engine' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
@@ -114,7 +118,7 @@ public class SupervisorFixture {
             if ($held.HasExited -or [DateTime]::UtcNow -ge $until) { throw 'Held child did not initialize' }
             Start-Sleep -Milliseconds 50
         }
-        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $output })
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = ('\\?\' + $output) })
         Protect-CoreBuildOutput -TargetDirectory $target
         if ($held.HasExited -or (Test-Path $output)) { throw 'Busy output was not preserved live under its previous name' }
         Copy-Item -LiteralPath $child -Destination $output

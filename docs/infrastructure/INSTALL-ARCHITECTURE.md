@@ -38,6 +38,27 @@ They map one-to-one onto memory rules:
 6. **Docker in chunks.** Multi-service compose, focused images, shared
    base layers. Carl pulls deltas, not monoliths.
 
+## Windows installed image ownership
+
+The native Windows installer stages the CLI/core in two bounded service slots
+and inference engines in separate slots. Live process images and the registered
+startup artifacts reserve their slots before anything is copied there.
+
+Normalize ordinary and extended Windows path spellings before these comparisons:
+`C:\...` and `\\?\C:\...` identify the same image, as do `\\server\share\...`
+and `\\?\UNC\server\share\...`. CIM reported a live service image with the
+extended prefix during a normal update; comparing it with the ordinary slot path
+incorrectly selected occupied `service-a`, and `Copy-Item` failed after both Rust
+builds had completed. `ConvertTo-CoreImagePath` now applies consistently to live
+and registered core/engine paths and Cargo output ownership checks. Slot boundary
+and case-insensitive comparisons remain in place; this is spelling normalization,
+not filesystem alias or junction resolution.
+
+The Windows PowerShell 5.1 regression is
+`powershell -NoProfile -ExecutionPolicy RemoteSigned -File tools/scripts/tests/windows-service.test.ps1`.
+It covers extended drive/UNC paths, occupied core and engine slots, and a mapped
+Cargo image that must remain alive while its output filename is reclaimed.
+
 ## Module shape
 
 Every install step is a function with this contract:
