@@ -41,10 +41,17 @@ pub const RESULT_BLOCK_TAG: &str = "[result #";
 /// and hands facts. A response that OPENS with one is the window read back, not
 /// speech (Delia/Paige/Iris, Intel Mac, 2026-09-15 09:xxZ: "[answered] ```python…",
 /// "[repetition]\n\n[context] 3 input turns…", "[pass]\n\nI'm sorry…").
-pub const WINDOW_TAGS: [&str; 13] = [
-    "[answered]", "[pass]", "[resumed]", "[rebuilt]", "[released]", "[env]", "[hands]",
+pub const WINDOW_TAGS: [&str; 14] = [
+    "[answered]", "[answer]", "[pass]", "[resumed]", "[rebuilt]", "[released]", "[env]", "[hands]",
     "[repetition]", "[context]", "[pattern]", "[notice]", "[budget]", "[dispatched]",
 ];
+/// The dream consolidator's SUPERSEDES instruction (`dream_consolidation.rs`, the
+/// belief-review tail). Nobody says this sentence as their own; a room message
+/// carrying it is the consolidation scaffold spoken (Delia, Intel Mac, 2026-09-15
+/// 11:1xZ — and then re-spoken every turn from her own [answered] entry: the WM loop
+/// Cormac traced). The Speak gate passing it is what breaks that loop, because
+/// record_settlement never lays a pass down.
+pub const CONSOLIDATOR_SUPERSEDES_INSTRUCTION: &str = "list which numbered prior beliefs are now outdated";
 /// The working-memory collapse marker (`working_memory::render_trail`): "…[N more
 /// chars — my full thought, collapsed]" reproduced in a message is the trail read back.
 pub const COLLAPSE_MARKER: &str = "my full thought, collapsed]";
@@ -137,6 +144,9 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
     // led with an apology ("I'm sorry, but I can't assist with this request…").
     if t.contains(PRESENCE_PASS_CLAUSE) {
         return Some("presence_block_echo");
+    }
+    if t.contains(CONSOLIDATOR_SUPERSEDES_INSTRUCTION) {
+        return Some("consolidator_scaffold_echo");
     }
     // The ROLE preamble — the turn-taking scaffold itself, not the wake sentence.
     // 2026-09-14, IntelMac: Paige posted the WHOLE instruction verbatim into
@@ -266,6 +276,14 @@ mod tests {
         // The clause the gate keys on must be the block's own words, never a retyped copy.
         assert!(crate::persona::prompt_assembly::SILENCE_AFFORDANCE_BLOCK.contains(PRESENCE_PASS_CLAUSE));
         assert_eq!(echoes_turn_framing("[answered] ```python\n# Mark this room's activity concluded (o)\n```", me), Some("window_tag_echo"));
+        assert_eq!(
+            echoes_turn_framing("[answer]\nThe general, reusable knowledge they share is that repetition of a message will produce the same result.\n\nAfter your reply, on its own final line, list which numbered prior beliefs are now outdated, wrong, or replaced by better understanding", me),
+            Some("window_tag_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("The general, reusable knowledge they share is X. After your reply, on its own final line, list which numbered prior beliefs are now outdated, wrong, or replaced.", me),
+            Some("consolidator_scaffold_echo")
+        );
         assert_eq!(echoes_turn_framing("[repetition]\n\n[context] 3 input turns were available before prompt fitting", me), Some("window_tag_echo"));
         assert_eq!(echoes_turn_framing("```bash\n# Mark  …[10 more chars — my full thought, collapsed]\n```", me), Some("collapse_marker_echo"));
         assert_eq!(echoes_turn_framing("The [env] line says my checkout has no prepared env — is that stale?", me), None, "a tag mid-sentence is discussion");
