@@ -34,6 +34,30 @@
 
 schema_version = 1
 
+[[module]]
+id = "airc"
+order = 26
+tier = 0
+platforms = ["windows"]
+accept = "airc --help"
+[module.sources.windows]
+type = "curl-sh"
+url = "https://raw.githubusercontent.com/CambrianTech/airc/main/install.ps1"
+
+[[module]]
+id = "onnxruntime"
+order = 70
+tier = 2
+applies = "has-nvidia"
+platforms = ["windows"]
+accept = "test-path ~/.continuum/lib/onnxruntime.dll"
+[module.sources.windows]
+type = "archive"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-gpu-1.23.0.zip"
+version = "1.23.0"
+sha256 = "ec423825a8782c0bbd5cbfabcd984363fbb99ff084afae128719690d4db7f8d5"
+extract = "strip-top-dir"
+
 # ── Tier 0: base ────────────────────────────────────────────────────────────
 [[module]]
 id = "rust"

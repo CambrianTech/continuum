@@ -7,6 +7,7 @@
 //! continuum reboot           # stop everything, rebuild on a free machine, relaunch
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum reboot --prebuilt <path> # validate that core first, then hand off without rebuilding
+//!                     # Windows: --service hands off to the installer's prepared task
 //! continuum stop             # stop the running core
 //! continuum ping             # dispatch a command to the running core
 //! continuum ping '{"message":"hi"}'
@@ -95,6 +96,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "deploy-verify"
                 | "verify"
                 | "checkpoint"
+                | "service-host"
         ) && args
             .iter()
             .any(|arg| matches!(arg.as_str(), "-h" | "--help")))
@@ -115,6 +117,10 @@ async fn run() -> Result<(), CliError> {
     // not mutate the checkout registry as a side effect.
     if first == "checkpoint" {
         return checkpoint(CheckpointCommand::parse(args)?).map_err(CliError::from);
+    }
+    if first == "service-host" {
+        let code = service_host(args.collect()).await?;
+        std::process::exit(code);
     }
     // Every CLI run from inside a repo records that checkout for the core
     // (repo-card staging reads it); the first deploy after #3706 would otherwise
@@ -814,8 +820,15 @@ async fn bind_decision() -> BindDecision {
 /// the same missing constraint `stop` got in #2287, on the other side of the lifecycle.
 async fn start(force: bool) -> Result<(), String> {
     let socket = socket_path();
-
-    match bind_decision().await {
+    let decision = bind_decision().await;
+    if matches!(decision, BindDecision::AlreadyServing { .. }) {
+        println!("core already running (socket={socket})");
+        return Ok(());
+    }
+    // Validate installed task selection before --force may reclaim anything.
+    // A source override remains the explicit opt-out from installed deployment.
+    let service = PreparedCoreService::for_start(&socket).await?;
+    match decision {
         BindDecision::AlreadyServing { .. } => {
             println!("core already running (socket={socket})");
             return Ok(());
@@ -865,15 +878,29 @@ async fn start(force: bool) -> Result<(), String> {
             // Hand the reaped pids to launch_core as its death-wait set, so readiness is
             // only reported once the OLD cores are gone and the ping provably came from
             // the NEW one — the same honesty check reboot relies on.
-            let secs = launch_core(&pids, LaunchSource::Installed).await?;
+            let secs = launch_installed_core(&pids, service).await?;
             println!("✅ core ready (socket={socket}) after ~{secs}s");
             return Ok(());
         }
     }
 
-    let secs = launch_core(&[], LaunchSource::Installed).await?;
+    let secs = launch_installed_core(&[], service).await?;
     println!("✅ core ready (socket={socket}) after ~{secs}s");
     Ok(())
+}
+
+async fn launch_installed_core(
+    old: &[i32],
+    service: Option<(PreparedCoreService, PrebuiltCore)>,
+) -> Result<u64, String> {
+    match service {
+        Some((service, candidate)) => {
+            let secs = service.launch(old).await?;
+            verify_deployed_build_against(false, Some(&candidate)).await?;
+            Ok(secs)
+        }
+        None => launch_core(old, LaunchSource::Installed).await,
+    }
 }
 
 /// `continuum reboot` — stop + rebuild + relaunch the core.
@@ -883,6 +910,8 @@ async fn start(force: bool) -> Result<(), String> {
 struct RebootOptions {
     force: bool,
     prebuilt: Option<PathBuf>,
+    service: bool,
+    validate_only: bool,
 }
 
 impl RebootOptions {
@@ -891,6 +920,8 @@ impl RebootOptions {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--force" if !options.force => options.force = true,
+                "--service" if !options.service => options.service = true,
+                "--validate-only" if !options.validate_only => options.validate_only = true,
                 "--prebuilt" if options.prebuilt.is_none() => {
                     let path = args
                         .next()
@@ -898,13 +929,28 @@ impl RebootOptions {
                         .ok_or("reboot --prebuilt requires a core binary path")?;
                     options.prebuilt = Some(PathBuf::from(path));
                 }
-                "--force" | "--prebuilt" => return Err(format!("duplicate reboot option {arg}")),
+                "--force" | "--prebuilt" | "--service" | "--validate-only" => {
+                    return Err(format!("duplicate reboot option {arg}"))
+                }
                 _ => {
                     return Err(format!(
-                        "unknown reboot option {arg}; use --force or --prebuilt <path>"
+                        "unknown reboot option {arg}; use --force or --prebuilt <path> [--service]"
                     ))
                 }
             }
+        }
+        if options.service && options.prebuilt.is_none() {
+            return Err("reboot --service requires --prebuilt <path>".to_string());
+        }
+        if options.service && !cfg!(windows) {
+            return Err("reboot --service is supported only on Windows".to_string());
+        }
+        if options.validate_only && (options.prebuilt.is_none() || options.service || options.force)
+        {
+            return Err(
+                "--validate-only requires --prebuilt and cannot combine with --force or --service"
+                    .to_string(),
+            );
         }
         Ok(options)
     }
@@ -962,6 +1008,291 @@ impl PrebuiltCore {
 /// twelve leaves the server, the citizens and the build their room.
 const WARM_BUILD_MIN_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 
+/// The scheduler owns this foreground host and its core as one process tree.
+/// Runtime DLL/config resolution is the same as every other native CLI launch.
+async fn service_host(args: Vec<String>) -> Result<i32, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = args;
+        Err("service-host is supported only on Windows".to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if args.len() != 3 || args.iter().any(|arg| arg.is_empty()) {
+            return Err("service-host requires <core-path> <socket> <engine-path>".to_string());
+        }
+        let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
+        apply_core_runtime_env(&mut command);
+        if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
+            let engine = Path::new(&args[2]);
+            if !engine.is_file() {
+                return Err(format!("service-host engine missing: {}", engine.display()));
+            }
+            command.env("LLAMA_SERVER_BIN", engine);
+        }
+        command.env("CONTINUUM_CORE_SOCKET", &args[1]);
+        command.stdin(Stdio::null()).creation_flags(0x0800_0000);
+        let mut command = tokio::process::Command::from(command);
+        command.kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("service-host cannot launch {}: {e}", args[0]))?;
+        let pid = child
+            .id()
+            .ok_or("service-host core exited before PID registration")?;
+        std::fs::write(pidfile_for(&args[1]), pid.to_string())
+            .map_err(|e| format!("service-host cannot record core PID: {e}"))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CoreServiceDescription {
+    artifact: String,
+    socket: String,
+    launcher: String,
+    cli: String,
+    engine: String,
+    log_directory: String,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CoreServiceTask {
+    description: String,
+    command: String,
+    arguments: String,
+    enabled: bool,
+    state: String,
+}
+
+#[cfg(any(windows, test))]
+impl CoreServiceTask {
+    fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
+        let description: CoreServiceDescription =
+            serde_json::from_str(&self.description).map_err(|e| {
+                format!("ContinuumCore has no valid installer artifact descriptor: {e}")
+            })?;
+        let resolve = |path: &str| {
+            if !Path::new(path).is_absolute() {
+                return Err(format!("ContinuumCore path must be absolute: {path}"));
+            }
+            std::fs::canonicalize(path)
+                .map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+        };
+        if !self.enabled
+            || resolve(&description.artifact)? != candidate.path
+            || description.socket != socket
+            || resolve(&self.command)? != shell.canonicalize().map_err(|e| e.to_string())?
+        {
+            return Err("ContinuumCore does not select the requested artifact/socket or is disabled; rerun the installer".to_string());
+        }
+        // Paired host/launcher files live in the same installed slot, never in
+        // the mutable build cache or a different release's directory.
+        for path in [&description.cli, &description.launcher] {
+            let path = resolve(path)?;
+            if !path.is_file() || path.parent() != candidate.path.parent() {
+                return Err(
+                    "ContinuumCore host/launcher must be files beside the selected artifact"
+                        .to_string(),
+                );
+            }
+        }
+        if !resolve(&description.log_directory)?.is_dir() {
+            return Err("ContinuumCore logDirectory is not a directory".to_string());
+        }
+        if !resolve(&description.engine)?.is_file() {
+            return Err("ContinuumCore engine is not an installed file".to_string());
+        }
+        if Path::new(&description.cli).file_name() != Some(std::ffi::OsStr::new("continuum.exe"))
+            || Path::new(&description.launcher).file_name()
+                != Some(std::ffi::OsStr::new("run-service-hidden.ps1"))
+        {
+            return Err("ContinuumCore requires the installed CLI and hidden launcher".to_string());
+        }
+        for value in [
+            &description.artifact,
+            &description.socket,
+            &description.launcher,
+            &description.cli,
+            &description.engine,
+            &description.log_directory,
+        ] {
+            if value.contains(['"', '\r', '\n']) || value.ends_with('\\') {
+                return Err(
+                    "ContinuumCore descriptor cannot be quoted as a task argument".to_string(),
+                );
+            }
+        }
+        let expected = format!(
+            "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"{}\" -ExecutablePath \"{}\" -CorePath \"{}\" -SocketPath \"{}\" -EnginePath \"{}\" -LogDirectory \"{}\"",
+            description.launcher, description.cli, description.artifact,
+            description.socket, description.engine, description.log_directory,
+        );
+        if self.arguments != expected {
+            return Err("ContinuumCore action differs from its artifact descriptor; rerun the installer before reboot".to_string());
+        }
+        Ok(())
+    }
+}
+
+struct PreparedCoreService {
+    #[cfg(windows)]
+    task: CoreServiceTask,
+}
+
+impl PreparedCoreService {
+    async fn for_start(socket: &str) -> Result<Option<(Self, PrebuiltCore)>, String> {
+        #[cfg(not(windows))]
+        {
+            let _ = socket;
+            Ok(None)
+        }
+        #[cfg(windows)]
+        {
+            if std::env::var_os("CONTINUUM_FROM_SOURCE").is_some() {
+                return Ok(None);
+            }
+            let Some(task) = Self::query_optional().await? else {
+                return Ok(None);
+            };
+            let description: CoreServiceDescription = serde_json::from_str(&task.description)
+                .map_err(|e| format!("ContinuumCore is not prepared by the current installer: {e}; rerun the installer"))?;
+            let path = Path::new(&description.artifact)
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve installed service artifact: {e}"))?;
+            // Start resumes an installed artifact; a developer's current checkout
+            // need not match it. Reboot's explicit candidate still MUST match HEAD.
+            let sha = binary_build_sha(&path).await?;
+            let candidate = PrebuiltCore::from_report(path, sha, None)?;
+            task.validate(&candidate, socket, &Self::shell()?)?;
+            Ok(Some((Self { task }, candidate)))
+        }
+    }
+
+    async fn prepare(candidate: &PrebuiltCore, socket: &str) -> Result<Self, String> {
+        #[cfg(not(windows))]
+        {
+            let _ = (candidate, socket);
+            Err("reboot --service is supported only on Windows".to_string())
+        }
+        #[cfg(windows)]
+        {
+            let task = Self::query().await?;
+            task.validate(candidate, socket, &Self::shell()?)?;
+            Ok(Self { task })
+        }
+    }
+
+    #[cfg(windows)]
+    fn shell() -> Result<PathBuf, String> {
+        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
+        Ok(PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+    }
+
+    #[cfg(windows)]
+    async fn powershell(script: &str) -> Result<String, String> {
+        use base64::Engine;
+        use std::os::windows::process::CommandExt;
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mut command = std::process::Command::new(Self::shell()?);
+        command
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+            .stdin(Stdio::null())
+            .creation_flags(0x0800_0000);
+        let mut command = tokio::process::Command::from(command);
+        command.kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+            .await
+            .map_err(|_| "ContinuumCore scheduler operation timed out".to_string())?
+            .map_err(|e| format!("cannot invoke Task Scheduler: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ContinuumCore scheduler operation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    #[cfg(windows)]
+    async fn query() -> Result<CoreServiceTask, String> {
+        Self::query_optional().await?.ok_or_else(|| {
+            "ContinuumCore is not registered; run the normal installer first".to_string()
+        })
+    }
+
+    #[cfg(windows)]
+    async fn query_optional() -> Result<Option<CoreServiceTask>, String> {
+        let json = Self::powershell(
+            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $t=Get-ScheduledTask | Where-Object { $_.TaskName -eq 'ContinuumCore' -and $_.TaskPath -eq '\\' }; if ($null -eq $t) { 'null'; exit 0 }; if (@($t.Actions).Count -ne 1) { throw 'Expected one core action' }; [pscustomobject]@{description=$t.Description; command=$t.Actions[0].Execute; arguments=$t.Actions[0].Arguments; enabled=[bool]$t.Settings.Enabled; state=[string]$t.State} | ConvertTo-Json -Compress",
+        ).await?;
+        serde_json::from_str(&json).map_err(|e| format!("cannot read ContinuumCore task: {e}"))
+    }
+
+    async fn launch(self, wait_for_death: &[i32]) -> Result<u64, String> {
+        #[cfg(not(windows))]
+        {
+            let _ = wait_for_death;
+            Err("reboot --service is supported only on Windows".to_string())
+        }
+        #[cfg(windows)]
+        {
+            let started = std::time::Instant::now();
+            // A task may still be finishing its foreground host after the core
+            // exits. IgnoreNew would silently swallow our start in that window.
+            let mut ticks = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                ticks.tick().await;
+                let task = Self::query().await?;
+                if task.description != self.task.description
+                    || task.command != self.task.command
+                    || task.arguments != self.task.arguments
+                    || !task.enabled
+                {
+                    return Err("ContinuumCore task changed during reboot; refusing to launch a different action".to_string());
+                }
+                if !wait_for_death.iter().any(|pid| pid_alive(*pid)) && task.state == "Ready" {
+                    break;
+                }
+                if started.elapsed() >= Duration::from_secs(60) {
+                    return Err("ContinuumCore old process/task did not finish within 60 s; no second core was launched".to_string());
+                }
+            }
+            Self::powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName 'ContinuumCore' -TaskPath '\\'").await?;
+            eprintln!("▶ supervisor=ContinuumCore: starting the prepared installed artifact");
+            let ready = std::time::Instant::now();
+            let mut ticks = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                ticks.tick().await;
+                if !wait_for_death.iter().any(|pid| pid_alive(*pid)) && core_is_up().await {
+                    if Self::query().await?.state != "Running" {
+                        return Err("A core answered but ContinuumCore is not running; refusing an unsupervised startup receipt".to_string());
+                    }
+                    return Ok(started.elapsed().as_secs());
+                }
+                if ready.elapsed() >= Duration::from_secs(5 * 60) {
+                    return Err("ContinuumCore did not answer within 5 minutes; inspect its task result and service logs".to_string());
+                }
+                if ready.elapsed() >= Duration::from_secs(5)
+                    && Self::query().await?.state != "Running"
+                {
+                    return Err("ContinuumCore task stopped before the core answered; inspect its task result and service logs".to_string());
+                }
+            }
+        }
+    }
+}
+
 /// May this reboot build before it stops? Needs a start script (one build definition)
 /// and headroom. The refusal names the number so the operator sees why the dark
 /// window will be long this time.
@@ -992,8 +1323,25 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         Some(path) => Some(PrebuiltCore::prepare(&path).await?),
         None => None,
     };
+    if options.validate_only {
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("--validate-only requires --prebuilt")?;
+        println!(
+            "prebuilt validated: {} (build {})",
+            candidate.path.display(),
+            candidate.build_sha
+        );
+        return Ok(());
+    }
     let force = options.force;
     let socket = socket_path();
+    let service = if options.service {
+        let candidate = prebuilt.as_ref().ok_or("--service requires --prebuilt")?;
+        Some(PreparedCoreService::prepare(candidate, &socket).await?)
+    } else {
+        None
+    };
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
     // the policy AND the path). A core swap kills spawned trainer children
     // (mlx_lm.lora) and their in-process watchers — glass-boxed 2026-07-11: 41
@@ -1158,7 +1506,10 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     let source = prebuilt
         .as_ref()
         .map_or(LaunchSource::FromSource, LaunchSource::Prebuilt);
-    let secs = launch_core(&old, source).await?;
+    let secs = match service {
+        Some(service) => service.launch(&old).await?,
+        None => launch_core(&old, source).await?,
+    };
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
     // answer on the same socket and this reboot would report success while running dead code.
@@ -3459,7 +3810,7 @@ fn usage() -> String {
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
        continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
-       continuum reboot --prebuilt <path>\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n  \
+       continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
      \n\
@@ -3691,12 +4042,95 @@ mod tests {
             vec!["--force", "--force"],
             vec!["--prebuilt", "one", "--prebuilt", "two"],
             vec!["--force", "--prebuilt", "core.exe", "--from-source"],
+            vec!["--service"],
+            vec!["--service", "--service", "--prebuilt", "core.exe"],
+            vec!["--validate-only"],
+            vec!["--validate-only", "--force", "--prebuilt", "core.exe"],
+            vec!["--validate-only", "--service", "--prebuilt", "core.exe"],
+            vec![
+                "--validate-only",
+                "--validate-only",
+                "--prebuilt",
+                "core.exe",
+            ],
         ] {
             assert!(
                 parse(&args).is_err(),
                 "invalid request must stop at parsing: {args:?}"
             );
         }
+        let service = parse(&["--service", "--prebuilt", "core.exe"]);
+        let validate = parse(&["--prebuilt", "core.exe", "--validate-only"]).unwrap();
+        assert!(validate.validate_only);
+        assert!(!validate.force && !validate.service);
+        if cfg!(windows) {
+            let service = service.unwrap();
+            assert!(service.service);
+            assert!(!service.force);
+        } else {
+            assert!(
+                service.is_err(),
+                "scheduled task deployment is Windows-only"
+            );
+        }
+    }
+
+    // what this catches: the normal Windows update must refuse a stale task
+    // BEFORE stopping the live core, even when its description names the new image.
+    #[test]
+    fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().canonicalize().unwrap();
+        let artifact = directory.join("continuum-core-server.exe");
+        let cli = directory.join("continuum.exe");
+        let launcher = directory.join("run-service-hidden.ps1");
+        let shell = directory.join("powershell.exe");
+        let stale = directory.join("old-core.exe");
+        let engine_directory = directory.join("engine-slot");
+        std::fs::create_dir(&engine_directory).unwrap();
+        let engine = engine_directory.join("llama-server.exe");
+        for path in [&artifact, &cli, &launcher, &shell, &stale, &engine] {
+            std::fs::write(path, b"installer artifact").unwrap();
+        }
+        let socket = directory.join("core.sock").display().to_string();
+        let description = serde_json::json!({
+            "artifact": artifact,
+            "socket": socket,
+            "cli": cli,
+            "launcher": launcher,
+            "engine": engine,
+            "logDirectory": directory,
+        });
+        let arguments = format!(
+            "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"{}\" -ExecutablePath \"{}\" -CorePath \"{}\" -SocketPath \"{}\" -EnginePath \"{}\" -LogDirectory \"{}\"",
+            launcher.display(), cli.display(), artifact.display(), socket, engine.display(), directory.display(),
+        );
+        let mut task = super::CoreServiceTask {
+            description: description.to_string(),
+            command: shell.display().to_string(),
+            arguments: arguments.clone(),
+            enabled: true,
+            state: "Ready".to_string(),
+        };
+        let candidate = super::PrebuiltCore {
+            path: artifact.canonicalize().unwrap(),
+            build_sha: "123456789".to_string(),
+        };
+        task.validate(&candidate, &socket, &shell).unwrap();
+        task.arguments = arguments.replace(
+            &artifact.display().to_string(),
+            &stale.display().to_string(),
+        );
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.arguments = arguments;
+        assert!(task.validate(&candidate, "different.sock", &shell).is_err());
+        task.enabled = false;
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.enabled = true;
+        let mut old_description = description;
+        old_description["artifact"] = serde_json::json!(stale);
+        task.description = old_description.to_string();
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
     }
 
     // what this catches: card 67f53b63 — provenance is checked before a
@@ -4054,7 +4488,10 @@ mod tests {
         assert!(warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES, script.clone()).is_ok());
         let err = warm_build_allowed(WARM_BUILD_MIN_FREE_BYTES - 1, script).unwrap_err();
         assert!(err.contains("GiB free"), "{err}");
-        assert!(warm_build_allowed(u64::MAX, None).is_err(), "no script = no build definition");
+        assert!(
+            warm_build_allowed(u64::MAX, None).is_err(),
+            "no script = no build definition"
+        );
     }
     use serde_json::json;
 

@@ -332,7 +332,7 @@ win_install() {
     rm -f "$xml" "$u16"; return 1
   fi
   rm -f "$xml" "$u16"
-  schtasks_raw /run /tn "$WIN_TASK" >/dev/null 2>&1 || true
+  schtasks_raw /run /tn "$WIN_TASK" || return 1
   if [ "$SCOPE" = "system" ]; then
     echo "✓ installed Scheduled Task '$WIN_TASK' (boot trigger — survives logout) → $bin $SOCKET"
   else

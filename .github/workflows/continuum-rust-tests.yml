@@ -391,3 +391,7 @@ jobs:
       - name: cargo check (lib + test harness, incl. test-fixtures targets)
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: cargo check -p continuum-core --lib --tests --features test-fixtures
+      - name: Windows installed release and supervisor regressions
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        shell: powershell
+        run: ./tools/scripts/tests/windows-service.test.ps1
