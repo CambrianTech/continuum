@@ -229,6 +229,7 @@ async fn run_python(
     std::fs::write(&src, code)
         .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
     let mut cmd = tokio::process::Command::new("python3");
+    crate::code::shell_session::strip_secret_env(&mut cmd);
     cmd.arg(&src)
         .current_dir(dir)
         .stdout(std::process::Stdio::piped())
@@ -287,6 +288,7 @@ async fn compile_and_run_rust(
     // 1. Compile. kill_on_drop bounds a runaway rustc; a non-success exit is a RESULT
     //    (the persona must SEE the compiler errors), only a spawn failure is an error.
     let mut rustc = tokio::process::Command::new("rustc");
+    crate::code::shell_session::strip_secret_env(&mut rustc);
     rustc
         .arg("--edition")
         .arg("2021")
@@ -331,6 +333,7 @@ async fn compile_and_run_rust(
     //    child is NOT killed — it orphans to init and burns a core forever (observed:
     //    6h+ runaway at 100% CPU). Dropping the Child with kill_on_drop sends SIGKILL.
     let mut child = tokio::process::Command::new(&bin);
+    crate::code::shell_session::strip_secret_env(&mut child);
     child
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -394,6 +397,31 @@ mod tests {
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(out.stdout.trim(), "10", "captured the real stdout");
         assert!(!out.timed_out);
+    }
+
+    // what this catches (card f25f4141): the snippet runner inherited the CORE's
+    // environment — the core is started with `set -a; . config.env`, so HF_TOKEN was
+    // one `std::env::var` away from any snippet, and tool output is quoted into rooms.
+    // The same strip that guards the shell (#3786) guards every citizen-facing spawn:
+    // a credential-shaped name is gone from the compiled program's environment, an
+    // ordinary name is still there.
+    #[tokio::test]
+    async fn a_snippet_cannot_see_credential_shaped_variables_of_the_core() {
+        std::env::set_var("CU_TEST_HF_TOKEN", "never-on-the-wire");
+        std::env::set_var("CU_TEST_PLAIN_DIR", "visible");
+        let out = CodeRun
+            .run(
+                &Ctx::default(),
+                CodeRunParams {
+                    lang: "rust".into(),
+                    code: "fn main() { println!(\"{:?} {:?}\", std::env::var(\"CU_TEST_HF_TOKEN\").ok(), std::env::var(\"CU_TEST_PLAIN_DIR\").ok()); }".into(),
+                    timeout_secs: None,
+                },
+            )
+            .await
+            .expect("ok");
+        assert!(out.ok, "{}", out.stderr);
+        assert_eq!(out.stdout.trim(), "None Some(\"visible\")");
     }
 
     // what this catches: a runtime panic is RETURNED, not swallowed — exit nonzero, the
