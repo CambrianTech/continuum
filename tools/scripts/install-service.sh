@@ -32,10 +32,10 @@ for a in "$@"; do
 done
 
 LABEL="com.continuum.core"
-SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
+SOCKET="${CONTINUUM_CORE_SOCKET:-${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}}"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
-    SOCKET="${CONTINUUM_SOCKET:-$(cygpath -w "${TEMP:-/tmp}")\\continuum-core.sock}" ;;
+    SOCKET="${CONTINUUM_CORE_SOCKET:-${CONTINUUM_SOCKET:-$(cygpath -w "${TEMP:-/tmp}")\\continuum-core.sock}}" ;;
 esac
 DATA="$HOME/.continuum"
 LOG_DIR="$DATA/logs"
