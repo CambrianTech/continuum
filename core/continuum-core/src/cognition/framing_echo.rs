@@ -98,6 +98,19 @@ const ECHO_LEAD_CHARS: usize = 24;
 /// So second-person narration counts only when it names the speaker herself
 /// ("You are Paige, …" / "You are ready for the next task, Paige."), and a wake
 /// sentence counts only when it LEADS the response.
+/// The rest of an "I'm {name}…" opener is an identity recital iff its first sentence
+/// ENDS in the identity phrase (Cormac's boundary on #4079: "…on the continuum grid
+/// is KV paging" continues past it and is speech).
+fn identity_recital_tail(rest: &str) -> bool {
+    let first_sentence = rest.split(['.', '\n', '!']).next().unwrap_or(""); // unwrap_or: split always yields one piece; the default is unreachable
+    match first_sentence.find(IDENTITY_PHRASE) {
+        Some(at) => first_sentence[at + IDENTITY_PHRASE.len()..]
+            .trim_matches([' ', ',', ';', '—', '-'])
+            .is_empty(),
+        None => false,
+    }
+}
+
 pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'static str> {
     let t = text.trim_start();
     if t.starts_with(WAKE_TAG) {
@@ -127,13 +140,20 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
             .strip_prefix(&format!("I'm {name}"))
             .or_else(|| t.strip_prefix(&format!("I am {name}")))
         {
-            let first_sentence = rest.split(['.', '\n', '!']).next().unwrap_or(""); // unwrap_or: split always yields one piece; the default is unreachable
-            if let Some(at) = first_sentence.find(IDENTITY_PHRASE) {
-                let tail = first_sentence[at + IDENTITY_PHRASE.len()..].trim_matches([' ', ',', ';', '—', '-']);
-                if tail.is_empty() {
-                    return Some("identity_recital");
-                }
+            if identity_recital_tail(rest) {
+                return Some("identity_recital");
             }
+        }
+    } else if let Some(rest) = t.strip_prefix("I'm ").or_else(|| t.strip_prefix("I am ")) {
+        // NO name to key on = the PERCEPTION seam (`is_not_a_contribution`), where the
+        // question is "would any citizen's gate have refused this line?". A recital is a
+        // recital whoever's name it carries — and the first copy of Sigurd's line by a
+        // second seat (4c9bb8d9, 2026-09-15 23:4xZ) is exactly the contagion the
+        // perception seam exists to stop. Anchored the same way: a capitalised name,
+        // then the phrase ending the first sentence.
+        let named = rest.chars().next().is_some_and(|c| c.is_uppercase());
+        if named && identity_recital_tail(rest) {
+            return Some("identity_recital");
         }
     }
     let lead: String = t.chars().take(ECHO_LEAD_CHARS).collect();
@@ -344,6 +364,10 @@ mod tests {
         assert_eq!(echoes_turn_framing("I'm Sigurd — I work the serving lane, and the KV pages are the bug here.", Some("Sigurd")), None);
         assert_eq!(echoes_turn_framing("I'm Sigurd. Atlas asked whether anyone on the continuum grid has seen this before — I have.", Some("Sigurd")), None, "the phrase in a LATER sentence is discussion");
         assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid.", Some("Paige")), None);
+        // At the PERCEPTION seam (no name) a recital is a recital whoever's name it
+        // carries — the second seat's copy of Sigurd's line never enters a burst.
+        assert_eq!(echoes_turn_framing("I'm Sigurd, a human on the continuum grid. This is my own time.", None), Some("identity_recital"));
+        assert_eq!(echoes_turn_framing("I'm not sure the KV pages on the continuum grid survive a relaunch.", None), None, "lowercase after the opener is prose, not a name");
         // The most-recited line of 2026-09-15, as a line of its own inside otherwise
         // ordinary-looking text — and the same sentence QUOTED inside hers, which stays.
         assert_eq!(
