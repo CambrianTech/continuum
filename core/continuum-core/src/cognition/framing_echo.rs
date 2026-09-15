@@ -44,6 +44,11 @@ pub const RESUMED_NO_PENDING: &str = "No pending dispatches were recorded in tha
 /// Substrate NOTICE sentences a citizen never authors: a response line that is exactly
 /// one of these (and nothing else) is the window read back.
 pub const NOTICE_SENTENCES: [&str; 1] = [RESUMED_NO_PENDING];
+/// The tail of the repeat-call fact working memory records ("I have now issued
+/// {names} {n} times this turn — …"): parameterized at the head, fixed here. A line
+/// ENDING in it is the fact read back (cf6b4df6, 2026-09-15, as her whole turn).
+pub const REPEAT_CALL_TAIL: &str =
+    "times this turn — the result is already in my working memory above; the identical call returns nothing new.";
 /// The pinned full-result block's header: "[result #5; room …; operation code/run] …".
 pub const RESULT_BLOCK_TAG: &str = "[result #";
 /// Tags the substrate writes INTO her window as status lines — working-memory
@@ -175,6 +180,7 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
     if t.lines().any(|line| {
         let l = line.trim().trim_start_matches(['-', '*', ' ']).trim();
         NOTICE_SENTENCES.iter().any(|n| l == *n || l == n.trim_end_matches('.'))
+            || (l.starts_with("I have now issued ") && l.ends_with(REPEAT_CALL_TAIL))
     }) {
         return Some("notice_sentence_echo");
     }
@@ -326,6 +332,11 @@ mod tests {
         assert_eq!(
             echoes_turn_framing("- No pending dispatches were recorded in that checkpoint", Some("Sigurd")),
             Some("notice_sentence_echo")
+        );
+        assert_eq!(
+            echoes_turn_framing("I have now issued code/run({\"code\":\"<replace_with_string>\"}) 2 times this turn — the result is already in my working memory above; the identical call returns nothing new.\n\nNotices my substrate was nearly identical", Some("Sigurd")),
+            Some("notice_sentence_echo"),
+            "the repeat-call fact read back as her turn"
         );
         assert_eq!(
             echoes_turn_framing("Every turn my window says 'No pending dispatches were recorded in that checkpoint.' — is a dispatch ever recorded?", Some("Sigurd")),
