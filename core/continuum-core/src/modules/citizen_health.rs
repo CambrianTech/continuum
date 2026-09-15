@@ -62,6 +62,74 @@ pub fn note_lane_granted_to(persona: uuid::Uuid) {
 pub fn lane_grants_of(persona: uuid::Uuid) -> u64 {
     GRANTS_BY_MIND.get(&persona).map(|v| *v).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
 }
+/// Per-mind speech discipline this hour — the MINDLESS receipt's inputs
+/// (card aed15611; Joel: "mindless AIs should be accounted for"). Fed at the two
+/// seams that already probe: the Speak verdict (`gate_refused` = a framing-echo or
+/// not-speech pass — the substrate silenced her) and the act seam (`wrote`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MindHour {
+    pub agent_name: String,
+    pub verdicts: u64,
+    pub gate_refused: u64,
+    pub acts: u64,
+    pub writes: u64,
+}
+static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+/// A Speak verdict was decided for a mind (the faculty's `verdict` seam).
+pub fn note_verdict_of(persona: uuid::Uuid, agent_name: &str, gate_refused: bool) {
+    let mut m = MINDS.entry(persona).or_default();
+    if m.agent_name.is_empty() {
+        m.agent_name = agent_name.to_string();
+    }
+    m.verdicts += 1;
+    if gate_refused {
+        m.gate_refused += 1;
+    }
+}
+/// An act was observed for a mind (the same seam as [`note_act`], per mind).
+pub fn note_act_of(persona: uuid::Uuid, wrote: bool) {
+    let mut m = MINDS.entry(persona).or_default();
+    m.acts += 1;
+    if wrote {
+        m.writes += 1;
+    }
+}
+/// A mind is MINDLESS this hour when at least [`MINDLESS_MIN_VERDICTS`] of her Speak
+/// verdicts were decided and at least [`MINDLESS_GATE_SHARE`] of them were the
+/// substrate refusing what she said (a recital, an envelope), and she changed no
+/// file. Pure — the rule the tick applies and a test can read.
+pub const MINDLESS_MIN_VERDICTS: u64 = 6;
+pub const MINDLESS_GATE_SHARE: f64 = 0.8;
+pub fn is_mindless(m: &MindHour) -> bool {
+    m.verdicts >= MINDLESS_MIN_VERDICTS
+        && m.writes == 0
+        && (m.gate_refused as f64) >= MINDLESS_GATE_SHARE * (m.verdicts as f64)
+}
+/// Never page the roster below this many resident minds, and never more than this
+/// many seats in one tick — a page-out is a considered act, not a purge.
+pub const MINDLESS_RESIDENT_FLOOR: u64 = 2;
+pub const MINDLESS_MAX_PER_TICK: usize = 3;
+/// The pure choice: which minds to page out this tick, worst first, bounded.
+pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(uuid::Uuid, MindHour)> {
+    let room = resident.saturating_sub(MINDLESS_RESIDENT_FLOOR) as usize;
+    let mut out: Vec<(uuid::Uuid, MindHour)> = minds
+        .iter()
+        .filter(|(_, m)| is_mindless(m))
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| {
+        let share = |m: &MindHour| m.gate_refused as f64 / m.verdicts.max(1) as f64;
+        share(&b.1).partial_cmp(&share(&a.1)).unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: NaN is impossible (verdicts ≥ 1); Equal keeps the order
+    });
+    out.truncate(room.min(MINDLESS_MAX_PER_TICK));
+    out
+}
+fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
+    let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
+    MINDS.clear();
+    out
+}
+
 /// A round card settled (the `bench.round.card_settled` seam).
 pub fn note_settle() {
     LEDGER.settles.fetch_add(1, Ordering::Relaxed);
@@ -198,6 +266,65 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
     )
 }
 
+/// Page out this hour's mindless seats: flush every resident's working memory (her
+/// checkpoint), take each chosen seat off the grid (the same orderly teardown as
+/// `persona/instances/despawn`), and record the rest so the reconciler does not
+/// re-draw her. Returns the names paged out, for the line.
+async fn page_out_mindless(h: &CitizenHealth) -> Vec<String> {
+    let minds = snapshot_minds_and_reset();
+    let chosen = mindless_seats(&minds, h.resident);
+    if chosen.is_empty() {
+        return Vec::new();
+    }
+    let Some(registry) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global() else {
+        return Vec::new();
+    };
+    // Her checkpoint first — the flush is the explicit, repeatable save, on a
+    // blocking worker like every other checkpoint pass (modules/cognition.rs).
+    let flushed = tokio::task::spawn_blocking(|| {
+        crate::cognition::persona_workspace::global().flush_volatile_all()
+    })
+    .await
+    .unwrap_or_default(); // unwrap_or_default: a panicked flush task = no checkpoint receipts; the probe below then says checkpoint_saved=false
+    let mut out = Vec::new();
+    for (persona, m) in chosen {
+        let saved = flushed.iter().any(|(id, r)| *id == persona && r.is_ok());
+        let reason = format!(
+            "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
+            m.gate_refused, m.verdicts, m.acts
+        );
+        let Some(runtime) = registry.shutdown_slot(persona).await else {
+            continue; // already gone this tick
+        };
+        let agent_name = runtime.agent_name().to_string();
+        let since_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // unwrap_or: a clock before the epoch is not a real host; 0 reads as "unknown"
+        let recorded = crate::persona::resting_seat::rest(crate::persona::resting_seat::RestingSeat {
+            agent_name: agent_name.clone(),
+            persona_id: persona,
+            reason: reason.clone(),
+            since_ms,
+            build: crate::persona::resting_seat::current_build().to_string(),
+        });
+        crate::probe!(
+            class = "persona.mindless.paged_out",
+            persona = %agent_name,
+            persona_id = %persona,
+            verdicts = m.verdicts,
+            gate_refused = m.gate_refused,
+            acts = m.acts,
+            checkpoint_saved = saved,
+            recorded = recorded.is_ok(),
+            reason = %reason,
+            "a mindless seat was paged out with her checkpoint — she returns on a change, not a clock"
+        );
+        out.push(agent_name);
+    }
+    out
+}
+
 pub struct CitizenHealthModule;
 
 impl CitizenHealthModule {
@@ -250,6 +377,11 @@ impl ServiceModule for CitizenHealthModule {
     async fn tick(&self) -> Result<(), String> {
         let h = self.read();
         let v = verdict(&h);
+        // THE OWNER ACTS (card aed15611): a mind whose hour was recitals and gate-passes
+        // is paged out WITH her checkpoint — her lane goes to a working mind, and she
+        // returns on a change (a deploy, a trained gene, the operator's word), never
+        // on a clock. The lake and the rabbits: her working memory is flushed first.
+        let paged_out = page_out_mindless(&h).await;
         crate::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
@@ -261,10 +393,15 @@ impl ServiceModule for CitizenHealthModule {
             settles = h.settles,
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
+            mindless_paged_out = paged_out.len() as u64,
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
-        crate::modules::grid::say_in_org_room(&line(&h, &v)).await;
+        let mut said = line(&h, &v);
+        if !paged_out.is_empty() {
+            said.push_str(&format!(" · mindless {} paged out ({})", paged_out.len(), paged_out.join(", ")));
+        }
+        crate::modules::grid::say_in_org_room(&said).await;
         Ok(())
     }
     async fn handle_command(&self, command: &str, _params: serde_json::Value) -> Result<CommandResult, String> {
@@ -312,6 +449,37 @@ impl ServiceModule for CitizenHealthModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card aed15611): the MINDLESS rule and the bounded choice. A
+    // mind whose verdicts were ≥80% gate refusals with no write is mindless; a mind
+    // that wrote once, or was refused half the time, or spoke fewer than the floor,
+    // is not. The choice is worst-first, never below the resident floor, never more
+    // than the per-tick cap.
+    #[test]
+    fn a_mind_of_recitals_is_paged_out_worst_first_and_never_below_the_floor() {
+        let mind = |name: &str, verdicts, refused, acts, writes| MindHour {
+            agent_name: name.into(), verdicts, gate_refused: refused, acts, writes,
+        };
+        assert!(is_mindless(&mind("Sigurd", 21, 18, 3, 0)));
+        assert!(!is_mindless(&mind("wrote", 21, 18, 3, 1)), "a write is a mind");
+        assert!(!is_mindless(&mind("half", 10, 5, 0, 0)), "half refused is a struggling mind, not a mindless one");
+        assert!(!is_mindless(&mind("quiet", 5, 5, 0, 0)), "below the verdict floor: not enough evidence");
+        let minds: Vec<(uuid::Uuid, MindHour)> = [
+            mind("A", 10, 8, 0, 0),
+            mind("B", 20, 20, 0, 0),
+            mind("C", 10, 9, 0, 0),
+            mind("D", 10, 10, 0, 0),
+            mind("ok", 10, 1, 4, 2),
+        ]
+        .into_iter()
+        .map(|m| (uuid::Uuid::new_v4(), m))
+        .collect();
+        let chosen = mindless_seats(&minds, 16);
+        let names: Vec<&str> = chosen.iter().map(|(_, m)| m.agent_name.as_str()).collect();
+        assert_eq!(names, ["B", "D", "C"], "worst first, capped at {MINDLESS_MAX_PER_TICK}");
+        assert_eq!(mindless_seats(&minds, 3).len(), 1, "3 resident − floor 2 = one seat may rest");
+        assert!(mindless_seats(&minds, 2).is_empty(), "at the floor nobody is paged out");
+    }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
         CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0 }

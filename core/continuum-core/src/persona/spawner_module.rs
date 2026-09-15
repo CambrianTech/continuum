@@ -340,6 +340,7 @@ impl PersonaSpawnerModule {
     /// slot state.)
     pub fn seats(&self) -> usize {
         seats_under(self.population, crate::persona::roster_hold::active().as_ref())
+            .saturating_sub(crate::persona::resting_seat::resting().len())
     }
 }
 
@@ -541,6 +542,18 @@ async fn draw_intents(
             });
         };
         drawn += 1;
+        // A RESTING seat (the substrate paged her out: card aed15611) is not re-drawn —
+        // she returns on a change, never on the next reconcile. The seat count already
+        // excludes her (`plan()`), so the loop never asks the provider for a seat it
+        // cannot fill.
+        if crate::persona::resting_seat::is_resting(&intent.agent_name) {
+            crate::probe!(
+                class = "persona.host.resting",
+                agent = %intent.agent_name,
+                "resting seat: identity drawn is paged out until a change — seat goes to the next one"
+            );
+            continue;
+        }
         // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
         // orders the roster — team first — but seats the whole population (below).
         if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
