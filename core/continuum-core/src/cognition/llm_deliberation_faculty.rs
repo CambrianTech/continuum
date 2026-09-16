@@ -1358,7 +1358,9 @@ impl LlmDeliberationFaculty {
             "draft reproduced a perception fact she was handed — settling to silence instead \
              of speaking the prompt back into the room (#158)"
         );
-        Decision::pass()
+        // Typed like every other gate refusal: an hour of parroted recitals is the
+        // most on-the-nose mindless hour there is (Cormac's block on #4081).
+        Decision::gate_refused("parroted_perception", "perception_fact", "the draft reproduced a fact she was handed")
     }
 
     /// She called the yield verb — settle the turn as the silence it names.
@@ -1415,12 +1417,10 @@ impl LlmDeliberationFaculty {
         // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal
         // — the substrate silencing a framing echo or a not-speech envelope — counts
         // against her; the hour's share decides whether her seat rests.
-        let gate_refused =
-            matches!(&decision, Decision::Pass { reason: Some(r) } if is_gate_refusal(r));
         crate::modules::citizen_health::note_verdict_of(
             self.persona_id,
             &self.persona_name,
-            gate_refused,
+            decision.gate_refusal().is_some(),
         );
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
@@ -4268,11 +4268,6 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
         .collect()
 }
 
-/// A pass the SUBSTRATE decided, not her: the two mechanical gates at the Speak seam
-/// (`framing_echo`, `not_speech`) name their reason with these prefixes.
-fn is_gate_refusal(reason: &str) -> bool {
-    reason.starts_with("framing echo") || reason.starts_with("not speech")
-}
 
 #[cfg(test)]
 mod tests {

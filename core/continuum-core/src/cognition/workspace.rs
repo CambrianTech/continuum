@@ -137,7 +137,34 @@ impl Decision {
     pub fn pass() -> Self {
         Decision::Pass { reason: None }
     }
+
+    /// A pass the SUBSTRATE decided, not her: a mechanical gate at the Speak seam
+    /// refused what she said (a framing echo, a not-speech envelope, a parroted
+    /// perception fact). The ONE constructor every gate uses, and
+    /// [`Self::gate_refusal`] is the one reader — the mindless receipt (card aed15611)
+    /// and the gate-as-lesson (card 657e74de) decide on this, never on a prose prefix
+    /// written for the glass box (Cormac's block on #4081).
+    pub fn gate_refused(gate: &'static str, marker: &'static str, why: impl std::fmt::Display) -> Self {
+        Decision::Pass {
+            reason: Some(format!("{GATE_REFUSAL_PREFIX}{gate}:{marker}: {why}")),
+        }
+    }
+
+    /// `Some((gate, marker))` iff this pass was a gate refusal. Her own `PASS`, a
+    /// narrated blocker, a yield — every pass that was HER decision — reads `None`.
+    pub fn gate_refusal(&self) -> Option<(&str, &str)> {
+        let Decision::Pass { reason: Some(r) } = self else {
+            return None;
+        };
+        let rest = r.strip_prefix(GATE_REFUSAL_PREFIX)?;
+        let (gate, tail) = rest.split_once(':')?;
+        let (marker, _) = tail.split_once(':')?;
+        Some((gate, marker))
+    }
 }
+
+/// The typed head of a gate-refusal reason (see [`Decision::gate_refused`]).
+pub const GATE_REFUSAL_PREFIX: &str = "gate-refused/";
 
 /// The cost of producing ONE deliberation verdict: how long the model took and
 /// how many tokens it moved. Stamped by the deliberation faculty onto the verdict
