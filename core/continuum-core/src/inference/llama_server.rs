@@ -1067,6 +1067,12 @@ fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) 
     let mut guard = PAGE_DIR_GUARD.lock();
     guard.collect_exited();
     if guard.has_unknown_retiring_dir() {
+        crate::probe!(
+            class = "inference.kv_page.sweep_skipped",
+            reason = "owned child exit unproven and page directory unknown",
+            retiring_children = guard.retiring.len(),
+            "stale-generation sweep skipped until owned child exit is observed"
+        );
         return None;
     }
     let records = match crate::inference::lane_registry::records_checked_in(registry_dir) {
@@ -3146,7 +3152,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
-        let reclaimed = if self.is_live_lane {
+        // An owned child is already retiring under its actual process handle.
+        // Canonical reclaim is for an adopted/orphan lane, not a second signal
+        // followed by pidfile deletion before our owned child has reported exit.
+        let reclaimed = if self.is_live_lane && !had_own_child {
             Some(format!("{:?}", crate::inference::lane_pidfile::reclaim(port).await))
         } else {
             None
@@ -3154,9 +3163,9 @@ impl LlamaServerControl for LlamaServerProcess {
         crate::probe!(
             class = "serving.lane.idled",
             port,
-            killed_own_child = had_own_child,
-            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"), // unwrap_or: None = this handle is not the live lane, so no port to reclaim — a label, not a quantity
-            "lane taken down on an empty plan — VRAM is free, the port is ours again"
+            killed_own_child = had_own_child, // Legacy field: signal requested, not proof of exit.
+            reclaim = reclaimed.as_deref().unwrap_or("owned child or non-live lane"), // unwrap_or: None labels the deliberate absence of canonical reclaim, not observed process exit
+            "lane retirement requested on an empty plan; owned-child exit remains independently observed"
         );
         Ok(())
     }
@@ -5410,13 +5419,14 @@ mod tests {
     }
 
     //  (b) the handoff (record written + reservation dropped) is ONE critical section:
-    //      censuses hammering the guard WHILE the handoff runs observe the lane in the
-    //      reservations or in the records, never in neither. The registry is a temp
+    //      concurrent censuses and ordered observations on both sides see the
+    //      reservation or record, never neither. The registry is a temp
     //      dir (the test seam), never the canonical `~/.continuum/run/lanes/`.
     #[test]
     fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() {
         use crate::inference::lane_registry::{records_checked_in, LaneRecord, LaneRole};
-        use std::sync::{Arc, Barrier};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
         let root = tempfile::tempdir().expect("tempdir");
         let registry = tempfile::tempdir().expect("tempdir");
         let b_dir = root.path().join("handoff-model--c32768");
@@ -5430,17 +5440,16 @@ mod tests {
             lanes: 1,
             page_dir: Some(b_dir.clone()),
         };
-        let start = Arc::new(Barrier::new(2));
+        let (before_tx, before_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let reg = registry.path().to_path_buf();
         let dir = b_dir.clone();
-        let start_c = Arc::clone(&start);
-        // The census side: contend for the guard while the handoff runs, and record
-        // every observation. Each observation is taken UNDER the guard, so it is
-        // either strictly before or strictly after the handoff's critical section.
+        // Contend during handoff, and observe both sides explicitly. A fixed
+        // iteration count could exhaust before the handoff thread ran.
         let census = std::thread::spawn(move || {
             let mut seen_before = 0usize;
             let mut seen_after = 0usize;
-            // One census strictly BEFORE the handoff can start, then contend with it.
+            // Initial BEFORE census, concurrent censuses, then explicit AFTER.
             let observe = |seen_before: &mut usize, seen_after: &mut usize| {
                 let g = PAGE_DIR_GUARD.lock();
                 let in_res = g.reservations.iter().any(|d| d == &dir);
@@ -5454,16 +5463,26 @@ mod tests {
                 if in_res { *seen_before += 1 } else { *seen_after += 1 }
             };
             observe(&mut seen_before, &mut seen_after);
-            start_c.wait();
-            for _ in 0..2_000 {
-                observe(&mut seen_before, &mut seen_after);
-                if seen_after > 50 { break; }
+            before_tx.send(()).expect("before census notification");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match done_rx.try_recv() {
+                    Ok(()) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        assert!(Instant::now() < deadline, "handoff completion deadline");
+                        observe(&mut seen_before, &mut seen_after);
+                        std::thread::yield_now();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => panic!("handoff owner disconnected"),
+                }
             }
+            observe(&mut seen_before, &mut seen_after);
             (seen_before, seen_after)
         });
-        start.wait();
+        before_rx.recv_timeout(Duration::from_secs(5)).expect("initial census completed");
         res.handoff_in(&rec, registry.path()).expect("handoff writes the temp registry");
         assert!(!res.is_held(), "a successful handoff releases the reservation");
+        done_tx.send(()).expect("handoff complete");
         let (before, after) = census.join().expect("census joins");
         assert!(before > 0 && after > 0, "censuses ran on both sides of the handoff: {before}/{after}");
         // And a FAILED handoff keeps the reservation: an unwritable registry dir.
