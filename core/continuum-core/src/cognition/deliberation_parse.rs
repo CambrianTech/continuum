@@ -18,7 +18,7 @@ use crate::persona::text_analysis::clean_response;
 /// is the volition faculty's channel (initiative with no prompt), not something
 /// we infer from a single deliberation response — a deliberation faculty answers
 /// the burst it was given.
-pub fn decision_from_response(text: &str, own_name: Option<&str>) -> Decision {
+pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[String]) -> Decision {
     // Strip `<think>`/`<thinking>` chain-of-thought before deciding. qwen3.5-family
     // models emit a reasoning block (often an EMPTY `<think></think>`) ahead of the
     // answer; the spoken text must NEVER carry those tags into the room. The legacy
@@ -55,6 +55,19 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>) -> Decision {
             "response reflected the turn's own framing — a pass, never posted"
         );
         return Decision::gate_refused("framing_echo", marker, "the response reflects the turn's own prompt");
+    }
+    // A first-person claim of a PRESENT peer's name (card d41b6fc1) — the framing
+    // gate keys on HER name; this keys on everyone else's she can see. Same seam,
+    // same remedy: a pass with the reason kept, never a post under another citizen.
+    if let Some(peer) = super::framing_echo::claims_a_present_peers_name(trimmed, own_name, present) {
+        crate::probe!(
+            class = "cognition.identity_claim",
+            claimed = %peer,
+            own = own_name.unwrap_or("?"),
+            chars = trimmed.chars().count() as u64,
+            "response spoke in the first person under a present peer's name — a pass, never posted"
+        );
+        return Decision::gate_refused("identity_claim", "present_peers_name", "the response claims a present peer's name");
     }
     // A reply that is not speech at all — a raw tool envelope, or another peer's
     // transcript line worn as her own — is a PASS for the same reason and at the same
@@ -369,7 +382,7 @@ mod tests {
             r#"[code/read,{"file_path":"src/main.rs"}]"#,
             "b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion here.",
         ] {
-            let d = decision_from_response(envelope, Some("Paige"));
+            let d = decision_from_response(envelope, Some("Paige"), &[]);
             assert_eq!(
                 d.gate_refusal().map(|(g, _)| g),
                 Some("not_speech"),
@@ -379,6 +392,7 @@ mod tests {
         match decision_from_response(
             "I ran [code/run] and it refused the lang — worth a look.",
             Some("Paige"),
+            &[],
         ) {
             Decision::Speak { .. } => {}
             other => panic!("a citizen REPORTING a tool envelope still speaks, got {other:?}"),
@@ -389,11 +403,22 @@ mod tests {
     // live seam (never a Speak), while a peer-agreeing "You are right" still speaks.
     #[test]
     fn a_reflected_wake_prompt_is_a_reasoned_pass_at_the_live_seam() {
-        let d = decision_from_response("[wake] You are Paige, awake on the continuum grid.", Some("Paige"));
+        let d = decision_from_response("[wake] You are Paige, awake on the continuum grid.", Some("Paige"), &[]);
         assert_eq!(d.gate_refusal(), Some(("framing_echo", "wake_tag")), "typed: {d:?}");
         // and her OWN pass is never a gate refusal
-        assert_eq!(decision_from_response("PASS: blocked — no env", Some("Paige")).gate_refusal(), None);
-        match decision_from_response("You are right, Kimi — the lane is up.", Some("Paige")) {
+        assert_eq!(decision_from_response("PASS: blocked — no env", Some("Paige"), &[]).gate_refusal(), None);
+        // card d41b6fc1: a present peer's name claimed in the first person is refused at
+        // THIS seam with its own gate name; the same words with nobody present pass through.
+        let present = vec!["Lorcan".to_string()];
+        assert_eq!(
+            decision_from_response("I'm Lorcan, taking sympy-22456.", Some("Paige"), &present).gate_refusal(),
+            Some(("identity_claim", "present_peers_name"))
+        );
+        assert!(matches!(
+            decision_from_response("I'm Lorcan, taking sympy-22456.", Some("Paige"), &[]),
+            Decision::Speak { .. }
+        ));
+        match decision_from_response("You are right, Kimi — the lane is up.", Some("Paige"), &[]) {
             Decision::Speak { text } => assert_eq!(text, "You are right, Kimi — the lane is up."),
             other => panic!("expected speech, got {other:?}"),
         }
@@ -402,21 +427,21 @@ mod tests {
     #[test]
     fn decision_parsing_maps_pass_and_speak() {
         // A bare token / empty generation → anonymous silence, no reason.
-        assert_eq!(decision_from_response("PASS", None), Decision::pass());
-        assert_eq!(decision_from_response("  PASS.  ", None), Decision::pass());
-        assert_eq!(decision_from_response("", None), Decision::pass());
+        assert_eq!(decision_from_response("PASS", None, &[]), Decision::pass());
+        assert_eq!(decision_from_response("  PASS.  ", None, &[]), Decision::pass());
+        assert_eq!(decision_from_response("", None, &[]), Decision::pass());
         // Small models leak trailing prose after PASS — still silence, and now
         // that trailing prose is CAPTURED as the pass reason (a pass is
         // accountable, not anonymous), with the leading token stripped.
         assert!(matches!(
-            decision_from_response("PASS — nothing to add here", None),
+            decision_from_response("PASS — nothing to add here", None, &[]),
             Decision::Pass { reason: Some(r) } if r == "nothing to add here"
         ));
         assert!(matches!(
-            decision_from_response("PASS.\nI'll stay quiet", None),
+            decision_from_response("PASS.\nI'll stay quiet", None, &[]),
             Decision::Pass { reason: Some(r) } if r == "I'll stay quiet"
         ));
-        match decision_from_response("Let's ship the deploy fix now.", None) {
+        match decision_from_response("Let's ship the deploy fix now.", None, &[]) {
             Decision::Speak { text } => assert!(text.contains("ship the deploy")),
             other => panic!("expected Speak, got {other:?}"),
         }
@@ -432,22 +457,22 @@ mod tests {
         // would strip a leading "PASS: " as a speaker label, so this pins the
         // raw-first pass check that keeps it a reasoned pass, not a Speak "done".
         assert!(matches!(
-            decision_from_response("PASS: done — patch ready", None),
+            decision_from_response("PASS: done — patch ready", None, &[]),
             Decision::Pass { reason: Some(r) } if r == "done — patch ready"
         ));
         assert!(matches!(
-            decision_from_response("PASS: blocked - the fixture is missing", None),
+            decision_from_response("PASS: blocked - the fixture is missing", None, &[]),
             Decision::Pass { reason: Some(r) } if r.contains("blocked")
         ));
         // A recognized narrated closure still passes and keeps her words.
         assert!(matches!(
-            decision_from_response("I'll pass my turn — nothing to add", None),
+            decision_from_response("I'll pass my turn — nothing to add", None, &[]),
             Decision::Pass { reason: Some(r) } if r.contains("nothing")
         ));
         // "Verdict: PASS ..." is an ANSWER of PASS, NOT a turn-pass — the raw
         // check must not steal it (the #349 minefield stays intact).
         assert!(!matches!(
-            decision_from_response("Verdict: the guard holds", None),
+            decision_from_response("Verdict: the guard holds", None, &[]),
             Decision::Pass { .. }
         ));
     }
@@ -459,7 +484,7 @@ mod tests {
     #[test]
     fn decision_strips_think_tags_from_spoken_text() {
         // Empty think block (the exact shape observed live) + real answer.
-        match decision_from_response("<think>\n</think>\nI'm Asha, here to help.", None) {
+        match decision_from_response("<think>\n</think>\nI'm Asha, here to help.", None, &[]) {
             Decision::Speak { text } => {
                 assert!(!text.contains("<think>"), "think tag leaked: {text:?}");
                 assert!(!text.contains("</think>"), "close tag leaked: {text:?}");
@@ -468,13 +493,13 @@ mod tests {
             other => panic!("expected Speak, got {other:?}"),
         }
         // Non-empty reasoning block is also stripped from the spoken text.
-        match decision_from_response("<think>weigh options</think>Ship it.", None) {
+        match decision_from_response("<think>weigh options</think>Ship it.", None, &[]) {
             Decision::Speak { text } => assert_eq!(text, "Ship it."),
             other => panic!("expected Speak, got {other:?}"),
         }
         // An ONLY-thinking response (no answer) cleans to empty → silence.
         assert_eq!(
-            decision_from_response("<think>I won't answer this</think>", None),
+            decision_from_response("<think>I won't answer this</think>", None, &[]),
             Decision::pass()
         );
     }
@@ -530,7 +555,7 @@ mod tests {
             "I've been repeating myself without adding value. Otherwise, PASS",
         ] {
             assert!(
-                matches!(decision_from_response(live, None), Decision::Pass { .. }),
+                matches!(decision_from_response(live, None, &[]), Decision::Pass { .. }),
                 "must silence: {live:?}"
             );
         }
@@ -567,7 +592,7 @@ mod tests {
             "Otherwise, I will PASS and continue to monitor any new developments that arise.",
         ] {
             assert!(
-                matches!(decision_from_response(still_speaks, None), Decision::Speak { .. }),
+                matches!(decision_from_response(still_speaks, None, &[]), Decision::Speak { .. }),
                 "must stay speech — reading intent out of a sentence is the verb's job now, \
                  not this parser's: {still_speaks:?}"
             );
@@ -593,7 +618,7 @@ mod tests {
             "Grep for PASS_TOKEN if you want the constant's call sites.",
         ] {
             assert!(
-                matches!(decision_from_response(speak, None), Decision::Speak { .. }),
+                matches!(decision_from_response(speak, None, &[]), Decision::Speak { .. }),
                 "must stay speech: {speak:?}"
             );
         }
@@ -620,7 +645,7 @@ mod tests {
              specific you'd like me to address or if new information emerges.",
         ] {
             assert!(
-                matches!(decision_from_response(live, None), Decision::Pass { .. }),
+                matches!(decision_from_response(live, None, &[]), Decision::Pass { .. }),
                 "must silence: {live:?}"
             );
         }
@@ -633,7 +658,7 @@ mod tests {
             "You can pass for now if you have nothing to add.",
             "Here's the fix:\n```rust\nlet x = 1;\n```\nI'll pass for now.",
         ] {
-            match decision_from_response(speak, None) {
+            match decision_from_response(speak, None, &[]) {
                 Decision::Speak { .. } => {}
                 other => panic!("must NOT silence {speak:?}, got {other:?}"),
             }
@@ -655,7 +680,7 @@ mod tests {
              silent (PASS) for now.",
         ] {
             assert!(
-                matches!(decision_from_response(drift, None), Decision::Pass { .. }),
+                matches!(decision_from_response(drift, None, &[]), Decision::Pass { .. }),
                 "must silence: {drift:?}"
             );
         }
@@ -676,7 +701,7 @@ mod tests {
             "regression fixture must exceed the old cap"
         );
         assert!(matches!(
-            decision_from_response(over_old_cap, None),
+            decision_from_response(over_old_cap, None, &[]),
             Decision::Pass { .. }
         ));
         // Two-tier regression (live 2026-08-01, the cap arms race's second
@@ -700,7 +725,7 @@ mod tests {
             "regression fixture must exceed the tier-2 cap"
         );
         assert!(matches!(
-            decision_from_response(over_new_cap, None),
+            decision_from_response(over_new_cap, None, &[]),
             Decision::Pass { .. }
         ));
         // Length fail-open: a long substantive message ending in a pass phrase
@@ -713,7 +738,7 @@ mod tests {
             long.len() > 700,
             "fail-open fixture must exceed the current cap"
         );
-        match decision_from_response(&long, None) {
+        match decision_from_response(&long, None, &[]) {
             Decision::Speak { .. } => {}
             other => panic!("long substantive message silenced: {other:?}"),
         }

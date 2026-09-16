@@ -95,6 +95,7 @@ pub mod rate_proposals;
 pub mod recall_faculty;
 pub mod recall_ranker;
 pub mod replay;
+pub mod room_roster;
 pub mod resolution;
 pub mod resolution_bench;
 pub mod resolution_compute;

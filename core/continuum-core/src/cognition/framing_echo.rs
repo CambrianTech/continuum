@@ -257,6 +257,48 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
     None
 }
 
+/// A first-person claim of a PEER'S name leading the response — "I'm Lorcan, …" from
+/// Paige. `echoes_turn_framing` refuses her OWN name recited from the prompt, but a
+/// name that is not hers walked straight past it (card d41b6fc1: Paige, 18c04c5b,
+/// said "I'm Lorcan" three times in one hour, 2026-09-16), and every line she posts
+/// under it is misattributed speech in a room where Lorcan also stands.
+///
+/// Anchored on the LEAD, and keyed on the names she can SEE (the room's roster she
+/// was handed this turn), never a list of every persona ever minted: "I'm Lorcan"
+/// where Lorcan is present is the claim; "Paige said 'I'm Lorcan' three times" is a
+/// report and stays (the substring is not at the lead). A peer whose name is not on
+/// the roster she sees cannot be claimed by this rule — the perception seam owns the
+/// unnamed case. The comparison is exact and case-sensitive on the roster's own
+/// spelling: "I'm lorcan-ish" and "I'm Lorcan's reviewer" are not claims.
+pub fn claims_a_present_peers_name<'p>(
+    text: &str,
+    own_name: Option<&str>,
+    present: &'p [String],
+) -> Option<&'p str> {
+    let t = text.trim_start();
+    // The PREFIX is case-insensitive (small tiers drop capitals — "i'm lorcan" is the
+    // same claim); the NAME stays exact against the roster's own spelling.
+    let rest = ["I'm ", "I am "]
+        .iter()
+        .find(|p| t.len() >= p.len() && t.is_char_boundary(p.len()) && t[..p.len()].eq_ignore_ascii_case(p))
+        .map(|p| &t[p.len()..])?;
+    let name: &str = rest
+        .split(|c: char| !c.is_alphabetic())
+        .next()
+        .unwrap_or(""); // unwrap_or: split always yields one piece; the default is unreachable
+    if name.is_empty() || own_name.is_some_and(|me| me.trim() == name) {
+        return None;
+    }
+    // A possessive or a compound is not a claim: "I'm Lorcan's reviewer" names his
+    // work, "I'm Lorcan-adjacent" names a relation. The claim ends the name with
+    // nothing, punctuation, or a space.
+    let after = rest[name.len()..].chars().next();
+    if matches!(after, Some('\'') | Some('-') | Some('_')) {
+        return None;
+    }
+    present.iter().map(String::as_str).find(|p| *p == name)
+}
+
 /// "[code/run]" / "[work/release]" … opening the text, then (after whitespace)
 /// a JSON object: the shape a model produces when it re-emits a tool call as
 /// prose. A verb path has at least one `/` and only `[a-z0-9_/-]`.
@@ -273,6 +315,34 @@ fn bracketed_verb_path_then_json(t: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: card d41b6fc1 — a citizen speaking under a PEER'S name. The
+    // own-name recital gate never saw "I'm Lorcan" from Paige; every such line was
+    // posted as hers. Keyed on the roster she sees, anchored on the lead, and blind to
+    // possessives, reports, and her own name.
+    #[test]
+    fn a_first_person_claim_of_a_present_peers_name_is_caught_and_a_report_is_not() {
+        let present = vec!["Lorcan".to_string(), "Kira".to_string(), "Paige".to_string()];
+        let me = Some("Paige");
+        assert_eq!(claims_a_present_peers_name("I'm Lorcan, picking up sympy-22456.", me, &present), Some("Lorcan"));
+        assert_eq!(claims_a_present_peers_name("  I am Kira.", me, &present), Some("Kira"));
+        assert_eq!(claims_a_present_peers_name("I'm Lorcan", me, &present), Some("Lorcan"));
+        // The prefix tolerates a dropped capital; the name never does.
+        assert_eq!(claims_a_present_peers_name("i'm Lorcan here.", me, &present), Some("Lorcan"));
+        assert_eq!(claims_a_present_peers_name("i am lorcan here.", me, &present), None);
+        // Her own name is the recital gate's business, not a foreign claim.
+        assert_eq!(claims_a_present_peers_name("I'm Paige, on the serving lane.", me, &present), None);
+        // A report quotes the claim mid-text and stays.
+        assert_eq!(claims_a_present_peers_name("Paige said \"I'm Lorcan\" three times.", me, &present), None);
+        // Possessive / compound / a name she cannot see / a lowercase word.
+        assert_eq!(claims_a_present_peers_name("I'm Lorcan's reviewer on that card.", me, &present), None);
+        assert_eq!(claims_a_present_peers_name("I'm Lorcan-adjacent on this.", me, &present), None);
+        assert_eq!(claims_a_present_peers_name("I'm Sigurd.", me, &present), None);
+        assert_eq!(claims_a_present_peers_name("I'm done with the read.", me, &present), None);
+        assert_eq!(claims_a_present_peers_name("I'm ", me, &present), None);
+        // No roster handed = nothing to claim.
+        assert_eq!(claims_a_present_peers_name("I'm Lorcan.", me, &[]), None);
+    }
 
     // what this catches: the ROLE preamble variant (2026-09-14) — the turn-taking
     // scaffold emitted as speech. Paige posted it verbatim into #continuum: "The
