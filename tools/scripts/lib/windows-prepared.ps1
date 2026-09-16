@@ -63,7 +63,7 @@ function Save-CorePreparedRelease {
     $temporary = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     try {
         [IO.File]::WriteAllText($temporary, ($receipt | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
-        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, $null) }
+        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
         else { [IO.File]::Move($temporary, $path) }
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
