@@ -2967,9 +2967,11 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     // infer the other's intent.
     let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
     let (script, server_bin) = if matches!(policy, LaunchSource::Prebuilt(_)) {
-        // Already prepared: neither an installed override nor a source script
-        // may redirect this explicit artifact or add work to the handoff.
-        (None, None)
+        // Already prepared: an installed override may not redirect this explicit
+        // artifact — but the source script, in PREBUILT MODE, is how the artifact
+        // gets its launch environment (desktop dist, power assertion, airc daemon,
+        // llama-server PATH). Without it the M5 came up dark on 2026-09-16.
+        (locate_start_script().ok(), None)
     } else {
         (locate_start_script().ok(), locate_core_server_binary())
     };
@@ -2985,12 +2987,34 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             let LaunchSource::Prebuilt(candidate) = policy else {
                 unreachable!("only a validated prebuilt source selects this plan")
             };
-            eprintln!(
-                "▶ starting verified prebuilt core: {} (build {}, no rebuild; log: {logfile})",
-                candidate.path.display(),
-                candidate.build_sha
-            );
-            direct_core_command(&candidate.path, &socket)
+            match script.as_ref() {
+                // ONE start path (2026-09-16): the verified artifact launches THROUGH
+                // start-server.sh in prebuilt mode — every cargo build skipped, every
+                // piece of launch environment kept (desktop dist, power assertion, airc
+                // daemon, llama-server PATH). The bare direct launch darkened the M5's
+                // desktop and dropped its sleep assertion on the first warm-build reboot.
+                Some(script) => {
+                    eprintln!(
+                        "▶ starting verified prebuilt core: {} (build {}, no rebuild) via {} (log: {logfile})",
+                        candidate.path.display(),
+                        candidate.build_sha,
+                        script.display()
+                    );
+                    let mut c = std::process::Command::new(locate_bash()?);
+                    c.arg(script);
+                    c.env("CONTINUUM_PREBUILT_CORE", &candidate.path);
+                    c
+                }
+                // No source tree (an installed-only box): the bare launch is all there is.
+                None => {
+                    eprintln!(
+                        "▶ starting verified prebuilt core: {} (build {}, no rebuild, no start script; log: {logfile})",
+                        candidate.path.display(),
+                        candidate.build_sha
+                    );
+                    direct_core_command(&candidate.path, &socket)
+                }
+            }
         }
         LaunchPlan::Script => {
             let script = script.expect("plan_launch only picks Script when one was found");
