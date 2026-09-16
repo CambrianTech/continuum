@@ -54,6 +54,7 @@ operations, not assertions that these exact CLI names already exist:
 | Operation | Contract |
 |---|---|
 | Inspect/search | Explain current composition, mode, candidates, compatibility, evidence, costs and selection reasons. Search does not activate. |
+| Select policy | Bind a versioned policy adapter to a persona/activity through the command surface; inspect or replace that binding using its expected generation. |
 | Select | Propose a typed composition for a persona, optionally locking it. Same validation and activation path as automatic selection. |
 | Lock/release | Hold an exact resolved composition or return to automatic selection. Durable across restart, with actor, scope and generation. |
 | Prefetch | Obtain verified artifacts within budget without changing active cognition. |
@@ -67,6 +68,59 @@ a newer lock or manual decision. Changes to another persona require that persona
 existing delegation/authorization policy. A lock prevents automatic replacement;
 it does not guarantee permanent GPU residency. If it cannot be served, expose the
 reason rather than silently changing its composition.
+
+## The selection policy is an adapter
+
+Policy is an explicit, replaceable adapter contract, not a hidden fixed scoring
+algorithm inside the pager. A command selects it. Implementations may be a static
+rule, a learned model/LoRA, a training or evaluation controller, an external agent,
+or the persona herself. A policy adapter need not be a weight file. These providers
+receive the same typed demand/candidate/budget snapshot and return attributable
+selection proposals through the same command path.
+
+The binding records adapter identity/revision, configuration, scope, actor and
+generation. Policy selection is distinct from both composition locking and artifact
+publication. Selecting a different policy does not unlock a held composition.
+Training/testing mode is explicit: shadow proposals can be evaluated and recorded
+without changing the live composition. An experimental policy acts live only under
+the activity's authorized mode and budgets.
+
+The concurrent owner invokes the selected policy outside inference's critical path.
+Local policies use typed calls; a remote agent uses the existing AIRC command/reply
+contract with cancellation, deadlines and generation matching. Slow, failed or stale
+proposals cannot hold the serving lane or overwrite newer intent. The pager enforces
+compatibility, capacity and authority independently of the policy implementation;
+the policy proposes choices rather than bypassing those constraints.
+
+Bootstrap uses an explicitly configured policy binding. Evaluating that binding
+does not recursively select another policy. A policy can propose its own replacement,
+but replacement is a recorded command decision under existing authority, validated
+and activated between evaluations. The incumbent revision owns its in-flight
+decisions; it cannot rewrite their attribution after learning.
+
+## Record actual execution, then learn from it
+
+Capture the model-visible request before dispatch, referencing existing immutable
+artifact identities rather than copying payloads. Correlate policy input and output,
+candidate set, selected and rejected revisions, lock/mode, composition actually
+admitted by the backend, base/tokenizer identity, layer scales, KV identity and
+executing node. Link tool results, model outputs, latency/memory, outcome evaluations
+and subsequent training to the same causal chain. A proposed composition is not an
+execution receipt; a ready roster is not a capability result.
+
+Use the existing recorder, artifact store and activity projections. Define capture
+durability as part of the activity contract; a failed required capture must be visible
+before dispatch, not silently described later as a replayable run. Local private
+context stays access-controlled; public HF/Alloy evidence exposes only permitted
+records. Replay requires retained referenced artifacts and records stochastic/backend
+limits rather than promising bit-identical regeneration.
+
+These records train both specialist skills and the policy adapter: which expertise
+helped, at what cost, on which tasks and hardware. Preserve alternatives and selection
+probabilities when the policy exposes them, so selection bias is measurable. A trace
+alone is not counterfactual evidence; validate policy improvements on held-out real
+activities before promotion. The same provenance and publishing machinery applies to
+a learned policy, without forcing static or agent-backed implementations into LoRA.
 
 ## Predict before inference; activate coherently
 
