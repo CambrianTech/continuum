@@ -309,20 +309,31 @@ fn candidate_paths_changed(root: &std::path::Path) -> String {
             .iter()
             .map(|s| s.to_string()),
     );
-    std::process::Command::new("git")
-        .args(&args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| format!(" M {l}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default() // unwrap_or: an unreadable diff reads as "no work", never a guessed one
+    match std::process::Command::new("git").args(&args).output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!(" M {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // "git failed" and "no changes" must not be the same silent value: the copy holding
+        // the real edit could be the one whose diff cannot be read, and it would be passed
+        // over exactly like the scratch copy this reader exists to pass over (#4117 review).
+        // Still no work is guessed — but the failure is a row someone can find.
+        other => {
+            let why = match other {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => e.to_string(),
+            };
+            crate::probe!(
+                class = "benchmark.workspace.candidate_diff_unreadable",
+                workspace = %root.display(),
+                why = why.as_str(),
+                "could not read this copy's candidate diff — it reads as NO candidate, which may hide real work"
+            );
+            String::new()
+        }
+    }
 }
 
 fn newest_commit_above_base_ms(root: &std::path::Path) -> Option<u64> {

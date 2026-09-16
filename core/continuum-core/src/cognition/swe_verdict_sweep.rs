@@ -233,11 +233,19 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     // minutes later — mid-run, before a single edit — and recorded "no candidate patch"
     // for django-11211 and sympy-24443 while both were still solving. A running ledger
     // means the work is not finished; grading it grades a snapshot. The instance waits.
+    // A `running` ledger untouched for an hour is a dead solve, not a live one — it must
+    // not hold its instance out of grading until the next boot's reaper (#4117 review).
+    let (live, stale) = crate::cognition::swe_bench::in_flight_solve_runs_fresh();
+    for (run_id, instance) in &stale {
+        crate::probe!(
+            class = "benchmark.verdict.stale_solve_ledger_ignored",
+            run_id = run_id.as_str(),
+            instance = instance.as_str(),
+            "a running ledger nothing has touched for an hour — not a solve in flight; grading proceeds"
+        );
+    }
     let in_flight: std::collections::BTreeSet<String> =
-        crate::cognition::swe_bench::in_flight_solve_runs()
-            .into_iter()
-            .map(|(_, instance)| instance)
-            .collect();
+        live.into_iter().map(|(_, instance)| instance).collect();
     for instance in all_staged_instances() {
         if in_flight.contains(&instance) {
             crate::probe!(
