@@ -2901,6 +2901,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn every_hf_catalogued_suite_yields_coordinates_and_non_hf_is_refused() {
         let by_name = |n: &str| known_benchmarks().iter().find(|b| b.name == n).unwrap();
 

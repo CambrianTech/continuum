@@ -504,6 +504,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn attach_local_artifact_records_paths_and_flips_ready() {
         use std::path::PathBuf;
         let reg = catalog::registry().expect("Rust catalog must validate");
