@@ -1120,7 +1120,7 @@ pub fn page_dirs_of(
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
 /// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
 /// into `~/.continuum/bin`. Resolution order:
-///   1. `LLAMA_SERVER_BIN` config override (deployment escape hatch),
+///   1. `LLAMA_SERVER_BIN` launch environment, then config override,
 ///   2. our owned install at `~/.continuum/bin/llama-server` (the normal case —
 ///      the core knows where its own engine lives; no reliance on a launcher
 ///      munging `PATH`, no borrowing `~/.unsloth`'s build),
@@ -1128,7 +1128,10 @@ pub fn page_dirs_of(
 /// We do NOT silently fall back to a different engine — a missing binary
 /// surfaces loudly when spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
 fn server_bin() -> String {
-    if let Some(over) = crate::config_env::read("LLAMA_SERVER_BIN")
+    if let Some(over) = std::env::var("LLAMA_SERVER_BIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     {
@@ -3996,6 +3999,32 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // The service-host's verified engine must win over any older default install.
+    // A child process isolates the launch environment from parallel tests.
+    #[test]
+    fn serving_uses_the_supervisors_engine() {
+        const CHILD: &str = "CONTINUUM_ENGINE_CONTRACT_TEST_CHILD";
+        const ENGINE: &str = "prepared release/engine-b/llama-server.exe";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(super::server_bin(), ENGINE);
+            return;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "inference::llama_server::tests::serving_uses_the_supervisors_engine",
+            ])
+            .env(CHILD, "1")
+            .env("LLAMA_SERVER_BIN", ENGINE);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        assert!(command.status().unwrap().success());
+    }
+
     // Regression for #4069: failed signalling and unknown wait must not free
     // pages while the actual owned process remains alive. All files are isolated.
     #[tokio::test]
