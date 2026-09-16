@@ -3334,15 +3334,20 @@ pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
         if !node.contains("::") {
             continue;
         }
+        // XPASS is a test that RAN AND PASSED under an xfail marker whose condition this
+        // env does not meet (xarray-4356, card 27a5d94d: `test_datetime_mean[False]/[True]`
+        // are xfail-marked against a pandas version the era env does not have, pass when
+        // run, and were graded as two P2P misses). The official harness never emits XPASS
+        // in the env that minted the P2P list — there the test simply PASSED — so the
+        // faithful reading of "it passed here too" is a pass. A STRICT xfail that passes is
+        // reported by pytest as FAILED, so strictness is never lost by this mapping.
         let ok = if verdict.starts_with("PASSED")
             || verdict.starts_with("XFAIL")
+            || verdict.starts_with("XPASS")
             || verdict.starts_with("SKIPPED")
         {
             true
-        } else if verdict.starts_with("FAILED")
-            || verdict.starts_with("ERROR")
-            || verdict.starts_with("XPASS")
-        {
+        } else if verdict.starts_with("FAILED") || verdict.starts_with("ERROR") {
             false
         } else {
             continue;
@@ -4282,6 +4287,23 @@ mod tests {
     // The parser must record the full space-bearing node id; the lookup must
     // score an unclosed-`[` fragment as the AND of the nodes it prefixes; and
     // outcome-leading short-summary rows must never parse as verbose rows.
+    // what this catches: card 27a5d94d — an XPASS graded as a miss. The test ran and
+    // passed; only its xfail marker (keyed on a package version the era env lacks) says
+    // it was expected not to. A strict xfail that passes arrives as FAILED and stays one.
+    #[test]
+    fn an_xpass_is_a_test_that_passed_and_a_strict_one_arrives_as_failed() {
+        let report = "\
+xarray/tests/test_duck_array_ops.py::test_datetime_mean[False] XPASS [ 50%]
+xarray/tests/test_duck_array_ops.py::test_datetime_mean[True] XPASS [ 75%]
+xarray/tests/test_duck_array_ops.py::test_strict_marker FAILED [100%]
+";
+        let (by_node, by_func) = parse_pytest_report(report);
+        assert_eq!(by_node.get("xarray/tests/test_duck_array_ops.py::test_datetime_mean[False]"), Some(&true));
+        assert_eq!(by_node.get("xarray/tests/test_duck_array_ops.py::test_datetime_mean[True]"), Some(&true));
+        assert_eq!(by_func.get("test_datetime_mean"), Some(&true));
+        assert_eq!(by_node.get("xarray/tests/test_duck_array_ops.py::test_strict_marker"), Some(&false));
+    }
+
     #[test]
     fn space_bearing_param_ids_parse_and_truncated_fragments_score_by_prefix() {
         let report = "\
