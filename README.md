@@ -937,6 +937,14 @@ This fast-forwards the checkout's configured upstream, rebuilds, validates the c
 
 Core updates preserve warm inference lanes. The staged inference engine is used when a lane next starts; an already running engine is retained rather than interrupted merely to refresh its executable.
 
+If compilation and preparation succeeded but startup registration or handoff failed, retry the prepared release from a local installer checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -ResumePrepared
+```
+
+This explicitly deploys the already prepared release, without provisioning or compiling the current checkout. It verifies the saved artifact hashes and Windows account, prints the selected core's actual build SHA, repairs registration, and uses the same guarded handoff. It cannot be combined with `-Update`. Future preparations save `%USERPROFILE%\.continuum\install-prepared.json` before requesting registration elevation. For older preparations without that receipt, resume selects the existing `ContinuumCore` task descriptor and validates its installed files; no historical artifact or build-configuration receipt is claimed. Invalid receipts or changed files are refused rather than silently selecting another release.
+
 `setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See the **[per-OS walkthrough](docs/SETUP.md)** with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
 <details>
