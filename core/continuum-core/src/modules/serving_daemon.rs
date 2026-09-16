@@ -985,13 +985,18 @@ impl ServingDaemonModule {
         // in-flight model calls, and the scratch slot is one of them (first cut clamped the
         // resident count and the +1 put the plan right back on the collapsed side).
         let clamped = crate::inference::decode_knee::knee_lanes(lanes, knee);
-        if clamped < lanes {
+        // One row when the clamp CHANGES (first live read: one row per planning tick,
+        // 400 in seven minutes — the ledger-rotation class), in both directions.
+        static LAST_CLAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let shape = ((lanes as u64) << 32) | clamped as u64;
+        if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
             crate::probe!(
                 class = "serving.decode_knee.clamped",
-                model = %active_model.unwrap_or_default(), // unwrap_or_default: a knee implies a model; the empty label is unreachable
+                model = %active_model.unwrap_or_default(), // unwrap_or_default: no model = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
-                "lane demand clamped to the measured decode knee — the roster pages, the streams stay fast"
+                clamped = clamped < lanes,
+                "lane demand against the measured decode knee — the roster pages, the streams stay fast"
             );
         }
         let lanes = clamped;
