@@ -1,5 +1,12 @@
 # Gene Lifecycle: Continue vs Fork vs Mint
 
+**Implementation refinement (2026-09-16):**
+[Automatic selection and the shared skill lifecycle](ADAPTIVE-GENOME-LIFECYCLE.md)
+connects this policy to live paging, commands and owner-governed publication.
+Its reject/retry step qualifies the rules below: distance permits a local mint
+experiment, not automatic publication; one failed assimilation is not sufficient
+evidence of valuable divergence. Parent skill repositories keep evolving after a fork.
+
 **Joel, 2026-08-23:** *"It also has to know when to keep training a LoRA layer
 vs a new one or a fork."* This note is that decision's design, extending the
 distance-routing doctrine (gene routing is DISTANCE, not keywords) with the
