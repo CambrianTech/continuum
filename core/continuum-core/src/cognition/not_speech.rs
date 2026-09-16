@@ -240,23 +240,47 @@ fn opens_with_peer_id(t: &str) -> bool {
 /// `peer <uuid>` within it) rather than guessing at citizen phrasing, because an
 /// open set of paraphrases is exactly what the module doc refuses to enumerate.
 fn opens_with_wrapped_peer_id(t: &str) -> bool {
-    if !t.starts_with('[') {
-        return false;
+    let mut t = t;
+    // The wrappers NEST. The substrate emits its renderings stacked — a dated
+    // history line wrapping an undated one, `[occurred …] [occurrence time unknown]
+    // <uuid>: …` — and a citizen echoes the whole stack, so peeling exactly one
+    // layer leaves the majority of real traffic unrecognised. Measured on the
+    // post-deploy window (card b8e2cb23): one layer catches 16 of 37 lines, peeling
+    // catches 23, and the seven it adds cost ZERO false positives across 2,061 lines
+    // from every peer in 24h — each one is a stacked prefix, nothing else.
+    //
+    // Bounded rather than unbounded: the depth that occurs is small, and a fixed
+    // ceiling keeps this linear on adversarial input instead of trusting the shape
+    // of what a model might emit.
+    for _ in 0..MAX_WRAPPER_DEPTH {
+        if !t.starts_with('[') {
+            return false;
+        }
+        let Some(close) = t.find(']') else { return false };
+        let header = &t[1..close];
+        let body = t[close + 1..].trim_start();
+        if body.is_empty() {
+            // A header with nothing after it carries no one's voice.
+            return false;
+        }
+        // Shape 1: the header names the peer; the body is that peer's turn.
+        if header_names_a_peer(header) {
+            return true;
+        }
+        // Shape 2: the header is an aside and the transcript line follows it intact.
+        if opens_with_peer_id(body) {
+            return true;
+        }
+        // Neither — this layer was some other bracketed prefix. Peel and look again.
+        t = body;
     }
-    let Some(close) = t.find(']') else { return false };
-    let header = &t[1..close];
-    let body = t[close + 1..].trim_start();
-    if body.is_empty() {
-        // A header with nothing after it carries no one's voice.
-        return false;
-    }
-    // Shape 1: the header names the peer; the body is that peer's turn.
-    if header_names_a_peer(header) {
-        return true;
-    }
-    // Shape 2: the header is an aside and the transcript line follows it intact.
-    opens_with_peer_id(body)
+    false
 }
+
+/// How many stacked substrate wrappers to peel before giving up. Four covers every
+/// depth observed in live traffic with headroom; the point of the ceiling is that
+/// the loop stays bounded, not that deeper stacks are legitimate.
+const MAX_WRAPPER_DEPTH: usize = 4;
 
 /// A delivery header naming a peer, as this substrate renders it: `peer <uuid>`.
 /// Requiring the literal keyword — not merely "a uuid appears in the brackets" —
@@ -288,6 +312,26 @@ mod tests {
     fn an_occurrence_time_aside_does_not_hide_a_transcript_line() {
         let observed = "[occurrence time unknown] 207de8bf-f3b1-407d-9789-09fc0b29f14f: Let me take stock honestly.";
         assert_eq!(is_not_speech(observed), Some("peer_voice_wrapped"));
+    }
+
+    // what this catches: STACKED wrappers, which are the majority shape in live
+    // traffic and which a single peel misses entirely. The substrate renders a dated
+    // history line wrapping an undated one; the citizen echoes both. Fixtured from an
+    // observed line. Measured: peeling takes the window from 16 of 37 to 23 of 37 and
+    // costs zero false positives across 2,061 lines from every peer in 24h.
+    #[test]
+    fn stacked_wrappers_do_not_hide_a_peers_turn() {
+        let observed = "[occurred 2026-09-16T08:45:13.707Z] [occurrence time unknown] cf6b4df6-ab13-4fd8-81fb-bcb115215468: Let me take stock honestly.";
+        assert_eq!(is_not_speech(observed), Some("peer_voice_wrapped"));
+    }
+
+    // what this catches: the bound. Peeling must terminate on a pathological stack
+    // rather than scanning forever, and a stack that never reaches a peer id is not
+    // peer voice however deep it goes.
+    #[test]
+    fn peeling_is_bounded_and_a_deep_stack_without_a_peer_is_speech() {
+        let deep = "[a] [b] [c] [d] [e] [f] I am still just talking.";
+        assert_eq!(is_not_speech(deep), None);
     }
 
     // what this catches: the over-match this predicate invites. A citizen may open
