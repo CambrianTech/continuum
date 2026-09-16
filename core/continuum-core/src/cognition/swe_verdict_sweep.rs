@@ -228,7 +228,33 @@ pub fn pending() -> Vec<PendingGrade> {
 pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     let mut out = Vec::new();
     let mut skipped_refused = 0usize;
+    // A SOLVE IN FLIGHT IS NOT AN ARTIFACT (2026-09-16): after the morning's reboots the
+    // resume re-fired five detached solves; the tick's sweep graded their checkouts
+    // minutes later — mid-run, before a single edit — and recorded "no candidate patch"
+    // for django-11211 and sympy-24443 while both were still solving. A running ledger
+    // means the work is not finished; grading it grades a snapshot. The instance waits.
+    // A `running` ledger untouched for an hour is a dead solve, not a live one — it must
+    // not hold its instance out of grading until the next boot's reaper (#4117 review).
+    let (live, stale) = crate::cognition::swe_bench::in_flight_solve_runs_fresh();
+    for (run_id, instance) in &stale {
+        crate::probe!(
+            class = "benchmark.verdict.stale_solve_ledger_ignored",
+            run_id = run_id.as_str(),
+            instance = instance.as_str(),
+            "a running ledger nothing has touched for an hour — not a solve in flight; grading proceeds"
+        );
+    }
+    let in_flight: std::collections::BTreeSet<String> =
+        live.into_iter().map(|(_, instance)| instance).collect();
     for instance in all_staged_instances() {
+        if in_flight.contains(&instance) {
+            crate::probe!(
+                class = "benchmark.verdict.sweep_deferred_in_flight",
+                instance = instance.as_str(),
+                "a detached solve is running on this instance — not graded until it settles"
+            );
+            continue;
+        }
         // A VERDICT IS AN ATTEMPT'S, NOT THE INSTANCE'S FOREVER. Keyed by instance, an
         // old verdict blocked every later attempt: django-15467 carried a False from
         // 2026-09-12 and astropy-13453 an old False, so Joaquin's validated astropy fix

@@ -404,6 +404,40 @@ pub fn in_flight_solve_runs() -> Vec<(String, String)> {
     in_flight_solve_runs_in(&solve_ledger_dir())
 }
 
+/// A `running` ledger that nothing has touched for this long is not a solve in flight — it
+/// is a solve that died without a reboot (a SIGKILL, a panicked task, the power event of
+/// 2026-09-16). The boot reaper only sees deaths a restart caused; between boots a dead
+/// ledger would otherwise hold its instance out of grading forever (Cormac, #4117 review).
+/// A live solve rewrites its ledger on every act, so an hour of silence is decisive.
+pub const SOLVE_LEDGER_STALE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// In-flight runs whose ledger is FRESH: `(run_id, instance)` for every `running` ledger
+/// touched within [`SOLVE_LEDGER_STALE`]; stale ones are returned separately so the caller
+/// can name them instead of silently ignoring them.
+pub fn in_flight_solve_runs_fresh_in(
+    dir: &Path,
+    now: std::time::SystemTime,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let mut fresh = Vec::new();
+    let mut stale = Vec::new();
+    for (run_id, instance) in in_flight_solve_runs_in(dir) {
+        let path = solve_ledger_path(dir, &run_id);
+        let age = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok());
+        match age {
+            Some(a) if a > SOLVE_LEDGER_STALE => stale.push((run_id, instance)),
+            _ => fresh.push((run_id, instance)), // an unreadable mtime is treated as fresh: never grade over a solve that might be live
+        }
+    }
+    (fresh, stale)
+}
+
+pub fn in_flight_solve_runs_fresh() -> (Vec<(String, String)>, Vec<(String, String)>) {
+    in_flight_solve_runs_fresh_in(&solve_ledger_dir(), std::time::SystemTime::now())
+}
+
 /// At boot, any run still marked `running` was owned by a core that no longer exists — a
 /// reboot, a crash, a SIGKILL. Rewrite it as a FAILED run naming the cause.
 ///
@@ -4960,6 +4994,17 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             vec![("alive".to_string(), "sympy__sympy-22005".to_string())],
             "only OUR unfinished runs count as in flight"
         );
+        // what this catches (#4117 review): a `running` ledger nothing touched for an hour is
+        // a dead solve between boots — it must stop blocking its instance's grade, and it
+        // must be NAMED (returned as stale), never silently dropped.
+        let now = std::time::SystemTime::now();
+        let (fresh, stale) = in_flight_solve_runs_fresh_in(p, now);
+        assert_eq!(fresh.len(), 1, "a ledger touched just now is in flight");
+        assert!(stale.is_empty());
+        let later = now + SOLVE_LEDGER_STALE + std::time::Duration::from_secs(1);
+        let (fresh, stale) = in_flight_solve_runs_fresh_in(p, later);
+        assert!(fresh.is_empty(), "an hour of silence is a dead solve");
+        assert_eq!(stale, vec![("alive".to_string(), "sympy__sympy-22005".to_string())]);
 
         let reaped = reap_orphaned_solve_runs_in(p);
         // PREMISE CHANGE, not a weakening: the reaper now returns `(run_id, instance)`, the

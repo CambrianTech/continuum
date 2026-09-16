@@ -165,18 +165,20 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
         if !path.join(".git").exists() {
             continue;
         }
-        let porcelain = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&path)
-            .args(["status", "--porcelain"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();  // unwrap_or: an unreadable status reads as "no work" — the same as before, never a guessed diff
-        // Committed work above the staged base counts — see `work_mtime_of`.
+        // WORK HERE IS THE CANDIDATE, NOTHING ELSE (2026-09-16). This reader feeds the
+        // grade: `git status --porcelain` counted every untracked file as "her hands
+        // touched it" — `?? repro_gfk_uuid.py`, `?? in`, a stray `django/` from a shell in
+        // the wrong directory — so a re-fired solve's scratch read as the NEWEST worked
+        // copy, the tiebreak graded it over an older copy holding a real +4/−2 edit, and
+        // the grader refused "no candidate patch" (django-11211, sympy-24443, the morning
+        // after the 09-16 reboots). The grader's reading of her work is the tracked diff
+        // against the staged base under `SOLUTION_PATH_EXCLUDES`; this reader asks git the
+        // same question, so "worked" here means exactly "gradeable" there. The PROTECTIVE
+        // reading — "does she carry anything a restage must not destroy" — is
+        // `work_mtime_of` and still counts every file; the two questions differ on purpose.
+        let changed = candidate_paths_changed(&path);
         let work_mtime_ms = newest_evidence_ms(
-            newest_work_mtime_ms(&path, &porcelain),
+            newest_work_mtime_ms(&path, &changed),
             newest_commit_above_base_ms(&path),
         );
         let has_work = work_mtime_ms.is_some();
@@ -286,6 +288,54 @@ pub(crate) fn staged_base_of(root: &std::path::Path) -> Option<String> {
 
 /// The committer time (ms) of the newest commit above the staged base, `None` when HEAD
 /// is the base (or the base is unknown, which reads as no committed work — the old rule).
+/// The tracked paths that differ from the staged base under the grader's exclude rules,
+/// rendered in the ` M path` shape `newest_work_mtime_ms` reads — one question to git,
+/// the same one `workspace_candidate_diff_from` asks, so "worked" and "gradeable" cannot
+/// drift. No recorded base (a checkout older than `clone_at`'s record) falls back to
+/// HEAD, which IS the base until she commits.
+fn candidate_paths_changed(root: &std::path::Path) -> String {
+    let base = staged_base_of(root).unwrap_or_else(|| "HEAD".to_string()); // unwrap_or: no record = the checkout sits at its base
+    let mut args: Vec<String> = vec![
+        "-C".into(),
+        root.to_string_lossy().into_owned(),
+        "diff".into(),
+        "--name-only".into(),
+        base,
+        "--".into(),
+        ".".into(),
+    ];
+    args.extend(
+        crate::commands::benchmark::SOLUTION_PATH_EXCLUDES
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    match std::process::Command::new("git").args(&args).output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!(" M {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // "git failed" and "no changes" must not be the same silent value: the copy holding
+        // the real edit could be the one whose diff cannot be read, and it would be passed
+        // over exactly like the scratch copy this reader exists to pass over (#4117 review).
+        // Still no work is guessed — but the failure is a row someone can find.
+        other => {
+            let why = match other {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => e.to_string(),
+            };
+            crate::probe!(
+                class = "benchmark.workspace.candidate_diff_unreadable",
+                workspace = %root.display(),
+                why = why.as_str(),
+                "could not read this copy's candidate diff — it reads as NO candidate, which may hide real work"
+            );
+            String::new()
+        }
+    }
+}
+
 fn newest_commit_above_base_ms(root: &std::path::Path) -> Option<u64> {
     let base = staged_base_of(root)?;
     let out = std::process::Command::new("git")
@@ -402,11 +452,26 @@ mod tests {
         git(&["commit", "-q", "-am", "the fix"]);
         assert!(super::work_mtime_of(root).is_some(), "a clean tree ABOVE the base is work");
         assert_eq!(super::newest_evidence_ms(None, None), None);
+        // what this catches (2026-09-16, django-11211 / sympy-24443): the GRADER's reading of
+        // work is the candidate — a tracked diff against the base — never untracked scratch.
+        // A repro script and a __pycache__ dir are not a candidate; a tracked edit is.
+        std::fs::write(root.join(".git").join("continuum-base"), git_head(root)).unwrap();
+        std::fs::write(root.join("repro_gfk_uuid.py"), "print('repro')\n").unwrap();
+        std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+        std::fs::write(root.join("__pycache__").join("x.pyc"), "junk").unwrap();
+        assert_eq!(super::candidate_paths_changed(root), "", "untracked scratch is not a candidate");
+        assert!(super::work_mtime_of(root).is_some(), "…but it IS something a restage must not destroy");
+        std::fs::write(root.join("a.txt"), "edit\n").unwrap();
+        assert_eq!(super::candidate_paths_changed(root), " M a.txt", "a tracked edit is the candidate");
         assert_eq!(super::newest_evidence_ms(Some(5), Some(9)), Some(9));
         assert_eq!(super::newest_evidence_ms(Some(5), None), Some(5));
     }
 
     use super::*;
+
+    fn git_head(root: &std::path::Path) -> String {
+        String::from_utf8(std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string()
+    }
 
     fn staged(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| (*s).to_string()).collect()
