@@ -2167,7 +2167,9 @@ pub fn start_server(
 
     // Phase 4c: EmbeddingModule (absorbs standalone embedding worker)
     // Provides embedding/generate, embedding/model/{load,list,info,unload}
-    runtime.register(Arc::new(EmbeddingModule::new()));
+    runtime.register(Arc::new(EmbeddingModule::new(
+        memory_manager.embedding_provider(),
+    )));
 
     // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
     // Provides runtime/metrics/{all,module,slow}, runtime/list
@@ -2443,6 +2445,7 @@ pub fn start_server(
         // executor is built so its typed commands land on the one registry.
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
+            memory_manager.embedding_provider(),
         )));
         runtime.register(Arc::new(crate::modules::room::RoomModule::new(
             registry.clone(),

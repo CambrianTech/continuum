@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use airc_lib::{
     Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard,
-    HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCardId,
+    HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId,
 };
 
 use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeRegistry};
@@ -223,6 +223,15 @@ pub(crate) fn persona_airc(
     family: &str,
 ) -> Result<Arc<Airc>, CommandError> {
     Ok(persona_runtime(registry, ctx, family)?.airc().clone())
+}
+
+fn priority_str(p: Priority) -> &'static str {
+    match p {
+        Priority::P0 => "p0",
+        Priority::P1 => "p1",
+        Priority::P2 => "p2",
+        Priority::P3 => "p3",
+    }
 }
 
 fn parse_priority(s: &str) -> Priority {
@@ -2423,6 +2432,12 @@ pub struct WorkListCard {
     /// "someone" ([[card-holder]]) — but read AFTER whether she can take it, because
     /// an owner on a lapsed lease is history, not an obstacle.
     pub owner: Option<String>,
+    /// The card's declared priority (`p0`..`p3`). The model always carried it; the
+    /// list did not render it, so a 118-card board read as unordered (2026-09-16).
+    pub priority: String,
+    /// How long the card has been on the board, in hours. Age is the other half of
+    /// order: an open P2 from July and an open P2 from this morning are not equals.
+    pub age_hours: u64,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -2542,6 +2557,8 @@ impl ActionCommand for WorkList {
                         owner: holder.owner.map(|_| holder.display.clone()),
                         claimable: holder.claimable(c.state),
                         lease: holder.lease_word().map(str::to_string),
+                        priority: priority_str(c.priority).to_string(),
+                        age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
                     },
                     c.state,
                 )
@@ -2593,6 +2610,300 @@ impl ActionCommand for WorkList {
 
 /// Read ONE card's full content (read-only) — the requirements a worker
 /// re-checks mid-task.
+// ───────────────────────── work/similar · work/duplicates ─────────────────────────
+//
+// The board's "which of these is the same card" question, answered in the ONE
+// embedding space. Measured 2026-09-16: 118 open cards, astropy-12907 open EIGHT
+// times, sympy-24152 five — and no surface could show it, so the triage never
+// started. Both compose the text-level primitives (`embedding/similar` /
+// `embedding/groups`); the only board-specific part is what text stands for a card.
+
+/// What a card SAYS, for similarity: its title plus the head of its body. The title
+/// alone catches instance duplicates (the bench cards' titles are identical); the
+/// body head catches engineering cards that name the same defect in different words.
+fn card_text(c: &WorkCard) -> String {
+    const BODY_HEAD: usize = 400;
+    match c.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        Some(body) => {
+            let head: String = body.chars().take(BODY_HEAD).collect();
+            format!("{}\n{}", c.title, head)
+        }
+        None => c.title.clone(),
+    }
+}
+
+fn card_candidates(
+    cards: &[WorkCard],
+    states: &[CardState],
+) -> Vec<crate::commands::embedding::similar::SimilarCandidate> {
+    cards
+        .iter()
+        .filter(|c| states.is_empty() || states.contains(&c.state))
+        .map(|c| crate::commands::embedding::similar::SimilarCandidate {
+            id: short8(c.card_id.as_uuid()),
+            text: card_text(c),
+        })
+        .collect()
+}
+
+fn parse_states(states: &[String]) -> Result<Vec<CardState>, CommandError> {
+    states.iter().map(|s| parse_state(s)).collect()
+}
+
+fn default_similar_k() -> usize {
+    10
+}
+fn default_open_states() -> Vec<String> {
+    vec!["open".to_string()]
+}
+
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarParams.ts")]
+pub struct WorkSimilarParams {
+    /// A card to find the likes of (short id or UUID). Its own text is the query and
+    /// it is excluded from the hits. Give this OR `text`.
+    #[serde(default)]
+    pub card_id: Option<String>,
+    /// Free text to find the nearest cards to — a new idea before you file it, a
+    /// symptom before you go looking. Give this OR `card_id`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// How many hits (default 10).
+    #[serde(default = "default_similar_k")]
+    pub k: usize,
+    /// Which columns to search (default `["open"]`). Empty = every card.
+    #[serde(default = "default_open_states")]
+    pub states: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarHit.ts")]
+pub struct WorkSimilarHit {
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    pub similarity: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub z: Option<f32>,
+    pub significant: bool,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarResult.ts")]
+pub struct WorkSimilarResult {
+    /// What was compared against: the card's id, or `text`.
+    pub query: String,
+    /// How many cards were scored (after the state filter).
+    pub searched: usize,
+    pub space: String,
+    pub gate: String,
+    pub hits: Vec<WorkSimilarHit>,
+}
+
+pub struct WorkSimilar {
+    pub registry: PersonaAircRuntimeRegistry,
+    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+}
+
+#[async_trait]
+impl ActionCommand for WorkSimilar {
+    const NAME: &'static str = "work/similar";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Find the cards most like a card (`cardId`) or a text (`text`). Each hit carries its \
+         similarity, `z` (standard deviations above the embedder's unrelated-pair mean) and \
+         `significant`. Use it BEFORE filing a card (is this already on the board?) and while \
+         triaging (is this card a duplicate?). Searches open cards by default; pass `states` \
+         to widen.";
+    type Params = WorkSimilarParams;
+    type Output = WorkSimilarResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: WorkSimilarParams,
+    ) -> Result<WorkSimilarResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        let states = parse_states(&p.states)?;
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+        let (query_label, query_text, exclude) = match (p.card_id.as_deref(), p.text.as_deref())
+        {
+            (Some(id), None) => {
+                let card_id = resolve_card_id(&airc, id).await?;
+                let card = board
+                    .cards
+                    .iter()
+                    .find(|c| c.card_id == card_id)
+                    .ok_or_else(|| {
+                        CommandError::NotFound(format!("card {id} is not on the board"))
+                    })?;
+                let short = short8(card_id.as_uuid());
+                (short.clone(), card_text(card), Some(short))
+            }
+            (None, Some(text)) if !text.trim().is_empty() => {
+                ("text".to_string(), text.to_string(), None)
+            }
+            _ => {
+                return Err(CommandError::Invalid(
+                    "give exactly one of `cardId` (find cards like this one) or `text` (find \
+                     cards like this text)"
+                        .into(),
+                ))
+            }
+        };
+        let candidates: Vec<_> = card_candidates(&board.cards, &states)
+            .into_iter()
+            .filter(|c| exclude.as_deref() != Some(c.id.as_str()))
+            .collect();
+        let searched = candidates.len();
+        let ranked = crate::commands::embedding::similar::rank_texts(
+            &self.embedder,
+            &query_text,
+            &candidates,
+            p.k,
+            0.0,
+            3.0,
+        )
+        .await?;
+        let by_id: std::collections::HashMap<String, &WorkCard> = board
+            .cards
+            .iter()
+            .map(|c| (short8(c.card_id.as_uuid()), c))
+            .collect();
+        let hits = ranked
+            .results
+            .into_iter()
+            .filter_map(|h| {
+                by_id.get(&h.id).map(|c| WorkSimilarHit {
+                    id: h.id,
+                    title: c.title.clone(),
+                    state: state_str(&c.state).to_string(),
+                    similarity: h.similarity,
+                    z: h.z,
+                    significant: h.significant,
+                })
+            })
+            .collect();
+        Ok(WorkSimilarResult {
+            query: query_label,
+            searched,
+            space: ranked.space,
+            gate: ranked.gate,
+            hits,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkDuplicatesParams.ts")]
+pub struct WorkDuplicatesParams {
+    /// Which columns to group (default `["open"]`). Empty = every card.
+    #[serde(default = "default_open_states")]
+    pub states: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkDuplicateGroup.ts")]
+pub struct WorkDuplicateGroup {
+    /// The member to KEEP first (the group's representative), then the rest.
+    pub ids: Vec<String>,
+    pub titles: Vec<String>,
+    pub cohesion: f32,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/work/WorkDuplicatesResult.ts")]
+pub struct WorkDuplicatesResult {
+    pub searched: usize,
+    /// Cards that sit in some group — how many the board can lose without losing a fact.
+    pub in_groups: usize,
+    /// `in_groups − group_count`: the cards that are pure excess.
+    pub excess: usize,
+    pub space: String,
+    pub gate: String,
+    pub joined_at: f32,
+    pub groups: Vec<WorkDuplicateGroup>,
+}
+
+pub struct WorkDuplicates {
+    pub registry: PersonaAircRuntimeRegistry,
+    pub embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+}
+
+#[async_trait]
+impl ActionCommand for WorkDuplicates {
+    const NAME: &'static str = "work/duplicates";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "List the groups of cards that say the same thing — the board's duplicates — strongest \
+         group first, the card to KEEP first within each group. `excess` is how many cards the \
+         board can close without losing a fact. Groups open cards by default; pass `states` to \
+         widen. The triage's first move.";
+    type Params = WorkDuplicatesParams;
+    type Output = WorkDuplicatesResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: WorkDuplicatesParams,
+    ) -> Result<WorkDuplicatesResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        let states = parse_states(&p.states)?;
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+        let candidates = card_candidates(&board.cards, &states);
+        let searched = candidates.len();
+        let grouped = crate::commands::embedding::groups::group_texts(
+            &self.embedder,
+            &candidates,
+            3.0,
+            0.85,
+        )
+        .await?;
+        let title_of: std::collections::HashMap<String, String> = board
+            .cards
+            .iter()
+            .map(|c| (short8(c.card_id.as_uuid()), c.title.clone()))
+            .collect();
+        let groups: Vec<WorkDuplicateGroup> = grouped
+            .groups
+            .into_iter()
+            .map(|g| WorkDuplicateGroup {
+                titles: g
+                    .ids
+                    .iter()
+                    .map(|id| title_of.get(id).cloned().unwrap_or_default())
+                    .collect(),
+                ids: g.ids,
+                cohesion: g.cohesion,
+            })
+            .collect();
+        Ok(WorkDuplicatesResult {
+            searched,
+            in_groups: grouped.grouped,
+            excess: grouped.grouped.saturating_sub(grouped.group_count),
+            space: grouped.space,
+            gate: grouped.gate,
+            joined_at: grouped.joined_at,
+            groups,
+        })
+    }
+}
+
 pub struct WorkGet {
     pub registry: PersonaAircRuntimeRegistry,
 }
@@ -2677,6 +2988,8 @@ impl ActionCommand for WorkGet {
 
 crate::register_command!(WorkList);
 crate::register_command!(WorkGet);
+crate::register_command!(WorkSimilar);
+crate::register_command!(WorkDuplicates);
 crate::register_command!(WorkClaim);
 crate::register_command!(WorkCreate);
 crate::register_command!(WorkRelease);
@@ -2688,6 +3001,10 @@ crate::register_command!(WorkNote);
 /// can resolve the CALLER's own airc handle and act as that persona.
 pub struct WorkModule {
     registry: PersonaAircRuntimeRegistry,
+    /// The ONE process-wide embedding space, handed in at construction — `work/similar`
+    /// and `work/duplicates` score card text in it. Never built here: a second embedder
+    /// is a second space, and vectors from two spaces compare as noise.
+    embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
     /// Late-bound substrate executor (the ChatModule pattern): benchmark/dispatch
     /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
     /// to re-home the lane — through the universal primitive instead of
@@ -2698,9 +3015,13 @@ pub struct WorkModule {
 }
 
 impl WorkModule {
-    pub fn new(registry: PersonaAircRuntimeRegistry) -> Self {
+    pub fn new(
+        registry: PersonaAircRuntimeRegistry,
+        embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
+    ) -> Self {
         Self {
             registry,
+            embedder,
             executor_slot: std::sync::Arc::new(crate::runtime::LateBound::new("work::executor")),
         }
     }
@@ -2742,6 +3063,14 @@ impl ServiceModule for WorkModule {
             }),
             Arc::new(WorkGet {
                 registry: self.registry.clone(),
+            }),
+            Arc::new(WorkSimilar {
+                registry: self.registry.clone(),
+                embedder: self.embedder.clone(),
+            }),
+            Arc::new(WorkDuplicates {
+                registry: self.registry.clone(),
+                embedder: self.embedder.clone(),
             }),
             Arc::new(WorkClaim {
                 registry: self.registry.clone(),
@@ -3194,6 +3523,8 @@ mod tests {
                 owner: Some("Benchy".to_string()),
                 claimable: true,
                 lease: Some("expired".to_string()),
+                priority: "p2".to_string(),
+                age_hours: 3,
             })
             .collect();
 

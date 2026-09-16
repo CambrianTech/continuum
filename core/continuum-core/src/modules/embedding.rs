@@ -412,17 +412,17 @@ pub fn detect_clusters(
     clusters
 }
 
-pub struct EmbeddingModule;
-
-impl EmbeddingModule {
-    pub fn new() -> Self {
-        Self
-    }
+pub struct EmbeddingModule {
+    /// The ONE process-wide embedding space (the memory manager's lazy recall
+    /// embedder), handed in at registration. The text-level commands
+    /// (`embedding/similar`, `embedding/groups`) score in it; the vector-math
+    /// commands stay stateless.
+    embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>,
 }
 
-impl Default for EmbeddingModule {
-    fn default() -> Self {
-        Self::new()
+impl EmbeddingModule {
+    pub fn new(embedder: Arc<dyn crate::cognition::embedding::EmbeddingProvider>) -> Self {
+        Self { embedder }
     }
 }
 
@@ -445,6 +445,17 @@ impl ServiceModule for EmbeddingModule {
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         Ok(())
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        vec![
+            Arc::new(crate::commands::embedding::similar::EmbeddingSimilar {
+                embedder: self.embedder.clone(),
+            }),
+            Arc::new(crate::commands::embedding::groups::EmbeddingGroups {
+                embedder: self.embedder.clone(),
+            }),
+        ]
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {

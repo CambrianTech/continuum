@@ -124,6 +124,13 @@ impl PersonaMemoryManager {
         }
     }
 
+    /// The ONE process-wide embedding space, shared with every surface that scores
+    /// text (`embedding/similar`, `embedding/groups`): a query and the stored
+    /// vectors must live in the same space, so no second embedder is ever built.
+    pub fn embedding_provider(&self) -> Arc<dyn EmbeddingProvider> {
+        self.embedding.clone()
+    }
+
     // ─── Corpus Lifecycle ─────────────────────────────────────────────────────
 
     /// Load a persona's memory corpus (called from TS ORM via IPC).
