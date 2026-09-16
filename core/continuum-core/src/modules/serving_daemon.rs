@@ -409,6 +409,10 @@ pub struct ServingDaemonModule {
     /// serving candidate on the very next tick — no reboot. This is the consumer
     /// side of the rich API: serving reacts to the universe changing.
     catalog: Arc<ModelCatalog>,
+    /// The persisted operator pin, as a handle this daemon and its `serving/pin` ·
+    /// `serving/unpin` commands share. Handed in at construction so a test daemon
+    /// owns a tempdir store and can never read or write the machine's real pin.
+    pin_store: crate::modules::serving_pin_store::ServingPinStore,
     /// K3 expert-residency state for the CURRENTLY-served MoE model, `(model_id, context)`.
     /// Built lazily on the first reconcile that serves a given MoE model and rebuilt when the
     /// served model changes; `None` for a dense model or before the first MoE reconcile. A
@@ -624,6 +628,7 @@ impl ServingDaemonModule {
         system: Arc<SystemResourceMonitor>,
         resource_daemon: Arc<ResourceDaemon>,
         catalog: Arc<ModelCatalog>,
+        pin_store: crate::modules::serving_pin_store::ServingPinStore,
     ) -> Self {
         Self::with_control(
             gpu,
@@ -631,6 +636,7 @@ impl ServingDaemonModule {
             resource_daemon,
             Arc::new(LlamaServerProcess::new()),
             catalog,
+            pin_store,
         )
     }
 
@@ -645,6 +651,7 @@ impl ServingDaemonModule {
         resource_daemon: Arc<ResourceDaemon>,
         server: Arc<dyn LlamaServerControl>,
         catalog: Arc<ModelCatalog>,
+        pin_store: crate::modules::serving_pin_store::ServingPinStore,
     ) -> Self {
         let (plan_tx, _rx) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
@@ -672,7 +679,7 @@ impl ServingDaemonModule {
         // the model may be pulled later. It is simply not honoured this boot. So the
         // node self-heals to autonomic serving, says loudly why, and re-honours the pin
         // on the first boot after the weights arrive.
-        let stored_pin = crate::modules::serving_pin_store::load();
+        let stored_pin = pin_store.load();
         let honoured = match stored_pin {
             None => {
                 crate::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses");
@@ -730,6 +737,7 @@ impl ServingDaemonModule {
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
+            pin_store,
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
@@ -4632,6 +4640,7 @@ impl ServiceModule for ServingDaemonModule {
             self.subscribe_serving(),
             self.subscribe(),
             self.catalog.clone(),
+            self.pin_store.clone(),
         )
     }
 
@@ -5242,7 +5251,13 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let daemon = ServingDaemonModule::new(
+            gpu,
+            system,
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
 
@@ -5274,7 +5289,13 @@ mod tests {
     async fn legacy_handle_command_fails_loud() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let daemon = ServingDaemonModule::new(
+            gpu,
+            system,
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
         let err = daemon
             .handle_command("serving/plan", serde_json::json!({}))
             .await
@@ -5292,7 +5313,13 @@ mod tests {
     async fn contributes_the_full_serving_surface() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let daemon = ServingDaemonModule::new(
+            gpu,
+            system,
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
         let mut names: Vec<&str> = daemon.commands().iter().map(|c| c.name()).collect();
         names.sort_unstable();
         assert_eq!(
@@ -5468,6 +5495,15 @@ mod tests {
     /// it reads a real governed number rather than the fail-closed 0. Calls
     /// `ResourceDaemon::start`, which spawns its tick task, so every test that
     /// constructs a daemon through `daemon_with` must be `#[tokio::test]`.
+    /// A pin store under a tempdir the process owns for its lifetime: a test daemon
+    /// must never read the machine's real pin (it would plan under whatever the box
+    /// last pinned) nor write it (2026-09-16: `cargo test` re-pinned every dev box).
+    fn test_pin_store() -> crate::modules::serving_pin_store::ServingPinStore {
+        static DIR: std::sync::LazyLock<tempfile::TempDir> =
+            std::sync::LazyLock::new(|| tempfile::tempdir().expect("tempdir"));
+        crate::modules::serving_pin_store::ServingPinStore::under_home(DIR.path())
+    }
+
     fn test_resource_daemon() -> Arc<ResourceDaemon> {
         use crate::resources::{DaemonConfig, MockCapacitySource};
         ResourceDaemon::start(
@@ -5500,6 +5536,7 @@ mod tests {
             test_resource_daemon(),
             server,
             Arc::new(ModelCatalog::from_registry(&empty)),
+            test_pin_store(),
         );
         let mut live = ServingSnapshot::empty();
         live.active_model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
@@ -5523,6 +5560,7 @@ mod tests {
             test_resource_daemon(),
             server,
             test_catalog(),
+            test_pin_store(),
         );
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
@@ -6885,7 +6923,13 @@ mod tests {
     async fn register_as_consumer_wires_serving_into_the_authority() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let daemon = ServingDaemonModule::new(
+            gpu,
+            system,
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
 
         assert!(
             !daemon
@@ -7096,7 +7140,7 @@ mod tests {
             // weights land. A fix that silently discarded the operator's choice would be
             // its own bug.
             assert!(
-                !src.contains("serving_pin_store::clear()"),
+                !src.contains("pin_store.clear()"),
                 "the pin FILE must survive being ignored — pull the weights and the next                  boot honours it; only serving/unpin drops the intent"
             );
         }

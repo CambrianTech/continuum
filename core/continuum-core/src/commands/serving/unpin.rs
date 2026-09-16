@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use ts_rs::TS;
 
+use crate::modules::serving_pin_store::ServingPinStore;
+
 /// `serving/unpin` takes no parameters — there is at most one force-pin per host.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
@@ -50,6 +52,8 @@ crate::action_command! {
     /// keeps serving. Idempotent when no pin was set.
     pub struct ServingUnpin {
         pin: watch::Sender<Option<String>>,
+        /// The same store `serving/pin` writes — handed in, never resolved here.
+        store: ServingPinStore,
     }
     name: "serving/unpin",
     access: Privileged,
@@ -59,7 +63,7 @@ crate::action_command! {
         let released_model = this.pin.borrow().clone();
         if released_model.is_some() {
             this.pin.send_replace(None);
-            crate::modules::serving_pin_store::clear();
+            this.store.clear();
         }
         let detail = match &released_model {
             Some(m) => format!(
@@ -92,14 +96,26 @@ mod tests {
     #[tokio::test]
     async fn release_clears_the_pin_and_names_it() {
         let (pin, pin_rx) = watch::channel(Some("coder-14b".to_string()));
-        let report = ServingUnpin { pin }
-            .run(&Ctx::default(), ServingUnpinParams {})
-            .await
-            .expect("unpin ok");
+        // The store is the test's own tempdir. Before 2026-09-16 this test removed
+        // the REAL machine's pin file on every `cargo test`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ServingPinStore::under_home(dir.path());
+        store.save("coder-14b");
+        let report = ServingUnpin {
+            pin,
+            store: store.clone(),
+        }
+        .run(&Ctx::default(), ServingUnpinParams {})
+        .await
+        .expect("unpin ok");
         assert_eq!(report.released_model.as_deref(), Some("coder-14b"));
         assert!(
             pin_rx.borrow().is_none(),
             "the pin watch is cleared → autonomic again"
+        );
+        assert!(
+            store.load().is_none(),
+            "the persisted pin is dropped from the command's own store"
         );
     }
 
@@ -108,10 +124,14 @@ mod tests {
     #[tokio::test]
     async fn release_with_no_pin_is_idempotent() {
         let (pin, _pin_rx) = watch::channel(None);
-        let report = ServingUnpin { pin }
-            .run(&Ctx::default(), ServingUnpinParams {})
-            .await
-            .expect("unpin ok");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let report = ServingUnpin {
+            pin,
+            store: ServingPinStore::under_home(dir.path()),
+        }
+        .run(&Ctx::default(), ServingUnpinParams {})
+        .await
+        .expect("unpin ok");
         assert!(report.released_model.is_none());
     }
 }
