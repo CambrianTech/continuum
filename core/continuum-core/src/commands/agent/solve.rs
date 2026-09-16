@@ -32,9 +32,19 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 // re-reading the target region when the budget expired) with 2.5 of the 3
 // deadline hours unused. Field SWE agents routinely take 30–80 steps; a count
 // cap that binds before the deadline is the hardcoded-LCD-clamp shape the
-// cognition pipeline doc forbids. The deadline stays derived from this budget
-// (× PER_ACT_ALLOWANCE_SECS), so the wedge watchdog scales with it.
+// cognition pipeline doc forbids. The attempt CEILING stays derived from this budget
+// (× ATTEMPT_CEILING_PER_ACT_SECS); the stall verdict itself is advancement-based.
 const DEFAULT_MAX_ACTS: u32 = 32;
+/// A detached attempt is STALLED when its ledger has not advanced (no new act settled)
+/// for this long: three act deadlines — an act that the turn driver itself would have
+/// surrendered at `TICK_DEADLINE`, twice over, plus one for the settle. Below this a
+/// slow lane is slow; past it nothing is moving.
+pub(crate) const ACT_STALL_ALLOWANCE: Duration =
+    Duration::from_secs(3 * crate::cognition::act_observe::TICK_DEADLINE.as_secs());
+/// The far ceiling on one attempt, per act of budget — 45 min/act, over twice the
+/// M5's measured median of 21 min under a 16-mind roster (2026-09-16). Named as a
+/// ceiling when it fires; it is not the stall verdict.
+const ATTEMPT_CEILING_PER_ACT_SECS: u64 = 45 * 60;
 /// How long to wait for the forked cognition template (post-spawn `register_from_cfg` race).
 const FORK_WAIT_TRIES: u32 = 20;
 
@@ -391,24 +401,27 @@ impl ActionCommand for AgentSolve {
                 // both burned attempts on byte-identical resubmits the verdict prose
                 // never surfaced as such.
                 let mut prev_patch_sha: Option<String> = None;
-                // Per-attempt DEADLINE (harnesses-first, Joel 2026-08-08): a wedged
-                // fork/lane used to stall this loop SILENTLY FOREVER — glass-boxed
-                // live: both graded runs froze after attempt 2 for 2.5h with zero
+                // Per-attempt STALL WATCHDOG (harnesses-first, Joel 2026-08-08): a
+                // wedged fork/lane used to stall this loop SILENTLY FOREVER — glass-
+                // boxed live: both graded runs froze after attempt 2 for 2.5h with zero
                 // ticks, zero markers, and the operator found out by ASKING. Silence
-                // must never be ambiguous with progress. Derived from the act budget,
-                // never flat (eval's 600s bounds ONE small task; a 12-act SWE attempt
-                // legitimately runs ~1h): budget × per-act allowance, generous 3×
-                // headroom over the measured ~5.5 min/act. On expiry: loud probe +
-                // loud marker on the poll surface, and the run ENDS — a retry into
-                // the same wedge would be a loop, and detection is the job here.
-                // 8 min/act: still ~1.5× the measured ~5.5 min/act worst case (and
-                // 3× the ~2.4 min/act measured on the n9/n6 rounds), while keeping
-                // the full-budget deadline at 32 × 8min ≈ 4.3h — comparable wedge
-                // detection to the old 12 × 15min = 3h, at 2.7× the act budget.
-                const PER_ACT_ALLOWANCE_SECS: u64 = 8 * 60;
-                let attempt_deadline = std::time::Duration::from_secs(
+                // must never be ambiguous with progress.
+                //
+                // The verdict is ADVANCEMENT, not wall-clock (dd71a114, Joaquin's
+                // instrument; Benchy's order: progressing → stalled → ceiling). The
+                // previous shape was one flat timeout of `max_acts × 8 min` over the whole
+                // attempt: sized for the ~5.5 min/act of August, it ended EVERY run on the
+                // M5 of 2026-09-16 — acts there cost a median 21 min (1.5 min of model, the
+                // rest lane queueing on a 16-mind roster), so 32 acts is ~11 h and the
+                // 4.3 h deadline killed two control solves at 26 and 22 acts, the resume
+                // pass re-fired them from act 1, and no solve on that box could ever
+                // complete: 4.3 h of work, "stall", restart, forever. A run whose ledger
+                // advances is not stalled at any pace; a run whose ledger has not moved
+                // for ACT_STALL_ALLOWANCE is — that is the wedge this exists to catch. A
+                // far ceiling remains and is NAMED as a ceiling when it fires.
+                let attempt_ceiling = std::time::Duration::from_secs(
                     inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
-                        * PER_ACT_ALLOWANCE_SECS,
+                        * ATTEMPT_CEILING_PER_ACT_SECS,
                 );
                 // #384: the attempt counter is MANUAL so an infra-void attempt (she
                 // never worked — zero acts, no error, empty patch: the F1 signature,
@@ -428,30 +441,33 @@ impl ActionCommand for AgentSolve {
                         run_id = %run_id,
                         attempt,
                         max_attempts,
-                        deadline_s = attempt_deadline.as_secs(),
+                        stall_allowance_s = ACT_STALL_ALLOWANCE.as_secs(),
+                        ceiling_s = attempt_ceiling.as_secs(),
                         "solve attempt starting — pulse anchor for run-liveness watchers"
                     );
-                    let body = match tokio::time::timeout(
-                        attempt_deadline,
+                    let body = match attempt_with_advancement_watchdog(
+                        path.as_deref(),
+                        ACT_STALL_ALLOWANCE,
+                        attempt_ceiling,
                         AgentSolve::solve_body(this_attempt),
                     )
                     .await
                     {
                         Ok(body) => body,
-                        Err(_) => {
+                        Err(halt) => {
                             let msg = format!(
-                                "attempt {attempt} of {max_attempts} exceeded its deadline \
-                                 ({}s = max_acts × {}s) with no settlement — fork/lane wedge, \
-                                 an INFRA fault, never a capability verdict",
-                                attempt_deadline.as_secs(),
-                                PER_ACT_ALLOWANCE_SECS,
+                                "attempt {attempt} of {max_attempts} {halt} — an INFRA fault, \
+                                 never a capability verdict"
                             );
                             crate::probe!(
                                 class = "benchmark.stall",
                                 run_id = %run_id,
                                 attempt,
-                                deadline_s = attempt_deadline.as_secs(),
-                                "solve attempt DEADLINE EXCEEDED — ending the run loudly"
+                                verdict = halt.kind(),
+                                acts = halt.acts(),
+                                allowance_s = ACT_STALL_ALLOWANCE.as_secs(),
+                                ceiling_s = attempt_ceiling.as_secs(),
+                                "solve attempt halted by the watchdog — ending the run loudly"
                             );
                             if let Some(path) = path.as_ref() {
                                 let _ = std::fs::write(
@@ -1269,6 +1285,101 @@ async fn close_claim_card_if_graded(run_id: &str) {
             error = %e.to_string(),
             "close refused — card stays as-is; the lapse sweeper retries"
         ),
+    }
+}
+
+/// Why a watchdog halted an attempt: the ledger stopped advancing, or the far ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptHalt {
+    /// No new act settled for the allowance — the wedge the watchdog exists to catch.
+    Stalled { acts: u64, allowance: Duration },
+    /// The attempt advanced the whole way and still outlived its ceiling.
+    Ceiling { acts: u64, ceiling: Duration },
+}
+
+impl AttemptHalt {
+    pub(crate) fn kind(self) -> &'static str {
+        match self {
+            AttemptHalt::Stalled { .. } => "stalled",
+            AttemptHalt::Ceiling { .. } => "ceiling",
+        }
+    }
+    pub(crate) fn acts(self) -> u64 {
+        match self {
+            AttemptHalt::Stalled { acts, .. } | AttemptHalt::Ceiling { acts, .. } => acts,
+        }
+    }
+}
+
+impl std::fmt::Display for AttemptHalt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttemptHalt::Stalled { acts, allowance } => write!(
+                f,
+                "stalled: its ledger did not advance past {acts} act(s) for {}s — fork/lane wedge",
+                allowance.as_secs()
+            ),
+            AttemptHalt::Ceiling { acts, ceiling } => write!(
+                f,
+                "outlived its ceiling ({}s) still advancing at {acts} act(s) — bounded, not judged",
+                ceiling.as_secs()
+            ),
+        }
+    }
+}
+
+/// The acts a run's ledger records right now, or `None` when there is no ledger or it
+/// does not decode — an absence the watchdog treats as "no advancement observed", never
+/// as a count.
+fn ledger_acts(path: Option<&std::path::Path>) -> Option<u64> {
+    let text = std::fs::read_to_string(path?).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("acts")?
+        .as_u64()
+}
+
+/// Run one attempt under an ADVANCEMENT watchdog: the attempt is halted only when its
+/// ledger's `acts` has not moved for `stall_allowance` (the pulse writes it every minute
+/// while she works), or when the far `ceiling` passes. A run that advances at any pace
+/// is never judged stalled — the flat `max_acts × 8 min` timeout this replaces ended
+/// every run on a box whose acts cost 21 min (2026-09-16, the M5's 16-mind roster) and
+/// the resume pass re-fired each from act 1, forever.
+async fn attempt_with_advancement_watchdog<F>(
+    ledger: Option<&std::path::Path>,
+    stall_allowance: Duration,
+    ceiling: Duration,
+    attempt: F,
+) -> Result<F::Output, AttemptHalt>
+where
+    F: std::future::Future,
+{
+    // Poll the ledger on a cadence well under the allowance; a missing ledger (an
+    // attached call has none) means the ceiling is the only bound.
+    const POLL: Duration = Duration::from_secs(60);
+    let started = tokio::time::Instant::now();
+    let mut last_acts = ledger_acts(ledger);
+    let mut last_advance = started;
+    tokio::pin!(attempt);
+    loop {
+        tokio::select! {
+            out = &mut attempt => return Ok(out),
+            _ = tokio::time::sleep(POLL) => {
+                let now = tokio::time::Instant::now();
+                let acts = ledger_acts(ledger);
+                if acts.is_some() && acts != last_acts {
+                    last_acts = acts;
+                    last_advance = now;
+                }
+                let acts_n = last_acts.unwrap_or(0);
+                if ledger.is_some() && now.duration_since(last_advance) >= stall_allowance {
+                    return Err(AttemptHalt::Stalled { acts: acts_n, allowance: stall_allowance });
+                }
+                if now.duration_since(started) >= ceiling {
+                    return Err(AttemptHalt::Ceiling { acts: acts_n, ceiling });
+                }
+            }
+        }
     }
 }
 
@@ -2501,6 +2612,85 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-16, the M5's 16-mind roster): the flat
+    // `max_acts × 8 min` attempt timeout ended every run on a box whose acts cost
+    // 21 min — two control solves killed at 26 and 22 acts and re-fired from act 1,
+    // forever. The verdict is ADVANCEMENT: a ledger that keeps moving is never
+    // stalled however slowly; a ledger that stops is, after the allowance; and the
+    // far ceiling names itself. Paused tokio time so the whole story runs in ms.
+    mod attempt_watchdog {
+        use super::super::{attempt_with_advancement_watchdog, AttemptHalt};
+        use std::time::Duration;
+
+        fn write_acts(path: &std::path::Path, acts: u64) {
+            std::fs::write(path, serde_json::json!({"state": "running", "acts": acts}).to_string())
+                .expect("ledger write");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_slowly_advancing_attempt_is_never_stalled_and_a_stopped_one_is() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ledger = dir.path().join("run.json");
+            write_acts(&ledger, 0);
+            let allowance = Duration::from_secs(75 * 60);
+            let ceiling = Duration::from_secs(24 * 3600);
+            // The attempt: one act every 30 minutes (slower than the old 8 min/act
+            // allowance) for six acts, then it completes.
+            let l = ledger.clone();
+            let attempt = async move {
+                for n in 1..=6u64 {
+                    tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+                    write_acts(&l, n);
+                }
+                "settled"
+            };
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, attempt).await;
+            assert_eq!(out, Ok("settled"), "advancing at 30 min/act is not a stall");
+
+            // The wedge: acts stop at 3 and nothing moves again.
+            write_acts(&ledger, 3);
+            let l = ledger.clone();
+            let wedged = async move {
+                tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+                write_acts(&l, 3);
+                std::future::pending::<&str>().await
+            };
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, wedged).await;
+            assert_eq!(out, Err(AttemptHalt::Stalled { acts: 3, allowance }));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_ceiling_names_itself_and_an_attached_call_has_only_the_ceiling() {
+            let dir = dir_with(0);
+            let ledger = dir.path().join("run.json");
+            let allowance = Duration::from_secs(75 * 60);
+            let ceiling = Duration::from_secs(3 * 3600);
+            // Advances every 20 min forever: never stalled, but the ceiling fires.
+            let l = ledger.clone();
+            let forever = async move {
+                let mut n = 0u64;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(20 * 60)).await;
+                    n += 1;
+                    write_acts(&l, n);
+                }
+                #[allow(unreachable_code)]
+                ()
+            };
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, forever).await;
+            assert!(matches!(out, Err(AttemptHalt::Ceiling { acts, .. }) if acts >= 8), "{out:?}");
+            // No ledger (an attached call): stall cannot be judged, the ceiling still can.
+            let out = attempt_with_advancement_watchdog(None, allowance, ceiling, std::future::pending::<()>()).await;
+            assert!(matches!(out, Err(AttemptHalt::Ceiling { acts: 0, .. })), "{out:?}");
+        }
+
+        fn dir_with(acts: u64) -> tempfile::TempDir {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_acts(&dir.path().join("run.json"), acts);
+            dir
+        }
+    }
+
     mod grade_close_classification {
         use super::super::{classify_grade_for_close, CardCloseDecision};
         use serde_json::json;
