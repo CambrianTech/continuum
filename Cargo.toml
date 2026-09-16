@@ -62,6 +62,11 @@ members = [
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
 #
+# 2026-09-16 bump 15f7b4b → 17abc10: inbox pages are byte-bounded and carry
+# `has_more` (airc#1440) — the daemon-attached paging loop continues past a
+# byte-cut page instead of reading it as "channel exhausted" (the M5 answered
+# one 23.9 MB page every 6 s for six hours).
+#
 # 2026-08-07 bump cf6e2c6 → 8dcfa76: project_room_work_board is now pub and
 # room_by_channel resolves a Room from the RoomId a caller already holds,
 # so a room-scoped caller passes the SAME room its gate checks instead of
@@ -190,18 +195,18 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "15f7b4be5e58dce3c7f5539632d999e3fbf33ca7" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

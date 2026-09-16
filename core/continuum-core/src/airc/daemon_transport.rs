@@ -347,6 +347,7 @@ mod tests {
             Ok(airc_ipc::InboxResponse {
                 envelopes: Vec::new(), // empty: we test cursor/request shape, not decode
                 newest: *self.inbox_newest.lock(),
+                has_more: false,
             })
         }
     }
