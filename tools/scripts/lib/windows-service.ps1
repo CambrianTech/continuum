@@ -13,6 +13,68 @@ function ConvertTo-CoreImagePath {
     return [IO.Path]::GetFullPath($normalized)
 }
 
+# Task Scheduler can return inherited ACEs before its explicit principal ACE.
+# Preserve that order: CommonSecurityDescriptor.AddAccess rejects this shape.
+# This deliberately supports only ordinary allow/deny ACLs. Without the original
+# caller token, overlapping denies (even for another SID) cannot prove access;
+# refuse them rather than sorting, clearing policy, or claiming an effective grant.
+function Get-CoreServiceSecurityDescriptor {
+    param([Parameter(Mandatory = $true)][string]$Sddl)
+    $security = [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    if ($null -eq $security.DiscretionaryAcl) { throw 'Unsupported startup task ACL: no explicit DACL.' }
+    foreach ($ace in $security.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+            $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed,
+                [Security.AccessControl.AceQualifier]::AccessDenied)) {
+            throw 'Unsupported startup task ACL: conditional/object or non-access ACE; no ACL changes made.'
+        }
+        # Include generic rights: their mapped masks can overlap FRFX.
+        if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied -and
+            (([long]$ace.AccessMask -band (4026531840L -bor 0x1200a9)) -ne 0)) {
+            throw 'Unsupported startup task ACL: deny ACE overlaps caller read/execute; no ACL changes made.'
+        }
+    }
+    return $security
+}
+
+function Test-CoreServiceCallerAccess {
+    param([Parameter(Mandatory = $true)][string]$Sddl,
+        [Parameter(Mandatory = $true)][string]$UserSid)
+    $security = Get-CoreServiceSecurityDescriptor -Sddl $Sddl
+    return @($security.DiscretionaryAcl | Where-Object {
+        $_.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+        ([int]$_.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
+        $_.SecurityIdentifier.Value -eq $UserSid -and ($_.AccessMask -band 0x1200a9) -eq 0x1200a9
+    }).Count -gt 0
+}
+
+function Grant-CoreServiceCallerAccess {
+    param([Parameter(Mandatory = $true)][string]$Sddl,
+        [Parameter(Mandatory = $true)][string]$UserSid)
+    $security = Get-CoreServiceSecurityDescriptor -Sddl $Sddl
+    $caller = [Security.Principal.SecurityIdentifier]::new($UserSid)
+    if (-not (Test-CoreServiceCallerAccess -Sddl $Sddl -UserSid $UserSid)) {
+        $found = $false
+        for ($i = 0; $i -lt $security.DiscretionaryAcl.Count; $i++) {
+            $ace = $security.DiscretionaryAcl[$i]
+            if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+                $ace.AceFlags -eq [Security.AccessControl.AceFlags]::None -and
+                $ace.SecurityIdentifier -eq $caller) {
+                $ace.AccessMask = $ace.AccessMask -bor 0x1200a9
+                $security.DiscretionaryAcl[$i] = $ace
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            $security.DiscretionaryAcl.InsertAce($security.DiscretionaryAcl.Count,
+                [Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,
+                    [Security.AccessControl.AceQualifier]::AccessAllowed, 0x1200a9, $caller, $false, $null))
+        }
+    }
+    return $security.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
+}
+
 function Protect-CoreBuildOutput {
     param([Parameter(Mandatory = $true)][string]$TargetDirectory)
     $TargetDirectory = ConvertTo-CoreImagePath $TargetDirectory
@@ -145,17 +207,10 @@ function Register-CoreServiceRelease {
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $canRun = $false
     if ($task) {
-        try {
-            $scheduler = New-Object -ComObject 'Schedule.Service'
-            $scheduler.Connect()
-            $security = [Security.AccessControl.RawSecurityDescriptor]::new(
-                $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4))
-            $canRun = @($security.DiscretionaryAcl | Where-Object {
-                $_ -is [Security.AccessControl.CommonAce] -and
-                $_.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
-                $_.SecurityIdentifier.Value -eq $userSid -and ($_.AccessMask -band 0x1200a9) -eq 0x1200a9
-            }).Count -gt 0
-        } catch { $canRun = $false }
+        $scheduler = New-Object -ComObject 'Schedule.Service'
+        $scheduler.Connect()
+        $canRun = Test-CoreServiceCallerAccess -UserSid $userSid -Sddl (
+            $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4))
     }
     if ($task -and $canRun -and $task.Description -eq $description -and $task.Actions.Count -eq 1 -and
         $task.Actions[0].Execute -eq $shell -and $task.Actions[0].Arguments -eq $arguments -and
@@ -188,6 +243,12 @@ function Register-CoreServiceRelease {
         $verified.Actions[0].Execute -ne $shell -or $verified.Actions[0].Arguments -ne $arguments -or
         $verified.Principal.UserId -ne $userSid -or -not $verified.Settings.Enabled) {
         throw 'Startup registration did not match the prepared release; refusing handoff.'
+    }
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    if (-not (Test-CoreServiceCallerAccess -UserSid $userSid -Sddl (
+        $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4)))) {
+        throw 'Startup task was registered but caller read/execute was not verified; refusing handoff.'
     }
     Module-Done 'service'
 }
