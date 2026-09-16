@@ -1696,8 +1696,19 @@ const ERA_BUILD_ENV: &[(&str, &str)] = &[
 // incompatible-function-pointer-types with the old form live).
 // NUMPY_IMPORT_ARRAY_RETVAL: numpy 1.20 deleted the macro (it was NULL on
 // py3); pandas<1.0's ujson still uses it — shimmed exactly like fdopen.
+// PANDAS BUILDS UNDER ITS OWN -Werror (pandas 1.x setup.py appends `-Werror` on
+// macOS AFTER these flags), so every diagnostic clang adds in a later release
+// becomes a build death for a 2020 sdist. Reproduced 2026-09-16 (xarray-4356,
+// gold gate: "could not install the repo into a venv"): py3.8 on arm64 has no
+// pandas 1.1.0 wheel, the sdist's Cython C died on clang 21 —
+// `CYTHON_FALLTHROUGH` in unreachable code (-Wunreachable-code-fallthrough,
+// algos.c ×2) and then `numdigits` set but not used
+// (-Wunused-but-set-variable, np_datetime_strings.c). -Wno-X disables the
+// diagnostic outright, which a later -Werror cannot re-arm; with both rows
+// pandas 1.1.0 built and imported in 43 s. Two rows, two measured deaths.
 const ERA_CFLAGS: &str = "-Wno-incompatible-function-pointer-types \
      -Wno-implicit-function-declaration -Wno-int-conversion \
+     -Wno-unreachable-code-fallthrough -Wno-unused-but-set-variable \
      -Dfdopen=fdopen -DNUMPY_IMPORT_ARRAY_RETVAL=NULL";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
@@ -1864,11 +1875,9 @@ fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String,
             return Ok(vec![
                 (
                     "CC".into(),
-                    format!(
-                        "clang -Xpreprocessor -fopenmp -I{inc} \
-                         -Wno-implicit-function-declaration -Wno-int-conversion \
-                         -Wno-incompatible-function-pointer-types"
-                    ),
+                    // The ONE era flag set rides here too — an inline copy of three
+                    // of its rows drifted the day the fourth was added (2026-09-16).
+                    format!("clang -Xpreprocessor -fopenmp -I{inc} {ERA_CFLAGS}"),
                 ),
                 (
                     "LDSHARED".into(),
@@ -4209,6 +4218,26 @@ mod tests {
     }
 
     use super::*;
+
+    // what this catches (2026-09-16, xarray-4356 / pandas 1.1.0 under its own -Werror on
+    // clang 21): every era C flag is a `-Wno-<diag>` (disabling the diagnostic — the only
+    // form a later `-Werror` cannot re-arm; `-Wno-error=` is exactly the form that
+    // failed live on 2026-08-27) or a `-D` shim; and the two rows that measured death
+    // tonight are present. A row added in the wrong form fails here, not on the next
+    // gold gate.
+    #[test]
+    fn every_era_c_flag_disables_a_diagnostic_or_defines_a_shim() {
+        for flag in ERA_CFLAGS.split_whitespace() {
+            assert!(
+                (flag.starts_with("-Wno-") && !flag.starts_with("-Wno-error=")) || flag.starts_with("-D"),
+                "era flag in a form -Werror can override: {flag}"
+            );
+        }
+        for row in ["-Wno-unreachable-code-fallthrough", "-Wno-unused-but-set-variable"] {
+            assert!(ERA_CFLAGS.split_whitespace().any(|f| f == row), "missing measured row {row}");
+        }
+    }
+
 
     // what this catches: node ids with SPACES inside their params, and the
     // truncated fragments upstream requires for them (pytest-7432, 2026-09-01:
