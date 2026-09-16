@@ -3902,6 +3902,16 @@ fn prompt_cache_decision(
     let Some(fp) = fp else {
         return decision;
     };
+    // Every prior that KNOWS the model's geometry holds at least ONE full prompt state
+    // (`kv_per_token × served window`): a persona's first-ever boot has seeds on disk
+    // but no recorded demand yet, and shipping the bare constant there reproduced
+    // "prompt state size … exceeds cache size limit 4096.000 MiB, skipping" for the
+    // life of the process on a `--parallel 1` box (Cormac's review of #4128, the 5090
+    // at -c 172436 = 4,499 MiB per state). Only the missing-footprint prior above is
+    // honestly unable to compute it.
+    let one_full_state_mib = (fp.kv_per_token.saturating_mul(served_ctx as u64) / (1024 * 1024))
+        .min(u32::MAX as u64) as u32;
+    decision.desired_mib = decision.desired_mib.max(one_full_state_mib);
     if demands.is_empty() {
         // Two different facts, two different names. A reader must never be able to
         // take "the node is cold" for "the residents exist and this sizing missed them".
@@ -4711,12 +4721,39 @@ mod tests {
         assert_eq!(empty.citizens, 0, "planned is not demand — citizens counts demand rows");
         let unknown = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 0);
         assert_eq!(unknown.reason, "prior_unknown_physical_memory");
+        assert_eq!(missing.desired_mib, crate::inference::lane_args::CACHE_RAM_MIB);
         for prior in [&missing, &cold, &empty, &unknown] {
-            assert_eq!(
-                prior.desired_mib,
-                crate::inference::lane_args::CACHE_RAM_MIB
-            );
             assert_eq!(prior.affordable_bytes, None);
+        }
+        // what this catches: a prior that knows the geometry must hold ONE FULL STATE.
+        // The fixture above sits on the crossover (65536 × 65536 B = exactly 4096 MiB),
+        // where the constant and the floor coincide and an `assert_eq!(…, CACHE_RAM_MIB)`
+        // could not tell them apart — the coincidence that let a first-ever boot ship an
+        // undersized cache (Cormac, #4128). So drive the priors across geometries with
+        // one full state BELOW the constant and ABOVE it, and assert the invariant.
+        let mib = 1024u64 * 1024;
+        for (kv_per_token, served_ctx) in [(16_384u64, 65_536u32), (27_360, 172_436), (65_536, 262_144)] {
+            let geo = crate::cognition::serving_plan::ModelFootprint {
+                kv_per_token,
+                context_window: served_ctx,
+                ..fp.clone()
+            };
+            let one_state_mib = (kv_per_token * served_ctx as u64 / mib) as u32;
+            let constant = crate::inference::lane_args::CACHE_RAM_MIB;
+            for (name, prior) in [
+                ("cold", prompt_cache_decision(Some(&geo), &[], 0, served_ctx, 1, 32 << 30)),
+                ("seeds", prompt_cache_decision(Some(&geo), &[], 2, served_ctx, 1, 32 << 30)),
+                ("unknown", prompt_cache_decision(Some(&geo), &[60_000], 1, served_ctx, 1, 0)),
+            ] {
+                assert!(
+                    prior.desired_mib >= one_state_mib,
+                    "{name} prior at kv {kv_per_token} × ctx {served_ctx}: {} MiB < one full state {one_state_mib} MiB",
+                    prior.desired_mib
+                );
+                assert_eq!(prior.desired_mib, constant.max(one_state_mib), "{name}: the floor lifts the prior, never lowers it");
+            }
+            // The one prior that cannot know the geometry keeps the constant.
+            assert_eq!(prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30).desired_mib, constant);
         }
         let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 2, 65536, 1, 32 << 30);
         // Same 4096 MiB result as the prior, but materially different evidence.
