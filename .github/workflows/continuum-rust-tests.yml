@@ -47,11 +47,13 @@ jobs:
   cargo-test-continuum-core:
     name: cargo test -p continuum-core --lib
     needs: changes
+    # A failed selector must not turn required checks into successful skips.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
       postgres:
-        image: ${{ needs.changes.outputs.rust == 'true' && 'postgres:17-alpine' || '' }}
+        image: ${{ needs.changes.outputs.rust != 'false' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_DB: continuum_test
           POSTGRES_USER: continuum
@@ -67,19 +69,19 @@ jobs:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         with:
           submodules: recursive
 
       - name: Install Rust toolchain from rust-toolchain.toml
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           rustup show active-toolchain || rustup show
           rustc --version
           cargo --version
 
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -88,14 +90,14 @@ jobs:
             libglib2.0-dev libasound2-dev libva-dev
 
       - name: Cache cargo state
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-1.95
           cache-on-failure: true
 
       - name: cargo test -p continuum-core --lib
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
@@ -113,7 +115,7 @@ jobs:
 
       # These tests share a database schema; run serially and reject zero matches.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
@@ -127,7 +129,7 @@ jobs:
 
       # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
       - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
@@ -139,7 +141,7 @@ jobs:
           fi
 
       - name: Verify protocol/typescript/ in sync with Rust source
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
             echo "::error::ts-rs binding drift detected. Some Rust types"
@@ -174,37 +176,38 @@ jobs:
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
     needs: changes
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.installer == 'true'
+        if: needs.changes.outputs.installer != 'false'
         with:
-          submodules: ${{ needs.changes.outputs.rust == 'true' && 'recursive' || 'false' }}
+          submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
       - name: Install Rust toolchain from rust-toolchain.toml
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           rustup show active-toolchain
           rustc --version
       - name: Cache cargo state
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-windows-1.95
           cache-on-failure: true
       - name: cargo check (lib + test harness, incl. test-fixtures targets)
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --lib --tests --features test-fixtures
       - name: Windows installed release and supervisor regressions
-        if: needs.changes.outputs.installer == 'true'
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/windows-service.test.ps1
       - name: Warm builds preserve live services
-        if: needs.changes.outputs.installer == 'true'
+        if: needs.changes.outputs.installer != 'false'
         shell: bash
         run: bash tools/scripts/tests/start-server-build-only.test.sh
       - name: Windows native cache and engine ownership regressions
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.rust != 'false'
         shell: powershell
         run: |
           $helperTest = Join-Path $env:RUNNER_TEMP 'continuum-msvc-cache-test.exe'
