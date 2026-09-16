@@ -3770,17 +3770,43 @@ fn derived_prompt_cache_mib(
     // "Live" means resident NOW: intersect with the runtime roster — the same
     // liveness truth every other consumer uses, never a recency threshold we
     // would have to invent (Law 1).
-    let resident: std::collections::HashSet<uuid::Uuid> =
+    // WHO WILL RESUME, not only who is resident this instant.
+    //
+    // This filter was live-residents-only, and at the moment that matters most — the
+    // FIRST launch of the engine — live residents are zero by construction: citizens
+    // resume only after the engine exists. So the derivation fell to its 4096 MiB
+    // prior, and every 4.5-5.5 GiB prompt state was refused by the engine for the life
+    // of the process (`prompt state size 4498.997 MiB exceeds cache size limit
+    // 4096.000 MiB, skipping`; Kimi at 317-359 s/turn, cached=0, hit=0.00, measured
+    // 2026-09-16 on the 5090). The M5 escaped only because its lane count changes when
+    // 16 residents arrive and forces a SECOND launch that re-derives; a `--parallel 1`
+    // box never gets that second chance.
+    //
+    // The seeds on disk ARE the resume set, and the demand registry persists across
+    // restarts for exactly this. Union them with the live roster: at first launch the
+    // seeds carry the answer; mid-life the live roster does; a persona in both counts
+    // once. `--cache-ram` is a launch argument, so getting this right at the first
+    // launch is the only chance there is.
+    let live: std::collections::HashSet<uuid::Uuid> =
         crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().into_iter().collect())
             .unwrap_or_default();
+    let planned: Vec<uuid::Uuid> = crate::persona::seed::persona_ids_with_seeds_in(
+        &crate::context::citizens_kind_dir(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::IdentityKind::Persona,
+        ),
+    );
+    let resident: std::collections::HashSet<uuid::Uuid> =
+        live.iter().copied().chain(planned.iter().copied()).collect();
     let demands: Vec<u32> = crate::cognition::working_set::global()
         .all()
         .into_iter()
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| d.peak_tokens)
         .collect();
-    let decision = prompt_cache_decision(fp, &demands, served_ctx, lanes, physical_bytes);
+    let decision =
+        prompt_cache_decision(fp, &demands, planned.len(), served_ctx, lanes, physical_bytes);
     // Deduplicate the decision, not just its MiB: a different model or a prior
     // becoming measured can yield the same limit and still needs a receipt.
     static LAST_SPOKEN: parking_lot::Mutex<Option<(String, PromptCacheDecision)>> =
@@ -3842,9 +3868,18 @@ struct PromptCacheDecision {
     affordable_bytes: Option<u64>,
 }
 
+/// `planned` is how many personas have a seed on disk — the resume set — independent
+/// of whether the registry holds demand for them. It exists so the EMPTY-demand case
+/// can be named honestly: "no seeds on disk" (a genuinely cold node) and "seeds exist
+/// but none has recorded demand yet" (their very first boot) are different states, and
+/// the old single reason `prior_no_resident_demand` read benign for both — and for a
+/// third state it was never meant to cover, "residents not yet up at launch", which is
+/// the one that cost 5 minutes a turn. That third state no longer produces an empty
+/// `demands` at all, because the caller now sizes from the resume set.
 fn prompt_cache_decision(
     fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
     demands: &[u32],
+    planned: usize,
     served_ctx: u32,
     lanes: u32,
     physical_bytes: u64,
@@ -3867,8 +3902,24 @@ fn prompt_cache_decision(
     let Some(fp) = fp else {
         return decision;
     };
+    // Every prior that KNOWS the model's geometry holds at least ONE full prompt state
+    // (`kv_per_token × served window`): a persona's first-ever boot has seeds on disk
+    // but no recorded demand yet, and shipping the bare constant there reproduced
+    // "prompt state size … exceeds cache size limit 4096.000 MiB, skipping" for the
+    // life of the process on a `--parallel 1` box (Cormac's review of #4128, the 5090
+    // at -c 172436 = 4,499 MiB per state). Only the missing-footprint prior above is
+    // honestly unable to compute it.
+    let one_full_state_mib = (fp.kv_per_token.saturating_mul(served_ctx as u64) / (1024 * 1024))
+        .min(u32::MAX as u64) as u32;
+    decision.desired_mib = decision.desired_mib.max(one_full_state_mib);
     if demands.is_empty() {
-        decision.reason = "prior_no_resident_demand";
+        // Two different facts, two different names. A reader must never be able to
+        // take "the node is cold" for "the residents exist and this sizing missed them".
+        decision.reason = if planned == 0 {
+            "prior_no_seeds_on_disk"
+        } else {
+            "prior_seeds_without_recorded_demand"
+        };
     } else if physical_bytes == 0 {
         decision.reason = "prior_unknown_physical_memory";
     } else {
@@ -4654,22 +4705,57 @@ mod tests {
             context_window: 65536,
             capability_rank: 1,
         };
-        let missing = prompt_cache_decision(None, &[60000], 65536, 1, 32 << 30);
+        let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30);
         assert_eq!(missing.reason, "prior_missing_footprint");
         assert_eq!(missing.estimated_kv_bytes, None);
         assert_eq!(missing.affordable_bytes, None);
-        let empty = prompt_cache_decision(Some(&fp), &[], 65536, 1, 32 << 30);
-        assert_eq!(empty.reason, "prior_no_resident_demand");
-        let unknown = prompt_cache_decision(Some(&fp), &[60000], 65536, 1, 0);
+        // Empty demand is TWO states now, and they must not share a name. A cold node
+        // (no seeds) and a node whose residents will resume but have never recorded
+        // demand are different facts; the old single reason read benign for both — and
+        // for a third state, "residents not yet up at launch", that the caller no longer
+        // produces (it sizes from the resume set). Regression for the 5-minute turn.
+        let cold = prompt_cache_decision(Some(&fp), &[], 0, 65536, 1, 32 << 30);
+        assert_eq!(cold.reason, "prior_no_seeds_on_disk");
+        let empty = prompt_cache_decision(Some(&fp), &[], 2, 65536, 1, 32 << 30);
+        assert_eq!(empty.reason, "prior_seeds_without_recorded_demand");
+        assert_eq!(empty.citizens, 0, "planned is not demand — citizens counts demand rows");
+        let unknown = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 0);
         assert_eq!(unknown.reason, "prior_unknown_physical_memory");
-        for prior in [&missing, &empty, &unknown] {
-            assert_eq!(
-                prior.desired_mib,
-                crate::inference::lane_args::CACHE_RAM_MIB
-            );
+        assert_eq!(missing.desired_mib, crate::inference::lane_args::CACHE_RAM_MIB);
+        for prior in [&missing, &cold, &empty, &unknown] {
             assert_eq!(prior.affordable_bytes, None);
         }
-        let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 65536, 1, 32 << 30);
+        // what this catches: a prior that knows the geometry must hold ONE FULL STATE.
+        // The fixture above sits on the crossover (65536 × 65536 B = exactly 4096 MiB),
+        // where the constant and the floor coincide and an `assert_eq!(…, CACHE_RAM_MIB)`
+        // could not tell them apart — the coincidence that let a first-ever boot ship an
+        // undersized cache (Cormac, #4128). So drive the priors across geometries with
+        // one full state BELOW the constant and ABOVE it, and assert the invariant.
+        let mib = 1024u64 * 1024;
+        for (kv_per_token, served_ctx) in [(16_384u64, 65_536u32), (27_360, 172_436), (65_536, 262_144)] {
+            let geo = crate::cognition::serving_plan::ModelFootprint {
+                kv_per_token,
+                context_window: served_ctx,
+                ..fp.clone()
+            };
+            let one_state_mib = (kv_per_token * served_ctx as u64 / mib) as u32;
+            let constant = crate::inference::lane_args::CACHE_RAM_MIB;
+            for (name, prior) in [
+                ("cold", prompt_cache_decision(Some(&geo), &[], 0, served_ctx, 1, 32 << 30)),
+                ("seeds", prompt_cache_decision(Some(&geo), &[], 2, served_ctx, 1, 32 << 30)),
+                ("unknown", prompt_cache_decision(Some(&geo), &[60_000], 1, served_ctx, 1, 0)),
+            ] {
+                assert!(
+                    prior.desired_mib >= one_state_mib,
+                    "{name} prior at kv {kv_per_token} × ctx {served_ctx}: {} MiB < one full state {one_state_mib} MiB",
+                    prior.desired_mib
+                );
+                assert_eq!(prior.desired_mib, constant.max(one_state_mib), "{name}: the floor lifts the prior, never lowers it");
+            }
+            // The one prior that cannot know the geometry keeps the constant.
+            assert_eq!(prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30).desired_mib, constant);
+        }
+        let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 2, 65536, 1, 32 << 30);
         // Same 4096 MiB result as the prior, but materially different evidence.
         assert_eq!(measured.desired_mib, missing.desired_mib);
         assert_ne!(measured, missing);
@@ -4686,7 +4772,7 @@ mod tests {
                 afford
             )
         );
-        let squeezed = prompt_cache_decision(Some(&fp), &[60000], 65536, 1, 1);
+        let squeezed = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 1);
         assert_eq!(squeezed.affordable_bytes, Some(0));
         assert_eq!(
             squeezed.desired_mib,
