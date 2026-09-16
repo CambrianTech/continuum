@@ -276,7 +276,12 @@ pub fn claims_a_present_peers_name<'p>(
     present: &'p [String],
 ) -> Option<&'p str> {
     let t = text.trim_start();
-    let rest = t.strip_prefix("I'm ").or_else(|| t.strip_prefix("I am "))?;
+    // The PREFIX is case-insensitive (small tiers drop capitals — "i'm lorcan" is the
+    // same claim); the NAME stays exact against the roster's own spelling.
+    let rest = ["I'm ", "I am "]
+        .iter()
+        .find(|p| t.len() >= p.len() && t.is_char_boundary(p.len()) && t[..p.len()].eq_ignore_ascii_case(p))
+        .map(|p| &t[p.len()..])?;
     let name: &str = rest
         .split(|c: char| !c.is_alphabetic())
         .next()
@@ -322,6 +327,9 @@ mod tests {
         assert_eq!(claims_a_present_peers_name("I'm Lorcan, picking up sympy-22456.", me, &present), Some("Lorcan"));
         assert_eq!(claims_a_present_peers_name("  I am Kira.", me, &present), Some("Kira"));
         assert_eq!(claims_a_present_peers_name("I'm Lorcan", me, &present), Some("Lorcan"));
+        // The prefix tolerates a dropped capital; the name never does.
+        assert_eq!(claims_a_present_peers_name("i'm Lorcan here.", me, &present), Some("Lorcan"));
+        assert_eq!(claims_a_present_peers_name("i am lorcan here.", me, &present), None);
         // Her own name is the recital gate's business, not a foreign claim.
         assert_eq!(claims_a_present_peers_name("I'm Paige, on the serving lane.", me, &present), None);
         // A report quotes the claim mid-text and stays.
