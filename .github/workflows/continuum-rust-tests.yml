@@ -1,145 +1,87 @@
-# continuum-core Rust unit-test gate.
-#
-# Why this exists: today's session (2026-06-14) opened the first continuum
-# realization cards on canary (#1613 lease-revocation, #1614 toolchain pin).
-# In doing so we discovered NO existing CI workflow runs `cargo test` against
-# continuum-core. `docker-images.yml` builds release bins via cargo-chef,
-# which compiles but never executes tests. `carl-install-smoke.yml` exercises
-# the install flow end-to-end. Unit tests on the Rust core were entirely
-# unguarded — every Rust PR that landed before #1613 was inspection-verified
-# rather than test-verified.
-#
-# This workflow closes that gap with the minimum surface: `cargo test -p
-# continuum-core --lib` on every PR that touches Rust code. It does NOT try
-# to be comprehensive — apps/cli, client/*, and the workers binaries can join
-# in follow-up workflows once this one proves stable.
-#
-# Toolchain: 1.95 via rust-toolchain.toml (added in PR #1614). rustup picks
-# it up; no explicit version pin here so a future toolchain bump only edits
-# rust-toolchain.toml.
 name: Continuum Rust Tests
 
 on:
-  # NO `paths:` FILTER — deliberately, and this must stay that way.
-  #
-  # All three jobs below are REQUIRED contexts on canary. A required check
-  # that never RUNS never REPORTS: GitHub holds the PR at "expected" forever,
-  # and auto-merge waits on a result that cannot arrive. The PR is not slow,
-  # it is permanently unmergeable, and nothing on the page says why.
-  #
-  # This was found once before (2026-08-20, PR #2343 — workflow-only edit) and
-  # "fixed" by adding `.github/workflows/**` to the filter. That fixed the
-  # instance, not the constraint: on 2026-08-21 PR #2346 (docs-only) deadlocked
-  # exactly the same way, because a docs path was not on the list either. Any
-  # path list is a list of the deadlocks you have already hit; the next PR that
-  # touches something unlisted hits a fresh one.
-  #
-  # So the rule is structural: a required check runs on EVERY pull request.
-  # The cost is a cargo build on PRs that could not have broken the build. That
-  # is the cheaper half of the trade — the other half is a PR that can never
-  # merge and a human having to discover why.
-  #
-  # That relevance gate now EXISTS (2026-08-23, after a docs-only PR paid the
-  # full suite): the first step of each job diffs the PR's file list; a
-  # docs-only diff (every file under docs/ or *.md) skips the heavy steps and
-  # reports SUCCESS honestly. Fail-open: gh error, >=100 files, or any push
-  # event runs everything. The trigger stays unfiltered — the gate is inside
-  # the job, exactly as this comment always prescribed.
   pull_request:
   push:
     branches: [canary, main]
 
-# Concurrency: one run per PR head. A fresh push cancels the prior run since
-# its result is moot — the cancellation is faster than letting a full 5-10
-# min cargo build finish on stale source.
 concurrency:
   group: continuum-rust-tests-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select existing checks
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      installer: ${{ steps.select.outputs.installer }}
+    steps:
+      - uses: actions/github-script@v7
+        id: select
+        with:
+          script: |
+            // Keep required jobs reporting on every PR; unknown/mixed changes run everything.
+            let rust = true, installer = true;
+            if (context.eventName === 'pull_request') {
+              try {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo, pull_number: context.issue.number, per_page: 100
+                });
+                // Include rename sources: moving Rust into docs still changes Rust.
+                const paths = files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
+                if (files.length > 0 && files.length < 3000 &&
+                    files.length === context.payload.pull_request.changed_files) {
+                  const docs = p => (p.startsWith('docs/') || p.endsWith('.md')) && !p.startsWith('docs/genome/');
+                  const windows = p => /^(install\.ps1|tools\/scripts\/(lib\/windows-(service|prepared)\.ps1|tests\/windows-service\.test\.ps1|register-core-service\.ps1|run-service-hidden\.ps1))$/.test(p);
+                  rust = paths.some(p => !docs(p) && !windows(p));
+                  installer = rust || paths.some(windows);
+                }
+              } catch (error) {
+                core.warning(`Cannot classify changes; running all checks: ${error.message}`);
+              }
+            }
+            core.setOutput('rust', String(rust));
+            core.setOutput('installer', String(installer));
+
   cargo-test-continuum-core:
     name: cargo test -p continuum-core --lib
+    needs: changes
+    # A failed selector must not turn required checks into successful skips.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # The Postgres adapter's tests were `#[ignore]`d because nothing here served
-    # them a database, so the adapter's TRANSACTIONAL behaviour was verified by
-    # `cargo check` alone — which is how four transactional defects reached this
-    # branch (self.read re-acquiring a second connection mid-transaction, a raw
-    # BEGIN with no rollback guard, DDL inside an aborted transaction, and column
-    # caches published before commit). Compiling proves a transaction is spelled
-    # correctly; only a server proves it behaves. A skipped test is not proof.
     services:
       postgres:
-        image: postgres:17-alpine
+        image: ${{ needs.changes.outputs.rust != 'false' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_DB: continuum_test
           POSTGRES_USER: continuum
           POSTGRES_PASSWORD: continuum
         ports:
           - 5432:5432
-        # Without the health check the job races the server: the first test
-        # connects before Postgres finishes initialising and fails as though the
-        # adapter were broken.
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
-      # The value the adapter's own fixture already defaults to — kept explicit
-      # so the job states the database it is testing against rather than relying
-      # on a default buried in a test module.
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
-      # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
-      # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
-      # the report (that is the deadlock this file's `on:` comment documents).
-      # Fail-open on any doubt: gh error, >=100 files (API page cap), push events —
-      # all read as relevant=true. A false "relevant" costs one cargo build; a
-      # false "irrelevant" costs trust in every green check.
-      - name: Relevance gate — docs-only PRs pass without paying for cargo
-        id: gate
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-          files=$(gh pr view ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
-          echo "$files"
-          count=$(echo "$files" | grep -c . || true)
-          if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
-             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-            echo "Docs-only diff ($count files) — heavy steps skipped; success reported honestly."
-          fi
       - uses: actions/checkout@v4
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         with:
-          # llama.cpp + whisper.cpp vendored submodules. continuum-core's
-          # dep tree pulls llama as a workspace crate which build-scripts
-          # vendor/llama.cpp via cmake; whisper similarly. Without recursive
-          # submodule init, cargo dies inside the llama build script with
-          # `CMakeLists.txt not found`. Same prereq BIGMAMA hit Sun 06-14
-          # when setting up Docker self-validation.
           submodules: recursive
 
-      # rust-toolchain.toml at the repo root pins 1.95. rustup detects it on
-      # the first cargo invocation. We touch rustup explicitly so the
-      # download happens up-front (with timing visible) rather than buried
-      # inside the cargo step.
       - name: Install Rust toolchain from rust-toolchain.toml
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           rustup show active-toolchain || rustup show
           rustc --version
           cargo --version
 
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -147,61 +89,22 @@ jobs:
             libclang-dev clang build-essential \
             libglib2.0-dev libasound2-dev libva-dev
 
-      # Cargo cache via Swatinem/rust-cache — NOT a raw actions/cache of `target`.
-      # The old approach cached the ENTIRE `target/` dir (incl. continuum-core's
-      # own multi-GB debug artifacts) with restore-keys fallback, so the cache
-      # grew unboundedly across lock bumps until the ~5.6 GB tarball overflowed
-      # the runner's ~14 GB disk on restore ("No space left on device"). rust-cache
-      # caches the DEPENDENCY artifacts + registry/git but prunes the workspace
-      # crates' own output (the big, fast-to-rebuild part) and cleans before save,
-      # so the cache stays small + bounded. `shared-key` keeps the two Rust
-      # workflows warming each other (replaces the old shared cache key).
       - name: Cache cargo state
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-1.95
-          # Key already includes Cargo.lock hash + rustc; this caps any drift.
           cache-on-failure: true
 
-      # `--lib` runs unit tests only — skips integration/doc tests + the
-      # workers binaries. This is the minimum gate; broader coverage comes
-      # in follow-ups. Default features = Linux-CPU-only (no `metal`, no
-      # `cuda`) per core/continuum-core/Cargo.toml's [features] notes.
-      #
-      # Skip patterns: this PR's first CI run exposed ~20 tests that
-      # have NEVER run on a Linux-CI runner before this workflow existed.
-      # They fall into two buckets:
-      #
-      # 1. GPU-required (`gpu::memory_manager::*`, `modules::gpu::*`) —
-      #    these tests expect a real GPU + driver. A Linux runner with
-      #    no GPU returns zero candidates / errors at probe time. The
-      #    correct long-term fix is a `#[cfg(feature = "gpu-tests")]`
-      #    gate; until then, skip.
-      # 2. Env-var-required (`*allocator::test*allocate*key*`,
-      #    `modules::persona_allocator::test*`) — these tests assert
-      #    behavior contingent on the presence of `ANTHROPIC_API_KEY`
-      #    etc. On CI those env vars are deliberately absent and the
-      #    tests fail. Correct fix is a test-fixtures shim per task
-      #    #221; until then, skip.
-      #
-      # Skipping here ISN'T sweeping under the rug — it's an honest
-      # named-pattern allowlist that gates the entire rest of the
-      # continuum-core lib surface (≈4000 tests) and unblocks
-      # forward velocity on substrate code that DOES run on Linux.
-      # Each skip pattern is a follow-up card.
       - name: cargo test -p continuum-core --lib
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
-          # Compile once; the Postgres step reuses this exact test executable.
-          # Human compiler diagnostics remain on stderr with this JSON format.
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
           cargo test -p continuum-core --lib --no-run --message-format=json-render-diagnostics > lib-artifacts.jsonl
           python3 tools/scripts/ci-lib-test-artifact.py lib-artifacts.jsonl \
             core/continuum-core "$(rustc --print target-libdir)" > lib-test.env
           cat lib-test.env >> "$GITHUB_ENV"
-          # Read only the validated environment assignments emitted above.
           while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
           cd core/continuum-core
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
@@ -210,26 +113,9 @@ jobs:
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
 
-      # The Postgres adapter, against an ACTUAL Postgres. These tests are
-      # `#[ignore]`d because they need a server, and until this job served one
-      # they had never executed — so `orm::postgres` was covered by compilation
-      # only. Four transactional defects reached this branch through that gap.
-      #
-      # SERIALISED deliberately. All 11 of these share the one `test_orm` schema,
-      # and `test_pg_clear_all` calls clear_all, which enumerates every collection
-      # and truncates each — so run in parallel it deletes the other tests' rows
-      # mid-flight and they fail as though the adapter were broken. Astra's
-      # review caught this before the first run; the alternative is a schema per
-      # test, which is the better fix and its own change.
-      #
-      # The `passed` count is load-bearing for the same reason the doctest step
-      # below asserts its own: `--ignored` with a filter that matches nothing
-      # exits 0, so a renamed module or a test that stops being marked would
-      # leave this step green while running NOTHING. That is precisely the
-      # failure mode the step exists to close, so it must not be able to happen
-      # silently.
+      # These tests share a database schema; run serially and reject zero matches.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
@@ -241,23 +127,9 @@ jobs:
             exit 1
           fi
 
-      # Compile-fail guards (#3881). `--lib` above CANNOT run these: proving a
-      # wrong construction does not compile requires a compile step, and the
-      # only in-toolchain way to assert that is a ```compile_fail doctest,
-      # which lives behind `--doc`. Without this step the guard would have been
-      # written, merged, and never executed once in CI — built-but-never-wired,
-      # which is the same class of defect #3881 exists to prevent.
-      #
-      # Filtered rather than the whole doctest surface deliberately: no doctest
-      # has ever run on a Linux runner here, so an unfiltered `--doc` could go
-      # red for reasons that predate this PR. Turning the rest on is its own
-      # card, not a side effect of this one.
-      #
-      # The `2 passed` assertion is load-bearing. A filter that matches NOTHING
-      # exits 0 — so if the struct is renamed, the step would go green while
-      # testing nothing at all. The count turns that silent zero into a failure.
+      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
       - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
           cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
@@ -268,22 +140,8 @@ jobs:
             exit 1
           fi
 
-      # ts-rs binding-drift gate (was its own workflow until 2026-08-16).
-      #
-      # Rust types carry `#[derive(TS)]` + `#[ts(export_to = "…/protocol/typescript/…")]`.
-      # The per-type `export_bindings_*` tests WRITE those .ts files as a side effect,
-      # so a Rust type change with an uncommitted .ts regeneration leaves the wire
-      # shape silently stale — no compile-time guard fires for the TS consumer.
-      # (Near-miss on #1624: TargetSilicon gained a variant, TargetSilicon.ts wasn't
-      # in the push.)
-      #
-      # This used to be a SECOND ubuntu job that re-compiled continuum-core from the
-      # same shared cache just to run `cargo test … export_bindings` — a strict subset
-      # of the step above, which already regenerated every binding. ~9 min of duplicate
-      # compile for one `git diff`. The check is the diff, not the build, so it belongs
-      # here where the build already happened.
       - name: Verify protocol/typescript/ in sync with Rust source
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
             echo "::error::ts-rs binding drift detected. Some Rust types"
@@ -300,29 +158,7 @@ jobs:
           fi
           echo "✓ protocol/typescript/ is in sync with Rust source"
 
-  # Publishes the REQUIRED status context `ts-rs binding drift detector`.
-  #
-  # This job does NOT detect drift. The detection is the `Verify protocol/typescript/
-  # in sync with Rust source` step inside cargo-test-continuum-core above, and it
-  # belongs there: the check is a `git diff` against bindings the test run already
-  # regenerated, so a standalone job would have to re-compile continuum-core (~9 min)
-  # to diff something the previous job just produced. That duplicate build was
-  # deliberately deleted on 2026-08-16 and must not come back.
-  #
-  # What was NOT updated that day: canary's branch protection, which still requires a
-  # status context by this name. No job had published it since, so the context never
-  # reported and EVERY pull request into canary sat permanently BLOCKED with all real
-  # gates green — four days of unmergeable PRs from a stale config line, not a quality
-  # problem. (Found 2026-08-20 merging #2338.)
-  #
-  # So this job exists to make the required name real again, honestly:
-  # `needs:` binds it to the job that actually runs the detector. Drift → lib job fails
-  # → this job is SKIPPED → the required check never passes → the PR stays blocked,
-  # which is the correct outcome. It mirrors a verdict; it does not compute one, and it
-  # says so rather than printing a "✓ no drift" it did not establish.
-  #
-  # If the detector ever moves out of that job, update `needs:` — a mirror pointed at
-  # the wrong source is worse than no mirror.
+  # Required legacy context mirrors the drift check above; never compile twice.
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
     needs: cargo-test-continuum-core
@@ -337,82 +173,41 @@ jobs:
           echo "That job passed, so the drift check within it passed."
           echo "This job publishes the required status context; it does not re-check."
 
-  # windows-msvc BUILD gate (#304). Glass-boxed 2026-08-02: the Windows grid
-  # node (the CUDA lane) could not run ANY core test locally — un-gated unix
-  # imports (std::os::unix FileExt/MetadataExt/symlink, unix-socket test
-  # helpers) broke the windows-msvc build, so every measurement that lives in
-  # the test tree needed a Mac as proxy. `cargo check --lib --tests` compiles
-  # the lib AND the test harness (the exact surface `cargo test` builds)
-  # without running anything — the cheapest job that keeps the Windows node a
-  # first-class developer of this crate. Also the first CI brick of #291
-  # (fresh-clone on all 3 platforms).
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
-      # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
-      # the report (that is the deadlock this file's `on:` comment documents).
-      # Fail-open on any doubt: gh error, >=100 files (API page cap), push events —
-      # all read as relevant=true. A false "relevant" costs one cargo build; a
-      # false "irrelevant" costs trust in every green check.
-      - name: Relevance gate — docs-only PRs pass without paying for cargo
-        id: gate
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-          files=$(gh pr view ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
-          echo "$files"
-          count=$(echo "$files" | grep -c . || true)
-          if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
-             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-            echo "Docs-only diff ($count files) — heavy steps skipped; success reported honestly."
-          fi
       - uses: actions/checkout@v4
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.installer != 'false'
         with:
-          submodules: recursive
+          submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
       - name: Install Rust toolchain from rust-toolchain.toml
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: |
           rustup show active-toolchain
           rustc --version
       - name: Cache cargo state
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-windows-1.95
           cache-on-failure: true
-      # `--features test-fixtures` (card 9d249bd6): every `[[test]]` in
-      # continuum-core/Cargo.toml with `required-features = ["test-fixtures"]`
-      # (airc_remote_inference_end_to_end, persona_command_inbound_pump, the
-      # architecture_* battery, …) is SKIPPED by cargo when the feature is
-      # absent — so without it this job compiles none of them and the linux
-      # job (`--lib`) never sees tests/ at all. #1952 broke
-      # persona_command_inbound_pump's fixture and canary stayed green for
-      # weeks; found by an IntelMac cold-start check (#3692). Compile-only,
-      # so the cost is one extra check pass, not a test run.
       - name: cargo check (lib + test harness, incl. test-fixtures targets)
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --lib --tests --features test-fixtures
       - name: Windows installed release and supervisor regressions
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/windows-service.test.ps1
       - name: Warm builds preserve live services
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.installer != 'false'
         shell: bash
         run: bash tools/scripts/tests/start-server-build-only.test.sh
       - name: Windows native cache and engine ownership regressions
-        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
+        if: needs.changes.outputs.rust != 'false'
         shell: powershell
         run: |
           $helperTest = Join-Path $env:RUNNER_TEMP 'continuum-msvc-cache-test.exe'
