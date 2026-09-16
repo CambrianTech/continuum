@@ -44,6 +44,7 @@ use ts_rs::TS;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::{Availability, ModelCatalog};
 use crate::modules::serving_daemon::PinFitChecker;
+use crate::modules::serving_pin_store::ServingPinStore;
 use crate::sdk_codegen::CommandError;
 
 /// Which model to force-serve on this host.
@@ -101,6 +102,9 @@ crate::action_command! {
         fit: PinFitChecker,
         catalog: Arc<ModelCatalog>,
         serving: watch::Receiver<ServingSnapshot>,
+        /// Where the pin is persisted — handed in, never resolved here (a global
+        /// resolution let this command's own unit test pin the real machine).
+        store: ServingPinStore,
     }
     name: "serving/pin",
     access: Privileged,
@@ -152,7 +156,7 @@ crate::action_command! {
         //    daemon's next tick reconciles the live server to it (sub-second to a
         //    few seconds; observe readiness via serving/status).
         this.pin.send_replace(Some(p.model_id.clone()));
-        crate::modules::serving_pin_store::save(&p.model_id);
+        this.store.save(&p.model_id);
 
         let detail = match &previous_model {
             Some(prev) if prev == &p.model_id => format!(
@@ -234,17 +238,26 @@ mod tests {
     fn build(
         fit: PinFitChecker,
         catalog: Arc<ModelCatalog>,
-    ) -> (ServingPin, watch::Receiver<Option<String>>) {
+    ) -> (
+        ServingPin,
+        watch::Receiver<Option<String>>,
+        tempfile::TempDir,
+    ) {
         let (pin, pin_rx) = watch::channel(None);
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
+        // The store lives under a tempdir the test owns. Before 2026-09-16 the command
+        // resolved the machine's real home and this test pinned the box it ran on.
+        let dir = tempfile::tempdir().expect("tempdir");
         (
             ServingPin {
                 pin,
                 fit,
                 catalog,
                 serving,
+                store: ServingPinStore::under_home(dir.path()),
             },
             pin_rx,
+            dir,
         )
     }
 
@@ -260,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_model_is_not_found() {
         let (catalog, _id) = catalog_and_id();
-        let (cmd, pin_rx) = build(
+        let (cmd, pin_rx, _dir) = build(
             fixed_fit(PinFit {
                 plan: Some(plan(true)),
                 weights_bytes: 0,
@@ -290,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn model_that_wont_fit_is_denied() {
         let (catalog, id) = catalog_and_id();
-        let (cmd, pin_rx) = build(
+        let (cmd, pin_rx, _dir) = build(
             fixed_fit(PinFit {
                 plan: Some(plan(false)),
                 weights_bytes: 30_000_000_000,
@@ -314,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn not_downloaded_is_denied() {
         let (catalog, id) = catalog_and_id();
-        let (cmd, pin_rx) = build(
+        let (cmd, pin_rx, _dir) = build(
             fixed_fit(PinFit {
                 plan: None,
                 weights_bytes: 0,
@@ -336,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn fitting_model_is_pinned() {
         let (catalog, id) = catalog_and_id();
-        let (cmd, pin_rx) = build(
+        let (cmd, pin_rx, _dir) = build(
             fixed_fit(PinFit {
                 plan: Some(plan(true)),
                 weights_bytes: 4_000_000_000,
@@ -360,5 +373,12 @@ mod tests {
             Some(id.as_str()),
             "the pin watch carries the forced model"
         );
+        // what this catches (2026-09-16): the persisted pin lands in THE STORE THE
+        // COMMAND HOLDS. This very test used to write ~/.continuum/state/serving-pin.json
+        // on every `cargo test`, re-pinning the box to the catalog's first key.
+        let stored = ServingPinStore::under_home(_dir.path())
+            .load()
+            .expect("the pin is persisted to the command's own store");
+        assert_eq!(stored.model_id, id);
     }
 }

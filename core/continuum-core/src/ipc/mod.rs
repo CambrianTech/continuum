@@ -1369,11 +1369,20 @@ pub fn start_server(
     // note above). If this reads small while the `serving` row stays huge, the cost is a
     // neighbour's and the row was never about the serving daemon.
     let t_serving = std::time::Instant::now();
+    // The pin store is built HERE, once, under the continuum home — the daemon and
+    // its pin/unpin commands are handed the handle and never resolve a path of their
+    // own (a global resolution let a unit test pin the real machine, 2026-09-16).
+    let pin_store = crate::modules::serving_pin_store::ServingPinStore::under_home(
+        &crate::commands::benchmark::continuum_home().map_err(|e| {
+            std::io::Error::other(format!("serving pin store needs the continuum home: {e}"))
+        })?,
+    );
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
         gpu_manager.clone(),
         system_monitor.clone(),
         resource_daemon.clone(),
         model_catalog.clone(),
+        pin_store,
     ));
     crate::probe!(
         class = "boot.stretch",

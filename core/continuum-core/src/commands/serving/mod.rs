@@ -79,6 +79,7 @@ pub fn command_objects(
     serving: watch::Receiver<ServingSnapshot>,
     plan: watch::Receiver<Option<ServingPlan>>,
     catalog: Arc<ModelCatalog>,
+    pin_store: crate::modules::serving_pin_store::ServingPinStore,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ServingUnload {
@@ -96,8 +97,12 @@ pub fn command_objects(
             fit,
             catalog,
             serving: serving.clone(),
+            store: pin_store.clone(),
         }),
-        Arc::new(ServingUnpin { pin }),
+        Arc::new(ServingUnpin {
+            pin,
+            store: pin_store,
+        }),
         Arc::new(ServingCacheProbe { serving: serving.clone() }),
         Arc::new(ServingStatus { serving }),
         Arc::new(ServingPlanQuery { plan }),
@@ -125,7 +130,16 @@ mod tests {
         });
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
         let (_ptx, plan) = watch::channel(None);
-        let objs = command_objects(suppress, pin, fit, serving, plan, catalog);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let objs = command_objects(
+            suppress,
+            pin,
+            fit,
+            serving,
+            plan,
+            catalog,
+            crate::modules::serving_pin_store::ServingPinStore::under_home(dir.path()),
+        );
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"serving/unload"), "the VRAM-axis free verb");
         assert!(
