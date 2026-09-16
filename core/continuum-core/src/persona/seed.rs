@@ -265,6 +265,53 @@ pub async fn read_seed(path: &Path) -> Result<PersonaSeedFile, PersonaSeedError>
     Ok(seed)
 }
 
+/// Every persona that WILL resume on this node — the `persona_id` of each parseable
+/// `seed.json` under `personas_dir` — synchronously, for a caller that must decide
+/// before the async resume has run.
+///
+/// # Why this exists (2026-09-16, the 5-minute turn)
+///
+/// The prompt cache is sized ONCE, at engine launch, from *live* residents. At launch
+/// there are none — citizens resume only after the engine exists — so the derivation
+/// fell to its 4096 MiB cold-start prior, and every citizen's 4.5-5.5 GiB prompt state
+/// was refused by the engine for the life of the process:
+///
+/// ```text
+/// serving.prompt_cache.derived  reason=prior_no_resident_demand  citizens=0  derived_mib=4096
+/// llama-server: prompt state size 4498.997 MiB exceeds cache size limit 4096.000 MiB, skipping
+/// delib.generate.cache          Kimi  latency=358937ms  prefill=27054  cached=0  hit=0.00
+/// ```
+///
+/// The M5 escaped only by accident: its lane count changes when 16 residents arrive,
+/// forcing a second launch that re-derived at 13,564 MiB. A `--parallel 1` box never
+/// gets that second launch and sits on the prior forever.
+///
+/// "Who is resident this instant" was the wrong question at launch. "Who will resume"
+/// is answerable synchronously from disk: the seeds are exactly the resume set, and the
+/// demand registry persists across restarts for exactly this. Sync `std::fs` on purpose
+/// — the caller (`derived_prompt_cache_mib`) is a sync seam inside the serving planner.
+///
+/// Read-only, tolerant, deterministic: a junk file or an unparseable seed is skipped
+/// (the async resume path logs those; sizing must not crash on them), and the result
+/// is sorted so two calls over one directory agree. A missing directory is the
+/// first-boot state and yields an empty set, which the caller names honestly as
+/// "no seeds on disk" — distinct from "seeds exist, residents not yet up".
+pub fn persona_ids_with_seeds_in(personas_dir: &Path) -> Vec<Uuid> {
+    let Ok(entries) = std::fs::read_dir(personas_dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<Uuid> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| std::fs::read(e.path().join("seed.json")).ok())
+        .filter_map(|bytes| serde_json::from_slice::<PersonaSeedFile>(&bytes).ok())
+        .map(|seed| seed.persona_id())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Atomically write a seed file. Writes to `<path>.tmp`, fsyncs,
 /// then renames to `<path>`. If anything fails midway, the original
 /// (if any) is preserved and the temp file is left on disk for the
@@ -694,4 +741,92 @@ mod tests {
             tmp_path.display()
         );
     }
+
+    /// The resume set, read synchronously for a sizing decision that cannot wait for
+    /// the async resume to run. Nested per the one-mod rule.
+    mod who_will_resume {
+        use super::*;
+
+        fn seed_for(id: &str, name: &str) -> PersonaSeedFile {
+            PersonaSeedFile::V1 {
+                persona_id: Uuid::parse_str(id).unwrap(),
+                agent_name: name.to_string(),
+                created_at_ms: 1_717_200_000_000,
+                avatar_vrm: None,
+            }
+        }
+
+        // what this catches: the input to the prompt-cache sizing at FIRST launch. With
+        // live residents at zero by construction (citizens resume after the engine
+        // exists), this is the only thing that can tell the derivation who is coming.
+        // Regression for the 5-minute turn: reason=prior_no_resident_demand citizens=0
+        // derived_mib=4096 while two seeds sat on disk with 27k of persisted demand each.
+        #[test]
+        fn every_seed_on_disk_is_in_the_resume_set_and_nothing_else_is() {
+            let temp = TempDir::new().unwrap();
+            let personas = temp.path().join("personas");
+            for (dir, id, name) in [
+                ("Kimi", "e2f0e022-04ac-4f66-a26c-7146551745b4", "Kimi"),
+                ("Sahar", "df72dbf2-b177-4d59-8325-b52c6ff71adf", "Sahar"),
+            ] {
+                let d = personas.join(dir);
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(
+                    d.join("seed.json"),
+                    serde_json::to_vec(&seed_for(id, name)).unwrap(),
+                )
+                .unwrap();
+            }
+            // Things that must NOT count: a dir with no seed, a dir with a corrupt seed,
+            // a stray file at the top level.
+            std::fs::create_dir_all(personas.join("Camille")).unwrap();
+            std::fs::create_dir_all(personas.join("Broken")).unwrap();
+            std::fs::write(personas.join("Broken").join("seed.json"), b"{ not json").unwrap();
+            std::fs::write(personas.join("notes.txt"), b"not a persona").unwrap();
+
+            let ids = persona_ids_with_seeds_in(&personas);
+            let mut want = vec![
+                Uuid::parse_str("e2f0e022-04ac-4f66-a26c-7146551745b4").unwrap(),
+                Uuid::parse_str("df72dbf2-b177-4d59-8325-b52c6ff71adf").unwrap(),
+            ];
+            want.sort();
+            assert_eq!(ids, want, "exactly the parseable seeds, sorted, nothing invented");
+        }
+
+        // what this catches: a missing personas dir is the FIRST-BOOT state, not an
+        // error — and it must read as an empty set so the caller can name it
+        // "no seeds on disk", distinct from "seeds exist, residents not yet up".
+        #[test]
+        fn a_missing_personas_dir_is_an_empty_resume_set_not_a_crash() {
+            let temp = TempDir::new().unwrap();
+            let ids = persona_ids_with_seeds_in(&temp.path().join("does-not-exist"));
+            assert!(ids.is_empty());
+        }
+
+        // what this catches: determinism. Two reads of one directory must agree, or a
+        // sizing decision could differ between the launch that computes it and the
+        // receipt that reports it.
+        #[test]
+        fn the_resume_set_is_sorted_and_deduplicated() {
+            let temp = TempDir::new().unwrap();
+            let personas = temp.path().join("personas");
+            // The same persona under two directory names (a rename that left the old
+            // home behind) counts once.
+            for dir in ["Old", "New"] {
+                let d = personas.join(dir);
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(
+                    d.join("seed.json"),
+                    serde_json::to_vec(&seed_for("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7", "Pax"))
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+            let a = persona_ids_with_seeds_in(&personas);
+            let b = persona_ids_with_seeds_in(&personas);
+            assert_eq!(a, b);
+            assert_eq!(a.len(), 1, "one persona, however many homes carry her seed");
+        }
+    }
+
 }
