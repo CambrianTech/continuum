@@ -494,14 +494,15 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Lazily ensure a persistent shell session exists for `who`, rooted at the
+/// Lazily ensure shell execution state exists for `who`, rooted at the
 /// caller's ENGINE root — the one workspace authority per caller (the operator's
 /// cwd, a peer's citizen layer, or whatever `create-workspace` pinned). Never a
 /// second independent cwd fallthrough: before this, a peer's shell rooted at the
 /// core's cwd even when her file engine didn't, which is how narrated shell
-/// commands landed in the shared checkout. Idempotent; one bash session per
-/// caller, reused across `code/shell` calls so `cd`/env persist like a real
-/// terminal.
+/// commands landed in the shared checkout. Idempotent; one execution registry per
+/// caller retains handles and configured cwd/env. Each command starts a fresh
+/// shell process: shell `cd`, assignments, exports and options do not flow back
+/// into this registry or into later calls.
 async fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
     // The ENGINE decides the root and evicts a shell whose root moved (a held card
     // claimed after the shell was opened) — so it runs first; a shell that survives
@@ -1290,7 +1291,7 @@ impl ActionCommand for CodeSearch {
 
 // ─────────────────────────── code/shell ──────────────────────────
 
-/// Run a shell command in the caller's persistent bash session (the agentic
+/// Run a command in a fresh shell process using the caller's workspace (the agentic
 /// primitive — build, test, git, training, a daemon). `Privileged` → the Trusted
 /// tier: a local persona or trusted node may run it; a remote `Provisional` peer
 /// may NOT.
@@ -1308,7 +1309,12 @@ pub struct CodeShell {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellParams {
-    /// The shell command line to run (bash), e.g. `cargo check` or `git status`.
+    /// Command; paths in code strings are not shell-translated.
+    ///
+    /// Each execution starts a fresh shell. For example, use `cd path && command`
+    /// in the same call. Check failures explicitly; use `set -o pipefail` where
+    /// supported when a pipeline must fail if any child fails. Child cwd/env/options
+    /// do not persist to later calls; files and execution handles do.
     pub cmd: String,
     /// How long to wait INLINE for completion before returning the execution_id
     /// handle to poll. Defaults to 30000 (30s). A long job keeps running past this.
@@ -1349,9 +1355,9 @@ impl ActionCommand for CodeShell {
                                // citizens (a local persona / a trusted node), never a Provisional remote peer.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Run a shell command (bash) in your persistent workspace session. Waits inline up to \
-         wait_ms (default 30s); if it finishes you get stdout/stderr/exit_code, otherwise you get \
-         status=running + an execution_id to poll with code/shell-poll. Use for build/test/git/etc.";
+        "New shell per cmd (Windows Bash; configured Unix shell). Files/handles persist; cd/env/options \
+         do not. Use native host paths. Shell status follows last-command/pipeline/|| rules, not each \
+         child's success. wait_ms defaults to 30000; poll running execution_id with code/shell-poll.";
     type Params = CodeShellParams;
     type Output = ShellExecuteResponse;
 
