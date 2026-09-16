@@ -163,6 +163,9 @@ try {
     Mod-ColdStorage
     } else {
         Write-Step 'Preparing with the existing toolchain; provisioning, elevation, startup registration, and handoff are deferred.'
+        Mod-CMake -ExistingOnly
+        Mod-LLVM -ExistingOnly
+        Mod-CUDA -ExistingOnly
     }
 
     # Build + run as the invoking user (never elevated -- keeps the cargo cache

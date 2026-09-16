@@ -327,6 +327,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
 using System;
 public class SupervisorFixture {
     public static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--version") {
+            var name = System.IO.Path.GetFileName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            Console.WriteLine(name == "nvcc.exe" ? "Cuda compilation tools, release 99.0" : "cmake version 99.0.0");
+            return 0;
+        }
         if (args.Length == 4 && args[0] == "reboot" && args[1] == "--prebuilt" && args[3] == "--validate-only") {
             Console.WriteLine("fixture prebuilt validated");
             return 0;
@@ -371,6 +376,13 @@ public class SupervisorFixture {
         $oldArtifact = Join-Path $oldSlot 'continuum-core-server.exe'
         Set-Content -LiteralPath $oldArtifact -Value 'registered candidate must survive'
         $oldHash = (Get-FileHash -LiteralPath $oldArtifact).Hash
+        $cmakeBin = Join-Path $prepareRoot 'tools\cmake\bin'
+        $llvmBin = Join-Path $prepareRoot 'tools\llvm\bin'
+        $cudaBin = Join-Path $prepareRoot 'cuda-toolkit\bin'
+        New-Item -ItemType Directory -Path $cmakeBin, $llvmBin, $cudaBin -Force | Out-Null
+        Copy-Item -LiteralPath $child -Destination (Join-Path $cmakeBin 'cmake.exe')
+        Copy-Item -LiteralPath $child -Destination (Join-Path $cudaBin 'nvcc.exe')
+        Set-Content -LiteralPath (Join-Path $llvmBin 'libclang.dll') -Value 'fixture'
         $shim = @'
 . '__SERVICE__'
 function Get-CimInstance { @() }
@@ -385,8 +397,13 @@ function git { $global:LASTEXITCODE = 0 }
 '@
         $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'windows-service.ps1')
-        @'
+        $modules = @'
+. '__MODULES__'
+function Get-Command { param($Name) if ($Name -ne 'cmake') { [pscustomobject]@{Source=$Name} } }
+function Invoke-WebRequest { throw 'Unexpected download' }
+function Invoke-RestMethod { throw 'Unexpected download' }
 function Mod-BuildCore {
+    if (-not $env:CMAKE -or -not $env:LIBCLANG_PATH -or -not $env:CUDA_PATH) { throw 'Cached toolchain environment was not restored' }
     $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE 'fixture-target'
     $release = Join-Path $env:CARGO_TARGET_DIR 'release'
     New-Item -ItemType Directory -Path $release -Force | Out-Null
@@ -397,16 +414,23 @@ function Mod-LlamaServer {
     New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
     Copy-Item -LiteralPath $env:CONTINUUM_FIXTURE_CHILD -Destination (Join-Path $InstallDirectory 'llama-server.exe')
 }
-'@ | Set-Content -LiteralPath (Join-Path $prepareLib 'win-modules.ps1')
-        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared')) {
+'@
+        $modules.Replace('__MODULES__', (Join-Path $repo 'tools\scripts\lib\win-modules.ps1').Replace("'", "''")) |
+            Set-Content -LiteralPath (Join-Path $prepareLib 'win-modules.ps1')
+        $missingFiles = @{cmake=(Join-Path $cmakeBin 'cmake.exe'); llvm=(Join-Path $llvmBin 'libclang.dll'); cuda=(Join-Path $cudaBin 'nvcc.exe')}
+        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda')) {
+            $missing = $missingFiles[$extra]
+            if ($missing) { Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $prepareRepo 'install.ps1') + '" -PrepareOnly' + $extra
+            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $prepareRepo 'install.ps1') + '" -PrepareOnly'
+            if (-not $missing) { $info.Arguments += $extra }
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
             $info.RedirectStandardError = $true
             $info.EnvironmentVariables['USERPROFILE'] = $prepareProfile
             $info.EnvironmentVariables['CONTINUUM_FIXTURE_CHILD'] = $child
+            foreach ($variable in @('CMAKE', 'LIBCLANG_PATH', 'CUDA_PATH')) { $info.EnvironmentVariables.Remove($variable) }
             $process = [Diagnostics.Process]::Start($info)
             try {
                 $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -415,8 +439,13 @@ function Mod-LlamaServer {
                 $output = $stdout.Result + $stderr.Result
                 if (-not $extra) {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
+                } elseif ($missing) {
+                    if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
                 } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw 'Preparation accepted incompatible flags' }
-            } finally { $process.Dispose() }
+            } finally {
+                $process.Dispose()
+                if ($missing) { Copy-Item -LiteralPath $child -Destination $missing }
+            }
         }
         if ((Get-FileHash -LiteralPath $oldArtifact).Hash -ne $oldHash) { throw 'Preparation overwrote the registered candidate' }
         function Write-Step { param($msg) }

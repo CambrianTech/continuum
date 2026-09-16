@@ -240,10 +240,10 @@ function Set-CMakeEnv {
     # only `npm start` (which re-runs install and re-adds cmake to the session PATH
     # each time). PATH-safe: we set a named var, not mutate persistent PATH. Mirrors
     # Mod-LLVM's LIBCLANG_PATH persistence so the toolchain env is automatic.
-    param([Parameter(Mandatory)][string]$Bin)
+    param([Parameter(Mandatory)][string]$Bin, [switch]$SessionOnly)
     $exe = Join-Path $Bin 'cmake.exe'
     $env:CMAKE = $exe
-    [Environment]::SetEnvironmentVariable('CMAKE', $exe, 'User')   # persist for future sessions
+    if (-not $SessionOnly) { [Environment]::SetEnvironmentVariable('CMAKE', $exe, 'User') }
     if ($env:PATH -notlike "*$Bin*") { $env:PATH = "$Bin;$env:PATH" }  # also on PATH for direct CLI this session
 }
 
@@ -258,6 +258,7 @@ function Get-CMakeVersion([string]$Exe) {
 }
 
 function Mod-CMake {
+    param([switch]$ExistingOnly)
     # Standalone Kitware CMake (knows every VS generator string, unlike the
     # VS-bundled one). Downloaded + extracted per-user -- NO admin.
     #
@@ -284,14 +285,15 @@ function Mod-CMake {
     if (Test-Path $installedExe) {
         $have = Get-CMakeVersion $installedExe
         if ($have -and $have -ge $pin) {
-            Set-CMakeEnv $bin
+            Set-CMakeEnv $bin -SessionOnly:$ExistingOnly
             Module-Skip 'CMake' "present at $dir ($have >= pinned $ver)"; return
         }
-        Module-Start 'CMake' "upgrading $have -> $ver (older pin cannot know this box's VS generator)"
+        if (-not $ExistingOnly) { Module-Start 'CMake' "upgrading $have -> $ver (older pin cannot know this box's VS generator)" }
     }
     else {
-        Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
+        if (-not $ExistingOnly) { Module-Start 'CMake' 'downloading Kitware CMake (no admin)' }
     }
+    if ($ExistingOnly) { throw 'Preparation requires the pinned CMake already installed; run the normal installer to provision it.' }
     $url = $src.url
     $zip = Join-Path $env:TEMP "cmake-$ver.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
@@ -307,15 +309,17 @@ function Mod-CMake {
 }
 
 function Mod-LLVM {
+    param([switch]$ExistingOnly)
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
     # windows-msvc tarball), extracted per-user -- no admin, no Python.
     $dir = Join-Path $env:USERPROFILE '.continuum\tools\llvm'
     $bin = Join-Path $dir 'bin'
     if (Test-Path (Join-Path $bin 'libclang.dll')) {
         $env:LIBCLANG_PATH = $bin
-        [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User')
+        if (-not $ExistingOnly) { [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User') }
         Module-Skip 'LLVM' "libclang present at $bin"; return
     }
+    if ($ExistingOnly) { throw 'Preparation requires libclang already installed; run the normal installer to provision it.' }
     Module-Start 'LLVM' 'downloading libclang from LLVM official release (no admin)'
     # Version is PINNED in the manifest. The GitHub "latest" can be a bleeding-edge
     # RC whose libclang mis-generates llama.cpp's bindgen layout tests (llama_sampler
@@ -349,6 +353,7 @@ function Mod-LLVM {
 }
 
 function Mod-CUDA {
+    param([switch]$ExistingOnly)
     # NVIDIA-only. Non-NVIDIA hosts build DirectML (no CUDA toolkit needed).
     if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
         Module-Skip 'CUDA' 'no NVIDIA GPU -- native build will use DirectML'
@@ -359,6 +364,7 @@ function Mod-CUDA {
         Module-Skip 'CUDA' "toolkit present at $script:CudaToolkitDir"
         return
     }
+    if ($ExistingOnly) { throw 'Preparation requires the CUDA build toolkit already installed; run the normal installer to provision it.' }
     Module-Start 'CUDA' 'assembling no-admin CUDA toolkit from NVIDIA redist archives'
 
     # redist source (manifest url + version + components) from install-manifest.toml.
