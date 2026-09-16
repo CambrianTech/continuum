@@ -2562,10 +2562,31 @@ impl ServingDaemonModule {
                                 None
                             }
                             Ok(cand) => {
-                                // Gate on the LIVE free-memory read, never a cached
-                                // plan figure (the eval-lane second-model SIGKILL
-                                // class).
-                                let free = system.snapshot().memory.available_bytes;
+                                // Gate on BOTH the live free-memory read (the eval-lane
+                                // second-model SIGKILL class) AND the PLANNED headroom
+                                // after the live lane's whole working set. The live read
+                                // alone admitted a 22 GB sidecar on 2026-09-15 00:17Z: it was
+                                // taken inside the main lane's relaunch window, when its 21
+                                // GB of weights + 15 GB of KV were momentarily unwired, so
+                                // "free" read 22 GB on a box that had 9 GB once both loaded —
+                                // 26 GB of swap, decode 6 t/s against a catalog 68. On unified
+                                // memory the live lane's device residency IS host RAM, so the
+                                // planned term counts the full weights, the KV at the served
+                                // window × lanes, the compute reserve and the OS floor.
+                                let live_free = system.snapshot().memory.available_bytes;
+                                let planned_headroom = sidecar_planned_headroom_bytes(
+                                    &target,
+                                    served_window,
+                                    system.memory().total_bytes,
+                                );
+                                let free = live_free.min(planned_headroom);
+                                crate::probe!(
+                                    class = "serving.vision.sidecar_headroom",
+                                    live_free,
+                                    planned_headroom,
+                                    need_bytes = cand.need_bytes,
+                                    "sidecar admission reads the tighter of the live free read and the planned headroom"
+                                );
                                 match sidecar::plan_sidecar(false, Ok(cand), free) {
                                     sidecar::SidecarVerdict::Spawn => {
                                         let mut slot = sidecar_slot.lock().await;
@@ -3835,6 +3856,31 @@ fn prompt_cache_decision(
             crate::inference::lane_args::host_prompt_cache_mib(demands, fp.kv_per_token, afford);
     }
     decision
+}
+
+/// What remains of physical RAM for a SIDECAR after the main lane's planned working
+/// set — the same terms the host-cache lease law uses ([`moe_host_cache_lease_inputs`]),
+/// with the FULL weights (on unified memory the device-resident share is host RAM):
+/// `physical − weights − KV(served window) × lanes − compute reserve − OS floor`.
+/// Saturating: an over-full box yields ZERO headroom, never a wrap. Pure over the
+/// target and the served window, so a relaunch window cannot lie to it.
+fn sidecar_planned_headroom_bytes(
+    target: &ServingTarget,
+    served_window: u32,
+    physical_bytes: u64,
+) -> u64 {
+    let Some(fp) = footprint_for(&target.model) else {
+        return 0; // no honest footprint = no honest headroom; the live read alone never admits
+    };
+    let lanes = target.lanes.max(1);
+    let window = if served_window > 0 { served_window } else { target.context_window };
+    let working_set = fp
+        .weights_bytes
+        .saturating_add(fp.kv_at(window).saturating_mul(lanes as u64))
+        .saturating_add(fp.prefill_compute_reserve(window, lanes))
+        .saturating_add((target.host_prompt_cache_mib as u64) * 1024 * 1024)
+        .saturating_add(host_os_floor_bytes(physical_bytes));
+    physical_bytes.saturating_sub(working_set)
 }
 
 fn host_os_floor_bytes(physical_bytes: u64) -> u64 {
@@ -7108,6 +7154,43 @@ mod tests {
         // sidecar — each one individually small enough to look affordable, the set of
         // them not. An admission that ignores existing ephemeral lanes admits N engines
         // one at a time.
+    // what this catches (2026-09-15 00:17Z): the vision sidecar was admitted on a live
+    // free-RAM read taken inside the main lane's relaunch window (weights + KV
+    // momentarily unwired) and the box swapped 26 GB. The PLANNED headroom after the
+    // main lane's working set — full weights, KV at the served window × lanes, the
+    // compute reserve, the prompt cache, the OS floor — must say NO on a 64 GB box
+    // serving a 21 GB model over 6 lanes at 59k, whatever the live read says.
+    #[test]
+    fn the_sidecar_headroom_is_planned_not_a_relaunch_window_free_read() {
+        let mut model = fake_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF");
+        model.weights_bytes = Some(21 * 1024 * 1024 * 1024);
+        model.context_window = 262_144;
+        let target = ServingTarget {
+            host_prompt_cache_mib: 2505,
+            model,
+            context_window: 59_392,
+            lanes: 6,
+            adapters: Vec::new(),
+            placement: crate::inference::llama_server::main_lane_placement(),
+            expert_placement: None,
+            resident_override: None,
+            vision_sidecar: false,
+        };
+        let physical = 64 * 1024 * 1024 * 1024;
+        let headroom = sidecar_planned_headroom_bytes(&target, 59_392, physical);
+        let need = 22_131_161_622; // the 27B sidecar's measured need on 2026-09-15
+        assert!(headroom < need, "planned headroom {headroom} must refuse a {need}-byte sidecar beside a 21 GB main lane on 64 GB");
+        // Not a blanket refusal: the same lane on a 256 GB box leaves the sidecar room.
+        let big = sidecar_planned_headroom_bytes(&target, 59_392, 256 * 1024 * 1024 * 1024);
+        assert!(big >= need, "on 256 GB the planned headroom {big} admits the sidecar");
+        // A row without a footprint (no stamped weights, no resolvable GGUF) yields ZERO
+        // headroom — the live read alone never admits.
+        let mut blind = target.model.clone();
+        blind.weights_bytes = None;
+        let blind_target = ServingTarget { model: blind, ..target.clone() };
+        assert_eq!(sidecar_planned_headroom_bytes(&blind_target, 59_392, physical), 0);
+    }
+
         #[test]
         fn ephemeral_siblings_weigh_on_the_decision() {
             let budget = 24_000_000_000;
