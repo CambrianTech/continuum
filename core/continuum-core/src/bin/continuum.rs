@@ -1529,6 +1529,17 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // source tree, no --prebuilt, and enough free memory, build FIRST through the
     // start script's own definition (CONTINUUM_BUILD_ONLY=1) while the core serves;
     // the exact reported artifact is validated before teardown and launched directly.
+    // The claim is published BEFORE the warm build, not after: the build is the deploy's
+    // longest phase and it runs beside the serving core (rustc on every core for minutes).
+    // The running core reads the claim (`deploy_claim::in_flight`) to know that a decode
+    // measured now measures the compiler, not the lane — 2026-09-16 the decode knee fell
+    // 4 → 2 on samples taken inside its own reboot's build. The claim's only other reader
+    // is the CLI's autostart gate, which is right to refuse during a build too.
+    let target_sha = prebuilt
+        .as_ref()
+        .map(|p| p.build_sha.clone())
+        .or_else(git_head_short_sha);
+    let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
     // A failed attempted warm build returns without stopping the serving core.
     // Below the headroom line the existing stop-first path remains available.
     if prebuilt.is_none() {
@@ -1551,11 +1562,6 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             Err(why) => println!("▶ no warm build: {why} — stopping first, then building"),
         }
     }
-    let target_sha = prebuilt
-        .as_ref()
-        .map(|p| p.build_sha.clone())
-        .or_else(git_head_short_sha);
-    let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
@@ -2828,19 +2834,8 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
 /// True if `pid` is still alive. Unix: signal 0 is the canonical liveness probe.
 /// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
-    // Same enumerator as processes_named, for the same reason: one implementation beats a
-    // per-OS pair where one arm shells out to a tool the other platform does not have. The old
-    // Windows arm also matched the pid as a SUBSTRING of tasklist's whole output, so pid 42 read
-    // as alive whenever any pid containing "42" existed.
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let target = Pid::from_u32(pid as u32);
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[target]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    sys.process(target).is_some()
+    // ONE enumerator, shared with the core's own read of the claim (`deploy_claim::in_flight`).
+    continuum_core::runtime::deploy_claim::owner_alive(pid)
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers

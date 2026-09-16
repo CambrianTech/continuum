@@ -963,6 +963,12 @@ impl ServingDaemonModule {
             .map(|r| r.live_personas().len())
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no residents = the floor stands
         let residents = resident_lane_demand(self.lane_demand(), live_count, lane_demand_overridden());
+        // THE DECODE KNEE (2026-09-16): the roster is the demand, the measured decode
+        // curve is the ceiling. 16 minds on 8 lanes decoded 7 t/s per stream against a
+        // catalog 68 — a ten-times tax; with KV pages restoring from disk, fewer warm
+        // slots is the restore economy, not starvation. `inference::decode_knee`.
+        let active_model = crate::inference::llama_server::current_serving().active_model;
+        let knee = active_model.as_deref().and_then(crate::inference::decode_knee::knee_for);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -975,6 +981,25 @@ impl ServingDaemonModule {
         // residents < 2 keeps the old shape (the adapter reserves nothing
         // below n_slots 3, so asking for the extra lane would waste it).
         let lanes = if residents >= 2 { residents + 1 } else { residents };
+        // The knee bounds the TOTAL slot count, scratch included: the curve is measured on
+        // in-flight model calls, and the scratch slot is one of them (first cut clamped the
+        // resident count and the +1 put the plan right back on the collapsed side).
+        let clamped = crate::inference::decode_knee::knee_lanes(lanes, knee);
+        // One row when the clamp CHANGES (first live read: one row per planning tick,
+        // 400 in seven minutes — the ledger-rotation class), in both directions.
+        static LAST_CLAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let shape = ((lanes as u64) << 32) | clamped as u64;
+        if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
+            crate::probe!(
+                class = "serving.decode_knee.clamped",
+                model = %active_model.unwrap_or_default(), // unwrap_or_default: no model = no knee = the roster's own count, still worth one row
+                roster_lanes = lanes as u64,
+                knee = clamped as u64,
+                clamped = clamped < lanes,
+                "lane demand against the measured decode knee — the roster pages, the streams stay fast"
+            );
+        }
+        let lanes = clamped;
         // Both ceilings are over the RESIDENTS, never the whole persisted registry
         // (490 entries: every test fixture and departed mind); the sent ceiling is what
         // the window follows, the untrimmed one only bounds it.

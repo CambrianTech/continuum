@@ -91,6 +91,14 @@ pub(crate) fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measu
     else {
         return;
     };
+    // EVERY measured decode feeds the decode curve (not only collapsed ones): the
+    // planner's lane clamp is derived from it (`inference::decode_knee`).
+    crate::inference::decode_knee::observe(
+        model_id,
+        crate::cognition::resource_admission::inflight_model_calls() as u32,
+        measured_tps,
+        expected,
+    );
     // Collapse alarm only: floor 0.25 of catalog rate, no above-par ceiling
     // (this seam never celebrates over-delivery — it screams on collapse).
     let verdict = crate::inference::throughput_expectation::classify_throughput(

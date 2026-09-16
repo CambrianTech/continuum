@@ -156,13 +156,23 @@ pub struct CitizenHealth {
     pub settles: u64,
     pub credits_staged: u64,
     pub credits_settled: u64,
+    /// The measured decode knee for the served model (`inference::decode_knee`), when
+    /// one is known: the lane count the planner will not exceed because every further
+    /// stream would decode below the tax floor. Above it, lanes are not what is owed.
+    pub knee: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Healthy,
-    /// More minds than the lanes can turn in the window.
+    /// More minds than the lanes can turn in the window, and the planner has lanes to
+    /// give (no knee, or lanes below it).
     Starved { resident: u64, lanes: u64 },
+    /// More minds than the lanes can turn, and the lanes are AT the measured decode
+    /// knee: one more lane would make every stream slower than the minds it was added
+    /// for. The roster pages (the restore economy); what is owed is fewer seats on
+    /// this box or more decode (a faster tier, another node) — never more lanes here.
+    AtKnee { resident: u64, lanes: u64, knee: u64 },
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
     /// Residents, no acts at all.
@@ -183,6 +193,7 @@ impl Verdict {
         match self {
             Verdict::Healthy => "healthy",
             Verdict::Starved { .. } => "starved",
+            Verdict::AtKnee { .. } => "at_knee",
             Verdict::Reading { .. } => "reading",
             Verdict::Idle { .. } => "idle",
             Verdict::Slow { .. } => "slow",
@@ -209,7 +220,10 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
         return Verdict::Idle { resident: h.resident };
     }
     if h.lanes > 0 && h.resident > h.lanes * MINDS_PER_LANE_STARVED_ABOVE {
-        return Verdict::Starved { resident: h.resident, lanes: h.lanes };
+        return match h.knee {
+            Some(knee) if h.lanes >= knee => Verdict::AtKnee { resident: h.resident, lanes: h.lanes, knee },
+            _ => Verdict::Starved { resident: h.resident, lanes: h.lanes },
+        };
     }
     if h.writes == 0 {
         return Verdict::Reading { acts: h.acts };
@@ -227,6 +241,9 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         Verdict::Starved { resident, lanes } => {
             format!("STARVED: {resident} minds on {lanes} lanes — the planner owes lanes")
         }
+        Verdict::AtKnee { resident, lanes, knee } => format!(
+            "AT THE KNEE: {resident} minds on {lanes} lanes, the measured decode knee is {knee} — the roster pages; owed: fewer seats here or more decode, never more lanes"
+        ),
         Verdict::Reading { acts } => {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
@@ -348,8 +365,15 @@ impl CitizenHealthModule {
             settles,
             credits_staged,
             credits_settled,
+            knee: knee_of(serving.active_model.as_deref()),
         }
     }
+}
+
+/// The served model's measured decode knee, if any — the fact that turns "owes lanes"
+/// into "at the knee".
+fn knee_of(model: Option<&str>) -> Option<u64> {
+    model.and_then(crate::inference::decode_knee::knee_for).map(u64::from)
 }
 
 impl Default for CitizenHealthModule {
@@ -421,6 +445,7 @@ impl ServiceModule for CitizenHealthModule {
                     settles: LEDGER.settles.load(Ordering::Relaxed),
                     credits_staged: LEDGER.credits_staged.load(Ordering::Relaxed),
                     credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
+                    knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
@@ -482,7 +507,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0 }
+        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, knee: None }
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -498,6 +523,14 @@ mod tests {
         // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
         assert_eq!(verdict(&h(16, 6, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
         assert_eq!(verdict(&h(4, 2, 10, 1)), Verdict::Healthy, "one write per four minds is the floor, inclusive");
+        // 2026-09-16 06:5xZ, the first hour under the decode knee: "STARVED: 16 minds on
+        // 5 lanes — the planner owes lanes" while the planner was holding lanes AT the
+        // knee on purpose. Lanes at the knee are not owed; seats or decode are.
+        let at_knee = CitizenHealth { knee: Some(5), ..h(16, 5, 70, 4) };
+        assert_eq!(verdict(&at_knee), Verdict::AtKnee { resident: 16, lanes: 5, knee: 5 });
+        assert!(line(&at_knee, &verdict(&at_knee)).contains("never more lanes"));
+        let below_knee = CitizenHealth { knee: Some(8), ..h(16, 5, 70, 4) };
+        assert_eq!(verdict(&below_knee), Verdict::Starved { resident: 16, lanes: 5 }, "below the knee the planner still owes lanes");
         assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Empty { lanes: 0, lanes_granted: 0 }, "an empty node is EMPTY, never 'healthy'");
     }
 

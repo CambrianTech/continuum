@@ -48,6 +48,7 @@ pub mod stream_liveness;
 pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
+pub mod decode_knee;
 pub mod lane_registry;
 pub mod llama_server;
 pub mod llamacpp_adapter;
