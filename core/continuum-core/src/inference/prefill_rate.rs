@@ -26,10 +26,47 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// Seconds of prefill a turn may cost before its first token. The latency law's line:
-/// time-to-act is what the person on the other side feels, and a minute is already the
-/// p90 on the M5 today; this bound keeps a smaller box from making it fifteen.
-pub const TTFT_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+/// Who is waiting on the first token. The TTFT budget is the last CHOSEN number in the
+/// render-budget chain (card 7496ed9d, Cormac's review of #4124): 60 s is justified by
+/// what the person on the other side feels — and a turn with nobody on the other side (a
+/// detached benchmark solve, a self-tick, a consolidation) would gladly spend three
+/// minutes of prefill for a materially better prompt. Same shape as the decode knee:
+/// keep the derivation, make the input typed. The audience is chosen at the turn seam
+/// (`cognition::audience`), never inferred from the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audience {
+    /// Someone is waiting: a room turn (a human, a peer, a citizen's question).
+    Interactive,
+    /// Nobody is waiting: a detached solve, the self-cycle, a dream consolidation.
+    Unattended,
+}
+
+impl Audience {
+    /// Seconds of prefill a turn may cost before its first token, for this audience.
+    pub const fn ttft(self) -> std::time::Duration {
+        match self {
+            Audience::Interactive => INTERACTIVE_TTFT,
+            Audience::Unattended => UNATTENDED_TTFT,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Audience::Interactive => "interactive",
+            Audience::Unattended => "unattended",
+        }
+    }
+}
+
+/// The latency law's line: time-to-act is what the person on the other side feels, and
+/// a minute is already the p90 on the M5 today; this bound keeps a smaller box from
+/// making it fifteen.
+pub const INTERACTIVE_TTFT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Three times the interactive line: an unattended turn buys a fuller prompt with time
+/// nobody is spending — bounded, because an act still has a tick deadline behind it.
+pub const UNATTENDED_TTFT: std::time::Duration = std::time::Duration::from_secs(180);
+/// The interactive line, kept under its historical name for the doc references.
+pub const TTFT_BUDGET: std::time::Duration = INTERACTIVE_TTFT;
 /// A prefill shorter than this measures the request overhead, not the lane — a time floor,
 /// deliberately not a token count (a token floor is window-shaped; the noise is in the clock).
 pub const MIN_SAMPLE: std::time::Duration = std::time::Duration::from_millis(250);
@@ -62,10 +99,10 @@ impl PrefillPoint {
     }
 }
 
-/// The prompt (tokens) a turn may cost at `tps` inside [`TTFT_BUDGET`], clamped to
-/// `[floor, served]`. Pure — the one rule.
-pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32) -> u32 {
-    let raw = (tps * TTFT_BUDGET.as_secs_f64()).floor();
+/// The prompt (tokens) a turn may cost at `tps` inside the audience's TTFT budget,
+/// clamped to `[floor, served]`. Pure — the one rule.
+pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32, audience: Audience) -> u32 {
+    let raw = (tps * audience.ttft().as_secs_f64()).floor();
     let raw = if raw.is_finite() && raw > 0.0 { raw as u32 } else { 0 };
     raw.max(floor).min(served.max(floor))
 }
@@ -176,11 +213,20 @@ mod tests {
     // trusted (thin, stale) leaves the served window in charge.
     #[test]
     fn the_prompt_a_turn_may_cost_follows_the_measured_prefill_rate() {
-        assert_eq!(affordable_prompt_tokens(500.0, 4096, 66_000), 30_000);
-        assert_eq!(affordable_prompt_tokens(80.0, 4096, 32_768), 4_800);
-        assert_eq!(affordable_prompt_tokens(20.8, 4096, 32_768), 4096, "below the floor: the floor");
-        assert_eq!(affordable_prompt_tokens(5_000.0, 4096, 66_000), 66_000, "never above the served window");
-        assert_eq!(affordable_prompt_tokens(f64::NAN, 4096, 66_000), 4096);
+        let live = Audience::Interactive;
+        assert_eq!(affordable_prompt_tokens(500.0, 4096, 66_000, live), 30_000);
+        assert_eq!(affordable_prompt_tokens(80.0, 4096, 32_768, live), 4_800);
+        assert_eq!(affordable_prompt_tokens(20.8, 4096, 32_768, live), 4096, "below the floor: the floor");
+        assert_eq!(affordable_prompt_tokens(5_000.0, 4096, 66_000, live), 66_000, "never above the served window");
+        assert_eq!(affordable_prompt_tokens(f64::NAN, 4096, 66_000, live), 4096);
+        // card 7496ed9d: nobody waiting buys a fuller prompt on the same lane — the 4B
+        // that could not afford the floor interactively renders ~3.7k unattended; the
+        // ceiling and the floor are unchanged.
+        let alone = Audience::Unattended;
+        assert_eq!(affordable_prompt_tokens(20.8, 4096, 32_768, alone), 4096, "still under the floor");
+        assert_eq!(affordable_prompt_tokens(80.0, 4096, 32_768, alone), 14_400);
+        assert_eq!(affordable_prompt_tokens(5_000.0, 4096, 66_000, alone), 66_000);
+        assert!(Audience::Unattended.ttft() > Audience::Interactive.ttft());
         let mut p = PrefillPoint::default();
         for _ in 0..MIN_SAMPLES - 1 {
             p.observe(80.0, T);

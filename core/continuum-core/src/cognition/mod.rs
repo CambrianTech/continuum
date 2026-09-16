@@ -94,6 +94,7 @@ pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
 pub mod recall_ranker;
+pub mod audience;
 pub mod replay;
 pub mod resolution;
 pub mod resolution_bench;

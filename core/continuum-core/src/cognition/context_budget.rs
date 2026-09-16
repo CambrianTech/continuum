@@ -165,13 +165,15 @@ fn prefill_affordable_window(served: u32) -> u32 {
     let Some(tps) = crate::inference::prefill_rate::rate_for(&model) else {
         return served;
     };
+    let audience = crate::cognition::audience::current();
     let affordable = crate::inference::prefill_rate::affordable_prompt_tokens(
         tps,
         crate::cognition::serving_plan::MIN_SERVE_CTX,
         served,
+        audience,
     );
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-    let shape = ((served as u64) << 32) | affordable as u64;
+    let shape = ((served as u64) << 32) | (affordable as u64) << 1 | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
     if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
         crate::probe!(
             class = "cognition.budget.prefill_bound",
@@ -179,6 +181,8 @@ fn prefill_affordable_window(served: u32) -> u32 {
             served_window = served as u64,
             affordable_tokens = affordable as u64,
             prefill_tps = tps,
+            audience = audience.as_str(),
+            ttft_s = audience.ttft().as_secs(),
             bound = affordable < served,
             "the render budget against the measured prefill rate — a turn costs what the lane can prefill in the TTFT budget"
         );

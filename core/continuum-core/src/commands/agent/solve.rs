@@ -1353,7 +1353,17 @@ fn solve_admission() -> &'static tokio::sync::Semaphore {
 impl AgentSolve {
     /// The solve body — deliberately ctx-free (reaches the persona via the global workspace
     /// registry), so it runs inline OR spawned detached with the same code path.
+    /// A detached solve has nobody waiting on its first token: it renders the prompt an
+    /// unattended turn can afford (card 7496ed9d) — every budget read inside sees it.
     pub(crate) async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
+        crate::cognition::audience::with(
+            crate::inference::prefill_rate::Audience::Unattended,
+            Self::solve_body_attended_by_nobody(p),
+        )
+        .await
+    }
+
+    async fn solve_body_attended_by_nobody(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
         let run_id = p.run_id.clone();
         // Short-form persona ids resolve too (#164): rosters/benchmark harnesses DISPLAY
         // 8-char short ids, so accept the id a caller was shown — a clean UUID passes

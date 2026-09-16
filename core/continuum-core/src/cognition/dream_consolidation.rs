@@ -1786,7 +1786,14 @@ impl BrainRegion for DreamConsolidationRegion {
     /// scope) has nothing to consolidate — sleep until scoped.
     async fn tick(&self, ctx: &RegionContext) -> TickOutcome {
         match ctx.persona_scope {
-            Some(persona_id) => self.consolidate(persona_id).await,
+            // A consolidation has nobody waiting on it (card 7496ed9d).
+            Some(persona_id) => {
+                crate::cognition::audience::with(
+                    crate::inference::prefill_rate::Audience::Unattended,
+                    self.consolidate(persona_id),
+                )
+                .await
+            }
             None => sleep(),
         }
     }
