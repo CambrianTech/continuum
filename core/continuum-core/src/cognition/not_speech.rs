@@ -153,6 +153,19 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 return true;
             }
         }
+        // THE FIFTH DIALECT (Saoirse, Intel Mac, 2026-09-16 23:0xZ, into #cambriantech):
+        // the CALL written inside the bracket — `[code/read({"file_path":"src/main.rs"})]`
+        // then `Result:` and a fenced echo of a peer's line. Neither the comma nor the
+        // `]` split above sees a verb (the `(` and the object are in the way), and the
+        // fence rule below needs a leading fence. Same discriminator as the fourth
+        // dialect: a namespaced verb CALLED with an object, `ns/verb({`, here at the
+        // lead. Anchored on the bracket; a citizen writing "I ran [code/read(...)]"
+        // mid-sentence is untouched.
+        if let Some((verb, after)) = rest.split_once('(') {
+            if verb_ok(verb) && verb.contains('/') && after.trim_start().starts_with('{') {
+                return true;
+            }
+        }
     }
     // THE FOURTH DIALECT: the call serialized inside a MARKDOWN FENCE. Measured the
     // same 24h window — 85 of 243 spoken lines open with a fence, a third of everything
@@ -318,6 +331,19 @@ fn header_names_a_peer(header: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the call spelled INSIDE the bracket with parens — the fifth
+    // dialect (Saoirse, 2026-09-16), invisible to the comma, bracket and fence rules.
+    #[test]
+    fn a_bracketed_call_with_parens_is_a_tool_envelope() {
+        let saoirse = "[code/read({\"file_path\":\"src/main.rs\"})]\nResult:\n```python\n\n# THESIS: a distributed proof is an ACTIVITY\n```";
+        assert_eq!(is_not_speech(saoirse), Some("tool_envelope"));
+        assert_eq!(is_not_speech("[work/list({})]"), Some("tool_envelope"));
+        // Mid-sentence mention, a non-namespaced bracket, and a call without an object stay.
+        assert_eq!(is_not_speech("I ran [code/read({\"file_path\":\"x\"})] and it was fine."), None);
+        assert_eq!(is_not_speech("[note(this)] is a phrase, not a verb"), None);
+        assert_eq!(is_not_speech("[code/read(path)] returned nothing"), None);
+    }
 
     // what this catches: an empty code fence posted as a message (Kimi, 2026-09-16) — a
     // box with nothing in it is not speech; a fence WITH content, or prose around one,
