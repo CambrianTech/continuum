@@ -41,7 +41,32 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if opens_with_wrapped_peer_id(t) {
         return Some("peer_voice_wrapped");
     }
+    // A fence with nothing in it — "```python\n\n```" (Kimi, 5090, 2026-09-16 22:0xZ,
+    // the first line after her node's deploy). The model opened a code block and had
+    // nothing to put in it; the room receives an empty box. Anchored on the WHOLE text:
+    // only fence markers and whitespace, no prose before, between, or after.
+    if is_only_empty_fences(t) {
+        return Some("empty_fence");
+    }
     None
+}
+
+/// Every non-blank line is a fence marker (```` ``` ```` with an optional language tag)
+/// and there is at least one — nothing said, in a box.
+fn is_only_empty_fences(t: &str) -> bool {
+    let mut fences = 0;
+    for line in t.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let Some(tag) = l.strip_prefix("```") else { return false };
+        if !tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.')) {
+            return false;
+        }
+        fences += 1;
+    }
+    fences > 0
 }
 
 /// The PERCEPTION-side twin of the speak gate: a transcript line that
@@ -293,6 +318,19 @@ fn header_names_a_peer(header: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: an empty code fence posted as a message (Kimi, 2026-09-16) — a
+    // box with nothing in it is not speech; a fence WITH content, or prose around one,
+    // is left to the other rules.
+    #[test]
+    fn an_empty_code_fence_is_not_speech_and_a_filled_one_is_not_this_rule() {
+        assert_eq!(is_not_speech("```python\n\n```"), Some("empty_fence"));
+        assert_eq!(is_not_speech("```\n```"), Some("empty_fence"));
+        assert_eq!(is_not_speech("  ```rust\n   \n```\n"), Some("empty_fence"));
+        assert_eq!(is_not_speech("```python\nprint(1)\n```"), None);
+        assert_eq!(is_not_speech("here is the patch:\n```\n```"), None);
+        assert_eq!(is_not_speech(""), None);
+    }
 
     // what this catches: the byte-0 anchor in `opens_with_peer_id`, which recognised
     // `<uuid>: text` and nothing else. Sigurd posted b6dcfc8e's turn carrying this
