@@ -32,6 +32,9 @@ try {
             logDirectory = (Join-Path $resumeRoot 'logs') }
         foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { Set-Content -LiteralPath $release.$field -Value $field }
         Save-CorePreparedRelease -Release $release -InstallRoot $resumeRoot
+        # Re-preparing must atomically replace an existing receipt in both PowerShell hosts.
+        Set-Content -LiteralPath $release.cli -Value 'replacement cli'
+        Save-CorePreparedRelease -Release $release -InstallRoot $resumeRoot
         $loaded = Get-CorePreparedRelease -InstallRoot $resumeRoot
         if ($loaded.artifact -ne $release.artifact) { throw 'Prepared receipt selected a different release' }
         Set-Content -LiteralPath $release.cli -Value 'tampered'
