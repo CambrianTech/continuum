@@ -1,4 +1,4 @@
-//! ShellSession — Persistent shell session per workspace.
+//! ShellSession — Shell execution state per workspace.
 //!
 //! Provides a handle-based shell execution model:
 //!   1. Create session (bound to workspace directory)
@@ -11,8 +11,11 @@
 //! Supports BOTH quick commands (wait=true → immediate result) and
 //! long-running commands (poll repeatedly → streaming output).
 //!
-//! Each command runs in its own process for isolation. The session
-//! maintains working directory and environment across executions.
+//! Each command runs in its own process for isolation. The session retains
+//! execution handles and the cwd/env configured through its methods. A child's
+//! `cd`, variables, exports and shell options do not change later executions.
+//! Files survive the child process. Exit status is the shell's status under its
+//! normal command/pipeline rules, not an assertion that every child succeeded.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -175,9 +178,10 @@ impl CompiledSentinel {
 // Shell Session
 // ============================================================================
 
-/// A persistent shell session bound to a workspace.
+/// Shell execution state bound to a workspace.
 ///
-/// Maintains working directory and environment across command executions.
+/// Retains explicitly configured cwd/env across command executions; changes made
+/// inside a child shell are local to that process.
 /// Each command runs in its own isolated process (bash -c "...").
 /// Process-global bus handle for pushed shell completions — set once at boot
 /// (ipc wiring), read by the detached exit-fold task which holds no self. Same
@@ -1272,6 +1276,94 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.status, ShellExecutionStatus::Failed);
         assert_eq!(response.exit_code, Some(42));
+
+        // Regression for card 08ef15c8: report the shell's chosen pipeline/OR
+        // status, never reinterpret a zero exit as validation of every child.
+        let handled = session
+            .execute_and_wait("false || true", Some(5000), rt.handle())
+            .unwrap();
+        assert_eq!(handled.status, ShellExecutionStatus::Completed);
+        assert_eq!(handled.exit_code, Some(0));
+        // The configured Unix shell need not support this Bash/Zsh option.
+        let supports_pipefail = session
+            .execute_and_wait("set -o pipefail", Some(5000), rt.handle())
+            .unwrap()
+            .exit_code
+            == Some(0);
+        if supports_pipefail {
+            for (command, status, exit_code) in [
+                (
+                    "set +o pipefail; false | cat",
+                    ShellExecutionStatus::Completed,
+                    0,
+                ),
+                (
+                    "set -o pipefail; false | cat",
+                    ShellExecutionStatus::Failed,
+                    1,
+                ),
+            ] {
+                let response = session
+                    .execute_and_wait(command, Some(5000), rt.handle())
+                    .unwrap();
+                assert_eq!(response.status, status, "{command}");
+                assert_eq!(response.exit_code, Some(exit_code), "{command}");
+            }
+        }
+    }
+
+    // Regression for card 08ef15c8: an advertised persistent shell caused callers
+    // to reuse a previous command's variables/cwd/options. Only files, handles
+    // and explicitly configured session state survive; each shell is fresh.
+    #[test]
+    fn test_execute_keeps_files_but_not_child_shell_state() {
+        let (dir, rt) = setup_workspace();
+        let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
+        session.set_env("CONTINUUM_SHELL_CONTRACT_STATE".into(), "session".into());
+        let pipeline = "false | cat";
+        let initial = session
+            .execute_and_wait(pipeline, Some(5000), rt.handle())
+            .unwrap();
+        assert!(matches!(initial.exit_code, Some(0 | 1)));
+        let supports_pipefail = session
+            .execute_and_wait("set -o pipefail", Some(5000), rt.handle())
+            .unwrap()
+            .exit_code
+            == Some(0);
+        let option = if initial.exit_code == Some(0) {
+            "-o"
+        } else {
+            "+o"
+        };
+        let mut command = "cd src && export CONTINUUM_SHELL_CONTRACT_STATE=child && \
+                           printf kept > shell-contract-proof"
+            .to_string();
+        if supports_pipefail {
+            command.push_str(&format!(" && set {option} pipefail; {pipeline}"));
+        }
+        let changed = session
+            .execute_and_wait(&command, Some(5000), rt.handle())
+            .unwrap();
+        if supports_pipefail {
+            assert_ne!(changed.exit_code, initial.exit_code);
+        } else {
+            assert_eq!(changed.exit_code, Some(0));
+        }
+        let fresh = session
+            .execute_and_wait(
+                "test -f src/shell-contract-proof && \
+                 test \"$CONTINUUM_SHELL_CONTRACT_STATE\" = session && printf fresh",
+                Some(5000),
+                rt.handle(),
+            )
+            .unwrap();
+        assert_eq!(fresh.exit_code, Some(0), "{fresh:?}");
+        assert!(fresh.stdout.unwrap().contains("fresh"));
+        let repeated = session
+            .execute_and_wait(pipeline, Some(5000), rt.handle())
+            .unwrap();
+        assert_eq!(repeated.status, initial.status);
+        assert_eq!(repeated.exit_code, initial.exit_code);
     }
 
     #[test]
