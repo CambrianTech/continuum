@@ -1,0 +1,12 @@
+C:\Users\joelt\.continuum\citizens\peers\e2f0e022-04ac-4f66-a26c-7146551745b4\workspace\target-ddbab098\debug\deps\serde-6a5922b1aa1d58aa.d: C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\joelt\.continuum\citizens\peers\e2f0e022-04ac-4f66-a26c-7146551745b4\workspace\target-ddbab098\debug\build\serde-492d8317564f8470\out/private.rs
+
+C:\Users\joelt\.continuum\citizens\peers\e2f0e022-04ac-4f66-a26c-7146551745b4\workspace\target-ddbab098\debug\deps\libserde-6a5922b1aa1d58aa.rmeta: C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\joelt\.continuum\citizens\peers\e2f0e022-04ac-4f66-a26c-7146551745b4\workspace\target-ddbab098\debug\build\serde-492d8317564f8470\out/private.rs
+
+C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\joelt\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\Users\joelt\.continuum\citizens\peers\e2f0e022-04ac-4f66-a26c-7146551745b4\workspace\target-ddbab098\debug\build\serde-492d8317564f8470\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\joelt\\.continuum\\citizens\\peers\\e2f0e022-04ac-4f66-a26c-7146551745b4\\workspace\\target-ddbab098\\debug\\build\\serde-492d8317564f8470\\out
