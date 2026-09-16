@@ -2809,6 +2809,19 @@ pub struct WorkDuplicatesParams {
     /// Which columns to group (default `["open"]`). Empty = every card.
     #[serde(default = "default_open_states")]
     pub states: Vec<String>,
+    /// How far above the embedder's unrelated-pair mean two cards must sit to be
+    /// called the same card, in standard deviations. Default 6 — deliberately
+    /// tighter than `work/similar`'s 3: "related" and "the same" are different
+    /// floors. Measured 2026-09-16 on the live board: at 3σ (cosine 0.57 on
+    /// qwen3-embedding-0.6b) connected components CHAINED 59 unrelated engineering
+    /// cards into one group at cohesion 0.45, while every true duplicate sat at
+    /// 1.00. Lower it to widen; the result names the floor it joined at.
+    #[serde(default = "default_duplicate_min_z")]
+    pub min_z: f32,
+}
+
+fn default_duplicate_min_z() -> f32 {
+    6.0
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
@@ -2848,8 +2861,9 @@ impl ActionCommand for WorkDuplicates {
     const DESCRIPTION: &'static str =
         "List the groups of cards that say the same thing — the board's duplicates — strongest \
          group first, the card to KEEP first within each group. `excess` is how many cards the \
-         board can close without losing a fact. Groups open cards by default; pass `states` to \
-         widen. The triage's first move.";
+         board can close without losing a fact. A group is a CANDIDATE: confirm with the ids \
+         (same instance, same defect) before closing. Groups open cards by default; pass \
+         `states` to widen, `minZ` (default 6) to loosen. The triage's first move.";
     type Params = WorkDuplicatesParams;
     type Output = WorkDuplicatesResult;
 
@@ -2870,8 +2884,8 @@ impl ActionCommand for WorkDuplicates {
         let grouped = crate::commands::embedding::groups::group_texts(
             &self.embedder,
             &candidates,
-            3.0,
-            0.85,
+            p.min_z,
+            0.9,
         )
         .await?;
         let title_of: std::collections::HashMap<String, String> = board
