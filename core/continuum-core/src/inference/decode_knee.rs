@@ -20,10 +20,15 @@
 //! var, no config: the knee is a measured fact.
 //!
 //! Three things the first live deploy taught (2026-09-16, 05:44–06:02Z):
-//! 1. A decode measured while the host is busy with something else measures the
-//!    neighbour: `rustc -j18` for the reboot's own build read 2 in flight at 0.18 of
-//!    catalog and the knee fell 4 → 2. Samples are taken only on a quiet host
-//!    ([`crate::system_resources::host_load`]); a skipped sample says so.
+//! 1. A decode measured inside our OWN transients measures them, not the lane:
+//!    `rustc -j18` for the reboot's warm build read 2 in flight at 0.18 of catalog and
+//!    the knee fell 4 → 2. Two windows are known facts, not guesses, and samples inside
+//!    them are skipped with a probe: the deploy in flight (the CLI's deploy claim,
+//!    published before its warm build — `runtime::deploy_claim::in_flight`) and the
+//!    boot window (`runtime::boot_clock`, [`BOOT_QUIET`]: board projections rebuilding,
+//!    the roster reseating, the desktop dist building). No load-average heuristic: on a
+//!    CPU-decode tier the serving lane IS the load (Cormac measured 14 on 12 cores with
+//!    nothing but serving), so "busy host" cannot tell a build from a lane.
 //! 2. A clamp is a ratchet with no way up: at the knee nothing ever runs ABOVE it, so a
 //!    collapsed point above is never re-measured. Points go STALE after
 //!    [`FRESH_MS`]; the knee EXPLORES one lane above the largest fresh holding point
@@ -47,6 +52,8 @@ const EMA_ALPHA: f64 = 0.2;
 /// A point older than this is not evidence about the box as it is now: a collapse
 /// measured under last hour's build must not hold the roster down all day.
 pub const FRESH_MS: u64 = 60 * 60 * 1000;
+/// Samples inside this window after boot are the boot's, not the lane's.
+pub const BOOT_QUIET: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct CurvePoint {
@@ -135,22 +142,20 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     if expected_tps <= 0.0 || measured_tps <= 0.0 {
         return;
     }
-    // A decode measured under a build or a boot measures the neighbour, not the lane.
-    let load = crate::system_resources::host_load::HostLoad::read();
-    if load.is_contended() {
+    let now = now_ms();
+    // A decode measured inside our own transients measures them, not the lane.
+    if let Some(why) = own_transient(now) {
         crate::probe!(
             class = "serving.decode_knee.sample_skipped",
             model = model,
             inflight = inflight as u64,
             measured_tps,
-            load1 = load.load1,
-            cores = load.cores as u64,
-            "decode sample skipped — the host is contended (build/boot), the rate is not the lane's"
+            why,
+            "decode sample skipped — inside our own transient, the rate is not the lane's"
         );
         return;
     }
     let ratio = measured_tps / expected_tps;
-    let now = now_ms();
     let mut curves = CURVES.lock();
     let curve = curves.entry(model.to_string()).or_default();
     let before = curve.knee(DECODE_TAX_FLOOR, now);
@@ -167,6 +172,21 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
             "the measured decode knee moved — lanes follow it, not the roster"
         );
         save_all(&curves);
+    }
+}
+
+/// Which of our own transients is open right now, if any: a deploy in flight (a live
+/// `continuum reboot` holds the claim while its warm build compiles beside this core) or
+/// the boot window. Named so the skip probe says which.
+fn own_transient(now: u64) -> Option<&'static str> {
+    if let Some(root) = crate::commands::benchmark::continuum_home().ok() {
+        if crate::runtime::deploy_claim::in_flight(&root, now).blocks() {
+            return Some("deploy_in_flight");
+        }
+    }
+    match crate::runtime::boot_clock::elapsed() {
+        Some(up) if up < BOOT_QUIET => Some("boot_window"),
+        _ => None,
     }
 }
 

@@ -165,6 +165,31 @@ pub fn read(root: &Path) -> Option<DeployClaim> {
 }
 
 /// Drop the claim. Idempotent; a missing file is success.
+/// Is the claim's owner (a `continuum reboot` process) still alive? One enumerator for
+/// every platform (the old Windows arm matched the pid as a substring of `tasklist`'s
+/// output, so pid 42 read alive whenever any pid containing "42" existed).
+pub fn owner_alive(pid: i32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid as u32);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    sys.process(target).is_some()
+}
+
+/// The deploy in flight on this host, as the core sees it: `InProgress` while a live
+/// `continuum reboot` holds the claim (its warm build compiles beside the serving core —
+/// `rustc -j<cores>` for ten minutes), `Clear` otherwise. Abandoned claims read `Clear`
+/// here; sweeping them is the CLI's job.
+pub fn in_flight(root: &Path, now_ms: u64) -> DeployGate {
+    let claim = read(root);
+    let alive = claim.as_ref().is_some_and(|c| owner_alive(c.pid));
+    decide(claim.as_ref(), alive, now_ms)
+}
+
 pub fn clear(root: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(claim_path(root)) {
         Ok(()) => Ok(()),
@@ -258,6 +283,25 @@ mod tests {
         clear(&dir).expect("clear");
         clear(&dir).expect("clear is idempotent — the release path may run twice");
         assert_eq!(read(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches (2026-09-16, the decode knee fell 4 → 2 on samples taken inside its
+    // own reboot's warm build): the core's read of the claim — a claim held by a LIVE
+    // process is a deploy in flight; one whose owner is gone reads Clear without anyone
+    // sweeping it; no file reads Clear.
+    #[test]
+    fn the_core_reads_a_live_claim_as_a_deploy_in_flight_and_a_dead_one_as_clear() {
+        let dir = std::env::temp_dir().join(format!("deploy-claim-in-flight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let now = 1_700_000_000_000u64;
+        assert_eq!(in_flight(&dir, now), DeployGate::Clear, "no claim = no deploy");
+        // Our own pid is alive by definition.
+        write(&dir, &claim(std::process::id() as i32, now - 1_000)).expect("write");
+        assert!(in_flight(&dir, now).blocks(), "a live owner's claim is a deploy in flight");
+        // A pid no process holds (pid_max is 99998 on macOS, 4194304 on Linux; i32::MAX is neither).
+        write(&dir, &claim(i32::MAX, now - 1_000)).expect("write");
+        assert!(!in_flight(&dir, now).blocks(), "a dead owner's claim never blocks");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

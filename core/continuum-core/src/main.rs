@@ -209,6 +209,7 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
+    continuum_core::runtime::boot_clock::mark();
     // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
     // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
     // so `continuum reboot` can prove the running core is the freshly-built one — not a stale cached
