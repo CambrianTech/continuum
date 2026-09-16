@@ -41,7 +41,7 @@ mod apply;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
-pub(crate) use settle::drive_to_settle_with_credit;
+pub(crate) use settle::{drive_to_settle_with_credit, TICK_DEADLINE};
 pub use settle::{drive_to_settle, drive_to_settle_with_input, settle_step};
 
 #[cfg(test)]

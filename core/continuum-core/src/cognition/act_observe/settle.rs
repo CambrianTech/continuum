@@ -22,6 +22,12 @@ use super::perception::{
 };
 use super::types::{SettleOutcome, SettleStep};
 
+/// The most one ACT may take before the turn is surrendered — perceive, deliberate,
+/// act, observe. The detached solve's stall watchdog derives its allowance from this
+/// (`commands::agent::solve::ACT_STALL_ALLOWANCE`): a run whose ledger has not advanced
+/// for several of these is wedged; one that advances at any pace is not.
+pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
 
@@ -269,7 +275,6 @@ async fn settle_to_outcome(
     let mut delib_retries: u32 = 0;
 
     let mut first_step = true;
-    const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
     let mut seen_inputs = None;
     let mut input_watermark = 0;
     loop {
