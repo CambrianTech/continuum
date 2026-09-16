@@ -938,7 +938,6 @@ impl ResourcePool for NvmeServingTierPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn seeded_target(tmp: &Path) -> Arc<TrackedDir> {
         std::fs::create_dir_all(tmp.join("debug/incremental")).expect("mkdir");

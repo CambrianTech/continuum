@@ -1304,7 +1304,7 @@ mod tests {
         let seed = || {
             let recall_meta = Arc::new(RecallMetadataRegistry::new());
             let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-            let mut mk = |content: &str, salience: f32, age_ms: u64| {
+            let mk = |content: &str, salience: f32, age_ms: u64| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
                     context_id: None,
@@ -1399,7 +1399,7 @@ mod tests {
         let seed = || {
             let recall_meta = Arc::new(RecallMetadataRegistry::new());
             let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-            let mut mk = |content: &str, salience: f32, age_ms: u64| {
+            let mk = |content: &str, salience: f32, age_ms: u64| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
                     context_id: None,
@@ -1475,7 +1475,7 @@ mod tests {
         let seed = || {
             let recall_meta = Arc::new(RecallMetadataRegistry::new());
             let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-            let mut mk = |content: &str, salience: f32| {
+            let mk = |content: &str, salience: f32| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
                     context_id: None,
@@ -1646,7 +1646,7 @@ mod tests {
         let seed = || {
             let recall_meta = Arc::new(RecallMetadataRegistry::new());
             let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-            let mut mk = |content: &str, salience: f32, age: u64| {
+            let mk = |content: &str, salience: f32, age: u64| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
                     context_id: None,
@@ -1734,7 +1734,7 @@ mod tests {
 
         let recall_meta = Arc::new(RecallMetadataRegistry::new());
         let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-        let mut mk = |content: &str, salience: f32| {
+        let mk = |content: &str, salience: f32| {
             let id = Uuid::new_v4();
             state.push_for_test(Engram {
                 context_id: None,
@@ -2065,7 +2065,7 @@ mod tests {
         let seed = |with_match: bool| {
             let recall_meta = Arc::new(RecallMetadataRegistry::new());
             let state = Arc::new(AdmissionState::new(recall_meta.clone()));
-            let mut mk = |content: &str, salience: f32| {
+            let mk = |content: &str, salience: f32| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
                     context_id: None,

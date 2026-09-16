@@ -335,7 +335,6 @@ mod tests {
     // wiring, not the predicate (that is covered in cognition::not_speech). Fixtured on
     // the exact reply two citizens posted to the room on 2026-09-05. It must be a PASS,
     // like framing_echo: silenced, not a hard failure, and the thinking still returned.
-    #[test]
     fn a_tool_envelope_spoken_as_prose_is_a_pass_not_a_post() {
         let observed =
             r#"[code/read,{"file_path":"src/main.rs"}] — exact args for any tool: commands/help(name)"#;

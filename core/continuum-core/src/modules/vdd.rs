@@ -123,7 +123,6 @@ mod tests {
     //! family. The command contracts themselves are pinned in
     //! `commands/vdd/{report,score}.rs`; these tests guard the module's wiring.
     use super::*;
-    use crate::sdk_codegen::DynCommand;
 
     /// What this catches: config exposes the canonical `vdd/` prefix + module
     /// name. If either drifts, the registry routes the command elsewhere.

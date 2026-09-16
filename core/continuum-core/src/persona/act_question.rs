@@ -33,7 +33,6 @@
 
 use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
-use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 
 /// How many run-room rows the write-or-release gate reads to count a holder's
 /// acts since her last write. 80 rows was ~15 minutes of a five-coder room

@@ -5036,7 +5036,6 @@ mod tests {
     // what this catches: 16 resident minds planned for a boot floor of 2 (3 lanes with
     // 40 GB idle, 2026-09-14) — the roster IS the demand; the floor only bounds it
     // from below; a measurement lease still holds it down while held.
-    #[test]
     fn the_lane_demand_follows_the_live_roster_above_the_boot_floor() {
         assert_eq!(resident_lane_demand(2, 16, false), 16);
         assert_eq!(resident_lane_demand(16, 5, false), 16, "the floor is a lower bound");

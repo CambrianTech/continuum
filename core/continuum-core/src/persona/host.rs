@@ -35,7 +35,6 @@
 
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
-use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::identity_provider::PersonaIdentityProvider;
 use crate::persona::role_template::RoleId;
 use crate::persona::service_loop::{
@@ -78,13 +77,10 @@ pub async fn spawn_persona_service(
     opts: ServeOptions,
     rt_handle: tokio::runtime::Handle,
 ) -> Result<JoinHandle<Result<ServeOutcome, String>>, String> {
-    // `ctx.runtime: Arc<dyn AircCitizen>` — slice 13.5 trait
-    // extraction. The reader for the RAG layer upcoerces from
-    // `AircCitizen` to its `AircTranscriptReader` supertrait via
-    // Rust 1.86+ trait_upcasting; no manual conversion, no Option,
-    // no `.expect("None is test-only")` per [[no-fallbacks-ever]].
+    // `ctx.runtime: Arc<dyn AircCitizen>` — slice 13.5 trait extraction; the
+    // conversation owns the citizen handle (the RAG layer's transcript reader now
+    // rides the inbound pump, not a separate reader argument).
     let citizen = ctx.runtime.clone();
-    let reader: Arc<dyn AircTranscriptReader> = citizen.clone();
     let mut conversation = AircPersonaConversation::new(citizen);
 
     // Eager priming BEFORE the spawn (slice 13.6 reviewer fix).
@@ -112,7 +108,7 @@ pub async fn spawn_persona_service(
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
         let outcome =
-            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, reader, opts))
+            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, opts))
                 .catch_unwind()
                 .await;
         match outcome {

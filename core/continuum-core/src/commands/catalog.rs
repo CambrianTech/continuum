@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 use crate::modules::grid::acl::is_command_authorized;
 use crate::routing::caller_trust;
-use crate::sdk_codegen::{command_registry, ActionCommand, CommandError, Ctx, WireShape};
+use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, WireShape};
 use crate::sdk_codegen::ext::command_registry_live;
 
 /// Params for `commands/list` — an optional case-insensitive name substring to
@@ -203,7 +203,6 @@ mod tests {
         use crate::modules::grid::node::TrustLevel;
         use crate::routing::CallerIdentity;
         use std::collections::HashSet;
-        use uuid::Uuid;
 
         let owner = CommandsList
             .run(&Ctx::default(), CommandsListParams { filter: None })

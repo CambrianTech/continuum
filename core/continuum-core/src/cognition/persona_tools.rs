@@ -31,7 +31,7 @@ use crate::cognition::tool_embedding::extract_category;
 use crate::commands::help::CommandsHelp;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
-use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandDescriptor};
 use crate::sdk_codegen::ext::command_registry_live;
 use serde_json::json;
 use std::collections::BTreeMap;

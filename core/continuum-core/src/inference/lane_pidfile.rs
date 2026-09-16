@@ -50,7 +50,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long [`reclaim`] waits for the canonical port to release after killing the
 /// orphan before giving up and letting the downstream bind fail loud. Generous

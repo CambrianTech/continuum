@@ -101,7 +101,14 @@ jobs:
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
-          cargo test -p continuum-core --lib --no-run --message-format=json-render-diagnostics > lib-artifacts.jsonl
+          # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
+          # compiler-message records, which the render-diagnostics form sends to stderr
+          # as text instead. The artifact script reads compiler-artifact records, present
+          # in both.
+          cargo test -p continuum-core --lib --no-run --message-format=json > lib-artifacts.jsonl
+          # Warning debt is monotonic: the same stream, counted against
+          # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
+          bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
           python3 tools/scripts/ci-lib-test-artifact.py lib-artifacts.jsonl \
             core/continuum-core "$(rustc --print target-libdir)" > lib-test.env
           cat lib-test.env >> "$GITHUB_ENV"

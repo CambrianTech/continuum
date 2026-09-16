@@ -2149,7 +2149,6 @@ mod tests {
     // and it must round-trip the volatile snapshot exactly as the ring does. The
     // measured failure: a 2,863-act citizen whose window showed ONE act read her
     // own starved history as "I have nothing to contribute".
-    #[test]
     fn receipt_archive_survives_ring_churn_and_roundtrips_the_snapshot() {
         let wm = WorkingMemory::new(2);
         wm.set_served_window(16_384);

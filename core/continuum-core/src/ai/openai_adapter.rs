@@ -1823,7 +1823,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         } = crate::inference::sse_stream::consume_sse_stream(
             &self.config,
             &request,
-            model,
             local_lane,
             response,
             &sink,

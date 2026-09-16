@@ -199,7 +199,7 @@ impl LexicalEmbedder {
     fn embed_sync(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; self.dim];
         let mut token = String::new();
-        let mut push = |tok: &mut String, v: &mut [f32]| {
+        let push = |tok: &mut String, v: &mut [f32]| {
             if !tok.is_empty() {
                 let idx = (Self::hash_token(tok) as usize) % v.len();
                 v[idx] += 1.0;

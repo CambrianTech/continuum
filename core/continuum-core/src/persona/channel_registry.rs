@@ -17,7 +17,6 @@ use super::types::PersonaState;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 /// Default burst window for [`ChannelRegistry::service_cycle_batched`].
 ///

@@ -42,7 +42,6 @@
 //!   substrate's IPC boundary; tests stub it without any daemon.
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
 use crate::persona::work_pull::{try_pull_next_card, PullOutcome};
@@ -392,11 +391,10 @@ pub struct ServeOutcome {
 pub async fn serve_persona_loop(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
-    reader: Arc<dyn AircTranscriptReader>,
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
     use tracing::Instrument;
-    serve_persona_loop_inner(ctx, conversation, reader, opts)
+    serve_persona_loop_inner(ctx, conversation, opts)
         .instrument(ctx.span())
         .await
 }
@@ -404,7 +402,6 @@ pub async fn serve_persona_loop(
 async fn serve_persona_loop_inner(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
-    reader: Arc<dyn AircTranscriptReader>,
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
     // PRECONDITION: caller MUST have called `conversation.prime()`
@@ -1111,16 +1108,6 @@ async fn serve_persona_loop_inner(
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
         // own active work is folded in so the tick advances it — see burst_fingerprint).
         last_burst_fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
-        // Project the room-roster delivery into its TWO grounding consumers —
-        // the formatted `[Present in this room]` lines + the bare
-        // `other_persona_names` history-drop — via the extracted
-        // `project_room_roster` (one roster truth; the exact projection the
-        // convergence seam-proof integration test drives).
-        let RoomRosterProjection {
-            room_roster,
-            other_persona_names,
-        } = project_room_roster(&composed.deliveries);
-
         // Room-doctrine grounding (the [Room operating doctrine] block) now reaches
         // the prompt via the WorkspaceCycle's RagSourceFaculty bridge (task #12), as
         // does the room roster — not threaded through a per-turn RespondInput. The
@@ -1165,12 +1152,11 @@ async fn serve_persona_loop_inner(
         // widening that match into a tuple every arm would have to carry and have
         // nothing to say about. Assigned unconditionally on the one path that
         // reaches `produce`; every other path `continue`s before it.
-        let mut turn_credit: Option<crate::persona::training_producer::CapturedCredit> = None;
+        let turn_credit: Option<crate::persona::training_producer::CapturedCredit>;
         // Card-linked work is staged during the shared drive and again at settlement,
         // including turns that finish without speech. These receipts remain available
         // for the separate, genuinely unlinked speech producer below.
-        let mut turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
-            Vec::new();
+        let turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>;
         let response_text = match crate::cognition::persona_workspace::global()
             .get(&ctx.identity.peer_id.as_uuid())
         {
@@ -2949,7 +2935,6 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::PeerId;
 
     // What this catches (e731576c): publication, not a later work-turn return,
     // owns the speech ring; failures and other rooms cannot become its history.
@@ -3427,7 +3412,6 @@ mod tests {
     use crate::ai::HeuristicInferenceAdapter;
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
-    use crate::persona::airc_source::AircTranscriptReader;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::role_template::RoleId;
     use crate::persona::scripted_conversation::ScriptedConversation;
@@ -3535,7 +3519,6 @@ mod tests {
         use crate::cognition::workspace::Burst;
         use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
         use serde_json::json;
-        use uuid::Uuid;
 
         fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
             RagDelivery {
@@ -4499,7 +4482,6 @@ mod tests {
         // Caller-primes contract per [[no-fallbacks-ever]] — explicit.
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -4507,7 +4489,7 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
+        let outcome = serve_persona_loop(&hosted, &mut conversation, opts)
             .await
             .expect("loop completes");
 
@@ -4592,7 +4574,6 @@ mod tests {
 
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -4600,7 +4581,7 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
+        let outcome = serve_persona_loop(&hosted, &mut conversation, opts)
             .await
             .expect("loop completes");
 
@@ -4905,11 +4886,9 @@ mod tests {
             .require_prime_before_next_message();
 
         // INTENTIONALLY do NOT prime — verify the loop doesn't auto-prime.
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
-            reader,
             ServeOptions {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
@@ -4947,11 +4926,9 @@ mod tests {
         ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
-            reader,
             ServeOptions {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
@@ -5005,11 +4982,9 @@ mod tests {
             ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
-            reader,
             ServeOptions {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
@@ -5055,11 +5030,9 @@ mod tests {
         ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
-            reader,
             ServeOptions {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,

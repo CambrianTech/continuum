@@ -1897,7 +1897,6 @@ pub(crate) mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::persona::engram::{Engram, EngramKind, EngramOrigin, TrustState};
-    use airc_core::PeerId;
 
     /// Build an episodic engram with a given id, content, and recall keys.
     pub(crate) fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {

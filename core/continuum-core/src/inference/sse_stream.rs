@@ -7,7 +7,6 @@
 use std::time::Instant;
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::ai::adapter::GenerationChunk;
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
@@ -268,7 +267,6 @@ pub(crate) struct StreamOutcome {
 pub(crate) async fn consume_sse_stream(
     cfg: &OpenAICompatibleConfig,
     request: &crate::ai::types::TextGenerationRequest,
-    model: &str,
     local_lane: bool,
     response: reqwest::Response,
     sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
@@ -296,13 +294,11 @@ pub(crate) async fn consume_sse_stream(
     // backend dying, which is what #385 was always about.
     let queue_budget = std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS);
     let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
-    let mut idle = queue_budget;
     // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
     // death on the local lane is wedge evidence the smoke probe cannot see (an
     // undersized slot passes a tiny probe while rejecting real prompts); a
     // completed stream is proof of life. Both stamps are gated on this request
     // actually targeting the published serving lane.
-    let local_lane = local_lane;
 
     let mut sse_buf: Vec<u8> = Vec::new();
     let mut acc_content = String::new();

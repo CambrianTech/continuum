@@ -948,7 +948,6 @@ impl LlamaCppBackend {
         // scheduler emits the stop sequence's tokens before signaling Done,
         // so we strip them from the collected output.
         let mut output = String::new();
-        let mut n_decoded = 0usize;
         let runtime_handle = tokio::runtime::Handle::try_current().ok();
 
         loop {
@@ -977,13 +976,14 @@ impl LlamaCppBackend {
             match event {
                 Some(TokenEvent::Token(piece)) => {
                     output.push_str(&piece);
-                    n_decoded += 1;
                 }
                 Some(TokenEvent::Done {
                     tokens_generated,
                     elapsed_ms,
                 }) => {
-                    n_decoded = tokens_generated;
+                    // The scheduler's own count is the receipt; a per-piece tally here
+                    // was never read (rustc: value assigned is never read).
+                    let n_decoded = tokens_generated;
                     let elapsed = gen_start.elapsed();
                     log.info(&format!(
                         "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",

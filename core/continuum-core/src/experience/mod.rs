@@ -417,7 +417,6 @@ pub fn chat_experience(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::PeerId;
 
     // what this catches: the outlier validation itself — if a future change makes
     // the Join Contract fit chat but not benchmark (or vice versa), one of these

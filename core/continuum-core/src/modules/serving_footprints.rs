@@ -42,7 +42,7 @@ use crate::inference::llama_server::ServingSnapshot;
 use crate::inference::vision_sidecar::SIDECAR_CTX;
 use crate::model_registry::live::ModelCatalog;
 use crate::model_registry::types::Model;
-use crate::resources::footprint_source::{FootprintReading, FootprintSource, Provenance};
+use crate::resources::footprint_source::{FootprintReading, FootprintSource};
 use crate::resources::lease::ResourceKind;
 
 /// THE residency calculation for one lane of one model — the single function every

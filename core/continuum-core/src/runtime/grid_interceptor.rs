@@ -92,7 +92,6 @@ mod tests {
 
     use super::*;
     use crate::modules::grid::GridModule;
-    use std::path::PathBuf;
 
     fn make_state() -> Arc<GridState> {
         // Construct a GridModule without a GPU + minimal grid_dir.

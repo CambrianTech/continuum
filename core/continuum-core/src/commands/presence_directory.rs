@@ -24,7 +24,6 @@
 //! (lane-warming reads as away), which is the exact defect the who-panel union
 //! already documents.
 
-use std::any::Any;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

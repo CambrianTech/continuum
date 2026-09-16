@@ -717,7 +717,7 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 /// it is a greeting and not an appositive.
 pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String]) -> Vec<&'a str> {
     let mut out: Vec<&'a str> = Vec::new();
-    let mut push = |n: &'a str, out: &mut Vec<&'a str>| {
+    let push = |n: &'a str, out: &mut Vec<&'a str>| {
         if out.len() < 3 && !out.iter().any(|e| e.eq_ignore_ascii_case(n)) {
             out.push(n);
         }

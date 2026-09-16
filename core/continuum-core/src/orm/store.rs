@@ -309,8 +309,6 @@ pub(crate) async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::adapter::AdapterConfig;
-    use crate::orm::sqlite::SqliteAdapter;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
     use serde::Deserialize;
 

@@ -37,7 +37,7 @@
 //! remedy (inspect, repair, or delete to mint fresh), and the
 //! provider moves on to the next persona directory.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;

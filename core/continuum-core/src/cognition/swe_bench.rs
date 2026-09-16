@@ -1748,15 +1748,10 @@ const ERA_CFLAGS: &str = "-Wno-incompatible-function-pointer-types \
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
 /// dependency sdist's declaration is honored by nobody). Keyed by repo because which sdists
-/// get built is a property of the repo's dependency graph on this platform. DATA, not logic —
-/// grow it one measured failure at a time, never speculatively.
-fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
-    era_sdist_build_deps_for(repo, 9999)
-}
-
-/// Era-scoped variant: rows may differ by instance year (the 2026-08-27
-/// coverage map caught the sklearn platform pins — right for 2019's
-/// no-arm64-wheel era, poison for a 2023 py3.11 env).
+/// get built is a property of the repo's dependency graph on this platform, and by instance
+/// year because rows differ by era (the 2026-08-27 coverage map caught the sklearn platform
+/// pins — right for 2019's no-arm64-wheel era, poison for a 2023 py3.11 env). DATA, not
+/// logic — grow it one measured failure at a time, never speculatively.
 fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
     if repo == "pydata/xarray" && year <= 2021 {
         // Era xarray drags era pandas as an sdist; its build needs cython and a

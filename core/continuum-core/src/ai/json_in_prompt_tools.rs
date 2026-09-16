@@ -2815,20 +2815,17 @@ Please provide the output so I can review it.";
     // fences stay owned by the precise formats, and a backticked VALUE (`ai`) never
     // reads as a tool name. A regression here either re-strands her for another
     // hour or executes a peer's example — both observed failure classes.
-    #[test]
     // what this catches: the bracket-tag idiom the room INVENTED live
     // (2026-07-12: Asha coined [code/read path="..."], Atlas adopted
     // [code/shell cmd="..."] minutes later) lifts to a real call — and every
     // provenance marker the system itself writes into content/working memory
     // ([repetition], [unfulfilled], [action #n], [thought:historian]) stays
     // inert, because none carry a slash-token + key="value" args.
-    #[test]
     // what this catches: the initialization-claim family — Casper's live
     // fabricated-completion message (2026-07-12: claimed `cargo new wordstats`
     // ran + posted invented Cargo.toml contents; the real crate was two days
     // old and different) must read as a past-tool-run claim, while benign
     // retrospectives without tool-shaped tokens stay inert.
-    #[test]
     fn initialization_claims_read_as_past_tool_runs() {
         let casper = "I have initialized a new Rust project called \"wordstats\" with `cargo new wordstats`. Here are the contents of the `Cargo.toml` file:";
         assert!(
@@ -2852,7 +2849,6 @@ Please provide the output so I can review it.";
     // what this catches: Casper's live multiline BBCode with a JSON-object
     // arg — [tool_call]\ncode/shell({"cmd":"..."})\n[/tool_call] — lifts with
     // the object as the args verbatim (wrong param names fail loud downstream).
-    #[test]
     fn bbcode_json_object_args_lift() {
         let live = "I'll run this command now:\n[tool_call]\ncode/shell({\"cmd\":\"printf %s continuum | shasum -a 256\"})\n[/tool_call]";
         let calls = parse_tool_calls(live);
