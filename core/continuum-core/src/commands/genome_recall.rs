@@ -271,6 +271,7 @@ crate::register_command!(GenomeRecall);
     export_to = "../../../protocol/typescript/genome/GenomeRecallReplayParams.ts"
 )]
 pub struct GenomeRecallReplayParams {
+    /// Durable decision UUID returned as trace_id by genome/recall.
     pub trace_id: String,
     /// Omit for exact replay; supply to compare a counterfactual configuration.
     #[serde(default)]
