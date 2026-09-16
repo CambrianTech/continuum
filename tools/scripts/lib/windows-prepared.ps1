@@ -91,7 +91,7 @@ function Get-CorePreparedRelease {
         Write-Step 'Selected the saved prepared release and verified its artifact hashes.'
     } else {
         $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-        if ($task.Principal.UserId -ne $userSid) { throw 'Prepared startup task belongs to a different Windows account.' }
+        if (-not (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid)) { throw 'Prepared startup task owner differs or cannot be resolved.' }
         if (-not $task.Description -or $task.Description.Length -gt 65536) { throw 'Prepared startup task has no bounded descriptor.' }
         $release = $task.Description | ConvertFrom-Json -ErrorAction Stop
         Assert-CorePreparedRelease -Release $release -InstallRoot $InstallRoot
@@ -104,8 +104,8 @@ function Resume-CorePreparedRelease {
     param([string]$RepoRoot, [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'))
     $release = Get-CorePreparedRelease -InstallRoot $InstallRoot
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
-    if ($task -and $task.Principal.UserId -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
-        throw 'Existing startup task belongs to a different Windows account; refusing resume.'
+    if ($task -and -not (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))) {
+        throw 'Existing startup task owner differs or cannot be resolved; refusing resume.'
     }
     $workingDirectory = Split-Path $release.artifact -Parent
     if ($env:GIT_DIR -or $env:GIT_WORK_TREE) { throw 'Prepared resume requires a shell without GIT_DIR/GIT_WORK_TREE overrides.' }
