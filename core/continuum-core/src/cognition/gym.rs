@@ -48,6 +48,10 @@ use std::path::Path;
 /// and resolve to the same bytes.
 const EMBEDDED_GYMS: &[(&str, &str)] = &[
     (
+        "speech-discipline.jsonl",
+        include_str!("../../../../docs/genome/speech-discipline.jsonl"),
+    ),
+    (
         "coder-eval.jsonl",
         include_str!("../../../../docs/genome/coder-eval.jsonl"),
     ),
@@ -378,7 +382,16 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
 /// ([[fallbacks-are-illegal-fail-loud]]). Adding a measured trait is one line
 /// here, paired with its committed gym in [`EMBEDDED_GYMS`] (the unit test below
 /// asserts every mapped gym resolves, so a typo fails at test time, not in prod).
-const TRAIT_GYMS: &[(&str, &str)] = &[("code", "docs/genome/coder-eval.jsonl")];
+const TRAIT_GYMS: &[(&str, &str)] = &[
+    ("code", "docs/genome/coder-eval.jsonl"),
+    // The gate-as-lesson bucket (card 657e74de): measures BOTH halves — quiet bursts
+    // that must end in silence and real asks that must be answered — so a gene that
+    // learned to pass everything fails here and is never adopted.
+    (
+        crate::persona::training_producer::SPEECH_DISCIPLINE_TRAIT,
+        "docs/genome/speech-discipline.jsonl",
+    ),
+];
 
 /// The committed gym that measures `trait_kind`, or `None` when no gym measures
 /// that trait yet. See [`TRAIT_GYMS`]. The returned reference is resolvable via
@@ -492,6 +505,32 @@ mod tests {
                 panic!("trait '{trait_name}' maps to gym '{gym}' which does not resolve: {e}")
             });
         }
+    }
+
+    // what this catches (card 657e74de): the speech-discipline gym measures BOTH halves.
+    // Every row is exactly one of silence-graded or substring-graded, and each half is
+    // populated — a set with only quiet rows would let a gene that passes everything
+    // score 100% and be adopted (muteness); a set with only asks would never measure
+    // the silence the bucket exists to teach.
+    #[test]
+    fn the_speech_discipline_gym_measures_silence_and_speech() {
+        let (_, text) = resolve_gym("speech-discipline.jsonl").expect("embedded");
+        let mut quiet = 0;
+        let mut asks = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let t: crate::cognition::eval::EvalTask =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("bad row {line}: {e}"));
+            assert!(!t.id.is_empty() && !t.prompt.is_empty(), "{line}");
+            match (t.silence, t.expect.is_empty()) {
+                (true, true) => quiet += 1,
+                (false, false) => asks += 1,
+                _ => panic!("a row is exactly silence-graded or expect-graded: {line}"),
+            }
+            // the grader agrees with the row's own kind
+            let (silent_ok, _) = crate::cognition::eval::substring_or_silence_grade(&t, "");
+            assert_eq!(silent_ok, t.silence, "an empty answer passes iff the row wants silence");
+        }
+        assert!(quiet >= 6 && asks >= 6, "both halves populated: quiet {quiet}, asks {asks}");
     }
 
     // what this catches: an existing on-disk custom gym is read from disk (step

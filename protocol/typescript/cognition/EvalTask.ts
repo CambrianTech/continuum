@@ -28,6 +28,13 @@ prompt: string,
  */
 expect: string, 
 /**
+ * SILENCE-graded: the task passes when she says NOTHING (a Pass, no spoken
+ * text). The speech-discipline gym's quiet half — a wake-shaped burst with
+ * nothing to answer must end in silence, not in the burst read back. `expect`
+ * is ignored when this is set.
+ */
+silence?: boolean, 
+/**
  * A test program appended to her extracted code and RUN; pass = exit 0. When
  * present, this objective grade supersedes `expect`.
  */
