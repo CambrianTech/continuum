@@ -19,8 +19,14 @@ pub fn current() -> Audience {
 
 /// Run `fut` as a turn for `audience`. Task-locals do not cross a `spawn`; a seam that
 /// spawns its render must re-declare inside the spawned task.
+///
+/// The future is BOXED on purpose: the seams declared here wrap the largest async state
+/// machines in the crate (a detached solve, the self-cycle), and nesting one of them
+/// inside the scope future pushed rustc's layout query past its depth limit on CI
+/// ("queries overflow the depth limit … computing layout of {async block @ agent/solve.rs}",
+/// rustc 1.95, #4132). One allocation per turn ends the recursion where it starts.
 pub async fn with<F: std::future::Future>(audience: Audience, fut: F) -> F::Output {
-    AUDIENCE.scope(audience, fut).await
+    AUDIENCE.scope(audience, Box::pin(fut)).await
 }
 
 #[cfg(test)]
