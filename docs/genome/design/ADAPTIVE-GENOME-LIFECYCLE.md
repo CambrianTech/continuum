@@ -78,8 +78,10 @@ or the persona herself. A policy adapter need not be a weight file. These provid
 receive the same typed demand/candidate/budget snapshot and return attributable
 selection proposals through the same command path.
 
-The binding records adapter identity/revision, configuration, scope, actor and
-generation. Policy selection is distinct from both composition locking and artifact
+The binding records adapter identity/revision, configuration, serving tier, scope,
+actor and generation. The demand snapshot comes from the existing perception
+`watch::Sender<Snapshot>` seam; its representation scales with the served model.
+A small tier must not impose its context or policy limits on a frontier tier. Policy selection is distinct from both composition locking and artifact
 publication. Selecting a different policy does not unlock a held composition.
 Training/testing mode is explicit: shadow proposals can be evaluated and recorded
 without changing the live composition. An experimental policy acts live only under
@@ -139,7 +141,13 @@ a learned policy, without forcing static or agent-backed implementations into Lo
 4. Prefetch promising candidates asynchronously through existing artifact handles
    and working-set/paging budgets. Bound speculative work and cancel obsolete
    demand. Keep useful resident expertise through related turns to avoid churn;
-   calibrate switching cost from measured loading and cache loss.
+   calibrate switching cost from measured loading and cache loss. Admission spends
+   planned headroom (weights, served-window KV times lanes, and reserves), not a
+   transient free-RAM reading; reuse the serving planner
+   (`serving_daemon::sidecar_planned_headroom_bytes`). Prefetch participates in the
+   existing `PagedResourcePool` with a real `evict_at_least`; checkpoint/prefetch
+   directories are `TrackedDir` resources with an explicit eviction policy.
+   Measured decode cost and the resulting lane knee are selection inputs.
 5. At an inference admission boundary, resolve one compatible ready composition
    and lease it for the request. Atomically publish its identity and adapter set.
    Never mutate weights midway through a generation or silently combine mutually
@@ -148,7 +156,9 @@ a learned policy, without forcing static or agent-backed implementations into Lo
    or placement failure.
 6. KV ownership includes base/tokenizer identity, ordered adapter revisions and
    scales, and relevant backend semantics. A changed composition cannot reuse
-   incompatible KV. A hash alone is not proof that the backend honors isolation:
+   incompatible KV. Put the composition revision inside `inference/slots.rs::ActivityKey`
+   so `KvSlotPool` and its page directories retain one ownership check. Do not add
+   a second sidecar KV identity gate. A hash alone is not proof that the backend honors isolation:
    validate slot behavior, especially a backend with global adapter controls.
 7. Outcomes feed existing experience and fitness owners. Attribute observations
    to the exact composition and task, rather than assuming every success proves
@@ -228,7 +238,10 @@ not a promise of remote erasure. No publish per turn or per training step.
    automatic selection cannot undo a lock, including after restart and rehoming.
 2. **Live paging:** connect demand, existing recall and pager to the shared genome
    handle. Prove real artifact resolution, compatible activation and request lease;
-   tests that only exchange persona UUIDs do not establish adapter loading.
+   tests that only exchange persona UUIDs do not establish adapter loading. Require
+   a production registration ratchet (registered or explicitly dormant with a card)
+   and a live `genome.page_in {persona, gene, reason}` probe. A test-only module
+   registration cannot satisfy this step.
 3. **Measure:** on a real project, change from implementation to review/planning
    work, show automatic demand and selection receipts, then compare useful outputs
    and latency with the base/current composition. Exercise concurrent personas with
