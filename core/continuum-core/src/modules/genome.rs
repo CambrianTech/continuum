@@ -25,6 +25,9 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::sdk_codegen::DynCommand;
 
 pub struct GenomeModule {
+    decisions: Arc<
+        crate::runtime::LateBound<crate::orm::OrmStore<crate::genome::recall_impl::RecallDecision>>,
+    >,
     registry: Arc<FineTuningRegistry>,
     coordinator: Arc<FineTuningCoordinator>,
     #[cfg(test)]
@@ -41,6 +44,7 @@ impl GenomeModule {
     pub fn new(registry: Arc<FineTuningRegistry>) -> Self {
         let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
         Self {
+            decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
             #[cfg(test)]
@@ -59,6 +63,7 @@ impl GenomeModule {
     ) -> Self {
         let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
         Self {
+            decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
             test_job_board,
@@ -81,7 +86,7 @@ impl ServiceModule for GenomeModule {
         ModuleConfig {
             name: "genome",
             priority: ModulePriority::Normal,
-            command_prefixes: &["genome/job-"],
+            command_prefixes: &["genome/job-", "genome/recall"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -89,24 +94,43 @@ impl ServiceModule for GenomeModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        // No state to lazy-init. Adapters are registered by the
-        // boot path; the coordinator + registry are constructed in
-        // GenomeModule::new and don't require async setup.
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        let module = ctx
+            .registry
+            .get_by_name("data")
+            .ok_or_else(|| "genome requires the data module".to_string())?;
+        let data = module
+            .as_any()
+            .downcast_ref::<crate::modules::data::DataModule>()
+            .ok_or_else(|| "genome data module type mismatch".to_string())?;
+        let adapter = data.state.get_adapter("main").await?;
+        let store = crate::orm::OrmStore::new(adapter)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.decisions.install(Arc::new(store));
         Ok(())
     }
 
     /// The `genome/job-*` verbs over the module's registry + coordinator. The
     /// typed registry dispatches them; this module owns no legacy `match` arm.
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        crate::commands::genome::command_objects(
+        let mut commands = crate::commands::genome::command_objects(
             Arc::clone(&self.registry),
             Arc::clone(&self.coordinator),
             #[cfg(test)]
             Arc::clone(&self.test_job_board),
             #[cfg(test)]
             Arc::clone(&self.test_artifacts),
-        )
+        );
+        commands.push(Arc::new(crate::commands::genome_recall::GenomeRecall {
+            decisions: Arc::clone(&self.decisions),
+        }));
+        commands.push(Arc::new(
+            crate::commands::genome_recall::GenomeRecallReplay {
+                decisions: Arc::clone(&self.decisions),
+            },
+        ));
+        commands
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
@@ -133,9 +157,11 @@ mod tests {
     // registry. A dropped family wiring would silently remove genome/job-* from the
     // persona tool surface, cu, and the grid — invisible without this assert.
     #[test]
-    fn exposes_three_typed_commands() {
+    fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 5);
+        assert!(names.contains(&"genome/recall"));
+        assert!(names.contains(&"genome/recall/replay"));
         assert!(names.contains(&"genome/job-create"));
         assert!(names.contains(&"genome/job-status"));
         assert!(names.contains(&"genome/job-cancel"));

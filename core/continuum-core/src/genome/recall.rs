@@ -51,7 +51,6 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use super::tier::TierRole;
 // The peer/actor in a federated recall is the same canonical actor identity used
@@ -294,6 +293,8 @@ pub enum TrustClass {
     export_to = "../../../protocol/typescript/genome/RecallError.ts"
 )]
 pub enum RecallError {
+    /// Missing, incompatible, corrupt, or unwritable decision record.
+    ReplayUnavailable { reason: String },
     /// The query's resource budget couldn't be satisfied by any
     /// combination of available artifacts.
     BudgetExhausted {
@@ -335,6 +336,7 @@ pub enum RecallError {
 impl std::fmt::Display for RecallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RecallError::ReplayUnavailable { reason } => write!(f, "recall replay unavailable: {reason}"),
             RecallError::BudgetExhausted {
                 budget_bytes,
                 available_bytes,
@@ -369,6 +371,7 @@ mod tests {
     //! the wire contract is what they intend.
     use super::*;
     use serde_json::json;
+    use uuid::Uuid;
 
     fn sample_peer() -> PeerId {
         PeerId::from_uuid(Uuid::nil())

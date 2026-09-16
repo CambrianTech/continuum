@@ -44,6 +44,68 @@ use tokio::sync::{Mutex, Semaphore};
 /// timeouts under normal 15-persona load.
 const MAX_CONCURRENT_QUERIES: usize = 16;
 
+// Adapter builders interpolate field/table identifiers. The generic API accepts
+// names, not SQL expressions: otherwise a public-table projection or filter
+// could subquery a protected collection. Values remain ordinary bound data.
+fn require_identifier(name: &str) -> Result<(), String> {
+    let mut bytes = name.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err("invalid storage identifier: expected letters, digits, and underscores".into());
+    }
+    Ok(())
+}
+
+fn require_field_name(name: &str) -> Result<(), String> {
+    for segment in name.split('.') {
+        require_identifier(segment)?;
+    }
+    Ok(())
+}
+
+fn require_query_fields(
+    filter: &Option<HashMap<String, FieldFilter>>,
+    sort: &Option<Vec<SortSpec>>,
+    select: &Option<Vec<String>>,
+) -> Result<(), String> {
+    for name in filter.iter().flat_map(|fields| fields.keys()) {
+        require_field_name(name)?;
+    }
+    for clause in sort.iter().flatten() {
+        require_field_name(&clause.field)?;
+    }
+    for name in select.iter().flatten() {
+        require_field_name(name)?;
+    }
+    Ok(())
+}
+
+fn require_record_fields(data: &Value) -> Result<(), String> {
+    if let Some(fields) = data.as_object() {
+        for name in fields.keys() {
+            require_identifier(name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Private substrate records are reachable only through their owning command.
+/// Match adapter table naming so camelCase aliases cannot bypass the gate.
+fn require_public_collection(collection: &str) -> Result<(), String> {
+    require_identifier(collection)?;
+    let table = crate::orm::adapter::naming::to_table_name(collection);
+    if let Some(owner) = crate::orm::entity::ProtectedCollection::find(&table) {
+        return Err(format!(
+            "protected collection: use {}",
+            owner.owning_command
+        ));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Vector Search Types and Cache
 // ============================================================================
@@ -153,6 +215,12 @@ impl DataModule {
         Self {
             state: Arc::new(DataState::new()),
         }
+    }
+}
+
+impl Default for DataState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -777,8 +845,10 @@ impl DataState {
         id: Option<UUID>,
         data: Value,
     ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(&collection)?;
         let start = std::time::Instant::now();
 
+        require_record_fields(&data)?;
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let record = DataRecord {
             id: id.clone(),
@@ -809,6 +879,7 @@ impl DataState {
         collection: &str,
         id: &UUID,
     ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(collection)?;
         let start = std::time::Instant::now();
         let adapter = self.get_adapter(handle).await?;
         let result = adapter.read(collection, id).await;
@@ -826,6 +897,8 @@ impl DataState {
         data: Value,
         increment_version: bool,
     ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(&collection)?;
+        require_record_fields(&data)?;
         let adapter = self.get_adapter(handle).await?;
         let result = adapter
             .update(&collection, &id, data, increment_version)
@@ -850,6 +923,7 @@ impl DataState {
         collection: String,
         id: UUID,
     ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(&collection)?;
         let adapter = self.get_adapter(handle).await?;
         let result = adapter.delete(&collection, &id).await;
 
@@ -865,6 +939,8 @@ impl DataState {
     }
 
     async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
         // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
         // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
         let _permit = self
@@ -917,6 +993,7 @@ impl DataState {
     /// The legacy `data/query` arm keeps the explicit-`db_path` `QueryParams`
     /// shape its internal Rust callers (chat, channel, self-task) still use.
     pub(crate) async fn list(&self, params: DataListParams) -> Result<DataListResult, String> {
+        require_public_collection(&params.collection)?;
         // Bound peak heap when many personas list concurrently (same gate as
         // handle_query). Excess callers wait — bounded, not dropped.
         let _permit = self
@@ -952,6 +1029,7 @@ impl DataState {
                 .collect::<Vec<_>>()
         });
 
+        require_query_fields(&filter, &sort, &None)?;
         let adapter = self.get_adapter(handle).await?;
 
         // Accurate total: SQL COUNT over the same filter, independent of paging.
@@ -1005,6 +1083,15 @@ impl DataState {
         &self,
         params: QueryWithJoinParams,
     ) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
+        for join in params.joins.iter().flatten() {
+            require_public_collection(&join.collection)?;
+            require_identifier(&join.alias)?;
+            require_field_name(&join.local_field)?;
+            require_field_name(&join.foreign_field)?;
+            require_query_fields(&None, &None, &join.select)?;
+        }
         let _permit = self
             .query_semaphore
             .acquire()
@@ -1037,6 +1124,10 @@ impl DataState {
         collection: String,
         filter: Option<serde_json::Map<String, Value>>,
     ) -> Result<StorageResult<usize>, String> {
+        require_public_collection(&collection)?;
+        for name in filter.iter().flat_map(|fields| fields.keys()) {
+            require_field_name(name)?;
+        }
         use std::time::Instant;
         let start = Instant::now();
 
@@ -1082,6 +1173,12 @@ impl DataState {
         handle: &str,
         operations: Vec<BatchOperation>,
     ) -> Result<StorageResult<Vec<Value>>, String> {
+        for operation in &operations {
+            require_public_collection(&operation.collection)?;
+            if let Some(data) = &operation.data {
+                require_record_fields(data)?;
+            }
+        }
         let op_count = operations.len();
 
         let adapter = self.get_adapter(handle).await?;
@@ -1115,6 +1212,7 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(collection)?;
         // Resolution order per [[orm-everything-not-hand-edited-files]]:
         //   1. Rust-native registry (substrate entities authored Rust-first:
         //      hw_tiers, role_templates, identity pools, universes).
@@ -1146,7 +1244,11 @@ impl DataState {
         handle: &str,
     ) -> Result<StorageResult<Vec<String>>, String> {
         let adapter = self.get_adapter(handle).await?;
-        Ok(adapter.list_collections().await)
+        let mut result = adapter.list_collections().await;
+        if let Some(collections) = result.data.as_mut() {
+            collections.retain(|name| require_public_collection(name).is_ok());
+        }
+        Ok(result)
     }
 
     /// Statistics for one collection (record count, size, last-modified, schema,
@@ -1156,6 +1258,7 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<StorageResult<crate::orm::types::CollectionStats>, String> {
+        require_public_collection(collection)?;
         let adapter = self.get_adapter(handle).await?;
         Ok(adapter.collection_stats(collection).await)
     }
@@ -1167,6 +1270,7 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(collection)?;
         let adapter = self.get_adapter(handle).await?;
         Ok(adapter.truncate(collection).await)
     }
@@ -1205,6 +1309,7 @@ impl DataState {
     /// 1. Check cache (RwLock read - concurrent, no blocking)
     /// 2. If miss, load from SQLite (serialized, but only once per collection)
     /// 3. Parallel rayon search against cached vectors
+    ///
     /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
     /// Loads (and caches) the collection's vectors, scores them against the query
     /// vector in parallel, and returns the top-`k` hits above `threshold`.
@@ -1217,6 +1322,7 @@ impl DataState {
         threshold: f64,
         include_data: bool,
     ) -> Result<VectorSearchResults, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let search_start = Instant::now();
 
@@ -1450,6 +1556,7 @@ impl DataState {
         id: String,
         embedding: Vec<f64>,
     ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -1486,6 +1593,7 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<VectorStats, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -1561,6 +1669,7 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<VectorCacheInvalidation, String> {
+        require_public_collection(collection)?;
         let cache_key = (handle.to_string(), collection.to_string());
         let removed = {
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
@@ -1598,6 +1707,9 @@ impl DataState {
         model: Option<String>,
         filter: Option<std::collections::HashMap<String, FieldFilter>>,
     ) -> Result<VectorBackfillStats, String> {
+        require_public_collection(collection)?;
+        require_field_name(text_field)?;
+        require_query_fields(&filter, &None, &None)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -1772,6 +1884,8 @@ impl DataState {
     /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
     /// - DashMap for concurrent query state (lock-free reads)
     async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &None)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -2232,6 +2346,95 @@ impl DataState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches: generic data/vector commands cannot bypass the owning
+    // recall command's authorization or mutate its retained decisions.
+    #[tokio::test]
+    async fn recall_capture_rejects_generic_access_paths() {
+        use crate::orm::OrmEntity;
+        let module = DataModule::new();
+        let private = crate::genome::recall_impl::RecallDecision::COLLECTION;
+        let aliases = [private.to_string(), crate::orm::adapter::naming::to_collection_name(private)];
+        let commands = module.commands();
+        for collection in aliases {
+            for name in ["data/create", "data/read", "data/update", "data/delete",
+                "data/list", "data/count", "data/ensure-schema", "data/collection-stats",
+                "data/truncate", "vector/search", "vector/index", "vector/stats",
+                "vector/invalidate-cache", "vector/backfill"] {
+                let command = commands.iter().find(|c| c.name() == name).expect(name);
+                let error = command.invoke(json!({
+                    "collection": collection, "dbPath": "invalid-handle",
+                    "id": "record", "data": {}, "embedding": [1.0],
+                    "queryVector": [1.0], "textField": "need"
+                }), None).await.expect_err(name);
+                assert!(error.contains("protected collection"), "{name}: {error}");
+            }
+            for name in ["data/query", "data/query-open", "data/queryWithJoin"] {
+                let error = module.state.dispatch(name, json!({
+                    "collection": collection, "dbPath": "invalid-handle"
+                })).await.expect_err(name);
+                assert!(error.contains("protected collection"), "{name}: {error}");
+            }
+            let error = module.state.handle_query_with_join(serde_json::from_value(json!({
+                "collection": "public", "dbPath": "invalid-handle",
+                "joins": [{"collection": collection, "alias": "decision",
+                    "localField": "id", "foreignField": "id", "type": "left"}]
+            })).unwrap()).await.expect_err("private join");
+            assert!(error.contains("protected collection"));
+            for operation_type in [crate::orm::types::BatchOperationType::Create,
+                crate::orm::types::BatchOperationType::Read,
+                crate::orm::types::BatchOperationType::Update,
+                crate::orm::types::BatchOperationType::Delete] {
+                let error = module.state.batch_operations("invalid-handle", vec![BatchOperation {
+                    operation_type, collection: collection.clone(), id: Some("record".into()), data: Some(json!({}))
+                }]).await.expect_err("private batch");
+                assert!(error.contains("protected collection"));
+            }
+        }
+    }
+
+    // What this catches: SQL-expression escapes cannot read private decisions;
+    // ordinary queries and explicitly owner-gated clearing retain their behavior.
+    #[tokio::test]
+    async fn recall_capture_blocks_query_escapes_without_breaking_owner_clear() {
+        use crate::orm::OrmEntity;
+        let module = DataModule::new();
+        let (_tmp, path) = test_db_path("protected-recall");
+        let private = crate::genome::recall_impl::RecallDecision::COLLECTION;
+        let adapter = module.state.get_adapter(&path).await.unwrap();
+        let stored = adapter.create(DataRecord {
+            id: "private-record".into(), collection: private.into(),
+            data: json!({"need": "private need"}), metadata: RecordMetadata::default(),
+        }).await;
+        assert!(stored.success, "{:?}", stored.error);
+        assert!(module.state.create_record(&path, "public".into(), Some("public-record".into()), json!({"value": 1})).await.unwrap().success);
+        assert!(module.state.read_record(&path, "public", &"public-record".into()).await.unwrap().success);
+        // These previously interpolated SQL expressions could bypass a plain
+        // protected-collection equality check while naming a public collection.
+        for attack in [
+            json!({"collection": "public", "select": [format!("(select need from {private} limit 1) as leaked")]}),
+            json!({"collection": format!("{private} where 1=1")}),
+            json!({"collection": "public", "filter": {(format!("(select need from {private} limit 1)")): "private need"}}),
+            json!({"collection": "public", "sort": [{"field": format!("(select need from {private} limit 1)"), "direction": "asc"}]}),
+        ] {
+            let mut params = attack;
+            params["dbPath"] = json!(path);
+            let error = module.state.dispatch("data/query", params).await.expect_err("SQL expression must not execute");
+            assert!(error.contains("invalid storage identifier"), "{error}");
+        }
+        let ordinary = module.state.dispatch("data/query", json!({
+            "dbPath": path, "collection": "public", "select": ["value"],
+            "filter": {"value": 1}, "sort": [{"field": "value", "direction": "asc"}]
+        })).await.unwrap();
+        assert!(ordinary.to_json_value().unwrap()["success"].as_bool().unwrap());
+        let names = module.state.list_collection_names(&path).await.unwrap().data.unwrap();
+        assert!(names.iter().all(|name| require_public_collection(name).is_ok()));
+        assert!(adapter.read(private, &"private-record".into()).await.success);
+        assert!(module.state.clear_all_collections(&path).await.unwrap().success);
+        assert!(!adapter.read(private, &"private-record".into()).await.success);
+
+    }
+
 
 
     /// what this catches: the substrate's own collections unknown to the ORM at

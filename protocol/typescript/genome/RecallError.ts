@@ -5,7 +5,7 @@
  * errors" rule: every failure mode has a typed variant with the
  * context needed to debug.
  */
-export type RecallError = { "kind": "budgetExhausted", 
+export type RecallError = { "kind": "replayUnavailable", reason: string, } | { "kind": "budgetExhausted", 
 /**
  * Bytes requested vs available — debugging signal.
  */
