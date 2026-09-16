@@ -1224,7 +1224,6 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::PeerId;
     use serde_json::json;
 
     /// A `persona:act` payload — one executed tool receipt (#243).

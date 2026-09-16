@@ -19,7 +19,7 @@ use ts_rs::TS;
 use super::ident::CommandIdent;
 use super::scaffold::{render_command_file, Access, Form, ScaffoldOpts};
 use super::wiring::{ensure_mod_lines, resolve_src_root, write_command_file};
-use crate::sdk_codegen::{CommandError, Ctx};
+use crate::sdk_codegen::CommandError;
 
 /// Params for `command/migrate`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]

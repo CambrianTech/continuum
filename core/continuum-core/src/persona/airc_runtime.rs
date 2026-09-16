@@ -832,7 +832,7 @@ impl PersonaAircRuntime {
                                         )
                                 })
                                 .max_by_key(|c| c.updated_at_ms);
-                            for card in recoverable {
+                            if let Some(card) = recoverable {
                                 match hb_airc
                                     .claim_work_card(airc_lib::ClaimWorkCard {
                                         card_id: card.card_id,

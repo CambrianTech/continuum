@@ -2563,7 +2563,8 @@ impl LlamaServerProcess {
         };
         let health = format!("{}/health", self.root);
         let deadline = Instant::now() + budget;
-        let mut last = String::from("no response");
+        // Assigned by every arm below before the deadline check reads it.
+        let mut last: String;
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
                 Ok(resp) if resp.status().is_success() => {

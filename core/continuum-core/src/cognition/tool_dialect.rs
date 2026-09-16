@@ -30,7 +30,6 @@ use std::sync::OnceLock;
 
 use crate::ai::types::NativeToolSpec;
 use crate::cognition::tool_usage::{record, Outcome};
-use crate::sdk_codegen::command_registry;
 use crate::sdk_codegen::ext::command_registry_live;
 
 /// alias → canonical command name. Built ONCE from every command's declared

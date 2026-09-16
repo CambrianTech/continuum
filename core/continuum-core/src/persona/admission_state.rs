@@ -351,9 +351,7 @@ impl AdmissionState {
         use crate::orm::adapter::{AdapterConfig, StorageAdapter};
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::admission_persistence::{
-            AdmissionPersistenceLoader, OrmLoader, OrmPersistenceSink,
-        };
+        use crate::persona::admission_persistence::{OrmLoader, OrmPersistenceSink};
         use crate::persona::engram::Engram;
         use crate::persona::recall_metadata::EngramRecallMetadata;
 

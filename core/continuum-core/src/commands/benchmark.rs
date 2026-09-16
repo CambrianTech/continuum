@@ -2889,7 +2889,6 @@ mod tests {
     // same name survived — benchmark/list showed the name twice and fetch-by-name
     // silently took whichever matched first. A name IS the lookup key everywhere
     // (fetch, dispatch, verify), so duplicates are a routing hazard, not cosmetics.
-    #[test]
     fn catalog_names_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for b in known_benchmarks() {

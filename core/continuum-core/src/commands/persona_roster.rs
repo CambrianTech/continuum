@@ -12,7 +12,6 @@
 //! Read-only. No board write, no airc publish — it reports the roster the substrate already
 //! holds, so a persona home that the registry never registered simply does not appear.
 
-use std::any::Any;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

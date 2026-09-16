@@ -733,7 +733,6 @@ mod tests {
     // <root>/var/…/<root>/index.html — graded "she never wrote it". Inside-root
     // absolutes rebase to relative; outside-root absolutes refuse LOUD; the
     // "/index.html" workspace-relative idiom keeps working.
-    #[test]
     fn absolute_paths_rebase_inside_refuse_outside_keep_the_slash_idiom() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();

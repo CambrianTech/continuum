@@ -12,7 +12,6 @@ use super::frame::{self, FrameType, GridFrame, GridPayload};
 use super::node::TrustLevel;
 use super::transport::{GridTransport, TransportError};
 use super::GridState;
-use crate::runtime::CommandResult;
 use std::sync::Arc;
 use std::time::Duration;
 

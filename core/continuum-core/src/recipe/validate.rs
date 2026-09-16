@@ -19,7 +19,6 @@
 //! lookup ([`registry_lookup`]) is built once per process. Cost: once per spawn and
 //! once per catalogue read — never on a turn.
 
-use super::types::RecipeStep;
 use crate::experience::recipe::ExperienceRecipe;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};

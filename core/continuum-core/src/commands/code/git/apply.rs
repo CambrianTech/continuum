@@ -83,7 +83,6 @@ crate::action_command! {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::code::git_bridge;
 
     // what this catches: the full diffs-over-the-room loop — author repo commits a

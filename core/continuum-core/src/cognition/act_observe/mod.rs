@@ -2067,7 +2067,6 @@ mod tests {
             8,
         )
         .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
-        let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.
         let a = drive_to_settle(

@@ -4505,7 +4505,6 @@ mod tests {
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
     use crate::cognition::workspace::BurstTurn;
-    use airc_core::PeerId;
     use serde_json::json;
     use std::collections::VecDeque;
     use std::sync::Mutex;

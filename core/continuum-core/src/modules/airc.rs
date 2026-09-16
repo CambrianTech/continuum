@@ -1,7 +1,7 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    spawn_daemon_attach, AircEventTransport, AircQueueClient, AircRealtimeStore,
+    AircEventTransport, AircQueueClient, AircRealtimeStore,
     CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
     StoreAircEventTransport, TokioAircCommandRunner,
 };

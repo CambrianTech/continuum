@@ -614,7 +614,7 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Returns the ModelInfo with ALL required fields (context_window,
     /// tokens_per_second, cost, capabilities). The adapter is the authority
     /// on its own models — no lookup tables, no guessing.
-    fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
+    fn model_metadata(&self, _model_id: &str) -> Option<ModelInfo> {
         // Default: search available_models synchronously from cached list.
         // Adapters with runtime catalogs (DMR, cloud /v1/models) should
         // override this with their live data.

@@ -457,7 +457,6 @@ mod tests {
     // row — and `weights_bytes` is cached there by design, so it survived every plan
     // until a process restart. Consequence was not cosmetic: an 11x under-count
     // granted a wider context window and left the card at 98.4% VRAM.
-    #[test]
     fn a_sidecar_pull_never_becomes_the_models_main_weights_path() {
         use std::path::PathBuf;
         let reg = catalog::registry().expect("Rust catalog must validate");

@@ -213,11 +213,8 @@ mod tests {
     //! actually emits fixtures from persona/turn-execute) lands
     //! against a stable contract.
     use super::*;
-    use crate::genome::working_set::ArtifactId;
     use crate::identity::PeerId;
-    use crate::inference::llm_module::{
-        CompositionPlan, FinishReason, GenerationBudget, InferenceRequestId, SamplingParams,
-    };
+    use crate::inference::llm_module::{FinishReason, InferenceRequestId};
     use crate::persona::inbox::{PersonaInboxFrame, PersonaInboxFrameMetrics};
     use crate::persona::turn_frame::{
         ConsolidatedInboxChunk, RagAssemblySeed, PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,

@@ -22,7 +22,6 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/identity/WhoamiParams.ts")]

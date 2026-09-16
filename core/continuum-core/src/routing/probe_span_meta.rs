@@ -245,7 +245,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::routing::{ProbeRouterLayer, UriCaptureLayer};
     use tracing_subscriber::prelude::*;
 
