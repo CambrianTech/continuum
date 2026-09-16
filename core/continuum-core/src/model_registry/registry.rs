@@ -164,6 +164,40 @@ mod tests {
     use crate::model_registry::artifacts::write_empty_gguf;
     use crate::model_registry::types::{Arch, Capability};
 
+    /// Catalog rows a node can SERVE a persona on but that have no trainable HF base to
+    /// declare — each with the reason. Data, not a loophole: a row lands here only when
+    /// the artifact genuinely has no safetensors upstream (forged/compacted outputs, a
+    /// cloud endpoint). Anything else that lacks `hf_source` fails the test below.
+    const SERVING_ONLY_BASES: &[(&str, &str)] = &[
+        ("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest", "forge OUTPUT — its trainable form is the forge's own PEFT stage, not an HF safetensors repo"),
+        ("continuum-ai/qwen3.5-4b-code-forged-GGUF", "forge OUTPUT — same artifact, canonical id"),
+        ("badtheorylabs/BTL-4-Compact", "compacted artifact published as GGUF only; no safetensors upstream to train from"),
+        ("deepseek-v4-flash", "cloud endpoint — served remotely, never a local trainable base"),
+    ];
+
+    // what this catches (2026-09-16, IntelMac 081674a6): the served model there,
+    // `continuum-ai/qwen2.5-coder-0.5b-instruct-GGUF`, had no `hf_source`, so every
+    // `genome/job-create` was refused ("no trainable base") — 4,077 refusals in 13.8 h,
+    // learning 100% dead on that node — and 19 other servable rows carried the same
+    // hole. A base a persona can be served on is a base her learning must train against:
+    // every Chat-capable GGUF row declares `hf_source`, or names why it cannot.
+    #[test]
+    fn every_servable_base_declares_its_trainable_source_or_says_why_not() {
+        let missing: Vec<String> = catalog::models()
+            .into_iter()
+            .filter(|m| m.gguf_hint.is_some() && m.capabilities.contains(&Capability::Chat))
+            .filter(|m| m.hf_source.is_none())
+            .filter(|m| !SERVING_ONLY_BASES.iter().any(|(id, _)| *id == m.id))
+            .map(|m| m.id)
+            .collect();
+        assert!(missing.is_empty(), "servable rows with no trainable base and no stated reason: {missing:?}");
+        // The allowlist names real rows — a stale entry is a lie the next reader inherits.
+        let ids: Vec<String> = catalog::models().into_iter().map(|m| m.id).collect();
+        for (id, _) in SERVING_ONLY_BASES {
+            assert!(ids.iter().any(|i| i == id), "SERVING_ONLY_BASES names a row that does not exist: {id}");
+        }
+    }
+
     // what this catches: ONE unparseable artifact must NOT take down the substrate (#63).
     // Live incident 2026-08-07 — a catalog entry whose GGUF our reader cannot parse
     // ("unknown dtype for tensor 16") aborted the whole registry and PANICKED the core at

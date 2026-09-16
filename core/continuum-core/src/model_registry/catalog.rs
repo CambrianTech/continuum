@@ -325,6 +325,7 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("docker.io/ai/qwen2.5:7B-Q4_K_M"),
+            hf_source: Some("Qwen/Qwen2.5-7B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -341,6 +342,7 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit"),
+            hf_source: Some("Qwen/Qwen2.5-7B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -433,6 +435,7 @@ pub fn models() -> Vec<Model> {
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-14B-Instruct"),
             ..ModelSpec::default()
         }),
         // DEVSTRAL SMALL 2507 — the AGENTIC coder (Mistral-Small-3.1 base, 24B, 68% SWE-bench
@@ -736,6 +739,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|eot_id|>"],
             persona_serving_eligible: false, // opponent: benchmark-only, never the citizens' model
+            hf_source: Some("NousResearch/Hermes-3-Llama-3.1-8B"),
             ..ModelSpec::default()
         }),
         // DeepSeek-V4-Flash via the ds4 sidecar (#306; launched 2026-08-02,
@@ -857,6 +861,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             persona_serving_eligible: false, // opponent flagship: the planner conscripted this TWICE (2026-07-12)
+            hf_source: Some("NousResearch/Hermes-4.3-36B"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -878,6 +883,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             persona_serving_eligible: false, // benchmark reference row (aider 64GB-class ceiling)
+            hf_source: Some("Qwen/Qwen3-32B"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -899,6 +905,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             persona_serving_eligible: false, // campaign row; eligibility revisit gated on #126 consent ranges
+            hf_source: Some("Qwen/Qwen3-Coder-30B-A3B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -919,6 +926,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             persona_serving_eligible: false, // benchmark roster row (no ToolUse — unfit for citizens anyway)
+            hf_source: Some("microsoft/phi-4"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -940,6 +948,7 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             persona_serving_eligible: false, // benchmark reference row (aider replicate-then-beat)
+            hf_source: Some("Qwen/Qwen2.5-Coder-32B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -988,6 +997,7 @@ pub fn models() -> Vec<Model> {
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-3B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -1008,6 +1018,7 @@ pub fn models() -> Vec<Model> {
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-1.5B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -1028,6 +1039,7 @@ pub fn models() -> Vec<Model> {
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-0.5B-Instruct"),
             ..ModelSpec::default()
         }),
         // A GENERAL (non-coder) model for the CATEGORY axis — same size class as a coder, so a
@@ -1050,6 +1062,7 @@ pub fn models() -> Vec<Model> {
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-3B-Instruct"),
             ..ModelSpec::default()
         }),
         // NOTE: benchmark OPPONENTS (Hermes, unsloth, cloud models) are DELIBERATELY absent
@@ -1077,6 +1090,7 @@ pub fn models() -> Vec<Model> {
         //     chat_template: Some(QWEN35_CHAT_TEMPLATE),
         //     multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
         //     stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+        //     hf_source: Some("Qwen/Qwen2.5-Coder-32B-Instruct"),
         //     ..ModelSpec::default()
         // }),
         model(ModelSpec {
@@ -1097,6 +1111,7 @@ pub fn models() -> Vec<Model> {
             gguf_local_path: Some("~/.continuum/models/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"),
             mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            hf_source: Some("Qwen/Qwen2-VL-7B-Instruct"),
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -1118,6 +1133,7 @@ pub fn models() -> Vec<Model> {
             gguf_local_path: Some("~/.continuum/models/Qwen2.5-Omni-7B-Q4_K_M.gguf"),
             mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2.5-Omni-7B-f16.gguf"),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            hf_source: Some("Qwen/Qwen2.5-Omni-7B"),
             ..ModelSpec::default()
         }),
         // LCD model — the substrate's lowest-common-denominator base
