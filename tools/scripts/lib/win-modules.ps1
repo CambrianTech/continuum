@@ -453,7 +453,7 @@ function Mod-AircFirewall {
     }
 
     Module-Start 'airc-firewall' 'allowing airc daemon inbound (peers must dial in for the grid)'
-    Ensure-Elevated
+    Ensure-Elevated -Reason 'configuring the AIRC inbound firewall rule'
     $add = "New-NetFirewallRule -DisplayName '$ruleName' -Program '$airc' -Direction Inbound -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null"
     Invoke-Elevated -CommandLine @('powershell', '-NoProfile', '-Command', $add)
     if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {

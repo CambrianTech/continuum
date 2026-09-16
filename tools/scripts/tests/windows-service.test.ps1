@@ -7,6 +7,52 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression for e1b774b1: a native elevation failure after a successful
+    # build must retain its evidence and caller phase, not invent a UAC refusal.
+    # Child scope confines mocks/preferences; cmd.exe supplies real stderr/exit.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\install-common.ps1')
+        $script:ElevationWarmed = $false
+        $script:elevationCalls = 0
+        $script:elevationMode = 'failure'
+        function Test-IsAdmin { $false }
+        function Ensure-Gsudo { }
+        function gsudo {
+            $script:elevationCalls++
+            if ($script:elevationMode -eq 'failure') {
+                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
+            } elseif ($script:elevationMode -eq 'empty') {
+                & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+            } else { $global:LASTEXITCODE = 0 }
+        }
+        $reason = 'registering the ContinuumCore startup task (before core handoff)'
+        $failure = $null
+        try { Invoke-Elevated -Reason $reason -CommandLine @('must-not-run') }
+        catch { $failure = $_.Exception.Message }
+        foreach ($expected in @($reason, 'exit 73', 'cache fixture stdout', 'cache fixture stderr')) {
+            if (-not $failure -or -not $failure.Contains($expected)) { throw "Elevation failure lost evidence: $expected" }
+        }
+        if ($failure -match 'declined|VS Build Tools|CUDA' -or $script:ElevationWarmed -or
+            $script:elevationCalls -ne 1 -or $ErrorActionPreference -ne 'Stop') {
+            throw 'Failed elevation misdiagnosed cause, warmed cache, ran command, or changed caller preference'
+        }
+        $script:elevationMode = 'empty'
+        $failure = $null
+        try { Ensure-Elevated -Reason $reason } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'exit 74' -or $failure -notmatch 'no diagnostic output') {
+            throw 'Missing elevation evidence was not explicit'
+        }
+        $script:elevationMode = 'success'
+        Ensure-Elevated -Reason $reason
+        Ensure-Elevated -Reason $reason
+        if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Successful elevation was not cached exactly once' }
+        $script:ElevationWarmed = $false
+        function Test-IsAdmin { $true }
+        Ensure-Elevated -Reason $reason
+        if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Already elevated path invoked gsudo' }
+    }
+    Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
+
     $installed = Join-Path $scratch 'installed with spaces'
     $target = Join-Path $scratch 'cargo'
     New-Item -ItemType Directory -Path (Join-Path $target 'release') | Out-Null
