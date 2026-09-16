@@ -2967,9 +2967,11 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     // infer the other's intent.
     let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
     let (script, server_bin) = if matches!(policy, LaunchSource::Prebuilt(_)) {
-        // Already prepared: neither an installed override nor a source script
-        // may redirect this explicit artifact or add work to the handoff.
-        (None, None)
+        // Already prepared: an installed override may not redirect this explicit
+        // artifact — but the source script, in PREBUILT MODE, is how the artifact
+        // gets its launch environment (desktop dist, power assertion, airc daemon,
+        // llama-server PATH). Without it the M5 came up dark on 2026-09-16.
+        (locate_start_script().ok(), None)
     } else {
         (locate_start_script().ok(), locate_core_server_binary())
     };
