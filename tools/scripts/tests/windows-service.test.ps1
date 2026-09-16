@@ -7,6 +7,96 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression for 6026ae26: Task Scheduler returned inherited administrator /
+    # SYSTEM ACEs before an explicit caller-read ACE. AddAccess throws for this
+    # real shape; repair must preserve every other ACE and its evaluation order.
+    $callerSid = 'S-1-5-21-1-2-3-1004'
+    $acl = "D:(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;BA)(A;;FR;;;$callerSid)"
+    $old = [Security.AccessControl.CommonSecurityDescriptor]::new($false, $false, $acl)
+    if ($old.IsDiscretionaryAclCanonical) { throw 'Regression did not reproduce the scheduler ACL shape' }
+    $oldFailed = $false
+    try {
+        $old.DiscretionaryAcl.AddAccess([Security.AccessControl.AccessControlType]::Allow,
+            [Security.Principal.SecurityIdentifier]::new($callerSid), 0x1200a9,
+            [Security.AccessControl.InheritanceFlags]::None, [Security.AccessControl.PropagationFlags]::None)
+    } catch { $oldFailed = $true }
+    if (-not $oldFailed) { throw 'Old AddAccess unexpectedly accepted the noncanonical ACL' }
+    $repaired = Grant-CoreServiceCallerAccess -Sddl $acl -UserSid $callerSid
+    $before = [Security.AccessControl.RawSecurityDescriptor]::new($acl)
+    $after = [Security.AccessControl.RawSecurityDescriptor]::new($repaired)
+    if ($after.DiscretionaryAcl.Count -ne $before.DiscretionaryAcl.Count) { throw 'Repair replaced/added unexpected ACEs' }
+    for ($i = 0; $i -lt $before.DiscretionaryAcl.Count; $i++) {
+        $expected = $before.DiscretionaryAcl[$i]
+        if ($i -eq 3) { $expected.AccessMask = $expected.AccessMask -bor 0x1200a9 }
+        if (-not $expected.Equals($after.DiscretionaryAcl[$i])) { throw "Repair changed ACE $i beyond the caller mask" }
+    }
+    if (-not (Test-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid) -or
+        (Grant-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid) -ne $repaired) { throw 'Caller grant failed verification/idempotence' }
+    $withoutCaller = 'D:(A;ID;FA;;;BA)(A;ID;FA;;;SY)'
+    $appended = [Security.AccessControl.RawSecurityDescriptor]::new(
+        (Grant-CoreServiceCallerAccess -Sddl $withoutCaller -UserSid $callerSid))
+    $original = [Security.AccessControl.RawSecurityDescriptor]::new($withoutCaller)
+    if ($appended.DiscretionaryAcl.Count -ne 3 -or $appended.DiscretionaryAcl[2].AccessMask -ne 0x1200a9 -or
+        $appended.DiscretionaryAcl[2].SecurityIdentifier.Value -ne $callerSid -or
+        -not $original.DiscretionaryAcl[0].Equals($appended.DiscretionaryAcl[0]) -or
+        -not $original.DiscretionaryAcl[1].Equals($appended.DiscretionaryAcl[1])) { throw 'Missing-caller repair did not append only the narrow grant' }
+    foreach ($unsupported in @("D:(D;;GX;;;WD)(A;;FRFX;;;$callerSid)",
+        "D:(D;;0x20;;;BA)(A;;FRFX;;;$callerSid)",
+        'D:(XA;;FR;;;WD;(@User.department == "Finance"))',
+        'D:(OA;;FR;11111111-1111-1111-1111-111111111111;;WD)')) {
+        $original = [Security.AccessControl.RawSecurityDescriptor]::new($unsupported).GetSddlForm('Access')
+        foreach ($operation in @('Grant-CoreServiceCallerAccess', 'Test-CoreServiceCallerAccess')) {
+            $refused = $false
+            try { & $operation -Sddl $unsupported -UserSid $callerSid | Out-Null }
+            catch { $refused = $_ -match 'Unsupported startup task ACL' }
+            if (-not $refused -or [Security.AccessControl.RawSecurityDescriptor]::new($unsupported).GetSddlForm('Access') -ne $original) {
+                throw "Unsupported/denied ACL was accepted or changed by $operation : $unsupported"
+            }
+        }
+    }
+    Write-Output 'PASS: noncanonical task ACL is repaired minimally; denied/conditional/object policy stays untouched'
+
+    # Run the real registrar with only scheduler boundaries replaced. A provider
+    # that ignores SetSecurityDescriptor must fail its reread, never claim success.
+    & {
+        $script:aclTask = [pscustomobject]@{ Sddl = $acl; Save = $true }
+        $script:aclTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
+        $script:aclTask | Add-Member ScriptMethod SetSecurityDescriptor { param($value, $flags) if ($this.Save) { $this.Sddl = $value } }
+        $folder = [pscustomobject]@{}
+        $folder | Add-Member ScriptMethod GetTask { param($name) $script:aclTask }
+        $script:aclScheduler = [pscustomobject]@{ Folder = $folder }
+        $script:aclScheduler | Add-Member ScriptMethod Connect { }
+        $script:aclScheduler | Add-Member ScriptMethod GetFolder { param($path) $this.Folder }
+        function New-Object { param($ComObject) if ($ComObject -ne 'Schedule.Service') { throw 'Unexpected fixture COM request' }; $script:aclScheduler }
+        function Get-ScheduledTask { [pscustomobject]@{} }
+        function New-ScheduledTaskAction { [pscustomobject]@{} }
+        function New-ScheduledTaskPrincipal { [pscustomobject]@{} }
+        function New-ScheduledTaskTrigger { [pscustomobject]@{} }
+        function New-ScheduledTaskSettingsSet { [pscustomobject]@{} }
+        $script:aclRegistrations = 0
+        function Register-ScheduledTask { $script:aclRegistrations++ }
+        $planPath = Join-Path $scratch 'acl-plan.json'
+        @{ userSid = $callerSid; shell = 'fixture'; arguments = 'fixture'; description = 'fixture' } |
+            ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
+        . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath
+        if ($script:aclRegistrations -ne 1 -or -not (Test-CoreServiceCallerAccess -Sddl $script:aclTask.Sddl -UserSid $callerSid)) {
+            throw 'Registrar did not persist and verify the caller grant'
+        }
+        $script:aclTask.Sddl = $acl
+        $script:aclTask.Save = $false
+        $refused = $false
+        try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
+        catch { $refused = $_ -match 'was not saved' }
+        if (-not $refused) { throw 'Registrar reported success despite a missing saved grant' }
+        $script:aclTask.Sddl = "D:(D;;GX;;;WD)(A;;FRFX;;;$callerSid)"
+        $writes = $script:aclRegistrations
+        $refused = $false
+        try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
+        catch { $refused = $_ -match 'Unsupported startup task ACL' }
+        if (-not $refused -or $script:aclRegistrations -ne $writes) { throw 'Registrar changed task before refusing existing deny policy' }
+    }
+    Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
+
     # Regression for e1b774b1: a native elevation failure after a successful
     # build must retain its evidence and caller phase, not invent a UAC refusal.
     # Child scope confines mocks/preferences; cmd.exe supplies real stderr/exit.
