@@ -895,7 +895,76 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usiz
 /// briefly, never across an await; `parking_lot` so a panic never poisons it.
 /// Process-local by design: two CORES spawning the same model at once is the
 /// split-brain class (card 27fd5870), not this seam.
-static PAGE_DIR_GUARD: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
+static PAGE_DIR_GUARD: parking_lot::Mutex<PageDirState> = parking_lot::Mutex::new(PageDirState {
+    reservations: Vec::new(),
+    retiring: Vec::new(),
+});
+
+struct PageDirState {
+    reservations: Vec<PathBuf>,
+    retiring: Vec<RetiringPageOwner>,
+}
+
+struct RetiringPageOwner {
+    child: tokio::process::Child,
+    // None means the registry carried the directory, but its current readability
+    // and OS identity lookup are not proof that this owned child has exited.
+    reserved_dir: Option<PathBuf>,
+}
+
+impl PageDirState {
+    fn has_unknown_retiring_dir(&self) -> bool {
+        self.retiring
+            .iter()
+            .any(|owner| owner.reserved_dir.is_none())
+    }
+
+    fn collect_exited(&mut self) {
+        self.collect_exited_with(tokio::process::Child::try_wait);
+    }
+
+    fn collect_exited_with(
+        &mut self,
+        mut poll: impl FnMut(
+            &mut tokio::process::Child,
+        ) -> std::io::Result<Option<std::process::ExitStatus>>,
+    ) {
+        let mut index = 0;
+        while index < self.retiring.len() {
+            match poll(&mut self.retiring[index].child) {
+                Ok(Some(_)) => {
+                    let owner = self.retiring.swap_remove(index);
+                    if let Some(dir) = owner.reserved_dir {
+                        if let Some(i) = self.reservations.iter().position(|d| d == &dir) {
+                            self.reservations.swap_remove(i);
+                        }
+                    }
+                }
+                Ok(None) | Err(_) => index += 1,
+            }
+        }
+    }
+}
+
+fn retire_page_owner(
+    child: tokio::process::Child,
+    reservation: Option<PageDirReservation>,
+    signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
+) {
+    let mut child = child;
+    let mut guard = PAGE_DIR_GUARD.lock();
+    if let Err(e) = signal(&mut child) {
+        tracing::warn!(error = %e, "could not signal llama-server child; retaining page ownership until verified exit");
+    }
+    // Disarm RAII while holding the same guard: no unlocked interval, and no
+    // recursive lock in PageDirReservation::drop. The reservation stays listed.
+    let reserved_dir = reservation.and_then(|mut reservation| reservation.0.take());
+    guard.retiring.push(RetiringPageOwner {
+        child,
+        reserved_dir,
+    });
+    guard.collect_exited();
+}
 
 /// RAII reservation of a page dir for a spawn in flight, taken the instant the dir is
 /// decided — BEFORE it is created or used ([`Self::take_and_create`]), so no sibling
@@ -903,14 +972,15 @@ static PAGE_DIR_GUARD: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::ne
 /// [`Self::handoff`] once the lane's registry record carries the dir, or on drop if
 /// the spawn unwinds first. A lane whose record write FAILED keeps its reservation
 /// for the CHILD's lifetime: the spawn parks it beside `child` on the process
-/// ([`LlamaServerProcess::retained_page_dir`]) and `kill_child` releases it — so
+/// ([`LlamaServerProcess::retained_page_dir`]) and retirement releases it only
+/// after the owned child reports exit — so
 /// registry persistence failing never unprotects a running lane, and a `serve()`
 /// that returns (or is cancelled) does not drop the protection its child still needs.
 struct PageDirReservation(Option<PathBuf>);
 
 impl PageDirReservation {
     fn take(dir: &Path) -> Self {
-        PAGE_DIR_GUARD.lock().push(dir.to_path_buf());
+        PAGE_DIR_GUARD.lock().reservations.push(dir.to_path_buf());
         Self(Some(dir.to_path_buf()))
     }
 
@@ -956,8 +1026,8 @@ impl PageDirReservation {
         let mut guard = PAGE_DIR_GUARD.lock();
         crate::inference::lane_registry::record_in(registry_dir, rec)?;
         if let Some(dir) = self.0.take() {
-            if let Some(i) = guard.iter().position(|d| d == &dir) {
-                guard.swap_remove(i);
+            if let Some(i) = guard.reservations.iter().position(|d| d == &dir) {
+                guard.reservations.swap_remove(i);
             }
         }
         Ok(())
@@ -973,8 +1043,8 @@ impl Drop for PageDirReservation {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
             let mut guard = PAGE_DIR_GUARD.lock();
-            if let Some(i) = guard.iter().position(|d| d == &dir) {
-                guard.swap_remove(i);
+            if let Some(i) = guard.reservations.iter().position(|d| d == &dir) {
+                guard.reservations.swap_remove(i);
             }
         }
     }
@@ -994,7 +1064,17 @@ fn sweep_stale_page_generations_guarded(current: &Path) -> Option<usize> {
 /// [`sweep_stale_page_generations_guarded`] against an explicit registry dir (the
 /// test seam).
 fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) -> Option<usize> {
-    let guard = PAGE_DIR_GUARD.lock();
+    let mut guard = PAGE_DIR_GUARD.lock();
+    guard.collect_exited();
+    if guard.has_unknown_retiring_dir() {
+        crate::probe!(
+            class = "inference.kv_page.sweep_skipped",
+            reason = "owned child exit unproven and page directory unknown",
+            retiring_children = guard.retiring.len(),
+            "stale-generation sweep skipped until owned child exit is observed"
+        );
+        return None;
+    }
     let records = match crate::inference::lane_registry::records_checked_in(registry_dir) {
         Ok(r) => r,
         Err(e) => {
@@ -1009,7 +1089,7 @@ fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) 
     };
     let (mut protect, complete) =
         page_dirs_of(records, crate::inference::lane_process::is_llama_server);
-    protect.extend(guard.iter().cloned());
+    protect.extend(guard.reservations.iter().cloned());
     if !complete {
         return None;
     }
@@ -2280,9 +2360,9 @@ pub struct LlamaServerProcess {
     /// the steady state).
     served_adapters: Arc<StdMutex<Vec<String>>>,
     /// The page-dir reservation of the CURRENT child when its registry record could
-    /// not be written — kept for the child's lifetime, released by `kill_child`
+    /// not be written — kept until the owned child reports exit
     /// (see [`PageDirReservation`]). Empty when the record carries the dir.
-    retained_page_dir: Arc<StdMutex<Option<PageDirReservation>>>,
+    retained_page_dir: Arc<parking_lot::Mutex<Option<PageDirReservation>>>,
     /// True for THE host's live persona lane (pins the canonical port, writes the
     /// reclaim pidfile, reaps a crashed predecessor's orphan). False for an
     /// [`EphemeralServingLane`]'s `with_root` process, which owns its own scanned
@@ -2360,7 +2440,7 @@ impl LlamaServerProcess {
             client,
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
-            retained_page_dir: Arc::new(StdMutex::new(None)),
+            retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
@@ -2387,7 +2467,7 @@ impl LlamaServerProcess {
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
-            retained_page_dir: Arc::new(StdMutex::new(None)),
+            retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
@@ -2399,23 +2479,19 @@ impl LlamaServerProcess {
         }
     }
 
-    /// Kill the currently-running child, if any. Idempotent.
+    /// Signal the owned child, retaining its pages until its handle proves exit.
     fn kill_child(&self) {
-        // The child's page dir stops needing protection with the child.
-        drop(self.retained_page_dir.lock().unwrap().take());
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            // start_kill is non-blocking; the OS reaps. We're replacing it, so
-            // we don't await the exit — the new spawn binds the same port once
-            // the old one releases it (readiness poll absorbs the gap).
-            // A kill that FAILS is why the successor will find the port still bound —
-            // the one fact the next bring-up failure needs and could never see before.
-            if let Err(e) = child.start_kill() {
-                tracing::warn!(
-                    error = %e,
-                    "could not signal the llama-server child to die — the port may stay \
-                     bound and the next spawn may fail to bind it"
-                );
-            }
+        self.kill_child_with(tokio::process::Child::start_kill);
+    }
+
+    fn kill_child_with(
+        &self,
+        signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
+    ) {
+        let child = self.child.lock().unwrap().take(); // unwrap: poisoned = prior panic while mutating the owned child
+        if let Some(child) = child {
+            let reservation = self.retained_page_dir.lock().take();
+            retire_page_owner(child, reservation, signal);
         }
     }
 
@@ -2564,32 +2640,10 @@ impl Default for LlamaServerProcess {
 
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
-        // Did we OWN the child we're about to kill? Capture the pid + ownership
-        // before `kill_child` takes it. Ownership is the difference between a core
-        // that SPAWNED its server and one that ADOPTED a persisting one
-        // (`AlreadyServing` → never spawned → no child). Only the spawner kills the
-        // server on the way out.
-        let owned_pid = self.child.lock().unwrap().as_ref().and_then(|c| c.id());
-        let owned_child = owned_pid.is_some();
         self.kill_child();
-        // Remove this lane's registry record — for BOTH live and ephemeral — since
-        // we just killed the process it named. A crash skips Drop, which is exactly
-        // the case the record survives for (the next boot's `sweep_orphans` reaps
-        // it). Only remove what we OWNED; an adopted persisting server keeps its
-        // record so the successor can reclaim it.
-        if let Some(pid) = owned_pid {
-            crate::inference::lane_registry::remove(pid);
-        }
-        // Clear the reclaim pidfile ONLY if we owned the child we just killed — the
-        // server is now dead, so there is nothing for the next boot to reclaim. If
-        // we ADOPTED a persisting server (no child of our own), it keeps running
-        // after we exit, so we LEAVE the pidfile naming it so the successor can
-        // reclaim that still-live server if it later goes sick. (A SIGKILL/crash
-        // skips Drop entirely — that is exactly the case the pidfile survives for,
-        // and the next boot's identity-verified reclaim handles it.)
-        if self.is_live_lane && owned_child {
-            crate::inference::lane_pidfile::clear();
-        }
+        // Signalling is not exit. Preserve the registry and reclaim pidfile;
+        // their existing identity-aware cleanup owners retire stale records.
+        // In particular, never clear a successor's canonical pidfile here.
     }
 }
 
@@ -3098,7 +3152,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
-        let reclaimed = if self.is_live_lane {
+        // An owned child is already retiring under its actual process handle.
+        // Canonical reclaim is for an adopted/orphan lane, not a second signal
+        // followed by pidfile deletion before our owned child has reported exit.
+        let reclaimed = if self.is_live_lane && !had_own_child {
             Some(format!("{:?}", crate::inference::lane_pidfile::reclaim(port).await))
         } else {
             None
@@ -3106,9 +3163,9 @@ impl LlamaServerControl for LlamaServerProcess {
         crate::probe!(
             class = "serving.lane.idled",
             port,
-            killed_own_child = had_own_child,
-            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"), // unwrap_or: None = this handle is not the live lane, so no port to reclaim — a label, not a quantity
-            "lane taken down on an empty plan — VRAM is free, the port is ours again"
+            killed_own_child = had_own_child, // Legacy field: signal requested, not proof of exit.
+            reclaim = reclaimed.as_deref().unwrap_or("owned child or non-live lane"), // unwrap_or: None labels the deliberate absence of canonical reclaim, not observed process exit
+            "lane retirement requested on an empty plan; owned-child exit remains independently observed"
         );
         Ok(())
     }
@@ -3228,7 +3285,12 @@ impl LlamaServerControl for LlamaServerProcess {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty() && s != "f16");
         let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
-            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+            .map(|s| {
+                matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "1" | "on" | "true" | "yes"
+                )
+            })
             .unwrap_or(false);
         // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
         // (2026-08-24, the cache_reuse confession). llama-server hard-disables
@@ -3432,7 +3494,13 @@ impl LlamaServerControl for LlamaServerProcess {
         .await
         {
             Ok(out) => out
-                .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                .map(|o| {
+                    format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    )
+                })
                 .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
             Err(_) => {
                 crate::probe!(
@@ -3670,8 +3738,9 @@ match (child.stderr.take(), log_path) {
         *self.child.lock().unwrap() = Some(child);
         // A reservation the handoff could not release (record write failed) lives
         // as long as the child does — beside it, not in this frame.
-        *self.retained_page_dir.lock().unwrap() =
-            page_dir_reservation.is_held().then_some(page_dir_reservation);
+        *self.retained_page_dir.lock() = page_dir_reservation
+            .is_held()
+            .then_some(page_dir_reservation);
         // Remember the genome set this child was launched with — the truthful
         // catalog record for the relaunch decision (llama.cpp can't report it).
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
@@ -3927,6 +3996,111 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // Regression for #4069: failed signalling and unknown wait must not free
+    // pages while the actual owned process remains alive. All files are isolated.
+    #[tokio::test]
+    async fn retiring_page_owner_requires_observed_child_exit() {
+        use super::*;
+        const CHILD_ENV: &str = "CONTINUUM_PAGE_OWNER_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            use std::io::Read;
+            let mut byte = [0];
+            let _ = std::io::stdin().read(&mut byte);
+            return;
+        }
+        let root = tempfile::tempdir().expect("isolated pages");
+        let registry = tempfile::tempdir().expect("isolated registry");
+        let old = root.path().join("retirement-model--c32768");
+        let current = root.path().join("retirement-model--c49152");
+        let (reservation, ready) = PageDirReservation::take_and_create(&old);
+        assert!(ready);
+        std::fs::create_dir_all(&current).expect("current directory");
+        std::fs::write(old.join("page"), b"owned").expect("owned page");
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "inference::llama_server::tests::retiring_page_owner_requires_observed_child_exit",
+            ])
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW: fixture never opens a console.
+        let mut child = command.spawn().expect("owned fixture child");
+        let pid = child.id().expect("running child PID");
+        let input = child.stdin.take().expect("child input held open");
+        assert!(child.try_wait().expect("child status").is_none());
+        let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
+        *process.child.lock().expect("fixture child lock") = Some(child);
+        *process.retained_page_dir.lock() = Some(reservation);
+        process.kill_child_with(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected signal failure",
+            ))
+        });
+        drop(process); // A failed signal followed by owner Drop must retain the child.
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            guard.collect_exited_with(|_| Err(std::io::Error::other("injected unknown status")));
+            assert!(guard
+                .retiring
+                .iter()
+                .any(|owner| owner.child.id() == Some(pid)));
+            assert!(guard.reservations.contains(&old));
+        }
+        assert_eq!(
+            sweep_stale_page_generations_guarded_in(&current, registry.path()),
+            Some(0)
+        );
+        assert!(old.join("page").is_file());
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            let index = guard
+                .retiring
+                .iter()
+                .position(|owner| owner.child.id() == Some(pid))
+                .expect("owned child");
+            let dir = guard.retiring[index].reserved_dir.take();
+            assert!(
+                guard.has_unknown_retiring_dir(),
+                "missing directory evidence must close the sweep gate"
+            );
+            guard.retiring[index].reserved_dir = dir;
+        }
+        // Keep the reservation listed while awaiting the fixture outside the lock.
+        let mut owner = {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            let index = guard
+                .retiring
+                .iter()
+                .position(|owner| owner.child.id() == Some(pid))
+                .expect("retained child");
+            guard.retiring.swap_remove(index)
+        };
+        drop(input);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), owner.child.wait())
+            .await
+            .expect("fixture exits after stdin closes")
+            .expect("observed exit");
+        assert!(status.success());
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            guard.retiring.push(owner);
+            guard.collect_exited();
+            assert!(!guard.reservations.contains(&old));
+        }
+        assert_eq!(
+            sweep_stale_page_generations_guarded_in(&current, registry.path()),
+            Some(1)
+        );
+        assert!(!old.exists());
+    }
+
     // what this catches: a debug llama-server hosting a lane silently (BigMama's
     // 5090 served one for a day, 2026-09-04) — the door reads the server's own
     // warning line; a release version line passes.
@@ -5218,7 +5392,7 @@ mod tests {
                 "B's reservation must not land while A holds the guard"
             );
             // A's census saw no reservation for B's dir → A deletes it under the guard.
-            let protect: Vec<PathBuf> = guard.iter().cloned().collect();
+            let protect: Vec<PathBuf> = guard.reservations.iter().cloned().collect();
             assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 1);
             assert!(!b_dir.exists(), "the stale generation is gone");
         }
@@ -5230,21 +5404,29 @@ mod tests {
             .expect("B reserved after A released");
         assert!(ready && b_dir.is_dir(), "B's dir was created after its reservation");
         assert!(b_res.is_held());
-        assert!(PAGE_DIR_GUARD.lock().iter().any(|d| d == &b_dir), "B is protected from here on");
+        assert!(
+            PAGE_DIR_GUARD
+                .lock()
+                .reservations
+                .iter()
+                .any(|d| d == &b_dir),
+            "B is protected from here on"
+        );
         // A second sweep now, with the guard's contents as the protect set, keeps B's dir.
-        let protect: Vec<PathBuf> = PAGE_DIR_GUARD.lock().iter().cloned().collect();
+        let protect: Vec<PathBuf> = PAGE_DIR_GUARD.lock().reservations.iter().cloned().collect();
         assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 0);
         assert!(b_dir.is_dir());
     }
 
     //  (b) the handoff (record written + reservation dropped) is ONE critical section:
-    //      censuses hammering the guard WHILE the handoff runs observe the lane in the
-    //      reservations or in the records, never in neither. The registry is a temp
+    //      concurrent censuses and ordered observations on both sides see the
+    //      reservation or record, never neither. The registry is a temp
     //      dir (the test seam), never the canonical `~/.continuum/run/lanes/`.
     #[test]
     fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() {
         use crate::inference::lane_registry::{records_checked_in, LaneRecord, LaneRole};
-        use std::sync::{Arc, Barrier};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
         let root = tempfile::tempdir().expect("tempdir");
         let registry = tempfile::tempdir().expect("tempdir");
         let b_dir = root.path().join("handoff-model--c32768");
@@ -5258,20 +5440,19 @@ mod tests {
             lanes: 1,
             page_dir: Some(b_dir.clone()),
         };
-        let start = Arc::new(Barrier::new(2));
+        let (before_tx, before_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let reg = registry.path().to_path_buf();
         let dir = b_dir.clone();
-        let start_c = Arc::clone(&start);
-        // The census side: contend for the guard while the handoff runs, and record
-        // every observation. Each observation is taken UNDER the guard, so it is
-        // either strictly before or strictly after the handoff's critical section.
+        // Contend during handoff, and observe both sides explicitly. A fixed
+        // iteration count could exhaust before the handoff thread ran.
         let census = std::thread::spawn(move || {
             let mut seen_before = 0usize;
             let mut seen_after = 0usize;
-            // One census strictly BEFORE the handoff can start, then contend with it.
+            // Initial BEFORE census, concurrent censuses, then explicit AFTER.
             let observe = |seen_before: &mut usize, seen_after: &mut usize| {
                 let g = PAGE_DIR_GUARD.lock();
-                let in_res = g.iter().any(|d| d == &dir);
+                let in_res = g.reservations.iter().any(|d| d == &dir);
                 let in_rec = records_checked_in(&reg)
                     .expect("temp registry readable")
                     .iter()
@@ -5282,16 +5463,26 @@ mod tests {
                 if in_res { *seen_before += 1 } else { *seen_after += 1 }
             };
             observe(&mut seen_before, &mut seen_after);
-            start_c.wait();
-            for _ in 0..2_000 {
-                observe(&mut seen_before, &mut seen_after);
-                if seen_after > 50 { break; }
+            before_tx.send(()).expect("before census notification");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match done_rx.try_recv() {
+                    Ok(()) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        assert!(Instant::now() < deadline, "handoff completion deadline");
+                        observe(&mut seen_before, &mut seen_after);
+                        std::thread::yield_now();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => panic!("handoff owner disconnected"),
+                }
             }
+            observe(&mut seen_before, &mut seen_after);
             (seen_before, seen_after)
         });
-        start.wait();
+        before_rx.recv_timeout(Duration::from_secs(5)).expect("initial census completed");
         res.handoff_in(&rec, registry.path()).expect("handoff writes the temp registry");
         assert!(!res.is_held(), "a successful handoff releases the reservation");
+        done_tx.send(()).expect("handoff complete");
         let (before, after) = census.join().expect("census joins");
         assert!(before > 0 && after > 0, "censuses ran on both sides of the handoff: {before}/{after}");
         // And a FAILED handoff keeps the reservation: an unwritable registry dir.
