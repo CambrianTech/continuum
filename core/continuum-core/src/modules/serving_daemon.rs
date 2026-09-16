@@ -963,6 +963,23 @@ impl ServingDaemonModule {
             .map(|r| r.live_personas().len())
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no residents = the floor stands
         let residents = resident_lane_demand(self.lane_demand(), live_count, lane_demand_overridden());
+        // THE DECODE KNEE (2026-09-16): the roster is the demand, the measured decode
+        // curve is the ceiling. 16 minds on 8 lanes decoded 7 t/s per stream against a
+        // catalog 68 — a ten-times tax; with KV pages restoring from disk, fewer warm
+        // slots is the restore economy, not starvation. `inference::decode_knee`.
+        let active_model = crate::inference::llama_server::current_serving().active_model;
+        let knee = active_model.as_deref().and_then(crate::inference::decode_knee::knee_for);
+        let clamped = crate::inference::decode_knee::knee_lanes(residents, knee);
+        if clamped < residents {
+            crate::probe!(
+                class = "serving.decode_knee.clamped",
+                model = %active_model.unwrap_or_default(), // unwrap_or_default: a knee implies a model; the empty label is unreachable
+                roster = residents as u64,
+                knee = clamped as u64,
+                "lane demand clamped to the measured decode knee — the roster pages, the streams stay fast"
+            );
+        }
+        let residents = clamped;
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
