@@ -35,6 +35,12 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if opens_with_peer_id(t) {
         return Some("peer_voice");
     }
+    // A DISTINCT marker, not a widening of `peer_voice`: the wrapped form was
+    // invisible for as long as it was unnamed, and the probe class is how the next
+    // reader measures its rate instead of inferring it from a zero (card b8e2cb23).
+    if opens_with_wrapped_peer_id(t) {
+        return Some("peer_voice_wrapped");
+    }
     None
 }
 
@@ -190,24 +196,163 @@ fn has_namespaced_call_with_object(t: &str) -> bool {
 /// citizen's own reply. Checked by SHAPE, not against the room roster — a reply
 /// opening with any peer id is a rendered transcript line whoever it names, and
 /// keeping it roster-free means the gate cannot go quiet when the roster is late.
-fn opens_with_peer_id(t: &str) -> bool {
-    let Some(head) = t.get(..36) else { return false };
-    let uuid_shaped = head.len() == 36
-        && head.chars().enumerate().all(|(i, c)| match i {
+fn is_uuid_shaped(s: &str) -> bool {
+    s.len() == 36
+        && s.chars().enumerate().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
             _ => c.is_ascii_hexdigit(),
-        });
-    if !uuid_shaped {
+        })
+}
+
+fn opens_with_peer_id(t: &str) -> bool {
+    let Some(head) = t.get(..36) else { return false };
+    if !is_uuid_shaped(head) {
         return false;
     }
     // A bare id with nothing after it is not a transcript line; the colon is what
-    // makes it one. Allow the `[*<uuid>, …]` rendering's separators too.
+    // makes it one.
     matches!(t[36..].trim_start().chars().next(), Some(':'))
+}
+
+/// The same violation, behind a prefix the SUBSTRATE wrote.
+///
+/// `opens_with_peer_id` anchors the id at byte 0, so it recognises exactly one
+/// rendering — `<uuid>: text` — and any leading prefix defeats it. The prefixes
+/// that actually occur are not citizen inventions like the bracket dialects in
+/// [`opens_with_tool_envelope`]; they are delivery headers and occurrence-time
+/// markers this substrate emits, which the citizen then echoes along with the body.
+/// Measured on a qwen2.5-0.5b node (card b8e2cb23): of nine citizen lines in a
+/// post-deploy window, five carried a wrapped peer id and the byte-0 anchor caught
+/// none of them, while the probe read zero and invited the reading that citizens had
+/// simply stopped.
+///
+/// Two shapes occur, and they are disjoint — the id is either inside the header or
+/// after it:
+///
+/// ```text
+/// [Room message received during this turn; room <uuid>; peer <uuid>; event <uuid>]
+/// I've been reading my workspace…            <- the named peer's words, verbatim
+///
+/// [occurrence time unknown] <uuid>: 💭 Let me take stock honestly…
+/// ```
+///
+/// Both stay tied to strings this substrate itself writes (a bracketed span, and
+/// `peer <uuid>` within it) rather than guessing at citizen phrasing, because an
+/// open set of paraphrases is exactly what the module doc refuses to enumerate.
+fn opens_with_wrapped_peer_id(t: &str) -> bool {
+    let mut t = t;
+    // The wrappers NEST. The substrate emits its renderings stacked — a dated
+    // history line wrapping an undated one, `[occurred …] [occurrence time unknown]
+    // <uuid>: …` — and a citizen echoes the whole stack, so peeling exactly one
+    // layer leaves the majority of real traffic unrecognised. Measured on the
+    // post-deploy window (card b8e2cb23): one layer catches 16 of 37 lines, peeling
+    // catches 23, and the seven it adds cost ZERO false positives across 2,061 lines
+    // from every peer in 24h — each one is a stacked prefix, nothing else.
+    //
+    // Bounded rather than unbounded: the depth that occurs is small, and a fixed
+    // ceiling keeps this linear on adversarial input instead of trusting the shape
+    // of what a model might emit.
+    for _ in 0..MAX_WRAPPER_DEPTH {
+        if !t.starts_with('[') {
+            return false;
+        }
+        let Some(close) = t.find(']') else { return false };
+        let header = &t[1..close];
+        let body = t[close + 1..].trim_start();
+        if body.is_empty() {
+            // A header with nothing after it carries no one's voice.
+            return false;
+        }
+        // Shape 1: the header names the peer; the body is that peer's turn.
+        if header_names_a_peer(header) {
+            return true;
+        }
+        // Shape 2: the header is an aside and the transcript line follows it intact.
+        if opens_with_peer_id(body) {
+            return true;
+        }
+        // Neither — this layer was some other bracketed prefix. Peel and look again.
+        t = body;
+    }
+    false
+}
+
+/// How many stacked substrate wrappers to peel before giving up. Four covers every
+/// depth observed in live traffic with headroom; the point of the ceiling is that
+/// the loop stays bounded, not that deeper stacks are legitimate.
+const MAX_WRAPPER_DEPTH: usize = 4;
+
+/// A delivery header naming a peer, as this substrate renders it: `peer <uuid>`.
+/// Requiring the literal keyword — not merely "a uuid appears in the brackets" —
+/// keeps a citizen's own `[re: <room-uuid>] …` aside out of the predicate.
+fn header_names_a_peer(header: &str) -> bool {
+    let Some(at) = header.find("peer ") else { return false };
+    is_uuid_shaped(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the byte-0 anchor in `opens_with_peer_id`, which recognised
+    // `<uuid>: text` and nothing else. Sigurd posted b6dcfc8e's turn carrying this
+    // delivery header; difflib against the store puts it at ratio 0.932 with an exact
+    // 60-char prefix, i.e. verbatim republication. Fixtured from that message.
+    // regression for card b8e2cb23.
+    #[test]
+    fn a_delivery_header_does_not_hide_another_peers_turn() {
+        let observed = "[Room message received during this turn; room 3be59578-7f1d-5d78-8b17-1eb0834b4643; peer b6dcfc8e-98ab-4c1e-9f3a-1d441720621b; event 11f81a8f-0c22-4a3e-9d55-3b6a0f1e7c84]\nI've been reading my workspace and reviewing the code for a while now.";
+        assert_eq!(is_not_speech(observed), Some("peer_voice_wrapped"));
+    }
+
+    // what this catches: the second wrapper, where the id sits AFTER the bracket
+    // rather than inside it — so the two shapes need different clauses and one fix
+    // does not imply the other. Fixtured from the observed line.
+    #[test]
+    fn an_occurrence_time_aside_does_not_hide_a_transcript_line() {
+        let observed = "[occurrence time unknown] 207de8bf-f3b1-407d-9789-09fc0b29f14f: Let me take stock honestly.";
+        assert_eq!(is_not_speech(observed), Some("peer_voice_wrapped"));
+    }
+
+    // what this catches: STACKED wrappers, which are the majority shape in live
+    // traffic and which a single peel misses entirely. The substrate renders a dated
+    // history line wrapping an undated one; the citizen echoes both. Fixtured from an
+    // observed line. Measured: peeling takes the window from 16 of 37 to 23 of 37 and
+    // costs zero false positives across 2,061 lines from every peer in 24h.
+    #[test]
+    fn stacked_wrappers_do_not_hide_a_peers_turn() {
+        let observed = "[occurred 2026-09-16T08:45:13.707Z] [occurrence time unknown] cf6b4df6-ab13-4fd8-81fb-bcb115215468: Let me take stock honestly.";
+        assert_eq!(is_not_speech(observed), Some("peer_voice_wrapped"));
+    }
+
+    // what this catches: the bound. Peeling must terminate on a pathological stack
+    // rather than scanning forever, and a stack that never reaches a peer id is not
+    // peer voice however deep it goes.
+    #[test]
+    fn peeling_is_bounded_and_a_deep_stack_without_a_peer_is_speech() {
+        let deep = "[a] [b] [c] [d] [e] [f] I am still just talking.";
+        assert_eq!(is_not_speech(deep), None);
+    }
+
+    // what this catches: the over-match this predicate invites. A citizen may open
+    // with her own bracketed aside that happens to quote a room id — brackets plus a
+    // uuid is NOT the signal; the substrate's `peer <uuid>` keyword is. Without
+    // `header_names_a_peer` requiring that keyword, this line is silently refused and
+    // the citizen loses a turn to a gate that was meant to protect her.
+    #[test]
+    fn a_citizens_own_bracketed_aside_quoting_a_room_id_is_still_speech() {
+        let observed = "[re: 3be59578-7f1d-5d78-8b17-1eb0834b4643] I think the board is stale, and I want to say why.";
+        assert_eq!(is_not_speech(observed), None);
+    }
+
+    // what this catches: a header with nothing after it. Nobody's voice is being worn,
+    // so refusing it would cost a turn for no violation — the same reason
+    // `opens_with_peer_id` requires the colon rather than accepting a bare id.
+    #[test]
+    fn a_delivery_header_with_no_body_carries_no_ones_voice() {
+        let observed = "[Room message received during this turn; peer b6dcfc8e-98ab-4c1e-9f3a-1d441720621b]";
+        assert_eq!(is_not_speech(observed), None);
+    }
 
     // what this catches: the exact reply Saoirse posted to the room on 2026-09-05 —
     // a bracketed tool envelope as her entire spoken turn. Fixtured verbatim.
