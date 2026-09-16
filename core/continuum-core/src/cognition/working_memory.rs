@@ -893,7 +893,7 @@ impl WorkingMemory {
             None => "with an unknown save time".to_string(),
         };
         let pending = if snap.interrupted_dispatches.is_empty() {
-            "No pending dispatches were recorded in that checkpoint.".to_string()
+            crate::cognition::framing_echo::RESUMED_NO_PENDING.to_string()
         } else {
             format!(
                 "Dispatches recorded as pending at that save: {}. Their completion and side effects are unknown.",

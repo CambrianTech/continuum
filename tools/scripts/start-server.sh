@@ -148,6 +148,9 @@ case "$(uname -sm)" in
     ;;
 esac
 
+# Warm builds prepare artifacts only. Runtime reconciliation belongs to launch:
+# it may reap engines or restart AIRC and must never run while the old core serves.
+if [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then
 # ── llama-server (the inference engine the CORE owns) ────────────────
 # llama.cpp's `llama-server` serves ONE model on /v1; the core's
 # ServingDaemonModule OWNS its launch — "switch model" is a process relaunch
@@ -621,6 +624,8 @@ if [ -z "$AIRC_DAEMON_SOCKET" ]; then
   fi
 fi
 
+fi # runtime reconciliation (not build-only)
+
 # ── Socket ───────────────────────────────────────────────────────────
 CONTINUUM_SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
 
@@ -844,53 +849,10 @@ if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge
   echo "⚠ forge-custodian still missing after swept-cache rebuild — genome gene-conversion unavailable (core still launches)" >&2
 fi
 
-# WINDOWS: stop the old core BEFORE building it.
-#
-# The build-first ordering below is Unix-shaped. Only there can you replace the
-# FILE of a running executable — unlink leaves the running inode, so the old core
-# keeps serving out of memory while cargo writes the new binary. Windows LOCKS a
-# running image, so building over a live core fails with
-#
-#   error: failed to remove file `...\continuum-core-server.exe`
-#   Caused by: Access is denied. (os error 5)
-#
-# and the FATAL below aborts the whole start. This is not a `continuum reboot`
-# bug — it is in the shared build path, so `npm start` has it too: on Windows the
-# core could never be rebuilt while a core was running. That is the real scope of
-# "start/reboot/pull never worked on Windows". Measured on BIGMAMA 2026-08-05,
-# reproduced both from `continuum reboot` AND from a standalone run of this
-# script, which is what proved it was not reboot-specific.
-#
-# So on Windows: stop first, then build, then launch. Zero downtime is an explicit
-# NON-goal here — restarts are commonplace, stop-build-launch is the model, and
-# the grid absorbs the churn. Unix keeps the overlapping build for its free ~0
-# downtime. Loud either way: a silent stop would look like a hang during a long
-# compile.
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*)
-    if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
-      echo "▶ Windows: stopping the running core before rebuilding it — a running .exe is"
-      echo "  locked, so build-then-swap cannot work here (downtime is expected, not a fault)"
-      taskkill //F //T //IM continuum-core-server.exe >/dev/null 2>&1 || true
-      # A dead pid is not a closed handle. Poll until the image is actually
-      # released; building one tick early reproduces the exact os error 5.
-      for _ in $(seq 1 60); do
-        tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null \
-          | grep -qi continuum-core-server || break
-        sleep 0.5
-      done
-      if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
-        echo "✗ FATAL: core still running after 30s — refusing to build over a locked image" >&2
-        echo "  (that path fails with os error 5 and silently leaves you on the OLD binary)" >&2
-        exit 1
-      fi
-    fi
-    ;;
-esac
-
-# Build the server binary BEFORE stopping the old core, so the running core keeps
-# serving through the (cached, fast) compile and downtime is ~0. (Unix ordering —
-# see the Windows stop-first block above.)
+# Build BEFORE any teardown on every platform. A Windows executable mapped from
+# another install slot does not lock this Cargo output. If this exact output is
+# mapped, let Cargo fail: never kill a serving core (or its children) to unlock it.
+# The guarded deploy caller owns the later stop and verified artifact handoff.
 echo "▶ building continuum-core-server"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
   || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
@@ -908,6 +870,7 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFIL
 # launch a lie. [[verify-the-build-actually-deployed]], [[fallbacks-are-illegal-fail-loud]].
 CORE_SRC_DIR="$(dirname "$CORE_MANIFEST")/src"
 CORE_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-core-server"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) CORE_BIN="$CORE_BIN.exe" ;; esac
 # #296: THE incident bin. A swept debug/ dir let the build above print
 # "Finished" with no binary on disk, and `exec "$CORE_BIN"` died at the very
 # end while the deploy read as green. Restore it HERE — before the #194
@@ -949,6 +912,19 @@ if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" 
 fi
 
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  # The caller must launch THIS artifact, not guess our profile/target directory
+  # or rerun the source launcher after stopping the old core. Publish only after
+  # the build and freshness checks succeed. Older callers need no receipt.
+  if [ -n "${CONTINUUM_BUILD_RECEIPT:-}" ]; then
+    artifact="$CORE_BIN"
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*)
+        artifact="$(cygpath -am "$artifact")"
+        ;;
+      *) artifact="$(cd "$(dirname "$artifact")" && pwd -P)/$(basename "$artifact")" ;;
+    esac
+    printf '%s\n' "$artifact" > "$CONTINUUM_BUILD_RECEIPT"
+  fi
   echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
   exit 0
 fi

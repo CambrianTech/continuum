@@ -5831,6 +5831,7 @@ mod tests {
             model: "qwen3-27b".into(),
             context_window: 25_075,
             lanes: 4,
+            page_dir: None,
         }
     }
 

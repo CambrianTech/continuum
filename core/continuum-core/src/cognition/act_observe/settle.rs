@@ -66,7 +66,7 @@ pub fn drive_to_settle(
     max_acts: usize,
     framing: TurnFraming,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + '_ {
-    drive_with_input(cycle, burst.into(), max_acts, framing, None)
+    drive_with_input(cycle, burst.into(), max_acts, framing, None, None)
 }
 
 /// The live driver leases its existing conversation between steps. No second
@@ -78,9 +78,22 @@ pub fn drive_to_settle_with_input<'a>(
     framing: TurnFraming,
     conversation: &'a mut dyn crate::persona::service_loop::PersonaConversation,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
+    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), None)
+}
+
+/// A live card-linked turn uses the same driver with its own credit capture.
+/// The optional owner never changes the activity's decision or assigns a verdict.
+pub(crate) fn drive_to_settle_with_credit<'a>(
+    cycle: &'a WorkspaceCycle,
+    burst: Burst,
+    max_acts: usize,
+    framing: TurnFraming,
+    conversation: &'a mut dyn crate::persona::service_loop::PersonaConversation,
+    credit: Option<&'a mut crate::persona::training_producer::TurnCreditCapture>,
+) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
     // nests its state in every live/eval caller and inflates future layout depth.
-    drive_with_input(cycle, burst, max_acts, framing, Some(conversation))
+    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), credit)
 }
 
 async fn drive_with_input(
@@ -89,14 +102,33 @@ async fn drive_with_input(
     max_acts: usize,
     framing: TurnFraming,
     conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
+    mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
-    let settled = settle_to_outcome(cycle, burst, max_acts, framing, conversation).await;
+    let settled = settle_to_outcome(
+        cycle,
+        burst,
+        max_acts,
+        framing,
+        conversation,
+        credit.as_deref_mut(),
+    )
+    .await;
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
             crate::identity::PeerId::from_uuid(body.persona_id),
             &settled,
         );
+    }
+    if let Some(capture) = credit {
+        capture
+            .record(
+                &settled.turn_acts,
+                &settled.generation_receipts,
+                settled.spoken.as_deref(),
+                true,
+            )
+            .await;
     }
     settled
 }
@@ -109,6 +141,7 @@ async fn settle_to_outcome(
     max_acts: usize,
     mut framing: TurnFraming,
     mut conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
+    mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
     // The turn's room comes FROM the burst — witnessed non-nil at construction,
     // so the drive can no longer disagree with the rendered header (#425).
@@ -594,12 +627,10 @@ async fn settle_to_outcome(
             SettleStep::Acted { calls, intent } => {
                 acts += 1;
                 turn_acts.push((intent.clone(), calls.clone()));
-                // A seam, not policy: the turn's owner decides what an act batch means
-                // (card 6de7f57a — long turns stage their chain before they end).
-                if crate::persona::training_producer::is_stage_point(turn_acts.len()) {
-                    if let Some(body) = cycle.acting() {
-                        crate::persona::training_producer::on_act_batch(body.persona_id, &turn_acts);
-                    }
+                if let Some(capture) = credit.as_deref_mut() {
+                    capture
+                        .record(&turn_acts, &generation_receipts, None, false)
+                        .await;
                 }
                 narrations_since_act = 0;
                 collect_touched_paths(&mut touched, &calls);

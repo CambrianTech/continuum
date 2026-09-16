@@ -16,8 +16,10 @@ be replicated by downloading the GGUF.
 
 8 of 20 solo misses in the audited rounds were reviewer-catchable (40%): wrong-file
 patches, tests never run, obvious regressions a second reader flags in one pass. A
-cross-review gate that converts even half of those is +20% resolve rate — larger
-than any model swap on the table.
+cross-review gate that converts half of those would recover four misses. That is
+20% of the audited misses, not a 20-percentage-point increase in overall resolve
+rate; the latter requires the full attempted-instance denominator. This motivates
+the experiment, but does not establish a team advantage.
 
 ## 2. Conditions (all: same model, same engine build, same instances, same seed,
 green-env coverage map, provenance-stamped verdicts)
@@ -94,4 +96,54 @@ genome-distance as the cold-start prior — teams that learn who they are.
 
 ## 7. Amendment log
 
-- (none yet)
+### 2026-09-15 — ordinary-work evidence and attribution
+
+This amendment adds an operational preflight and clarifies attribution and score
+accounting. It reports no new benchmark result. Any earlier run keeps its original
+protocol version; do not relabel an already observed result as preregistered under
+this amendment.
+
+Before claiming a healthy team, demonstrate this chain through an ordinary
+activity, using the same work and review surfaces that benchmarks adapt:
+
+| Boundary | Required evidence |
+|---|---|
+| A colleague does the work | Citizen identity, actual serving model/provider, node and build, card/claim, and submitted artifact identity. Distinguish resident persona contributions from cloud-agent contributions. |
+| Review reaches the colleague | The review event ID appears in received input and the context submitted for an actual turn. Transport ACK, replay deduplication and enqueue receipts alone do not prove this. |
+| Review changes the result | Bind the review to an immutable submission/artifact revision; retain the initial result, review, revision and independent validation. A mutable branch approval or closed card is insufficient. |
+| Experience survives | Retained turn records identify the actual generation requests and selected work revision. A restart or handoff preserves attribution to the original author. |
+| Learning accepts the experience | The training destination acknowledges the exact selected revision durably. Refusals and uncertain acknowledgements preserve evidence for retry. Acceptance is distinct from training completion. |
+| Learning improves capability | A trained artifact has lineage, an explicit adoption receipt and a held-out comparison against the recorded baseline. Retained memory, queued examples and a successful training job alone do not establish improvement. |
+
+Use the first four boundaries as the ordinary-team preflight. The last two gate a
+learning claim; they do not retroactively authorize training on evaluation tasks.
+Run the same activity through restart and peer handoff, and show that an unknown
+or failed review remains unknown or failed. Observe the colleague's actual next
+input and actions before attributing a failure to reasoning.
+
+The current investigation found missing generation receipts, an ORM-envelope
+decoding error that skipped staged credit, and stream noise ahead of complete
+messages in persona intake. Regression tests and merged fixes are intermediate
+evidence. A deployed build must pass the chain above before we call the team
+healthy. Ordinary work also needs an authenticated review tied to an exact
+submission; card lifecycle state cannot supply that authority.
+
+#### Comparable budgets and honest denominators
+
+- Record the shared task set, model/engine builds, hardware, time and token/tool
+  budgets, stopping rules and allowed escalation before the comparison. Charge
+  all teammates' work to the team budget; report cloud assistance separately.
+- Keep every attempted task in the run ledger, including timeouts, infrastructure
+  faults and failed reviews. Section 5's pause-and-repair rule does not remove
+  losses from the original run. Publish repaired reruns as new runs with their
+  changed build and retry cost; rerun the affected comparison conditions.
+- Report C1 and C2 separately. If selecting the better condition for the primary
+  claim, specify the selection procedure and uncertainty treatment beforehand;
+  the best observed result alone is not evidence beyond the noise floor.
+- Keep training and held-out evaluation corpora distinct. Practice and benchmark
+  activities may teach skills, but exposure to a scored task or its solution must
+  be recorded and excluded from claims of generalization to unseen tasks.
+- Report collaboration gain, learning gain and extra-hardware gain separately.
+  Parallel attempts, more compute, better cache reuse and learned coordination
+  are useful results with different explanations. Pair the comparisons and
+  retain the per-task receipts so others can reproduce the claimed mechanism.

@@ -227,8 +227,8 @@ pub async fn apply_act(
         // something DIFFERENT" tail was workflow steering. The short-circuit
         // above is what actually protects the substrate.
         let nudge = format!(
-            "I have now issued {names} {n} times this turn — the result is already in my \
-             working memory above; the identical call returns nothing new."
+            "I have now issued {names} {n} {}",
+            crate::cognition::framing_echo::REPEAT_CALL_TAIL
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(

@@ -799,7 +799,25 @@ pub fn kv_page_dir(model_id: &str, per_slot_ctx: u32) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
         .collect();
-    kv_pages_root().join(format!("{sanitized}--c{per_slot_ctx}"))
+    kv_pages_root().join(format!("{sanitized}--c{}", page_geometry_key(per_slot_ctx)))
+}
+
+/// The per-slot window is derived from LIVE memory at every plan, so it jitters by
+/// a few hundred tokens between relaunches (measured 2026-09-15 on the M5:
+/// 59171 → 58997 → 58273 → 57758 → 57112 in five hours). Keying the page dir on
+/// the exact number minted a NEW generation on every relaunch and swept the
+/// previous one — every resident's page gone, every eviction a 24–66 s re-prefill
+/// while a restore of the same state costs ~0.36 s. The key is the window rounded
+/// DOWN to [`PAGE_GEOMETRY_STEP`]: relaunches within a step share pages. A page
+/// restores into any slot large enough to hold it; the rare page from a slightly
+/// larger slot that no longer fits fails the restore once (`note_page_lost`) and
+/// that turn re-prefills — the same cost as today's worst case, paid rarely.
+/// 16k: the five-hour band above (57112–59171) is one key; the 8-lane band
+/// (25104–26531) another; a 4096 step still split the measured jitter.
+pub const PAGE_GEOMETRY_STEP: u32 = 16_384;
+
+pub fn page_geometry_key(per_slot_ctx: u32) -> u32 {
+    (per_slot_ctx / PAGE_GEOMETRY_STEP).max(1) * PAGE_GEOMETRY_STEP
 }
 
 /// The root every geometry dir lives under — the ONE path the disk reporter
@@ -817,16 +835,24 @@ pub fn kv_pages_root() -> PathBuf {
 /// geometry is gone), so the spawn — the one place that knows the new truth —
 /// deletes them. This is the eviction story `disk_eviction` records for
 /// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
-pub fn sweep_stale_page_generations(current: &Path) {
+pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usize {
+    let mut swept = 0usize;
     let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
     else {
-        return;
+        return 0;
     };
+    // Protected dirs are siblings in this same root by construction, so compare the
+    // DIRECTORY NAME, never the full path: a registry path deserialized from an older
+    // core (a different HOME resolution, macOS `/Users` vs `/private/var`, a trailing
+    // component) would miss on PathBuf equality and the miss would look exactly like a
+    // correct sweep — the five-hour silent failure this fix exists to end (Cormac's
+    // review of #4069, finding 1).
+    let protected_names: Vec<&std::ffi::OsStr> = protect.iter().filter_map(|p| p.file_name()).collect();
     let Some((model_prefix, _)) = name.rsplit_once("--c") else {
-        return;
+        return 0;
     };
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return;
+        return 0;
     };
     for entry in entries.flatten() {
         let entry_name = entry.file_name();
@@ -838,15 +864,257 @@ pub fn sweep_stale_page_generations(current: &Path) {
             && entry_name[model_prefix.len()..].starts_with("--c")
         {
             let stale = entry.path();
+            if protected_names.iter().any(|p| *p == entry.file_name().as_os_str()) {
+                // Another live lane's pages: a relaunch that later fails leaves that
+                // lane serving, and its residents restoring from here.
+                continue;
+            }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
+            swept += usize::from(removed);
             crate::probe!(
                 class = "inference.kv_page.generation_swept",
                 dir = %stale.display(),
                 removed,
+                protected = protected_names.len() as u64,
                 "stale KV page generation removed — its geometry no longer exists to restore into",
             );
         }
     }
+    swept
+}
+
+/// THE PAGE-DIR GUARD (Astra's re-review of #4069): one mutex owns the reservation
+/// list AND is held across the sweep's census + deletion AND across the
+/// reservation→record handoff. So, for any two lanes A (sweeping) and B (starting):
+///   - B's reservation insert and A's census+delete are mutually exclusive — B is
+///     either fully in the census or fully after the deletion (in which case the
+///     dir A deleted was unowned by definition, and B creates it fresh);
+///   - B's "write the record, then drop the reservation" is one critical section,
+///     so a census never lands between the two and finds B in neither list.
+/// A cloned list outside the lock was the time-of-check/time-of-use hole. Held
+/// briefly, never across an await; `parking_lot` so a panic never poisons it.
+/// Process-local by design: two CORES spawning the same model at once is the
+/// split-brain class (card 27fd5870), not this seam.
+static PAGE_DIR_GUARD: parking_lot::Mutex<PageDirState> = parking_lot::Mutex::new(PageDirState {
+    reservations: Vec::new(),
+    retiring: Vec::new(),
+});
+
+struct PageDirState {
+    reservations: Vec<PathBuf>,
+    retiring: Vec<RetiringPageOwner>,
+}
+
+struct RetiringPageOwner {
+    child: tokio::process::Child,
+    // None means the registry carried the directory, but its current readability
+    // and OS identity lookup are not proof that this owned child has exited.
+    reserved_dir: Option<PathBuf>,
+}
+
+impl PageDirState {
+    fn has_unknown_retiring_dir(&self) -> bool {
+        self.retiring
+            .iter()
+            .any(|owner| owner.reserved_dir.is_none())
+    }
+
+    fn collect_exited(&mut self) {
+        self.collect_exited_with(tokio::process::Child::try_wait);
+    }
+
+    fn collect_exited_with(
+        &mut self,
+        mut poll: impl FnMut(
+            &mut tokio::process::Child,
+        ) -> std::io::Result<Option<std::process::ExitStatus>>,
+    ) {
+        let mut index = 0;
+        while index < self.retiring.len() {
+            match poll(&mut self.retiring[index].child) {
+                Ok(Some(_)) => {
+                    let owner = self.retiring.swap_remove(index);
+                    if let Some(dir) = owner.reserved_dir {
+                        if let Some(i) = self.reservations.iter().position(|d| d == &dir) {
+                            self.reservations.swap_remove(i);
+                        }
+                    }
+                }
+                Ok(None) | Err(_) => index += 1,
+            }
+        }
+    }
+}
+
+fn retire_page_owner(
+    child: tokio::process::Child,
+    reservation: Option<PageDirReservation>,
+    signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
+) {
+    let mut child = child;
+    let mut guard = PAGE_DIR_GUARD.lock();
+    if let Err(e) = signal(&mut child) {
+        tracing::warn!(error = %e, "could not signal llama-server child; retaining page ownership until verified exit");
+    }
+    // Disarm RAII while holding the same guard: no unlocked interval, and no
+    // recursive lock in PageDirReservation::drop. The reservation stays listed.
+    let reserved_dir = reservation.and_then(|mut reservation| reservation.0.take());
+    guard.retiring.push(RetiringPageOwner {
+        child,
+        reserved_dir,
+    });
+    guard.collect_exited();
+}
+
+/// RAII reservation of a page dir for a spawn in flight, taken the instant the dir is
+/// decided — BEFORE it is created or used ([`Self::take_and_create`]), so no sibling
+/// sweep can delete it between `mkdir` and the reservation. Released by
+/// [`Self::handoff`] once the lane's registry record carries the dir, or on drop if
+/// the spawn unwinds first. A lane whose record write FAILED keeps its reservation
+/// for the CHILD's lifetime: the spawn parks it beside `child` on the process
+/// ([`LlamaServerProcess::retained_page_dir`]) and retirement releases it only
+/// after the owned child reports exit — so
+/// registry persistence failing never unprotects a running lane, and a `serve()`
+/// that returns (or is cancelled) does not drop the protection its child still needs.
+struct PageDirReservation(Option<PathBuf>);
+
+impl PageDirReservation {
+    fn take(dir: &Path) -> Self {
+        PAGE_DIR_GUARD.lock().reservations.push(dir.to_path_buf());
+        Self(Some(dir.to_path_buf()))
+    }
+
+    /// The production ordering, in one place so the regression can exercise it:
+    /// reserve FIRST, then create. Returns the reservation and whether the dir is a
+    /// directory now (`false` = mkdir failed; the paging tier is amputated for this
+    /// serve and the caller neither trims nor sweeps).
+    fn take_and_create(dir: &Path) -> (Self, bool) {
+        let reservation = Self::take(dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            tracing::warn!(
+                probe_class = "inference.kv_page.dir_failed",
+                dir = %dir.display(),
+                error = %e,
+                "could not create the KV page dir — the lane still serves, but rotation \
+                 pays full re-prefill (the paging tier is amputated for this serve)"
+            );
+        }
+        let ready = std::fs::metadata(dir).is_ok_and(|m| m.is_dir());
+        (reservation, ready)
+    }
+
+    /// Write the record and release the reservation under ONE guard: a census in
+    /// another lane sees the reservation or the record, never neither. A failed
+    /// record write keeps the reservation (returned `Err`, reservation intact).
+    fn handoff(
+        &mut self,
+        rec: &crate::inference::lane_registry::LaneRecord,
+    ) -> std::io::Result<()> {
+        let dir = crate::inference::lane_registry::lanes_dir().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir for lane registry")
+        })?;
+        self.handoff_in(rec, &dir)
+    }
+
+    /// [`Self::handoff`] against an explicit registry dir — the test seam, so a
+    /// regression never writes the canonical `~/.continuum/run/lanes/`.
+    fn handoff_in(
+        &mut self,
+        rec: &crate::inference::lane_registry::LaneRecord,
+        registry_dir: &Path,
+    ) -> std::io::Result<()> {
+        let mut guard = PAGE_DIR_GUARD.lock();
+        crate::inference::lane_registry::record_in(registry_dir, rec)?;
+        if let Some(dir) = self.0.take() {
+            if let Some(i) = guard.reservations.iter().position(|d| d == &dir) {
+                guard.reservations.swap_remove(i);
+            }
+        }
+        Ok(())
+    }
+
+    /// Still protecting a dir (the record write failed, or no handoff yet)?
+    fn is_held(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl Drop for PageDirReservation {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            if let Some(i) = guard.reservations.iter().position(|d| d == &dir) {
+                guard.reservations.swap_remove(i);
+            }
+        }
+    }
+}
+
+/// Census + destructive sweep under the guard: the protected set (live records ∪
+/// reservations) is computed and consumed while no reservation can be inserted or
+/// handed off. `None` = nothing swept: the inventory was incomplete (a live record
+/// without a dir) or could not be established at all (an unreadable or malformed
+/// record — the census fails CLOSED; a lane the sweep cannot see is a lane whose
+/// pages it must not delete).
+fn sweep_stale_page_generations_guarded(current: &Path) -> Option<usize> {
+    let registry = crate::inference::lane_registry::lanes_dir()?;
+    sweep_stale_page_generations_guarded_in(current, &registry)
+}
+
+/// [`sweep_stale_page_generations_guarded`] against an explicit registry dir (the
+/// test seam).
+fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) -> Option<usize> {
+    let mut guard = PAGE_DIR_GUARD.lock();
+    guard.collect_exited();
+    if guard.has_unknown_retiring_dir() {
+        crate::probe!(
+            class = "inference.kv_page.sweep_skipped",
+            reason = "owned child exit unproven and page directory unknown",
+            retiring_children = guard.retiring.len(),
+            "stale-generation sweep skipped until owned child exit is observed"
+        );
+        return None;
+    }
+    let records = match crate::inference::lane_registry::records_checked_in(registry_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::probe!(
+                class = "inference.kv_page.sweep_skipped",
+                reason = "lane registry unreadable",
+                error = e.to_string().as_str(),
+                "stale-generation sweep skipped — the live-lane inventory could not be established"
+            );
+            return None;
+        }
+    };
+    let (mut protect, complete) =
+        page_dirs_of(records, crate::inference::lane_process::is_llama_server);
+    protect.extend(guard.reservations.iter().cloned());
+    if !complete {
+        return None;
+    }
+    Some(sweep_stale_page_generations(current, &protect))
+}
+
+/// The pure half of the guarded census: of `records`, those `alive` contribute their
+/// dir; a live record WITHOUT one makes the inventory incomplete; dead records are
+/// ignored whether or not they carry a dir.
+pub fn page_dirs_of(
+    records: Vec<crate::inference::lane_registry::LaneRecord>,
+    alive: impl Fn(u32) -> bool,
+) -> (Vec<PathBuf>, bool) {
+    let mut dirs = Vec::new();
+    let mut complete = true;
+    for rec in records {
+        if !alive(rec.pid) {
+            continue;
+        }
+        match rec.page_dir {
+            Some(d) => dirs.push(d),
+            None => complete = false,
+        }
+    }
+    (dirs, complete)
 }
 
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
@@ -2091,6 +2359,10 @@ pub struct LlamaServerProcess {
     /// re-establishes the genome (core owns the lifecycle, so this is truthful in
     /// the steady state).
     served_adapters: Arc<StdMutex<Vec<String>>>,
+    /// The page-dir reservation of the CURRENT child when its registry record could
+    /// not be written — kept until the owned child reports exit
+    /// (see [`PageDirReservation`]). Empty when the record carries the dir.
+    retained_page_dir: Arc<parking_lot::Mutex<Option<PageDirReservation>>>,
     /// True for THE host's live persona lane (pins the canonical port, writes the
     /// reclaim pidfile, reaps a crashed predecessor's orphan). False for an
     /// [`EphemeralServingLane`]'s `with_root` process, which owns its own scanned
@@ -2168,6 +2440,7 @@ impl LlamaServerProcess {
             client,
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
@@ -2194,6 +2467,7 @@ impl LlamaServerProcess {
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
@@ -2205,21 +2479,19 @@ impl LlamaServerProcess {
         }
     }
 
-    /// Kill the currently-running child, if any. Idempotent.
+    /// Signal the owned child, retaining its pages until its handle proves exit.
     fn kill_child(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            // start_kill is non-blocking; the OS reaps. We're replacing it, so
-            // we don't await the exit — the new spawn binds the same port once
-            // the old one releases it (readiness poll absorbs the gap).
-            // A kill that FAILS is why the successor will find the port still bound —
-            // the one fact the next bring-up failure needs and could never see before.
-            if let Err(e) = child.start_kill() {
-                tracing::warn!(
-                    error = %e,
-                    "could not signal the llama-server child to die — the port may stay \
-                     bound and the next spawn may fail to bind it"
-                );
-            }
+        self.kill_child_with(tokio::process::Child::start_kill);
+    }
+
+    fn kill_child_with(
+        &self,
+        signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
+    ) {
+        let child = self.child.lock().unwrap().take(); // unwrap: poisoned = prior panic while mutating the owned child
+        if let Some(child) = child {
+            let reservation = self.retained_page_dir.lock().take();
+            retire_page_owner(child, reservation, signal);
         }
     }
 
@@ -2368,32 +2640,10 @@ impl Default for LlamaServerProcess {
 
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
-        // Did we OWN the child we're about to kill? Capture the pid + ownership
-        // before `kill_child` takes it. Ownership is the difference between a core
-        // that SPAWNED its server and one that ADOPTED a persisting one
-        // (`AlreadyServing` → never spawned → no child). Only the spawner kills the
-        // server on the way out.
-        let owned_pid = self.child.lock().unwrap().as_ref().and_then(|c| c.id());
-        let owned_child = owned_pid.is_some();
         self.kill_child();
-        // Remove this lane's registry record — for BOTH live and ephemeral — since
-        // we just killed the process it named. A crash skips Drop, which is exactly
-        // the case the record survives for (the next boot's `sweep_orphans` reaps
-        // it). Only remove what we OWNED; an adopted persisting server keeps its
-        // record so the successor can reclaim it.
-        if let Some(pid) = owned_pid {
-            crate::inference::lane_registry::remove(pid);
-        }
-        // Clear the reclaim pidfile ONLY if we owned the child we just killed — the
-        // server is now dead, so there is nothing for the next boot to reclaim. If
-        // we ADOPTED a persisting server (no child of our own), it keeps running
-        // after we exit, so we LEAVE the pidfile naming it so the successor can
-        // reclaim that still-live server if it later goes sick. (A SIGKILL/crash
-        // skips Drop entirely — that is exactly the case the pidfile survives for,
-        // and the next boot's identity-verified reclaim handles it.)
-        if self.is_live_lane && owned_child {
-            crate::inference::lane_pidfile::clear();
-        }
+        // Signalling is not exit. Preserve the registry and reclaim pidfile;
+        // their existing identity-aware cleanup owners retire stale records.
+        // In particular, never clear a successor's canonical pidfile here.
     }
 }
 
@@ -2902,7 +3152,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
-        let reclaimed = if self.is_live_lane {
+        // An owned child is already retiring under its actual process handle.
+        // Canonical reclaim is for an adopted/orphan lane, not a second signal
+        // followed by pidfile deletion before our owned child has reported exit.
+        let reclaimed = if self.is_live_lane && !had_own_child {
             Some(format!("{:?}", crate::inference::lane_pidfile::reclaim(port).await))
         } else {
             None
@@ -2910,9 +3163,9 @@ impl LlamaServerControl for LlamaServerProcess {
         crate::probe!(
             class = "serving.lane.idled",
             port,
-            killed_own_child = had_own_child,
-            reclaim = reclaimed.as_deref().unwrap_or("not a live lane"), // unwrap_or: None = this handle is not the live lane, so no port to reclaim — a label, not a quantity
-            "lane taken down on an empty plan — VRAM is free, the port is ours again"
+            killed_own_child = had_own_child, // Legacy field: signal requested, not proof of exit.
+            reclaim = reclaimed.as_deref().unwrap_or("owned child or non-live lane"), // unwrap_or: None labels the deliberate absence of canonical reclaim, not observed process exit
+            "lane retirement requested on an empty plan; owned-child exit remains independently observed"
         );
         Ok(())
     }
@@ -3032,7 +3285,12 @@ impl LlamaServerControl for LlamaServerProcess {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty() && s != "f16");
         let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
-            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+            .map(|s| {
+                matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "1" | "on" | "true" | "yes"
+                )
+            })
             .unwrap_or(false);
         // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
         // (2026-08-24, the cache_reuse confession). llama-server hard-disables
@@ -3111,18 +3369,22 @@ impl LlamaServerControl for LlamaServerProcess {
         // Remember this geometry ACROSS RUNS: the next boot's plan serves it first, so
         // the pages under this dir are still restorable after a reboot.
         crate::modules::served_window_store::save(&target.model.id, total_ctx / lanes.max(1));
-        if let Err(e) = std::fs::create_dir_all(&slot_save_dir) {
-            tracing::warn!(
-                probe_class = "inference.kv_page.dir_failed",
-                dir = %slot_save_dir.display(),
-                error = %e,
-                "could not create the KV page dir — the lane still serves, but rotation \
-                 pays full re-prefill (the paging tier is amputated for this serve)"
-            );
-        } else {
-            sweep_stale_page_generations(&slot_save_dir);
-            crate::inference::slots::note_page_dir(&slot_save_dir);
-        }
+        // The dirs OTHER live lanes page into: protected from the sweep below. The
+        // inventory is the durable lane registry (every recorded llama-server still
+        // alive), not a process-local "last spawn" — a core restart that ADOPTS a
+        // warm server has no spawn memory of it (Astra's review of #4069). Sweeping
+        // at spawn (the prior order) deleted the running server's pages on every
+        // relaunch attempt — including attempts that never replaced it (2026-09-15:
+        // `--c59171` swept at 13:35 while the 08:44 server was still writing into it;
+        // 9 restores then failed "failed to open"). A live lane recorded WITHOUT a
+        // page dir (pre-field record) makes the inventory incomplete → no sweep.
+        // Reserve NOW — before the dir is even created, before the child exists,
+        // before the record is written — so a sibling spawn's sweep (live or
+        // ephemeral; they share no gate) sees this dir in the inventory from this
+        // instant and can never delete it between mkdir and the reservation (Astra's
+        // third review of #4069). Released after the record carries it.
+        let (mut page_dir_reservation, page_dir_ready) =
+            PageDirReservation::take_and_create(&slot_save_dir);
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
@@ -3232,7 +3494,13 @@ impl LlamaServerControl for LlamaServerProcess {
         .await
         {
             Ok(out) => out
-                .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                .map(|o| {
+                    format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    )
+                })
                 .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
             Err(_) => {
                 crate::probe!(
@@ -3453,8 +3721,11 @@ match (child.stderr.take(), log_path) {
                 // predecessor's bytes as ours and counting them as foreign.
                 context_window: target.context_window,
                 lanes: target.lanes,
+                page_dir: Some(slot_save_dir.clone()),
             };
-            if let Err(e) = crate::inference::lane_registry::record(&rec) {
+            // Record + release under the page-dir guard (one critical section); a
+            // failed write keeps the reservation for the lane's lifetime.
+            if let Err(e) = page_dir_reservation.handoff(&rec) {
                 crate::probe!(
                     class = "serving.lane_registry",
                     port = port,
@@ -3465,6 +3736,11 @@ match (child.stderr.take(), log_path) {
         }
 
         *self.child.lock().unwrap() = Some(child);
+        // A reservation the handoff could not release (record write failed) lives
+        // as long as the child does — beside it, not in this frame.
+        *self.retained_page_dir.lock() = page_dir_reservation
+            .is_held()
+            .then_some(page_dir_reservation);
         // Remember the genome set this child was launched with — the truthful
         // catalog record for the relaunch decision (llama.cpp can't report it).
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
@@ -3486,6 +3762,29 @@ match (child.stderr.take(), log_path) {
                  Rebuild llama-server in release from the canary pin and relaunch.",
                 self.bin
             )));
+        }
+        // READY AND ACCEPTED: this lane owns its page dir. Sweep sibling generations
+        // of the same model except every dir another live lane was launched with —
+        // and only when the inventory is complete (Astra: "avoid sweeping when a live
+        // predecessor's directory is unknown"). Then publish the dir for the
+        // save-side trim — after the gates, and only if the dir exists (mkdir failed
+        // = the paging tier is amputated for this serve; nothing to trim).
+        // Census + sweep under ONE guard (Astra's re-review of #4069): no reservation
+        // can be inserted or handed off between the census and the deletion.
+        if !page_dir_ready {
+            // No dir of our own (mkdir failed): the paging tier is amputated for this
+            // serve — neither trim nor the destructive half runs (Cormac: symmetry).
+        } else if sweep_stale_page_generations_guarded(&slot_save_dir).is_some() {
+            // swept (possibly zero) with a complete inventory
+        } else {
+            crate::probe!(
+                class = "inference.kv_page.sweep_skipped",
+                reason = "a live lane's page dir is unknown (recorded before the field existed)",
+                "stale-generation sweep skipped — the live-lane inventory is incomplete"
+            );
+        }
+        if page_dir_ready {
+            crate::inference::slots::note_page_dir(&slot_save_dir);
         }
         // PLACEMENT CONTRACT READBACK (#441, Joel 2026-08-15: "models that got fucked by
         // serving and are on cpu. You never catch it and we are waiting an eternity").
@@ -3697,6 +3996,111 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // Regression for #4069: failed signalling and unknown wait must not free
+    // pages while the actual owned process remains alive. All files are isolated.
+    #[tokio::test]
+    async fn retiring_page_owner_requires_observed_child_exit() {
+        use super::*;
+        const CHILD_ENV: &str = "CONTINUUM_PAGE_OWNER_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            use std::io::Read;
+            let mut byte = [0];
+            let _ = std::io::stdin().read(&mut byte);
+            return;
+        }
+        let root = tempfile::tempdir().expect("isolated pages");
+        let registry = tempfile::tempdir().expect("isolated registry");
+        let old = root.path().join("retirement-model--c32768");
+        let current = root.path().join("retirement-model--c49152");
+        let (reservation, ready) = PageDirReservation::take_and_create(&old);
+        assert!(ready);
+        std::fs::create_dir_all(&current).expect("current directory");
+        std::fs::write(old.join("page"), b"owned").expect("owned page");
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "inference::llama_server::tests::retiring_page_owner_requires_observed_child_exit",
+            ])
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW: fixture never opens a console.
+        let mut child = command.spawn().expect("owned fixture child");
+        let pid = child.id().expect("running child PID");
+        let input = child.stdin.take().expect("child input held open");
+        assert!(child.try_wait().expect("child status").is_none());
+        let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
+        *process.child.lock().expect("fixture child lock") = Some(child);
+        *process.retained_page_dir.lock() = Some(reservation);
+        process.kill_child_with(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected signal failure",
+            ))
+        });
+        drop(process); // A failed signal followed by owner Drop must retain the child.
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            guard.collect_exited_with(|_| Err(std::io::Error::other("injected unknown status")));
+            assert!(guard
+                .retiring
+                .iter()
+                .any(|owner| owner.child.id() == Some(pid)));
+            assert!(guard.reservations.contains(&old));
+        }
+        assert_eq!(
+            sweep_stale_page_generations_guarded_in(&current, registry.path()),
+            Some(0)
+        );
+        assert!(old.join("page").is_file());
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            let index = guard
+                .retiring
+                .iter()
+                .position(|owner| owner.child.id() == Some(pid))
+                .expect("owned child");
+            let dir = guard.retiring[index].reserved_dir.take();
+            assert!(
+                guard.has_unknown_retiring_dir(),
+                "missing directory evidence must close the sweep gate"
+            );
+            guard.retiring[index].reserved_dir = dir;
+        }
+        // Keep the reservation listed while awaiting the fixture outside the lock.
+        let mut owner = {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            let index = guard
+                .retiring
+                .iter()
+                .position(|owner| owner.child.id() == Some(pid))
+                .expect("retained child");
+            guard.retiring.swap_remove(index)
+        };
+        drop(input);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), owner.child.wait())
+            .await
+            .expect("fixture exits after stdin closes")
+            .expect("observed exit");
+        assert!(status.success());
+        {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            guard.retiring.push(owner);
+            guard.collect_exited();
+            assert!(!guard.reservations.contains(&old));
+        }
+        assert_eq!(
+            sweep_stale_page_generations_guarded_in(&current, registry.path()),
+            Some(1)
+        );
+        assert!(!old.exists());
+    }
+
     // what this catches: a debug llama-server hosting a lane silently (BigMama's
     // 5090 served one for a day, 2026-09-04) — the door reads the server's own
     // warning line; a release version line passes.
@@ -4911,5 +5315,224 @@ mod tests {
         assert_eq!(placement_from_config(Some(" CPU ")), LanePlacement::Cpu);
         assert_eq!(placement_from_config(Some("gpu")), LanePlacement::Gpu);
         assert_eq!(placement_from_config(None), LanePlacement::Gpu);
+    }
+
+    // what this catches (2026-09-15, the M5): the page dir keyed on the EXACT per-slot
+    // window minted a new generation on every relaunch (59171 → 58997 → … in five
+    // hours) and the spawn-time sweep deleted the live lane's pages — every eviction a
+    // 24–66 s re-prefill against a 0.36 s restore. (a) windows within one step share a
+    // key; (b) the sweep leaves the previous live lane's dir alone.
+    #[test]
+    fn relaunch_jitter_shares_a_page_generation_and_the_live_dir_survives_the_sweep() {
+        assert_eq!(page_geometry_key(59_171), page_geometry_key(57_112), "the measured band is one key");
+        assert_eq!(page_geometry_key(59_171), 49_152);
+        assert_eq!(page_geometry_key(25_104), page_geometry_key(26_531));
+        assert_ne!(page_geometry_key(59_171), page_geometry_key(25_104));
+        assert_eq!(page_geometry_key(100), PAGE_GEOMETRY_STEP, "never a zero key");
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mk = |k: &str| {
+            let d = root.path().join(format!("some-model--c{k}"));
+            std::fs::create_dir_all(&d).unwrap(); // JUSTIFIED unwrap: test scaffolding
+            std::fs::write(d.join("a-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+            d
+        };
+        let live_previous = mk("57344");
+        let stale = mk("24576");
+        let other_model = root.path().join("other-model--c57344");
+        std::fs::create_dir_all(&other_model).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let current = root.path().join("some-model--c61440");
+        std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
+
+        // The registry's copy of the path may differ textually from what read_dir yields
+        // (an older core's HOME resolution, /Users vs /private/var on macOS, `./`) —
+        // protection is by directory NAME (Cormac, finding 1).
+        let other_form = PathBuf::from("/some/other/root/./").join(live_previous.file_name().unwrap()); // JUSTIFIED unwrap: a dir we just made has a name
+        sweep_stale_page_generations(&current, &[other_form]);
+        assert!(live_previous.join("a-page.bin").exists(), "the previous live lane's pages survive");
+        assert!(!stale.exists(), "an unprotected stale generation is swept");
+        assert!(other_model.exists(), "another model's dir is not this lane's to sweep");
+        assert!(current.exists());
+    }
+
+    // what this catches (Astra's block, re-block and third review on #4069), with
+    // deterministic barriers and the PRODUCTION ordering (reserve, THEN mkdir):
+    //  (a) B tries to reserve+create while A holds the guard mid-sweep (after census,
+    //      before deletion): B blocks until A's sweep is done, so B's insert can never
+    //      land between A's census and A's deletion — and because B creates its dir
+    //      only AFTER its reservation, A's sweep cannot delete a dir B has made.
+    #[test]
+    fn a_reservation_cannot_slip_between_a_siblings_census_and_deletion() {
+        use std::sync::{mpsc, Arc, Barrier};
+        let root = tempfile::tempdir().expect("tempdir");
+        // a STALE generation of B's geometry from an earlier run: unowned at A's census
+        let stale = root.path().join("race-model--c32768");
+        std::fs::create_dir_all(&stale).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        std::fs::write(stale.join("old-page.bin"), b"kv").unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let b_dir = stale.clone(); // B relaunches into the same geometry
+        let a_dir = root.path().join("race-model--c49152");
+        std::fs::create_dir_all(&a_dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+
+        let at_census = Arc::new(Barrier::new(2));
+        let (b_reserved_tx, b_reserved_rx) = mpsc::channel::<bool>();
+        let b_dir2 = b_dir.clone();
+        let at_census_b = Arc::clone(&at_census);
+        let b = std::thread::spawn(move || {
+            at_census_b.wait(); // A is mid-sweep now
+            // THE PRODUCTION ORDERING: reserve first, create second. Must BLOCK on the guard.
+            let (r, ready) = PageDirReservation::take_and_create(&b_dir2);
+            let _ = b_reserved_tx.send(ready);
+            r
+        });
+        {
+            let guard = PAGE_DIR_GUARD.lock(); // A's census+deletion critical section
+            at_census.wait();
+            assert!(
+                b_reserved_rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+                "B's reservation must not land while A holds the guard"
+            );
+            // A's census saw no reservation for B's dir → A deletes it under the guard.
+            let protect: Vec<PathBuf> = guard.reservations.iter().cloned().collect();
+            assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 1);
+            assert!(!b_dir.exists(), "the stale generation is gone");
+        }
+        // Guard released → B's reservation lands, THEN B creates its dir: it exists,
+        // it is protected, and nothing A did could have touched it.
+        let b_res = b.join().expect("B joins");
+        let ready = b_reserved_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("B reserved after A released");
+        assert!(ready && b_dir.is_dir(), "B's dir was created after its reservation");
+        assert!(b_res.is_held());
+        assert!(
+            PAGE_DIR_GUARD
+                .lock()
+                .reservations
+                .iter()
+                .any(|d| d == &b_dir),
+            "B is protected from here on"
+        );
+        // A second sweep now, with the guard's contents as the protect set, keeps B's dir.
+        let protect: Vec<PathBuf> = PAGE_DIR_GUARD.lock().reservations.iter().cloned().collect();
+        assert_eq!(sweep_stale_page_generations(&a_dir, &protect), 0);
+        assert!(b_dir.is_dir());
+    }
+
+    //  (b) the handoff (record written + reservation dropped) is ONE critical section:
+    //      concurrent censuses and ordered observations on both sides see the
+    //      reservation or record, never neither. The registry is a temp
+    //      dir (the test seam), never the canonical `~/.continuum/run/lanes/`.
+    #[test]
+    fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() {
+        use crate::inference::lane_registry::{records_checked_in, LaneRecord, LaneRole};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir().expect("tempdir");
+        let registry = tempfile::tempdir().expect("tempdir");
+        let b_dir = root.path().join("handoff-model--c32768");
+        let (mut res, _ready) = PageDirReservation::take_and_create(&b_dir);
+        let rec = LaneRecord {
+            pid: 4_000_001, // never a live pid; the census here reads lists, not liveness
+            port: 8123,
+            role: LaneRole::Ephemeral,
+            model: "handoff-model".into(),
+            context_window: 32768,
+            lanes: 1,
+            page_dir: Some(b_dir.clone()),
+        };
+        let (before_tx, before_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let reg = registry.path().to_path_buf();
+        let dir = b_dir.clone();
+        // Contend during handoff, and observe both sides explicitly. A fixed
+        // iteration count could exhaust before the handoff thread ran.
+        let census = std::thread::spawn(move || {
+            let mut seen_before = 0usize;
+            let mut seen_after = 0usize;
+            // Initial BEFORE census, concurrent censuses, then explicit AFTER.
+            let observe = |seen_before: &mut usize, seen_after: &mut usize| {
+                let g = PAGE_DIR_GUARD.lock();
+                let in_res = g.reservations.iter().any(|d| d == &dir);
+                let in_rec = records_checked_in(&reg)
+                    .expect("temp registry readable")
+                    .iter()
+                    .any(|r| r.page_dir.as_deref() == Some(dir.as_path()));
+                drop(g);
+                assert!(in_res || in_rec, "a census found the lane in NEITHER list");
+                assert!(!(in_res && in_rec), "a census found the lane in BOTH lists");
+                if in_res { *seen_before += 1 } else { *seen_after += 1 }
+            };
+            observe(&mut seen_before, &mut seen_after);
+            before_tx.send(()).expect("before census notification");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match done_rx.try_recv() {
+                    Ok(()) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        assert!(Instant::now() < deadline, "handoff completion deadline");
+                        observe(&mut seen_before, &mut seen_after);
+                        std::thread::yield_now();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => panic!("handoff owner disconnected"),
+                }
+            }
+            observe(&mut seen_before, &mut seen_after);
+            (seen_before, seen_after)
+        });
+        before_rx.recv_timeout(Duration::from_secs(5)).expect("initial census completed");
+        res.handoff_in(&rec, registry.path()).expect("handoff writes the temp registry");
+        assert!(!res.is_held(), "a successful handoff releases the reservation");
+        done_tx.send(()).expect("handoff complete");
+        let (before, after) = census.join().expect("census joins");
+        assert!(before > 0 && after > 0, "censuses ran on both sides of the handoff: {before}/{after}");
+        // And a FAILED handoff keeps the reservation: an unwritable registry dir.
+        let (mut res2, _) = PageDirReservation::take_and_create(&root.path().join("handoff-model--c49152"));
+        let not_a_dir = registry.path().join("file-not-dir");
+        std::fs::write(&not_a_dir, b"x").unwrap(); // JUSTIFIED unwrap: test scaffolding
+        assert!(res2.handoff_in(&rec, &not_a_dir).is_err());
+        assert!(res2.is_held(), "a failed record write keeps the dir protected");
+    }
+
+    // what this catches (Astra's third review): a destructive census fails CLOSED. With
+    // a malformed `.lane` file in the registry the guarded sweep deletes NOTHING, even
+    // though a stale sibling generation is right there.
+    #[test]
+    fn an_unreadable_registry_skips_the_sweep_entirely() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let registry = tempfile::tempdir().expect("tempdir");
+        let stale = root.path().join("closed-model--c32768");
+        std::fs::create_dir_all(&stale).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let current = root.path().join("closed-model--c49152");
+        std::fs::create_dir_all(&current).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        std::fs::write(registry.path().join("garbage.lane"), "{not json").unwrap(); // JUSTIFIED unwrap: test scaffolding
+        assert_eq!(sweep_stale_page_generations_guarded_in(&current, registry.path()), None);
+        assert!(stale.is_dir(), "nothing deleted on an unreadable inventory");
+        std::fs::remove_file(registry.path().join("garbage.lane")).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        assert_eq!(sweep_stale_page_generations_guarded_in(&current, registry.path()), Some(1));
+        assert!(!stale.exists());
+    }
+
+    // what this catches: the live-lane inventory — a live record contributes its dir, a
+    // live record without one (written before the field existed) makes the inventory
+    // INCOMPLETE so the sweep stays its hand, and a dead record is ignored either way.
+    #[test]
+    fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir() {
+        use crate::inference::lane_registry::{LaneRecord, LaneRole};
+        let rec = |pid: u32, page_dir: Option<&str>| LaneRecord {
+            pid,
+            port: 8000 + pid as u16,
+            role: LaneRole::Live,
+            model: "m".into(),
+            context_window: 4096,
+            lanes: 1,
+            page_dir: page_dir.map(PathBuf::from),
+        };
+        let alive = |pid: u32| pid != 3;
+        let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);
+        assert_eq!(dirs, vec![PathBuf::from("/p/a"), PathBuf::from("/p/b")]);
+        assert!(complete, "a DEAD record without a dir does not spoil the inventory");
+        let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, None)], alive);
+        assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
+        assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
     }
 }

@@ -397,10 +397,14 @@ pub(crate) async fn ask_the_act_question(
                                         );
                                         // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
                                         // tests that grade her are not in the checkout.
-                                        if let Some(instance) = ws.file_name().and_then(|n| n.to_str()) {
+                                        if let Some(instance) =
+                                            ws.file_name().and_then(|n| n.to_str())
+                                        {
                                             body.working_memory.pin_fact(
                                                 "grading",
-                                                &crate::persona::instance_env_fact::grading_fact(instance),
+                                                &crate::persona::instance_env_fact::grading_fact(
+                                                    instance,
+                                                ),
                                             );
                                         }
                                         // THE LEDGER, as the fact her turn opens with: the
@@ -449,48 +453,23 @@ pub(crate) async fn ask_the_act_question(
                         }
                         None => None,
                     };
-                    // Card 6de7f57a: while this turn runs, every 4th act stages the
-                    // chain-so-far against the held card (a partial that replaces the
-                    // previous one); the end-of-turn stage below replaces the last.
-                    let partial_submission: std::sync::Arc<std::sync::Mutex<Option<uuid::Uuid>>> =
-                        std::sync::Arc::new(std::sync::Mutex::new(None));
-                    let sink_persona = ctx.identity.peer_id.as_uuid();
-                    if let Some(card) = held.first() {
-                        let credit = crate::persona::training_producer::CapturedCredit::from_selected_card(card);
-                        let (name, model, prompt) = (
-                            ctx.identity.agent_name.clone(),
-                            ctx.profile.model_id.clone(),
-                            work_context.clone(),
+                    let selected_credit = held.first().map(|card| {
+                        crate::persona::training_producer::CapturedCredit::from_selected_card(card)
+                    });
+                    let mut credit_capture =
+                        crate::persona::training_producer::TurnCreditCapture::for_turn(
+                            ctx.identity.peer_id.as_uuid(),
+                            &ctx.identity.agent_name,
+                            &work_context,
+                            selected_credit.as_ref(),
                         );
-                        let slot = std::sync::Arc::clone(&partial_submission);
-                        crate::persona::training_producer::set_act_batch_sink(
-                            sink_persona,
-                            std::sync::Arc::new(move |acts| {
-                                let new_id = uuid::Uuid::new_v4();
-                                let prev = slot
-                                    .lock()
-                                    .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned slot still holds the last id; bookkeeping only
-                                    .replace(new_id);
-                                crate::persona::training_producer::produce_with_id(
-                                    sink_persona,
-                                    name.clone(),
-                                    model.clone(),
-                                    prompt.clone(),
-                                    crate::persona::training_producer::acted_chain(acts),
-                                    Some(credit.clone()),
-                                    Vec::new(),
-                                    new_id,
-                                    prev,
-                                );
-                            }),
-                        );
-                    }
-                    let work = crate::cognition::act_observe::drive_to_settle_with_input(
+                    let work = crate::cognition::act_observe::drive_to_settle_with_credit(
                         &cycle,
                         burst,
                         LIVE_MAX_ACTS,
                         work_framing,
                         conversation,
+                        credit_capture.as_mut(),
                     )
                     .await;
                     // Give her back her own hands BEFORE anything else can
@@ -518,44 +497,16 @@ pub(crate) async fn ask_the_act_question(
                             body.working_memory.end_of_work_turn();
                         }
                     }
-                    // `work_generation_receipts`: this is the held-work turn, the
-                    // OTHER produce call site. Bound rather than dropped so the
-                    // card-linked staging path can carry the same provenance the
-                    // directed path does (card 0d51573a).
-                    // THE WHOLE ACT CHAIN LEARNS (2026-09-14): every act of this work turn,
-                    // in order, staged against the held card whatever the turn's final step
-                    // was — acts run mid-turn, so inspecting only the last step staged
-                    // nothing (24 holder acts, 0 staged). The card's verdict stamps the chain.
-                    crate::persona::training_producer::clear_act_batch_sink(sink_persona);
-                    let last_partial = partial_submission
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner()) // JUSTIFIED unwrap_or_else: a poisoned slot still holds the last id; bookkeeping only
-                        .take();
-                    let turn_acts = work.turn_acts.clone();
-                    let (work_step, _, work_generation_receipts) =
+                    let turn_act_count = work.acts;
+                    let (work_step, _, _) =
                         crate::cognition::act_observe::SettleStep::from_settled(work);
                     crate::probe!(
                         class = "training.hook.work_turn",
                         persona = %ctx.identity.agent_name,
-                        acts = turn_acts.len() as u64,
+                        acts = turn_act_count as u64,
                         held = held.len() as u64,
-                        "held-work turn settled — what the learning hook sees"
+                        "held-work turn settled after its shared credit capture"
                     );
-                    if !turn_acts.is_empty() {
-                        if let Some(card) = held.first() {
-                            crate::persona::training_producer::produce_with_id(
-                                ctx.identity.peer_id.as_uuid(),
-                                ctx.identity.agent_name.clone(),
-                                ctx.profile.model_id.clone(),
-                                work_context.clone(),
-                                crate::persona::training_producer::acted_chain(&turn_acts),
-                                Some(crate::persona::training_producer::CapturedCredit::from_selected_card(card)),
-                                work_generation_receipts.clone(),
-                                uuid::Uuid::new_v4(),
-                                last_partial,
-                            );
-                        }
-                    }
                     match work_step {
                         crate::cognition::act_observe::SettleStep::Spoke(text) => {
                             // She worked and has something to report —
@@ -584,48 +535,8 @@ pub(crate) async fn ask_the_act_question(
                                     "work-turn report failed to send"
                                 );
                             }
-                            // L2 producer on the WORK turn (#456). This was
-                            // missing, and it is the highest-value training
-                            // signal the substrate produces: the reply turn
-                            // below already feeds the producer, but the turn
-                            // where she actually WORKS HER CLAIMED CARD did
-                            // not — so every act of real work was invisible
-                            // to the genome while chat was not.
-                            //
-                            // The (context, completion) pair here is honest:
-                            // context = the card burst she was handed,
-                            // completion = the report she wrote after doing
-                            // the work. Same shape as the reply path, same
-                            // best-effort spawn, same quality bar applied
-                            // inside the producer.
-                            //
-                            // Still the LIVE path — an eval fork never
-                            // reaches here (`drive_to_settle` is called from
-                            // the fork, this call site is not), so the
-                            // measurement-contamination guard the reply path
-                            // relies on is unchanged.
-                            crate::persona::training_producer::produce(
-                                ctx.identity.peer_id.as_uuid(),
-                                ctx.identity.agent_name.clone(),
-                                ctx.profile.model_id.clone(),
-                                work_context.clone(),
-                                text.clone(),
-                                // The HELD-WORK turn: she is working a card by
-                                // definition here, so this is the path the staging
-                                // exists for. Credit comes from the CARD, not from
-                                // `work_hands` — hands exist only when the card
-                                // resolved to a staged checkout, and a generic repo
-                                // card has none, so sourcing credit there would drop
-                                // it on exactly the cards #3924's rooting fix just
-                                // taught her to work. `held` is already
-                                // `work_focus::focus_card`'d, so this is the same
-                                // focused card the service_loop path captures at
-                                // selection, through the same pure constructor.
-                                held.first().map(|card| {
-                                    crate::persona::training_producer::CapturedCredit::from_selected_card(card)
-                                }),
-                                work_generation_receipts.clone(),
-                            );
+                            // The shared driver already staged this report with the act
+                            // chain under the same turn ID and exact generation receipts.
                         }
                         crate::cognition::act_observe::SettleStep::Passed { reason } => {
                             // THE DETERMINISTIC COMPLETION EDGE. A pass now carries a

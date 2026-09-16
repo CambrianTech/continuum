@@ -512,7 +512,16 @@ impl AircPersonaConversation {
     /// continuously into a bounded in-process inbox. Backpressure, if any, lands
     /// here (in-process, where a turn in progress is the only slow consumer) and
     /// never at the daemon, whose lag policy drops live pushes for good.
-    fn install_stream(&mut self, mut stream: FilteredEventStream) {
+    fn install_stream(
+        &mut self,
+        stream: impl futures::Stream<Item = Result<Arc<TranscriptEvent>, airc_lib::LiveLag>>
+            + Send
+            + 'static,
+    ) {
+        let mut stream: futures::stream::BoxStream<
+            'static,
+            Result<Arc<TranscriptEvent>, airc_lib::LiveLag>,
+        > = Box::pin(stream);
         self.stop_stream();
         let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
         let persona = self.own_peer_id;
@@ -545,6 +554,17 @@ impl AircPersonaConversation {
                             live_since_tick = live_since_tick.saturating_add(1);
                             reopen_attempt = 0;
                             if let Ok(ev) = &item {
+                                // These headers already mean "not perception" in
+                                // admission and durable catch-up. Drop them BEFORE
+                                // the bounded attention inbox: a token flood must
+                                // not consume the ready-drain budget ahead of a
+                                // colleague's complete message. No body decode or
+                                // seen-ring churn for traffic we will never admit.
+                                if crate::persona::airc_citizen::is_heartbeat(ev)
+                                    || crate::airc::realtime_wire::is_stream_chunk(ev)
+                                {
+                                    continue;
+                                }
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                                 if let Ok((peer, text)) =
@@ -553,11 +573,7 @@ impl AircPersonaConversation {
                                     s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(peer, &text));
                                 }
                                 drop(s);
-                                if !crate::persona::airc_citizen::is_heartbeat(ev)
-                                    && !crate::airc::realtime_wire::is_stream_chunk(ev)
-                                {
-                                    signal_if_directed(persona, ev);
-                                }
+                                signal_if_directed(persona, ev);
                             }
                             if tx.send(item).await.is_err() {
                                 return; // the conversation dropped its inbox — the pump is done
@@ -571,7 +587,7 @@ impl AircPersonaConversation {
                             );
                             match reopen_live_stream(&*runtime, persona, "ended", &mut reopen_attempt).await {
                                 Some(next) => {
-                                    stream = next;
+                                    stream = Box::pin(next);
                                     // The next tick admits the backlog the citizen missed
                                     // while the stream was down — that is not a dead stream.
                                     first_tick = true;
@@ -606,7 +622,7 @@ impl AircPersonaConversation {
                             // window — a replay would double-deliver.
                             match reopen_live_stream(&*runtime, persona, "missed_events", &mut reopen_attempt).await {
                                 Some(next) => {
-                                    stream = next;
+                                    stream = Box::pin(next);
                                     first_tick = true;
                                     live_since_tick = 0;
                                     continue;
@@ -1033,6 +1049,108 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
 
 #[cfg(test)]
 mod tests {
+    // Regression for a4747386: stream/heartbeat traffic reached the actual pump
+    // queue and exhausted ready intake before a complete directed room message.
+    #[tokio::test]
+    async fn pump_drops_non_perceptual_flood_before_ready_intake() {
+        use super::*;
+        use crate::persona::airc_citizen::StubAircCitizen;
+        use futures::StreamExt;
+
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let runtime = Arc::new(StubAircCitizen::new(own).with_rooms(vec![room]));
+        let mut conversation = AircPersonaConversation::new(runtime);
+        conversation.rooms = Some(vec![room]);
+        let event = |text: &str| {
+            event_from_row(
+                room,
+                crate::persona::durable_history::RoomRow {
+                    id: Uuid::new_v4(),
+                    sender: peer,
+                    occurred_at_ms: 1,
+                    text: text.into(),
+                },
+            )
+        };
+        let mut frames = Vec::new();
+        for index in 0..CATCH_UP_PAGE * 2 {
+            let mut noise = event("not a completed utterance");
+            noise.headers.insert(
+                if index % 2 == 0 {
+                    airc_lib::HEADER_STREAM_ID
+                } else {
+                    airc_lib::HEADER_HEARTBEAT_KIND
+                }
+                .into(),
+                "fixture".into(),
+            );
+            frames.push(Ok(Arc::new(noise)));
+        }
+        let mut control = event("");
+        control.kind = airc_core::TranscriptKind::System;
+        control.body = None;
+        let control = Arc::new(control);
+        frames.push(Ok(Arc::clone(&control)));
+        let mut directed = event("@citizen Shared Cargo owner: please wait");
+        directed.target = airc_core::MentionTarget::Peer(airc_core::PeerId::from_uuid(own));
+        let directed = Arc::new(directed);
+        frames.push(Ok(Arc::clone(&directed)));
+        // Terminal stream fence: observing it proves every preceding frame went
+        // through the real pump's send/skip branch. No sleep-based absence claim.
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        let stream = futures::stream::iter(frames).chain(futures::stream::once(async move {
+            drained.send(()).unwrap();
+            std::future::pending().await
+        }));
+        conversation.install_stream(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        let inbox = conversation.inbox.as_mut().unwrap();
+        assert_eq!(
+            inbox.len(),
+            2,
+            "only control and completed message are queued"
+        );
+        let forwarded_control = inbox.try_recv().unwrap().unwrap();
+        assert!(Arc::ptr_eq(&forwarded_control, &control));
+        assert!(conversation
+            .seen
+            .lock()
+            .unwrap()
+            .was_seen(room, directed.event_id.as_uuid()));
+        let perceived = conversation.perceive_ready().await.unwrap();
+        assert_eq!(perceived.len(), 1);
+        assert_eq!(perceived[0].event_id, directed.event_id.as_uuid());
+        assert_eq!(perceived[0].room_id, room);
+        assert_eq!(perceived[0].peer_id, peer);
+        assert!(perceived[0].text.contains("Shared Cargo owner"));
+
+        // Error frames must still reach the consumer, never disappear as noise.
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(
+            futures::stream::iter([Err(airc_lib::LiveLag { skipped: 7 })]).chain(
+                futures::stream::once(async move {
+                    drained.send(()).unwrap();
+                    std::future::pending().await
+                }),
+            ),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = conversation
+            .next_message_inner(false, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("lagged 7"), "{error}");
+        conversation.stop_stream();
+    }
+
     // what this catches: c5910be2 — ready intake must use the real decoder, keep
     // both rooms, return promptly on an empty inbox, and retain source ownership
     // if a drive drops its snapshot before submitting another request.
