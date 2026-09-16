@@ -41,6 +41,7 @@ mod apply;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
+pub(crate) use settle::drive_to_settle_with_credit;
 pub use settle::{drive_to_settle, drive_to_settle_with_input, settle_step};
 
 #[cfg(test)]
@@ -1008,6 +1009,7 @@ mod tests {
         >,
         rooms: Mutex<Vec<Uuid>>,
         pending_persona: Mutex<Option<Uuid>>,
+        pause_before: Option<(usize, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     }
     impl ScriptedExecutor {
         fn new(results: impl IntoIterator<Item = &'static str>) -> Self {
@@ -1016,6 +1018,7 @@ mod tests {
                 input: Mutex::new(std::collections::VecDeque::new()),
                 rooms: Mutex::new(Vec::new()),
                 pending_persona: Mutex::new(None),
+                pause_before: None,
             }
         }
         fn with_incoming(
@@ -1035,7 +1038,17 @@ mod tests {
             context: &ToolExecutionContext,
             _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
-            self.rooms.lock().unwrap().push(context.context_id);
+            let act = {
+                let mut rooms = self.rooms.lock().unwrap();
+                rooms.push(context.context_id);
+                rooms.len()
+            };
+            if let Some((before, entered, release)) = &self.pause_before {
+                if act == *before {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+            }
             if let Some((feed, messages)) = self.input.lock().unwrap().pop_front() {
                 for message in messages {
                     feed.push(Ok(Some(message)));
@@ -1083,6 +1096,243 @@ mod tests {
         ) -> Result<Uuid, ToolError> {
             Ok(Uuid::nil())
         }
+    }
+
+    // what this catches:41f4e3ef — a directed drive must persist real receipt-linked
+    // progress before settlement; cancellation/rollback cannot lose the last whole
+    // snapshot or attach another card's work to this turn's identity.
+    #[tokio::test]
+    async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::ai::types::{
+            FinishReason, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+        };
+        use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
+        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::persona::service_loop::PersonaConversation;
+        use crate::persona::training_producer::{
+            tests::turn_capture, CapturedCredit, StagedCredit,
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut hands = ScriptedExecutor::new([
+            "read one",
+            "read two",
+            "read three",
+            "read four",
+            "read five",
+        ]);
+        hands.pause_before = Some((5, Arc::clone(&entered), release));
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.set_served_window(32_768);
+        let body = body_with_wm(Arc::new(hands), admission(), Arc::clone(&wm));
+        let persona = body.persona_id;
+        let responses = (0..5)
+            .map(|n| TextGenerationResponse {
+                text: String::new(),
+                finish_reason: FinishReason::ToolUse,
+                model: "actual-served-model".into(),
+                provider: "fixture".into(),
+                usage: UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: format!("provider-{n}"),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: format!("call-{n}"),
+                    name: "code/read".into(),
+                    input: serde_json::json!({"path":format!("src/{n}.rs")}),
+                }]),
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            })
+            .collect();
+        let recorded = Arc::new(Mutex::new(Vec::<TextGenerationRequest>::new()));
+        let adapter = Arc::new(
+            HeuristicInferenceAdapter::new()
+                .with_responses(responses)
+                .with_request_recorder(Arc::clone(&recorded)),
+        );
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "Review the project.", adapter)
+            .with_context_window(32_768)
+            .with_working_memory(Arc::clone(&wm))
+            .with_tools(vec![crate::ai::types::NativeToolSpec {
+                name: "code/read".into(),
+                description: "Read a workspace file".into(),
+                input_schema: crate::ai::types::ToolInputSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({ "path": { "type": "string" } }),
+                    required: Some(vec!["path".into()]),
+                    definitions: None,
+                },
+            }]);
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(wm)) as Arc<dyn Faculty>,
+                Arc::new(faculty),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body);
+        let card = Uuid::new_v4();
+        let mut capture = turn_capture(
+            persona,
+            "capture-owner".into(),
+            "review first card".into(),
+            CapturedCredit {
+                card_id: card,
+                claim: None,
+            },
+        );
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap();
+        let mut drive = Box::pin(drive_to_settle_with_credit(
+            &cycle,
+            "review first card".into(),
+            8,
+            TurnFraming::ambient(),
+            &mut conversation,
+            Some(&mut capture),
+        ));
+        tokio::select! {
+            _ = entered.notified() => {},
+            _ = &mut drive => panic!("driver must still be working after its fourth persisted act"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("fifth act never reached its pause"),
+        }
+        let db = rusqlite::Connection::open_with_flags(
+            home.path()
+                .join(".continuum/personas/capture-owner/data/longterm.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let read = || -> StagedCredit {
+            let text: String = db.query_row("SELECT json_object('id',id,'cardId',card_id,'claimId',claim_id,'owner',owner,'role',json(role),'receipts',json(receipts),'served',json(served),'prompt',prompt,'completion',completion,'stagedAtMs',staged_at_ms) FROM staged_credit WHERE card_id=?", [card.to_string()], |row| row.get(0)).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let partial = read();
+        assert_eq!(
+            partial.receipts.len(),
+            4,
+            "actual partial stage, not just final capture"
+        );
+        let expected: Vec<_> = recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .take(4)
+            .map(|r| r.request_id.clone().unwrap())
+            .collect();
+        assert_eq!(
+            partial
+                .receipts
+                .iter()
+                .map(|r| r.submitted_request_id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            partial.served.as_ref().unwrap().model,
+            "actual-served-model"
+        );
+        for (n, receipt) in partial.receipts.iter().enumerate() {
+            assert!(matches!(&receipt.outcome,
+                crate::cognition::provenance::GenerationOutcome::Served { model, provider, provider_request_id }
+                    if model == "actual-served-model" && provider == "fixture"
+                        && provider_request_id.as_deref() == Some(format!("provider-{n}").as_str())));
+        }
+        assert!(
+            partial.claim_id.is_none(),
+            "staging must not invent ownership or a verdict"
+        );
+        drop(drive); // Cancels the fifth act; the fourth-act durable row survives.
+        assert_eq!(read().id, partial.id);
+        let acts: Vec<_> = (0..8)
+            .map(|n| {
+                (
+                    format!("act {n}"),
+                    vec![ToolCall {
+                        id: format!("a{n}"),
+                        name: "code/read".into(),
+                        input: serde_json::json!({"path":n}),
+                    }],
+                )
+            })
+            .collect();
+        let mut duplicate = partial.receipts.clone();
+        duplicate.push(partial.receipts[0].clone());
+        assert!(
+            !capture.record(&acts, &duplicate, None, false).await,
+            "duplicate child must roll back the replacement"
+        );
+        assert_eq!(
+            read().receipts,
+            partial.receipts,
+            "rollback preserves the previous whole row"
+        );
+        let mut final_receipts = partial.receipts.clone();
+        final_receipts.push(crate::cognition::provenance::GenerationReceipt::faulted(
+            "fault-after-four",
+            "transport refused",
+        ));
+        assert!(
+            capture
+                .record(&acts, &final_receipts, Some("honest final report"), true)
+                .await
+        );
+        let finished = read();
+        assert_ne!(
+            finished.id, partial.id,
+            "changed content gets a new immutable revision"
+        );
+        assert_eq!(finished.receipts, final_receipts);
+        assert!(finished.completion.ends_with("honest final report"));
+        assert!(
+            capture
+                .record(&acts, &final_receipts, Some("honest final report"), true)
+                .await
+        );
+        assert_eq!(
+            read().id,
+            finished.id,
+            "identical retry reuses its revision identity"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM staged_credit_generation", [], |r| {
+                r.get::<_, usize>(0)
+            })
+            .unwrap(),
+            5
+        );
+        drop(capture);
+        let other_card = Uuid::new_v4();
+        let mut other = turn_capture(
+            persona,
+            "capture-owner".into(),
+            "another activity".into(),
+            CapturedCredit {
+                card_id: other_card,
+                claim: None,
+            },
+        );
+        assert!(other.record(&acts, &final_receipts, None, true).await);
+        assert_eq!(
+            read().id,
+            finished.id,
+            "same Persona's next turn cannot replace this card"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM staged_credit", [], |r| r
+                .get::<_, usize>(0))
+                .unwrap(),
+            2
+        );
     }
 
     // what this catches: c5910be2 — an ordinary room drive could not see coaching

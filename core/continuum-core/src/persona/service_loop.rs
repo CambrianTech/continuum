@@ -867,7 +867,10 @@ async fn serve_persona_loop_inner(
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
-        crate::cognition::resource_admission::note_turn_started(ctx.identity.peer_id.as_uuid(), crate::persona::trace::now_ms());
+        crate::cognition::resource_admission::note_turn_started(
+            ctx.identity.peer_id.as_uuid(),
+            crate::persona::trace::now_ms(),
+        );
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
@@ -1157,13 +1160,9 @@ async fn serve_persona_loop_inner(
         // nothing to say about. Assigned unconditionally on the one path that
         // reaches `produce`; every other path `continue`s before it.
         let mut turn_credit: Option<crate::persona::training_producer::CapturedCredit> = None;
-        // THE ACT CHAIN OF A DIRECTED TURN LEARNS TOO (2026-09-14): a holder answering a
-        // human line acts on her card mid-turn and often PASSES (no spoken text), so
-        // the spoke-path `produce` below never ran for her — 25 holder acts in 30 min,
-        // 0 credits staged, on the build that had just made staging possible (#4032).
-        // The chain is staged against the card the moment the settle returns, whatever
-        // the turn's final step was (the same rule as the held-work turn, #4021).
-        let mut turn_acts: Vec<(String, Vec<crate::ai::types::ToolCall>)> = Vec::new();
+        // Card-linked work is staged during the shared drive and again at settlement,
+        // including turns that finish without speech. These receipts remain available
+        // for the separate, genuinely unlinked speech producer below.
         let mut turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
             Vec::new();
         let response_text = match crate::cognition::persona_workspace::global()
@@ -1323,13 +1322,22 @@ async fn serve_persona_loop_inner(
                     conversation,
                 )
                 .await;
+                let mut credit_capture =
+                    crate::persona::training_producer::TurnCreditCapture::for_turn(
+                        ctx.identity.peer_id.as_uuid(),
+                        &ctx.identity.agent_name,
+                        &msg.text,
+                        held_card.credit.as_ref(),
+                    );
+                let turn_act_count;
                 let (step, turn_metrics, settled_receipts) = {
-                    let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
+                    let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
                         &cycle,
                         workspace_burst,
                         LIVE_MAX_ACTS,
                         framing,
                         conversation,
+                        credit_capture.as_mut(),
                     )
                     .await;
                     // The lived-turn experience write (#319) is NOT here: it lives inside
@@ -1338,7 +1346,7 @@ async fn serve_persona_loop_inner(
                     // self-tick and held-work paths settle turns through the same driver
                     // and got no record, so nothing on disk ever described a lived turn.
                     // The driver stays a driver: no learning policy at any call site.
-                    turn_acts = outcome.turn_acts.clone();
+                    turn_act_count = outcome.acts;
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Captured HERE, where both facts still exist. The credit is read off
@@ -1354,23 +1362,10 @@ async fn serve_persona_loop_inner(
                 crate::probe!(
                     class = "training.hook.directed_turn",
                     persona = %ctx.identity.agent_name,
-                    acts = turn_acts.len() as u64,
+                    acts = turn_act_count as u64,
                     card_linked = turn_credit.as_ref().map(|c| c.is_card_linked()).unwrap_or(false), // JUSTIFIED unwrap_or: no credit = not card-linked, a legible false
                     "directed turn settled — what the learning hook sees"
                 );
-                if !turn_acts.is_empty() {
-                    if let Some(credit) = turn_credit.as_ref().filter(|c| c.is_card_linked()) {
-                        crate::persona::training_producer::produce(
-                            ctx.identity.peer_id.as_uuid(),
-                            ctx.identity.agent_name.clone(),
-                            ctx.profile.model_id.clone(),
-                            msg.text.clone(),
-                            crate::persona::training_producer::acted_chain(&turn_acts),
-                            Some(credit.clone()),
-                            turn_generation_receipts.clone(),
-                        );
-                    }
-                }
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
@@ -1619,17 +1614,24 @@ async fn serve_persona_loop_inner(
         // correctness. It lives ONLY on this live `Spoke` path, which eval forks
         // (`drive_to_settle`) never run, so the training set can never be
         // contaminated by a measurement simulation.
-        crate::persona::training_producer::produce(
-            ctx.identity.peer_id.as_uuid(),
-            ctx.identity.agent_name.clone(),
-            ctx.profile.model_id.clone(),
-            msg.text.clone(),
-            response_text.clone(),
-            // Captured in the cycle arm above, at selection. `None` is an ordinary
-            // conversation and submits immediately, exactly as before.
-            turn_credit,
-            turn_generation_receipts,
-        );
+        // Card-linked work was captured once by the shared driver, including its
+        // report and final generation. Only genuinely unlinked speech submits here.
+        if !turn_credit
+            .as_ref()
+            .is_some_and(|credit| credit.is_card_linked())
+        {
+            crate::persona::training_producer::produce(
+                ctx.identity.peer_id.as_uuid(),
+                ctx.identity.agent_name.clone(),
+                ctx.profile.model_id.clone(),
+                msg.text.clone(),
+                response_text.clone(),
+                // Captured in the cycle arm above, at selection. `None` is an ordinary
+                // conversation and submits immediately, exactly as before.
+                turn_credit,
+                turn_generation_receipts,
+            );
+        }
         tracing::info!(
             lamport = msg.lamport,
             turn_duration_ms = turn_duration_ms,
