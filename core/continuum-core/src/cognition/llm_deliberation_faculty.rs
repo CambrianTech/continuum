@@ -1417,11 +1417,34 @@ impl LlmDeliberationFaculty {
         // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal
         // — the substrate silencing a framing echo or a not-speech envelope — counts
         // against her; the hour's share decides whether her seat rests.
+        // THE MINDLESS RECEIPT (card aed15611) and THE GATE BECOMES A LESSON (card
+        // 657e74de) read the SAME typed fact: a pass the substrate decided, not her.
+        let refusal = decision.gate_refusal().map(|(g, m)| (g.to_string(), m.to_string()));
         crate::modules::citizen_health::note_verdict_of(
             self.persona_id,
             &self.persona_name,
-            decision.gate_refusal().is_some(),
+            refusal.is_some(),
         );
+        // A framing-echo / not-speech pass on an UNDIRECTED, LIVED turn stages
+        // {burst → PASS} as a speech-discipline example. A directed turn never trains
+        // silence (a human's question is not a "nothing to say"), a synthetic burst is
+        // not her experience, and a PARROTED draft is not staged: its correct completion
+        // was speech in her own words, not silence.
+        if let Some((gate, _marker)) = refusal.as_ref() {
+            let gate = gate.as_str();
+            if gate != "parroted_perception"
+                && !ws.directed_at_self()
+                && ws.cause != super::workspace::Cause::Synthetic
+            {
+                crate::persona::training_producer::produce_speech_discipline(
+                    self.persona_id,
+                    self.persona_name.clone(),
+                    self.binding.load().model.clone().unwrap_or_default(), // unwrap_or_default: an unbound faculty stages under an empty base — the trigger keys buckets by base and files it honestly under ""
+                    ws.world_state.clone(),
+                    if gate == "framing_echo" { "framing_echo" } else { "not_speech" },
+                );
+            }
+        }
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
