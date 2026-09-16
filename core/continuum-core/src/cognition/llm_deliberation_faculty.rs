@@ -1410,8 +1410,13 @@ impl LlmDeliberationFaculty {
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
+        // The names she can SEE this turn — the room's roster, the same view her
+        // prompt was handed — so a first-person claim of a peer's name is refused at
+        // the seam (card d41b6fc1). Read, never inserted; a room with no projection
+        // hands an empty list and the rule is simply inert.
+        let present = super::room_roster::present_names(ws.room_id);
         let decision = self.silence_a_parroted_draft(
-            decision_from_response(&resp.text, Some(&self.persona_name)),
+            decision_from_response(&resp.text, Some(&self.persona_name), &present),
             ws,
         );
         // THE MINDLESS RECEIPT (card aed15611): every verdict counts, and a gate refusal

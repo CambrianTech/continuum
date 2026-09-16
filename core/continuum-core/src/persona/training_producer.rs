@@ -1687,7 +1687,7 @@ pub(crate) mod tests {
         assert!(plan.stamp.is_none());
         // and the token is the one the Speak seam decides silence on
         assert_eq!(
-            crate::cognition::deliberation_parse::decision_from_response(SILENCE_COMPLETION, None),
+            crate::cognition::deliberation_parse::decision_from_response(SILENCE_COMPLETION, None, &[]),
             crate::cognition::workspace::Decision::pass()
         );
         // the bucket is measurable: its gym exists, so the sentinel can adopt or refuse
