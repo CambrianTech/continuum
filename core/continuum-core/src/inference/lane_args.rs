@@ -138,7 +138,7 @@ pub const CACHE_RAM_MIB: u32 = 4096;
 /// llama-server a zero. The REAL floor is one conversation's worth, derived per
 /// model in [`host_prompt_cache_mib`]; hardcoding a byte count here would be the
 /// same mistake this function exists to delete.
-const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
+pub(crate) const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
 
 /// Size the host-RAM prompt cache from the WORKLOAD, not from a constant.
 ///
