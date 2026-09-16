@@ -602,7 +602,13 @@ async fn serve_persona_loop_inner(
                 // citizens on a lanes-1 ambient pool nine of them yielded every tick and
                 // never reached the pull (measured live: 31 yields in 10 minutes, 3 of 12
                 // residents working an Open deck of 12).
-                let starved = run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                // Nobody is waiting on a self-cycle: it renders the prompt an unattended
+                // turn can afford (card 7496ed9d) — the message path below stays interactive.
+                let starved = crate::cognition::audience::with(
+                    crate::inference::prefill_rate::Audience::Unattended,
+                    run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp),
+                )
+                .await;
                 if starved {
                     if let Some(yields) =
                         crate::cognition::resource_admission::take_ambient_yield_report(
