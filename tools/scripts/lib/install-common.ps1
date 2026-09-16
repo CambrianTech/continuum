@@ -127,14 +127,26 @@ function Ensure-Gsudo {
 # after this. Idempotent + lazy: only the first module that actually needs admin
 # triggers it.
 function Ensure-Elevated {
+    param([string]$Reason = 'the current installer operation')
     if ($script:ElevationWarmed) { return }
     if (Test-IsAdmin) { $script:ElevationWarmed = $true; return }  # already elevated -- gsudo not needed
     Ensure-Gsudo
-    Write-Step 'Admin access needed -- approve the UAC prompt once now; no further prompts this run.'
-    & gsudo cache on 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail 'Elevation declined. The toolchain (VS Build Tools, CUDA, LLVM) needs admin once. Re-run and approve the prompt.'
-        exit 1
+    Write-Step "Admin access needed for $Reason -- requesting the shared elevation cache."
+    Write-Step 'gsudo is a third-party elevation helper. Windows may show its publisher, not Continuum, in the consent prompt.'
+    Write-Step 'Approval lets the installer continue its admin steps; it does not mean installation is complete. The build and core stay unelevated.'
+    # PS5 represents redirected native stderr as ErrorRecords. Capture it even
+    # under the installer's Stop preference, then judge the native exit code.
+    $savedErrorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $PSNativeCommandUseErrorActionPreference = $false
+        $diagnostic = @(& gsudo cache on 2>&1)
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedErrorPreference }
+    if ($code -ne 0) {
+        $detail = ($diagnostic | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'gsudo returned no diagnostic output.' }
+        throw "Elevation failed while $Reason (gsudo cache on exit $code).$([Environment]::NewLine)$detail"
     }
     $script:ElevationWarmed = $true
 }
@@ -150,9 +162,10 @@ function Clear-Elevation {
 # Run one command elevated, reusing the warmed cache (no extra prompt). Already
 # admin -> run directly.
 function Invoke-Elevated {
-    param([Parameter(Mandatory = $true)][string[]]$CommandLine)
+    param([Parameter(Mandatory = $true)][string[]]$CommandLine,
+        [string]$Reason = 'running the elevated installer command')
     if (Test-IsAdmin) { & $CommandLine[0] @($CommandLine[1..($CommandLine.Length - 1)]); return }
-    Ensure-Elevated
+    Ensure-Elevated -Reason $Reason
     & gsudo @CommandLine
 }
 
@@ -187,7 +200,7 @@ function Install-IfMissing {
     if ($UserScope -or (Test-IsAdmin)) {
         & winget @wingetArgs
     } else {
-        Ensure-Elevated
+        Ensure-Elevated -Reason "installing $Name"
         & gsudo winget @wingetArgs
     }
     $code = $LASTEXITCODE

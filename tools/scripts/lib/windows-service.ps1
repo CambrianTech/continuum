@@ -177,7 +177,7 @@ function Register-CoreServiceRelease {
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
         # Elevate registration only, with the caller's SID explicit. The core and
         # build stay unelevated. Registration deliberately does not start a core.
-        Invoke-Elevated -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
+        Invoke-Elevated -Reason 'registering the ContinuumCore startup task (before core handoff)' -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
             (Join-Path $RepoRoot 'tools\scripts\register-core-service.ps1'), '-PlanPath', $planPath)
         if ($LASTEXITCODE -ne 0) { throw 'Startup registration failed; the running core has not been stopped.' }
     } finally {
