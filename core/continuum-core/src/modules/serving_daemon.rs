@@ -3909,7 +3909,13 @@ fn prompt_cache_decision(
     // life of the process on a `--parallel 1` box (Cormac's review of #4128, the 5090
     // at -c 172436 = 4,499 MiB per state). Only the missing-footprint prior above is
     // honestly unable to compute it.
-    let one_full_state_mib = (fp.kv_per_token.saturating_mul(served_ctx as u64) / (1024 * 1024))
+    // Ceil, not floor: the engine skips a save when `state_size > limit_size` in BYTES
+    // (server-task.cpp), so a cache 1 MiB under a full state still refuses it — the
+    // 5090's 4,498.997 MiB state against a floored 4,498 MiB limit is that refusal.
+    let one_full_state_mib = fp
+        .kv_per_token
+        .saturating_mul(served_ctx as u64)
+        .div_ceil(1024 * 1024)
         .min(u32::MAX as u64) as u32;
     decision.desired_mib = decision.desired_mib.max(one_full_state_mib);
     if demands.is_empty() {
@@ -4738,17 +4744,22 @@ mod tests {
                 context_window: served_ctx,
                 ..fp.clone()
             };
-            let one_state_mib = (kv_per_token * served_ctx as u64 / mib) as u32;
+            let one_state_bytes = kv_per_token * served_ctx as u64;
+            let one_state_mib = one_state_bytes.div_ceil(mib) as u32;
             let constant = crate::inference::lane_args::CACHE_RAM_MIB;
             for (name, prior) in [
                 ("cold", prompt_cache_decision(Some(&geo), &[], 0, served_ctx, 1, 32 << 30)),
                 ("seeds", prompt_cache_decision(Some(&geo), &[], 2, served_ctx, 1, 32 << 30)),
                 ("unknown", prompt_cache_decision(Some(&geo), &[60_000], 1, served_ctx, 1, 0)),
             ] {
+                // The engine's check is in BYTES (`state_size > limit_size`), so the
+                // invariant is asserted in bytes: a limit floored to the MiB below a
+                // full state still refuses that state.
                 assert!(
-                    prior.desired_mib >= one_state_mib,
-                    "{name} prior at kv {kv_per_token} × ctx {served_ctx}: {} MiB < one full state {one_state_mib} MiB",
-                    prior.desired_mib
+                    (prior.desired_mib as u64) * mib >= one_state_bytes,
+                    "{name} prior at kv {kv_per_token} × ctx {served_ctx}: {} MiB < one full state {} B",
+                    prior.desired_mib,
+                    one_state_bytes
                 );
                 assert_eq!(prior.desired_mib, constant.max(one_state_mib), "{name}: the floor lifts the prior, never lowers it");
             }
