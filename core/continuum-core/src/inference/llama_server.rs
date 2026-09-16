@@ -5283,9 +5283,14 @@ mod tests {
             };
             observe(&mut seen_before, &mut seen_after);
             start_c.wait();
-            for _ in 0..2_000 {
+            // DETERMINISTIC COMPLETION (Astra's note on #4069, CI red on #4094): keep
+            // taking censuses until the handoff has been observed at least once, under a
+            // wall-clock bound — never a fixed iteration count a loaded runner can spend
+            // before the handoff thread is even scheduled.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while seen_after == 0 && std::time::Instant::now() < deadline {
                 observe(&mut seen_before, &mut seen_after);
-                if seen_after > 50 { break; }
+                std::thread::yield_now();
             }
             (seen_before, seen_after)
         });
