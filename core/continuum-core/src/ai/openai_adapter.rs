@@ -1985,6 +1985,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // every breaching call rather than wait for a human to notice slowness.
         if let Some(t) = &timing {
             warn_if_decode_collapsed(model, t.decode_tokens, t.decode_tokens_per_second);
+            // The measured prefill rate feeds the render budget (`inference::prefill_rate`):
+            // what a turn may cost before its first token is derived from what this lane
+            // actually prefills at, not from the served window alone.
+            crate::inference::prefill_rate::observe(model, t.prefill_ms, t.prefill_tokens_per_second);
         }
 
         // Plain EOF is accepted by the existing stream reader, but is not proof

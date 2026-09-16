@@ -80,8 +80,30 @@ pub struct ContextBudget {
 }
 
 impl ContextBudget {
-    /// Bounds derived from a live served context window, in tokens.
+    /// Bounds derived from a live served context window, in tokens — AND from what the
+    /// served lane can prefill inside the turn's time-to-first-token budget.
+    ///
+    /// The served window is KV capacity; it is not what a turn may cost. Measured
+    /// 2026-09-16 on the Intel Mac: a 4B prefilled at 20.8 t/s and every render carried
+    /// ~18k tokens (9.3k of tool registry, 9k of conversation) — fifteen minutes before the
+    /// first token, on a box whose served window said 32k was fine. So the total here is
+    /// `min(served window, TTFT_BUDGET × measured prefill t/s)`, floored at the serving
+    /// stack's own minimum ([`crate::inference::prefill_rate::affordable_prompt_tokens`]),
+    /// and every fraction below scales with it — the tool menu, recall, the digest. One
+    /// owner, one rule: the frontier keeps its window (500 t/s buys it whole), the small
+    /// tier gets the prompt it can afford. No trusted rate for the served model = the
+    /// served window rules, as before.
     pub fn from_window(context_window: u32) -> Self {
+        let affordable = Self::prefill_affordable_window(context_window);
+        Self {
+            total_chars: (affordable > 0)
+                .then(|| (affordable as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
+        }
+    }
+
+    /// The served window only — the KV-capacity reading, for seams that must not be
+    /// prefill-bounded (a test fixture, a capacity report).
+    pub fn from_window_unbounded(context_window: u32) -> Self {
         Self {
             total_chars: (context_window > 0)
                 .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
@@ -128,6 +150,41 @@ impl ContextBudget {
     pub fn unknown() -> Self {
         Self { total_chars: None }
     }
+
+/// The served window clamped to what the served lane can prefill inside the turn's
+/// time-to-first-token budget. `served` itself when no trusted prefill rate exists for
+/// the served model (cold, remote, unmeasured) — the served window rules until measured.
+/// One row when the clamp binds or lifts, never per call.
+fn prefill_affordable_window(served: u32) -> u32 {
+    if served == 0 {
+        return 0;
+    }
+    let Some(model) = crate::inference::llama_server::current_serving().active_model else {
+        return served;
+    };
+    let Some(tps) = crate::inference::prefill_rate::rate_for(&model) else {
+        return served;
+    };
+    let affordable = crate::inference::prefill_rate::affordable_prompt_tokens(
+        tps,
+        crate::cognition::serving_plan::MIN_SERVE_CTX,
+        served,
+    );
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let shape = ((served as u64) << 32) | affordable as u64;
+    if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
+        crate::probe!(
+            class = "cognition.budget.prefill_bound",
+            model = %model,
+            served_window = served as u64,
+            affordable_tokens = affordable as u64,
+            prefill_tps = tps,
+            bound = affordable < served,
+            "the render budget against the measured prefill rate — a turn costs what the lane can prefill in the TTFT budget"
+        );
+    }
+    affordable
+}
 
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
 const RECALL_DENOM: usize = 10;

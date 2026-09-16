@@ -197,7 +197,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
 /// Which of our own transients is open right now, if any: a deploy in flight (a live
 /// `continuum reboot` holds the claim while its warm build compiles beside this core) or
 /// the boot window. Named so the skip probe says which.
-fn own_transient(now: u64) -> Option<&'static str> {
+pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
     if let Some(root) = crate::commands::benchmark::continuum_home().ok() {
         if crate::runtime::deploy_claim::in_flight(&root, now).blocks() {
             return Some("deploy_in_flight");
