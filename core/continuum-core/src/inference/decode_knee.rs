@@ -8,11 +8,19 @@
 //! per resident) and never asked the decode curve, because nothing recorded it.
 //!
 //! This module records it. Every measured decode reports `(in-flight model calls,
-//! measured/expected ratio)`; per model the ledger keeps an EMA of the ratio at each
-//! concurrency. The KNEE is the largest concurrency whose ratio still clears
-//! [`DECODE_TAX_FLOOR`]; the lane demand is clamped to it. With the KV pages surviving
-//! relaunches (#4069) and restoring from disk in ~0.4 s, fewer warm slots plus paging IS
-//! the design — the restore economy — not a loss of minds.
+//! per-stream tokens/s)`; per model the ledger keeps an EMA of the rate at each
+//! concurrency. The KNEE is the largest concurrency whose per-stream rate still clears
+//! [`DECODE_FLOOR_TPS`] — an ABSOLUTE floor, never a fraction of the catalog: the first
+//! clean hour (2026-09-16 13:03–13:14Z) measured this box at 15 t/s per stream with 2 in
+//! flight and 9 t/s with 4, against a catalog 68 measured on an EMPTY M5; a 0.25-of-catalog
+//! floor read every lane as collapsed and walked the knee 4 → 3 → 2 → 1 — sixteen minds
+//! on one lane, which no law asked for. The physics: on a memory-bound box the AGGREGATE
+//! rate is roughly constant across lane counts (2 × 15 ≈ 4 × 9), so lanes only choose
+//! between queueing and per-stream speed; the floor names the speed below which a
+//! stream is slower than a person reads, and the knee never drops below
+//! [`MIN_KNEE_LANES`] while a roster is seated (one lane serialises prefill behind
+//! decode and idles the box between turns). Fewer warm slots plus paging IS the design
+//! (the restore economy, #4069) — not a loss of minds.
 //!
 //! Shape: a pure rule ([`knee_lanes`]) over a small ledger, a durable record per model
 //! (`state/decode-knee.json`) so a reboot starts AT the knee instead of re-climbing to
@@ -32,19 +40,24 @@
 //! 2. A clamp is a ratchet with no way up: at the knee nothing ever runs ABOVE it, so a
 //!    collapsed point above is never re-measured. Points go STALE after
 //!    [`FRESH_MS`]; the knee EXPLORES one lane above the largest fresh holding point
-//!    when the aggregate-throughput prediction says it will hold (ratio × n/(n+1) ≥
-//!    floor) and no fresh point above contradicts it — one flap per model per hour at
-//!    most.
+//!    when the constant-aggregate prediction says it will hold (tps × n/(n+1) ≥ floor)
+//!    and no fresh point above contradicts it — one flap per model per hour at most.
 //! 3. The clamp probe fires when the clamp CHANGES, not every planning tick.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// A lane count "holds" while the per-stream ratio to the single-stream catalog rate stays
-/// at or above this: a 4× tax at worst, inside the law's "disqualifying" line. Below it,
-/// one more lane makes every stream slower than the minds it was added for.
-pub const DECODE_TAX_FLOOR: f64 = 0.25;
+/// A lane count "holds" while its per-stream decode stays at or above this many tokens
+/// per second — an absolute floor. Ten is 1.5× a reader's pace (~7 t/s) and three times
+/// speech: below it a citizen's voice in a call drags and an 800-token act takes longer
+/// than the wait for a lane it was meant to shorten. The catalog single-stream rate
+/// (68 on an empty M5) is the collapse ALARM's reference (`serving.throughput.degraded`),
+/// never this rule's — a box carrying sixteen minds is not empty.
+pub const DECODE_FLOOR_TPS: f64 = 10.0;
+/// The knee never clamps a seated roster below this: one lane serialises the next
+/// turn's prefill behind the current decode and idles the box between turns.
+pub const MIN_KNEE_LANES: u32 = 2;
 /// Samples at a concurrency before its EMA is trusted — one decode is noise, a handful
 /// is a curve.
 pub const MIN_SAMPLES: u32 = 4;
@@ -58,7 +71,10 @@ pub const BOOT_QUIET: std::time::Duration = std::time::Duration::from_secs(600);
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct CurvePoint {
     pub samples: u32,
-    pub ratio_ema: f64,
+    /// Per-stream tokens/s at this concurrency (EMA). A record from before this field
+    /// (ratio-only) loads as 0 and is stale by `last_ms` anyway.
+    #[serde(default)]
+    pub tps_ema: f64,
     /// Unix ms of the newest sample; a record without one (pre-freshness) is stale.
     #[serde(default)]
     pub last_ms: u64,
@@ -70,15 +86,15 @@ impl CurvePoint {
     }
 }
 
-/// The measured decode curve of one model: concurrency → per-stream ratio.
+/// The measured decode curve of one model: concurrency → per-stream tokens/s.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct DecodeCurve {
     pub points: BTreeMap<u32, CurvePoint>,
 }
 
 impl DecodeCurve {
-    pub fn observe(&mut self, inflight: u32, ratio: f64, now_ms: u64) {
-        if inflight == 0 || !ratio.is_finite() || ratio <= 0.0 {
+    pub fn observe(&mut self, inflight: u32, tps: f64, now_ms: u64) {
+        if inflight == 0 || !tps.is_finite() || tps <= 0.0 {
             return;
         }
         let p = self.points.entry(inflight).or_default();
@@ -86,34 +102,35 @@ impl DecodeCurve {
         if now_ms.saturating_sub(p.last_ms) > FRESH_MS {
             p.samples = 0;
         }
-        p.ratio_ema = if p.samples == 0 {
-            ratio
+        p.tps_ema = if p.samples == 0 {
+            tps
         } else {
-            p.ratio_ema + EMA_ALPHA * (ratio - p.ratio_ema)
+            p.tps_ema + EMA_ALPHA * (tps - p.tps_ema)
         };
         p.samples = p.samples.saturating_add(1);
         p.last_ms = now_ms;
     }
 
-    /// The knee under `floor` at `now_ms`: the LARGEST fresh, trusted concurrency whose
-    /// ratio holds — plus one when the aggregate-throughput prediction says the next
-    /// lane holds too (`ratio × n/(n+1) ≥ floor`) and no fresh point above says
+    /// The knee under `floor_tps` at `now_ms`: the LARGEST fresh, trusted concurrency
+    /// whose per-stream rate holds — plus one when the constant-aggregate prediction says
+    /// the next lane holds too (`tps × n/(n+1) ≥ floor`) and no fresh point above says
     /// otherwise (the way back up from a clamp). If every fresh concurrency has
-    /// collapsed, one below the smallest collapsed one (never below 1) — shrink and
-    /// re-measure. `None` = nothing fresh and trusted (no clamp; the roster rules).
-    pub fn knee(&self, floor: f64, now_ms: u64) -> Option<u32> {
+    /// collapsed, one below the smallest collapsed one, never below [`MIN_KNEE_LANES`] —
+    /// shrink and re-measure. `None` = nothing fresh and trusted (no clamp; the roster
+    /// rules).
+    pub fn knee(&self, floor_tps: f64, now_ms: u64) -> Option<u32> {
         let trusted: Vec<(&u32, &CurvePoint)> =
             self.points.iter().filter(|(_, p)| p.trusted_at(now_ms)).collect();
         if trusted.is_empty() {
             return None;
         }
-        if let Some((n, p)) = trusted.iter().rev().find(|(_, p)| p.ratio_ema >= floor) {
+        if let Some((n, p)) = trusted.iter().rev().find(|(_, p)| p.tps_ema >= floor_tps) {
             let n = **n;
             let is_top = trusted.last().map(|(top, _)| **top == n).unwrap_or(false); // unwrap_or: non-empty by the guard above
-            let predicted_next = p.ratio_ema * n as f64 / (n + 1) as f64;
-            return Some(if is_top && predicted_next >= floor { n + 1 } else { n });
+            let predicted_next = p.tps_ema * n as f64 / (n + 1) as f64;
+            return Some((if is_top && predicted_next >= floor_tps { n + 1 } else { n }).max(MIN_KNEE_LANES));
         }
-        trusted.first().map(|(n, _)| (**n).saturating_sub(1).max(1))
+        trusted.first().map(|(n, _)| (**n).saturating_sub(1).max(MIN_KNEE_LANES))
     }
 }
 
@@ -125,10 +142,11 @@ fn now_ms() -> u64 {
 }
 
 /// The pure rule the planner applies: the roster's demand, clamped to the knee when one
-/// is known. A knee never RAISES demand.
+/// is known. A knee never RAISES demand, and never takes a seated roster below
+/// [`MIN_KNEE_LANES`].
 pub fn knee_lanes(demand: u32, knee: Option<u32>) -> u32 {
     match knee {
-        Some(k) => demand.min(k.max(1)),
+        Some(k) => demand.min(k.max(MIN_KNEE_LANES)),
         None => demand,
     }
 }
@@ -158,9 +176,9 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     let ratio = measured_tps / expected_tps;
     let mut curves = CURVES.lock();
     let curve = curves.entry(model.to_string()).or_default();
-    let before = curve.knee(DECODE_TAX_FLOOR, now);
-    curve.observe(inflight, ratio, now);
-    let after = curve.knee(DECODE_TAX_FLOOR, now);
+    let before = curve.knee(DECODE_FLOOR_TPS, now);
+    curve.observe(inflight, measured_tps, now);
+    let after = curve.knee(DECODE_FLOOR_TPS, now);
     if before != after {
         crate::probe!(
             class = "serving.decode_knee.moved",
@@ -168,6 +186,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
             from = before.map(|k| k as u64).unwrap_or(0),
             to = after.map(|k| k as u64).unwrap_or(0),
             inflight = inflight as u64,
+            measured_tps,
             ratio,
             "the measured decode knee moved — lanes follow it, not the roster"
         );
@@ -193,7 +212,7 @@ fn own_transient(now: u64) -> Option<&'static str> {
 /// The knee for `model`, if measured.
 pub fn knee_for(model: &str) -> Option<u32> {
     let now = now_ms();
-    CURVES.lock().get(model).and_then(|c| c.knee(DECODE_TAX_FLOOR, now))
+    CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -236,71 +255,75 @@ mod tests {
     use super::*;
 
     const T: u64 = 10_000_000_000; // a fixed "now" — every sample fresh unless a test ages it
+    const F: f64 = DECODE_FLOOR_TPS;
 
-    fn measured(c: &mut DecodeCurve, n: u32, ratio: f64) {
+    fn measured(c: &mut DecodeCurve, n: u32, tps: f64) {
+        measured_at(c, n, tps, T);
+    }
+
+    fn measured_at(c: &mut DecodeCurve, n: u32, tps: f64, at: u64) {
         for _ in 0..MIN_SAMPLES {
-            c.observe(n, ratio, T);
+            c.observe(n, tps, at);
         }
     }
 
     // what this catches (2026-09-16, the M5 at 8 lanes / 7 t/s): the knee is the largest
-    // concurrency that still clears the tax floor; a roster of 16 clamps to it; when every
-    // measured concurrency has collapsed the rule shrinks below the smallest one instead
-    // of standing still; nothing trusted = no clamp; a knee never raises demand.
+    // concurrency whose per-stream rate still clears the absolute floor; a roster of 16
+    // clamps to it; when every measured concurrency has collapsed the rule shrinks below
+    // the smallest one — but never below two lanes for a seated roster (the first clean
+    // hour walked 4 → 3 → 2 → 1 against a 0.25-of-catalog floor: sixteen minds on one
+    // lane); nothing trusted = no clamp; a knee never raises demand.
     #[test]
     fn lanes_stop_at_the_largest_concurrency_that_still_holds() {
         let mut c = DecodeCurve::default();
-        measured(&mut c, 2, 0.30); // 20 of 68 t/s
-        measured(&mut c, 4, 0.22); // 15 of 68
-        measured(&mut c, 8, 0.10); // 7 of 68
-        assert_eq!(c.knee(DECODE_TAX_FLOOR, T), Some(2));
-        assert_eq!(knee_lanes(16, c.knee(DECODE_TAX_FLOOR, T)), 2, "the roster's 16 clamps to the knee");
+        measured(&mut c, 2, 20.0);
+        measured(&mut c, 4, 9.0);
+        measured(&mut c, 8, 7.0);
+        assert_eq!(c.knee(F, T), Some(2));
+        assert_eq!(knee_lanes(16, c.knee(F, T)), 2, "the roster's 16 clamps to the knee");
         assert_eq!(knee_lanes(1, Some(4)), 1, "a knee never raises demand");
-        // Only collapsed concurrencies measured → one below the smallest, never zero.
+        // Only collapsed concurrencies measured → one below the smallest.
         let mut worst = DecodeCurve::default();
-        measured(&mut worst, 6, 0.12);
-        measured(&mut worst, 8, 0.09);
-        assert_eq!(worst.knee(DECODE_TAX_FLOOR, T), Some(5));
-        let mut floor = DecodeCurve::default();
-        measured(&mut floor, 1, 0.05);
-        assert_eq!(floor.knee(DECODE_TAX_FLOOR, T), Some(1));
+        measured(&mut worst, 6, 8.0);
+        measured(&mut worst, 8, 6.0);
+        assert_eq!(worst.knee(F, T), Some(5));
+        // Even 2 in flight collapsed: the floor of the rule is two lanes, not one.
+        let mut two = DecodeCurve::default();
+        measured(&mut two, 2, 8.0);
+        measured(&mut two, 3, 6.0);
+        assert_eq!(two.knee(F, T), Some(MIN_KNEE_LANES), "never one lane for a roster");
+        assert_eq!(knee_lanes(16, Some(1)), MIN_KNEE_LANES, "a remembered 1 is lifted to two");
         // Untrusted (too few samples) = no clamp.
         let mut thin = DecodeCurve::default();
-        thin.observe(8, 0.1, T);
-        assert_eq!(thin.knee(DECODE_TAX_FLOOR, T), None);
+        thin.observe(8, 7.0, T);
+        assert_eq!(thin.knee(F, T), None);
         assert_eq!(knee_lanes(16, None), 16);
     }
 
     // what this catches (the first live deploy, 06:02Z): a clamp is a ratchet with no way
     // up — at the knee nothing runs above it, so a collapse measured under a build held
     // seventeen minds on two lanes. The knee EXPLORES one lane above the largest fresh
-    // holding point when the aggregate-throughput prediction says it holds, a fresh
+    // holding point when the constant-aggregate prediction says it holds, a fresh
     // collapsed point above blocks the climb, and a stale one (older than an hour) no
     // longer does. A stale point also restarts its EMA instead of averaging last hour in.
     #[test]
     fn the_knee_climbs_back_when_the_collapse_above_it_goes_stale() {
         let mut c = DecodeCurve::default();
-        measured(&mut c, 2, 0.45); // 0.45 × 2/3 = 0.30 ≥ floor → predicted to hold at 3
-        assert_eq!(c.knee(DECODE_TAX_FLOOR, T), Some(3), "explores one above a comfortable hold");
-        measured(&mut c, 3, 0.20); // measured: 3 collapses (a build was running)
-        assert_eq!(c.knee(DECODE_TAX_FLOOR, T), Some(2), "a fresh collapse above blocks the climb");
+        measured(&mut c, 2, 30.0); // 30 × 2/3 = 20 ≥ floor → predicted to hold at 3
+        assert_eq!(c.knee(F, T), Some(3), "explores one above a comfortable hold");
+        measured(&mut c, 3, 8.0); // measured: 3 collapses (a build was running)
+        assert_eq!(c.knee(F, T), Some(2), "a fresh collapse above blocks the climb");
         let later = T + FRESH_MS + 1;
-        assert_eq!(c.knee(DECODE_TAX_FLOOR, later), None, "nothing fresh = nothing trusted = no clamp");
-        measured_at(&mut c, 2, 0.45, later);
-        assert_eq!(c.knee(DECODE_TAX_FLOOR, later), Some(3), "the stale collapse no longer holds it down");
-        c.observe(3, 0.40, later);
+        assert_eq!(c.knee(F, later), None, "nothing fresh = nothing trusted = no clamp");
+        measured_at(&mut c, 2, 30.0, later);
+        assert_eq!(c.knee(F, later), Some(3), "the stale collapse no longer holds it down");
+        c.observe(3, 18.0, later);
         let p = &c.points[&3];
-        assert_eq!((p.samples, p.ratio_ema), (1, 0.40), "a stale point restarts, it does not average last hour in");
-        // At the tax line the prediction says the next lane will NOT hold: no exploring.
+        assert_eq!((p.samples, p.tps_ema), (1, 18.0), "a stale point restarts, it does not average last hour in");
+        // At the floor the prediction says the next lane will NOT hold: no exploring.
         let mut edge = DecodeCurve::default();
-        measured(&mut edge, 4, 0.26); // 0.26 × 4/5 = 0.208 < floor
-        assert_eq!(edge.knee(DECODE_TAX_FLOOR, T), Some(4));
-    }
-
-    fn measured_at(c: &mut DecodeCurve, n: u32, ratio: f64, at: u64) {
-        for _ in 0..MIN_SAMPLES {
-            c.observe(n, ratio, at);
-        }
+        measured(&mut edge, 4, 11.0); // 11 × 4/5 = 8.8 < floor
+        assert_eq!(edge.knee(F, T), Some(4));
     }
 
     // what this catches: the record survives a reboot and a corrupt file is forgotten;
@@ -311,7 +334,7 @@ mod tests {
         let p = dir.path().join("decode-knee.json");
         let mut curves = BTreeMap::new();
         let mut c = DecodeCurve::default();
-        measured(&mut c, 3, 0.4);
+        measured(&mut c, 3, 15.0);
         curves.insert("m".to_string(), c);
         save_to(&p, &curves);
         assert_eq!(load_from(&p), curves);
@@ -319,6 +342,6 @@ mod tests {
         assert!(load_from(&p).is_empty());
         std::fs::write(&p, br#"{"m":{"points":{"2":{"samples":9,"ratio_ema":0.1}}}}"#).expect("write");
         let old = load_from(&p);
-        assert_eq!(old["m"].knee(DECODE_TAX_FLOOR, T), None, "a pre-freshness record is stale evidence");
+        assert_eq!(old["m"].knee(F, T), None, "a pre-freshness record is stale evidence");
     }
 }
