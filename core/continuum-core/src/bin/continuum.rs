@@ -2985,12 +2985,34 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             let LaunchSource::Prebuilt(candidate) = policy else {
                 unreachable!("only a validated prebuilt source selects this plan")
             };
-            eprintln!(
-                "▶ starting verified prebuilt core: {} (build {}, no rebuild; log: {logfile})",
-                candidate.path.display(),
-                candidate.build_sha
-            );
-            direct_core_command(&candidate.path, &socket)
+            match script.as_ref() {
+                // ONE start path (2026-09-16): the verified artifact launches THROUGH
+                // start-server.sh in prebuilt mode — every cargo build skipped, every
+                // piece of launch environment kept (desktop dist, power assertion, airc
+                // daemon, llama-server PATH). The bare direct launch darkened the M5's
+                // desktop and dropped its sleep assertion on the first warm-build reboot.
+                Some(script) => {
+                    eprintln!(
+                        "▶ starting verified prebuilt core: {} (build {}, no rebuild) via {} (log: {logfile})",
+                        candidate.path.display(),
+                        candidate.build_sha,
+                        script.display()
+                    );
+                    let mut c = std::process::Command::new(locate_bash()?);
+                    c.arg(script);
+                    c.env("CONTINUUM_PREBUILT_CORE", &candidate.path);
+                    c
+                }
+                // No source tree (an installed-only box): the bare launch is all there is.
+                None => {
+                    eprintln!(
+                        "▶ starting verified prebuilt core: {} (build {}, no rebuild, no start script; log: {logfile})",
+                        candidate.path.display(),
+                        candidate.build_sha
+                    );
+                    direct_core_command(&candidate.path, &socket)
+                }
+            }
         }
         LaunchPlan::Script => {
             let script = script.expect("plan_launch only picks Script when one was found");

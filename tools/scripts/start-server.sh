@@ -62,6 +62,28 @@ fi
 # target); we only supply the default so the unattended path can't diverge.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
 
+# ── PREBUILT MODE (2026-09-16): the CLI's warm-build reboot hands a VERIFIED
+# artifact in CONTINUUM_PREBUILT_CORE. Everything else this script does for the
+# core — the llama-server PATH, ORT_DYLIB_PATH, the derived airc room, the models
+# dir, the airc daemon, the desktop dist + its background rebuild, the caffeinate
+# sleep assertion — still runs; only the cargo builds are skipped. #4090's direct
+# launch ran the artifact bare and the M5 came up with NO desktop (CONTINUUM_UI_DIST
+# unset: desktop.dm.unconfigured) and NO power assertion. One start path, not two.
+if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
+  if [ ! -x "$CONTINUUM_PREBUILT_CORE" ]; then
+    echo "✗ CONTINUUM_PREBUILT_CORE=$CONTINUUM_PREBUILT_CORE is not an executable — refusing to launch" >&2
+    exit 1
+  fi
+  echo "▶ prebuilt core: $CONTINUUM_PREBUILT_CORE — skipping every cargo build, keeping the launch environment"
+  cargo() {
+    if [ "${1:-}" = "build" ]; then
+      echo "  (prebuilt core: skipped cargo $*)"
+      return 0
+    fi
+    command cargo "$@"
+  }
+fi
+
 # ORT_DYLIB_PATH — the ort crate is built with `load-dynamic`, so it dlopens
 # ONNX Runtime BY NAME at runtime. Naming it explicitly is not a nicety on
 # Windows: the OS search order finds C:\Windows\System32\onnxruntime.dll, which
@@ -876,6 +898,9 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFIL
 CORE_SRC_DIR="$(dirname "$CORE_MANIFEST")/src"
 CORE_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-core-server"
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) CORE_BIN="$CORE_BIN.exe" ;; esac
+if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
+  CORE_BIN="$CONTINUUM_PREBUILT_CORE"
+fi
 # #296: THE incident bin. A swept debug/ dir let the build above print
 # "Finished" with no binary on disk, and `exec "$CORE_BIN"` died at the very
 # end while the deploy read as green. Restore it HERE — before the #194
@@ -885,7 +910,7 @@ if ! ensure_unswept_bin "$CORE_BIN" continuum-core-server "$CORE_MANIFEST" $PROF
   echo "✗ FATAL #296: continuum-core-server missing at $CORE_BIN even after a swept-cache rebuild — refusing to exec a nonexistent binary (leaving any running core untouched)" >&2
   exit 1
 fi
-core_bin_is_stale() { [ -f "$CORE_BIN" ] && [ -n "$(find "$CORE_SRC_DIR" -name '*.rs' -type f -newer "$CORE_BIN" 2>/dev/null | head -1)" ]; }
+core_bin_is_stale() { [ -z "${CONTINUUM_PREBUILT_CORE:-}" ] && [ -f "$CORE_BIN" ] && [ -n "$(find "$CORE_SRC_DIR" -name '*.rs' -type f -newer "$CORE_BIN" 2>/dev/null | head -1)" ]; }
 if core_bin_is_stale; then
   echo "⚠ #194: continuum-core-server is STALE (a source is newer than the binary) — cargo missed an edit; busting fingerprint + rebuilding" >&2
   find "$CORE_SRC_DIR" -name '*.rs' -type f -exec touch {} +
