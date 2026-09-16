@@ -23,10 +23,12 @@
 [CmdletBinding()]
 param(
     [switch]$Grid,
-    [switch]$Update
+    [switch]$Update,
+    [switch]$ResumePrepared
 )
 
 $ErrorActionPreference = 'Stop'
+if ($ResumePrepared -and $Update) { throw '-ResumePrepared selects an existing release and cannot be combined with -Update.' }
 
 function Enter-ContinuumInstallLease {
     $state = Join-Path $env:USERPROFILE '.continuum'
@@ -59,6 +61,7 @@ function Update-ContinuumCheckout {
 # cloned install.ps1 which has a real $PSScriptRoot. Mirrors the root install.sh
 # bootstrapper.
 if (-not $PSScriptRoot) {
+    if ($ResumePrepared) { throw '-ResumePrepared requires a local installer checkout.' }
     Write-Host '  Continuum installer (bootstrap) -- fetching the repo for a native build ...'
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host '  winget not found. Install App Installer from the Microsoft Store, then re-run.' -ForegroundColor Red
@@ -99,8 +102,15 @@ if ($Update) {
 $installLease = Enter-ContinuumInstallLease
 try {
 . (Join-Path $LibDir 'install-common.ps1')
-. (Join-Path $LibDir 'win-modules.ps1')
 . (Join-Path $LibDir 'windows-service.ps1')
+. (Join-Path $LibDir 'windows-prepared.ps1')
+if ($ResumePrepared) {
+    try { Resume-CorePreparedRelease -RepoRoot $RepoRoot }
+    finally { Clear-Elevation }
+    Write-Ok 'Prepared release is verified and supervised.'
+    return
+}
+. (Join-Path $LibDir 'win-modules.ps1')
 
 $WantsGrid = $Grid -or ($env:CONTINUUM_GRID -eq '1')
 
@@ -159,7 +169,7 @@ try {
     # speak. Needs CUDA + MSVC env (already provisioned above).
     Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory (Split-Path $release.engine)
 
-    Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
+    Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -PersistPreparedReceipt
     Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
 }
 finally {

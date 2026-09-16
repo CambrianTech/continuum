@@ -4,9 +4,130 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression for 72920541: retrying registration must select exact prepared
+    # files, never treat an unchecked descriptor as a source-build cache hit.
+    & {
+        function Write-Step { param($msg) }
+        $resumeRoot = Join-Path $scratch 'resume installed'
+        $serviceSlot = Join-Path $resumeRoot 'bin\service-a'
+        $engineSlot = Join-Path $resumeRoot 'bin\engine-a'
+        New-Item -ItemType Directory -Path $serviceSlot, $engineSlot, (Join-Path $resumeRoot 'logs') -Force | Out-Null
+        $release = [pscustomobject]@{ artifact = (Join-Path $serviceSlot 'continuum-core-server.exe');
+            cli = (Join-Path $serviceSlot 'continuum.exe'); launcher = (Join-Path $serviceSlot 'run-service-hidden.ps1');
+            engine = (Join-Path $engineSlot 'llama-server.exe'); socket = (Join-Path $scratch 'prepared.sock');
+            logDirectory = (Join-Path $resumeRoot 'logs') }
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { Set-Content -LiteralPath $release.$field -Value $field }
+        Save-CorePreparedRelease -Release $release -InstallRoot $resumeRoot
+        $loaded = Get-CorePreparedRelease -InstallRoot $resumeRoot
+        if ($loaded.artifact -ne $release.artifact) { throw 'Prepared receipt selected a different release' }
+        Set-Content -LiteralPath $release.cli -Value 'tampered'
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
+        if (-not $refused) { throw 'Changed prepared artifact was accepted' }
+        Set-Content -LiteralPath $release.cli -Value 'cli'
+        $receiptPath = Join-Path $resumeRoot 'install-prepared.json'
+        $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+        $receipt.userSid = 'S-1-5-18'
+        $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'schema or owner' }
+        if (-not $refused) { throw 'Wrong-owner receipt was accepted' }
+        Remove-Item -LiteralPath $receiptPath
+        $script:resumeTask = [pscustomobject]@{ Principal = [pscustomobject]@{ UserId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value };
+            Description = ($release | ConvertTo-Json -Compress) }
+        function Get-ScheduledTask { $script:resumeTask }
+        $loaded = Get-CorePreparedRelease -InstallRoot $resumeRoot
+        if ($loaded.engine -ne $release.engine) { throw 'Legacy task release selection changed the engine' }
+        $bad = $release | ConvertTo-Json | ConvertFrom-Json
+        $bad.cli = Join-Path $scratch 'outside.exe'
+        $refused = $false
+        try { Assert-CorePreparedRelease -Release $bad -InstallRoot $resumeRoot } catch { $refused = $_ -match 'expected installed layout' }
+        if (-not $refused) { throw 'Prepared path escaped the paired slot' }
+        $bad = $release | ConvertTo-Json | ConvertFrom-Json
+        $bad | Add-Member NoteProperty unknown 'extra'
+        $refused = $false
+        try { Assert-CorePreparedRelease -Release $bad -InstallRoot $resumeRoot } catch { $refused = $_ -match 'unexpected or missing fields' }
+        if (-not $refused) { throw 'Unknown descriptor field was accepted' }
+        $redirect = Join-Path $resumeRoot 'bin\service-b'
+        New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
+        try {
+            $bad = $release | ConvertTo-Json | ConvertFrom-Json
+            foreach ($field in @('artifact', 'cli', 'launcher')) { $bad.$field = Join-Path $redirect (Split-Path $bad.$field -Leaf) }
+            $refused = $false
+            try { Assert-CorePreparedRelease -Release $bad -InstallRoot $resumeRoot } catch { $refused = $_ -match 'redirected' }
+            if (-not $refused) { throw 'Prepared slot junction was accepted' }
+        } finally { [IO.Directory]::Delete($redirect) }
+        $script:resumeOrder = @()
+        function Register-CoreServiceRelease {
+            param($Release, $RepoRoot, $WorkingDirectory)
+            if ($WorkingDirectory -ne $serviceSlot -or $RepoRoot -ne $repo -or $env:CONTINUUM_CORE_SOCKET -ne $release.socket) { throw 'Resume mixed source/installed context or socket' }
+            $script:resumeOrder += 'register'
+        }
+        function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirectory) $script:resumeOrder += 'handoff' }
+        $originalSocket = $env:CONTINUUM_CORE_SOCKET
+        Resume-CorePreparedRelease -RepoRoot $repo -InstallRoot $resumeRoot
+        if (($script:resumeOrder -join ',') -ne 'register,handoff' -or $env:CONTINUUM_CORE_SOCKET -ne $originalSocket) { throw 'Resume ordering or socket restoration failed' }
+        function Register-CoreServiceRelease { throw 'fixture registration refused' }
+        $script:resumeOrder = @()
+        $refused = $false
+        try { Resume-CorePreparedRelease -RepoRoot $repo -InstallRoot $resumeRoot } catch { $refused = $_ -match 'fixture registration refused' }
+        if (-not $refused -or $script:resumeOrder.Count -ne 0 -or $env:CONTINUUM_CORE_SOCKET -ne $originalSocket) { throw 'Failed registration reached handoff or leaked socket context' }
+
+        # Execute the public installer in a disposable profile, with only the
+        # registration/handoff boundary mocked. Loading provisioning is a trap.
+        $fakeRepo = Join-Path $scratch 'resume installer'
+        $fakeLib = Join-Path $fakeRepo 'tools\scripts\lib'
+        New-Item -ItemType Directory -Path $fakeLib -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $fakeRepo
+        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+            Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
+        }
+        $shim = @'
+. '__SERVICE__'
+function Get-ScheduledTask { $null }
+function Register-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirectory) Write-Output 'fixture register prepared' }
+function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirectory) Write-Output 'fixture guarded handoff' }
+'@
+        $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |
+            Set-Content -LiteralPath (Join-Path $fakeLib 'windows-service.ps1')
+        Set-Content -LiteralPath (Join-Path $fakeLib 'win-modules.ps1') -Value "throw 'Unexpected provisioning/build module load'"
+        $profile = Join-Path $scratch 'resume profile'
+        $root = Join-Path $profile '.continuum'
+        New-Item -ItemType Directory -Path $profile | Out-Null
+        Copy-Item -LiteralPath $resumeRoot -Destination $root -Recurse -Force
+        $selected = $release | ConvertTo-Json | ConvertFrom-Json
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine', 'logDirectory')) { $selected.$field = $selected.$field.Replace($resumeRoot, $root) }
+        Save-CorePreparedRelease -Release $selected -InstallRoot $root
+        foreach ($extra in @('', ' -Update')) {
+            $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $fakeRepo 'install.ps1') + '" -ResumePrepared' + $extra
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            $info.EnvironmentVariables['USERPROFILE'] = $profile
+            $child = [Diagnostics.Process]::Start($info)
+            try {
+                $stdout = $child.StandardOutput.ReadToEndAsync()
+                $stderr = $child.StandardError.ReadToEndAsync()
+                if (-not $child.WaitForExit(10000)) { $child.Kill(); $child.WaitForExit(); throw 'Isolated resume installer fixture timed out' }
+                $output = $stdout.Result + $stderr.Result
+                if (-not $extra) {
+                    if ($child.ExitCode -ne 0 -or $output -notmatch 'fixture register prepared' -or $output -notmatch 'fixture guarded handoff') {
+                        throw "Public prepared resume did not reach guarded handoff: $output"
+                    }
+                } elseif ($child.ExitCode -eq 0 -or $output -notmatch 'cannot be combined with -Update' -or $output -match 'fixture register prepared') {
+                    throw 'Public resume accepted source-update mode'
+                }
+            } finally { $child.Dispose() }
+        }
+    }
+    Write-Output 'PASS: explicit prepared release validates integrity/identity/layout and retains guarded handoff ordering'
+
     # Regression for 6026ae26: Task Scheduler returned inherited administrator /
     # SYSTEM ACEs before an explicit caller-read ACE. AddAccess throws for this
     # real shape; repair must preserve every other ACE and its evaluation order.

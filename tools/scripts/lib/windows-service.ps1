@@ -185,7 +185,8 @@ function New-CoreServiceRelease {
 }
 
 function Register-CoreServiceRelease {
-    param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot)
+    param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$WorkingDirectory = $RepoRoot, [switch]$PersistPreparedReceipt)
     foreach ($field in $Release.PSObject.Properties) {
         $value = [string]$field.Value
         if (-not $value -or $value.IndexOfAny([char[]]@('"', "`r", "`n")) -ge 0 -or $value.EndsWith('\')) {
@@ -195,11 +196,12 @@ function Register-CoreServiceRelease {
     if (-not (Test-Path -LiteralPath $Release.engine -PathType Leaf)) { throw 'Candidate inference engine is missing; startup registration was preserved.' }
     # Reuse the CLI's artifact/SHA/runtime preflight before changing what the
     # next login will launch. A failed update must leave the old task intact.
-    Push-Location $RepoRoot
+    Push-Location $WorkingDirectory
     try {
         & $Release.cli reboot --prebuilt $Release.artifact --validate-only
         if ($LASTEXITCODE -ne 0) { throw 'Candidate validation failed; startup registration and the running core were preserved.' }
     } finally { Pop-Location }
+    if ($PersistPreparedReceipt) { Save-CorePreparedRelease -Release $Release }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "{0}" -ExecutablePath "{1}" -CorePath "{2}" -SocketPath "{3}" -EnginePath "{4}" -LogDirectory "{5}"' -f $Release.launcher, $Release.cli, $Release.artifact, $Release.socket, $Release.engine, $Release.logDirectory
     $description = $Release | ConvertTo-Json -Compress
@@ -254,8 +256,9 @@ function Register-CoreServiceRelease {
 }
 
 function Invoke-CoreServiceRelease {
-    param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot)
-    Push-Location $RepoRoot
+    param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$WorkingDirectory = $RepoRoot)
+    Push-Location $WorkingDirectory
     try {
         & $Release.cli reboot --prebuilt $Release.artifact --service
         if ($LASTEXITCODE -ne 0) { throw 'Guarded service handoff failed; installer did not report success.' }
