@@ -106,6 +106,10 @@ pub fn record_refusal(instance: &str, reason: &str, work_mtime_ms: Option<u64>) 
 /// the WORK (no patch to grade)? An env refusal is deck hygiene: the instance is not
 /// offered on this box again until the env changes. A work refusal is the citizen's.
 pub fn refusal_is_env_fault(reason: &str) -> bool {
+    // A failure to look is neither env nor work: it is no verdict at all (cffc9c5e).
+    if reason.starts_with(crate::cognition::swe_bench::COULD_NOT_LOOK) {
+        return false;
+    }
     reason.starts_with("UNGRADEABLE — ")
         || reason.contains("env has no runnable test harness")
         || reason.contains("could not install")
@@ -327,6 +331,9 @@ pub struct SweepReport {
     pub resolved: usize,
     pub ungradeable: usize,
     pub errored: usize,
+    /// Could not LOOK (the package index unreachable while building the env) — no
+    /// verdict, no marker; the next tick tries again. Card cffc9c5e.
+    pub deferred: usize,
 }
 
 /// Grade every pending artifact, sequentially, recording each verdict.
@@ -397,6 +404,31 @@ pub async fn sweep() -> SweepReport {
             workspace: Some(item.workspace.to_string_lossy().into_owned()),
         };
         match crate::commands::benchmark::grade_swe(params).await {
+            Ok(result)
+                if result
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with(crate::cognition::swe_bench::COULD_NOT_LOOK)) =>
+            {
+                // A failure to LOOK is not a verdict about the instance and must never
+                // become its standing refusal (xarray-4356, 2026-09-16: a DNS error during
+                // a power outage stood as the env verdict and hid the real one). No marker,
+                // so `pending()` offers it again next tick; the probe says why it waited.
+                report.deferred += 1;
+                let reason: String = result
+                    .error
+                    .as_deref()
+                    .unwrap_or("") // unwrap_or: guarded by the arm — error is Some here
+                    .chars()
+                    .take(160)
+                    .collect();
+                crate::probe!(
+                    class = "benchmark.verdict.sweep_deferred_could_not_look",
+                    instance = item.instance.as_str(),
+                    reason = %reason,
+                    "the index was unreachable while building the env — deferred, not refused",
+                );
+            }
             Ok(result) if result.error.is_some() => {
                 report.ungradeable += 1;
                 record_refusal(
@@ -448,6 +480,7 @@ pub async fn sweep() -> SweepReport {
         resolved = report.resolved,
         ungradeable = report.ungradeable,
         errored = report.errored,
+        deferred = report.deferred,
         "boot artifact sweep complete — every worked artifact now carries a verdict",
     );
     report
@@ -480,6 +513,11 @@ mod tests {
         assert!(refusal_is_env_fault("psf__requests-1766's env has no runnable test harness: era-pinned pytest cannot execute"));
         assert!(refusal_is_env_fault("could not install scikit-learn__scikit-learn-14983's repo into a venv — a cached broken env"));
         assert!(!refusal_is_env_fault("no candidate patch to grade for matplotlib__matplotlib-21568 — the workspace holds no diff"));
+        // card cffc9c5e: a failure to LOOK is never an env fault (nor a work fault).
+        assert!(!refusal_is_env_fault(&format!(
+            "{}the resolver could not reach the package index during `uv pip install [\"cython<3\"]`",
+            crate::cognition::swe_bench::COULD_NOT_LOOK
+        )));
     }
 
     /// what this catches: the sweep manufacturing a score out of an absence or an ambiguity —

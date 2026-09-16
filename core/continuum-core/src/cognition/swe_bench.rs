@@ -2058,6 +2058,23 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         }
         return Ok(py);
     }
+    // ANY failure below leaves NO half-built env: `bin/python` is the "env is complete"
+    // key, so a venv whose deps never installed (the index unreachable, card cffc9c5e)
+    // would otherwise be adopted as complete on the next run and grade every attempt
+    // ungradeable. Each fatal site still removes on its own; this is the floor under them.
+    let built = build_env_from_scratch(instance, repo_dir, env_dir.clone(), py.clone()).await;
+    if built.is_err() {
+        let _ = std::fs::remove_dir_all(&env_dir);
+    }
+    built
+}
+
+async fn build_env_from_scratch(
+    instance: &SweInstance,
+    repo_dir: &Path,
+    env_dir: PathBuf,
+    py: PathBuf,
+) -> Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
     let uv = which("uv").ok_or_else(|| {
         "uv is not installed — it builds the per-instance environment (a Rust binary, \
@@ -2531,6 +2548,38 @@ fn setuptools_importlib_clash_override(stderr: &str) -> Option<String> {
 /// observed across Lite is two.
 const MAX_ERA_OVERRIDES: usize = 8;
 
+/// The head of an env-build error that is a failure to LOOK, never a fact about the
+/// instance: the resolver could not reach the index. Card cffc9c5e (2026-09-16 07:28Z,
+/// the router down in a power outage): uv's "dns error … Failed to fetch
+/// https://pypi.org/simple/cython/" was recorded as xarray-4356's standing env refusal,
+/// the env removed, and the REAL env fault (pandas 1.1.0 under -Werror, #4118) had to be
+/// re-derived by hand. COULD_NOT_LOOK ≠ NOT_FOUND ([[unknown-is-not-a-quantity]]); a
+/// reader that sees this head defers and looks again, it never records a verdict.
+pub const COULD_NOT_LOOK: &str = "COULD NOT LOOK — ";
+
+/// Does uv's stderr say the INDEX was unreachable (resolver/network), as opposed to a
+/// package that would not resolve or build? Anchored on uv's/reqwest's own phrasing for
+/// transport failures; a build backend error, a missing wheel, or an unsatisfiable pin
+/// never carries one of these.
+pub fn network_failure_signature(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    [
+        "dns error",
+        "failed to fetch",
+        "request failed after",
+        "error sending request",
+        "connection refused",
+        "connection reset",
+        "network is unreachable",
+        "no route to host",
+        "temporary failure in name resolution",
+        "operation timed out",
+        "connect timed out",
+    ]
+    .iter()
+    .any(|sig| s.contains(sig))
+}
+
 /// ONE era-pinned `uv pip install`, healing from uv's own evidence.
 ///
 /// # Why this is a function and not two copies of a loop
@@ -2574,10 +2623,24 @@ async fn era_pinned_uv_install(
         }
         args.extend(tail.iter().copied());
         let out = run_env(uv, &args, cwd, envs).await?;
-        if out.status.success() || as_of.is_none() {
+        if out.status.success() {
             return Ok(out);
         }
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // A failure to REACH the index is not a resolution failure: no heal rung fixes DNS,
+        // and no caller may read it as the instance's env verdict. Typed by its head so
+        // every reader (the sweep, the refusal marker, the deck) can tell it apart.
+        if network_failure_signature(&stderr) {
+            let last: String = stderr.trim().chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+            return Err(format!(
+                "{COULD_NOT_LOOK}the resolver could not reach the package index during \
+                 `uv pip install {tail:?}` — nothing about the instance is known; look \
+                 again once a fetch succeeds: {last}"
+            ));
+        }
+        if as_of.is_none() {
+            return Ok(out);
+        }
         // Three heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
         // candidates and uv's hint names the earliest surviving upload; (2) metadata-mismatch
         // — an era sdist with no wheel for this platform builds as version 0.0.0
@@ -4089,6 +4152,24 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches: card cffc9c5e — uv's transport failure read as the instance's
+    // env verdict. The signature must fire on the exact stderr the outage produced and
+    // stay silent on a resolution / build failure, which IS an env fact.
+    #[test]
+    fn a_network_failure_is_a_could_not_look_never_an_env_fact() {
+        use super::{network_failure_signature, COULD_NOT_LOOK};
+        let outage = "error: Failed to fetch: `https://pypi.org/simple/cython/`\n  Caused by: Request failed after 3 retries\n  Caused by: error sending request for url (https://pypi.org/simple/cython/)\n  Caused by: client error (Connect)\n  Caused by: dns error: failed to lookup address information: nodename nor servname provided, or not known";
+        assert!(network_failure_signature(outage));
+        assert!(network_failure_signature("error: Failed to download `numpy==1.21.6`\n  Caused by: Connection reset by peer (os error 54)"));
+        assert!(network_failure_signature("  Caused by: Operation timed out (os error 60)"));
+        // A resolution hole or a build failure is a fact about the instance.
+        assert!(!network_failure_signature("error: Because only atomicwrites<=1.4.1 is available and you require atomicwrites>=1.4.2, we can conclude that the requirements are unsatisfiable."));
+        assert!(!network_failure_signature("error: Failed to build `numpy==1.21.6`\n  Caused by: The build backend returned an error\n  Caused by: Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)"));
+        assert!(!network_failure_signature(""));
+        // The head every reader keys on is one substrate sentence, never uv's wording.
+        assert!(COULD_NOT_LOOK.starts_with("COULD NOT LOOK"));
+    }
+
     // what this catches: the Multilingual harness misread — the marked command not
     // lifted (wrapper kept, the marker comment taken as the command), a cargo/go log
     // read into the wrong verdict, or a Python-family instance routed through a
