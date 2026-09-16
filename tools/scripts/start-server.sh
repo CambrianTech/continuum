@@ -74,12 +74,18 @@ if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
     echo "✗ CONTINUUM_PREBUILT_CORE=$CONTINUUM_PREBUILT_CORE is not an executable — refusing to launch" >&2
     exit 1
   fi
-  echo "▶ prebuilt core: $CONTINUUM_PREBUILT_CORE — skipping every cargo build, keeping the launch environment"
+  echo "▶ prebuilt core: $CONTINUUM_PREBUILT_CORE — skipping the core-server build only, keeping the launch environment"
+  # ONLY the verified artifact's build is skipped. The script also builds the MCP
+  # bin, the CLI, forge-custodian and the livekit-bridge (the voice path) — those
+  # are not what the CLI verified, and a shim that answered 0 to EVERY cargo build
+  # would leave a swept or fresh-clone cache without them while the launch read
+  # green (Cormac's review of #4107). They build warm against the shared cache.
   cargo() {
-    if [ "${1:-}" = "build" ]; then
-      echo "  (prebuilt core: skipped cargo $*)"
-      return 0
-    fi
+    case " $* " in
+      *" --bin continuum-core-server "*)
+        echo "  (prebuilt core: skipped cargo $*)"
+        return 0 ;;
+    esac
     command cargo "$@"
   }
 fi
