@@ -201,7 +201,7 @@ function New-CoreServiceRelease {
 
 function Register-CoreServiceRelease {
     param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [string]$WorkingDirectory = $RepoRoot, [switch]$PersistPreparedReceipt)
+        [string]$WorkingDirectory = $RepoRoot, [switch]$PersistPreparedReceipt, [switch]$PrepareOnly)
     foreach ($field in $Release.PSObject.Properties) {
         $value = [string]$field.Value
         if (-not $value -or $value.IndexOfAny([char[]]@('"', "`r", "`n")) -ge 0 -or $value.EndsWith('\')) {
@@ -216,7 +216,8 @@ function Register-CoreServiceRelease {
         & $Release.cli reboot --prebuilt $Release.artifact --validate-only
         if ($LASTEXITCODE -ne 0) { throw 'Candidate validation failed; startup registration and the running core were preserved.' }
     } finally { Pop-Location }
-    if ($PersistPreparedReceipt) { Save-CorePreparedRelease -Release $Release }
+    if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
+    if ($PrepareOnly) { return }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "{0}" -ExecutablePath "{1}" -CorePath "{2}" -SocketPath "{3}" -EnginePath "{4}" -LogDirectory "{5}"' -f $Release.launcher, $Release.cli, $Release.artifact, $Release.socket, $Release.engine, $Release.logDirectory
     $description = $Release | ConvertTo-Json -Compress
