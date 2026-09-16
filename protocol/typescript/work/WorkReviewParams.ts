@@ -2,4 +2,40 @@
 import type { ReviewOutcome } from "./ReviewOutcome";
 import type { WorkArtifactReference } from "./WorkArtifactReference";
 
-export type WorkReviewParams = { room: string, review_id: string, card_id: string, submission_id: string, artifact: WorkArtifactReference, review_card_id: string, review_claim_id: string, outcome: ReviewOutcome, evidence: WorkArtifactReference, };
+export type WorkReviewParams = { 
+/**
+ * Submission and review-card room.
+ */
+room: string, 
+/**
+ * Chosen UUID; retry identical judgement with this id.
+ */
+review_id: string, 
+/**
+ * Submission's parent work-card UUID.
+ */
+card_id: string, 
+/**
+ * Accepted submission UUID.
+ */
+submission_id: string, 
+/**
+ * Must match the submitted artifact.
+ */
+artifact: WorkArtifactReference, 
+/**
+ * Linked review-card UUID.
+ */
+review_card_id: string, 
+/**
+ * Your claim UUID on the review card.
+ */
+review_claim_id: string, 
+/**
+ * Your judgement, not an objective grade.
+ */
+outcome: ReviewOutcome, 
+/**
+ * Supporting evidence content identity.
+ */
+evidence: WorkArtifactReference, };

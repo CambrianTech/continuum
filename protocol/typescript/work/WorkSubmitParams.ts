@@ -3,23 +3,34 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkSubmitParams = { 
 /**
- * Explicit activity room; publication does not change current focus.
+ * Activity room; does not switch focus.
  */
 room: string, 
 /**
- * Stable caller-chosen id. Reuse on retry with identical content.
+ * Chosen UUID; retry identical content with this id.
  */
-submission_id: string, card_id: string, claim_id: string, 
+submission_id: string, 
 /**
- * Task/instance identity carried by the existing submission protocol.
+ * Work card UUID in this room.
+ */
+card_id: string, 
+/**
+ * Your claim UUID on this card.
+ */
+claim_id: string, 
+/**
+ * Task/instance identity.
  */
 instance: string, 
 /**
- * Full Git base object id of the submitted candidate.
+ * Full Git base object id.
  */
-base_sha: string, artifact: WorkArtifactReference, 
+base_sha: string, 
 /**
- * Optional exact own staged-credit revision to preserve for independent
- * review. Omitted means ordinary artifact publication without learning credit.
+ * Candidate content identity.
+ */
+artifact: WorkArtifactReference, 
+/**
+ * Own staged revision UUID for reviewed credit; absent means no credit binding.
  */
 staged_revision_id?: string, };

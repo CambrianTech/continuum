@@ -108,6 +108,18 @@
       "command": "work/heartbeat"
     },
     {
+      "verb": "submit",
+      "command": "work/submit"
+    },
+    {
+      "verb": "review",
+      "command": "work/review"
+    },
+    {
+      "verb": "submission",
+      "command": "work/submission"
+    },
+    {
       "verb": "note",
       "command": "work/note"
     },

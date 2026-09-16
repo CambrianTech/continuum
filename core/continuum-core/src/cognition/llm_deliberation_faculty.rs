@@ -6823,11 +6823,19 @@ mod tests {
             // starting an activity must be "easy and common", and citizens mint
             // their own activities per [[activities-are-self-hosting]]). Same
             // conscious trade as vision/look above.
-            const AGENTIC_SURFACE_CEILING: u32 = 10700;
+            // 10700 -> 12000, stated plainly (#4102): three native reviewed-work
+            // verbs, work/submit + work/review + work/submission. Their compact,
+            // documented schemas cost 1286 guard tokens: exact artifact identity,
+            // submission/review claims, and evidence must be callable by native
+            // models. The full catalog plus framing is 11974 (10688 without
+            // these three). This is a test receipt, not a runtime budget increase;
+            // per-turn selection and whole-request window accounting stay intact.
+            const AGENTIC_SURFACE_CEILING: u32 = 12000;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
+            println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (measured 10098, ceiling \
+                "the agentic surface is now {surface} tokens (schema projection 11974, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );
@@ -6860,7 +6868,11 @@ mod tests {
                     .contains("LATEST: did the deploy fix land?"),
                 "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
-                 withheld registry again (card dec1a7ff)\n{}",
+                 withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
+                faculty.select_tool_surface(&ws, window).tokens,
+                view.estimated_prompt_tokens,
+                view.completion_reserve,
+                view.capacity_error,
                 &view.user_text()[..view.user_text().len().min(600)]
             );
             assert!(

@@ -13,10 +13,12 @@ use continuum_client::Connection;
     export_to = "../../../protocol/typescript/work/WorkArtifactReference.ts"
 )]
 pub struct WorkArtifactReference {
-    /// SHA-256 of the artifact bytes, as 64 hexadecimal characters.
+    /// Artifact SHA-256: 64 hex characters.
     pub hash: String,
+    /// Artifact byte length.
     #[ts(type = "number")]
     pub size_bytes: u64,
+    /// Optional media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mime: Option<String>,
@@ -59,22 +61,24 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// Explicit activity room; publication does not change current focus.
+    /// Activity room; does not switch focus.
     pub room: String,
-    /// Stable caller-chosen id. Reuse on retry with identical content.
+    /// Chosen UUID; retry identical content with this id.
     #[ts(type = "string")]
     pub submission_id: Uuid,
+    /// Work card UUID in this room.
     #[ts(type = "string")]
     pub card_id: Uuid,
+    /// Your claim UUID on this card.
     #[ts(type = "string")]
     pub claim_id: Uuid,
-    /// Task/instance identity carried by the existing submission protocol.
+    /// Task/instance identity.
     pub instance: String,
-    /// Full Git base object id of the submitted candidate.
+    /// Full Git base object id.
     pub base_sha: String,
+    /// Candidate content identity.
     pub artifact: WorkArtifactReference,
-    /// Optional exact own staged-credit revision to preserve for independent
-    /// review. Omitted means ordinary artifact publication without learning credit.
+    /// Own staged revision UUID for reviewed credit; absent means no credit binding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -108,9 +112,7 @@ impl ActionCommand for WorkSubmit {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Submit an exact artifact reference under your own card claim. Reuse submission_id on retry. \
-         Optionally bind one own staged_revision_id before publication for independent reviewed credit. \
-         This records a candidate; it does not establish success or train it.";
+        "Publish a claimed artifact, optionally binding staged credit for independent review. Publication is not success.";
     type Params = WorkSubmitParams;
     type Output = WorkSubmitResult;
 
@@ -252,19 +254,28 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
+    /// Submission and review-card room.
     pub room: String,
+    /// Chosen UUID; retry identical judgement with this id.
     #[ts(type = "string")]
     pub review_id: Uuid,
+    /// Submission's parent work-card UUID.
     #[ts(type = "string")]
     pub card_id: Uuid,
+    /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
+    /// Must match the submitted artifact.
     pub artifact: WorkArtifactReference,
+    /// Linked review-card UUID.
     #[ts(type = "string")]
     pub review_card_id: Uuid,
+    /// Your claim UUID on the review card.
     #[ts(type = "string")]
     pub review_claim_id: Uuid,
+    /// Your judgement, not an objective grade.
     pub outcome: ReviewOutcome,
+    /// Supporting evidence content identity.
     pub evidence: WorkArtifactReference,
 }
 
@@ -299,7 +310,7 @@ impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Publish passed, failed or unknown judgement of an exact submission, under your linked review-card claim, with an evidence reference. Reuse review_id on retry. This attributes judgement; it does not claim the artifact was objectively graded or training completed.";
+    const DESCRIPTION: &'static str = "Review an exact submission with evidence under your linked review claim. Does not imply training completion.";
     type Params = WorkReviewParams;
     type Output = WorkReviewResult;
 
@@ -386,9 +397,12 @@ pub struct WorkSubmission {
     export_to = "../../../protocol/typescript/work/WorkSubmissionParams.ts"
 )]
 pub struct WorkSubmissionParams {
+    /// Submission's activity room.
     pub room: String,
+    /// Parent work-card UUID in this room.
     #[ts(type = "string")]
     pub card_id: Uuid,
+    /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
 }
@@ -414,7 +428,7 @@ impl ActionCommand for WorkSubmission {
     const NAME: &'static str = "work/submission";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Inspect one accepted submission, signed review evidence and local learning acceptance metadata in an explicit room. Does not return private training prompts or initiate training.";
+    const DESCRIPTION: &'static str = "Inspect a submission, signed reviews and local credit receipts. No private prompts or training.";
     type Params = WorkSubmissionParams;
     type Output = WorkSubmissionResult;
 

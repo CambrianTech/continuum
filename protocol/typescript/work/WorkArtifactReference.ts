@@ -5,6 +5,14 @@
  */
 export type WorkArtifactReference = { 
 /**
- * SHA-256 of the artifact bytes, as 64 hexadecimal characters.
+ * Artifact SHA-256: 64 hex characters.
  */
-hash: string, size_bytes: number, mime?: string, };
+hash: string, 
+/**
+ * Artifact byte length.
+ */
+size_bytes: number, 
+/**
+ * Optional media type.
+ */
+mime?: string, };
