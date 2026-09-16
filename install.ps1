@@ -24,11 +24,13 @@
 param(
     [switch]$Grid,
     [switch]$Update,
-    [switch]$ResumePrepared
+    [switch]$ResumePrepared,
+    [switch]$PrepareOnly
 )
 
 $ErrorActionPreference = 'Stop'
 if ($ResumePrepared -and $Update) { throw '-ResumePrepared selects an existing release and cannot be combined with -Update.' }
+if ($PrepareOnly -and ($ResumePrepared -or $Update -or $Grid)) { throw '-PrepareOnly cannot be combined with -ResumePrepared, -Update, or -Grid.' }
 
 function Enter-ContinuumInstallLease {
     $state = Join-Path $env:USERPROFILE '.continuum'
@@ -61,7 +63,7 @@ function Update-ContinuumCheckout {
 # cloned install.ps1 which has a real $PSScriptRoot. Mirrors the root install.sh
 # bootstrapper.
 if (-not $PSScriptRoot) {
-    if ($ResumePrepared) { throw '-ResumePrepared requires a local installer checkout.' }
+    if ($ResumePrepared -or $PrepareOnly) { throw 'Prepared-release operations require a local installer checkout.' }
     Write-Host '  Continuum installer (bootstrap) -- fetching the repo for a native build ...'
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host '  winget not found. Install App Installer from the Microsoft Store, then re-run.' -ForegroundColor Red
@@ -121,13 +123,14 @@ Write-Host "  Repo:  $RepoRoot"
 if ($WantsGrid) { Write-Host '  Grid:  yes (GitHub login)' } else { Write-Host '  Grid:  no (local-only)' }
 Write-Host ''
 
-Test-WingetAvailable
-
 try {
+    if (-not $PrepareOnly) {
+    Test-WingetAvailable
     # Git + vendored submodules (llama.cpp, whisper.cpp) -- the native build needs
     # them. Per-user, no elevation.
     Install-IfMissing -Name 'Git' -WingetId 'Git.Git' `
         -TestCmd { Get-Command git -ErrorAction SilentlyContinue } -UserScope
+    }
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Push-Location $RepoRoot
         try {
@@ -136,6 +139,7 @@ try {
         } finally { Pop-Location }
     }
 
+    if (-not $PrepareOnly) {
     # Toolchain. Per-user tools first (rustup -- no prompt); machine-scope tools
     # (VS Build Tools, CMake, LLVM, CUDA, gh) share the SINGLE gsudo UAC.
     Mod-Rust
@@ -157,6 +161,12 @@ try {
     # (migrating what's on the system drive) BEFORE the build, so cargo builds into
     # the relocated cache. No-op on single-drive machines. Reconfigurable later.
     Mod-ColdStorage
+    } else {
+        Write-Step 'Preparing with the existing toolchain; provisioning, elevation, startup registration, and handoff are deferred.'
+        Mod-CMake -ExistingOnly
+        Mod-LLVM -ExistingOnly
+        Mod-CUDA -ExistingOnly
+    }
 
     # Build + run as the invoking user (never elevated -- keeps the cargo cache
     # user-owned so a later non-elevated `npm start` can rebuild).
@@ -169,7 +179,11 @@ try {
     # speak. Needs CUDA + MSVC env (already provisioned above).
     Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory (Split-Path $release.engine)
 
-    Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -PersistPreparedReceipt
+    Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -PersistPreparedReceipt -PrepareOnly:$PrepareOnly
+    if ($PrepareOnly) {
+        Write-Ok 'Release prepared and validated. Deploy it with .\install.ps1 -ResumePrepared when ready for startup registration and handoff.'
+        return
+    }
     Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
 }
 finally {
