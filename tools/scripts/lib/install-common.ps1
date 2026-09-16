@@ -132,6 +132,8 @@ function Ensure-Elevated {
     if (Test-IsAdmin) { $script:ElevationWarmed = $true; return }  # already elevated -- gsudo not needed
     Ensure-Gsudo
     Write-Step "Admin access needed for $Reason -- requesting the shared elevation cache."
+    Write-Step 'gsudo is a third-party elevation helper. Windows may show its publisher, not Continuum, in the consent prompt.'
+    Write-Step 'Approval lets the installer continue its admin steps; it does not mean installation is complete. The build and core stay unelevated.'
     # PS5 represents redirected native stderr as ErrorRecords. Capture it even
     # under the installer's Stop preference, then judge the native exit code.
     $savedErrorPreference = $ErrorActionPreference
