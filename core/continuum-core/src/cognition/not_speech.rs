@@ -161,8 +161,14 @@ fn opens_with_tool_envelope(t: &str) -> bool {
         // dialect: a namespaced verb CALLED with an object, `ns/verb({`, here at the
         // lead. Anchored on the bracket; a citizen writing "I ran [code/read(...)]"
         // mid-sentence is untouched.
+        // The object is a JSON object — or the KWARGS spelling of one, `cmd=…, lang=…`
+        // (0051cdcf, #academy, the same hour: `[code/shell(cmd=code/read(…), lang=rust))]`).
         if let Some((verb, after)) = rest.split_once('(') {
-            if verb_ok(verb) && verb.contains('/') && after.trim_start().starts_with('{') {
+            let a = after.trim_start();
+            let kwargs = a
+                .split_once('=')
+                .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+            if verb_ok(verb) && verb.contains('/') && (a.starts_with('{') || kwargs) {
                 return true;
             }
         }
@@ -339,6 +345,11 @@ mod tests {
         let saoirse = "[code/read({\"file_path\":\"src/main.rs\"})]\nResult:\n```python\n\n# THESIS: a distributed proof is an ACTIVITY\n```";
         assert_eq!(is_not_speech(saoirse), Some("tool_envelope"));
         assert_eq!(is_not_speech("[work/list({})]"), Some("tool_envelope"));
+        assert_eq!(
+            is_not_speech("[code/shell(cmd=code/read({\"file_path\":\"src/main.rs\"}) \n, lang=rust))]"),
+            Some("tool_envelope"),
+            "the kwargs spelling of the object"
+        );
         // Mid-sentence mention, a non-namespaced bracket, and a call without an object stay.
         assert_eq!(is_not_speech("I ran [code/read({\"file_path\":\"x\"})] and it was fine."), None);
         assert_eq!(is_not_speech("[note(this)] is a phrase, not a verb"), None);
