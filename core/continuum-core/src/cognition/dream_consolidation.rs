@@ -26,7 +26,7 @@
 //! exact anti-pattern this codebase forbids
 //! (`[[no-hardcoded-heuristics-to-steer-cognition]]`).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -347,7 +347,7 @@ impl SemanticDistiller {
                 let dropped_first_chars = prior_beliefs
                     .get(beliefs_kept)
                     .map(|b| b.content.trim().len())
-                    .unwrap_or(0);  // unwrap_or: kept == len means nothing was dropped, so there is no first-dropped belief to size
+                    .unwrap_or(0); // unwrap_or: kept == len means nothing was dropped, so there is no first-dropped belief to size
                 tracing::info!(
                     probe_class = "dream.beliefs.budgeted",
                     beliefs = prior_beliefs.len(),
@@ -677,6 +677,13 @@ pub struct DreamConsolidationRegion {
     /// gate: never two concurrent dreams for one persona, and the governor's
     /// re-tick while a dream runs is a cheap no-op.
     in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    /// Exact durable acceptance IDs, coalesced by the existing persona pass.
+    /// Acceptance is durable in the credit store; this scheduling state is not.
+    /// A replay after restart can request again, with engram admission dedup intact.
+    review_boundaries: Arc<Mutex<HashMap<Uuid, ReviewBoundaries>>>,
+    review_boundary_wake: tokio::sync::watch::Sender<()>,
+    #[cfg(test)]
+    idle_wait: Option<Arc<tokio::sync::Notify>>,
     /// Per-persona ids of Semantic beliefs the rotating supersession review has
     /// already shown the distiller (#221 slice 2b). In-memory; a restart
     /// re-reviews from the oldest — harmless (demotion is idempotent, admission
@@ -717,6 +724,30 @@ pub enum DreamTrigger {
 /// then the pass ends whether or not every cluster was distilled.
 pub const CARD_BOUNDARY_PASS_SECS: u64 = 90;
 
+/// Receipt scheduling cache, not a curriculum or context limit. Excess pending
+/// requests remain retryable from durable credit acceptance; recent completed
+/// entries suppress replays, with engram dedup as the durable guard after eviction.
+const REVIEW_BOUNDARY_CAPACITY: usize = 64;
+
+#[derive(Default)]
+struct ReviewBoundaries {
+    pending: HashSet<Uuid>,
+    completed: VecDeque<Uuid>,
+}
+
+/// Admission covers selection as well as inference. Public boundary requests and
+/// governor ticks can race; cancellation must release the same existing gate.
+struct DreamPermit {
+    personas: Arc<Mutex<HashSet<Uuid>>>,
+    persona: Uuid,
+}
+
+impl Drop for DreamPermit {
+    fn drop(&mut self) {
+        self.personas.lock().unwrap().remove(&self.persona); // JUSTIFIED: this set is only mutated synchronously; poison means the owner invariant failed.
+    }
+}
+
 pub fn install_global(region: Arc<DreamConsolidationRegion>) {
     let _ = GLOBAL_DREAM_REGION.set(region);
 }
@@ -748,6 +779,10 @@ impl DreamConsolidationRegion {
             min_cluster: DEFAULT_MIN_CLUSTER,
             consolidated: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            review_boundaries: Arc::new(Mutex::new(HashMap::new())),
+            review_boundary_wake: tokio::sync::watch::channel(()).0,
+            #[cfg(test)]
+            idle_wait: None,
             reviewed: Arc::new(Mutex::new(HashMap::new())),
             last_review_ms: Arc::new(Mutex::new(HashMap::new())),
             last_consolidated_ms: Arc::new(Mutex::new(HashMap::new())),
@@ -759,6 +794,45 @@ impl DreamConsolidationRegion {
     /// (the mind can be asked "am I dreaming?") and the test-drain hook.
     pub fn dreaming(&self) -> bool {
         !self.in_flight.lock().unwrap().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_boundary_pending(&self, persona: Uuid, review: Uuid) -> bool {
+        self.review_boundaries
+            .lock()
+            .unwrap()
+            .get(&persona)
+            .is_some_and(|r| r.pending.contains(&review))
+    }
+
+    /// Queue an EXACT acceptance (the bound submission ID) at the existing owner, without
+    /// inference or another task on the work/review intake path. Its governor tick
+    /// retries readiness gates and failed passes. This is not a training receipt.
+    pub(crate) fn request_reviewed_boundary(&self, persona: Uuid, acceptance: Uuid) -> bool {
+        let live = self.source.live_personas();
+        if !live.contains(&persona) {
+            return false;
+        }
+        let inserted = {
+            let mut all = self.review_boundaries.lock().unwrap(); // JUSTIFIED: receipt sets are only changed synchronously under this owner.
+            all.retain(|id, _| live.contains(id));
+            let receipts = all.entry(persona).or_default();
+            if receipts.completed.contains(&acceptance) || receipts.pending.contains(&acceptance) {
+                return false;
+            }
+            if receipts.pending.len() >= REVIEW_BOUNDARY_CAPACITY {
+                crate::probe!(class = "dream.review_boundary_deferred", persona = %persona,
+                    acceptance = %acceptance, "receipt scheduling cache full; durable acceptance remains retryable");
+                return false;
+            }
+            receipts.pending.insert(acceptance)
+        };
+        if inserted {
+            self.review_boundary_wake.send_replace(());
+            crate::probe!(class = "dream.review_boundary_pending", persona = %persona,
+                acceptance = %acceptance, "accepted review queued at the existing consolidation owner");
+        }
+        inserted
     }
 
     /// The scoped tick body: a CHEAP freshness gate (in-memory reads only),
@@ -782,14 +856,32 @@ impl DreamConsolidationRegion {
     /// cancelled by her next act; everything else — the clusters, the reflector, the
     /// exam courtesy, the serving check — is the idle pass's own.
     pub async fn consolidate_at_card_boundary(&self, persona_id: Uuid) -> TickOutcome {
-        self.consolidate_with(persona_id, DreamTrigger::CardBoundary).await
+        self.consolidate_with(persona_id, DreamTrigger::CardBoundary)
+            .await
     }
 
     async fn consolidate_with(&self, persona_id: Uuid, trigger: DreamTrigger) -> TickOutcome {
-        // A dream for this persona is already running on its own task — rest.
-        if self.in_flight.lock().unwrap().contains(&persona_id) {
+        // One owner spans selection through task completion, including public calls.
+        let admitted = self.in_flight.lock().unwrap().insert(persona_id); // JUSTIFIED: the synchronous set guards single ownership, including concurrent public boundary calls.
+        if !admitted {
             return sleep();
         }
+        let mut permit = Some(DreamPermit {
+            personas: Arc::clone(&self.in_flight),
+            persona: persona_id,
+        });
+        let boundary_ids: Vec<_> = self
+            .review_boundaries
+            .lock()
+            .unwrap() // JUSTIFIED: snapshot receipt IDs while the persona permit serializes selection.
+            .get(&persona_id)
+            .map(|r| r.pending.iter().copied().collect())
+            .unwrap_or_default(); // No accepted review is pending for this persona.
+        let trigger = if boundary_ids.is_empty() {
+            trigger
+        } else {
+            DreamTrigger::CardBoundary
+        };
         let Some(reflector) = self.source.reflector_for(persona_id) else {
             // No live reflective surface for this persona this tick — sleep.
             return sleep();
@@ -873,16 +965,20 @@ impl DreamConsolidationRegion {
         }
         let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
+            if !boundary_ids.is_empty() {
+                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                return sleep(); // No eligible cluster; never force a singleton or a training bucket.
+            }
             // Nothing new to digest — a QUIET day. The dream still works. Prefer
             // consolidating what other agents TAUGHT her (received-lesson → genome,
             // the being-loop's autonomic completion), else belief-hygiene review
             // (slice 2c). At most ONE background pass per tick — both spawn onto the
             // shared in_flight guard, and we return on the first that launches, so a
             // dream and a consolidation never run for one persona at once.
-            if let Some(launched) = self.try_consolidate_received(persona_id) {
+            if let Some(launched) = self.try_consolidate_received(persona_id, &mut permit) {
                 return launched;
             }
-            if let Some(launched) = self.try_review_only(&reflector, persona_id) {
+            if let Some(launched) = self.try_review_only(&reflector, persona_id, &mut permit) {
                 return launched;
             }
             return sleep();
@@ -895,20 +991,25 @@ impl DreamConsolidationRegion {
         // recall E2E, never deferred indefinitely.
         let clusters = cluster_by_recall_key(&fresh, self.min_cluster);
         if clusters.is_empty() {
-            if let Some(launched) = self.try_review_only(&reflector, persona_id) {
+            if !boundary_ids.is_empty() {
+                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                return sleep();
+            }
+            if let Some(launched) = self.try_review_only(&reflector, persona_id, &mut permit) {
                 return launched;
             }
             return sleep();
         }
 
-        // Launch the dream on its own task. Single caller (the governor ticks
-        // this region serially), so mark-then-spawn is race-free; the spawned
-        // task clears the flag when the pass completes, success or not.
-        self.in_flight.lock().unwrap().insert(persona_id);
+        // The existing task owns the permit; dropping it also releases admission.
         let consolidated = Arc::clone(&self.consolidated);
-        let in_flight = Arc::clone(&self.in_flight);
         let reviewed = Arc::clone(&self.reviewed);
+        let boundaries = Arc::clone(&self.review_boundaries);
+        let mut boundary_wake = self.review_boundary_wake.subscribe();
+        #[cfg(test)]
+        let idle_wait = self.idle_wait.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             // #2561 preemption = paging out: an arriving demand does not queue
             // behind a dream — it CANCELS it. The dropped future closes the
             // generation stream (the backend abandons the slot on disconnect);
@@ -926,7 +1027,9 @@ impl DreamConsolidationRegion {
                 let a = crate::cognition::activity_gate::persona_activity(persona_id);
                 if !crate::cognition::activity_gate::persona_bored(
                     a,
-                    crate::inference::measured_hold::subscribe().borrow().is_some(),
+                    crate::inference::measured_hold::subscribe()
+                        .borrow()
+                        .is_some(),
                     crate::persona::trace::now_ms(),
                 ) {
                     crate::probe!(
@@ -942,15 +1045,56 @@ impl DreamConsolidationRegion {
                     persona = %persona_id,
                     "a settled card is a consolidation boundary — one bounded pass, no boredom wait, not paged out by her next act"
                 );
-                let _ = tokio::time::timeout(
+                let cluster_count = clusters.len();
+                let completed = tokio::time::timeout(
                     std::time::Duration::from_secs(CARD_BOUNDARY_PASS_SECS),
-                    dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed),
+                    dream_pass(
+                        reflector,
+                        persona_id,
+                        clusters,
+                        fresh,
+                        consolidated,
+                        reviewed,
+                    ),
                 )
                 .await;
-                in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
+                match completed {
+                    Ok(true) => finish_review_boundaries(
+                        &boundaries,
+                        persona_id,
+                        &boundary_ids,
+                        cluster_count,
+                    ),
+                    other => {
+                        crate::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
+                            acceptances = boundary_ids.len(), timed_out = other.is_err(),
+                            "unfinished episode clusters retain their boundary for the existing governor");
+                    }
+                }
                 return;
             }
-            crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+            // A review arriving while idle work is parked must not disappear behind
+            // its in-flight flag. Retire only the wait; next tick selects fresh
+            // episodes under the bounded boundary policy, including the finished work.
+            let bored = async {
+                #[cfg(test)]
+                if let Some(wait) = idle_wait {
+                    wait.notified().await;
+                    return;
+                }
+                crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+            };
+            tokio::select! {
+                _ = async {
+                    loop {
+                        if boundaries.lock().unwrap().get(&persona_id).is_some_and(|r| !r.pending.is_empty()) { // JUSTIFIED: inspect the owner state without holding its guard across the wait.
+                            return;
+                        }
+                        if boundary_wake.changed().await.is_err() { return; }
+                    }
+                } => { return; }
+                _ = bored => {}
+            }
             tokio::select! {
                 _ = dream_pass(
                     reflector,
@@ -968,7 +1112,6 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
 
         TickOutcome {
@@ -990,6 +1133,7 @@ impl DreamConsolidationRegion {
         &self,
         reflector: &PersonaReflector,
         persona_id: Uuid,
+        permit: &mut Option<DreamPermit>,
     ) -> Option<TickOutcome> {
         // Rest gate: belief hygiene trickles, never grinds. If this persona ran a
         // review-only pass within the cooldown, sleep instead of launching another
@@ -1019,13 +1163,12 @@ impl DreamConsolidationRegion {
         if beliefs.is_empty() {
             return None;
         }
-        self.in_flight.lock().unwrap().insert(persona_id);
-        let in_flight = Arc::clone(&self.in_flight);
+        let permit = permit.take();
         let reviewed = Arc::clone(&self.reviewed);
         let reflector = reflector.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             review_pass(reflector, persona_id, beliefs, reviewed).await;
-            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
@@ -1047,7 +1190,11 @@ impl DreamConsolidationRegion {
     /// AND a consolidation for one persona at once), and the idempotence WATERMARK (only
     /// lessons newer than the last consolidated timestamp — never re-train the same
     /// lesson). Returns the launch outcome, or `None` when gated (caller falls through).
-    fn try_consolidate_received(&self, persona_id: Uuid) -> Option<TickOutcome> {
+    fn try_consolidate_received(
+        &self,
+        persona_id: Uuid,
+        permit: &mut Option<DreamPermit>,
+    ) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
         let now = now_ms();
         let last = self
@@ -1076,12 +1223,12 @@ impl DreamConsolidationRegion {
             .lock()
             .unwrap()
             .insert(persona_id, now);
-        self.in_flight.lock().unwrap().insert(persona_id);
-        let in_flight = Arc::clone(&self.in_flight);
+        let permit = permit.take();
         let watermark = Arc::clone(&self.consolidated_watermark);
         let since = watermark.lock().unwrap().get(&persona_id).cloned();
 
         tokio::spawn(async move {
+            let _permit = permit;
             // Dispatch `memory/consolidate` AS the persona (its LocalPersona identity;
             // the command re-gates the Privileged training submit internally).
             let conn = continuum_client::Connection::new(crate::runtime::InProcessTransport::new(
@@ -1127,7 +1274,6 @@ impl DreamConsolidationRegion {
                     );
                 }
             }
-            in_flight.lock().unwrap().remove(&persona_id); // JUSTIFIED: a poisoned in-flight set means a boundary pass panicked — surface it rather than double-consolidate silently
         });
         Some(TickOutcome {
             published: 0,
@@ -1138,10 +1284,33 @@ impl DreamConsolidationRegion {
     }
 }
 
+fn finish_review_boundaries(
+    all: &Mutex<HashMap<Uuid, ReviewBoundaries>>,
+    persona: Uuid,
+    reviews: &[Uuid],
+    eligible_clusters: usize,
+) {
+    let mut all = all.lock().unwrap(); // JUSTIFIED: completion only updates the owner receipt cache synchronously.
+    if let Some(receipts) = all.get_mut(&persona) {
+        for review in reviews {
+            if receipts.pending.remove(review) {
+                if receipts.completed.len() == REVIEW_BOUNDARY_CAPACITY {
+                    receipts.completed.pop_front();
+                }
+                receipts.completed.push_back(*review);
+                crate::probe!(class = "dream.review_boundary_processed", persona = %persona,
+                    acceptance = %review, eligible_clusters,
+                    "eligible episode clusters processed; not a training or adoption receipt");
+            }
+        }
+    }
+}
+
 /// The inference-heavy dream pass — runs on ITS OWN tokio task, never inside
 /// the governor's timeout-isolated tick (see [`DreamConsolidationRegion::consolidate`]).
-/// Distills each cluster into a durable fact, then the historian wander pass
-/// leaves one provenance-tagged thought.
+/// Returns whether every selected episode cluster was admitted or deduplicated.
+/// The existing historian and belief-review tails are optional follow-on work;
+/// their failures do not undo admitted cluster facts or claim a training result.
 async fn dream_pass(
     reflector: PersonaReflector,
     persona_id: Uuid,
@@ -1149,7 +1318,7 @@ async fn dream_pass(
     fresh: Vec<Engram>,
     consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
     reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
-) {
+) -> bool {
     // CAUSAL EARLY-SKIP (restore-economy 1.a, the subscribe() consumer): while a
     // measured solve holds the core, don't even ASSEMBLE the dream — cluster
     // gathering, budget math and prompt composition are wasted work for a
@@ -1198,6 +1367,8 @@ async fn dream_pass(
     // constant, not an invented one), which the next ready tick supersedes.
     let distiller = distiller_for(&reflector);
     let mut published = 0usize;
+    let mut complete = true;
+    let mut historian_admitted = false;
     for cluster in &clusters {
         // #221 slice 2 — SUPERSESSION REVIEW: alongside the cluster, show
         // the distiller the persona's most related PRIOR beliefs (lexical
@@ -1243,6 +1414,7 @@ async fn dream_pass(
         {
             Ok(fact) => fact,
             Err(err) => {
+                complete = false;
                 tracing::warn!(
                     persona = %persona_id,
                     error = %err,
@@ -1271,6 +1443,7 @@ async fn dream_pass(
                 mark_consolidated(&consolidated, persona_id, cluster);
             }
             Ok(AdmissionDecision::Quarantine { .. }) => {
+                complete = false;
                 // Self-produced facts are SelfTrust and do not route through
                 // the quarantine gate; reaching here is a contract change in
                 // `admit_reflection`. Surface it rather than hide it.
@@ -1280,6 +1453,7 @@ async fn dream_pass(
                 );
             }
             Err(err) => {
+                complete = false;
                 tracing::warn!(
                     persona = %persona_id,
                     error = %err,
@@ -1306,7 +1480,10 @@ async fn dream_pass(
                     .admission
                     .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
                 {
-                    Ok(AdmissionDecision::Admit { .. }) => published += 1,
+                    Ok(AdmissionDecision::Admit { .. }) => {
+                        published += 1;
+                        historian_admitted = true;
+                    }
                     Ok(_) => {}
                     Err(err) => {
                         tracing::warn!(
@@ -1349,9 +1526,12 @@ async fn dream_pass(
         persona = %persona_id,
         published,
         clusters = clusters.len(),
+        clusters_processed = complete,
+        historian_admitted,
         probe_class = "persona.dream.pass_complete",
-        "dream: pass complete — durable facts + historian thought admitted"
+        "dream: pass ended; admitted counts and required-cluster outcome recorded"
     );
+    complete
 }
 
 /// Build the pass distiller with its observation budget derived from the LIVE
@@ -1706,14 +1886,14 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::persona::engram::{Engram, EngramKind, EngramOrigin, TrustState};
     use airc_core::PeerId;
 
     /// Build an episodic engram with a given id, content, and recall keys.
-    fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
+    pub(crate) fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
         Engram {
             id,
             context_id: None,
@@ -1910,7 +2090,7 @@ mod tests {
     // here per the one-tests-mod-per-file rule; these drive `tick`/`consolidate`
     // directly against a stub source (no governor, no real backend), the
     // ship-it-dark unit-test contract for slice 3.
-    mod region {
+    pub(crate) mod region {
         use super::*;
         use crate::persona::admission_state::AdmissionState;
         use crate::persona::recall_metadata::RecallMetadataRegistry;
@@ -1941,7 +2121,7 @@ mod tests {
         /// Build a fresh in-memory hippocampus and seed it with the given
         /// episodics (via `admit_reflection`, which pushes whatever kind it's
         /// handed — the cleanest way to populate the real store in a test).
-        fn seeded_admission(episodics: &[Engram]) -> Arc<AdmissionState> {
+        pub(crate) fn seeded_admission(episodics: &[Engram]) -> Arc<AdmissionState> {
             let admission = Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())));
             for e in episodics {
                 admission
@@ -1953,7 +2133,7 @@ mod tests {
 
         /// Wait for the spawned dream pass to finish (the heuristic adapter is
         /// instant; this is scheduling latency only). Panics if it never does.
-        async fn drain(region: &DreamConsolidationRegion) {
+        pub(crate) async fn drain(region: &DreamConsolidationRegion) {
             for _ in 0..400 {
                 if !region.dreaming() {
                     return;
@@ -1963,7 +2143,7 @@ mod tests {
             panic!("dream pass did not complete");
         }
 
-        fn region_over(
+        pub(crate) fn region_over(
             persona_id: Uuid,
             admission: Arc<AdmissionState>,
         ) -> DreamConsolidationRegion {
@@ -1972,6 +2152,152 @@ mod tests {
                 admission,
                 adapter: Arc::new(HeuristicInferenceAdapter::new()),
             }))
+        }
+
+        // ce37fbfb: a parked idle owner cannot swallow a reviewed boundary;
+        // repeated delivery and concurrent ticks must not double inference.
+        #[tokio::test]
+        async fn reviewed_boundary_wakes_the_idle_owner_and_deduplicates_replay() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let persona = Uuid::new_v4();
+            let seeds: Vec<_> = (0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("reviewed work observation {n}"),
+                        &["project"],
+                    )
+                })
+                .collect();
+            let admission = seeded_admission(&seeds);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id: persona,
+                admission: admission.clone(),
+                adapter: Arc::new(
+                    HeuristicInferenceAdapter::new().with_generate_observer(calls.clone()),
+                ),
+            }));
+            region.idle_wait = Some(Arc::new(tokio::sync::Notify::new()));
+            region.consolidate(persona).await;
+            tokio::task::yield_now().await;
+            assert!(region.dreaming());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "the actual owner is parked before inference"
+            );
+            let review = Uuid::new_v4();
+            assert!(region.request_reviewed_boundary(persona, review));
+            assert!(!region.request_reviewed_boundary(persona, review));
+            drain(&region).await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "wake retires stale selection; it does not start another task"
+            );
+            tokio::join!(region.consolidate(persona), region.consolidate(persona));
+            drain(&region).await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "one consolidator and one historian request"
+            );
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::Semantic)
+                    .count(),
+                1
+            );
+            assert!(!region.request_reviewed_boundary(persona, review));
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert!(
+                !region.request_reviewed_boundary(Uuid::new_v4(), review),
+                "unregistered recipients are not queued"
+            );
+        }
+
+        // ce37fbfb: failed inference leaves the same accepted receipt pending;
+        // the existing governor retries it without another review or new ID.
+        #[tokio::test]
+        async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_state() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let persona = Uuid::new_v4();
+            let seeds: Vec<_> = (0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("project observation {n}"),
+                        &["retry"],
+                    )
+                })
+                .collect();
+            let admission = seeded_admission(&seeds);
+            let good = HeuristicInferenceAdapter::new()
+                .generate_text(TextGenerationRequest {
+                    messages: vec![ChatMessage::text("user", "a reusable observation")],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let mut empty = good.clone();
+            empty.text.clear();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id: persona,
+                admission: admission.clone(),
+                adapter: Arc::new(
+                    HeuristicInferenceAdapter::new()
+                        .with_responses(vec![empty.clone(), good, empty])
+                        .with_generate_observer(calls.clone()),
+                ),
+            }));
+            let review = Uuid::new_v4();
+            assert!(region.request_reviewed_boundary(persona, review));
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert!(region.review_boundaries.lock().unwrap()[&persona]
+                .pending
+                .contains(&review));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert!(region.review_boundaries.lock().unwrap()[&persona]
+                .completed
+                .contains(&review));
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::Semantic)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::SelfReflection)
+                    .count(),
+                0,
+                "optional historian failure must not be reported as an admitted thought"
+            );
+            for _ in 0..REVIEW_BOUNDARY_CAPACITY {
+                assert!(region.request_reviewed_boundary(persona, Uuid::new_v4()));
+            }
+            let overflow = Uuid::new_v4();
+            assert!(!region.request_reviewed_boundary(persona, overflow));
+            region.consolidate(persona).await; // All eligible episodes already processed; no new inference.
+            assert!(region.request_reviewed_boundary(persona, overflow));
+            let all = region.review_boundaries.lock().unwrap();
+            assert_eq!(all[&persona].completed.len(), REVIEW_BOUNDARY_CAPACITY);
+            assert_eq!(all[&persona].pending.len(), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
         }
 
         // what this catches: the dream reads a persona's fresh episodics,

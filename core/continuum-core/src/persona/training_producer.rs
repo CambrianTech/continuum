@@ -1673,10 +1673,17 @@ pub(crate) mod tests {
     fn a_gated_echo_plans_as_burst_to_pass_in_its_own_bucket() {
         let plan = plan_speech_discipline("[wake] You are Paige, awake on the continuum grid.");
         assert_eq!(plan.trait_kind, SPEECH_DISCIPLINE_TRAIT);
-        assert_eq!(plan.bucket_key(), SPEECH_DISCIPLINE_TRAIT, "unstamped: the bare bucket");
+        assert_eq!(
+            plan.bucket_key(),
+            SPEECH_DISCIPLINE_TRAIT,
+            "unstamped: the bare bucket"
+        );
         assert_eq!(plan.completion, SILENCE_COMPLETION);
         assert!(plan.prompt.starts_with("[wake]"));
-        assert!(plan.quality >= MIN_TRAINING_QUALITY, "curated floor clears the chat gate");
+        assert!(
+            plan.quality >= MIN_TRAINING_QUALITY,
+            "curated floor clears the chat gate"
+        );
         assert!(plan.stamp.is_none());
         // and the token is the one the Speak seam decides silence on
         assert_eq!(
@@ -2831,6 +2838,23 @@ pub(crate) mod tests {
             .unwrap();
         let executor = data_runtime();
         let persona = Uuid::new_v4();
+        use crate::cognition::dream_consolidation::tests::{
+            episodic,
+            region::{drain, region_over, seeded_admission},
+        };
+        use crate::runtime::brain_region::{BrainRegion, RegionContext};
+        let admission = seeded_admission(
+            &(0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("ordinary reviewed work {n}"),
+                        &["reviewed-project"],
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        let dream = region_over(persona, admission.clone());
         let owner = airc_core::PeerId::from_uuid(persona);
         let reviewer = airc_core::PeerId::new();
         let card_id = airc_work::WorkCardId::new();
@@ -2955,13 +2979,14 @@ pub(crate) mod tests {
                 ..pass.clone()
             };
             let board = project(vec![(WorkEvent::WorkSubmissionReviewed(review), reviewer)]);
-            let result = reviewed::consume_review(
+            let result = reviewed::consume_review_with_boundary(
                 &refused_conn,
                 name,
                 persona,
                 room,
                 &board,
                 pass.review_id,
+                Some(&dream),
             )
             .await
             .unwrap();
@@ -2988,13 +3013,14 @@ pub(crate) mod tests {
             (WorkEvent::WorkSubmissionReviewed(self_review), owner),
         ]);
         assert_eq!(
-            reviewed::consume_review(
+            reviewed::consume_review_with_boundary(
                 &refused_conn,
                 name,
                 persona,
                 room,
                 &self_board,
-                pass.review_id
+                pass.review_id,
+                Some(&dream)
             )
             .await
             .unwrap()
@@ -3006,13 +3032,14 @@ pub(crate) mod tests {
             WorkEvent::WorkSubmissionReviewed(pass.clone()),
             owner,
         )]);
-        assert!(reviewed::consume_review(
+        assert!(reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
             persona,
             room,
             &spoofed,
-            pass.review_id
+            pass.review_id,
+            Some(&dream)
         )
         .await
         .is_err());
@@ -3028,27 +3055,33 @@ pub(crate) mod tests {
             panic!("unrelated observer must not transfer publisher credit")
         });
         let unrelated = Connection::new(unrelated_transport);
-        assert!(reviewed::consume_observed_review(
+        assert!(reviewed::consume_observed_review_with_boundary(
             &unrelated,
             "unrelated-resident",
             reviewer.as_uuid(),
             room,
             &board,
-            pass.review_id
+            pass.review_id,
+            Some(&dream)
         )
         .await
         .unwrap()
         .is_none());
-        assert!(reviewed::consume_review(
+        assert!(reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
             persona,
             Uuid::new_v4(),
             &board,
-            pass.review_id
+            pass.review_id,
+            Some(&dream)
         )
         .await
         .is_err());
+        assert!(
+            !dream.review_boundary_pending(persona, selection.submission_id),
+            "failed, unknown, self, unrelated and wrong-room reviews cannot queue a boundary"
+        );
         let submit = continuum_client::mock::MockTransport::new();
         let selected_id = selected.id;
         let review_id = pass.review_id.as_uuid();
@@ -3062,13 +3095,14 @@ pub(crate) mod tests {
             Err(ClientError::Transport("destination ACK lost".into()))
         });
         let conn = settlement_connection(executor, persona, submit, None);
-        assert!(reviewed::consume_observed_review(
+        assert!(reviewed::consume_observed_review_with_boundary(
             &conn,
             name,
             persona,
             room,
             &board,
-            pass.review_id
+            pass.review_id,
+            Some(&dream)
         )
         .await
         .is_err());
@@ -3076,6 +3110,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(pending.state, State::AwaitingAcceptance);
+        assert!(
+            !dream.review_boundary_pending(persona, selection.submission_id),
+            "lost destination ACK does not acknowledge a consolidation boundary"
+        );
         assert_eq!(pending.decision_review_id, Some(review_id));
         let mut later = receipts;
         later.push(served_receipt("later-request", "actual-model"));
@@ -3102,13 +3140,14 @@ pub(crate) mod tests {
             ),
         ]);
         assert_eq!(
-            reviewed::consume_review(
+            reviewed::consume_review_with_boundary(
                 &refused_conn,
                 name,
                 persona,
                 room,
                 &board,
-                competing.review_id
+                competing.review_id,
+                Some(&dream)
             )
             .await
             .unwrap()
@@ -3123,13 +3162,14 @@ pub(crate) mod tests {
             "acceptance":{"submissionId":selected.id,"replayed":true}})),
         );
         let reopened = settlement_connection(data_runtime(), persona, submit, None);
-        let result = reviewed::consume_observed_review(
+        let result = reviewed::consume_observed_review_with_boundary(
             &reopened,
             name,
             persona,
             room,
             &board,
             pass.review_id,
+            Some(&dream),
         )
         .await
         .unwrap()
@@ -3149,13 +3189,79 @@ pub(crate) mod tests {
             selected.id
         );
         assert_eq!(
-            reviewed::consume_review(&refused_conn, name, persona, room, &board, pass.review_id)
-                .await
-                .unwrap()
-                .state,
+            reviewed::consume_review_with_boundary(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &board,
+                pass.review_id,
+                Some(&dream)
+            )
+            .await
+            .unwrap()
+            .state,
             State::Accepted,
             "accepted replay does not dispatch again"
         );
+        assert!(dream.review_boundary_pending(persona, selection.submission_id));
+        assert_eq!(
+            reviewed::consume_review_with_boundary(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &board,
+                competing.review_id,
+                Some(&dream)
+            )
+            .await
+            .unwrap()
+            .state,
+            State::Accepted,
+            "another review can inspect the accepted submission without owning its boundary"
+        );
+        dream.tick(&RegionContext::for_persona(0, persona)).await;
+        drain(&dream).await;
+        assert!(!dream.review_boundary_pending(persona, selection.submission_id));
+        assert_eq!(
+            admission
+                .recall_recent(16)
+                .iter()
+                .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+                .count(),
+            1
+        );
+        // Replaying the durable acceptance into a fresh owner restores the request;
+        // automatic acceptance rescan after boot belongs to retained-credit retry.
+        let restarted = region_over(persona, admission);
+        reviewed::consume_review_with_boundary(
+            &refused_conn,
+            name,
+            persona,
+            room,
+            &board,
+            competing.review_id,
+            Some(&restarted),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !restarted.review_boundary_pending(persona, selection.submission_id),
+            "another signed review cannot replay the selected acceptance into a fresh owner"
+        );
+        reviewed::consume_review_with_boundary(
+            &refused_conn,
+            name,
+            persona,
+            room,
+            &board,
+            pass.review_id,
+            Some(&restarted),
+        )
+        .await
+        .unwrap();
+        assert!(restarted.review_boundary_pending(persona, selection.submission_id));
         assert_eq!(
             stored_credit_rows(&data, name).await.len(),
             1,

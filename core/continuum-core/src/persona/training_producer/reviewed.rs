@@ -5,6 +5,9 @@
 //! same atomic batch reserves every request id against another cumulative revision.
 //! Reservations survive refusal and transfer: deleting them would permit training
 //! the same generations again through a later artifact or the legacy grader.
+//! Accepted exact-review replay also notifies the existing dream owner. Its bounded
+//! scheduling cache is not durable completion: boot-time acceptance rescan remains
+//! the retained-credit retry seam (a346); acceptance is never a training/adoption claim.
 
 use super::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -98,6 +101,28 @@ pub(crate) async fn consume_observed_review<T: Transport>(
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
+    let dream = crate::cognition::dream_consolidation::global();
+    consume_observed_review_with_boundary(
+        conn,
+        persona_name,
+        observer,
+        room_id,
+        board,
+        review_id,
+        dream.as_deref(),
+    )
+    .await
+}
+
+pub(super) async fn consume_observed_review_with_boundary<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    observer: Uuid,
+    room_id: Uuid,
+    board: &airc_work::WorkBoardProjection,
+    review_id: airc_work::WorkReviewId,
+    dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
+) -> Result<Option<ReviewedCredit>, CreditBindingError> {
     let review = board
         .submission_review(review_id)
         .ok_or(CreditBindingError::WrongSelection)?;
@@ -112,9 +137,17 @@ pub(crate) async fn consume_observed_review<T: Transport>(
     if submitted.publisher.as_uuid() != observer {
         return Ok(None);
     }
-    consume_review(conn, persona_name, observer, room_id, board, review_id)
-        .await
-        .map(Some)
+    consume_review_with_boundary(
+        conn,
+        persona_name,
+        observer,
+        room_id,
+        board,
+        review_id,
+        dream,
+    )
+    .await
+    .map(Some)
 }
 
 pub(crate) async fn consume_as_publisher(
@@ -344,6 +377,56 @@ pub async fn ensure_storage<T: Transport>(
 /// The projection verified signed author and the historical review-card claim.
 /// A pass remains reviewer judgement; this does not fetch or grade the artifact.
 pub async fn consume_review<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    room_id: Uuid,
+    board: &airc_work::WorkBoardProjection,
+    review_id: airc_work::WorkReviewId,
+) -> Result<ReviewedCredit, CreditBindingError> {
+    let dream = crate::cognition::dream_consolidation::global();
+    consume_review_with_boundary(
+        conn,
+        persona_name,
+        persona_id,
+        room_id,
+        board,
+        review_id,
+        dream.as_deref(),
+    )
+    .await
+}
+
+pub(super) async fn consume_review_with_boundary<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    room_id: Uuid,
+    board: &airc_work::WorkBoardProjection,
+    review_id: airc_work::WorkReviewId,
+    dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
+) -> Result<ReviewedCredit, CreditBindingError> {
+    let credit =
+        consume_review_credit(conn, persona_name, persona_id, room_id, board, review_id).await?;
+    if credit.state == ReviewedCreditState::Accepted
+        && credit.decision_review_id == Some(review_id.as_uuid())
+    {
+        if let Some(dream) = dream {
+            // First acceptance AND exact replay use the same scheduling owner. A
+            // cancellation after durable acceptance can retry; another review's
+            // status, a refusal, and unrelated observers cannot request a pass.
+            let submission_id = board
+                .submission_review(review_id)
+                .ok_or(CreditBindingError::WrongSelection)?
+                .submission_id
+                .as_uuid();
+            dream.request_reviewed_boundary(persona_id, submission_id);
+        }
+    }
+    Ok(credit)
+}
+
+async fn consume_review_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     persona_id: Uuid,
