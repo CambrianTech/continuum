@@ -40,6 +40,8 @@ use crate::runtime::{
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
+pub mod submission;
+
 /// The bus event published the moment a card transitions — by [`bridge_wire_work_event`]
 /// from the transition's own wire echo, so EVERY writer fires it: a citizen's
 /// `work/state`, the operator's `airc work state`, a remote peer. Subscribers
@@ -177,7 +179,10 @@ fn first_sighting(event_id: Uuid) -> bool {
 /// `work/state` VERB emitted — a card closed by any other writer changed the board
 /// and graded nothing (found live 2026-08-15: Asha's real rle_roundtrip artifact,
 /// operator close, zero grade).
-pub async fn bridge_wire_work_event(event: &airc_core::TranscriptEvent) {
+pub async fn bridge_wire_work_event(event: &airc_core::TranscriptEvent, observer: Uuid) {
+    // Review delivery is durable/idempotent in its existing storage owner. Do
+    // not mark it seen before awaiting: cancellation must permit exact replay.
+    crate::persona::training_producer::reviewed::bridge_review(event, observer).await;
     let Some(payload) = wire_card_state_payload(event) else {
         return;
     };
@@ -1698,9 +1703,17 @@ impl ActionCommand for WorkState {
         // believing it hers. Idempotent for the holder (the claim verb's already-yours
         // arm), so `in_progress` on a held card costs one re-claim, never a refusal.
         if matches!(state, CardState::Claimed | CardState::InProgress) {
-            let claim = WorkClaim { registry: self.registry.clone() }
-                .run(ctx, WorkClaimParams { card_id: p.card_id.clone(), ttl_ms: None })
-                .await?;
+            let claim = WorkClaim {
+                registry: self.registry.clone(),
+            }
+            .run(
+                ctx,
+                WorkClaimParams {
+                    card_id: p.card_id.clone(),
+                    ttl_ms: None,
+                },
+            )
+            .await?;
             crate::probe!(
                 class = "work.state.held_through_claim",
                 card_id = %card_id.as_uuid(),
@@ -1709,7 +1722,10 @@ impl ActionCommand for WorkState {
                 "a holder's column set through the one claim path — owner + lease + staging, never a bare column"
             );
             if state == CardState::Claimed {
-                return Ok(WorkStateResult { card_id: p.card_id, state: state_str(&state).to_string() });
+                return Ok(WorkStateResult {
+                    card_id: p.card_id,
+                    state: state_str(&state).to_string(),
+                });
             }
         }
         let actor = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
@@ -2019,7 +2035,6 @@ async fn raw_advance(
     Ok(())
 }
 
-
 /// The claim half of a reopen: a card returned to Open carries no hold. Best effort
 /// with a named outcome — a release the ledger refuses (a claim already gone) is a
 /// row, never an error on the verb, and `active_claims` no longer counts a claim
@@ -2032,11 +2047,21 @@ async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: WorkCardId, via
     else {
         return;
     };
-    let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else { return };
-    let (Some(owner), Some(claim_id)) = (card.owner, card.claim_id) else { return };
-    let reason = Some(format!("reopened via {via}: a card returned to Open carries no hold"));
+    let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
+        return;
+    };
+    let (Some(owner), Some(claim_id)) = (card.owner, card.claim_id) else {
+        return;
+    };
+    let reason = Some(format!(
+        "reopened via {via}: a card returned to Open carries no hold"
+    ));
     match airc
-        .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason })
+        .release_work_claim(ReleaseWorkClaim {
+            card_id,
+            claim_id,
+            reason,
+        })
         .await
     {
         Ok(_) => crate::probe!(
@@ -2120,7 +2145,6 @@ pub struct WorkNoteResult {
 
 #[async_trait]
 impl ActionCommand for WorkNote {
-
     const NAME: &'static str = "work/note";
     const ALIASES: &'static [&'static str] = &["ledger", "note_task"];
     const NATIVE: bool = true;
@@ -2165,7 +2189,10 @@ impl ActionCommand for WorkNote {
             has_next = !ledger.next_test.trim().is_empty(),
             "the card's ledger was written — the next turn opens from it"
         );
-        Ok(WorkNoteResult { recorded: true, room: room.name.clone() })
+        Ok(WorkNoteResult {
+            recorded: true,
+            room: room.name.clone(),
+        })
     }
 }
 
@@ -2721,6 +2748,18 @@ impl ServiceModule for WorkModule {
             }),
             Arc::new(WorkCreate {
                 registry: self.registry.clone(),
+            }),
+            Arc::new(submission::WorkSubmit {
+                registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
+            }),
+            Arc::new(submission::WorkReview {
+                registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
+            }),
+            Arc::new(submission::WorkSubmission {
+                registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
             }),
             Arc::new(WorkRelease {
                 registry: self.registry.clone(),

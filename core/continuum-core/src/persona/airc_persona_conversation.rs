@@ -871,8 +871,8 @@ impl AircPersonaConversation {
                 // durably in the room, `kickoffs: 1`, zero raw_event rows). The
                 // reopen pages the recent transcript and queues every room turn
                 // strictly newer than the watermark; the same decode + self-skip
-                // rules as the live path apply, and the work-event bridge dedups
-                // by event id, so a replayed card event cannot double-fire.
+                // rules as the live path apply. Card-state events dedup by event
+                // id; reviewed credit retains its durable destination identity.
                 match self.page_subscribed_rooms(32).await {
                     Ok(events) => {
                         let scanned = events.len();
@@ -885,7 +885,11 @@ impl AircPersonaConversation {
                             {
                                 continue;
                             }
-                            crate::modules::work::bridge_wire_work_event(event).await;
+                            crate::modules::work::bridge_wire_work_event(
+                                event,
+                                self.runtime.peer_id(),
+                            )
+                            .await;
                             if let Ok(message) = perceptual_from_event(event) {
                                 if message.peer_id != self.own_peer_id {
                                     replayed += 1;
@@ -1818,10 +1822,10 @@ impl AircPersonaConversation {
         // the persona subscribe streams are the only channel-complete
         // receiver this core has (the daemon attach covers ONE room),
         // and this runs BEFORE the perceptual filter and the self-skip
-        // so a citizen's own `work/state` echo counts. Once per wire
-        // event process-wide (the bridge dedups by event id); this is
-        // the single emitter the grade-on-done subscriber hears.
-        crate::modules::work::bridge_wire_work_event(&event).await;
+        // so a citizen's own `work/state` echo counts. State events dedup by
+        // event id; reviewed-credit delivery selects the publisher observer
+        // and retains its durable retry identity.
+        crate::modules::work::bridge_wire_work_event(&event, self.runtime.peer_id()).await;
         self.last_lamport = self.last_lamport.max(event.lamport);
         // Recover a perceptual room turn. Two on-wire shapes
         // reach a persona's subscribe stream and both are

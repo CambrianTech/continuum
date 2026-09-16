@@ -55,6 +55,8 @@ use crate::orm::types::{BatchOperation, BatchOperationType};
 // there, so the trait must be in scope to name it.
 use crate::orm::OrmEntity;
 
+pub mod reviewed;
+
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
 /// [`install_executor`]. The producer dispatches `genome/training-trigger/submit`
@@ -1543,41 +1545,33 @@ fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit
 /// Transfer one immutable revision using the destination's existing idempotency
 /// key. The accepted receipt proves ownership independently of training dispatch;
 /// a refusal, failed outcome, missing claim or incompatible lane keeps evidence.
-/// The current verdict can arrive during a continuing turn. A later verdict may
-/// accept its cumulative successor and repeat earlier acts; revision idempotency
-/// does not deduplicate across that activity-lifecycle boundary. The ordered
-/// request receipts retain the evidence needed to identify such overlap.
-async fn settle_staged_row<T: Transport>(
-    conn: &Connection<T>,
+/// Generation reservations also cover ordinary reviewed submissions, so a later
+/// cumulative successor cannot repeat the same acts under an earlier verdict.
+fn staged_submission_params(
     persona_id: Uuid,
     persona_name: &str,
     row: &StagedCredit,
     passed: bool,
-) -> Result<bool, ClientError> {
+) -> Option<serde_json::Value> {
     let eligible_role = match (passed, row.claim_id, row.owner, row.role) {
         (true, Some(_), Some(owner), Some(role)) if owner == persona_id => role,
-        _ => return Ok(false),
+        _ => return None,
     };
     // The full receipts are authoritative, including records written before the
     // scalar served summary existed. Never borrow another row's model.
-    let Some(served) = served_provenance(&row.receipts)
-        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())
-    else {
-        return Ok(false);
-    };
+    let served = served_provenance(&row.receipts)
+        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())?;
     let stamp = OutcomeStamp {
         card_id: row.card_id,
         role: eligible_role,
         outcome: passed,
     };
-    let Some(plan) = plan(
+    let plan = plan(
         CLASSIFIER.get_or_init(DomainClassifier::new),
         &row.prompt,
         &row.completion,
         Some(stamp),
-    ) else {
-        return Ok(false);
-    };
+    )?;
     let mut params = build_submit_params(
         persona_id,
         persona_name,
@@ -1586,6 +1580,34 @@ async fn settle_staged_row<T: Transport>(
         "card-credit",
     );
     params["submissionId"] = json!(row.id);
+    Some(params)
+}
+
+async fn settle_staged_row<T: Transport>(
+    conn: &Connection<T>,
+    persona_id: Uuid,
+    persona_name: &str,
+    row: &StagedCredit,
+    passed: bool,
+) -> Result<bool, ClientError> {
+    let Some(params) = staged_submission_params(persona_id, persona_name, row, passed) else {
+        return Ok(false);
+    };
+    match reviewed::reserve_transfer(conn, persona_name, row, None).await {
+        Ok(()) => {}
+        Err(reviewed::CreditBindingError::Storage(error)) => return Err(error),
+        Err(error) => {
+            crate::probe!(
+                class = "training.credit.settle_overlap",
+                persona = %persona_name,
+                card = %row.card_id,
+                revision = %row.id,
+                error = %error,
+                "generation evidence is already reserved; revision retained without another submission"
+            );
+            return Ok(false);
+        }
+    }
     let receipt = submit_training(conn, params).await?;
     if receipt
         .acceptance
@@ -2601,8 +2623,786 @@ pub(crate) mod tests {
         });
     }
 
-    // what this catches: 41f4e3ef — an older verdict drain must never delete a
-    // newer snapshot while waiting for the trigger's ownership receipt.
+    // what this catches: 6c36c24d — the actual public verbs bind before signed
+    // publication, preserve caller/room, and report review versus credit honestly.
+    #[tokio::test]
+    async fn work_submission_commands_bind_before_publication_and_preserve_identity() {
+        use crate::modules::work::submission::*;
+        use crate::sdk_codegen::{ActionCommand, Ctx};
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let airc_home = home.path().join("isolated-airc");
+        let airc = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(&airc_home, &airc_home)
+                .await
+                .unwrap(),
+        );
+        let room = airc.join("ordinary-project").await.unwrap();
+        let persona = airc.peer_id().as_uuid();
+        let name = "public-submission-owner";
+        let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        registry.register(crate::persona::PersonaAircRuntime::from_attached(
+            persona,
+            name,
+            airc_home,
+            airc.clone(),
+            room.channel,
+            crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+        ));
+        let executor = data_runtime();
+        let slot = Arc::new(LateBound::new("work submission fixture"));
+        slot.install(executor.clone());
+        let ctx = Ctx {
+            caller: Some(CallerIdentity::local_persona(airc.peer_id())),
+            ..Default::default()
+        };
+        let repo = airc_work::RepoId::new("acme/ordinary-project").unwrap();
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(
+                repo.clone(),
+                "verified ordinary work",
+                airc_work::Priority::P1,
+            ))
+            .await
+            .unwrap();
+        let claim = airc
+            .claim_work_card(airc_lib::ClaimWorkCard {
+                card_id: card,
+                ttl_ms: 60_000,
+            })
+            .await
+            .unwrap();
+        let mut capture = TurnCreditCapture::with_executor(
+            executor.clone(),
+            persona,
+            name.into(),
+            "Inspect and repair the actual implementation, with evidence.".into(),
+            CapturedCredit {
+                card_id: card.as_uuid(),
+                claim: Some(ClaimReceipt {
+                    claim_id: claim.as_uuid(),
+                    owner: airc.peer_id(),
+                    role: CreditRole::Owner,
+                }),
+            },
+        );
+        assert!(
+            capture
+                .record(
+                    &settlement_acts(4),
+                    &[served_receipt("public-command-request", "served-model")],
+                    None,
+                    true
+                )
+                .await
+        );
+        let selected = stored_credit_rows(&conn_as(executor, persona), name)
+            .await
+            .pop()
+            .unwrap();
+        let params = WorkSubmitParams {
+            room: room.channel.as_uuid().to_string(),
+            submission_id: Uuid::new_v4(),
+            card_id: card.as_uuid(),
+            claim_id: claim.as_uuid(),
+            instance: "generic-project-work".into(),
+            base_sha: "a".repeat(40),
+            artifact: WorkArtifactReference {
+                hash: "b".repeat(64),
+                size_bytes: 20,
+                mime: Some("text/x-diff".into()),
+            },
+            staged_revision_id: Some(selected.id),
+        };
+        let submit = WorkSubmit {
+            registry: registry.clone(),
+            executor_slot: slot.clone(),
+        };
+        let published = submit.run(&ctx, params.clone()).await.unwrap();
+        assert_eq!(published.publisher, persona);
+        assert_eq!(published.bound_staged_revision_id, Some(selected.id));
+        let mut overlap = params.clone();
+        overlap.submission_id = Uuid::new_v4();
+        assert!(submit.run(&ctx, overlap.clone()).await.is_err());
+        assert!(
+            !airc
+                .work_board_in(&room)
+                .await
+                .unwrap()
+                .card(card)
+                .unwrap()
+                .submissions
+                .iter()
+                .any(|s| s.submission_id.as_uuid() == overlap.submission_id),
+            "failed binding cannot publish its artifact"
+        );
+        let review_card = airc
+            .create_work_card(
+                airc_lib::CreateWorkCard::new(
+                    repo,
+                    "review exact candidate",
+                    airc_work::Priority::P1,
+                )
+                .reviewing(card),
+            )
+            .await
+            .unwrap();
+        let review_claim = airc
+            .claim_work_card(airc_lib::ClaimWorkCard {
+                card_id: review_card,
+                ttl_ms: 60_000,
+            })
+            .await
+            .unwrap();
+        let focus = airc.join("unrelated-focus").await.unwrap();
+        let replay = submit.run(&ctx, params.clone()).await.unwrap();
+        assert_eq!(replay.submitted_at_ms, published.submitted_at_ms);
+        let reviewed = WorkReview {
+            registry: registry.clone(),
+            executor_slot: slot.clone(),
+        }
+        .run(
+            &ctx,
+            WorkReviewParams {
+                room: params.room.clone(),
+                review_id: Uuid::new_v4(),
+                card_id: card.as_uuid(),
+                submission_id: params.submission_id,
+                artifact: params.artifact.clone(),
+                review_card_id: review_card.as_uuid(),
+                review_claim_id: review_claim.as_uuid(),
+                outcome: ReviewOutcome::Passed,
+                evidence: params.artifact.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            reviewed.credit_error.is_none(),
+            "{:?}",
+            reviewed.credit_error
+        );
+        assert_eq!(
+            reviewed.credit.unwrap().state,
+            reviewed::ReviewedCreditState::IndependentReviewRequired
+        );
+        let inspected = WorkSubmission {
+            registry,
+            executor_slot: slot,
+        }
+        .run(
+            &ctx,
+            WorkSubmissionParams {
+                room: params.room,
+                card_id: card.as_uuid(),
+                submission_id: params.submission_id,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(inspected.submission.publisher, persona);
+        assert_eq!(inspected.reviews.len(), 1);
+        assert_eq!(inspected.reviews[0].reviewer, persona);
+        assert_eq!(
+            inspected.credit.unwrap().state,
+            reviewed::ReviewedCreditState::AwaitingReview
+        );
+        let safe = serde_json::to_value(&inspected.submission).unwrap();
+        assert!(!safe.to_string().contains(&selected.prompt));
+        assert_eq!(
+            airc.current_room().await.unwrap().channel,
+            focus.channel,
+            "all explicit work verbs preserve unrelated focus"
+        );
+    }
+
+    // what this catches: 6c36c24d — only an accepted independent exact-artifact
+    // review may transfer a bound snapshot; lost ACK/replacement/reopen cannot
+    // relabel the evidence or submit it under a fresh destination identity.
+    #[tokio::test]
+    async fn reviewed_credit_replays_exact_authority_and_recovers_after_replacement() {
+        use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
+        use reviewed::{ReviewedCreditState as State, SubmissionSelection};
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let owner = airc_core::PeerId::from_uuid(persona);
+        let reviewer = airc_core::PeerId::new();
+        let card_id = airc_work::WorkCardId::new();
+        let room = Uuid::new_v4();
+        let name = "reviewed-project-work";
+        let receipts = vec![served_receipt("reviewed-request", "actual-model")];
+        let (mut capture, selected) = stage_settlement_fixture(
+            executor.clone(),
+            persona,
+            name,
+            card_id.as_uuid(),
+            receipts.clone(),
+        )
+        .await;
+        let selection = SubmissionSelection {
+            submission_id: Uuid::new_v4(),
+            room_id: room,
+            card_id: card_id.as_uuid(),
+            claim_id: selected.claim_id.unwrap(),
+            staged_revision_id: selected.id,
+            instance: "ordinary-project-work".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12}))
+                .unwrap(),
+        };
+        let data = conn_as(executor.clone(), persona);
+        reviewed::bind_submission(&data, name, persona, selection.clone())
+            .await
+            .unwrap();
+        let repo = airc_work::RepoId::new("acme/ordinary-project").unwrap();
+        let create = |card_id, reviews| {
+            WorkEvent::CardCreated(airc_work::CardCreated {
+                card_id,
+                repo: repo.clone(),
+                title: "ordinary work with reviewed deliverable".into(),
+                body: None,
+                priority: airc_work::Priority::P1,
+                lane_id: None,
+                created_by: owner,
+                created_at_ms: 1,
+                reviews,
+                origin: None,
+            })
+        };
+        let claim = |card_id, claim_id, holder| {
+            WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                card_id,
+                claim_id,
+                owner: holder,
+                ttl_ms: 1000,
+                claimed_at_ms: 2,
+            })
+        };
+        let submitted = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_uuid(selection.submission_id),
+            card_id,
+            claim_id: airc_work::ClaimId::from_uuid(selection.claim_id),
+            instance: selection.instance.clone(),
+            base_sha: selection.base_sha.clone(),
+            artifact: selection.artifact.clone(),
+            publisher: owner,
+            submitted_at_ms: 3,
+        };
+        let review_card = airc_work::WorkCardId::new();
+        let review_claim = airc_work::ClaimId::new();
+        let pass = WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(),
+            card_id,
+            submission_id: submitted.submission_id,
+            artifact: submitted.artifact.clone(),
+            review_card_id: review_card,
+            review_claim_id: review_claim,
+            reviewer,
+            outcome: WorkReviewOutcome::Passed,
+            evidence: submitted.artifact.clone(),
+            reviewed_at_ms: 4,
+        };
+        let prefix = [
+            (create(card_id, None), owner),
+            (claim(card_id, submitted.claim_id, owner), owner),
+            (WorkEvent::WorkSubmitted(submitted.clone()), owner),
+            (create(review_card, Some(card_id)), reviewer),
+            (claim(review_card, review_claim, reviewer), reviewer),
+        ];
+        // Existing codec/replay boundary, including authoritative transcript peer.
+        let project = |tail: Vec<(WorkEvent, airc_core::PeerId)>| {
+            airc_work::project_transcript_work_events(
+                prefix
+                    .iter()
+                    .cloned()
+                    .chain(tail)
+                    .enumerate()
+                    .map(|(n, (event, peer_id))| {
+                        let (headers, body) = airc_work::encode_work_event(&event).unwrap();
+                        airc_core::TranscriptEvent {
+                            event_id: airc_core::EventId::new(),
+                            room_id: airc_core::RoomId::from_uuid(room),
+                            peer_id,
+                            client_id: airc_core::ClientId::new(),
+                            kind: airc_core::TranscriptKind::System,
+                            occurred_at_ms: event.occurred_at_ms(),
+                            lamport: n as u64 + 1,
+                            target: airc_core::MentionTarget::All,
+                            headers,
+                            body: Some(body),
+                            attachment: None,
+                            receipt: None,
+                            metadata: serde_json::Value::Null,
+                        }
+                    }),
+            )
+            .unwrap()
+        };
+        let never_submit = continuum_client::mock::MockTransport::new();
+        never_submit.respond_to("genome/training-trigger/submit", |_| {
+            panic!("unaccepted/failed/unknown review must not submit")
+        });
+        let refused_conn = settlement_connection(executor.clone(), persona, never_submit, None);
+        for outcome in [WorkReviewOutcome::Failed, WorkReviewOutcome::Unknown] {
+            let review = WorkSubmissionReview {
+                outcome,
+                ..pass.clone()
+            };
+            let board = project(vec![(WorkEvent::WorkSubmissionReviewed(review), reviewer)]);
+            let result = reviewed::consume_review(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &board,
+                pass.review_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                result.state,
+                if outcome == WorkReviewOutcome::Failed {
+                    State::FailedReview
+                } else {
+                    State::UnknownReview
+                }
+            );
+        }
+        let self_card = airc_work::WorkCardId::new();
+        let self_claim = airc_work::ClaimId::new();
+        let self_review = WorkSubmissionReview {
+            review_card_id: self_card,
+            review_claim_id: self_claim,
+            reviewer: owner,
+            ..pass.clone()
+        };
+        let self_board = project(vec![
+            (create(self_card, Some(card_id)), owner),
+            (claim(self_card, self_claim, owner), owner),
+            (WorkEvent::WorkSubmissionReviewed(self_review), owner),
+        ]);
+        assert_eq!(
+            reviewed::consume_review(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &self_board,
+                pass.review_id
+            )
+            .await
+            .unwrap()
+            .state,
+            State::IndependentReviewRequired,
+            "signed self-review remains visible without positive learning credit"
+        );
+        let spoofed = project(vec![(
+            WorkEvent::WorkSubmissionReviewed(pass.clone()),
+            owner,
+        )]);
+        assert!(reviewed::consume_review(
+            &refused_conn,
+            name,
+            persona,
+            room,
+            &spoofed,
+            pass.review_id
+        )
+        .await
+        .is_err());
+        let board = project(vec![(
+            WorkEvent::WorkSubmissionReviewed(pass.clone()),
+            reviewer,
+        )]);
+        let unrelated_transport = continuum_client::mock::MockTransport::new();
+        unrelated_transport.respond_to("data/ensure-schema", |_| {
+            panic!("unrelated observer must not open credit storage")
+        });
+        unrelated_transport.respond_to("genome/training-trigger/submit", |_| {
+            panic!("unrelated observer must not transfer publisher credit")
+        });
+        let unrelated = Connection::new(unrelated_transport);
+        assert!(reviewed::consume_observed_review(
+            &unrelated,
+            "unrelated-resident",
+            reviewer.as_uuid(),
+            room,
+            &board,
+            pass.review_id
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(reviewed::consume_review(
+            &refused_conn,
+            name,
+            persona,
+            Uuid::new_v4(),
+            &board,
+            pass.review_id
+        )
+        .await
+        .is_err());
+        let submit = continuum_client::mock::MockTransport::new();
+        let selected_id = selected.id;
+        let review_id = pass.review_id.as_uuid();
+        submit.respond_to("genome/training-trigger/submit", move |params| {
+            assert_eq!(params["submissionId"], json!(selected_id));
+            assert_eq!(params["baseModel"], "actual-model");
+            assert_eq!(
+                params["examples"][0]["metadata"]["reviewedSubmission"]["review"]["review_id"],
+                json!(review_id)
+            );
+            Err(ClientError::Transport("destination ACK lost".into()))
+        });
+        let conn = settlement_connection(executor, persona, submit, None);
+        assert!(reviewed::consume_observed_review(
+            &conn,
+            name,
+            persona,
+            room,
+            &board,
+            pass.review_id
+        )
+        .await
+        .is_err());
+        let pending = reviewed::credit_status(&data, name, selection.submission_id)
+            .await
+            .unwrap();
+        assert_eq!(pending.state, State::AwaitingAcceptance);
+        assert_eq!(pending.decision_review_id, Some(review_id));
+        let mut later = receipts;
+        later.push(served_receipt("later-request", "actual-model"));
+        assert!(
+            capture
+                .record(&settlement_acts(8), &later, None, true)
+                .await
+        );
+        assert!(
+            reviewed::read_one::<_, StagedCredit>(&data, name, &selected.id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let competing = WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(),
+            ..pass.clone()
+        };
+        let board = project(vec![
+            (WorkEvent::WorkSubmissionReviewed(pass.clone()), reviewer),
+            (
+                WorkEvent::WorkSubmissionReviewed(competing.clone()),
+                reviewer,
+            ),
+        ]);
+        assert_eq!(
+            reviewed::consume_review(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &board,
+                competing.review_id
+            )
+            .await
+            .unwrap()
+            .state,
+            State::AnotherReviewSelected
+        );
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &selected,
+            Some(json!({"success":false,"errorKind":"DispatchFailed",
+            "acceptance":{"submissionId":selected.id,"replayed":true}})),
+        );
+        let reopened = settlement_connection(data_runtime(), persona, submit, None);
+        let result = reviewed::consume_observed_review(
+            &reopened,
+            name,
+            persona,
+            room,
+            &board,
+            pass.review_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.state,
+            State::Accepted,
+            "durable acceptance is independent of dispatch success"
+        );
+        assert_eq!(
+            result
+                .destination
+                .unwrap()
+                .acceptance
+                .unwrap()
+                .submission_id,
+            selected.id
+        );
+        assert_eq!(
+            reviewed::consume_review(&refused_conn, name, persona, room, &board, pass.review_id)
+                .await
+                .unwrap()
+                .state,
+            State::Accepted,
+            "accepted replay does not dispatch again"
+        );
+        assert_eq!(
+            stored_credit_rows(&data, name).await.len(),
+            1,
+            "newer staging remains intact"
+        );
+    }
+
+    // what this catches: 6c36c24d — publication pins a selected immutable copy,
+    // not the periodically replaced row; overlapping bindings roll back whole.
+    #[tokio::test]
+    async fn submission_binding_survives_replacement_and_reserves_generations_atomically() {
+        use reviewed::{
+            CreditBindingError, CreditGenerationReservation, CreditTransferIntent,
+            SubmissionSelection, WorkCreditBinding,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        let name = "immutable-work-binding";
+        let receipts = vec![served_receipt("generation-a", "model-a")];
+        let (mut capture, selected) =
+            stage_settlement_fixture(executor.clone(), persona, name, card, receipts.clone()).await;
+        let data = conn_as(executor.clone(), persona);
+        let selection = SubmissionSelection {
+            submission_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            card_id: card,
+            claim_id: selected.claim_id.unwrap(),
+            staged_revision_id: selected.id,
+            instance: "ordinary-project-card".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: serde_json::from_value(json!({
+                "hash":"b".repeat(64),"size_bytes":5,"mime":"text/x-diff"
+            }))
+            .unwrap(),
+        };
+        let binding = reviewed::bind_submission(&data, name, persona, selection.clone())
+            .await
+            .unwrap();
+        assert_eq!(binding.transfer_intent_id, selected.id);
+        let mut later = receipts;
+        later.push(served_receipt("generation-b", "model-a"));
+        assert!(
+            capture
+                .record(
+                    &settlement_acts(8),
+                    &later,
+                    Some("The later revision includes an additional inspection."),
+                    true
+                )
+                .await
+        );
+        let current = stored_credit_rows(&data, name).await.pop().unwrap();
+        assert_ne!(current.id, selected.id);
+        assert!(
+            reviewed::read_one::<_, StagedCredit>(&data, name, &selected.id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // New caller/executor uses the durable binding, including after a lost
+        // publication acknowledgement. It does not require the old working row.
+        let reopened = conn_as(data_runtime(), persona);
+        let replay = reviewed::bind_submission(&reopened, name, persona, selection.clone())
+            .await
+            .unwrap();
+        let intent = reviewed::read_one::<_, CreditTransferIntent>(
+            &reopened,
+            name,
+            &replay.transfer_intent_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(intent.snapshot.completion, selected.completion);
+        assert_eq!(intent.snapshot.receipts, selected.receipts);
+        let mut changed = selection.clone();
+        changed.artifact.size_bytes += 1;
+        assert!(matches!(
+            reviewed::bind_submission(&data, name, persona, changed).await,
+            Err(CreditBindingError::ConflictingSubmission(_))
+        ));
+
+        let mut overlapping = selection.clone();
+        overlapping.submission_id = Uuid::new_v4();
+        overlapping.staged_revision_id = current.id;
+        assert!(
+            reviewed::bind_submission(&data, name, persona, overlapping.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            reviewed::read_one::<_, WorkCreditBinding>(
+                &data,
+                name,
+                &overlapping.submission_id.to_string()
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "failed child reservation rolls back the new binding"
+        );
+        assert!(
+            reviewed::read_one::<_, CreditGenerationReservation>(&data, name, "generation-b")
+                .await
+                .unwrap()
+                .is_none(),
+            "rollback leaves no partial reservation of the new generation"
+        );
+        assert!(
+            reviewed::read_one::<_, CreditTransferIntent>(&data, name, &current.id.to_string())
+                .await
+                .unwrap()
+                .is_none(),
+            "failed binding also rolls back its preserved snapshot"
+        );
+        assert!(
+            matches!(
+                reviewed::reserve_transfer(&data, name, &selected, None).await,
+                Err(CreditBindingError::Overlap)
+            ),
+            "the legacy grader cannot train a bound snapshot"
+        );
+        reviewed::reserve_transfer(&data, name, &intent.snapshot, Some(selection.submission_id))
+            .await
+            .unwrap();
+        assert_eq!(stored_credit_rows(&data, name).await[0].id, current.id);
+    }
+
+    // what this catches: 6c36c24d — legacy refusal/uncertain acknowledgement
+    // cannot leave generation reservations whose replaced payload is lost.
+    #[tokio::test]
+    async fn refused_legacy_transfer_reopens_its_exact_payload_after_periodic_replacement() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        for (name, refused) in [
+            (
+                "legacy-refused",
+                Some(
+                    json!({"success":false,"errorKind":"PersistenceFailed","error":"unavailable"}),
+                ),
+            ),
+            ("legacy-uncertain", None),
+        ] {
+            let executor = data_runtime();
+            let persona = Uuid::new_v4();
+            let receipts = vec![served_receipt("original-generation", "actual-model")];
+            let (mut capture, original) = stage_settlement_fixture(
+                executor.clone(),
+                persona,
+                name,
+                Uuid::new_v4(),
+                receipts.clone(),
+            )
+            .await;
+            let submit = continuum_client::mock::MockTransport::new();
+            script_settlement_reply(&submit, &original, refused);
+            let conn = settlement_connection(executor.clone(), persona, submit, None);
+            assert!(!matches!(
+                settle_staged_row(&conn, persona, name, &original, true).await,
+                Ok(true)
+            ));
+            let mut later_receipts = receipts;
+            later_receipts.push(served_receipt("later-generation", "actual-model"));
+            assert!(
+                capture
+                    .record(
+                        &settlement_acts(8),
+                        &later_receipts,
+                        Some("Later progress is preserved separately."),
+                        true
+                    )
+                    .await
+            );
+            let reopened_executor = data_runtime();
+            let reopened = conn_as(reopened_executor.clone(), persona);
+            assert!(reviewed::read_one::<_, StagedCredit>(
+                &reopened,
+                name,
+                &original.id.to_string()
+            )
+            .await
+            .unwrap()
+            .is_none());
+            reviewed::ensure_storage(&reopened, name).await.unwrap();
+            let intent = reviewed::read_one::<_, reviewed::CreditTransferIntent>(
+                &reopened,
+                name,
+                &original.id.to_string(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(intent.work_submission_id, None);
+            assert_eq!(intent.snapshot.id, original.id);
+            assert_eq!(intent.snapshot.prompt, original.prompt);
+            assert_eq!(intent.snapshot.completion, original.completion);
+            assert_eq!(intent.snapshot.receipts, original.receipts);
+            assert_eq!(intent.snapshot.served, original.served);
+            let newer = stored_credit_rows(&reopened, name).await.pop().unwrap();
+            assert_ne!(newer.id, original.id);
+
+            let submit = continuum_client::mock::MockTransport::new();
+            script_settlement_reply(
+                &submit,
+                &original,
+                Some(json!({
+                    "success":true,"outcome":"AlreadyAccepted",
+                    "acceptance":{"submissionId":original.id,"replayed":true}
+                })),
+            );
+            submit.respond_to("genome/training-trigger/submit", |_| {
+                panic!("overlap reached destination")
+            });
+            let conn = settlement_connection(reopened_executor, persona, submit, None);
+            assert!(
+                settle_staged_row(&conn, persona, name, &intent.snapshot, true)
+                    .await
+                    .unwrap()
+            );
+            assert!(!settle_staged_row(&conn, persona, name, &newer, true)
+                .await
+                .unwrap());
+            assert_eq!(stored_credit_rows(&reopened, name).await[0].id, newer.id);
+            assert!(
+                reviewed::read_one::<_, reviewed::CreditTransferIntent>(
+                    &reopened,
+                    name,
+                    &original.id.to_string()
+                )
+                .await
+                .unwrap()
+                .is_some(),
+                "accepted evidence remains inspectable"
+            );
+        }
+    }
+
+    // what this catches: 41f4e3ef / 6c36c24d — an older verdict drain must never
+    // delete newer progress, nor permit its cumulative successor to train twice.
     #[tokio::test]
     async fn settlement_of_an_older_snapshot_cannot_delete_newer_progress() {
         let home = tempfile::tempdir().unwrap();
@@ -2682,22 +3482,17 @@ pub(crate) mod tests {
         assert_eq!(children["items"].as_array().unwrap().len(), 8);
 
         let submit = continuum_client::mock::MockTransport::new();
-        script_settlement_reply(
-            &submit,
-            &newer,
-            Some(json!({
-                "success":false,"errorKind":"DispatchFailed","error":"provider unavailable",
-                "acceptance":{"submissionId":newer.id,"replayed":false}
-            })),
-        );
+        submit.respond_to("genome/training-trigger/submit", |_| {
+            panic!("overlapping cumulative revision reached destination submission")
+        });
         let conn = settlement_connection(executor, persona, submit, None);
         assert!(
-            settle_staged_row(&conn, persona, name, &newer, true)
+            !settle_staged_row(&conn, persona, name, &newer, true)
                 .await
                 .unwrap(),
-            "durable destination ownership survives later dispatch failure"
+            "a cumulative successor cannot inherit a verdict and train the same generations again"
         );
-        assert!(stored_credit_rows(&data, name).await.is_empty());
+        assert_eq!(stored_credit_rows(&data, name).await[0].id, newer.id);
     }
 
     // what this catches: 41f4e3ef — one row's served model cannot label its
@@ -2809,8 +3604,8 @@ pub(crate) mod tests {
             &submit,
             &b,
             Some(json!({
-                "success":true,"outcome":"AlreadyAccepted",
-                "acceptance":{"submissionId":b.id,"replayed":true}
+                "success":false,"errorKind":"DispatchFailed","error":"provider unavailable",
+                "acceptance":{"submissionId":b.id,"replayed":false}
             })),
         );
         assert!(settle_staged_row(&conn, persona, name, &b, true)
