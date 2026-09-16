@@ -31,22 +31,38 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPin};
 
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
-/// permit and the slot pin (RAII) — never before the generation completes, because
-/// the caller binds it at function scope alongside the streamed response.
+/// permit and the slot pin (RAII). An incomplete call also invalidates local KV
+/// attribution; dropping this guard is not an acknowledgement of backend stop.
 pub struct TurnAdmission {
     /// The slot to pin the request to (`id_slot`), or `None` to stay unpinned
-    /// (non-Turn traffic, or a Turn whose activity could not be leased).
+    /// (traffic using separate scratch, or a Turn whose activity could not be leased).
     slot: Option<u32>,
-    /// The concurrency permit — held so no more than `lanes` turns decode at once.
-    _permit: OwnedSemaphorePermit,
     /// The slot pin — held so eviction cannot reassign this turn's slot mid-decode.
     _pin: Option<SlotPin>,
+    /// Released after the pin so the next permit holder can lease the free slot.
+    _permit: OwnedSemaphorePermit,
+    /// A lease is provisional until the adapter observes successful generation.
+    /// Cancellation during paging or generation must not save foreign KV later.
+    uncommitted: Option<(Arc<KvSlotPool>, ActivityKey, u32)>,
 }
 
 impl TurnAdmission {
     /// The leased slot this turn should pin `id_slot` to, if any.
     pub fn slot(&self) -> Option<u32> {
         self.slot
+    }
+
+    /// The adapter received a complete successful generation in this slot.
+    pub(crate) fn generation_completed(&mut self) {
+        self.uncommitted = None;
+    }
+}
+
+impl Drop for TurnAdmission {
+    fn drop(&mut self) {
+        if let Some((pool, key, slot)) = self.uncommitted.take() {
+            pool.forget_resident(slot, key);
+        }
     }
 }
 
@@ -56,8 +72,9 @@ impl TurnAdmission {
 /// caller must hold across the generation.
 ///
 /// `key`/`pool` are `None` for non-Turn traffic (or a cloud provider with no slots):
-/// the caller still gets the permit, `slot()` is `None`, and it places the request
-/// on scratch (or unpinned) itself.
+/// the caller still gets the permit and places the request on scratch (or unpinned)
+/// itself. On a single-slot server the pool saves and detaches the resident before
+/// transient traffic borrows that slot; `slot()` then returns its index.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
     key: Option<ActivityKey>,
@@ -74,22 +91,30 @@ pub async fn admit_turn(
         .await
         .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
-    let mut slot = None;
-    let mut _pin = None;
+    let mut admission = TurnAdmission {
+        slot: None,
+        _pin: None,
+        _permit,
+        uncommitted: None,
+    };
 
-    if let (Some(k), Some(pool)) = (key, pool) {
+    if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
         if let Some(pg) = pool.lease_paged(k).await {
             // 2. PIN synchronously, before any await below — a permit-holding
             //    returner leases only an UNPINNED slot, so pinning here (there are
             //    at most lanes-1 other pinned slots while we hold a permit) makes the
             //    slot we just leased un-evictable for the turn. No await between the
             //    lease returning and this pin, so no other task can slip in.
-            _pin = pool.pin(&k);
+            admission._pin = pool.pin(&k);
+            admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
 
             // 3. The context switch onto a now-free slot: page the evictee out,
             //    page this activity in. Lands immediately (no defer) because the slot
             //    is not decoding.
             if let Some(prev) = pg.save_first {
+                // A failed or cancelled save may have replaced an older file.
+                // Only a completed save can make this page restorable again.
+                pool.note_page_lost(&prev);
                 if kv_page_action(client, root, pg.slot, &prev, "save").await {
                     pool.note_saved(prev);
                 }
@@ -102,11 +127,25 @@ pub async fn admit_turn(
             // Price basis for the eviction policy (B5): this activity's current
             // prompt size — comparable across slots, which is all eviction needs.
             pool.note_tail(&k, approx_tokens);
-            slot = Some(pg.slot);
+            admission.slot = Some(pg.slot);
         }
+    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.n_slots() == 1) {
+        // A single-slot server has no separate scratch slot. Preserve the
+        // resident before background/anonymous traffic borrows its physical slot.
+        // Remove attribution BEFORE the await so cancellation cannot leave the
+        // next activity treating transient KV as its own warm tail.
+        let (previous, pin) = pool.take_resident(0);
+        admission._pin = pin;
+        if let Some(previous) = previous {
+            pool.note_page_lost(&previous);
+            if kv_page_action(client, root, 0, &previous, "save").await {
+                pool.note_saved(previous);
+            }
+        }
+        admission.slot = Some(0);
     }
 
-    TurnAdmission { slot, _permit, _pin }
+    admission
 }
 
 /// Execute one KV page action against the server (`/slots/{id}?action=save|restore`).
@@ -186,10 +225,13 @@ mod tests {
         drop(adm_a);
 
         // Now B can lease, and it gets the freed slot.
+        let after_cancel = pool.lease_paged(b).await.expect("slot released after cancellation");
         assert_eq!(
-            pool.lease(b).await,
-            Some(slot_a),
+            after_cancel.slot,
+            slot_a,
             "after the turn dropped, the slot must become leasable again"
         );
+        assert_eq!(after_cancel.save_first, None,
+            "an admission dropped without successful generation must not be saved as activity A");
     }
 }

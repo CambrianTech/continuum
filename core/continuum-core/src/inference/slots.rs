@@ -56,8 +56,9 @@ pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
 /// INFERENCE-SCHEDULING doc's open question; never per-callsite hacks).
 ///
 /// Placement rule: **only `Turn` may hold or evict a citizen's activity slot.**
-/// Everything else lands on the reserved SCRATCH slot (or, on a ≤2-slot server
-/// with no scratch to spare, goes unpinned with `cache_prompt: false`). The
+/// Everything else lands on the reserved SCRATCH slot. A single-slot server
+/// saves its resident before lending that slot transiently; a two-slot server
+/// without scratch stays unpinned. Both use `cache_prompt: false`. The
 /// measured defect this closes: the small sidecar calls (`should_respond`,
 /// `check_redundancy`, `generate_response`) pinned the SAME slot as the turn
 /// and truncated the citizen's ~30k warm tail to their tiny common head —
@@ -175,7 +176,8 @@ pub struct KvSlotPool {
     /// The reserved non-citizen slot (highest index) when the server has ≥3
     /// slots — where ALL non-Turn traffic lands, so it structurally cannot
     /// evict a citizen's warm tail. `None` on small servers (≤2 slots): there,
-    /// non-Turn traffic goes unpinned with `cache_prompt: false` instead.
+    /// non-Turn traffic uses `cache_prompt: false`; one slot saves its resident
+    /// before transient use, while two slots keep the unpinned fallback.
     scratch: Option<u32>,
     /// slot index → the activity whose KV last WARMED that slot. This is the
     /// paging ledger's "who is resident" half: when a lease hands a slot to a
@@ -487,6 +489,25 @@ impl KvSlotPool {
         self.pool.pin(key)
     }
 
+    /// Detach the resident identity before transient traffic overwrites a slot.
+    /// The caller holds the decode permit and keeps the returned pin through the
+    /// request. A later activity must restore its saved page, never mistake the
+    /// transient KV for its own warm state or save it under its own filename.
+    pub(crate) fn take_resident(&self, slot: u32) -> (Option<ActivityKey>, Option<SlotPin>) {
+        let previous = self.holders.lock().remove(&slot);
+        let pin = previous.and_then(|key| self.pin(&key));
+        (previous, pin)
+    }
+
+    /// Failed/cancelled generation never proves whose KV now occupies the slot.
+    /// Saved pages remain valid; only the provisional physical attribution clears.
+    pub(crate) fn forget_resident(&self, slot: u32, key: ActivityKey) {
+        let mut holders = self.holders.lock();
+        if holders.get(&slot) == Some(&key) {
+            holders.remove(&slot);
+        }
+    }
+
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: ActivityKey) {
@@ -502,7 +523,7 @@ impl KvSlotPool {
 }
 
 /// Per-server directory: which roots have a pool, and which are latched
-/// unsupported (no /props surface / single slot). The transport-side probe
+/// unsupported (no /props surface). The transport-side probe
 /// (the adapter owns the HTTP client) discovers; this directory owns state.
 pub struct SlotDirectory {
     pools: dashmap::DashMap<String, Option<Arc<KvSlotPool>>>,

@@ -667,8 +667,8 @@ impl OpenAICompatibleAdapter {
             .get("total_slots")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
-        if n_slots <= 1 {
-            dir.latch_unsupported(&root);
+        if n_slots == 0 {
+            // Missing geometry is not proof that activity paging is unsupported.
             return None;
         }
         // The directory arbitrates the probe race: only the first writer installs
@@ -1115,6 +1115,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
             return;
         };
+        if pool.n_slots() == 1 {
+            // No spare slot: restoration must hold the actual turn permit. This
+            // best-effort task must not restore over transient background KV.
+            return;
+        }
         let client = self.client.clone();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
@@ -1568,12 +1573,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             };
             let root = self.endpoints().root().to_string();
             // Discovery: install this server's slot pool on first use (probes /props).
-            // Only a Turn needs it; non-Turn takes the permit and lands on scratch.
-            let pool = if turn_key.is_some() {
-                self.ensure_slot_pool().await
-            } else {
-                None
-            };
+            // Non-Turn traffic also needs the pool on a single-slot server: it
+            // must save the activity resident before borrowing the only slot.
+            let pool = self.ensure_slot_pool().await;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
@@ -1595,7 +1597,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                             obj.insert("cache_prompt".to_string(), json!(false));
                         }
                     }
-                    scratch
+                    adm.slot().or(scratch)
                 }
             };
             _admission = Some(adm);
@@ -1852,6 +1854,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
+        let generation_completed = finish_reason_str.is_some()
+            && !matches!(finish_reason, FinishReason::Error);
 
         // Assemble native tool calls from the streamed fragments.
         let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
@@ -1981,6 +1985,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // every breaching call rather than wait for a human to notice slowness.
         if let Some(t) = &timing {
             warn_if_decode_collapsed(model, t.decode_tokens, t.decode_tokens_per_second);
+        }
+
+        // Plain EOF is accepted by the existing stream reader, but is not proof
+        // that generation finished. Only an explicit successful terminal frame
+        // makes the provisional physical KV attribution safe to retain.
+        if generation_completed {
+            if let Some(admission) = _admission.as_mut() {
+                admission.generation_completed();
+            }
         }
 
         Ok(TextGenerationResponse {
@@ -2599,6 +2612,278 @@ mod tests {
             first["messages"][0]["content"],
             "Inspect the selected artifact — λ"
         );
+    }
+
+    // Regression for 73d66475: use the actual adapter HTTP path, not just the
+    // one-slot pool constructor. Background traffic must save the resident before
+    // overwrite, then restore it on return; a failed save cannot remain restorable
+    // or make the next call save background KV under the activity's filename.
+    // A failed model request must likewise lose its provisional slot identity.
+    #[tokio::test]
+    async fn single_slot_background_use_preserves_only_successfully_saved_activity_pages() {
+        use axum::{
+            extract::Query,
+            http::StatusCode,
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::sync::{
+            atomic::{AtomicBool, AtomicU8, Ordering},
+            Arc, Mutex,
+        };
+
+        let operations = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let fail_save = Arc::new(AtomicBool::new(false));
+        let fail_restore = Arc::new(AtomicBool::new(false));
+        // 0: complete, 1: HTTP error, 2: premature EOF, 3: read error, 4: pending.
+        let generation_mode = Arc::new(AtomicU8::new(0));
+        let release_stream = Arc::new(tokio::sync::Notify::new());
+        let page_log = Arc::clone(&operations);
+        let page_failure = Arc::clone(&fail_save);
+        let restore_failure = Arc::clone(&fail_restore);
+        let generate_log = Arc::clone(&operations);
+        let generate_mode = Arc::clone(&generation_mode);
+        let generate_release = Arc::clone(&release_stream);
+        let app = Router::new()
+            .route("/props", get(|| async {
+                Json(json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 8192}}))
+            }))
+            .route("/slots/{slot}", post(move |
+                Query(query): Query<std::collections::HashMap<String, String>>,
+                Json(body): Json<Value>,
+            | {
+                let log = Arc::clone(&page_log);
+                let fail = Arc::clone(&page_failure);
+                let restore_fail = Arc::clone(&restore_failure);
+                async move {
+                    let action = query.get("action").expect("fixture page action");
+                    log.lock().expect("fixture log").push(json!({
+                        "action": action, "filename": body["filename"]
+                    }));
+                    if (action == "save" && fail.load(Ordering::SeqCst))
+                        || (action == "restore" && restore_fail.load(Ordering::SeqCst))
+                    {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                }
+            }))
+            .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+                let log = Arc::clone(&generate_log);
+                let mode = generate_mode.load(Ordering::SeqCst);
+                let release = Arc::clone(&generate_release);
+                async move {
+                    log.lock().expect("fixture log").push(json!({"action": "generate", "body": body}));
+                    if mode == 1 {
+                        return (StatusCode::BAD_REQUEST, "fixture generation failed").into_response();
+                    }
+                    const PARTIAL: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+                    if mode == 2 {
+                        return ([("content-type", "text/event-stream")], PARTIAL).into_response();
+                    }
+                    if mode == 3 || mode == 4 {
+                        use futures::StreamExt;
+                        let stream = futures::stream::once(async {
+                            Ok::<_, std::io::Error>(PARTIAL)
+                        }).chain(futures::stream::once(async move {
+                            if mode == 4 {
+                                release.notified().await;
+                            } else {
+                                tokio::task::yield_now().await;
+                            }
+                            Err::<&str, _>(std::io::Error::other("fixture interrupted stream"))
+                        }));
+                        return ([("content-type", "text/event-stream")], axum::body::Body::from_stream(stream)).into_response();
+                    }
+                    ([ ("content-type", "text/event-stream") ],
+                     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\ndata: [DONE]\n\n").into_response()
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("isolated HTTP fixture");
+        let address = listener.local_addr().expect("bound address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut adapter = test_adapter();
+        adapter.config.base_url = format!("http://{address}");
+        adapter.config.llamacpp_sampling_extensions = true;
+        adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
+        let activity =
+            crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
+                .expect("non-nil fixture activity");
+        let turn = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "activity")],
+            persona_id: Some(activity.persona.to_string()),
+            room_id: Some(activity.room.to_string()),
+            purpose: Some("cognition/deliberation".into()),
+            ..Default::default()
+        };
+        let background = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "background")],
+            purpose: Some("dream-belief-review".into()),
+            ..Default::default()
+        };
+        for (request, fails) in [
+            (turn.clone(), false),
+            (background.clone(), false),
+            (turn.clone(), false),
+            (background.clone(), true),
+            (turn.clone(), false),
+        ] {
+            fail_save.store(fails, Ordering::SeqCst);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                adapter.generate_text(request),
+            )
+            .await
+            .expect("bounded adapter fixture")
+            .expect("fixture generation");
+        }
+        let failed_turn = TextGenerationRequest {
+            room_id: Some(uuid::Uuid::new_v4().to_string()),
+            ..turn.clone()
+        };
+        generation_mode.store(1, Ordering::SeqCst);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_text(failed_turn.clone()),
+        )
+        .await
+        .expect("bounded failed generation")
+        .is_err());
+        generation_mode.store(0, Ordering::SeqCst);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_text(turn.clone()),
+        )
+        .await
+        .expect("bounded return after failure")
+        .expect("restored activity generation");
+        let initial = std::mem::take(&mut *operations.lock().expect("actual HTTP operations"));
+        let actions: Vec<_> = initial
+            .iter()
+            .map(|op| op["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                "generate", "save", "generate", "restore", "generate", "save", "generate",
+                "generate", "save", "generate", "restore", "generate"
+            ]
+        );
+        let filename = crate::inference::slots::page_filename(&activity);
+        for op in initial.iter().filter(|op| op["action"] != "generate") {
+            assert_eq!(op["filename"], filename);
+        }
+        let requests: Vec<_> = initial.iter().filter_map(|op| op.get("body")).collect();
+        for (index, body) in requests.iter().enumerate() {
+            assert_eq!(body["id_slot"], 0, "every request uses the one actual slot");
+            assert_eq!(
+                body["cache_prompt"],
+                [true, false, true, false, true, true, true][index]
+            );
+        }
+
+        // Neither an early clean EOF nor a transport error establishes a warm
+        // activity. A's saved page must survive and B must never be saved.
+        for mode in [2, 3, 4] {
+            generation_mode.store(mode, Ordering::SeqCst);
+            if mode == 4 {
+                // Poll the real client until it receives partial output, then
+                // cancel it. Releasing this fixture stream separately makes no
+                // assertion that cancellation stops a production backend.
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                {
+                    let generation = adapter.generate_stream(failed_turn.clone(), tx);
+                    tokio::pin!(generation);
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        tokio::select! {
+                            result = &mut generation => panic!("stream completed before cancellation: {result:?}"),
+                            chunk = rx.recv() => assert!(matches!(chunk, Some(GenerationChunk::Token(_)))),
+                        }
+                    }).await.expect("bounded partial stream");
+                }
+                assert_eq!(adapter.concurrency.available_permits(), 1);
+                release_stream.notify_one();
+            } else {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    adapter.generate_text(failed_turn.clone()),
+                )
+                .await
+                .expect("bounded interrupted generation");
+                if mode == 3 {
+                    assert!(result.is_err(), "stream read failure must remain an error");
+                } else {
+                    // Existing response compatibility accepts EOF; the cache
+                    // ledger must still require an actual successful terminal.
+                    assert_eq!(result.expect("existing EOF response").text, "partial");
+                }
+            }
+            generation_mode.store(0, Ordering::SeqCst);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                adapter.generate_text(turn.clone()),
+            )
+            .await
+            .expect("bounded restore")
+            .expect("return to A");
+            let observed = std::mem::take(&mut *operations.lock().expect("HTTP operations"));
+            assert_eq!(
+                observed
+                    .iter()
+                    .map(|op| op["action"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["save", "generate", "restore", "generate"],
+                "mode {mode}"
+            );
+            for op in observed.iter().filter(|op| op["action"] != "generate") {
+                assert_eq!(
+                    op["filename"], filename,
+                    "never persist incomplete B as resident"
+                );
+            }
+        }
+
+        // A failed restore invalidates the saved-page claim even when the
+        // following generation also fails; retry must prefill, not retry that page.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_text(background),
+        )
+        .await
+        .expect("bounded background")
+        .expect("background");
+        fail_restore.store(true, Ordering::SeqCst);
+        generation_mode.store(1, Ordering::SeqCst);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_text(turn.clone())
+        )
+        .await
+        .expect("bounded failed restore")
+        .is_err());
+        fail_restore.store(false, Ordering::SeqCst);
+        generation_mode.store(0, Ordering::SeqCst);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.generate_text(turn),
+        )
+        .await
+        .expect("bounded cold retry")
+        .expect("cold retry");
+        let observed = std::mem::take(&mut *operations.lock().expect("HTTP operations"));
+        assert_eq!(
+            observed
+                .iter()
+                .map(|op| op["action"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["save", "generate", "restore", "generate", "generate"]
+        );
+        server.abort();
+        let _ = server.await;
     }
 
     fn image_message() -> Vec<ChatMessage> {
