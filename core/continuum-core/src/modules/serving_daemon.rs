@@ -969,17 +969,6 @@ impl ServingDaemonModule {
         // slots is the restore economy, not starvation. `inference::decode_knee`.
         let active_model = crate::inference::llama_server::current_serving().active_model;
         let knee = active_model.as_deref().and_then(crate::inference::decode_knee::knee_for);
-        let clamped = crate::inference::decode_knee::knee_lanes(residents, knee);
-        if clamped < residents {
-            crate::probe!(
-                class = "serving.decode_knee.clamped",
-                model = %active_model.unwrap_or_default(), // unwrap_or_default: a knee implies a model; the empty label is unreachable
-                roster = residents as u64,
-                knee = clamped as u64,
-                "lane demand clamped to the measured decode knee — the roster pages, the streams stay fast"
-            );
-        }
-        let residents = clamped;
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -992,6 +981,20 @@ impl ServingDaemonModule {
         // residents < 2 keeps the old shape (the adapter reserves nothing
         // below n_slots 3, so asking for the extra lane would waste it).
         let lanes = if residents >= 2 { residents + 1 } else { residents };
+        // The knee bounds the TOTAL slot count, scratch included: the curve is measured on
+        // in-flight model calls, and the scratch slot is one of them (first cut clamped the
+        // resident count and the +1 put the plan right back on the collapsed side).
+        let clamped = crate::inference::decode_knee::knee_lanes(lanes, knee);
+        if clamped < lanes {
+            crate::probe!(
+                class = "serving.decode_knee.clamped",
+                model = %active_model.unwrap_or_default(), // unwrap_or_default: a knee implies a model; the empty label is unreachable
+                roster_lanes = lanes as u64,
+                knee = clamped as u64,
+                "lane demand clamped to the measured decode knee — the roster pages, the streams stay fast"
+            );
+        }
+        let lanes = clamped;
         // Both ceilings are over the RESIDENTS, never the whole persisted registry
         // (490 entries: every test fixture and departed mind); the sent ceiling is what
         // the window follows, the untrimmed one only bounds it.
