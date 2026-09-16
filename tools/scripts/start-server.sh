@@ -875,6 +875,7 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFIL
 # launch a lie. [[verify-the-build-actually-deployed]], [[fallbacks-are-illegal-fail-loud]].
 CORE_SRC_DIR="$(dirname "$CORE_MANIFEST")/src"
 CORE_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-core-server"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) CORE_BIN="$CORE_BIN.exe" ;; esac
 # #296: THE incident bin. A swept debug/ dir let the build above print
 # "Finished" with no binary on disk, and `exec "$CORE_BIN"` died at the very
 # end while the deploy read as green. Restore it HERE — before the #194
@@ -916,6 +917,19 @@ if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" 
 fi
 
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  # The caller must launch THIS artifact, not guess our profile/target directory
+  # or rerun the source launcher after stopping the old core. Publish only after
+  # the build and freshness checks succeed. Older callers need no receipt.
+  if [ -n "${CONTINUUM_BUILD_RECEIPT:-}" ]; then
+    artifact="$CORE_BIN"
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*)
+        artifact="$(cygpath -am "$artifact")"
+        ;;
+      *) artifact="$(cd "$(dirname "$artifact")" && pwd -P)/$(basename "$artifact")" ;;
+    esac
+    printf '%s\n' "$artifact" > "$CONTINUUM_BUILD_RECEIPT"
+  fi
   echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
   exit 0
 fi

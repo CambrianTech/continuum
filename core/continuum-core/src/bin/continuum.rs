@@ -1320,13 +1320,73 @@ fn available_memory_bytes() -> u64 {
     sys.available_memory()
 }
 
+/// A per-attempt receipt owned by this invocation, never a cached artifact hint.
+/// The build script writes its selected native path only after all checks pass.
+struct WarmBuildReceipt(PathBuf);
+
+impl WarmBuildReceipt {
+    fn create() -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!(
+            "continuum-warm-build-{}.receipt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("cannot create warm-build receipt: {e}"))?;
+        Ok(Self(path))
+    }
+
+    fn artifact(&self) -> Result<PathBuf, String> {
+        use std::io::Read;
+        const MAX_RECEIPT_BYTES: u64 = 16 * 1024;
+        let mut report = String::new();
+        std::fs::File::open(&self.0)
+            .and_then(|file| file.take(MAX_RECEIPT_BYTES + 1).read_to_string(&mut report))
+            .map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        let path = report.strip_suffix('\n').unwrap_or(&report); // No optional framing newline means the entire report is the path.
+        if report.len() > MAX_RECEIPT_BYTES as usize
+            || path.is_empty()
+            || path.contains(['\n', '\r', '\0'])
+            || !Path::new(path).is_absolute()
+        {
+            return Err("warm build did not report one absolute native artifact path; leaving the running core untouched".to_string());
+        }
+        Ok(PathBuf::from(path))
+    }
+}
+
+impl Drop for WarmBuildReceipt {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCore, String> {
+    let receipt = WarmBuildReceipt::create()?;
+    cmd.env("CONTINUUM_BUILD_ONLY", "1")
+        .env("CONTINUUM_BUILD_RECEIPT", &receipt.0)
+        .stdin(Stdio::null());
+    let status = cmd.status().map_err(|e| {
+        format!("warm build could not start: {e}; leaving the running core untouched")
+    })?;
+    if !status.success() {
+        return Err(format!(
+            "warm build exited {status}; leaving the running core untouched"
+        ));
+    }
+    PrebuiltCore::prepare(&receipt.artifact()?).await
+}
+
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
 async fn reboot(options: RebootOptions) -> Result<(), String> {
-    let prebuilt = match options.prebuilt {
+    let mut prebuilt = match options.prebuilt {
         Some(path) => Some(PrebuiltCore::prepare(&path).await?),
         None => None,
     };
+    let requested_source_build = prebuilt.is_none();
     if options.validate_only {
         let candidate = prebuilt
             .as_ref()
@@ -1468,9 +1528,9 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // eighty dark minutes, dropped turns and lapsed leases each time. So: with a
     // source tree, no --prebuilt, and enough free memory, build FIRST through the
     // start script's own definition (CONTINUUM_BUILD_ONLY=1) while the core serves;
-    // the launch after the stop then finds the binary fresh and its build is a warm
-    // no-op. Below the headroom line, or on any failure, the old path runs and the
-    // receipt says why.
+    // the exact reported artifact is validated before teardown and launched directly.
+    // A failed attempted warm build returns without stopping the serving core.
+    // Below the headroom line the existing stop-first path remains available.
     if prebuilt.is_none() {
         match warm_build_allowed(available_memory_bytes(), locate_start_script().ok()) {
             Ok(script) => {
@@ -1481,17 +1541,12 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
                     cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
                 }
-                cmd.env("CONTINUUM_BUILD_ONLY", "1");
-                cmd.stdin(Stdio::null());
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
-                match cmd.status() {
-                    Ok(st) if st.success() => println!(
-                        "✓ warm build done in {}s — the core served throughout; stopping now for a swap-length dark window",
-                        started.elapsed().as_secs()
-                    ),
-                    Ok(st) => println!("⚠ warm build exited {st} after {}s — falling back to stop-then-build", started.elapsed().as_secs()),
-                    Err(e) => println!("⚠ warm build could not start ({e}) — falling back to stop-then-build"),
-                }
+                prebuilt = Some(prepare_warm_build(cmd).await?);
+                println!(
+                    "✓ warm artifact validated in {}s — stopping now for direct artifact handoff",
+                    started.elapsed().as_secs()
+                );
             }
             Err(why) => println!("▶ no warm build: {why} — stopping first, then building"),
         }
@@ -1529,7 +1584,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
     // deliberately skips. Getting this wrong in either direction re-creates the noise this
     // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
-    let rebuilt_cli = prebuilt.is_none()
+    let rebuilt_cli = requested_source_build
         && locate_start_script().is_ok()
         && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
     verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
@@ -4497,6 +4552,55 @@ mod tests {
             warm_build_allowed(u64::MAX, None).is_err(),
             "no script = no build definition"
         );
+    }
+
+    // Regression for card 571d6e0b: an old script's absent receipt, malformed
+    // output, or failed build cannot turn into teardown followed by a rebuild.
+    #[tokio::test]
+    async fn warm_build_receipts_are_bounded_owned_and_fail_closed() {
+        let receipt = WarmBuildReceipt::create().unwrap();
+        let receipt_path = receipt.0.clone();
+        for invalid in ["", "relative/core", "/one\n/two\n", "/one\0two"] {
+            std::fs::write(&receipt.0, invalid).unwrap();
+            assert!(receipt.artifact().is_err(), "accepted {invalid:?}");
+        }
+        std::fs::write(&receipt.0, vec![b'x'; 16 * 1024 + 1]).unwrap();
+        assert!(receipt.artifact().is_err());
+        let artifact = std::env::temp_dir().join("build cache 雪").join("core.exe");
+        std::fs::write(&receipt.0, format!("{}\n", artifact.display())).unwrap();
+        assert_eq!(receipt.artifact().unwrap(), artifact);
+        drop(receipt);
+        assert!(!receipt_path.exists());
+
+        let mut failed = std::process::Command::new(locate_bash().unwrap());
+        failed.args([
+            "-c",
+            "printf '%s\\n' /misleading/core > \"$CONTINUUM_BUILD_RECEIPT\"; exit 23",
+        ]);
+        let error = prepare_warm_build(failed).await.unwrap_err();
+        assert!(error.contains("warm build exited"), "{error}");
+        assert!(error.contains("leaving the running core untouched"));
+
+        let mut missing = std::process::Command::new(locate_bash().unwrap());
+        missing.args(["-c", "exit 0"]);
+        assert!(prepare_warm_build(missing)
+            .await
+            .unwrap_err()
+            .contains("did not report one absolute native artifact path"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let unusable = directory.path().join("unusable core.exe");
+        std::fs::write(&unusable, b"not an executable").unwrap();
+        let mut reported = std::process::Command::new(locate_bash().unwrap());
+        reported
+            .args([
+                "-c",
+                "printf '%s\\n' \"$1\" > \"$CONTINUUM_BUILD_RECEIPT\"",
+                "receipt-fixture",
+            ])
+            .arg(&unusable);
+        let error = prepare_warm_build(reported).await.unwrap_err();
+        assert!(error.contains("--build-sha"), "{error}");
     }
     use serde_json::json;
 
