@@ -13,6 +13,21 @@ function ConvertTo-CoreImagePath {
     return [IO.Path]::GetFullPath($normalized)
 }
 
+function Test-CoreTaskUser {
+    param([string]$UserId, [string]$ExpectedSid)
+    if (-not $UserId) { return $false }
+    try {
+        # Scheduler CIM projections may turn a registered SID into an account
+        # name. Compare identities, not their provider-specific spelling.
+        $actual = if ($UserId.StartsWith('S-', [StringComparison]::OrdinalIgnoreCase)) {
+            [Security.Principal.SecurityIdentifier]::new($UserId)
+        } else {
+            ([Security.Principal.NTAccount]::new($UserId)).Translate([Security.Principal.SecurityIdentifier])
+        }
+        return $actual.Equals([Security.Principal.SecurityIdentifier]::new($ExpectedSid))
+    } catch { return $false } # Unresolvable identities never authorize a task.
+}
+
 # Task Scheduler can return inherited ACEs before its explicit principal ACE.
 # Preserve that order: CommonSecurityDescriptor.AddAccess rejects this shape.
 # This deliberately supports only ordinary allow/deny ACLs. Without the original
@@ -216,14 +231,14 @@ function Register-CoreServiceRelease {
     }
     if ($task -and $canRun -and $task.Description -eq $description -and $task.Actions.Count -eq 1 -and
         $task.Actions[0].Execute -eq $shell -and $task.Actions[0].Arguments -eq $arguments -and
-        $task.Principal.UserId -eq $userSid -and $task.Principal.LogonType -eq 'Interactive' -and
+        (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid) -and $task.Principal.LogonType -eq 'Interactive' -and
         $task.Principal.RunLevel -eq 'Limited' -and $task.Settings.Enabled -and
         $task.Settings.RestartCount -eq 999 -and $task.Settings.RestartInterval -eq 'PT1M' -and
         $task.Settings.ExecutionTimeLimit -eq 'PT0S' -and $task.Settings.MultipleInstances -eq 'IgnoreNew' -and
         $task.Settings.StartWhenAvailable -and -not $task.Settings.DisallowStartIfOnBatteries -and
         -not $task.Settings.StopIfGoingOnBatteries -and @($task.Triggers).Count -eq 1 -and
         $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and
-        $task.Triggers[0].UserId -eq $userSid -and $task.Triggers[0].Enabled) {
+        (Test-CoreTaskUser -UserId $task.Triggers[0].UserId -ExpectedSid $userSid) -and $task.Triggers[0].Enabled) {
         Module-Skip 'service' 'prepared startup task already matches this release'
         return
     }
@@ -243,7 +258,7 @@ function Register-CoreServiceRelease {
     $verified = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ($verified.Description -ne $description -or @($verified.Actions).Count -ne 1 -or
         $verified.Actions[0].Execute -ne $shell -or $verified.Actions[0].Arguments -ne $arguments -or
-        $verified.Principal.UserId -ne $userSid -or -not $verified.Settings.Enabled) {
+        -not (Test-CoreTaskUser -UserId $verified.Principal.UserId -ExpectedSid $userSid) -or -not $verified.Settings.Enabled) {
         throw 'Startup registration did not match the prepared release; refusing handoff.'
     }
     $scheduler = New-Object -ComObject 'Schedule.Service'

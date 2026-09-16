@@ -8,6 +8,16 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression for 81021ff6: the real scheduler projects SID registration as
+    # an account name. Resolve via Windows without broadening caller ownership.
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    foreach ($owner in @($identity.User.Value, $identity.Name, $env:USERNAME)) {
+        if (-not (Test-CoreTaskUser -UserId $owner -ExpectedSid $identity.User.Value)) { throw "Equivalent task owner was refused: $owner" }
+    }
+    foreach ($owner in @('S-1-5-18', 'S-invalid', ('continuum-unmapped-' + [guid]::NewGuid().ToString('N')), '')) {
+        if (Test-CoreTaskUser -UserId $owner -ExpectedSid $identity.User.Value) { throw "Different/unresolved task owner was accepted: $owner" }
+    }
+    Write-Output 'PASS: scheduler SID/account-name identities compare equally; different/unresolved owners fail closed'
     # Regression for 72920541: retrying registration must select exact prepared
     # files, never treat an unchecked descriptor as a source-build cache hit.
     & {
@@ -37,7 +47,7 @@ try {
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'schema or owner' }
         if (-not $refused) { throw 'Wrong-owner receipt was accepted' }
         Remove-Item -LiteralPath $receiptPath
-        $script:resumeTask = [pscustomobject]@{ Principal = [pscustomobject]@{ UserId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value };
+        $script:resumeTask = [pscustomobject]@{ Principal = [pscustomobject]@{ UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name };
             Description = ($release | ConvertTo-Json -Compress) }
         function Get-ScheduledTask { $script:resumeTask }
         $loaded = Get-CorePreparedRelease -InstallRoot $resumeRoot
