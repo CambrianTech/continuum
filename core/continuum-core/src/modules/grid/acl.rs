@@ -53,6 +53,14 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 access: CommandAccess::Owner,
             },
             AccessRule {
+                prefix: "data/truncate",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "data/clear-all",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
                 prefix: commands::PAIR,
                 access: CommandAccess::Owner,
             },
@@ -151,7 +159,7 @@ fn default_rules() -> &'static Vec<AccessRule> {
         ];
 
         // Sort by prefix length descending (most specific first)
-        rules.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        rules.sort_by_key(|rule| std::cmp::Reverse(rule.prefix.len()));
         rules
     })
 }
@@ -200,8 +208,7 @@ fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
             // operator's own desktop was refused a read-only roster
             // (live-found 2026-08-30). One command, every name it answers to.
             .flat_map(|d| {
-                std::iter::once(d.name.to_string())
-                    .chain(d.aliases.iter().map(|a| a.to_string()))
+                std::iter::once(d.name.to_string()).chain(d.aliases.iter().map(|a| a.to_string()))
             })
             .collect()
     })
@@ -221,8 +228,7 @@ fn privileged_commands() -> &'static std::collections::HashSet<String> {
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::Privileged)
             // Same alias rule as ai_safe_commands: one command, every name.
             .flat_map(|d| {
-                std::iter::once(d.name.to_string())
-                    .chain(d.aliases.iter().map(|a| a.to_string()))
+                std::iter::once(d.name.to_string()).chain(d.aliases.iter().map(|a| a.to_string()))
             })
             .collect()
     })
@@ -274,8 +280,7 @@ mod tests {
         let canonical_ai_safe = registry
             .iter()
             .find(|d| {
-                d.access_level == crate::sdk_codegen::AccessLevel::AiSafe
-                    && !d.aliases.is_empty()
+                d.access_level == crate::sdk_codegen::AccessLevel::AiSafe && !d.aliases.is_empty()
             })
             .expect("at least one aliased ai-safe command exists");
         for alias in canonical_ai_safe.aliases {
@@ -409,6 +414,12 @@ mod tests {
                 !is_command_authorized(cmd, TrustLevel::Provisional),
                 "{cmd} must NOT be reachable at Provisional — it's a destructive, \
                  Owner-only command (a remote/TCP caller must never run it)"
+            );
+            // Recall capture exposed the gap: Privileged resolves to Trusted,
+            // so denying only Provisional did not prove these were Owner-only.
+            assert!(
+                !is_command_authorized(cmd, TrustLevel::Trusted),
+                "{cmd} must not erase shared records as a trusted persona"
             );
             assert!(
                 is_command_authorized(cmd, TrustLevel::Owner),

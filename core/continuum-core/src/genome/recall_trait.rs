@@ -286,10 +286,8 @@ pub struct CompositionHint {
     pub layer_order_hint: Vec<LoRALayerRef>,
 }
 
-/// Stub placeholder for the replay handle. The full shape carries
-/// the snapshotted scoring weights + artifact-set version + query
-/// hash that `replay` uses to reproduce the recall deterministically
-/// for sentinel attribution + VDD regression tests.
+/// Handle of a retained recall decision. Nil explicitly means unrecorded;
+/// callers must not treat a pure ranking result as a durable replay receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 #[ts(
@@ -380,7 +378,7 @@ impl RecallScoreWeights {
         provenance_trust: f32,
     ) -> Result<Self, WeightSumOutOfBounds> {
         let sum = semantic + outcome_history + recency + tier_proximity + provenance_trust;
-        if (sum - 1.0).abs() > Self::SUM_EPSILON {
+        if !sum.is_finite() || (sum - 1.0).abs() > Self::SUM_EPSILON {
             return Err(WeightSumOutOfBounds { actual_sum: sum });
         }
         if semantic < 0.0

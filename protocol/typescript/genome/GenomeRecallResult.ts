@@ -3,6 +3,11 @@ import type { GenomeRecallGene } from "./GenomeRecallGene";
 
 export type GenomeRecallResult = { 
 /**
+ * Durable decision UUID for genome/recall/replay. This is selection evidence,
+ * not a receipt that weights were loaded into an inference backend.
+ */
+trace_id: string, 
+/**
  * Ranked genes, best first. Empty = no genes registered on this node
  * (the honest pre-first-adoption state, not an error).
  */
