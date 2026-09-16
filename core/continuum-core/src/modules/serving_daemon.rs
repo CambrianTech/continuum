@@ -7154,43 +7154,6 @@ mod tests {
         // sidecar — each one individually small enough to look affordable, the set of
         // them not. An admission that ignores existing ephemeral lanes admits N engines
         // one at a time.
-    // what this catches (2026-09-15 00:17Z): the vision sidecar was admitted on a live
-    // free-RAM read taken inside the main lane's relaunch window (weights + KV
-    // momentarily unwired) and the box swapped 26 GB. The PLANNED headroom after the
-    // main lane's working set — full weights, KV at the served window × lanes, the
-    // compute reserve, the prompt cache, the OS floor — must say NO on a 64 GB box
-    // serving a 21 GB model over 6 lanes at 59k, whatever the live read says.
-    #[test]
-    fn the_sidecar_headroom_is_planned_not_a_relaunch_window_free_read() {
-        let mut model = fake_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF");
-        model.weights_bytes = Some(21 * 1024 * 1024 * 1024);
-        model.context_window = 262_144;
-        let target = ServingTarget {
-            host_prompt_cache_mib: 2505,
-            model,
-            context_window: 59_392,
-            lanes: 6,
-            adapters: Vec::new(),
-            placement: crate::inference::llama_server::main_lane_placement(),
-            expert_placement: None,
-            resident_override: None,
-            vision_sidecar: false,
-        };
-        let physical = 64 * 1024 * 1024 * 1024;
-        let headroom = sidecar_planned_headroom_bytes(&target, 59_392, physical);
-        let need = 22_131_161_622; // the 27B sidecar's measured need on 2026-09-15
-        assert!(headroom < need, "planned headroom {headroom} must refuse a {need}-byte sidecar beside a 21 GB main lane on 64 GB");
-        // Not a blanket refusal: the same lane on a 256 GB box leaves the sidecar room.
-        let big = sidecar_planned_headroom_bytes(&target, 59_392, 256 * 1024 * 1024 * 1024);
-        assert!(big >= need, "on 256 GB the planned headroom {big} admits the sidecar");
-        // A row without a footprint (no stamped weights, no resolvable GGUF) yields ZERO
-        // headroom — the live read alone never admits.
-        let mut blind = target.model.clone();
-        blind.weights_bytes = None;
-        let blind_target = ServingTarget { model: blind, ..target.clone() };
-        assert_eq!(sidecar_planned_headroom_bytes(&blind_target, 59_392, physical), 0);
-    }
-
         #[test]
         fn ephemeral_siblings_weigh_on_the_decision() {
             let budget = 24_000_000_000;
@@ -7218,6 +7181,44 @@ mod tests {
                 "the refusal names how many were already there: {why}"
             );
         }
+
+        // what this catches (2026-09-15 00:17Z): the vision sidecar was admitted on a live
+        // free-RAM read taken inside the main lane's relaunch window (weights + KV
+        // momentarily unwired) and the box swapped 26 GB. The PLANNED headroom after the
+        // main lane's working set — full weights, KV at the served window × lanes, the
+        // compute reserve, the prompt cache, the OS floor — must say NO on a 64 GB box
+        // serving a 21 GB model over 6 lanes at 59k, whatever the live read says.
+        #[test]
+        fn the_sidecar_headroom_is_planned_not_a_relaunch_window_free_read() {
+            let mut model = fake_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF");
+            model.weights_bytes = Some(21 * 1024 * 1024 * 1024);
+            model.context_window = 262_144;
+            let target = ServingTarget {
+                host_prompt_cache_mib: 2505,
+                model,
+                context_window: 59_392,
+                lanes: 6,
+                adapters: Vec::new(),
+                placement: crate::inference::llama_server::main_lane_placement(),
+                expert_placement: None,
+                resident_override: None,
+                vision_sidecar: false,
+            };
+            let physical = 64 * 1024 * 1024 * 1024;
+            let headroom = sidecar_planned_headroom_bytes(&target, 59_392, physical);
+            let need = 22_131_161_622; // the 27B sidecar's measured need on 2026-09-15
+            assert!(headroom < need, "planned headroom {headroom} must refuse a {need}-byte sidecar beside a 21 GB main lane on 64 GB");
+            // Not a blanket refusal: the same lane on a 256 GB box leaves the sidecar room.
+            let big = sidecar_planned_headroom_bytes(&target, 59_392, 256 * 1024 * 1024 * 1024);
+            assert!(big >= need, "on 256 GB the planned headroom {big} admits the sidecar");
+            // A row without a footprint (no stamped weights, no resolvable GGUF) yields ZERO
+            // headroom — the live read alone never admits.
+            let mut blind = target.model.clone();
+            blind.weights_bytes = None;
+            let blind_target = ServingTarget { model: blind, ..target.clone() };
+            assert_eq!(sidecar_planned_headroom_bytes(&blind_target, 59_392, physical), 0);
+        }
+
 
         // what this catches: the authority going UNWIRED — which is not hypothetical, it
         // is the whole reason this gate had to be written. `EphemeralServingLane::spawn`
