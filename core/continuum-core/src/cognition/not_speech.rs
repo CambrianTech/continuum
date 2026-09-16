@@ -123,6 +123,20 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             if verb_ok(verb) && after.trim_start().starts_with('{') {
                 return true;
             }
+            // `[execute] code/read(code=…` (0d5c1ffa, #academy, 2026-09-16 23:5xZ): the
+            // bracket holds a STAGE WORD and the namespaced CALL follows it. The call is
+            // the discriminator — a namespaced verb, then `(` or `{` — so `[answer] the
+            // code/read verb is fine` (no call) stays speech.
+            let a = after.trim_start();
+            let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
+            let callee = &a[..call_len];
+            if verb_ok(verb)
+                && verb_ok(callee)
+                && callee.contains('/')
+                && matches!(a[call_len..].chars().next(), Some('(') | Some('{'))
+            {
+                return true;
+            }
             // THE THIRD DIALECT, and by 2026-09-15 the DOMINANT one: no object
             // follows at all. Measured over 24h across the 8 citizens on IntelMac —
             // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
@@ -345,6 +359,10 @@ mod tests {
         let saoirse = "[code/read({\"file_path\":\"src/main.rs\"})]\nResult:\n```python\n\n# THESIS: a distributed proof is an ACTIVITY\n```";
         assert_eq!(is_not_speech(saoirse), Some("tool_envelope"));
         assert_eq!(is_not_speech("[work/list({})]"), Some("tool_envelope"));
+        // A stage word in the bracket, the namespaced call after it.
+        assert_eq!(is_not_speech("[execute] code/read(code=\n# THESIS…"), Some("tool_envelope"));
+        assert_eq!(is_not_speech("[executing] work/list{\"state\":\"open\"}"), Some("tool_envelope"));
+        assert_eq!(is_not_speech("[answer] the code/read verb is the one I would use"), None);
         assert_eq!(
             is_not_speech("[code/shell(cmd=code/read({\"file_path\":\"src/main.rs\"}) \n, lang=rust))]"),
             Some("tool_envelope"),
