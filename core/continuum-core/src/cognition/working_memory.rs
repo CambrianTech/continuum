@@ -828,7 +828,16 @@ impl WorkingMemory {
         {
             let mut e = self.entries.lock();
             e.clear();
-            e.extend(snap.entries);
+            // A notice about a MOMENT is not memory: checkpoints written before
+            // 2026-09-16 carried the previous restore's `[resumed]`/`[rebuilt]` lines as
+            // entries, so every later restore re-loaded them and Kira's window said
+            // "restored from a checkpoint saved under a minute ago … rebuilt 480243761 →
+            // 374144c34" on every turn for five hours. The notices are pinned for two
+            // turns below; any that a snapshot still carries are dropped here.
+            e.extend(snap.entries.into_iter().filter(|w| {
+                !(w.kind == WmKind::Fact
+                    && (w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")))
+            }));
             while e.len() > self.capacity {
                 e.pop_front();
             }
@@ -900,9 +909,15 @@ impl WorkingMemory {
                 snap.interrupted_dispatches.join("; ")
             )
         };
-        self.record_fact(&format!(
-            "[resumed] your memory was restored from a checkpoint {saved}. {pending}"
-        ));
+        // A TURN-SCOPED pin, never a ring entry: the checkpoint's age and its pending
+        // dispatches are true at the wake and stale by the next act; as an entry the
+        // line outlived the whole life (and was re-checkpointed into the next one).
+        // Two turns, like [released]: the wake's turn and the one that acts on it.
+        self.pin_fact_for_turns(
+            "resumed",
+            &format!("[resumed] your memory was restored from a checkpoint {saved}. {pending}"),
+            2,
+        );
 
         // The OTHER discontinuity, and until 2026-08-07 an invisible one: the
         // substrate itself was rebuilt while she was away (#165).
@@ -925,7 +940,9 @@ impl WorkingMemory {
         let current = env!("CONTINUUM_BUILD_GIT_SHA");
         if !snap.build_sha.is_empty() && snap.build_sha != current {
             let short = |s: &str| s.chars().take(9).collect::<String>();
-            self.record_fact(&format!(
+            // Same lifetime as [resumed]: the rebuild is news at the wake, not a
+            // standing condition — after two turns her receipts on THIS build exist.
+            self.pin_fact_for_turns("rebuilt", &format!(
                 "[rebuilt] the substrate was rebuilt while you were away ({} → {}). Your \
                  workspace, its checkout, and every file you read are UNCHANGED by that — what \
                  you learned about the code still stands; resume from your last conclusion, do \
@@ -934,7 +951,7 @@ impl WorkingMemory {
                  from memory.",
                 short(&snap.build_sha),
                 short(current),
-            ));
+            ), 2);
         }
     }
 
@@ -1563,10 +1580,11 @@ mod rebuilt_marker {
         fresh.restore(snap_from(&wm, "0000000deadbeef"));
 
         let lines = fresh.recent();
-        let marker = lines
+        let pinned = fresh.pinned_facts();
+        let marker = pinned
             .iter()
             .find(|l| l.contains("[rebuilt]"))
-            .unwrap_or_else(|| panic!("rebuild must be perceivable: {lines:?}"));
+            .unwrap_or_else(|| panic!("rebuild must be perceivable: {pinned:?}"));
         assert!(
             marker.contains("0000000de"),
             "names the build she was recorded against: {marker}"
@@ -1600,9 +1618,38 @@ mod rebuilt_marker {
         let fresh = WorkingMemory::new(8);
         fresh.restore(snap_from(&wm, ""));
         assert!(
-            !fresh.recent().iter().any(|l| l.contains("[rebuilt]")),
+            !fresh.pinned_facts().iter().any(|l| l.contains("[rebuilt]")),
             "unknown build is not a known change"
         );
+    }
+
+    // what this catches (Kira, 2026-09-16): the wake notices outliving the wake. As ring
+    // entries they were checkpointed and restored forever — "saved under a minute ago"
+    // on every turn for five hours. They are two-turn pins now, never entries, and a
+    // snapshot that still carries the old lines as entries loses them on the way in.
+    #[test]
+    fn the_wake_notices_last_two_turns_and_never_ride_a_checkpoint() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("code/read(a.rs) → 40 lines");
+        wm.record_fact("[resumed] your memory was restored from a checkpoint saved ~54 min ago.");
+        wm.record_fact("[rebuilt] the substrate was rebuilt while you were away (a → b).");
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(snap_from(&wm, "0000000deadbeef"));
+        // Only the receipt came back as memory; the old notices were dropped.
+        let lines = fresh.recent();
+        assert!(lines.iter().any(|l| l.contains("code/read")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("[resumed]") || l.contains("[rebuilt]")), "{lines:?}");
+        // The NEW notices are pins: present at the wake, gone after two work turns.
+        let pinned = fresh.pinned_facts();
+        assert!(pinned.iter().any(|l| l.starts_with("[resumed]")), "{pinned:?}");
+        assert!(pinned.iter().any(|l| l.starts_with("[rebuilt]")), "{pinned:?}");
+        fresh.end_of_work_turn();
+        assert!(fresh.pinned_facts().iter().any(|l| l.starts_with("[resumed]")), "the next turn still reads it");
+        fresh.end_of_work_turn();
+        assert!(fresh.pinned_facts().is_empty(), "{:?}", fresh.pinned_facts());
+        // And a checkpoint taken from the restored mind never carries them.
+        let again = fresh.snapshot();
+        assert!(!again.entries.iter().any(|w| w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")));
     }
 }
 
@@ -1859,14 +1906,15 @@ mod tests {
 
         let fresh = WorkingMemory::new(8);
         fresh.restore(back);
-        // Everything restored, and the [resumed] fact appended as NEWEST.
+        // Everything restored, and the [resumed] notice PINNED (a two-turn pin, never a
+        // ring entry — 2026-09-16, the notice that outlived a whole life).
         let restored = fresh.recent();
-        let (window, resumed) = restored.split_at(restored.len() - 1);
         assert_eq!(
-            window,
+            restored.as_slice(),
             wm.recent().as_slice(),
-            "window identical before the marker"
+            "the window is identical; the notice is not an entry"
         );
+        let resumed = fresh.pinned_facts();
         assert!(
             resumed[0].starts_with("[resumed] your memory was restored from a checkpoint saved ")
                 && resumed[0].contains(" ago."),
@@ -1924,8 +1972,8 @@ mod tests {
             let legacy = serde_json::from_value(legacy).expect("legacy snapshot deserializes");
             let restored_legacy = WorkingMemory::new(8);
             restored_legacy.restore(legacy);
-            let recent = restored_legacy.recent();
-            let resumed = recent.last().expect("restored checkpoint fact");
+            let pinned = restored_legacy.pinned_facts();
+            let resumed = pinned.first().expect("restored checkpoint notice");
             assert!(
                 resumed.contains("checkpoint with an unknown save time."),
                 "{resumed}"
@@ -1952,7 +2000,8 @@ mod tests {
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
         });
-        let q = quiet.recent();
+        assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
+        let q = quiet.pinned_facts();
         assert_eq!(q.len(), 1);
         assert!(
             q[0].contains("No pending dispatches were recorded in that checkpoint."),
@@ -2218,8 +2267,8 @@ mod tests {
             "the legacy receipt restored"
         );
         assert!(
-            texts.iter().any(|t| t.starts_with("[resumed]")),
-            "restore appends the wake-orientation fact"
+            fresh.pinned_facts().iter().any(|t| t.starts_with("[resumed]")),
+            "restore pins the wake-orientation notice"
         );
         assert!(
             fresh.recent_acts().is_empty(),
