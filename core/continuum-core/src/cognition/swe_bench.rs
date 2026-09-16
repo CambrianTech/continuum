@@ -2627,10 +2627,23 @@ async fn era_pinned_uv_install(
             return Ok(out);
         }
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // Every install failure says whether the transport signature matched (Cormac's
+        // review of #4130): the signature is a substring match on uv's prose, and a
+        // rewording upstream would fail SILENTLY toward the wrong side — a transport
+        // failure recorded as the instance's env verdict, card cffc9c5e again. A step
+        // change in unmatched failures is how that drift is seen the day it lands.
+        let matched = network_failure_signature(&stderr);
+        crate::probe!(
+            class = "benchmark.env.install_failed",
+            signature_matched = matched,
+            tail = ?tail,
+            stderr_head = %stderr.trim().chars().take(200).collect::<String>(),
+            "an era-pinned uv install failed — matched = the transport signature read it as COULD NOT LOOK"
+        );
         // A failure to REACH the index is not a resolution failure: no heal rung fixes DNS,
         // and no caller may read it as the instance's env verdict. Typed by its head so
         // every reader (the sweep, the refusal marker, the deck) can tell it apart.
-        if network_failure_signature(&stderr) {
+        if matched {
             let last: String = stderr.trim().chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
             return Err(format!(
                 "{COULD_NOT_LOOK}the resolver could not reach the package index during \
