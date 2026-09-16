@@ -2455,13 +2455,11 @@ impl LlmDeliberationFaculty {
         input.update(b"stimulus");
         input.update([stimulus_index.is_some() as u8]);
         for (index, turn) in ws.turns.iter().enumerate() {
-            if Some(index) == stimulus_index {
-                field(&mut input, turn.author.as_bytes());
-                field(&mut input, turn.content.as_bytes());
-            }
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             if Some(index) == stimulus_index {
+                // The event time and addressed author are required provenance too.
+                field(&mut input, line.as_bytes());
                 stimulus = Some(ChatMessage::text(role, line));
                 after_stimulus = true;
                 continue;
@@ -4121,13 +4119,18 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
     runs.push(("system", cum as u32));
     for m in messages {
         let body = m.content_text();
-        let label =
-            if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙')
-            {
-                "grounding"
-            } else {
-                "history"
-            };
+        // Occurrence-time framing belongs to speech history, not grounding.
+        let dated_history = body.starts_with("[occurred ")
+            || body.starts_with("[occurrence time unknown] ");
+        let label = if !dated_history
+            && (body.starts_with('[')
+                || body.starts_with("Full result of")
+                || body.starts_with('⚙'))
+        {
+            "grounding"
+        } else {
+            "history"
+        };
         cum += est_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
         match runs.last_mut() {
             Some((l, end)) if *l == label => *end = cum as u32,
@@ -4787,6 +4790,8 @@ mod tests {
         // what this catches: e731576c — fuzzy and verbatim history dedupe both
         // lose real state changes. Inspect the actual adapter request at each
         // step: passed -> failed -> passed must remain three distinct events.
+        // 7a519f86: dated events and unknown times survive same-role coalescing
+        // on the actual adapter wire; advancing now must not rewrite old dates.
         #[tokio::test]
         async fn own_history_preserves_corrections_at_each_inference_step() {
             use crate::ai::types::{ToolCall, ToolResult};
@@ -4821,10 +4826,41 @@ mod tests {
             ];
             let room = crate::identity::ActivityRoom::mint();
             let result_rooms = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
-            let mut turns = Vec::new();
+            let mut turns = vec![
+                BurstTurn::attributed(
+                    false,
+                    "Operator",
+                    "Deployment pending.",
+                    Some(1_699_913_600_123),
+                ),
+                BurstTurn::attributed(
+                    false,
+                    "Operator",
+                    "Deployment completed.",
+                    Some(1_700_000_000_123),
+                ),
+                BurstTurn::attributed(false, "Operator", "Undated imported report.", None),
+                BurstTurn::attributed(false, "Operator", "Unmeasured imported report.", Some(0)),
+            ];
+            let dated_history =
+                "[occurred 2023-11-13T22:13:20.123Z] Operator: Deployment pending.\n\
+                [occurred 2023-11-14T22:13:20.123Z] Operator: Deployment completed.\n\
+                [occurrence time unknown] Operator: Undated imported report.\n\
+                [occurrence time unknown] Operator: Unmeasured imported report.";
             for (step, (report, update)) in own_reports.iter().zip(peer_updates).enumerate() {
-                turns.push(BurstTurn::attributed(false, "Asha", update, None));
-                turns.push(BurstTurn::attributed(true, "Anwen", *report, None));
+                let occurred_at = 1_700_000_000_123 + step as u64 * 86_400_000;
+                turns.push(BurstTurn::attributed(
+                    false,
+                    "Asha",
+                    update,
+                    Some(occurred_at),
+                ));
+                turns.push(BurstTurn::attributed(
+                    true,
+                    "Anwen",
+                    *report,
+                    Some(occurred_at),
+                ));
                 let call_id = format!("verify-{step}");
                 wm.record_receipt_typed(
                     &[Observation {
@@ -4848,22 +4884,52 @@ mod tests {
                     report,
                     Some(result_rooms[step]),
                 );
-                let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
+                let mut ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
                     room,
                     turns.clone(),
                 ));
+                let required_identity = faculty.messages_unfitted(&ws, None).input_identity;
+                ws.now_ms = Some(occurred_at + 86_400_000);
+                assert_eq!(
+                    faculty.messages_unfitted(&ws, None).input_identity,
+                    required_identity
+                );
+                let stimulus_index = ws.turns.len() - 2;
+                ws.turns[stimulus_index].occurred_at_ms = Some(occurred_at + 1);
+                assert_ne!(
+                    faculty.messages_unfitted(&ws, None).input_identity,
+                    required_identity,
+                    "required stimulus identity includes its rendered occurrence time"
+                );
+                ws.turns[stimulus_index].occurred_at_ms = Some(occurred_at);
                 let outcome = faculty.contribute(&ws).await.expect("deliberation outcome");
                 assert!(outcome.fault.is_none());
                 let recorded = calls.lock().expect("actual request recorder");
                 assert_eq!(recorded.len(), step + 1);
                 let request = recorded.last().expect("submitted request");
+                let history_block = &request.messages[0];
+                assert_eq!(history_block.role, "user");
+                assert!(
+                    history_block.content_text().starts_with(dated_history),
+                    "coalesced history retains event dates across later turns"
+                );
                 let history: Vec<_> = request
                     .messages
                     .iter()
                     .filter(|message| message.role == "assistant")
                     .map(|message| message.content_text())
                     .collect();
-                assert_eq!(history, own_reports[..=step]);
+                let expected: Vec<_> = own_reports[..=step]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, report)| {
+                        format!(
+                            "[occurred 2023-11-{:02}T22:13:20.123Z] {report}",
+                            14 + index
+                        )
+                    })
+                    .collect();
+                assert_eq!(history, expected);
                 for update in &peer_updates[..=step] {
                     assert!(request.messages.iter().any(|message| {
                         message.role == "user"
@@ -6791,12 +6857,17 @@ mod tests {
             // `user` turns prefixed with the author so several speakers stay distinct.
             let assistant = &view.messages[1];
             assert_eq!(assistant.role, "assistant");
-            assert_eq!(assistant.content_text(), "I propose using bart-large-cnn.");
+            assert_eq!(
+                assistant.content_text(),
+                "[occurred 1970-01-01T00:00:00.002Z] I propose using bart-large-cnn."
+            );
             assert!(
                 !assistant.content_text().contains("Asha:"),
                 "the persona's own turn must not be self-prefixed: {assistant:?}"
             );
-            assert!(view.messages[0].content_text().starts_with("Operator: "));
+            assert!(view.messages[0]
+                .content_text()
+                .starts_with("[occurred 1970-01-01T00:00:00.001Z] Operator: "));
             // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
             // turn), so the ask stays LAST where the model answers it — not the bracketed
             // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
@@ -6812,7 +6883,7 @@ mod tests {
                     .last()
                     .unwrap()
                     .content_text()
-                    .starts_with("Operator: "),
+                    .starts_with("[occurred 1970-01-01T00:00:00.003Z] Operator: "),
                 "the ask (last peer turn) stays LAST, after the grounding facts"
             );
         }
@@ -6954,6 +7025,11 @@ mod tests {
             let msgs = vec![
                 ChatMessage::text("user", "Alice: how goes the fix?"),
                 ChatMessage::text("assistant", "landed it, running tests"),
+                ChatMessage::text(
+                    "user",
+                    "[occurred 2023-11-14T22:13:20.123Z] Alice: prior status",
+                ),
+                ChatMessage::text("assistant", "[occurrence time unknown] Earlier own report."),
                 ChatMessage::text("user", "[recall]\n(my memories …)"),
                 ChatMessage::text("user", "Full result of your most recent action (#3): ok"),
                 ChatMessage::text("user", "Alice: and the grade?"),
@@ -7041,7 +7117,17 @@ mod tests {
                 .filter(|message| message.role == "assistant")
                 .map(|message| message.content_text())
                 .collect();
-            assert_eq!(own, vec![v1, v2, v3]);
+            assert_eq!(
+                own,
+                [v1, v2, v3]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, body)| format!(
+                        "[occurred 1970-01-01T00:00:00.{:03}Z] {body}",
+                        index * 2 + 1
+                    ))
+                    .collect::<Vec<_>>()
+            );
 
             // The same raw history still supports the repetition observation.
             let all_user: String = view
