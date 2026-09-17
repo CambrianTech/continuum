@@ -119,18 +119,51 @@ impl DecodeCurve {
     /// shrink and re-measure. `None` = nothing fresh and trusted (no clamp; the roster
     /// rules).
     pub fn knee(&self, floor_tps: f64, now_ms: u64) -> Option<u32> {
-        let trusted: Vec<(&u32, &CurvePoint)> =
+        // FRESH points first: a fresh measurement is trusted enough to EXPLORE one lane
+        // above the largest holding point when the constant-aggregate prediction says so.
+        let fresh: Vec<(&u32, &CurvePoint)> =
             self.points.iter().filter(|(_, p)| p.trusted_at(now_ms)).collect();
-        if trusted.is_empty() {
+        if !fresh.is_empty() {
+            return Self::knee_over(&fresh, floor_tps, true);
+        }
+        // No fresh point, but a STALE measurement of THIS box is still better evidence than
+        // the roster's blind demand: a ceiling measured an hour ago CAPS (it does not
+        // explore — we are not confident enough to grow past it uncorroborated), and the
+        // lane re-measures at the capped count on its next decode. Returning None here
+        // unclamped the roster to its full demand and relaunched the exact shape that had
+        // collapsed: measured 2026-09-17 11:34Z, the M5 booted 8 lanes (the knee's 7/8-lane
+        // points 102 min old), Metal-OOM'd every decode, and every reboot re-picked 8 —
+        // a dead node with the answer sitting stale on disk (card 03243d67).
+        let stale: Vec<(&u32, &CurvePoint)> = self
+            .points
+            .iter()
+            // A pre-freshness record loads with `tps_ema` 0 (the field did not exist): that
+            // is UNKNOWN, never a measured 0 t/s — reading it as a collapse is the
+            // absence-as-value trap. A real stale measurement has a positive rate.
+            .filter(|(_, p)| p.samples >= MIN_SAMPLES && p.tps_ema > 0.0)
+            .collect();
+        if stale.is_empty() {
+            return None; // never measured = the roster rules, nothing is clamped on nothing
+        }
+        Self::knee_over(&stale, floor_tps, false)
+    }
+
+    /// The knee rule over a set of points (already filtered for trust/staleness): the
+    /// largest concurrency whose per-stream rate holds the floor, plus one when `explore`
+    /// and the constant-aggregate prediction says the next lane holds AND no measured
+    /// point above contradicts it. If every point has collapsed, one below the smallest.
+    fn knee_over(points: &[(&u32, &CurvePoint)], floor_tps: f64, explore: bool) -> Option<u32> {
+        if points.is_empty() {
             return None;
         }
-        if let Some((n, p)) = trusted.iter().rev().find(|(_, p)| p.tps_ema >= floor_tps) {
+        if let Some((n, p)) = points.iter().rev().find(|(_, p)| p.tps_ema >= floor_tps) {
             let n = **n;
-            let is_top = trusted.last().map(|(top, _)| **top == n).unwrap_or(false); // unwrap_or: non-empty by the guard above
+            let is_top = points.last().map(|(top, _)| **top == n).unwrap_or(false); // unwrap_or: non-empty by the guard above
             let predicted_next = p.tps_ema * n as f64 / (n + 1) as f64;
-            return Some((if is_top && predicted_next >= floor_tps { n + 1 } else { n }).max(MIN_KNEE_LANES));
+            let grow = explore && is_top && predicted_next >= floor_tps;
+            return Some((if grow { n + 1 } else { n }).max(MIN_KNEE_LANES));
         }
-        trusted.first().map(|(n, _)| (**n).saturating_sub(1).max(MIN_KNEE_LANES))
+        points.first().map(|(n, _)| (**n).saturating_sub(1).max(MIN_KNEE_LANES))
     }
 }
 
@@ -347,7 +380,9 @@ mod tests {
         measured(&mut c, 3, 8.0); // measured: 3 collapses (a build was running)
         assert_eq!(c.knee(F, T), Some(2), "a fresh collapse above blocks the climb");
         let later = T + FRESH_MS + 1;
-        assert_eq!(c.knee(F, later), None, "nothing fresh = nothing trusted = no clamp");
+        // Stale now CAPS at the last holding count (2) rather than unclamping to None —
+        // 3 collapsed, stale, so no exploration back to it (card 03243d67).
+        assert_eq!(c.knee(F, later), Some(2), "a stale measurement caps, it does not unclamp");
         measured_at(&mut c, 2, 30.0, later);
         assert_eq!(c.knee(F, later), Some(3), "the stale collapse no longer holds it down");
         c.observe(3, 18.0, later);
@@ -361,6 +396,27 @@ mod tests {
 
     // what this catches: the record survives a reboot and a corrupt file is forgotten;
     // a record from before freshness (no `last_ms`) loads as stale, never as a clamp.
+    // what this catches (2026-09-17 11:34Z, card 03243d67): when every point has aged past
+    // FRESH_MS the knee falls back to the STALE measurement (a cap, no exploration) rather
+    // than to None — returning None unclamped the roster to 8 lanes and relaunched the shape
+    // that Metal-OOM'd, dead-looping the node with the answer stale on disk. A stale 8@8.6
+    // (below floor) + 7@12.1 caps to 7 and does NOT explore back to 8.
+    #[test]
+    fn a_stale_knee_still_caps_and_does_not_explore() {
+        let mut c = DecodeCurve::default();
+        let old = T - FRESH_MS - 1; // every point stale
+        measured_at(&mut c, 7, F + 2.0, old);
+        measured_at(&mut c, 8, F - 2.0, old); // 8 collapsed, and it is stale
+        // Fresh view: nothing trusted → but the stale fallback caps at 7, no +1 to 8.
+        assert_eq!(c.knee(F, T), Some(7), "a stale ceiling caps; the collapsed top blocks exploration");
+        // A box that only ever measured a HOLDING top, stale, caps there without growing.
+        let mut c2 = DecodeCurve::default();
+        measured_at(&mut c2, 4, F + 5.0, old);
+        assert_eq!(c2.knee(F, T), Some(4), "stale = no exploration bonus, unlike a fresh top");
+        // Truly never measured is still None (the roster rules).
+        assert_eq!(DecodeCurve::default().knee(F, T), None);
+    }
+
     #[test]
     fn the_knee_is_remembered_across_a_reboot_and_a_corrupt_record_is_forgotten() {
         let dir = tempfile::tempdir().expect("tempdir");
