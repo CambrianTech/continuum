@@ -2711,16 +2711,16 @@ pub(crate) mod tests {
             .unwrap();
         let params = WorkSubmitParams {
             room: room.channel.as_uuid().to_string(),
-            submission_id: Uuid::new_v4(),
+            submission_id: Some(Uuid::new_v4()),
             card_id: card.as_uuid(),
-            claim_id: claim.as_uuid(),
-            instance: "generic-project-work".into(),
-            base_sha: "a".repeat(40),
-            artifact: WorkArtifactReference {
+            claim_id: Some(claim.as_uuid()),
+            instance: Some("generic-project-work".into()),
+            base_sha: Some("a".repeat(40)),
+            artifact: Some(WorkArtifactReference {
                 hash: "b".repeat(64),
                 size_bytes: 20,
                 mime: Some("text/x-diff".into()),
-            },
+            }),
             staged_revision_id: Some(selected.id),
         };
         let submit = WorkSubmit {
@@ -2731,7 +2731,7 @@ pub(crate) mod tests {
         assert_eq!(published.publisher, persona);
         assert_eq!(published.bound_staged_revision_id, Some(selected.id));
         let mut overlap = params.clone();
-        overlap.submission_id = Uuid::new_v4();
+        overlap.submission_id = Some(Uuid::new_v4());
         assert!(submit.run(&ctx, overlap.clone()).await.is_err());
         assert!(
             !airc
@@ -2742,7 +2742,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .submissions
                 .iter()
-                .any(|s| s.submission_id.as_uuid() == overlap.submission_id),
+                .any(|s| Some(s.submission_id.as_uuid()) == overlap.submission_id),
             "failed binding cannot publish its artifact"
         );
         let review_card = airc
@@ -2776,12 +2776,12 @@ pub(crate) mod tests {
                 room: params.room.clone(),
                 review_id: Uuid::new_v4(),
                 card_id: card.as_uuid(),
-                submission_id: params.submission_id,
-                artifact: params.artifact.clone(),
+                submission_id: params.submission_id.expect("the fixture names its submission"),
+                artifact: params.artifact.clone().expect("the fixture names its artifact"),
                 review_card_id: review_card.as_uuid(),
                 review_claim_id: review_claim.as_uuid(),
                 outcome: ReviewOutcome::Passed,
-                evidence: params.artifact.clone(),
+                evidence: params.artifact.clone().expect("the fixture names its artifact"),
             },
         )
         .await
@@ -2804,7 +2804,7 @@ pub(crate) mod tests {
             WorkSubmissionParams {
                 room: params.room,
                 card_id: card.as_uuid(),
-                submission_id: params.submission_id,
+                submission_id: params.submission_id.expect("the fixture names its submission"),
             },
         )
         .await
