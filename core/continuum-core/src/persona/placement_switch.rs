@@ -76,6 +76,11 @@ pub struct PlacementInputs {
     pub lane_cold: bool,
     pub local_available: bool,
     pub since_last_move_ms: u64,
+    /// Has the seat's PEER ever served (or is it brand new)? A fresh beacon proves the
+    /// peer is ALIVE, not that it will ANSWER; without this a rescued citizen is
+    /// returned to a peer that has never served a single request (card ad96f5d1). From
+    /// the peer breaker's `served_ok` — the summed-success mirror of `lane_cold`.
+    pub peer_served_ok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +116,11 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
         }
         Seat::Home => {
             let fresh = i.beacon_age_ms.map(|a| a < REMOTE_SEAT_FRESH_MS).unwrap_or(false); // JUSTIFIED unwrap_or: never heard = not fresh
-            if fresh && !i.lane_cold && cooled {
+            // A fresh beacon proves the peer is ALIVE; `peer_served_ok` proves it will
+            // ANSWER (or has never been tried). Without the service term a rescued
+            // citizen is returned to a never-serving peer the moment the 5-minute cold
+            // window lapses — the flap card ad96f5d1 measured.
+            if fresh && !i.lane_cold && cooled && i.peer_served_ok {
                 PlacementMove::ReturnRemote
             } else {
                 PlacementMove::Stay
@@ -551,6 +560,13 @@ pub async fn follow_the_fleet(
                 Seat::Home => true,
             },
             since_last_move_ms: now_ms.saturating_sub(sw.moved_at_ms()),
+            // The peer's summed service evidence — the return gate's mirror of
+            // `lane_cold` (card ad96f5d1). breaker_for creates a pristine (served_ok =
+            // true) entry for a peer never seen, so a new seat is not self-sealed.
+            peer_served_ok: crate::inference::airc_remote::peer_breaker::breaker_for(
+                &peer.to_string(),
+            )
+            .served_ok(),
         };
         let mv = decide(inputs);
         if let Some(line) = sw.apply(&mv, now_ms).await {
@@ -597,7 +613,10 @@ mod tests {
     use super::*;
 
     fn inputs(seat: Seat, age: Option<u64>, cold: bool, local: bool, since: u64) -> PlacementInputs {
-        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since }
+        // peer_served_ok defaults TRUE here: these cases predate the return-gate service
+        // term and assume a serving peer; `a_fresh_but_never_serving_seat_is_not_returned`
+        // exercises the false case.
+        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true }
     }
 
     // what this catches: the 2026-09-07 hand moves, as the rule — a dark seat (no
@@ -619,6 +638,23 @@ mod tests {
             "never heard = dark"
         );
         assert_eq!(decide(inputs(Seat::Home, Some(10_000), false, true, MOVE_COOLDOWN_MS)), PlacementMove::ReturnRemote);
+    }
+
+    // what this catches (card ad96f5d1, the flap): a fresh beacon proves the peer is
+    // ALIVE, not that it will ANSWER. A seat that beacons perfectly but has never served
+    // (peer_served_ok = false) must NOT be returned to — otherwise a rescued citizen is
+    // sent straight back the moment the 5-minute cold window lapses. Same inputs that
+    // returned above, only the service term flipped, must now Stay.
+    #[test]
+    fn a_fresh_but_never_serving_seat_is_not_returned() {
+        let mut i = inputs(Seat::Home, Some(10_000), false, true, MOVE_COOLDOWN_MS);
+        assert_eq!(decide(i.clone()), PlacementMove::ReturnRemote, "serving peer: return");
+        i.peer_served_ok = false;
+        assert_eq!(
+            decide(i),
+            PlacementMove::Stay,
+            "alive-but-never-served peer: hold home, do not feed the dead seat"
+        );
     }
 
     // what this catches: a node with no lane for her PARKS (loud, no move) — never the
