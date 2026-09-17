@@ -41,6 +41,7 @@ pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;
 pub mod registry_bridge;
+pub mod stream_sinks;
 pub mod types;
 
 // Re-export commonly used types

@@ -177,7 +177,16 @@ crate::action_command! {
         ));
 
         let is_local = adapter.capabilities().is_local;
-        let mut response = adapter.generate_text(request).await?;
+        // INFERENCE IS A STREAM, NOT A PROMISE. A caller that registered a sink under
+        // the `streamId` it stamped (the airc responder, for a remote-bound mind) gets
+        // every chunk the instant the backend produces it — the same primitive the
+        // local persona turn rides — and the assembled response at the end. No sink
+        // registered (a plain call) = the drain, exactly as before.
+        let sink = crate::ai::stream_sinks::stream_id_of(&p).and_then(crate::ai::stream_sinks::take);
+        let mut response = match sink {
+            Some(sink) => adapter.generate_stream(request, sink).await?,
+            None => adapter.generate_text(request).await?,
+        };
 
         // Preserve the serving node's receipt, model mapping and adapter metadata.
         let route = RoutingInfo::stamp(

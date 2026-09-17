@@ -17,7 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
-use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
+use crate::ai::adapter::{
+    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, InferenceDevice,
+};
 use crate::ai::types::{
     HealthState, HealthStatus, ModelInfo, RoutingInfo, TextGenerationRequest,
     TextGenerationResponse,
@@ -232,7 +234,21 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
 
     async fn generate_text(
         &self,
+        request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        // The drain over the stream (the trait's own definition of this method).
+        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(_rx);
+        self.generate_stream(request, sink).await
+    }
+
+    /// The streaming primitive on the remote lane: every chunk the peer publishes
+    /// reaches `sink` as it arrives — a remote-bound mind renders her answer as it
+    /// forms exactly like a local one, and the lane's liveness is the next chunk.
+    async fn generate_stream(
+        &self,
         mut request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
         // The lane serves ONE model and the peer refuses any other: a request
         // that names the caller's local model is refused there after the full
@@ -272,7 +288,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             envelope = envelope.with_target_peer(peer.clone());
         }
         let started = std::time::Instant::now();
-        let sent = self.transport.send_request(envelope).await;
+        let sent = self.transport.send_request_streaming(envelope, sink).await;
         self.observe(&sent.as_ref().map(|_| ()));
         // Every request ends in exactly one row. Before this the only remote
         // rows were the breaker's — a turn that timed out, errored, or answered
