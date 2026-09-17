@@ -58,6 +58,7 @@
 //!   peer has capacity.
 
 pub mod adapter;
+pub mod peer_breaker;
 pub mod protocol;
 pub mod transport;
 
