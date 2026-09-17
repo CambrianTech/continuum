@@ -1260,24 +1260,47 @@ impl ServingDaemonModule {
         // conservative pressure read (which on UMA under-reports free memory). The drive mode
         // follows the ACTIVITY, not just the pressure. Otherwise the live pressure-adaptive
         // mode (a game opening still drops us to Eco). [[serving-mode-follows-activity-ludicrous-to-dream]]
+        // The previous PRESSURE mode is the hysteresis state (a ludicrous override is
+        // not pressure history): Eco is left only past the exit band, so a memory read
+        // wandering across the 8 GiB line once a minute no longer flips the plan.
+        use std::sync::atomic::{AtomicU8, Ordering};
+        static LAST_MODE: AtomicU8 = AtomicU8::new(u8::MAX);
+        static LAST_PRESSURE_MODE_ECO: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let previous = if LAST_PRESSURE_MODE_ECO.load(Ordering::Relaxed) {
+            Some(crate::provisioning::model_catalog::PowerMode::Eco)
+        } else {
+            Some(crate::provisioning::model_catalog::PowerMode::Comfort)
+        };
+        let pressure_mode = crate::provisioning::serving_mode_for_pressure_from(available, previous);
+        LAST_PRESSURE_MODE_ECO.store(
+            pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco,
+            Ordering::Relaxed,
+        );
         let mode = if serving_ludicrous_active() {
             crate::provisioning::model_catalog::PowerMode::Performance
         } else {
-            crate::provisioning::serving_mode_for_pressure(available)
+            pressure_mode
         };
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
         // This is the seam a learned / LLM policy will report through — watch it kick down
         // under load, and later watch a smarter policy make a better call.
         {
-            use std::sync::atomic::{AtomicU8, Ordering};
-            static LAST_MODE: AtomicU8 = AtomicU8::new(u8::MAX);
             let m = mode as u8;
-            if LAST_MODE.swap(m, Ordering::Relaxed) != m {
+            let was = LAST_MODE.swap(m, Ordering::Relaxed);
+            if was != m {
                 eprintln!(
                     "🎛 serving mode → {:?} ({} GiB free)",
                     mode,
                     available / (1 << 30)
+                );
+                crate::probe!(
+                    class = "serving.mode.transition",
+                    to = ?mode,
+                    from = was as u64,
+                    available_gib = available / (1 << 30),
+                    "serving mode moved with memory pressure — the plan's budget fraction follows it"
                 );
             }
         }

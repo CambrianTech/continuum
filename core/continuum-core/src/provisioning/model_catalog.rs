@@ -266,11 +266,27 @@ pub fn budget_for_mode(total_bytes: u64, mode: PowerMode) -> u64 {
 /// automatically: serving reserves harder precisely when the pool is under strain, never
 /// grabbing its way into an OOM. 8 GiB matches the `DefaultScalingPolicy` starved-box line.
 pub fn serving_mode_for_pressure(available_bytes: u64) -> PowerMode {
-    const TIGHT: u64 = 8 * (1 << 30);
-    if available_bytes < TIGHT {
-        PowerMode::Eco
-    } else {
-        PowerMode::Comfort
+    serving_mode_for_pressure_from(available_bytes, None)
+}
+
+/// Eco is ENTERED below this much available memory…
+pub const ECO_ENTER_BYTES: u64 = 8 * (1 << 30);
+/// …and LEFT only above this much: a band, not a line. macOS's "available" on a
+/// swapping UMA box wanders across any single threshold once a minute (measured
+/// 2026-09-17 09:47–10:10Z: usable_gb 20 ↔ 30, the plan 6 ↔ 7 lanes, `warm-slot-
+/// oversubscribed` every other tick — and every flip reset the reconcile's sustain
+/// streak, so no re-home could ever fire). A mode change is a plan change is a
+/// relaunch; it must cost a real move in pressure, not noise.
+pub const ECO_EXIT_BYTES: u64 = 12 * (1 << 30);
+
+/// [`serving_mode_for_pressure`] with hysteresis: from Eco, stay until available clears
+/// [`ECO_EXIT_BYTES`]; otherwise Eco below [`ECO_ENTER_BYTES`], Comfort above. A caller
+/// with no previous mode gets the plain line.
+pub fn serving_mode_for_pressure_from(available_bytes: u64, previous: Option<PowerMode>) -> PowerMode {
+    match previous {
+        Some(PowerMode::Eco) if available_bytes < ECO_EXIT_BYTES => PowerMode::Eco,
+        _ if available_bytes < ECO_ENTER_BYTES => PowerMode::Eco,
+        _ => PowerMode::Comfort,
     }
 }
 
@@ -629,6 +645,25 @@ mod tests {
 
     // what this catches: the auto-downshift — tight free memory picks Eco (reserve
     // hardest), roomy picks Comfort. The base reserves harder exactly under strain.
+    // what this catches (2026-09-17): a single 8 GiB line under a wandering memory read
+    // flipped Eco ↔ Comfort once a minute, the plan 6 ↔ 7 lanes with it, and every flip
+    // reset the re-home streak. From Eco the read must clear the EXIT band to leave;
+    // from Comfort it must fall below the ENTER line to drop; a caller without history
+    // gets the plain line.
+    #[test]
+    fn the_serving_mode_holds_through_a_flapping_read() {
+        let gib = 1u64 << 30;
+        // Fresh: the line.
+        assert_eq!(serving_mode_for_pressure_from(7 * gib, None), PowerMode::Eco);
+        assert_eq!(serving_mode_for_pressure_from(9 * gib, None), PowerMode::Comfort);
+        // From Eco, 9 GiB is inside the band: stay Eco; 12 GiB leaves it.
+        assert_eq!(serving_mode_for_pressure_from(9 * gib, Some(PowerMode::Eco)), PowerMode::Eco);
+        assert_eq!(serving_mode_for_pressure_from(12 * gib, Some(PowerMode::Eco)), PowerMode::Comfort);
+        // From Comfort, 9 GiB stays Comfort; 7 GiB drops.
+        assert_eq!(serving_mode_for_pressure_from(9 * gib, Some(PowerMode::Comfort)), PowerMode::Comfort);
+        assert_eq!(serving_mode_for_pressure_from(7 * gib, Some(PowerMode::Comfort)), PowerMode::Eco);
+    }
+
     #[test]
     fn serving_downshifts_to_eco_under_pressure() {
         assert_eq!(serving_mode_for_pressure(4 * (1 << 30)), PowerMode::Eco);
