@@ -191,9 +191,38 @@ pub struct CommandRequest<P> {
     /// here so the ENVELOPE consumes it and a command's own `requestId: String` never
     /// sees an integer (measured 2026-09-06: the airc hop refused every well-formed
     /// peer-addressed generate with "invalid type: integer `1`, expected a string").
-    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none", default)]
+    ///
+    /// AND THE INVERSE (measured 2026-09-17, the first hour cross-grid inference was
+    /// addressable at all): a command's own `requestId: String` — `TextGenerationRequest`
+    /// stamps a uuid on every persona turn — lands on the RESPONDER in this same flat
+    /// namespace, and an `Option<u64>` refused it: "invalid type: string
+    /// `05acabe7-…`, expected u64", five of six remote turns dead on arrival, 0 ms.
+    /// Two ids share one key. The counter is the framing's (an integer); anything
+    /// else under the key is the command's, and the envelope has no counter on that
+    /// hop. The command's id does not survive the wire — it is per-hop correlation
+    /// and the responder stamps its own — which is the price of the flat namespace,
+    /// paid here once rather than by every command that carries a `requestId`.
+    #[serde(
+        rename = "requestId",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "wire_request_counter"
+    )]
     #[ts(optional, type = "number")]
     pub request_id: Option<u64>,
+}
+
+/// The framing's integer counter, or nothing: a string under `requestId` is a
+/// command's own id sharing the key (see `CommandRequest::request_id`).
+fn wire_request_counter<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(d)?;
+    Ok(match raw {
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => None,
+    })
 }
 
 /// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
@@ -621,6 +650,24 @@ mod tests {
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
         assert_eq!(req.handle.unwrap().id.as_uuid(), handle_id);
+    }
+
+    // what this catches (2026-09-17): a command whose params carry their OWN
+    // `requestId: String` (every persona turn's TextGenerationRequest) must parse on
+    // the responder — the envelope's integer counter and the command's uuid share one
+    // flat key, and refusing the string killed five of six remote turns the hour
+    // cross-grid inference first became addressable. The integer still lands in the
+    // envelope; the string is the command's and the envelope reads no counter.
+    #[test]
+    fn a_commands_own_string_request_id_does_not_break_the_envelope() {
+        let value = json!({ "model": "qwen", "max_tokens": 8, "requestId": "05acabe7-80ef-43ba-b954-9dd43784e037" });
+        let req = CommandRequest::<StartParams>::from_value(value)
+            .expect("a string requestId is the command's, not a type error"); // JUSTIFIED: the invariant under test
+        assert_eq!(req.request_id, None, "the envelope has no counter on this hop");
+        assert_eq!(req.params.model, "qwen");
+        let value = json!({ "model": "qwen", "max_tokens": 8, "requestId": 7 });
+        let req = CommandRequest::<StartParams>::from_value(value).expect("an integer is the counter"); // JUSTIFIED: the invariant under test
+        assert_eq!(req.request_id, Some(7));
     }
 
     #[test]
