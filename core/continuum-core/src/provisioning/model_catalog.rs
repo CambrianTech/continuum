@@ -325,16 +325,29 @@ pub struct ModelFamily {
 }
 
 impl ModelFamily {
-    /// The Qwen2.5-Coder ladder — the everyday coder + the teacher.
+    /// The Qwen2.5-Coder ladder — the weak-box floor, the everyday coder, the teacher.
+    ///
+    /// The bottom rung is 1.5B, NOT 0.5B (Joel, 2026-09-16: "0.5 isn't even supposed to
+    /// be available to anyone. 1.5b only."). A 0.5B is below the floor at which a citizen
+    /// is worth serving — the Intel tier ran one all day and its output was the echo
+    /// contagion carded as 380c21bd, so the speed was not a bargain.
+    ///
+    /// The small rungs exist in `model_registry::catalog` (0.5B / 1.5B / 3B, documented
+    /// there as "so a weak box serves what it can") but were absent from THIS ladder,
+    /// which is the one `plan_family_fetch` walks. A box that cannot hold 7B could
+    /// therefore never fetch anything: catalogued is not the same as reachable, and the
+    /// weak tiers are exactly the boxes where that gap is fatal rather than annoying.
     pub fn coder() -> Self {
         Self {
             name: "qwen2.5-coder",
             ladder: &[
+                "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+                "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
                 "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
                 "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
                 "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
             ],
-            default_idx: 1, // 14B is the everyday size
+            default_idx: 3, // 14B is still the everyday size — index shifts with the floor
         }
     }
 }
@@ -662,6 +675,46 @@ mod tests {
     // what this catches: LIVE — the gas pedal climbs the SIZE ladder, not just the quant.
     // Balanced serves the everyday 14B; Maximum reaches for the biggest coder this machine
     // can hold (the teacher's brain). Run: `-- --ignored this_machine_climbs_the_coder_ladder`.
+    // what this catches: the coder ladder losing its weak-box floor. The rungs a small
+    // box can actually hold (1.5B, 3B) existed in model_registry::catalog but NOT in this
+    // ladder, which is the one plan_family_fetch walks — so a box that could not hold 7B
+    // could never fetch anything at all. Also pins 0.5B OUT (Joel, 2026-09-16: "0.5 isn't
+    // even supposed to be available to anyone. 1.5b only") and 14B as the everyday default,
+    // which the floor's arrival shifts by index.
+    #[test]
+    fn the_coder_ladder_starts_at_the_weak_box_floor_and_still_defaults_to_14b() {
+        let fam = ModelFamily::coder();
+        assert!(
+            fam.ladder[0].contains("1.5B"),
+            "the floor rung must be 1.5B, got {}",
+            fam.ladder[0]
+        );
+        assert!(
+            !fam.ladder.iter().any(|r| r.contains("0.5B")),
+            "0.5B is below the floor and must not be reachable: {:?}",
+            fam.ladder
+        );
+        assert!(
+            fam.ladder[fam.default_idx].contains("14B"),
+            "14B is the everyday size, got {}",
+            fam.ladder[fam.default_idx]
+        );
+        // Ascending by parameter count — plan_family_fetch climbs TOP-DOWN for Maximum
+        // and indexes for the default, so an out-of-order rung silently mis-selects.
+        let sizes: Vec<f32> = fam
+            .ladder
+            .iter()
+            .map(|r| {
+                let t = r.split("Coder-").nth(1).expect("rung names a Coder size");
+                t.split("B-").next().unwrap().parse().expect("size parses")
+            })
+            .collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] < w[1]),
+            "ladder must ascend by size: {sizes:?}"
+        );
+    }
+
     #[tokio::test]
     #[ignore]
     async fn this_machine_climbs_the_coder_ladder() {
