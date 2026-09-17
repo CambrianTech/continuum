@@ -8,7 +8,8 @@ export type GroupsParams = { candidates: Array<SimilarCandidate>,
  */
 minZ: number, 
 /**
- * Raw cosine floor that joins two candidates, used ONLY when the embedder has
- * no measured null. Default 0.85.
+ * Raw cosine floor that joins two candidates, honoured ONLY when the embedder
+ * has no usable null. Default 0 = none: the call then refuses rather than
+ * grouping at a floor borrowed from another space.
  */
 minSimilarity: number, };

@@ -7,8 +7,10 @@ export type SimilarResult = { results: Array<SimilarHit>, count: number, totalCa
  */
 space: string, 
 /**
- * `"z"` when significance came from the measured null, `"threshold"` when it
- * came from the raw cosine floor because the embedder has not calibrated.
+ * `"z"` when significance came from a measured null with real spread;
+ * `"threshold"` when the caller passed a raw cosine floor and the null is
+ * unusable; `"uncalibrated"` when the null is unusable and no floor was given —
+ * then NOTHING is marked significant (ranking still holds; significance does not).
  */
 gate: string, 
 /**
