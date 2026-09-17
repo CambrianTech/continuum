@@ -3248,26 +3248,52 @@ impl ServingDaemonModule {
                 // is never licence to sink). A plan below it is refused, loudly, every time
                 // it is asked for; the previous plan stands.
                 let floor = host_floor_of(self.physical_budget(), on_disk, demand);
-                if let FloorVerdict::Below { floor, wanted } = floor_gate(&plan, floor.as_ref()) {
-                    static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
-                        parking_lot::Mutex::new(None);
-                    let key = (floor.clone(), wanted.clone());
-                    if LAST_REFUSED.lock().as_ref() != Some(&key) {
-                        crate::probe!(
-                            class = "serving.plan.demotion_refused",
-                            floor = floor.as_str(),
-                            wanted = wanted.as_str(),
-                            incumbent = incumbent.as_deref().unwrap_or("<none>"),
-                            usable_gb = (budget.usable_bytes / 1_000_000_000),
-                            physical_usable_gb =
-                                (self.physical_budget().usable_bytes / 1_000_000_000),
-                            "plan wants a base BELOW what this host's physical capacity \
-                             serves — refused; the previous plan stands until the budget \
-                             returns (a host never sinks below its floor)"
-                        );
-                        *LAST_REFUSED.lock() = Some(key);
+                // The floor guards against a host SINKING below its capability — which needs an
+                // incumbent to sink FROM. With no incumbent (a COLD BOOT) there is nothing to
+                // preserve, and refusing serves NOTHING: the node boots dark (card 48f5438a,
+                // measured on the Intel tier 2026-09-17: resident 0, active_model None,
+                // degraded_reason NULL, while a servable 1.5B sat on disk). So refuse ONLY when
+                // there is an incumbent worth holding.
+                let verdict = floor_gate(&plan, floor.as_ref());
+                let refuse = below_floor_refuses(&verdict, incumbent.is_some());
+                if let FloorVerdict::Below { floor, wanted } = verdict {
+                    if refuse {
+                        static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
+                            parking_lot::Mutex::new(None);
+                        let key = (floor.clone(), wanted.clone());
+                        if LAST_REFUSED.lock().as_ref() != Some(&key) {
+                            crate::probe!(
+                                class = "serving.plan.demotion_refused",
+                                floor = floor.as_str(),
+                                wanted = wanted.as_str(),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                physical_usable_gb =
+                                    (self.physical_budget().usable_bytes / 1_000_000_000),
+                                "plan wants a base BELOW what this host's physical capacity \
+                                 serves — refused; the previous plan stands until the budget \
+                                 returns (a host never sinks below its floor)"
+                            );
+                            *LAST_REFUSED.lock() = Some(key);
+                        }
+                        return;
                     }
-                    return;
+                    // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
+                    // capability floor it cannot reach. Serve the plan instead of booting dark
+                    // (Cormac's recovery 2026-09-17: pinning the 1.5B — the very plan this gate
+                    // stood in front of — came up ready with all eight citizens hosted). The
+                    // floor's other half — count only models with a VIABLE served window, so
+                    // the 4B whose weights fit but whose window is a dead 2048 stops out-ranking
+                    // a serviceable 1.5B — stays card 48f5438a and is owned with its measurements.
+                    crate::probe!(
+                        class = "serving.plan.cold_boot_below_floor_served",
+                        floor = floor.as_str(),
+                        wanted = wanted.as_str(),
+                        physical_usable_gb =
+                            (self.physical_budget().usable_bytes / 1_000_000_000),
+                        "no incumbent to preserve and the plan is below the capability floor \
+                         — serving it rather than booting dark (card 48f5438a)"
+                    );
                 }
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
                 // only shields the incumbent from its OWN residency — an external
@@ -3538,6 +3564,17 @@ fn floor_gate(plan: &ServingPlan, floor: Option<&ModelFootprint>) -> FloorVerdic
         }
         _ => FloorVerdict::AtOrAbove,
     }
+}
+
+/// Does a below-floor plan get REFUSED? Only when there is an incumbent to preserve.
+///
+/// The floor exists so a capable host does not SINK below its capability — but sinking
+/// needs something to sink FROM. On a cold boot (`has_incumbent == false`) there is no
+/// prior plan, so refusing a below-floor plan serves NOTHING and boots the node dark
+/// (card 48f5438a). A viable base the budget can serve beats no base, so a cold boot
+/// serves the plan; only a host that already holds a better incumbent refuses.
+fn below_floor_refuses(verdict: &FloorVerdict, has_incumbent: bool) -> bool {
+    matches!(verdict, FloorVerdict::Below { .. }) && has_incumbent
 }
 
 fn downshift_gate(
@@ -5794,6 +5831,32 @@ mod tests {
             !serving_ludicrous_active(),
             "all holds dropped ⇒ back to pressure-adaptive mode"
         );
+    }
+
+    // what this catches (card 48f5438a): a below-floor plan is refused ONLY when there
+    // is an incumbent to preserve. A COLD BOOT (no incumbent) must SERVE the plan rather
+    // than refuse into a gap and boot the node DARK — measured on the Intel tier
+    // 2026-09-17: #4169 without #4174 sized a CPU host below its capability floor, the
+    // gate refused into "the previous plan stands" with no previous plan, and the node
+    // reported resident 0 / active_model None while a servable 1.5B sat on disk. The
+    // floor guards SINKING from an incumbent; on a cold boot there is nothing to sink
+    // from. Against the pre-fix unconditional refuse the cold-boot assert fails.
+    #[test]
+    fn a_cold_boot_below_the_floor_serves_rather_than_booting_dark() {
+        let below = FloorVerdict::Below {
+            floor: "qwen2.5-coder-4b".to_string(),
+            wanted: "qwen2.5-coder-1.5b".to_string(),
+        };
+        // Below the floor WITH an incumbent → refuse (a host never sinks below its floor).
+        assert!(below_floor_refuses(&below, true), "with an incumbent, hold the floor");
+        // Below the floor with NO incumbent (cold boot) → SERVE, never refuse into dark.
+        assert!(
+            !below_floor_refuses(&below, false),
+            "a cold boot serves the viable plan rather than booting dark (48f5438a)"
+        );
+        // At or above the floor never refuses, incumbent or not.
+        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, true));
+        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, false));
     }
 
     // what this catches: regression #4146 on the Intel tier — a CPU-placed host
