@@ -126,6 +126,11 @@ pub enum CatalogError {
     },
     #[error("no quant of {repo} fits {} MiB of VRAM — this machine can't host it", budget >> 20)]
     NoneFit { repo: String, budget: u64 },
+    /// The host asked us to wait — its own Retry-After / rate-limit headers, honored so a
+    /// retry loop never earns a 429-then-ban (Joel 2026-09-17: read the headers, they are
+    /// for your own good). The caller sleeps `wait_ms` before trying `repo` again.
+    #[error("huggingface rate-limited {repo}: wait {wait_ms} ms (the host's own Retry-After)")]
+    RateLimited { repo: String, wait_ms: u64 },
 }
 
 /// The resolved decision of what to download for a model repo on this machine: the exact
@@ -175,12 +180,29 @@ pub async fn list_repo_ggufs(
 ) -> Result<Vec<GgufCandidate>, CatalogError> {
     let repo = normalize_repo(repo);
     let url = format!("https://huggingface.co/api/models/{repo}/tree/main?recursive=true");
-    let entries: Vec<HfTreeEntry> = client
+    let resp = client
         .get(&url)
         .header("user-agent", "continuum-provisioner")
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .map_err(|source| CatalogError::Http {
+            repo: repo.clone(),
+            source,
+        })?;
+    // Read the host's own rate-limit signal BEFORE error_for_status turns a 429 into an
+    // opaque HTTP error: honor Retry-After / x-ratelimit-* so the caller waits exactly as
+    // told instead of hammering into a ban (`provisioning::rate_limit`, the one primitive).
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let limit = super::rate_limit::RateLimit::from_response(resp.status().as_u16(), resp.headers(), now_ms);
+    let wait = limit.remaining_wait_ms(now_ms);
+    if wait > 0 {
+        return Err(CatalogError::RateLimited { repo: repo.clone(), wait_ms: wait });
+    }
+    let entries: Vec<HfTreeEntry> = resp
+        .error_for_status()
         .map_err(|source| CatalogError::Http {
             repo: repo.clone(),
             source,

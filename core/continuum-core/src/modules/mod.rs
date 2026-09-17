@@ -30,6 +30,7 @@ pub mod avatar;
 pub mod benchmark_grade;
 pub mod citizen_health;
 pub mod benchmark_standing;
+pub mod floor_fetch;
 pub mod benchmark_resume;
 pub mod bevy_consumer;
 pub mod card_staging;
