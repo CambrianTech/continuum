@@ -68,17 +68,44 @@ pub fn resolved_endpoint(stdout: Option<&str>) -> Option<PathBuf> {
     (!line.is_empty()).then(|| PathBuf::from(line))
 }
 
+/// Bound on one liveness status round-trip.
+pub const ANSWERING_PROBE_BOUND: Duration = Duration::from_secs(2);
+
 /// Does a daemon answer on the machine socket right now? `false` covers "no socket
 /// path could be resolved" — the spawn path names that case.
+///
+/// THE PROBE RUNS THE PRODUCT'S PATH: a `DaemonClient::status` round-trip through the
+/// same IPC client every command uses. Until 2026-09-17 the Windows arm was
+/// `path.exists()` on a `.sock` path that never exists there (the transport is a
+/// named pipe; only the `.sock.lock` is on disk), so a healthy daemon with hours of
+/// uptime read "absent" every period and the owner "revived" it every 5 min — 26
+/// failed spawns in a row on the 5090, each one a child that could not bind against
+/// the daemon that was already answering. The unix arm's raw connect was also
+/// weaker than this: a wedged daemon that accepts and never answers read alive.
+/// A dedicated thread with its own current-thread runtime, so the probe is callable
+/// from every caller this module already has (sync boot, `spawn_blocking`, the
+/// fd-pressure pool) without a runtime-in-runtime panic.
 pub fn answering() -> bool {
     let Some(path) = socket_path() else { return false };
-    #[cfg(unix)]
-    {
-        std::os::unix::net::UnixStream::connect(&path).is_ok()
-    }
-    #[cfg(not(unix))]
-    {
-        path.exists()
+    let probe = std::thread::Builder::new()
+        .name("airc-daemon-answering".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            rt.block_on(async move {
+                airc_ipc::DaemonClient::new(path)
+                    .status_with_timeout(ANSWERING_PROBE_BOUND)
+                    .await
+                    .ok()
+            })
+        });
+    match probe {
+        Ok(handle) => handle.join().ok().flatten().is_some(),
+        // A thread that cannot be spawned is a starved host, not a dead daemon — but
+        // "not answering" is the only honest reading of a probe that could not run.
+        Err(_) => false,
     }
 }
 
