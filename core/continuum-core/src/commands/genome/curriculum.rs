@@ -385,6 +385,40 @@ mod tests {
         assert_eq!(tasks[0].id, "failed-testable");
     }
 
+    // what this catches (card 6cdaf59f — the coding-learning dead link): a swe-grade
+    // failure is source=Eval AND testless (its ground truth is a python harness, not a
+    // rust EvalTask.test), so it is salient yet reaches NO learning organ — remediation
+    // wants a test, lived-expansion wants source=Lived, received-expansion wants
+    // source=Received. A citizen's REAL coding failures teach nothing. This pins the
+    // orphan quadrant; the fix that closes it (broaden teacher-expansion selection to
+    // testless-non-received) flips the lived-expansion assertion below from empty to
+    // selected. Until then the drain must fail LOUD, never read "healthy".
+    #[test]
+    fn a_testless_eval_failure_is_salient_but_orphaned_across_every_organ() {
+        use crate::cognition::experience::{ErrorSalience, SalienceDetector};
+        let swe = record("swe-fail", false, false); // source=Eval, test=None, ok=false
+        assert!(
+            ErrorSalience.assess(&swe).is_some(),
+            "a failed swe grade IS salient — she got it wrong and the grader named it"
+        );
+        assert!(
+            RemediationSynthesizer::new()
+                .select(std::slice::from_ref(&swe))
+                .is_empty(),
+            "remediation drops it: no rust test to objectively re-grade a correction"
+        );
+        assert!(
+            LivedExpansionSynthesizer::new()
+                .select(std::slice::from_ref(&swe))
+                .is_empty(),
+            "lived-expansion drops it: source is Eval, not Lived (the seam to close)"
+        );
+        assert!(
+            expansion_examples(std::slice::from_ref(&swe)).is_empty(),
+            "received-expansion drops it: source is Eval, not Received"
+        );
+    }
+
     // What this catches: a batch with NO salient failure selects to an empty task set
     // — so `synthesize` can honor its "empty corpus, not an error, and no teacher
     // round-trip" contract. Proves the short-circuit's precondition: absence of a
