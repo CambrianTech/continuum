@@ -2179,6 +2179,53 @@ mod tests {
         );
     }
 
+    // what this catches (2026-09-17, #academy): a settled utterance that near-duplicates
+    // a PEER's line from the burst was recorded as an [echo] fact and STILL POSTED —
+    // 0d5c1ffa re-spoke cf6b4df6's whole line verbatim minutes apart, and the Intel
+    // tier's 64 "draft_peer_echo" rows in an hour refused nothing. The copy is a gate
+    // pass now (peer_echo / near_identical), the fact stays in her memory, and a
+    // substantial line of her own still speaks.
+    #[tokio::test]
+    async fn a_near_identical_copy_of_a_peers_line_is_a_pass_not_a_post() {
+        use crate::cognition::workspace::{Burst, BurstTurn};
+        let peer_line = "I'm not sure what you're trying to do here, but I can help you with any development question or challenge you might have today.";
+        let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).unwrap();
+        let burst = || {
+            Burst::from_turns(
+                room,
+                vec![BurstTurn::attributed(false, "cf6b4df6", peer_line, None)],
+            )
+        };
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(peer_line)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
+        let (step, _, _) = settle_step(&cycle, burst(), true, TurnFraming::ambient(), Situation::FreshContext, &ActChain::new()).await;
+        match step {
+            SettleStep::Passed { reason: Some(r) } => assert!(r.contains("peer_echo:near_identical"), "{r}"),
+            other => panic!("a verbatim copy of a peer's line must not post: {other:?}"),
+        }
+        assert!(wm.recent().iter().any(|l| l.contains("[echo]")), "{:?}", wm.recent());
+
+        let wm2 = Arc::new(WorkingMemory::new(4));
+        let own = "The failing test is test_datetime_mean; the pivot's tzinfo is naive while the inputs are aware, so align it before subtracting.";
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(own)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
+        let (step2, _, _) = settle_step(&cycle2, burst(), true, TurnFraming::ambient(), Situation::FreshContext, &ActChain::new()).await;
+        assert!(matches!(step2, SettleStep::Spoke(_)), "her own substantial line speaks: {step2:?}");
+    }
+
     // what this catches: the CONFABULATION backstop (Joel 2026-07-11) — under a
     // peer's verification pressure Atlas upgraded from stage directions to
     // plausible fenced FILE CONTENTS no tool ever produced. A fenced Speak in a
