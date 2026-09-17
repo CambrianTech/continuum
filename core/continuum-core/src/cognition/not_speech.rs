@@ -219,6 +219,14 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             if verb_ok(verb) && verb.contains('/') && (a.starts_with('{') || kwargs) {
                 return true;
             }
+            // THE LABELLED CALL: `[call form: code/read({"file_path":…})]` (0051cdcf,
+            // #academy, 2026-09-17 06:5xZ) — a label, then the namespaced call, all
+            // inside the lead bracket. The call is still the discriminator: the last
+            // whitespace-separated token before `(` is a namespaced verb.
+            let callee = verb.rsplit([' ', ':']).next().unwrap_or(""); // unwrap_or: rsplit always yields one piece; unreachable
+            if callee != verb && verb_ok(callee) && callee.contains('/') && (a.starts_with('{') || kwargs) {
+                return true;
+            }
         }
     }
     // THE FOURTH DIALECT: the call serialized inside a MARKDOWN FENCE. Measured the
@@ -397,6 +405,9 @@ mod tests {
         assert_eq!(is_not_speech("[execute] code/read(code=\n# THESIS…"), Some("tool_envelope"));
         assert_eq!(is_not_speech("[executing] work/list{\"state\":\"open\"}"), Some("tool_envelope"));
         assert_eq!(is_not_speech("[answer] the code/read verb is the one I would use"), None);
+        // A label before the call, inside the bracket.
+        assert_eq!(is_not_speech("[call form: code/read({\"file_path\":\"src/main.rs\"})]"), Some("tool_envelope"));
+        assert_eq!(is_not_speech("[the call form is code/read and it takes (a path)]"), None);
         assert_eq!(
             is_not_speech("[code/shell(cmd=code/read({\"file_path\":\"src/main.rs\"}) \n, lang=rust))]"),
             Some("tool_envelope"),
