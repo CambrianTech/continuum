@@ -48,7 +48,34 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if is_only_empty_fences(t) {
         return Some("empty_fence");
     }
+    // The transcript's own OCCURRENCE header at the lead — `[occurred <iso>] …` /
+    // `[occurrence time unknown] …` — with no peer's voice behind it (Saoirse, 2026-09-17
+    // 01:15Z: the header, then a fenced copy of a peer's line). `opens_with_wrapped_peer_id`
+    // peels this layer looking for a peer id; when none follows, the header alone is
+    // still the substrate's rendering read back, never a citizen's words — nobody types
+    // the transcript's timestamp. Anchored on the substrate's exact strings.
+    if t.starts_with("[occurred ") || t.starts_with("[occurrence time unknown]") {
+        return Some("occurrence_header");
+    }
+    // A message that is NOTHING BUT one bracketed word — `[execute]` (cf6b4df6, #academy,
+    // 2026-09-17 01:3xZ). A stage tag with no stage, an empty box like the empty fence.
+    // The whole text, not the lead: `[answer] the plan holds` is speech with a tag.
+    if is_one_bare_bracket(t) {
+        return Some("bare_bracket");
+    }
     None
+}
+
+/// The entire text is `[word]` — letters, spaces, underscores — and nothing else.
+fn is_one_bare_bracket(t: &str) -> bool {
+    let t = t.trim();
+    t.strip_prefix('[')
+        .and_then(|r| r.strip_suffix(']'))
+        .is_some_and(|w| {
+            !w.trim().is_empty()
+                && w.len() <= 32
+                && w.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_')
+        })
 }
 
 /// Every non-blank line is a fence marker (```` ``` ```` with an optional language tag)
@@ -372,6 +399,22 @@ mod tests {
         assert_eq!(is_not_speech("I ran [code/read({\"file_path\":\"x\"})] and it was fine."), None);
         assert_eq!(is_not_speech("[note(this)] is a phrase, not a verb"), None);
         assert_eq!(is_not_speech("[code/read(path)] returned nothing"), None);
+    }
+
+    // what this catches: the transcript's occurrence header spoken at the lead with no
+    // peer id behind it (Saoirse, 2026-09-17) — the substrate's timestamp is never hers.
+    #[test]
+    fn the_occurrence_header_at_the_lead_is_not_speech() {
+        assert_eq!(is_not_speech("[occurred 2026-09-17T01:15:37.456Z] ```python\n# THESIS\n```"), Some("occurrence_header"));
+        assert_eq!(is_not_speech("[occurrence time unknown] I think the plan holds."), Some("occurrence_header"));
+        // Mid-sentence, or a citizen's own bracket, stays.
+        assert_eq!(is_not_speech("It [occurred 2026-09-17] to me that the plan holds."), None);
+        assert_eq!(is_not_speech("[occupied] the lane is mine for this act"), None);
+        // A lone bracketed word is an empty box; a tag with words after it is speech.
+        assert_eq!(is_not_speech("[execute]"), Some("bare_bracket"));
+        assert_eq!(is_not_speech("  [executing actions]\n"), Some("bare_bracket"));
+        assert_eq!(is_not_speech("[answer] the plan holds"), None);
+        assert_eq!(is_not_speech("[code/run]"), Some("tool_envelope"), "the namespaced form keeps its own marker");
     }
 
     // what this catches: an empty code fence posted as a message (Kimi, 2026-09-16) — a
