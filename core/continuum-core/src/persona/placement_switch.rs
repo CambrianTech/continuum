@@ -230,7 +230,8 @@ impl PlacementSwitch {
         let adapter = Arc::new(
             AircRemoteInferenceAdapter::new(transport)
                 .with_target_peer(peer.to_string())
-                .with_model(model.to_string()),
+                .with_model(model.to_string())
+                .with_persona(self.persona_name.clone()),
         );
         *self.remote.write().unwrap_or_else(|p| p.into_inner()) = Some(adapter); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         *self.peer.write().unwrap_or_else(|p| p.into_inner()) = Some(peer); // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth

@@ -54,6 +54,16 @@ pub struct AircRemoteInferenceAdapter {
     /// wire without one is refused there (measured 2026-09-06, BigMama's
     /// `detail` field: "No provider or model specified").
     default_model: Option<String>,
+    /// Which persona's brain rides this lane, for the breaker probes ONLY —
+    /// never a routing input. The breaker counter is per-adapter and every
+    /// remote lane is built per-persona (`remote_lane_factory`), so a per-PEER
+    /// fault (a dead grid host) is measured once per persona and each counter
+    /// can sit below `COLD_AFTER_DEADLINES` while the peer is dead for all of
+    /// them. `remote_lane.failed` naming only the peer is exactly what kept that
+    /// invisible (card ad96f5d1, 2026-09-17): four consecutive same-peer
+    /// timeouts could not be told from four different citizens each timing out
+    /// once. This label is that missing attribution.
+    persona: Option<String>,
     /// Told the served window every time the peer stamps one on an answer.
     /// The persona's lane factory hangs her override's writer here so the
     /// window she budgets against follows the responder's (card 1ab60567).
@@ -95,6 +105,7 @@ impl AircRemoteInferenceAdapter {
             transport,
             default_target_peer: None,
             default_model: None,
+            persona: None,
             window_sink: None,
             has_observed_success: AtomicBool::new(false),
             consecutive_deadlines: AtomicU32::new(0),
@@ -122,6 +133,7 @@ impl AircRemoteInferenceAdapter {
                     crate::probe!(
                         class = "remote_lane.cold",
                         peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                        persona = %self.persona_label(),
                         deadlines = n,
                         cold_for_s = COLD_WINDOW.as_secs(),
                         "the remote peer let requests die at the deadline in a row; \
@@ -147,6 +159,21 @@ impl AircRemoteInferenceAdapter {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = Some(model.into());
         self
+    }
+
+    /// Name the persona whose brain rides this lane, so the breaker probes can
+    /// attribute a timeout to a citizen (card ad96f5d1). Observability only —
+    /// never touches routing or the breaker count.
+    pub fn with_persona(mut self, persona: impl Into<String>) -> Self {
+        self.persona = Some(persona.into());
+        self
+    }
+
+    /// The persona label for the breaker probes, `-` when this lane was not
+    /// built per-persona (a dream, a test). Used by every `remote_lane.*` probe
+    /// AND asserted in `with_persona_labels_the_breaker_probes`.
+    pub(crate) fn persona_label(&self) -> &str {
+        self.persona.as_deref().unwrap_or("-") // unwrap_or: probe label only — "-" = no persona bound to this lane, never a routing decision
     }
 
     /// Learn the responder's served window from every answer (see `window_sink`).
@@ -235,6 +262,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             crate::probe!(
                 class = "remote_lane.refused_cold",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                persona = %self.persona_label(),
                 "remote lane is cold; request refused without a round trip"
             );
             return Err(format!(
@@ -259,6 +287,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             Ok(r) => crate::probe!(
                 class = "remote_lane.answered",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                persona = %self.persona_label(),
                 served_by = %r.served_by,
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 out_tokens = r.text_response.usage.output_tokens,
@@ -269,6 +298,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             Err(e) => crate::probe!(
                 class = "remote_lane.failed",
                 peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                persona = %self.persona_label(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 error = %e,
                 "remote inference failed"
@@ -466,6 +496,24 @@ mod tests {
         assert!(!pinned.supports_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF"));
         let open = AircRemoteInferenceAdapter::new(transport);
         assert!(open.supports_model("anything-at-all"));
+    }
+
+    // what this catches (card ad96f5d1, 2026-09-17): the breaker counter is
+    // per-adapter and every remote lane is built per-persona, so a per-PEER
+    // fault is measured once per citizen and no single counter reaches
+    // COLD_AFTER_DEADLINES. `remote_lane.failed` naming only the peer made that
+    // invisible — four same-peer timeouts read the same as four citizens each
+    // timing out once. The persona label is that missing attribution: absent it
+    // reads "-" (a dream, a test — never a per-persona lane), present it names
+    // the mind whose turn died, so the probe stream can tell the two apart.
+    #[test]
+    fn with_persona_labels_the_breaker_probes() {
+        let transport =
+            StubInferenceTransport::always_failing(RemoteInferenceError::Timeout { elapsed_ms: 1 });
+        let unlabeled = AircRemoteInferenceAdapter::new(transport.clone());
+        assert_eq!(unlabeled.persona_label(), "-", "no persona bound = '-', never a citizen's name");
+        let labeled = AircRemoteInferenceAdapter::new(transport).with_persona("mathis");
+        assert_eq!(labeled.persona_label(), "mathis");
     }
 
     #[tokio::test]
