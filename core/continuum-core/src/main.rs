@@ -220,6 +220,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
+    // grid's hub — it opens many airc unix sockets and sqlite handles by design — and a
+    // low inherited RLIMIT_NOFILE wedges it on ORDINARY load: 2026-09-17 the M5 inherited
+    // ~362, hit "Too many open files (os error 24)", its IPC listener died, track-canary
+    // could not even see it to redeploy, and the node was dark for hours. Self-reliant,
+    // not launcher-dependent (tracing is not up yet, so this reports on stderr → the log).
+    if let Some(soft) = continuum_core::system_resources::fd_gauge::raise_fd_soft_limit() {
+        eprintln!("continuum-core: RLIMIT_NOFILE soft limit set to {soft} at startup");
+    }
+
     // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
     // optional JsonlProbeFileSink + fmt-to-stderr governed by
     // RUST_LOG (default `info`). See
