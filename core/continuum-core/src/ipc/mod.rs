@@ -1404,6 +1404,15 @@ pub fn start_server(
     serving_daemon.register_planner_on_authority_tick();
     runtime.register(serving_daemon.clone());
 
+    // A node with no serveable coder model pulls the ladder FLOOR (the 1.5B, #4154)
+    // instead of stranding on unfit on-disk weights — the missing wire that made deleting
+    // the 0.5B strand a weak tier (the Intel box, 2026-09-17). Watches serving's snapshot;
+    // fetches off its own tick, honoring the host's rate-limit headers.
+    runtime.register(Arc::new(crate::modules::floor_fetch::FloorFetchModule::new(
+        serving_daemon.subscribe_serving(),
+        system_monitor.clone(),
+    )));
+
     // #79: expose the one per-machine resource authority's accounting board as a typed
     // read command (`resources/board`). The daemon owns its background poll + watch
     // snapshot; this thin module wraps the same `Arc<ResourceDaemon>` so the measured
