@@ -2,7 +2,7 @@
   "$schema": "../../../../../protocol/schema/experience-recipe.schema.json",
   "id": "7c1e4a52-9b3d-4f6e-8a2b-0d5c9e7f3a11",
   "version": 1,
-  "purpose": "board/triage",
+  "purpose": "triage",
   "regions": [
     {
       "name": "board",
