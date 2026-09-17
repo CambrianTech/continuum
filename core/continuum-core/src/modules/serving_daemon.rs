@@ -2421,6 +2421,7 @@ impl ServingDaemonModule {
             served_ctx,
             lanes,
             self.system.memory().total_bytes,
+            self.system.memory().available_bytes,
             self.system.gpu_memory_mode(),
         );
         if let Ok(mut g) = self.served_prompt_cache_mib.lock() {
@@ -3770,6 +3771,7 @@ fn derived_prompt_cache_mib(
     served_ctx: u32,
     lanes: u32,
     physical_bytes: u64,
+    available_bytes: u64,
     memory_mode: Option<crate::gpu::monitor::MemoryMode>,
 ) -> u32 {
     // LIVE citizens only. The WorkingSetRegistry persists every persona that
@@ -3824,7 +3826,7 @@ fn derived_prompt_cache_mib(
         lanes,
         physical_bytes,
         serve_host_bytes,
-        system_commit_charge_bytes(),
+        available_bytes,
     );
     // Deduplicate the decision, not just its MiB: a different model or a prior
     // becoming measured can yield the same limit and still needs a receipt.
@@ -3866,7 +3868,7 @@ fn derived_prompt_cache_mib(
             estimated_kv_bytes = ?decision.estimated_kv_bytes,
             affordable_bytes = ?decision.affordable_bytes,
             serve_host_bytes = decision.serve_host_bytes,
-            commit_charge_bytes = ?decision.commit_charge_bytes,
+            available_bytes = decision.available_bytes,
             serialized_state_bytes = "unobserved",
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
@@ -3891,11 +3893,15 @@ struct PromptCacheDecision {
     /// residency on unified memory, ZERO on a discrete GPU (weights and KV live in
     /// VRAM). This is the term that took the 5090's cache to the 256 MiB floor.
     serve_host_bytes: u64,
-    /// The system-wide commit charge at derivation (Windows; `None` elsewhere or on
-    /// read failure). The cache may never push total commit past physical — the
-    /// pagefile-overcommit clamp the host-cache lease already applies — so with it
-    /// known, `afford` is also bounded by `physical − commit`.
-    commit_charge_bytes: Option<u64>,
+    /// Host RAM actually available at derivation (the system monitor's reading; 0 =
+    /// unknown). The cache may never promise more than the box can give right now:
+    /// the second ceiling on `afford`, minus the OS floor. NOT the commit charge —
+    /// on a CUDA host commit is chronically above physical (measured 2026-09-17:
+    /// 75.5 GB committed, 43 GB free, 63 GB physical — reserved-but-untouched and
+    /// pagefile-backed allocations count), so `physical − commit` is always the hard
+    /// floor there; it is the right clamp only where commit ≈ resident, the MoE
+    /// mmap'd-expert case the host-cache lease was written for.
+    available_bytes: u64,
 }
 
 /// `planned` is how many personas have a seed on disk — the resume set — independent
@@ -3914,7 +3920,7 @@ fn prompt_cache_decision(
     lanes: u32,
     physical_bytes: u64,
     serve_host_bytes: u64,
-    commit_charge_bytes: Option<u64>,
+    available_bytes: u64,
 ) -> PromptCacheDecision {
     let mut decision = PromptCacheDecision {
         reason: "prior_missing_footprint",
@@ -3931,7 +3937,7 @@ fn prompt_cache_decision(
         }),
         affordable_bytes: None,
         serve_host_bytes,
-        commit_charge_bytes,
+        available_bytes,
     };
     let Some(fp) = fp else {
         return decision;
@@ -3963,19 +3969,21 @@ fn prompt_cache_decision(
     } else if physical_bytes == 0 {
         decision.reason = "prior_unknown_physical_memory";
     } else {
-        // Two ceilings, the lower wins — the SAME pair the MoE host-cache lease uses
-        // (`host_cache_lease_bytes`): what is left after the serve's host working set
-        // and the OS floor, and what is left before total commit reaches physical. On
-        // the 5090 (2026-09-17) the first said 55 GB while 31 GB of host RAM was free:
-        // a `--cache-ram` that large fills to a pagefile thrash (the 2026-08-01 shape)
-        // once two 115k-token states are saved. The commit ceiling holds it to what
-        // the box can actually give without overcommitting.
+        // Two ceilings, the lower wins: what is left of PHYSICAL after the serve's host
+        // working set and the OS floor, and what is AVAILABLE right now less the same
+        // floor. On the 5090 (2026-09-17) the first said 55 GB while 31 GB of host RAM
+        // was free: a `--cache-ram` that large fills to a pagefile thrash (the
+        // 2026-08-01 shape) once two 115k-token states are saved. The available ceiling
+        // holds it to what the box can actually give. (Not the commit charge — see the
+        // field doc: on a CUDA host that reading is always past physical.)
+        let floor = host_os_floor_bytes(physical_bytes);
         let headroom = physical_bytes
             .saturating_sub(serve_host_bytes)
-            .saturating_sub(host_os_floor_bytes(physical_bytes));
-        let afford = match commit_charge_bytes {
-            Some(commit) => headroom.min(physical_bytes.saturating_sub(commit)),
-            None => headroom,
+            .saturating_sub(floor);
+        let afford = if available_bytes > 0 {
+            headroom.min(available_bytes.saturating_sub(floor))
+        } else {
+            headroom
         };
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
@@ -4784,7 +4792,7 @@ mod tests {
             context_window: 65536,
             capability_rank: 1,
         };
-        let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, None);
+        let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
         assert_eq!(missing.reason, "prior_missing_footprint");
         assert_eq!(missing.estimated_kv_bytes, None);
         assert_eq!(missing.affordable_bytes, None);
@@ -4793,12 +4801,12 @@ mod tests {
         // demand are different facts; the old single reason read benign for both — and
         // for a third state, "residents not yet up at launch", that the caller no longer
         // produces (it sizes from the resume set). Regression for the 5-minute turn.
-        let cold = prompt_cache_decision(Some(&fp), &[], 0, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), None);
+        let cold = prompt_cache_decision(Some(&fp), &[], 0, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), 0);
         assert_eq!(cold.reason, "prior_no_seeds_on_disk");
-        let empty = prompt_cache_decision(Some(&fp), &[], 2, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), None);
+        let empty = prompt_cache_decision(Some(&fp), &[], 2, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), 0);
         assert_eq!(empty.reason, "prior_seeds_without_recorded_demand");
         assert_eq!(empty.citizens, 0, "planned is not demand — citizens counts demand rows");
-        let unknown = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 0, fp.peak_resident_bytes(65536, 1), None);
+        let unknown = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 0, fp.peak_resident_bytes(65536, 1), 0);
         assert_eq!(unknown.reason, "prior_unknown_physical_memory");
         assert_eq!(missing.desired_mib, crate::inference::lane_args::CACHE_RAM_MIB);
         for prior in [&missing, &cold, &empty, &unknown] {
@@ -4821,9 +4829,9 @@ mod tests {
             let one_state_mib = one_state_bytes.div_ceil(mib) as u32;
             let constant = crate::inference::lane_args::CACHE_RAM_MIB;
             for (name, prior) in [
-                ("cold", prompt_cache_decision(Some(&geo), &[], 0, served_ctx, 1, 32 << 30, geo.peak_resident_bytes(served_ctx, 1), None)),
-                ("seeds", prompt_cache_decision(Some(&geo), &[], 2, served_ctx, 1, 32 << 30, geo.peak_resident_bytes(served_ctx, 1), None)),
-                ("unknown", prompt_cache_decision(Some(&geo), &[60_000], 1, served_ctx, 1, 0, geo.peak_resident_bytes(served_ctx, 1), None)),
+                ("cold", prompt_cache_decision(Some(&geo), &[], 0, served_ctx, 1, 32 << 30, geo.peak_resident_bytes(served_ctx, 1), 0)),
+                ("seeds", prompt_cache_decision(Some(&geo), &[], 2, served_ctx, 1, 32 << 30, geo.peak_resident_bytes(served_ctx, 1), 0)),
+                ("unknown", prompt_cache_decision(Some(&geo), &[60_000], 1, served_ctx, 1, 0, geo.peak_resident_bytes(served_ctx, 1), 0)),
             ] {
                 // The engine's check is in BYTES (`state_size > limit_size`), so the
                 // invariant is asserted in bytes: a limit floored to the MiB below a
@@ -4837,9 +4845,9 @@ mod tests {
                 assert_eq!(prior.desired_mib, constant.max(one_state_mib), "{name}: the floor lifts the prior, never lowers it");
             }
             // The one prior that cannot know the geometry keeps the constant.
-            assert_eq!(prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30, 0, None).desired_mib, constant);
+            assert_eq!(prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30, 0, 0).desired_mib, constant);
         }
-        let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 2, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), None);
+        let measured = prompt_cache_decision(Some(&fp), &[32768, 32768], 2, 65536, 1, 32 << 30, fp.peak_resident_bytes(65536, 1), 0);
         // Same 4096 MiB result as the prior, but materially different evidence.
         assert_eq!(measured.desired_mib, missing.desired_mib);
         assert_ne!(measured, missing);
@@ -4856,7 +4864,7 @@ mod tests {
                 afford
             )
         );
-        let squeezed = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 1, fp.peak_resident_bytes(65536, 1), None);
+        let squeezed = prompt_cache_decision(Some(&fp), &[60000], 1, 65536, 1, 1, fp.peak_resident_bytes(65536, 1), 0);
         assert_eq!(squeezed.affordable_bytes, Some(0));
         assert_eq!(
             squeezed.desired_mib,
@@ -4897,9 +4905,9 @@ mod tests {
         );
 
         let on_unified =
-            prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, unified, None);
+            prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, unified, 0);
         let on_discrete =
-            prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, discrete, None);
+            prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, discrete, 0);
         assert_eq!(
             on_unified.affordable_bytes,
             Some(0),
@@ -4926,10 +4934,11 @@ mod tests {
     // what this catches (2026-09-17, the 5090 after #4144): with VRAM residency no
     // longer charged to the host, afford read 55 GB on a 63 GB box that had 31 GB
     // free — a `--cache-ram` that fills to a pagefile thrash once two 115k-token
-    // states are saved. The commit ceiling is the same clamp the MoE host-cache lease
-    // applies: the cache never promises more than physical − commit.
+    // states are saved. The second ceiling is what is AVAILABLE now, less the floor.
+    // And it is not the commit charge: the first cut used it and read 75.5 GB
+    // committed on that same box with 43 GB free → afford 0 → the 256 MiB floor again.
     #[test]
-    fn the_cache_never_promises_past_the_commit_ceiling() {
+    fn the_cache_never_promises_past_what_is_available_now() {
         use super::*;
         let fp = crate::cognition::serving_plan::ModelFootprint {
             model_id: "27b-on-a-5090".into(),
@@ -4940,13 +4949,13 @@ mod tests {
         };
         let physical = 63u64 << 30;
         let demands = [115_000u32, 115_000]; // ~58 GB wanted
-        let free = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, None);
+        let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 0);
         assert_eq!(
-            free.affordable_bytes,
+            unknown.affordable_bytes,
             Some(physical - host_os_floor_bytes(physical)),
-            "no commit reading: headroom alone"
+            "no availability reading: headroom alone"
         );
-        let committed = 32u64 << 30; // what the box had in use at launch
+        let available = 31u64 << 30;
         let bound = prompt_cache_decision(
             Some(&fp),
             &demands,
@@ -4955,29 +4964,20 @@ mod tests {
             1,
             physical,
             0,
-            Some(committed),
+            available,
         );
         assert_eq!(
             bound.affordable_bytes,
-            Some(physical - committed),
-            "commit-bound"
+            Some(available - host_os_floor_bytes(physical)),
+            "bounded by what the box can give now"
         );
-        assert!(bound.desired_mib < free.desired_mib);
-        assert_eq!(bound.commit_charge_bytes, Some(committed));
-        // Past-physical commit → nothing to promise → the hard floor, never a wrap.
-        let over = prompt_cache_decision(
-            Some(&fp),
-            &demands,
-            2,
-            144_640,
-            1,
-            physical,
-            0,
-            Some(physical + 1),
-        );
-        assert_eq!(over.affordable_bytes, Some(0));
+        assert!(bound.desired_mib < unknown.desired_mib);
+        assert_eq!(bound.available_bytes, available);
+        // Less available than the floor → nothing to promise → the hard floor, no wrap.
+        let starved = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 1);
+        assert_eq!(starved.affordable_bytes, Some(0));
         assert_eq!(
-            over.desired_mib,
+            starved.desired_mib,
             crate::inference::lane_args::CACHE_RAM_HARD_FLOOR_MIB
         );
     }
