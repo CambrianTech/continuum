@@ -893,18 +893,48 @@ impl GenomeTeach {
                 &latest,
                 &crate::cognition::experience::ErrorSalience,
             );
+            // Salient failures the remediation teacher CANNOT consume: objectively
+            // graded but testless (a swe-grade carries no rust `EvalTask.test`), so
+            // `salient_teach_set` filters them out. They reach no learning organ today
+            // (card 6cdaf59f) — count them so an empty remediation drain is not mistaken
+            // for a clean citizen, and so the dead link is loud on the probe stream.
+            let unteachable_salient = {
+                use crate::cognition::experience::SalienceDetector;
+                let d = crate::cognition::experience::ErrorSalience;
+                latest
+                    .iter()
+                    .filter(|r| d.assess(r).is_some())
+                    .filter(|r| r.task.test.is_none())
+                    .count()
+            };
             crate::probe!(
                 class = "genome.teach.from_experience",
                 solver = solver_full.as_str(),
                 stream_records = records.len() as u64,
                 after_dedup = latest.len() as u64,
                 teachable_failures = teach.len() as u64,
+                unteachable_salient = unteachable_salient as u64,
                 "curriculum drained from the citizen's lived experience stream (#319)",
             );
             if teach.is_empty() {
-                // An empty drain is a CLEAN state (no salient failures pending —
-                // she has learned everything her grades exposed), distinct from a
-                // misconfigured teach_set. Named so callers/sentinels can tell.
+                // Distinguish a genuinely-clean citizen from a SILENT DEAD LINK. If she
+                // has salient failures the remediation teacher can't consume (testless —
+                // swe-grades), zero teachable is NOT "healthy": her real coding failures
+                // are reaching no learning organ (card 6cdaf59f). Fail LOUD and name it,
+                // never the reassuring all-clear that hid this.
+                if unteachable_salient > 0 {
+                    return Err(CommandError::Invalid(format!(
+                        "{unteachable_salient} salient failure(s) in {solver_full}'s stream \
+                         that the remediation teacher CANNOT consume — objectively graded but \
+                         testless (e.g. swe-grade), so no learning organ reaches them today \
+                         (card 6cdaf59f). This is a DEAD LINK, not a healthy state: her real \
+                         coding failures are not becoming curriculum ({} records, {} after dedup)",
+                        records.len(),
+                        latest.len()
+                    )));
+                }
+                // An empty drain with no unteachable remainder is a genuinely CLEAN state
+                // (no salient failures pending), distinct from a misconfigured teach_set.
                 return Err(CommandError::Invalid(format!(
                     "no salient failures pending in {solver_full}'s experience stream \
                      ({} records, {} after latest-per-task dedup) — nothing to learn \
