@@ -27,7 +27,7 @@
 //! stable id, entries created on first need.
 
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -49,6 +49,15 @@ pub struct PeerBreaker {
     /// While `now < cold_until_ms` the peer is COLD: requests are refused without a
     /// wire round trip. 0 = warm.
     cold_until_ms: AtomicU64,
+    /// Has this peer ever answered a request (from ANY caller)? The service signal
+    /// that gates a persona's RETURN to a remote seat — moved here from the adapter's
+    /// per-persona `has_observed_success` because SERVICE, like the fault, is a fact
+    /// about the peer, not about who asked (card ad96f5d1, Cormac's return-gate).
+    ever_served: AtomicBool,
+    /// Has this peer ever been TRIED (any outcome — a timeout or an answer)? Lets
+    /// [`served_ok`](Self::served_ok) tell a proven-bad peer (tried, never served)
+    /// from a brand-new one (never tried, deserves its first chance).
+    ever_observed: AtomicBool,
 }
 
 impl PeerBreaker {
@@ -63,6 +72,7 @@ impl PeerBreaker {
     /// peer + persona labels — and `None` while still warming. On the trip the count
     /// resets so the next window starts fresh.
     pub fn observe_timeout(&self, now_ms: u64) -> Option<u32> {
+        self.ever_observed.store(true, Ordering::Relaxed);
         let n = self.consecutive_deadlines.fetch_add(1, Ordering::Relaxed) + 1;
         if n < COLD_AFTER_DEADLINES {
             return None;
@@ -91,9 +101,38 @@ impl PeerBreaker {
     }
 
     /// Fold ANY answer from the peer (even a refusal): it evaluated our mail, so it is
-    /// alive — reset the count for everyone routed to it.
+    /// alive — reset the count for everyone routed to it, and record that it has SERVED
+    /// (the positive evidence the return gate needs).
     pub fn observe_answer(&self) {
         self.consecutive_deadlines.store(0, Ordering::Relaxed);
+        self.ever_served.store(true, Ordering::Relaxed);
+        self.ever_observed.store(true, Ordering::Relaxed);
+    }
+
+    /// Is it worth (re)placing a persona onto this peer? The service term for the
+    /// placement return gate (card ad96f5d1, Cormac): a fresh beacon proves the peer
+    /// is ALIVE, not that it will ANSWER — and a node that beacons perfectly and
+    /// serves nothing is the most attractive dead seat on the grid.
+    ///
+    /// `true` when the peer has ever answered (proven service) OR has never been tried
+    /// at all — a brand-new peer deserves its first placement. `false` ONLY for a peer
+    /// that has been tried and has never served: exactly the dead seat the return gate
+    /// must stop feeding. (#1560 taught the SELECTOR not to route to an unproven peer;
+    /// refusing to ever TRY a new one is a different, worse, self-sealing failure, so
+    /// untried reads optimistic here — strict for proven-bad, optimistic for untried.)
+    ///
+    /// PER-PROCESS BY CONSTRUCTION (Cormac's #4176 review): `ever_observed` lives only
+    /// in this process's registry, so a RESTART re-arms the optimism — a peer this
+    /// process has never tried reads `served_ok = true` even if a prior process proved
+    /// it dead. That matters because `model_override.json` (the seat) IS durable while
+    /// fall-home is runtime-only, so a constantly-rebooting node re-exiles to a known-
+    /// dead peer each boot and re-learns it over ~30 min. Making the durable and
+    /// runtime states agree (fall-home writing through to the override, or re-deriving
+    /// the seat from live capacity, or persisting service evidence) is its own card,
+    /// bigger than a return gate — and likely moot once #4175 makes the peer answer at
+    /// all, since `ever_served` then flips true on the first turn.
+    pub fn served_ok(&self) -> bool {
+        self.ever_served.load(Ordering::Relaxed) || !self.ever_observed.load(Ordering::Relaxed)
     }
 }
 
@@ -164,5 +203,50 @@ mod tests {
         assert_eq!(a.observe_timeout(NOW), None, "reset: this is miss 1 again, not the trip");
         assert_eq!(a.observe_timeout(NOW), None, "miss 2");
         assert_eq!(a.observe_timeout(NOW), Some(COLD_AFTER_DEADLINES), "miss 3 trips");
+    }
+
+    // what this catches (Cormac's #4173 re-review): while a peer is ALREADY cold,
+    // observe_timeout must not re-trip. The count can climb back to the threshold
+    // inside the window, but the CAS sees `cold_until` set (warm = false) and refuses
+    // the second claim — the CAS-refusal branch, distinct from the count-reset path in
+    // `a_peer_keyed_breaker_sums_evidence_across_callers`.
+    #[test]
+    fn a_miss_while_already_cold_does_not_re_trip() {
+        const NOW: u64 = 4_000_000;
+        let b = breaker_for("peerkey-test-already-cold");
+        assert_eq!(b.observe_timeout(NOW), None);
+        assert_eq!(b.observe_timeout(NOW), None);
+        assert_eq!(b.observe_timeout(NOW), Some(COLD_AFTER_DEADLINES), "trips on the third");
+        assert!(b.is_cold(NOW));
+        // Three more misses inside the cold window: n climbs 1→2→3 again, but the CAS
+        // refuses because cold_until is already set — no second cold probe fires.
+        assert_eq!(b.observe_timeout(NOW), None);
+        assert_eq!(b.observe_timeout(NOW), None);
+        assert_eq!(b.observe_timeout(NOW), None, "reached the threshold again but stays refused while cold");
+    }
+
+    // what this catches (card ad96f5d1, Cormac's return gate): served_ok gates a
+    // persona's RETURN to a peer on positive SERVICE, not a fresh beacon. A pristine
+    // peer reads true (a new peer deserves its first try); a peer that has answered
+    // reads true; a peer that has ONLY ever timed out reads false — the dead seat the
+    // return gate must stop feeding, which is exactly this tier's e85a5bb3.
+    #[test]
+    fn served_ok_is_optimistic_for_untried_and_strict_for_proven_bad() {
+        const NOW: u64 = 3_000_000;
+        let untried = breaker_for("servedok-untried");
+        assert!(untried.served_ok(), "a peer never tried deserves its first placement");
+
+        // Tried once (a miss), no answer yet → proven-bad-so-far, do not return to it.
+        let served = breaker_for("servedok-served");
+        served.observe_timeout(NOW);
+        assert!(!served.served_ok(), "tried but not yet served → blocked");
+        // Then it answers → proven service, return is safe.
+        served.observe_answer();
+        assert!(served.served_ok(), "it has answered — proven service");
+
+        // Tried, only ever timed out → the dead seat the gate must stop feeding.
+        let dead = breaker_for("servedok-dead");
+        dead.observe_timeout(NOW);
+        assert!(!dead.served_ok(), "tried and never served → do not return a citizen to it");
     }
 }
