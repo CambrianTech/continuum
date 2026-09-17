@@ -142,10 +142,11 @@ pub fn plan_for_roles(
         .take(1)
         .map(|role| DesiredRole {
             role: role.clone(),
-            // Fallback model when no ServingPlan is published yet (safe LCD).
-            // The serving daemon's plan overrides this via with_serving —
-            // that's the real, honest, GPU-residency-aware pick.
-            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            // Fallback model when no ServingPlan is published yet: the FLOOR, which
+            // is the 1.5B coder — there is no 0.5B row in the catalog any more. The
+            // serving daemon's plan overrides this via with_serving — that's the
+            // real, honest, GPU-residency-aware pick.
+            model_id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".to_string(),
             // Default single lane; with_serving overrides from the live plan.
             lanes: 1,
             // Runnable floor until the serving daemon publishes a host-fit
@@ -821,7 +822,7 @@ mod tests {
     }
 
     /// Compat tier produces the LCD roster: Helper + Coder both on
-    /// Qwen2.5-0.5B. The canonical Intel-Mac startup state #133
+    /// the 1.5B floor. The canonical Intel-Mac startup state #133
     /// targets.
     ///
     /// Slice 13 update: temporarily single-Helper while ResumeOrMint-
@@ -829,14 +830,19 @@ mod tests {
     /// resolved in slice 14. Coder will be re-added once
     /// role-in-seed.json lands.
     #[test]
-    fn compat_tier_plans_single_helper_on_lcd() {
+    fn compat_tier_plans_single_helper_on_the_floor() {
         let plan = plan_for_tier(
             HwCapabilityTier::MacIntelMetalDiscrete,
             HwTierCategory::Compat,
         );
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].role, RoleId::Helper);
-        assert_eq!(plan[0].model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
+        // THE FLOOR IS 1.5B (2026-09-16): the pre-plan fallback names the smallest
+        // model any tier may serve, and there is no 0.5B row to name.
+        assert_eq!(
+            plan[0].model_id,
+            "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF"
+        );
     }
 
     /// Every tier currently plans exactly one Helper — until slice 14
