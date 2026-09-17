@@ -1288,6 +1288,31 @@ impl ServingDaemonModule {
         servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)
     }
 
+    /// The serving budget this host has when the box is OURS — physical VRAM at the
+    /// everyday (Comfort) fraction. Not the live governed number, which sinks under
+    /// an outgoing engine, a game, or a training lease: those decide what the plan
+    /// can do NOW; this decides what the host may never sink below.
+    fn physical_budget(&self) -> HostBudget {
+        HostBudget {
+            usable_bytes: (self.gpu.total_vram_bytes() as f64
+                * crate::provisioning::model_catalog::PowerMode::Comfort.serving_fraction())
+                as u64,
+            perf_cores: perf_cores(),
+        }
+    }
+
+    /// The universe the host floor is judged over: everything servable on disk with
+    /// the PIN applied and suppression ignored. A pin is the operator's word — the
+    /// floor's ceiling, never something the floor overrules (Fable's block on #4146:
+    /// the M5 pins Ornith with a higher-ranked 27B on disk; a pin-blind floor read
+    /// every plan under the pin as `Below` and the host published nothing). An
+    /// unload's suppression is intent to MOVE, not licence to sink — it stays ignored
+    /// (#4145).
+    fn floor_candidates(&self) -> Vec<ModelFootprint> {
+        let pinned = self.pinned.borrow();
+        servable_candidates(&self.catalog.snapshot(), &HashSet::new(), &pinned)
+    }
+
     /// A clone of the suppress-set writer, for the `serving/unload` ·
     /// `serving/load` commands to mutate the VRAM-axis allocation ledger. The
     /// daemon stays the authority: the commands only edit the exclude-set; the
@@ -1439,7 +1464,7 @@ impl ServingDaemonModule {
             return;
         }
         let budget = self.host_budget();
-        self.publish_plan(budget, &self.live_candidates());
+        self.publish_plan(budget, &self.live_candidates(), &self.floor_candidates());
     }
 
     /// Bring the running `llama-server` in line with the published plan. FAST —
@@ -2355,7 +2380,37 @@ impl ServingDaemonModule {
                  lane's window instead of a teardown-dip plan (#363)",
             );
         }
-        let served_ctx = floored;
+        // A KEPT WINDOW MUST STILL FIT. Both laws above keep the BIGGER window on the
+        // assumption it was legitimately sized. On 2026-09-17 it was not: a 144,640
+        // window sized against a fictional 54 GB budget (the ledger's uncapped add-back)
+        // was kept by sticky, then by wedge-heal, across every relaunch onto a 26 GB
+        // budget — 31.9 of 32.6 GB VRAM, 44 s prefills, the cache demand it implied.
+        // Bound the kept window by what the PHYSICAL budget fits at this lane count
+        // (physical, not live: the live budget is exactly the teardown transient the
+        // wedge-heal law exists to see through). The plan's own window is always
+        // within it, so this touches nothing but a kept fiction.
+        let served_ctx = match self
+            .catalog
+            .snapshot()
+            .get(&desired)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
+        {
+            Some(fits) if floored > fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX) => {
+                let bound = fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+                crate::probe!(
+                    class = "serving.reconcile.window",
+                    decision = "kept-window-exceeds-physical-fit",
+                    kept_window = floored,
+                    bound_to = bound,
+                    plan_lanes = lanes,
+                    physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                    "a kept (sticky / wedge-heal) window does not fit this host's physical \\n                     budget at this lane count — bounded; a kept window is never a licence \\n                     to exceed the card",
+                );
+                bound
+            }
+            _ => floored,
+        };
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -2978,7 +3033,16 @@ impl ServingDaemonModule {
     /// Pure publish step: run the classifier on the given inputs, publish the
     /// result, log it. Split from `recompute` so it's testable without the
     /// global registry / live GPU.
-    fn publish_plan(&self, budget: HostBudget, candidates: &[ModelFootprint]) {
+    /// `candidates` is what the plan may choose from NOW (suppression and pin applied);
+    /// `on_disk` is everything servable with only the pin applied — the universe the
+    /// host floor is judged over. Both are inputs so the floor is never read from an
+    /// ambient catalog.
+    fn publish_plan(
+        &self,
+        budget: HostBudget,
+        candidates: &[ModelFootprint],
+        on_disk: &[ModelFootprint],
+    ) {
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //
@@ -3005,6 +3069,38 @@ impl ServingDaemonModule {
         );
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
+                // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
+                // 27b we are sucking"). The debounce below separates jitter from a sustained
+                // squeeze; it does not say what a host may SINK TO. Measured today: an unload
+                // suppressed the 27B, so it vanished from `candidates`, the debounce saw
+                // "incumbent gone from disk" and adopted the 0.5B on a 32 GB card at a
+                // transient 24 GB — then relaunched it 35 times (#4145). The floor is what
+                // this host's PHYSICAL capacity fits, judged by the SAME selection law over
+                // everything servable on disk, ignoring suppression and pin (intent to move
+                // is never licence to sink). A plan below it is refused, loudly, every time
+                // it is asked for; the previous plan stands.
+                let floor = host_floor_of(self.physical_budget(), on_disk, demand);
+                if let FloorVerdict::Below { floor, wanted } = floor_gate(&plan, floor.as_ref()) {
+                    static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
+                        parking_lot::Mutex::new(None);
+                    let key = (floor.clone(), wanted.clone());
+                    if LAST_REFUSED.lock().as_ref() != Some(&key) {
+                        crate::probe!(
+                            class = "serving.plan.demotion_refused",
+                            floor = floor.as_str(),
+                            wanted = wanted.as_str(),
+                            incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                            physical_usable_gb =
+                                (self.physical_budget().usable_bytes / 1_000_000_000),
+                            "plan wants a base BELOW what this host's physical capacity \
+                             serves — refused; the previous plan stands until the budget \
+                             returns (a host never sinks below its floor)"
+                        );
+                        *LAST_REFUSED.lock() = Some(key);
+                    }
+                    return;
+                }
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
                 // only shields the incumbent from its OWN residency — an external
                 // squeeze deep enough that even the credited budget can't hold it
@@ -3239,6 +3335,43 @@ enum DownshiftVerdict {
 /// incumbent to still be a candidate (still on disk): if its weights vanished,
 /// holding a plan that names them would be serving a ghost, so that case adopts
 /// `fresh` immediately (mirrors `plan_serving_stable`'s own disk check).
+/// The host floor as a pure function of the physical budget, what is on disk, and the
+/// demand: [`plan_serving`]'s own choice at that budget. Reusing the selection law is
+/// the point — the floor and the plan disagree only because their BUDGETS differ, never
+/// because a second ranking was invented.
+fn host_floor_of(
+    physical: HostBudget,
+    on_disk: &[ModelFootprint],
+    demand: ServingDemand,
+) -> Option<ModelFootprint> {
+    plan_serving(physical, on_disk, demand)
+        .filter(|p| p.fits_on_gpu)
+        .map(|p| p.base_model)
+}
+
+/// Verdict of [`floor_gate`]: may this plan be adopted on this host at all?
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FloorVerdict {
+    /// At or above the host floor (or the host has no GPU floor — CPU serving).
+    AtOrAbove,
+    /// The plan's base ranks below what the host's physical capacity serves.
+    Below { floor: String, wanted: String },
+}
+
+/// Pure classification — a plan whose base is LESS capable than the host floor is a
+/// demotion below physical capacity, whatever the live budget said this tick.
+fn floor_gate(plan: &ServingPlan, floor: Option<&ModelFootprint>) -> FloorVerdict {
+    match floor {
+        Some(floor) if plan.base_model.capability_rank < floor.capability_rank => {
+            FloorVerdict::Below {
+                floor: floor.model_id.clone(),
+                wanted: plan.base_model.model_id.clone(),
+            }
+        }
+        _ => FloorVerdict::AtOrAbove,
+    }
+}
+
 fn downshift_gate(
     plan: &ServingPlan,
     incumbent: Option<&str>,
@@ -5547,7 +5680,7 @@ mod tests {
             footprint_from_parts("small", GB, 4096, false, None).unwrap(),
             footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap(),
         ];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
         let plan = rx.borrow().clone().expect("plan published");
         assert_eq!(
             plan.base_model.model_id, "coder-14b",
@@ -5556,7 +5689,7 @@ mod tests {
         assert!(plan.fits_on_gpu);
 
         // No candidates → None published (no silent serve).
-        daemon.publish_plan(budget, &[]);
+        daemon.publish_plan(budget, &[], &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
     }
 
@@ -5830,7 +5963,13 @@ mod tests {
     }
 
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
-        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        daemon_on_card(server, 53 * GB)
+    }
+
+    /// The same daemon on a card of a chosen size — the host floor is derived from
+    /// PHYSICAL VRAM, so a test about "a genuinely small box" must give it one.
+    fn daemon_on_card(server: Arc<dyn LlamaServerControl>, vram_bytes: u64) -> ServingDaemonModule {
+        let gpu = Arc::new(GpuMemoryManager::simulated("test card", vram_bytes));
         let system = Arc::new(SystemResourceMonitor::new());
         let mut daemon = ServingDaemonModule::with_control(
             gpu,
@@ -6236,7 +6375,7 @@ mod tests {
         daemon.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
 
         let (budget, candidates) = boot_squeeze();
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
 
         let plan = daemon.plan_tx.borrow().clone().expect("a plan");
         assert_eq!(
@@ -6252,19 +6391,48 @@ mod tests {
     // not fit. If this ever also returns the 27B, the test above proves nothing.
     #[tokio::test]
     async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift() {
-        let daemon = daemon_with(Arc::new(FakeServer::healthy(
-            Arc::new(AtomicUsize::new(0)),
-            true,
-        )));
-
+        // A genuinely 8 GB card: 6 GB live is not a squeeze, it is the box. The host
+        // floor (physical × 0.80 = 6.4 GB) is honestly the 4B, so the downshift stands.
+        let daemon = daemon_on_card(
+            Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)),
+            8 * GB,
+        );
         let (budget, candidates) = boot_squeeze();
-        daemon.publish_plan(budget, &candidates);
-
+        daemon.publish_plan(budget, &candidates, &candidates);
         let plan = daemon.plan_tx.borrow().clone().expect("a plan");
         assert_eq!(
             plan.base_model.model_id, "coder-4b",
             "with no incumbent to credit, 6 GB genuinely cannot hold a 19 GB model"
         );
+    }
+
+    // what this catches (2026-09-16): the same 6 GB reading on a 53 GB card is a
+    // TRANSIENT, and with no incumbent to defend (a fresh boot, an unload that
+    // suppressed the 27B) every other guard is disarmed. The host floor is not: the
+    // card's physical capacity serves the 27B, so a plan naming the 4B is refused and
+    // NOTHING is published — the host waits for its budget rather than sinking. This is
+    // the crash-restart demotion of #438 and the unload demotion of #4145, closed at
+    // the layer both share.
+    #[tokio::test]
+    async fn a_transient_six_gigabytes_on_a_big_card_refuses_to_sink_below_the_floor() {
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )));
+        let (budget, candidates) = boot_squeeze();
+        daemon.publish_plan(budget, &candidates, &candidates);
+        assert!(
+            daemon.plan_tx.borrow().is_none(),
+            "a 53 GB card whose floor is the 27B must not publish a 4B plan on a 6 GB reading"
+        );
+        // And when the budget comes back, the 27B is adopted at once.
+        let recovered = HostBudget {
+            usable_bytes: 40 * GB,
+            perf_cores: budget.perf_cores,
+        };
+        daemon.publish_plan(recovered, &candidates, &candidates);
+        let plan = daemon.plan_tx.borrow().clone().expect("a plan once the budget returns");
+        assert_eq!(plan.base_model.model_id, "qwen3-27b");
     }
 
     // what this catches: precedence. Once THIS core has published a decision, its own plan is
@@ -6299,7 +6467,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
 
         let handle = daemon
             .reconcile_to_plan()
@@ -6341,7 +6509,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
 
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -6380,7 +6548,7 @@ mod tests {
         };
         let candidates =
             vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
             let plan = plan.as_ref().expect("plan published");
@@ -6471,11 +6639,11 @@ mod tests {
             );
             // A dip: the plan momentarily affords no more than the lane already has.
             let small = vec![footprint_from_parts("coder-14b", 9 * GB, live_window, true, None).unwrap()];
-            daemon.publish_plan(budget, &small);
+            daemon.publish_plan(budget, &small, &small);
             assert!(daemon.reconcile_to_plan().is_none(), "dip: nothing to gain");
             // …and back up.
             let big = vec![footprint_from_parts("coder-14b", 9 * GB, plan_window, true, None).unwrap()];
-            daemon.publish_plan(budget, &big);
+            daemon.publish_plan(budget, &big, &big);
         }
         assert_eq!(
             serves.load(Ordering::SeqCst),
@@ -6949,7 +7117,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
             let plan = plan.as_ref().expect("plan published");
@@ -7039,7 +7207,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        daemon.publish_plan(budget, &[]); // no candidates → plan None
+        daemon.publish_plan(budget, &[], &[]); // no candidates → plan None
 
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -7064,7 +7232,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
 
         daemon.reconcile_to_plan().expect("spawned").await.unwrap();
         let snap = daemon.subscribe_serving().borrow().clone();
@@ -7101,7 +7269,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
-        daemon.publish_plan(budget, &candidates);
+        daemon.publish_plan(budget, &candidates, &candidates);
         daemon.reconcile_to_plan().expect("spawned").await.unwrap();
 
         let event = bus
@@ -7224,6 +7392,79 @@ mod tests {
                 .contains(&SERVING_CONSUMER_ID.to_string()),
             "serving must register itself as a measured consumer with the authority"
         );
+    }
+
+    // what this catches (2026-09-16, the 5090): a host sinking BELOW what its physical
+    // capacity serves. `serving/unload` suppressed the 27B, so it left `candidates`;
+    // the debounce read that as "incumbent gone from disk" (the case just below) and
+    // adopted the 0.5B on a 32 GB card at a transient 24 GB — 35 silent relaunches
+    // (#4145). The floor is the plan's OWN selection law at the PHYSICAL budget over
+    // everything on disk, suppression ignored: on this card that is the 27B, so a plan
+    // naming anything less is refused. On a card that cannot hold the 27B at all the
+    // floor is honestly the smaller model and the same plan passes.
+    #[test]
+    fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
+        let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
+            model_id: id.into(),
+            weights_bytes: weights_gb * GB,
+            kv_per_token: 100_000,
+            context_window: 32768,
+            capability_rank: rank,
+        };
+        let big = footprint("qwen3.8-27b", 17, 9);
+        let tiny = footprint("qwen-0.5b", 1, 1);
+        let on_disk = vec![big.clone(), tiny.clone()];
+        let demand = ServingDemand::new(1, Some(8192));
+        let plan_for = |m: &ModelFootprint| ServingPlan {
+            base_model: m.clone(),
+            served_context_window: 2048,
+            lanes: 1,
+            grid_overflow_lanes: 0,
+            resident_models: 1,
+            fits_on_gpu: true,
+            rationale: String::new(),
+        };
+        // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
+        // plan that asked was computed over a candidate list the unload had emptied
+        // of it (the floor looks at what is ON DISK, not what is currently permitted).
+        let card_5090 = HostBudget {
+            usable_bytes: (32.0 * GB as f64 * 0.80) as u64,
+            perf_cores: 8,
+        };
+        let floor = host_floor_of(card_5090, &on_disk, demand).expect("something on disk");
+        assert_eq!(floor.model_id, "qwen3.8-27b");
+        assert_eq!(
+            floor_gate(&plan_for(&tiny), Some(&floor)),
+            FloorVerdict::Below {
+                floor: "qwen3.8-27b".into(),
+                wanted: "qwen-0.5b".into()
+            },
+            "the 0.5B on a 5090 is a demotion below physical capacity, whatever the live budget said"
+        );
+        assert_eq!(floor_gate(&plan_for(&big), Some(&floor)), FloorVerdict::AtOrAbove);
+        // A card the 27B cannot fit at all (16 GB × 0.80 < 17 GB weights): the floor is
+        // honestly the small model, and serving it is not a demotion.
+        let small_card = HostBudget {
+            usable_bytes: (16.0 * GB as f64 * 0.80) as u64,
+            perf_cores: 4,
+        };
+        let floor = host_floor_of(small_card, &on_disk, demand).expect("something on disk");
+        assert_eq!(floor.model_id, "qwen-0.5b");
+        assert_eq!(floor_gate(&plan_for(&tiny), Some(&floor)), FloorVerdict::AtOrAbove);
+        // THE PIN IS THE FLOOR'S CEILING (Fable, #4146 review): the M5 pins a lower-ranked
+        // model with a higher-ranked one on disk. The floor is judged over the PINNED
+        // universe, so the pinned model IS the floor and serving it is never a demotion.
+        let ornith = footprint("ornith-35b-a3b", 20, 5);
+        let pinned_universe = vec![ornith.clone()]; // what servable_candidates yields under the pin
+        let floor =
+            host_floor_of(card_5090, &pinned_universe, demand).expect("pinned model on disk");
+        assert_eq!(floor.model_id, "ornith-35b-a3b");
+        assert_eq!(
+            floor_gate(&plan_for(&ornith), Some(&floor)),
+            FloorVerdict::AtOrAbove
+        );
+        // No floor (nothing on disk / no GPU) never refuses.
+        assert_eq!(floor_gate(&plan_for(&tiny), None), FloorVerdict::AtOrAbove);
     }
 
     // what this catches (#368, 2nd occurrence): a ONE-tick budget collapse must

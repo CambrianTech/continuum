@@ -369,6 +369,31 @@ impl ModelFootprint {
     /// window is what makes N-lane serving fit BOTH the resident KV and the concurrent
     /// compute buffers — so the lane ceiling can follow persona DEMAND on a roomy host
     /// and still stay OOM-safe on a small one, killing the flat `MAX_LANES = 2` clamp.
+    /// The largest per-slot window `lanes` lanes of this model fit inside
+    /// `usable_bytes` (after co-consumer headroom, weights, and the per-lane compute
+    /// floor + window-scaled reserve), capped at the model's trained window. The ONE
+    /// arithmetic the plan sizes windows with — and the bound every "keep the bigger
+    /// window" law on the launch path must respect (2026-09-17: a 144k window sized
+    /// against a fictional 54 GB budget was kept by the sticky and wedge-heal laws
+    /// across a relaunch onto a 26 GB one). 0 lanes = 0.
+    pub fn window_within(&self, usable_bytes: u64, lanes: u32) -> u32 {
+        let l = lanes as u64;
+        if l == 0 {
+            return 0;
+        }
+        if self.kv_per_token == 0 {
+            return self.context_window;
+        }
+        let effective = (usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+        let after_weights = effective.saturating_sub(self.weights_bytes);
+        let compute_floor = self.compute_buffer_per_lane();
+        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let per_token_cost = self.kv_per_token.saturating_add(compute_rate).max(1);
+        let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
+        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32)
+            .min(self.context_window)
+    }
+
     pub fn compute_buffer_per_lane(&self) -> u64 {
         // weights / 16 ≈ 854 MiB for the 24B (1.55× the measured 551 MiB — the safety
         // margin), and scales DOWN for smaller models (a 4B ≈ 140 MiB). Floored so a
@@ -642,30 +667,7 @@ pub fn plan_serving(
     // sizes against THIS, so a mid-session spike from a game/browser can't OOM the
     // window we picked (Joel 2026-07-16; the governor #56 grows it back on reclaim).
     let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
-    let after_weights = effective.saturating_sub(model.weights_bytes);
-    let compute_floor = model.compute_buffer_per_lane();
-    let compute_rate = model.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
-    let per_token_cost = model.kv_per_token.saturating_add(compute_rate).max(1);
-
-    // The LARGEST context each of `l` lanes can hold once weights + every lane's compute
-    // buffer are reserved (the full fixpoint — KV *and* the window-scaled prefill graph,
-    // worst case all lanes prefill at once):
-    //   after_weights ≥ l · (kv_per_token·C + compute_floor + compute_rate·C)
-    //   C ≤ (after_weights − l·compute_floor) / (l · (kv_per_token + compute_rate))
-    // Capped at the model's trained ceiling. Over-reserve → smaller window (safe);
-    // under-reserve → OOM (fatal), so `compute_rate` rounds UP. `0` when `l` lanes can't
-    // even hold one token — adding that lane would starve every lane.
-    let window_for = |l: u64| -> u32 {
-        if l == 0 {
-            return 0;
-        }
-        if model.kv_per_token == 0 {
-            return model.context_window;
-        }
-        let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
-        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32)
-            .min(model.context_window)
-    };
+    let window_for = |l: u64| -> u32 { model.window_within(host.usable_bytes, l as u32) };
 
     // THE DAEMON'S PURPOSE, made concrete (#213): serve as many concurrent minds as DEMAND
     // wants — but ONLY while each still gets a window big enough to THINK in. Concurrency is
@@ -2262,6 +2264,33 @@ mod tests {
     // 2026-09-13) instead of what turns actually send — a 25k working set provisioned a
     // 137k slot, starving the lane count and the RAM prompt-cache tier, and the sticky
     // window could never "cover" a demand that large.
+    // what this catches (2026-09-17, the 5090): the ONE window arithmetic, callable from
+    // the launch path. A 144,640 window kept by the sticky / wedge-heal laws must not
+    // survive onto a budget that fits ~57k; the same method the plan sizes with says so.
+    #[test]
+    fn window_within_is_the_plans_own_arithmetic_and_bounds_a_kept_window() {
+        let m = ModelFootprint {
+            model_id: "qwen3.8-27b".into(),
+            weights_bytes: 17 * GB,
+            kv_per_token: 262_144,
+            context_window: 262_144,
+            capability_rank: 9,
+        };
+        let physical = HostBudget {
+            usable_bytes: (33.6 * GB as f64 * 0.80) as u64,
+            perf_cores: 8,
+        };
+        let fits = m.window_within(physical.usable_bytes, 1);
+        assert!(fits > MIN_SERVE_CTX && fits < 144_640, "fits={fits}");
+        // The plan's own choice at that budget IS window_within (the closure delegates).
+        let plan = plan_serving(physical, std::slice::from_ref(&m), ServingDemand::new(1, Some(200_000)))
+            .expect("plan");
+        assert_eq!(plan.served_context_window, fits);
+        assert_eq!(m.window_within(physical.usable_bytes, 0), 0);
+        let kv_free = ModelFootprint { kv_per_token: 0, ..m.clone() };
+        assert_eq!(kv_free.window_within(physical.usable_bytes, 1), kv_free.context_window);
+    }
+
     #[test]
     fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
         let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));

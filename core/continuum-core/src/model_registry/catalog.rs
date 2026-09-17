@@ -1021,27 +1021,6 @@ pub fn models() -> Vec<Model> {
             hf_source: Some("Qwen/Qwen2.5-Coder-1.5B-Instruct"),
             ..ModelSpec::default()
         }),
-        model(ModelSpec {
-            id: "continuum-ai/qwen2.5-coder-0.5b-instruct-GGUF",
-            name: "Qwen2.5-Coder-0.5B-Instruct",
-            provider: "llama-server",
-            arch: Arch::Qwen2,
-            context_window: 32_768,
-            max_output_tokens: 8192,
-            tokens_per_second: 110.0,
-            capabilities: &[
-                Capability::TextGeneration,
-                Capability::Chat,
-                Capability::ToolUse,
-                Capability::Streaming,
-            ],
-            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF"),
-            chat_template: Some(QWEN35_CHAT_TEMPLATE),
-            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
-            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
-            hf_source: Some("Qwen/Qwen2.5-Coder-0.5B-Instruct"),
-            ..ModelSpec::default()
-        }),
         // A GENERAL (non-coder) model for the CATEGORY axis — same size class as a coder, so a
         // chart shows specialist-vs-generalist at equal size (the model-fit thesis, measured).
         model(ModelSpec {
@@ -1136,34 +1115,13 @@ pub fn models() -> Vec<Model> {
             hf_source: Some("Qwen/Qwen2.5-Omni-7B"),
             ..ModelSpec::default()
         }),
-        // LCD model — the substrate's lowest-common-denominator base
-        // per [[lcd-model-qwen25-05b-and-foundry-lora]]. Qwen2.5 0.5B
-        // Instruct Q4_K_M GGUF, ~468 MiB. Runs on any tier including
-        // CPU-only and Intel Mac mac-cpu-only. Substrate slice 13's
-        // boot composition asks for this model_id explicitly via
-        // `PersonaSpawnerModule::plan_for_tier`.
-        model(ModelSpec {
-            id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
-            name: "Qwen2.5-0.5B-Instruct (LCD, in-process)",
-            provider: "llamacpp-local",
-            arch: Arch::Qwen2,
-            context_window: 32_768,
-            max_output_tokens: 4096,
-            tokens_per_second: 60.0,
-            capabilities: &[
-                Capability::TextGeneration,
-                Capability::Chat,
-                Capability::Streaming,
-            ],
-            gguf_hint: Some("huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
-            // Trainable safetensors base for the L3 genome loop. The `-GGUF` repo
-            // above is serving-only; MLX/PEFT fine-tuning + the custodian convert
-            // resolve THIS HF repo (cached, MLX-ready) through the canonical id.
-            hf_source: Some("unsloth/Qwen2.5-0.5B-Instruct"),
-            // gguf_local_path DERIVED from the id under genome/models (see coder-14b above).
-            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
-            ..ModelSpec::default()
-        }),
+        // THE FLOOR IS 1.5B. There is no 0.5B row: nothing below Qwen2.5-Coder-1.5B is
+        // servable on any tier (Joel, 2026-09-16: "0.5 isn't even supposed to be
+        // available to anyone … 1.5b only"). The 0.5B rows were the fallback the 5090's
+        // planner fell to mid-transition and then relaunched 35 times in silence
+        // (#4145); a floor that can be served is a floor citizens end up living on.
+        // The LCD trainable base for the L3 genome loop is now the 1.5B coder's
+        // `hf_source` (Qwen/Qwen2.5-Coder-1.5B-Instruct).
         // The grid's canonical retrieval embedder — Qwen3-Embedding-0.6B
         // (Q8_0 GGUF, ~610 MiB). Served IN-PROCESS by LlamaCppAdapter (GPU
         // forward, last-token pooled). `resolve_recall_embedder` finds this
