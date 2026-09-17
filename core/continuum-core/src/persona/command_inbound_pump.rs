@@ -148,9 +148,9 @@ pub async fn build_grant_authorizer(
 /// `remote_lane.answered` 0 across the Intel node's whole retained history
 /// (Cormac). Cross-grid inference had never been addressable.
 ///
-/// This attaches a handle under the scope's DEFAULT identity — the same
-/// keypair the daemon and the CLI speak as, the one the beacon is stamped
-/// with — and runs the same pump on it. A node's spare inference is a
+/// This attaches a handle under the MACHINE-ACCOUNT home's default identity
+/// — the keypair the singular daemon speaks as, the one the beacon is
+/// stamped with — and runs the same pump on it. A node's spare inference is a
 /// node-level service, answered at the granularity it is offered.
 /// Executes through the substrate's wired executor under the CALLER's
 /// identity (the envelope's), gated by the same grant authorizer the
@@ -165,8 +165,14 @@ pub async fn spawn_node_pump(
     executor: Arc<CommandExecutor>,
     state_home: &Path,
 ) -> Result<Uuid, NodePumpError> {
+    // The MACHINE-ACCOUNT home (`$HOME/.airc`), not the scope's: the singular daemon
+    // lives there and stamps everything it publishes — the beacon included — with
+    // THAT home's identity. Attaching at the continuum root gave a third identity
+    // (`9237e018` on the 5090's first boot of this code, beside the beacon's
+    // `e85a5bb3`) that nothing on the grid addresses.
+    let home = airc_lib::machine_account_home(airc_home);
     let airc = Arc::new(
-        Airc::attach(airc_home.to_path_buf(), daemon_socket)
+        Airc::attach(home.as_path().to_path_buf(), daemon_socket)
             .await
             .map_err(NodePumpError::Attach)?,
     );
