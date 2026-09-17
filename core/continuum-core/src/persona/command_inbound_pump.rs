@@ -18,6 +18,10 @@
 //! `[[personas-are-citizens-airc-is-identity-provider]]`: the
 //! substrate has no airc identity of its own — only personas do. So
 //! the pump lives ON THE PERSONA, attached to its `Arc<Airc>` handle.
+//! (Superseded in one respect on 2026-09-17: the NODE answers too —
+//! see [`spawn_node_pump`] — because capacity is offered and placement
+//! targets at node granularity, and inference addressed to the node's
+//! identity had no handler anywhere.)
 //! Every persona that boots gets one; when peer_b dispatches
 //! `airc://<persona-uuid>/ai/generate`, that persona's pump receives
 //! the envelope, hands it to a `CommandRequestHandler`, the handler
@@ -128,6 +132,93 @@ pub async fn build_grant_authorizer(
         mesh,
         Arc::new(watermark),
     )))
+}
+
+/// THE NODE'S OWN COMMAND PUMP (2026-09-17, cards ad96f5d1 / 7c72c0f0).
+///
+/// Capacity is ADVERTISED per node (`grid.capacity.offer` rides
+/// `airc/realtime-publish`, stamped with the daemon's scope identity),
+/// placement TARGETS per node (`model_override.json` `remote_peer` = that
+/// stamp; the transport addresses `MentionTarget::Peer(stamp)`), and
+/// inference was SERVED per persona only — the pumps below, each under her
+/// own peer id. Three layers each right, no join key: every `ai/generate`
+/// a remote-bound mind sent was refused by every citizen on the host,
+/// correctly, as not-for-me — 27 `airc.command.request_not_for_me` on the
+/// 5090 in one afternoon, `airc.command.accepted` 0, and
+/// `remote_lane.answered` 0 across the Intel node's whole retained history
+/// (Cormac). Cross-grid inference had never been addressable.
+///
+/// This attaches a handle under the scope's DEFAULT identity — the same
+/// keypair the daemon and the CLI speak as, the one the beacon is stamped
+/// with — and runs the same pump on it. A node's spare inference is a
+/// node-level service, answered at the granularity it is offered.
+/// Executes through the substrate's wired executor under the CALLER's
+/// identity (the envelope's), gated by the same grant authorizer the
+/// citizens use — the node lends its lane, never its seat.
+///
+/// Failure is loud and named; a node that cannot answer must not look
+/// like one that can (the beacon still goes out — the seat-side breaker
+/// and fall-home cover the gap, as they did before this existed).
+pub async fn spawn_node_pump(
+    airc_home: &Path,
+    daemon_socket: std::path::PathBuf,
+    executor: Arc<CommandExecutor>,
+    state_home: &Path,
+) -> Result<Uuid, NodePumpError> {
+    let airc = Arc::new(
+        Airc::attach(airc_home.to_path_buf(), daemon_socket)
+            .await
+            .map_err(NodePumpError::Attach)?,
+    );
+    let peer = airc.peer_id().as_uuid();
+    std::fs::create_dir_all(state_home).map_err(|e| NodePumpError::StateHome {
+        path: state_home.to_path_buf(),
+        source: e,
+    })?;
+    let grant_authorizer = build_grant_authorizer(&airc, state_home)
+        .await
+        .map_err(NodePumpError::GrantAuthorizer)?;
+    // The node never changes rooms on its own; the sender lives with the pump
+    // for the life of the process so the loop never reads "runtime dropped".
+    let (membership_tx, membership_rx) = watch::channel(0u64);
+    let pump = PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
+        .await
+        .map_err(NodePumpError::Subscribe)?;
+    NODE_PUMP
+        .set((pump, membership_tx))
+        .map_err(|_| NodePumpError::AlreadyInstalled)?;
+    crate::probe!(
+        class = "node.command_pump.online",
+        peer_id = %peer,
+        "the node answers cross-grid commands under its own identity — the one its capacity beacon is stamped with"
+    );
+    Ok(peer)
+}
+
+/// Whether the node pump TASK is running (liveness is the task, not the handle).
+pub fn node_pump_alive() -> bool {
+    NODE_PUMP.get().is_some_and(|(p, _)| p.is_alive())
+}
+
+static NODE_PUMP: std::sync::OnceLock<(PersonaCommandInboundPump, watch::Sender<u64>)> =
+    std::sync::OnceLock::new();
+
+#[derive(Debug, thiserror::Error)]
+pub enum NodePumpError {
+    #[error("attach the node's own airc identity: {0}")]
+    Attach(#[source] AircError),
+    #[error("node pump state home {path}: {source}")]
+    StateHome {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("node pump grant authorizer: {0}")]
+    GrantAuthorizer(#[source] GrantAuthorizerBuildError),
+    #[error("node pump subscribe: {0}")]
+    Subscribe(#[source] AircError),
+    #[error("the node command pump is already installed")]
+    AlreadyInstalled,
 }
 
 /// One persona's command inbound pump. Holds the JoinHandle so the

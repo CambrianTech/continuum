@@ -3660,7 +3660,33 @@ pub fn start_server(
         rt_handle.spawn(async move {
             crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone())
                 .await;
-            crate::persona::operator_peer::ensure_agent_peer(&root, sock, exec).await;
+            crate::persona::operator_peer::ensure_agent_peer(&root, sock.clone(), exec.clone()).await;
+            // THE NODE ANSWERS (2026-09-17): a command pump under the scope's own
+            // identity — the one the capacity beacon is stamped with and placement
+            // targets — so a remote-bound mind's `ai/generate` reaches a handler
+            // instead of every citizen saying "not for me" while it dies at 600 s.
+            let state_home = crate::commands::benchmark::continuum_home()
+                .map(|h| h.join("state").join("node-responder"));
+            match state_home {
+                Ok(state_home) => {
+                    if let Err(e) = crate::persona::command_inbound_pump::spawn_node_pump(
+                        &root, sock, exec, &state_home,
+                    )
+                    .await
+                    {
+                        crate::probe!(
+                            class = "node.command_pump.boot_failed",
+                            error = %e.to_string(),
+                            "the node cannot answer cross-grid commands this boot — minds seated here by its beacon will time out until it can"
+                        );
+                    }
+                }
+                Err(e) => crate::probe!(
+                    class = "node.command_pump.boot_failed",
+                    error = %e.to_string(),
+                    "no continuum home for the node pump's state — the node cannot answer cross-grid commands this boot"
+                ),
+            }
         });
     }
     // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`
