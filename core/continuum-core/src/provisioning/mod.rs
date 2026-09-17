@@ -29,6 +29,7 @@ pub mod scaling;
 pub use avatar_source::AvatarSource;
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use downloader::{DownloadError, Downloader};
+pub mod rate_limit;
 pub use fetch::{fetch_and_place, FetchError};
 pub use model_catalog::{
     budget_for_mode, parse_quant, plan_family_fetch, plan_model_fetch, provision_model,
