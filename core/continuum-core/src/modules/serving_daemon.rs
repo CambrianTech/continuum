@@ -3255,7 +3255,22 @@ impl ServingDaemonModule {
                 // degraded_reason NULL, while a servable 1.5B sat on disk). So refuse ONLY when
                 // there is an incumbent worth holding.
                 let verdict = floor_gate(&plan, floor.as_ref());
-                let refuse = below_floor_refuses(&verdict, incumbent.is_some());
+                // How long the plan has been below the floor with NOTHING serving. A
+                // teardown transient (one low reading while a predecessor dies) clears
+                // in a tick or two; a real shortfall holds for hours. The two are orders
+                // of magnitude apart in duration, so the grace is not delicate.
+                static BELOW_FLOOR_SINCE: parking_lot::Mutex<Option<std::time::Instant>> =
+                    parking_lot::Mutex::new(None);
+                let below_for = {
+                    let mut since = BELOW_FLOOR_SINCE.lock();
+                    if matches!(verdict, FloorVerdict::Below { .. }) && incumbent.is_none() {
+                        since.get_or_insert_with(std::time::Instant::now).elapsed()
+                    } else {
+                        *since = None;
+                        std::time::Duration::ZERO
+                    }
+                };
+                let refuse = below_floor_refuses(&verdict, incumbent.is_some(), below_for);
                 if let FloorVerdict::Below { floor, wanted } = verdict {
                     if refuse {
                         static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
@@ -3289,10 +3304,11 @@ impl ServingDaemonModule {
                         class = "serving.plan.cold_boot_below_floor_served",
                         floor = floor.as_str(),
                         wanted = wanted.as_str(),
+                        waited_s = below_for.as_secs(),
                         physical_usable_gb =
                             (self.physical_budget().usable_bytes / 1_000_000_000),
-                        "no incumbent to preserve and the plan is below the capability floor \
-                         — serving it rather than booting dark (card 48f5438a)"
+                        "no incumbent to preserve and the plan stayed below the capability \
+                         floor past the grace — serving it rather than staying dark (card 48f5438a)"
                     );
                 }
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
@@ -3566,15 +3582,31 @@ fn floor_gate(plan: &ServingPlan, floor: Option<&ModelFootprint>) -> FloorVerdic
     }
 }
 
-/// Does a below-floor plan get REFUSED? Only when there is an incumbent to preserve.
+/// How long a below-floor plan with NO incumbent is held before it is served. Bounded
+/// from both sides by two incidents a day apart: the 5090's teardown transient (ONE low
+/// reading on a 53 GB card while a predecessor died — latched into an 80-minute 0.5B
+/// plan once) resolves within a tick or two; the Intel tier's real shortfall held the
+/// same floor/wanted pair for 40+ minutes and stayed dark for 90. Anything from ~30 s to
+/// ~5 min satisfies both; the value is not delicate and needs no tuning (Cormac's
+/// sizing, 2026-09-17).
+pub const COLD_BOOT_BELOW_FLOOR_GRACE: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Does a below-floor plan get REFUSED?
 ///
 /// The floor exists so a capable host does not SINK below its capability — but sinking
-/// needs something to sink FROM. On a cold boot (`has_incumbent == false`) there is no
-/// prior plan, so refusing a below-floor plan serves NOTHING and boots the node dark
-/// (card 48f5438a). A viable base the budget can serve beats no base, so a cold boot
-/// serves the plan; only a host that already holds a better incumbent refuses.
-fn below_floor_refuses(verdict: &FloorVerdict, has_incumbent: bool) -> bool {
-    matches!(verdict, FloorVerdict::Below { .. }) && has_incumbent
+/// needs something to sink FROM. With an incumbent: always refuse (a host never sinks
+/// below its floor, unchanged). With none: refuse while the shortfall is younger than
+/// [`COLD_BOOT_BELOW_FLOOR_GRACE`] — a teardown transient must not latch a small model
+/// onto a big card — and past it SERVE, because refusing into "the previous plan stands"
+/// with no previous plan boots the node dark (card 48f5438a: resident 0, active_model
+/// None while a servable 1.5B sat on disk). A viable base beats no base.
+fn below_floor_refuses(
+    verdict: &FloorVerdict,
+    has_incumbent: bool,
+    below_for: std::time::Duration,
+) -> bool {
+    matches!(verdict, FloorVerdict::Below { .. })
+        && (has_incumbent || below_for < COLD_BOOT_BELOW_FLOOR_GRACE)
 }
 
 fn downshift_gate(
@@ -5847,16 +5879,25 @@ mod tests {
             floor: "qwen2.5-coder-4b".to_string(),
             wanted: "qwen2.5-coder-1.5b".to_string(),
         };
-        // Below the floor WITH an incumbent → refuse (a host never sinks below its floor).
-        assert!(below_floor_refuses(&below, true), "with an incumbent, hold the floor");
-        // Below the floor with NO incumbent (cold boot) → SERVE, never refuse into dark.
+        use std::time::Duration;
+        let grace = COLD_BOOT_BELOW_FLOOR_GRACE;
+        // Below the floor WITH an incumbent → refuse, however long (a host never sinks).
+        assert!(below_floor_refuses(&below, true, Duration::ZERO), "with an incumbent, hold the floor");
+        assert!(below_floor_refuses(&below, true, grace * 10), "…for as long as it takes");
+        // Below the floor with NO incumbent: a fresh reading is a teardown transient →
+        // refuse (the 5090's 53 GB card must not latch a 4B on one 6 GB reading)…
         assert!(
-            !below_floor_refuses(&below, false),
-            "a cold boot serves the viable plan rather than booting dark (48f5438a)"
+            below_floor_refuses(&below, false, Duration::ZERO),
+            "a first below-floor reading with nothing serving is a transient, not a shortfall"
+        );
+        // …and a shortfall that has outlived the grace → SERVE, never stay dark.
+        assert!(
+            !below_floor_refuses(&below, false, grace),
+            "a cold boot held below the floor past the grace serves the viable plan (48f5438a)"
         );
         // At or above the floor never refuses, incumbent or not.
-        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, true));
-        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, false));
+        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, true, Duration::ZERO));
+        assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, false, grace));
     }
 
     // what this catches: regression #4146 on the Intel tier — a CPU-placed host
