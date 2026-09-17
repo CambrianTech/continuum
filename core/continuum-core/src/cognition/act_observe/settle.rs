@@ -937,6 +937,7 @@ pub async fn settle_step(
             }
         }
         Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
+            let mut echoed_a_peer = false;
             // Mark the settlement in the volatile buffer: she produced an utterance, so
             // the current concern is answered. This boundary is what lets the next
             // concern legitimately re-issue a tool call identical to one used here
@@ -1099,8 +1100,18 @@ pub async fn settle_step(
                         class = "persona.act.draft_peer_echo",
                         persona = %body.persona_name,
                         room_id = %room_id,
-                        "settled utterance near-duplicates a peer turn from this burst — recorded echo proprioception"
+                        "settled utterance near-duplicates a peer turn from this burst — recorded echo proprioception, NOT posted"
                     );
+                    // The copy does not leave her mouth. Until 2026-09-17 this arm only
+                    // RECORDED the fact and the line still posted (SettleStep::Spoke):
+                    // 0d5c1ffa re-spoke cf6b4df6's whole "I'm not sure what you're
+                    // trying to do here…" verbatim minutes apart in #academy, and Cormac
+                    // counted 64 of these "refusals" in an hour on the Intel tier — none
+                    // of them refused anything. A near-identical copy of a peer's line is
+                    // the contagion carrier ([[a-mindless-seat-is-accounted-for]]); it is
+                    // a gate pass like a framing echo, counted by the mindless receipt,
+                    // and her memory keeps the fact so the next turn is not the same one.
+                    echoed_a_peer = true;
                 }
                 if let Some(file) = claimed_file_without_act(&text, &pre_settle) {
                     body.working_memory.record_fact(&format!(
@@ -1118,7 +1129,16 @@ pub async fn settle_step(
                     );
                 }
             }
-            SettleStep::Spoke(text)
+            if echoed_a_peer {
+                SettleStep::Passed {
+                    reason: Some(format!(
+                        "{}peer_echo:near_identical: the draft near-duplicated a peer's line in this burst",
+                        crate::cognition::workspace::GATE_REFUSAL_PREFIX
+                    )),
+                }
+            } else {
+                SettleStep::Spoke(text)
+            }
         }
         Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
         None => SettleStep::Passed { reason: None },
