@@ -1301,10 +1301,16 @@ impl ServingDaemonModule {
         }
     }
 
-    /// Everything servable on disk regardless of suppression or pin — the universe
-    /// the host floor is judged over (intent to move is never licence to sink).
-    fn on_disk_candidates(&self) -> Vec<ModelFootprint> {
-        servable_candidates(&self.catalog.snapshot(), &HashSet::new(), &None)
+    /// The universe the host floor is judged over: everything servable on disk with
+    /// the PIN applied and suppression ignored. A pin is the operator's word — the
+    /// floor's ceiling, never something the floor overrules (Fable's block on #4146:
+    /// the M5 pins Ornith with a higher-ranked 27B on disk; a pin-blind floor read
+    /// every plan under the pin as `Below` and the host published nothing). An
+    /// unload's suppression is intent to MOVE, not licence to sink — it stays ignored
+    /// (#4145).
+    fn floor_candidates(&self) -> Vec<ModelFootprint> {
+        let pinned = self.pinned.borrow();
+        servable_candidates(&self.catalog.snapshot(), &HashSet::new(), &pinned)
     }
 
     /// A clone of the suppress-set writer, for the `serving/unload` ·
@@ -1458,7 +1464,7 @@ impl ServingDaemonModule {
             return;
         }
         let budget = self.host_budget();
-        self.publish_plan(budget, &self.live_candidates(), &self.on_disk_candidates());
+        self.publish_plan(budget, &self.live_candidates(), &self.floor_candidates());
     }
 
     /// Bring the running `llama-server` in line with the published plan. FAST —
@@ -2996,8 +3002,9 @@ impl ServingDaemonModule {
     /// result, log it. Split from `recompute` so it's testable without the
     /// global registry / live GPU.
     /// `candidates` is what the plan may choose from NOW (suppression and pin applied);
-    /// `on_disk` is everything servable regardless — the universe the host floor is
-    /// judged over. Both are inputs so the floor is never read from an ambient catalog.
+    /// `on_disk` is everything servable with only the pin applied — the universe the
+    /// host floor is judged over. Both are inputs so the floor is never read from an
+    /// ambient catalog.
     fn publish_plan(
         &self,
         budget: HostBudget,
@@ -7232,6 +7239,18 @@ mod tests {
         let floor = host_floor_of(small_card, &on_disk, demand).expect("something on disk");
         assert_eq!(floor.model_id, "qwen-0.5b");
         assert_eq!(floor_gate(&plan_for(&tiny), Some(&floor)), FloorVerdict::AtOrAbove);
+        // THE PIN IS THE FLOOR'S CEILING (Fable, #4146 review): the M5 pins a lower-ranked
+        // model with a higher-ranked one on disk. The floor is judged over the PINNED
+        // universe, so the pinned model IS the floor and serving it is never a demotion.
+        let ornith = footprint("ornith-35b-a3b", 20, 5);
+        let pinned_universe = vec![ornith.clone()]; // what servable_candidates yields under the pin
+        let floor =
+            host_floor_of(card_5090, &pinned_universe, demand).expect("pinned model on disk");
+        assert_eq!(floor.model_id, "ornith-35b-a3b");
+        assert_eq!(
+            floor_gate(&plan_for(&ornith), Some(&floor)),
+            FloorVerdict::AtOrAbove
+        );
         // No floor (nothing on disk / no GPU) never refuses.
         assert_eq!(floor_gate(&plan_for(&tiny), None), FloorVerdict::AtOrAbove);
     }
