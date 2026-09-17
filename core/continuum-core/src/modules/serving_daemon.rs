@@ -1370,12 +1370,22 @@ impl ServingDaemonModule {
     /// is a function of the PLACEMENT and not of the device that happens to be
     /// present.
     fn physical_budget(&self) -> HostBudget {
+        // The SAME drive mode the live plan sizes with: a Ludicrous hold (a benchmark's
+        // exam) plans at Performance — the whole GPU — and a bound fixed at Comfort
+        // would then cap the kept window below what the plan legitimately sized
+        // (2026-09-17: 32 GB × 0.80 = 27 GB bound vs a Performance plan). Physical
+        // capacity, current mode; never the live free reading.
+        let mode = if serving_ludicrous_active() {
+            crate::provisioning::model_catalog::PowerMode::Performance
+        } else {
+            crate::provisioning::model_catalog::PowerMode::Comfort
+        };
         HostBudget {
             usable_bytes: physical_usable_bytes(
                 crate::inference::llama_server::main_lane_placement(),
                 self.gpu.total_vram_bytes(),
                 self.system.memory().total_bytes,
-                crate::provisioning::model_catalog::PowerMode::Comfort.serving_fraction(),
+                mode.serving_fraction(),
             ),
             perf_cores: perf_cores(),
         }
