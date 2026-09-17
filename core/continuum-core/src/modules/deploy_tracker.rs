@@ -54,7 +54,7 @@ pub fn parse_check_runs(body: &str) -> Checks {
         r.get("conclusion")
             .and_then(|c| c.as_str())
             .map(|c| hard_fail.contains(&c))
-            .unwrap_or(false)
+            .unwrap_or(false) // unwrap_or: a run with no conclusion is not a hard-fail
     }) {
         return Checks::Red;
     }
@@ -91,7 +91,7 @@ impl GitGhDeploySource {
             })
             .filter(|p| p.join(".git").exists())?;
         let branch = crate::config_env::read("CONTINUUM_TRACK_BRANCH")
-            .unwrap_or_else(|| "canary".to_string());
+            .unwrap_or_else(|| "canary".to_string()); // unwrap_or_else: no branch configured = the canary default
         let repo = origin_repo(&repo_dir)?;
         Some(Self { repo_dir, repo, branch })
     }
@@ -110,7 +110,7 @@ fn origin_repo(repo_dir: &std::path::Path) -> Option<String> {
     let after_host = url
         .rsplit_once("github.com")
         .map(|(_, r)| r.trim_start_matches([':', '/']))
-        .unwrap_or(url);
+        .unwrap_or(url); // unwrap_or: a non-github URL passes through unchanged
     Some(after_host.trim_end_matches(".git").trim_matches('/').to_string())
 }
 
@@ -134,7 +134,7 @@ impl DeploySource for GitGhDeploySource {
             // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
             let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
             let gh_out = probe("gh", &["api", &path], GH_TIMEOUT);
-            let checks = gh_out.stdout_if_ok().map(parse_check_runs).unwrap_or(Checks::Unknown);
+            let checks = gh_out.stdout_if_ok().map(parse_check_runs).unwrap_or(Checks::Unknown); // unwrap_or: gh unreachable = Unknown = wait, never a deploy on a guess
             Ok(Some((tip, checks)))
         })
         .await
@@ -156,7 +156,7 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
     Some(Hold { reason: text.trim().chars().take(200).collect(), created_ms, ttl_ms: None })
 }
 
@@ -182,7 +182,7 @@ impl DeployTrackerModule {
     pub fn new() -> Self {
         let source = GitGhDeploySource::from_env();
         let repo_dir = source.as_ref().map(|s| s.repo_dir.clone());
-        let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from("."));
+        let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         Self {
             source: source.map(|s| Box::new(s) as Box<dyn DeploySource>),
             root,
@@ -194,7 +194,7 @@ impl DeployTrackerModule {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: a clock before 1970 = 0; the decision degrades safely
     }
 
     fn tree_dirty(&self) -> bool {
@@ -206,7 +206,7 @@ impl DeployTrackerModule {
             &["-C", &dir, "status", "--porcelain"],
             GIT_TIMEOUT,
         );
-        out.stdout_if_ok().map(|s| !s.trim().is_empty()).unwrap_or(false)
+        out.stdout_if_ok().map(|s| !s.trim().is_empty()).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
     }
 }
 
