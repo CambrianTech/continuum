@@ -1676,6 +1676,72 @@ impl ServingDaemonModule {
         }
     }
 
+    /// Once a minute, read the live lane's anonymous footprint off its process and feed
+    /// the per-token cost back to the plan (`inference::lane_footprint`). One probe per
+    /// sample carries predicted vs measured so the plan's arithmetic is checked against
+    /// the process it launched, every minute, on every box.
+    fn sample_lane_footprint(&self) {
+        let now = crate::persona::trace::now_ms();
+        if !crate::inference::lane_footprint::sample_due(now) {
+            return;
+        }
+        let live = self.serving_tx.borrow().clone();
+        if !live.ready || live.lanes == 0 || live.served_context_window == 0 {
+            return;
+        }
+        let Some(active) = live.active_model.clone() else {
+            return;
+        };
+        let Some(pid) = crate::inference::lane_pidfile::read() else {
+            return;
+        };
+        let Some(model) = (self.model_resolver)(&active) else {
+            return;
+        };
+        let Some(fp) = footprint_for(&model) else {
+            return;
+        };
+        let outcome = match crate::inference::lane_footprint::anon_footprint_of(pid) {
+            Some(anon) => {
+                let predicted = fp
+                    .kv_at(live.served_context_window)
+                    .saturating_mul(live.lanes as u64)
+                    .saturating_add(fp.prefill_compute_reserve(live.served_context_window, live.lanes));
+                let measured = crate::inference::lane_footprint::observe(
+                    &active,
+                    live.lanes,
+                    live.served_context_window,
+                    anon,
+                    fp.compute_buffer_per_lane(),
+                );
+                crate::probe!(
+                    class = "serving.footprint.measured",
+                    model = %active,
+                    pid = pid as u64,
+                    lanes = live.lanes as u64,
+                    window = live.served_context_window as u64,
+                    anon_bytes = anon,
+                    predicted_beyond_weights = predicted,
+                    ratio = anon as f64 / predicted.max(1) as f64,
+                    per_token_estimate = fp.kv_per_token,
+                    per_token_measured = measured.unwrap_or(0),
+                    "the lane's anonymous footprint, read off its process, against the plan's arithmetic"
+                );
+                "read"
+            }
+            None => "could_not_look",
+        };
+        if outcome != "read" {
+            crate::probe!(
+                class = "serving.footprint.measured",
+                model = %active,
+                pid = pid as u64,
+                outcome,
+                "the lane's footprint could not be read off its process"
+            );
+        }
+    }
+
     fn publish_moe_host_cache_lease(&self) {
         let live = self.serving_tx.borrow().clone();
         if !live.ready || live.served_context_window == 0 {
@@ -4355,7 +4421,36 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
             fp.kv_per_token = rate;
         }
     }
-    Some(apply_kv_quantization(fp))
+    Some(apply_measured_cost(apply_kv_quantization(fp)))
+}
+
+/// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
+/// off the serving process (`inference::lane_footprint`), says a served token costs
+/// more than the header + quantization arithmetic claims, the plan's per-token cost
+/// rises to the measurement. Measured 2026-09-17 on the M5: arithmetic 10 KB/token,
+/// process 36 KB/token (compute buffers at ubatch 2048 over a 412k total context, the
+/// hybrid's recurrent state and checkpoints) — the plan fitted 8 × 51,712 into 30 GB,
+/// the server took 47 GB, the box swapped and every stream ran at 7.9 t/s. The plan's
+/// per-token cost is `kv + kv / PREFILL_COMPUTE_KV_DIVISOR`, so kv is set to make that
+/// sum the measurement; a smaller measurement never lowers it (a footprint is a lower
+/// bound of the need).
+fn apply_measured_cost(mut fp: ModelFootprint) -> ModelFootprint {
+    if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
+        fp.kv_per_token = kv_per_token_from_measured(fp.kv_per_token, measured);
+    }
+    fp
+}
+
+/// Pure half of [`apply_measured_cost`]: the kv rate whose plan cost (`kv + kv / D`)
+/// equals `measured`, or the estimate when the measurement does not correct it.
+fn kv_per_token_from_measured(estimate: u64, measured: u64) -> u64 {
+    use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
+    let estimated_cost = estimate.saturating_add(estimate / D);
+    if !crate::inference::lane_footprint::corrects(estimated_cost, measured) {
+        return estimate;
+    }
+    // kv × (D + 1) / D = measured  →  kv = measured × D / (D + 1)
+    measured.saturating_mul(D) / (D + 1)
 }
 
 /// Memoized `gguf_keys::kv_bytes_per_token_f16` per artifact path. `None` is
@@ -4925,6 +5020,7 @@ impl ServiceModule for ServingDaemonModule {
         // LIVE working set (KV grows as slots fill) and publish it through the sticky
         // band to the per-port plan file — the actuator her ResidencyCache polls.
         self.publish_moe_host_cache_lease();
+        self.sample_lane_footprint();
         Ok(())
     }
 
@@ -5247,7 +5343,20 @@ mod tests {
     // computed a negative gain and never relaunched — five residents thrashed
     // two slots at hit_rate 0.0 until an operator cycled the server by hand.
     // The evidence currency is window × lanes.
+        // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): a fresh measured
+    // per-token cost above the arithmetic raises the plan's kv rate so that kv + kv/D
+    // equals the measurement; agreement or a smaller reading leaves the estimate alone.
     #[test]
+    fn a_measured_per_token_cost_corrects_the_plans_rate_upward_only() {
+        use super::kv_per_token_from_measured;
+        use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
+        let kv = kv_per_token_from_measured(10_240, 36_000);
+        assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
+        assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
+        assert_eq!(kv_per_token_from_measured(36_000, 10_240), 36_000, "a smaller reading never lowers it");
+    }
+
+#[test]
     fn rehome_evidence_counts_lanes_not_just_per_slot_window() {
         use super::rehome_gain_evidence;
         // The live incident shape: more lanes, smaller per-slot, bigger total.
