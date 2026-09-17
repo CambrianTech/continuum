@@ -214,6 +214,16 @@ async fn derive_submission(
     })
 }
 
+/// The evidence reference of a reviewer's own words: SHA-256 over the text, its length.
+fn artifact_of_text(text: &str) -> WorkArtifactReference {
+    use sha2::Digest;
+    WorkArtifactReference {
+        hash: format!("{:x}", sha2::Sha256::digest(text.as_bytes())),
+        size_bytes: text.len() as u64,
+        mime: Some("text/plain".to_string()),
+    }
+}
+
 /// The artifact reference of a patch: SHA-256 over its bytes, its length, `text/x-patch`.
 fn artifact_of_patch(patch: &str) -> WorkArtifactReference {
     use sha2::Digest;
@@ -447,29 +457,45 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
-    /// Submission and review-card room.
+    /// The room the review card lives in (id or name).
     pub room: String,
-    /// Chosen UUID; retry identical judgement with this id.
-    #[ts(type = "string")]
-    pub review_id: Uuid,
-    /// Submission's parent work-card UUID.
-    #[ts(type = "string")]
-    pub card_id: Uuid,
-    /// Accepted submission UUID.
-    #[ts(type = "string")]
-    pub submission_id: Uuid,
-    /// Must match the submitted artifact.
-    pub artifact: WorkArtifactReference,
-    /// Linked review-card UUID.
+    // The REVIEW card she holds. The parent card, its latest submission and artifact,
+    // and her claim on the review card are read off the board from it when the fields
+    // below are omitted — a reviewer never had a way to know a submission id or an
+    // artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
+    /// The review card you hold.
     #[ts(type = "string")]
     pub review_card_id: Uuid,
-    /// Your claim UUID on the review card.
-    #[ts(type = "string")]
-    pub review_claim_id: Uuid,
-    /// Your judgement, not an objective grade.
+    /// Your verdict.
     pub outcome: ReviewOutcome,
-    /// Supporting evidence content identity.
-    pub evidence: WorkArtifactReference,
+    /// What you ran and saw; becomes the review's evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub evidence_text: Option<String>,
+    /// Minted when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub review_id: Option<Uuid>,
+    /// The card under review; read from the review card when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub card_id: Option<Uuid>,
+    /// The submission reviewed; the latest when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub submission_id: Option<Uuid>,
+    /// Its artifact; read off the board when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub artifact: Option<WorkArtifactReference>,
+    /// Your claim on the review card; read off the board when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub review_claim_id: Option<Uuid>,
+    /// A typed evidence reference instead of evidence_text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub evidence: Option<WorkArtifactReference>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -516,18 +542,97 @@ impl ActionCommand for WorkReview {
         let runtime = persona_runtime(&self.registry, ctx, "work/review")?;
         let airc = runtime.airc();
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        // Everything a reviewer cannot know by hand is read off the board from the
+        // review card she holds: the parent, her claim, the parent's latest submission
+        // and its artifact. Typed values are honoured; placeholders were already
+        // refused at the executor seam.
+        let board = airc
+            .work_board_in(&room)
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        let review_card = board
+            .card(WorkCardId::from_uuid(p.review_card_id))
+            .ok_or_else(|| CommandError::NotFound(format!("review card {} is absent from this room", p.review_card_id)))?;
+        let card_id = match p.card_id {
+            Some(c) => WorkCardId::from_uuid(c),
+            None => review_card.reviews.ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "card {} is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band",
+                    p.review_card_id
+                ))
+            })?,
+        };
+        let review_claim_id = match p.review_claim_id {
+            Some(c) => ClaimId::from_uuid(c),
+            None => match (review_card.owner, review_card.claim_id) {
+                (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
+                (Some(owner), _) => {
+                    return Err(CommandError::Invalid(format!(
+                        "review card {} is held by {owner}, not by you — only its holder reviews",
+                        p.review_card_id
+                    )))
+                }
+                _ => {
+                    return Err(CommandError::Invalid(format!(
+                        "review card {} is not claimed — claim it (work/claim) before reviewing",
+                        p.review_card_id
+                    )))
+                }
+            },
+        };
+        let parent = board
+            .card(card_id)
+            .ok_or_else(|| CommandError::NotFound(format!("card {card_id} is absent from this room")))?;
+        let submission = match p.submission_id {
+            Some(id) => parent
+                .submissions
+                .iter()
+                .find(|s| s.submission_id.as_uuid() == id)
+                .ok_or_else(|| CommandError::Invalid(format!("card {card_id} has no submission {id}")))?,
+            None => parent
+                .submissions
+                .iter()
+                .max_by_key(|s| s.submitted_at_ms)
+                .ok_or_else(|| {
+                    CommandError::Invalid(format!(
+                        "card {card_id} has no submission to review yet — the holder submits first (work/submit)"
+                    ))
+                })?,
+        };
+        let artifact = match p.artifact.clone() {
+            Some(a) => a.into_artifact()?,
+            None => submission.artifact.clone(),
+        };
+        let evidence = match (p.evidence.clone(), p.evidence_text.as_deref()) {
+            (Some(e), _) => e.into_artifact()?,
+            (None, Some(text)) if !text.trim().is_empty() => artifact_of_text(text).into_artifact()?,
+            _ => {
+                return Err(CommandError::Invalid(
+                    "a review carries evidence: pass evidence_text (what you ran and saw) — a verdict without evidence is not a verdict".into(),
+                ))
+            }
+        };
+        let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
+        crate::probe!(
+            class = "work.review.shaped",
+            review_card = %p.review_card_id,
+            card = %card_id,
+            submission = %submission.submission_id,
+            derived = p.submission_id.is_none() || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
+            "the review as it goes to the board"
+        );
         let review = airc
             .review_work_submission_in(
                 &room,
                 airc_lib::ReviewWorkSubmission {
-                    review_id: airc_work::WorkReviewId::from_uuid(p.review_id),
-                    card_id: WorkCardId::from_uuid(p.card_id),
-                    submission_id: airc_work::SubmissionId::from_uuid(p.submission_id),
-                    artifact: p.artifact.into_artifact()?,
+                    review_id: airc_work::WorkReviewId::from_uuid(review_id),
+                    card_id,
+                    submission_id: submission.submission_id,
+                    artifact,
                     review_card_id: WorkCardId::from_uuid(p.review_card_id),
-                    review_claim_id: ClaimId::from_uuid(p.review_claim_id),
+                    review_claim_id,
                     outcome: p.outcome.into(),
-                    evidence: p.evidence.into_artifact()?,
+                    evidence,
                 },
             )
             .await

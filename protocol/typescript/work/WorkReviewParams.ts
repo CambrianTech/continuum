@@ -4,38 +4,42 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkReviewParams = { 
 /**
- * Submission and review-card room.
+ * The room the review card lives in (id or name).
  */
 room: string, 
 /**
- * Chosen UUID; retry identical judgement with this id.
- */
-review_id: string, 
-/**
- * Submission's parent work-card UUID.
- */
-card_id: string, 
-/**
- * Accepted submission UUID.
- */
-submission_id: string, 
-/**
- * Must match the submitted artifact.
- */
-artifact: WorkArtifactReference, 
-/**
- * Linked review-card UUID.
+ * The review card you hold.
  */
 review_card_id: string, 
 /**
- * Your claim UUID on the review card.
- */
-review_claim_id: string, 
-/**
- * Your judgement, not an objective grade.
+ * Your verdict.
  */
 outcome: ReviewOutcome, 
 /**
- * Supporting evidence content identity.
+ * What you ran and saw; becomes the review's evidence.
  */
-evidence: WorkArtifactReference, };
+evidence_text?: string, 
+/**
+ * Minted when omitted.
+ */
+review_id?: string, 
+/**
+ * The card under review; read from the review card when omitted.
+ */
+card_id?: string, 
+/**
+ * The submission reviewed; the latest when omitted.
+ */
+submission_id?: string, 
+/**
+ * Its artifact; read off the board when omitted.
+ */
+artifact?: WorkArtifactReference, 
+/**
+ * Your claim on the review card; read off the board when omitted.
+ */
+review_claim_id?: string, 
+/**
+ * A typed evidence reference instead of evidence_text.
+ */
+evidence?: WorkArtifactReference, };
