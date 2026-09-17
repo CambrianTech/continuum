@@ -2,6 +2,11 @@
 
 export type WorkSimilarParams = { 
 /**
+ * Which room's board to read — a room name (`academy`) or channel id you are
+ * subscribed to. Default: the room you are standing in. Boards are PER ROOM.
+ */
+room?: string, 
+/**
  * A card to find the likes of (short id or UUID). Its own text is the query and
  * it is excluded from the hits. Give this OR `text`.
  */
