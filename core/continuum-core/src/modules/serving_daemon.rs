@@ -2380,7 +2380,37 @@ impl ServingDaemonModule {
                  lane's window instead of a teardown-dip plan (#363)",
             );
         }
-        let served_ctx = floored;
+        // A KEPT WINDOW MUST STILL FIT. Both laws above keep the BIGGER window on the
+        // assumption it was legitimately sized. On 2026-09-17 it was not: a 144,640
+        // window sized against a fictional 54 GB budget (the ledger's uncapped add-back)
+        // was kept by sticky, then by wedge-heal, across every relaunch onto a 26 GB
+        // budget — 31.9 of 32.6 GB VRAM, 44 s prefills, the cache demand it implied.
+        // Bound the kept window by what the PHYSICAL budget fits at this lane count
+        // (physical, not live: the live budget is exactly the teardown transient the
+        // wedge-heal law exists to see through). The plan's own window is always
+        // within it, so this touches nothing but a kept fiction.
+        let served_ctx = match self
+            .catalog
+            .snapshot()
+            .get(&desired)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
+        {
+            Some(fits) if floored > fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX) => {
+                let bound = fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+                crate::probe!(
+                    class = "serving.reconcile.window",
+                    decision = "kept-window-exceeds-physical-fit",
+                    kept_window = floored,
+                    bound_to = bound,
+                    plan_lanes = lanes,
+                    physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                    "a kept (sticky / wedge-heal) window does not fit this host's physical \\n                     budget at this lane count — bounded; a kept window is never a licence \\n                     to exceed the card",
+                );
+                bound
+            }
+            _ => floored,
+        };
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
