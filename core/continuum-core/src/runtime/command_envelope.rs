@@ -191,9 +191,58 @@ pub struct CommandRequest<P> {
     /// here so the ENVELOPE consumes it and a command's own `requestId: String` never
     /// sees an integer (measured 2026-09-06: the airc hop refused every well-formed
     /// peer-addressed generate with "invalid type: integer `1`, expected a string").
-    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none", default)]
+    ///
+    /// A SPONGE, not a value: the only construction site sets it to `None` and NOTHING
+    /// reads it. Its whole job is to claim the `requestId` key so a stray integer cannot
+    /// land in a command's `requestId: String`.
+    ///
+    /// Which is why it must not be strict. `params` is `#[serde(flatten)]`, so the
+    /// envelope and every command share ONE key namespace, and this key has now broken
+    /// the SAME peer-addressed generate path twice in opposite directions: the 2026-09-06
+    /// incident above (envelope integer → command String), and on 2026-09-17 its mirror,
+    /// when the Intel tier's cross-grid turns began arriving for the first time and five
+    /// of six died at 0 ms on
+    ///     `CommandRequest deserialization failed: invalid type: string "05acabe7-…", expected u64`
+    /// — `TextGenerationRequest::request_id` is an `Option<String>` (a UUID), and a strict
+    /// sponge rejected the whole envelope rather than the field it could not use.
+    ///
+    /// So: absorb EITHER shape and keep only what this field means. An integer is the wire
+    /// counter and is kept; a string belongs to the command, is not a counter, and is
+    /// dropped here rather than failing a well-formed request. Dropping it costs the
+    /// remote hop its prompt-capture correlation id and nothing else — the alternative
+    /// cost the hop every turn.
+    ///
+    /// This is a floor under a shared namespace, NOT a repair of it. The real fix is to
+    /// stop flattening params into the envelope (card f2a70725, which also records the
+    /// third instance: `handle` in #3924). Until that lands, any param named like an
+    /// envelope field is still silently claimed — this one just fails soft now.
+    #[serde(
+        rename = "requestId",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "absorb_wire_request_id"
+    )]
     #[ts(optional, type = "number")]
     pub request_id: Option<u64>,
+}
+
+/// Deserialize the envelope's `requestId` sponge permissively — see
+/// [`CommandRequest::request_id`] for why a strict one takes the whole envelope down.
+///
+/// Keeps an integer (the IPC framing's counter, the only thing this field means) and
+/// discards a string (a command's own id, which this field cannot represent and no one
+/// reads off the envelope anyway). Never errors on either shape.
+fn absorb_wire_request_id<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Take the key in whatever shape it arrives and keep only what this field MEANS.
+    // `as_u64` is the whole rule: an unsigned integer is the wire counter and survives;
+    // a string (a command's own id), or anything else, is not a counter and becomes
+    // `None` rather than an error. Expressed over `Value` instead of an untagged enum
+    // because the discarded arm would carry a payload nothing reads — a `dead_code`
+    // warning, and the baseline gate is right to refuse it.
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|v| v.as_u64()))
 }
 
 /// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
@@ -684,6 +733,65 @@ mod tests {
     // made it non-empty, that branch was skipped, and they were told to fix a field the
     // KERNEL had added. Unremovable, so they resent the identical call and got the identical
     // message. Six-plus times across two citizens in minutes.
+    // what this catches (card f2a70725, 2026-09-17): `params` is `#[serde(flatten)]`, so the
+    // envelope and every command share ONE key namespace, and `requestId` is claimed by BOTH
+    // this envelope (u64, the IPC counter) and `TextGenerationRequest` (String, a UUID). A
+    // STRICT sponge rejected the entire envelope — five of six cross-grid generates died at
+    // 0 ms on `invalid type: string "05acabe7-…", expected u64` the moment the Intel tier's
+    // turns started arriving at all (#4175). The sponge must absorb either shape: keep the
+    // integer it means, drop the string it cannot represent, never fail the request.
+    // Against the pre-fix strict field the first assertion errors, which is the regression.
+    #[test]
+    fn the_request_id_sponge_absorbs_a_command_owned_string_without_failing_the_envelope() {
+        #[derive(Debug, serde::Deserialize, PartialEq)]
+        #[serde(rename_all = "camelCase")]
+        struct GenerateParams {
+            model: String,
+            // The command's OWN requestId — a UUID, exactly like TextGenerationRequest's.
+            #[serde(default)]
+            request_id: Option<String>,
+        }
+
+        // A peer-addressed generate as the airc hop actually sends it.
+        let wire = serde_json::json!({
+            "model": "ggml-org/Qwen3.8-27B-GGUF",
+            "requestId": "05acabe7-1f4e-4a3c-9d77-6b1c0e2f8a55",
+        });
+        let parsed: CommandRequest<GenerateParams> = serde_json::from_value(wire)
+            .expect("a command-owned string requestId must not fail the whole envelope");
+        assert_eq!(parsed.params.model, "ggml-org/Qwen3.8-27B-GGUF");
+        assert_eq!(
+            parsed.request_id, None,
+            "a string is not the wire counter — the sponge drops it rather than inventing one"
+        );
+
+        // And the 2026-09-06 behaviour it was created for is UNCHANGED: an integer from the
+        // IPC framing is still consumed by the envelope, so it can never reach a command's
+        // `requestId: String`.
+        let framed = serde_json::json!({ "model": "m", "requestId": 7 });
+        let parsed: CommandRequest<GenerateParams> =
+            serde_json::from_value(framed).expect("the IPC framing's integer still deserializes");
+        assert_eq!(parsed.request_id, Some(7), "the integer IS the wire counter");
+        assert_eq!(
+            parsed.params.request_id, None,
+            "and it must NOT leak into the command's own String field (the 2026-09-06 incident)"
+        );
+
+        // A sponge that can still be made to fail is not a sponge. Any shape it cannot
+        // represent must become None, never an error — the envelope must not die over a
+        // field no one reads, whatever a future caller puts there.
+        for odd in [
+            serde_json::json!({ "model": "m", "requestId": null }),
+            serde_json::json!({ "model": "m", "requestId": -1 }),
+            serde_json::json!({ "model": "m", "requestId": {"nested": true} }),
+            serde_json::json!({ "model": "m" }),
+        ] {
+            let parsed: CommandRequest<GenerateParams> = serde_json::from_value(odd.clone())
+                .unwrap_or_else(|e| panic!("the sponge must never fail the envelope: {odd} → {e}"));
+            assert_eq!(parsed.request_id, None, "only an unsigned integer is a counter");
+        }
+    }
+
     #[test]
     fn every_envelope_field_is_filtered_from_the_you_sent_list() {
         // Every wire name on `CommandRequest` that is NOT the caller's params.
