@@ -1123,6 +1123,12 @@ pub fn start_server(
     // system:launch-mode:changed so a running UI can attach/tear down its overlay.
     runtime.register(Arc::new(LaunchModeModule::new()));
 
+    // The cadence-deploy DECISION, in Rust (replacing the Unix-only track-canary.sh shell
+    // jack): watches the tracked branch tip and records a DeployRequest for the supervisor
+    // when a green tip differs from the running build. Never reboots. Degrades safely with
+    // no checkout/gh. (card ee76c0df)
+    runtime.register(Arc::new(crate::modules::deploy_tracker::DeployTrackerModule::new()));
+
     // AircBridgeDirectiveModule — recognizes inbound `!continuum` directives on
     // the airc bus (chat:posted) OFF the transport hot path, emitting an
     // observable airc:bridge:directive event. Passive subscriber, NO execution
