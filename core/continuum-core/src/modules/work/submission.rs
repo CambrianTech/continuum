@@ -61,27 +61,167 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// Activity room; does not switch focus.
+    /// The room the card lives in (id or name).
     pub room: String,
-    /// Chosen UUID; retry identical content with this id.
-    #[ts(type = "string")]
-    pub submission_id: Uuid,
-    /// Work card UUID in this room.
+    // The card you hold. Everything below is DERIVED from it and your checkout when
+    // omitted — the citizen's world has no verb that mints an artifact hash, and
+    // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
+    // (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
+    /// The card you hold.
     #[ts(type = "string")]
     pub card_id: Uuid,
-    /// Your claim UUID on this card.
-    #[ts(type = "string")]
-    pub claim_id: Uuid,
-    /// Task/instance identity.
-    pub instance: String,
-    /// Full Git base object id.
-    pub base_sha: String,
-    /// Candidate content identity.
-    pub artifact: WorkArtifactReference,
-    /// Own staged revision UUID for reviewed credit; absent means no credit binding.
+    /// Minted when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub submission_id: Option<Uuid>,
+    /// Your claim on the card; read off the board when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub claim_id: Option<Uuid>,
+    /// Benchmark instance name; read from your checkout when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instance: Option<String>,
+    /// The commit your patch is against; read from your checkout when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base_sha: Option<String>,
+    /// SHA-256 + size of your patch; computed when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub artifact: Option<WorkArtifactReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
+}
+
+/// What a submit is made of when the citizen only names her card: her checkout for
+/// it, the base her patch stands on, and the patch's hash — read from her hands, never
+/// typed.
+struct DerivedSubmission {
+    instance: String,
+    base_sha: String,
+    artifact: WorkArtifactReference,
+}
+
+/// The all-zero hash the AI manual's example showed and citizens copied verbatim, or a
+/// manual blank (`<string>`) read back as a value.
+fn is_placeholder_hash(h: &str) -> bool {
+    let t = h.trim();
+    t.is_empty() || t.chars().all(|c| c == '0') || t.starts_with('<')
+}
+
+/// The checkout her hands are rooted at for THIS card — the one place the patch can be
+/// read from. A submit for a card she is not rooted at is refused with the verb that
+/// roots her, never guessed from a workspace listing.
+fn rooted_checkout_for(persona: Uuid, card_id: Uuid) -> Result<std::path::PathBuf, CommandError> {
+    match (
+        crate::cognition::persona_workspace::acting_card_of(persona),
+        crate::cognition::persona_workspace::acting_root_of(persona),
+    ) {
+        (Some(card), Some(root)) if card == card_id => Ok(root),
+        (Some(card), _) => Err(CommandError::Invalid(format!(
+            "your hands are rooted at card {card}, not {card_id} — root at the card you are \
+             submitting (work/get {card_id}) and submit again"
+        ))),
+        _ => Err(CommandError::Invalid(format!(
+            "your hands are not rooted at a card's checkout — root at {card_id} first \
+             (work/get {card_id}); work/submit reads the patch from that checkout"
+        ))),
+    }
+}
+
+/// `workspace/swe/<instance>` names a benchmark checkout; anything else is a repo
+/// worktree and the card id is its instance name.
+fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) -> Option<String> {
+    let parts: Vec<&str> = checkout.iter().filter_map(|c| c.to_str()).collect();
+    parts
+        .windows(3)
+        .find(|w| w[0] == "workspace" && w[1] == "swe")
+        .map(|w| w[2].to_string())
+        .or_else(|| Some(card_id.to_string()))
+}
+
+fn git_stdout(checkout: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(checkout)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The commit her patch stands on. A benchmark checkout: the instance's base commit
+/// from the dataset row. A repo worktree: the merge-base with the remote's default
+/// branch (`origin/HEAD`), else the upstream's. Absent = a named refusal, never HEAD
+/// (a diff against HEAD would hide her own commits — the sympy-12481 lesson in
+/// `workspace_candidate_diff_from`).
+async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
+    if is_swe {
+        return crate::commands::benchmark::swe_base_commit_for(instance)
+            .await
+            .ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "no dataset row names instance {instance}, so its base commit is unknown — pass base_sha"
+                ))
+            });
+    }
+    for upstream in ["origin/HEAD", "@{upstream}"] {
+        if let Some(base) = git_stdout(checkout, &["merge-base", "HEAD", upstream]) {
+            return Ok(base);
+        }
+    }
+    Err(CommandError::Invalid(
+        "the worktree has no default-branch merge-base to diff against — pass base_sha".into(),
+    ))
+}
+
+/// Read the submission off her checkout: instance, base, and the patch's hash + size.
+/// Parts she supplied herself are kept; the artifact is always recomputed here, so a
+/// placeholder can never reach the board.
+async fn derive_submission(
+    persona: Uuid,
+    card_id: Uuid,
+    given_instance: Option<String>,
+    given_base: Option<String>,
+) -> Result<DerivedSubmission, CommandError> {
+    let checkout = rooted_checkout_for(persona, card_id)?;
+    let is_swe = checkout.iter().any(|c| c == "swe");
+    let instance = given_instance
+        .or_else(|| instance_of_checkout(&checkout, card_id))
+        .unwrap_or_else(|| card_id.to_string()); // unwrap_or: instance_of_checkout always yields the card id as its floor
+    let base_sha = match given_base {
+        Some(b) => b,
+        None => base_sha_of(&checkout, &instance, is_swe).await?,
+    };
+    let ws = checkout.to_string_lossy().into_owned();
+    let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
+    if patch.trim().is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "nothing to submit: {} has no changes since {} (substrate paths excluded) — \
+             a submit publishes a patch, not an intention",
+            checkout.display(),
+            &base_sha[..base_sha.len().min(9)]
+        )));
+    }
+    Ok(DerivedSubmission {
+        instance,
+        base_sha,
+        artifact: artifact_of_patch(&patch),
+    })
+}
+
+/// The artifact reference of a patch: SHA-256 over its bytes, its length, `text/x-patch`.
+fn artifact_of_patch(patch: &str) -> WorkArtifactReference {
+    use sha2::Digest;
+    WorkArtifactReference {
+        hash: format!("{:x}", sha2::Sha256::digest(patch.as_bytes())),
+        size_bytes: patch.len() as u64,
+        mime: Some("text/x-patch".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -126,9 +266,6 @@ impl ActionCommand for WorkSubmit {
         let airc = runtime.airc();
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
         let card_id = WorkCardId::from_uuid(p.card_id);
-        let artifact = p.artifact.into_artifact()?;
-        let base_sha = airc_work::GitObjectId::new(p.base_sha)
-            .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
         // Validate before allocating a durable binding. The SDK validates again
         // against its own latest projection immediately before publication.
         let board = airc
@@ -138,11 +275,67 @@ impl ActionCommand for WorkSubmit {
         let card = board.card(card_id).ok_or_else(|| {
             CommandError::NotFound(format!("card {} is absent from this room", p.card_id))
         })?;
+        // The claim is HERS on THIS card, read off the board — a typed id she would
+        // otherwise have to remember from a claim receipt three turns ago.
+        let claim_id = match p.claim_id {
+            Some(c) => ClaimId::from_uuid(c),
+            None => match (card.owner, card.claim_id) {
+                (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
+                (Some(owner), _) => {
+                    return Err(CommandError::Invalid(format!(
+                        "card {} is held by {owner}, not by you — only the holder submits",
+                        p.card_id
+                    )))
+                }
+                _ => {
+                    return Err(CommandError::Invalid(format!(
+                        "card {} is not claimed — claim it (work/claim) before submitting",
+                        p.card_id
+                    )))
+                }
+            },
+        };
+        // A complete, real artifact she wrote herself is honoured as-is; anything less
+        // — an omitted part, or the manual's zero hash read back as a value — is read
+        // off her checkout, and a placeholder says so in the ledger.
+        let typed_in_full = matches!(&p.artifact, Some(a) if !is_placeholder_hash(&a.hash))
+            && p.base_sha.is_some()
+            && p.instance.is_some();
+        if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
+            crate::probe!(
+                class = "work.submit.placeholder_artifact",
+                card = %p.card_id,
+                "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
+            );
+        }
+        let (instance, base_sha_text, artifact_ref) = if typed_in_full {
+            (
+                p.instance.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
+                p.base_sha.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
+                p.artifact.clone().unwrap_or(WorkArtifactReference { hash: String::new(), size_bytes: 0, mime: None }), // unwrap_or: guarded by typed_in_full
+            )
+        } else {
+            let d = derive_submission(runtime.persona_id(), p.card_id, p.instance.clone(), p.base_sha.clone()).await?;
+            (d.instance, d.base_sha, d.artifact)
+        };
+        crate::probe!(
+            class = "work.submit.shaped",
+            card = %p.card_id,
+            instance = %instance,
+            base = %&base_sha_text[..base_sha_text.len().min(9)],
+            size_bytes = artifact_ref.size_bytes,
+            derived = !typed_in_full,
+            "the submission as it goes to the board"
+        );
+        let artifact = artifact_ref.into_artifact()?;
+        let base_sha = airc_work::GitObjectId::new(base_sha_text)
+            .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
+        let submission_id = p.submission_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
         let candidate = airc_work::WorkSubmission {
-            submission_id: airc_work::SubmissionId::from_uuid(p.submission_id),
+            submission_id: airc_work::SubmissionId::from_uuid(submission_id),
             card_id,
-            claim_id: ClaimId::from_uuid(p.claim_id),
-            instance: p.instance,
+            claim_id,
+            instance,
             base_sha,
             artifact,
             publisher: airc.peer_id(),
@@ -174,10 +367,10 @@ impl ActionCommand for WorkSubmit {
                 runtime.agent_name(),
                 runtime.persona_id(),
                 SubmissionSelection {
-                    submission_id: p.submission_id,
+                    submission_id,
                     room_id: room.channel.as_uuid(),
                     card_id: p.card_id,
-                    claim_id: p.claim_id,
+                    claim_id: claim_id.as_uuid(),
                     staged_revision_id: revision,
                     instance: candidate.instance.clone(),
                     base_sha: candidate.base_sha.clone(),
@@ -524,3 +717,51 @@ impl ActionCommand for WorkSubmission {
 }
 
 crate::register_command!(WorkSubmission);
+
+#[cfg(test)]
+mod tests {
+    // what this catches (2026-09-17): a submit the citizen could not satisfy by hand —
+    // the manual's zero hash is a placeholder and never an artifact; the artifact is
+    // the SHA-256 of her patch; a benchmark checkout names its instance from its path
+    // and a repo worktree names the card; a worktree with no base to diff against is a
+    // named refusal, never a diff against HEAD.
+    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash};
+    use std::path::Path;
+
+    #[test]
+    fn placeholders_are_never_artifacts_and_a_patch_hashes_to_its_sha256() {
+        assert!(is_placeholder_hash(""));
+        assert!(is_placeholder_hash(&"0".repeat(64)));
+        assert!(is_placeholder_hash("<replace-with-string>"));
+        assert!(!is_placeholder_hash("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"));
+        let a = artifact_of_patch("test");
+        assert_eq!(a.hash, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08");
+        assert_eq!(a.size_bytes, 4);
+        assert_eq!(a.mime.as_deref(), Some("text/x-patch"));
+    }
+
+    #[test]
+    fn a_benchmark_checkout_names_its_instance_and_a_worktree_names_the_card() {
+        let card = uuid::Uuid::from_u128(7);
+        assert_eq!(
+            instance_of_checkout(Path::new("/x/peers/p/workspace/swe/sympy__sympy-23413"), card).as_deref(),
+            Some("sympy__sympy-23413")
+        );
+        assert_eq!(
+            instance_of_checkout(Path::new("/x/.airc/worktrees/1f58fc16"), card),
+            Some(card.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worktree_with_no_base_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(dir.path()).output().expect("git")
+        };
+        run(&["init", "-q"]);
+        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
+        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no remote, no upstream");
+        assert!(err.to_string().contains("pass base_sha"), "{err}");
+    }
+}

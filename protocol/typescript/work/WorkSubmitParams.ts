@@ -3,34 +3,30 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkSubmitParams = { 
 /**
- * Activity room; does not switch focus.
+ * The room the card lives in (id or name).
  */
 room: string, 
 /**
- * Chosen UUID; retry identical content with this id.
- */
-submission_id: string, 
-/**
- * Work card UUID in this room.
+ * The card you hold.
  */
 card_id: string, 
 /**
- * Your claim UUID on this card.
+ * Minted when omitted.
  */
-claim_id: string, 
+submission_id?: string, 
 /**
- * Task/instance identity.
+ * Your claim on the card; read off the board when omitted.
  */
-instance: string, 
+claim_id?: string, 
 /**
- * Full Git base object id.
+ * Benchmark instance name; read from your checkout when omitted.
  */
-base_sha: string, 
+instance?: string, 
 /**
- * Candidate content identity.
+ * The commit your patch is against; read from your checkout when omitted.
  */
-artifact: WorkArtifactReference, 
+base_sha?: string, 
 /**
- * Own staged revision UUID for reviewed credit; absent means no credit binding.
+ * SHA-256 + size of your patch; computed when omitted.
  */
-staged_revision_id?: string, };
+artifact?: WorkArtifactReference, staged_revision_id?: string, };

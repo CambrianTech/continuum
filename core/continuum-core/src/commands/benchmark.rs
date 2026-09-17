@@ -3502,6 +3502,25 @@ pub(crate) fn workspace_candidate_diff_from(
 
 /// The `benchmark/swe-grade` body, callable without a command context — the
 /// hands-free autograde on `agent/solve` completion invokes the SAME grader
+/// The base commit an instance's checkout stands on, found the way the grader finds
+/// it: every known SWE dataset searched for the row. `None` = no dataset names it —
+/// an absence, never a guessed HEAD. Read by `work/submit` to shape a citizen's
+/// submission from her checkout (2026-09-17).
+pub(crate) async fn swe_base_commit_for(instance: &str) -> Option<String> {
+    let datasets: Vec<String> = known_benchmarks()
+        .iter()
+        .filter_map(|b| b.swe_dataset())
+        .map(|d| d.to_string())
+        .collect();
+    for dataset in &datasets {
+        let rows = swe_bench::load_dataset(dataset).await.ok()?;
+        if let Some(r) = rows.into_iter().find(|r| r.instance_id == instance) {
+            return Some(r.base_commit);
+        }
+    }
+    None
+}
+
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
 /// the operator verb. One grader, never two.
 pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
