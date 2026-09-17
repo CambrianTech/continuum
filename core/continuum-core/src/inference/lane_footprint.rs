@@ -89,6 +89,13 @@ pub fn sample_due(now_ms: u64) -> bool {
 }
 
 /// Record one measurement of the live lane. Returns the per-token cost it derived.
+///
+/// The record is REPLACED by each sample (last write wins), never maxed across samples:
+/// "upward only" is a rule about the measurement against the ESTIMATE at apply time
+/// ([`corrects`]), not a ratchet over the measurement's own history. A reading taken
+/// in a bad minute rules for one sample interval, and a record older than [`FRESH_MS`]
+/// is ignored entirely — the plan falls back to its arithmetic, never to a remembered
+/// maximum.
 pub fn observe(model: &str, lanes: u32, window: u32, anon_bytes: u64, compute_floor_per_lane: u64) -> Option<u64> {
     let per_token = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane)?;
     let now = now_ms();
