@@ -2885,7 +2885,7 @@ impl ActionCommand for WorkDuplicates {
             &self.embedder,
             &candidates,
             p.min_z,
-            0.9,
+            0.0, // no borrowed floor: on an uncalibrated embedder the call refuses (Cormac, #4140)
         )
         .await?;
         let title_of: std::collections::HashMap<String, String> = board

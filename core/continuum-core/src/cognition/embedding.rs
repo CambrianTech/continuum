@@ -64,6 +64,16 @@ pub trait EmbeddingProvider: Send + Sync {
     fn unrelated_null(&self) -> Option<(f32, f32)> {
         None
     }
+    /// Does cosine in this space stand for MEANING? A neural embedder says yes. A
+    /// token-overlap space says no: two distinct cards that share "the / test /
+    /// fails / on" score 0.70 in `lexical-fnv-tf` — a fine ranking fallback for
+    /// recall, never a judgment that two things are the same. Consumers that turn
+    /// similarity into an ACT (grouping duplicates, closing a card) must refuse on a
+    /// non-semantic space (Cormac, #4140). Default `false` by cost asymmetry: a
+    /// wrong "no" refuses (recoverable); a wrong "yes" merges distinct items.
+    fn is_semantic(&self) -> bool {
+        false
+    }
 }
 
 /// Canned UNRELATED text pairs for measuring an embedder's cosine null
@@ -491,6 +501,9 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         // changes nothing about the geometry, so it delegates.
         self.inner.unrelated_null()
     }
+    fn is_semantic(&self) -> bool {
+        self.inner.is_semantic()
+    }
 
     async fn embed(&self, text: &str) -> Vec<f32> {
         let key = EmbeddingCache::key(self.inner.id(), text);
@@ -621,6 +634,9 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
 
     fn unrelated_null(&self) -> Option<(f32, f32)> {
         self.null.get().copied()
+    }
+    fn is_semantic(&self) -> bool {
+        true
     }
 }
 
@@ -966,6 +982,9 @@ impl EmbeddingProvider for LazyRecallEmbedder {
 
     fn unrelated_null(&self) -> Option<(f32, f32)> {
         self.resolved.get().and_then(|p| p.unrelated_null())
+    }
+    fn is_semantic(&self) -> bool {
+        self.resolved.get().is_some_and(|p| p.is_semantic())
     }
 }
 

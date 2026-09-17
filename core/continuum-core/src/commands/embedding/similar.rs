@@ -32,6 +32,31 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 fn default_k() -> usize {
     10
 }
+
+/// A measured null is usable only if unrelated pairs actually SPREAD: a space whose
+/// unrelated cosines all land on one value has no scale to judge significance
+/// against, and `mean + k·std` collapses onto the mean — every pair sharing one
+/// token clears it. The lexical fallback (`lexical-fnv-tf`) measures ≈ (0, 0) by
+/// construction (disjoint vocabularies share no buckets), so on a node whose
+/// embedder resolved to it (the Intel tier: 8,768 `recall.embedder.resolved
+/// kind=lexical` in one day — Cormac, #4140 review) a z-gate would group almost
+/// everything. Below this spread the embedder is UNCALIBRATED for this purpose.
+pub const MIN_NULL_STD: f32 = 0.01;
+
+/// The gate an embedder supports, named on every result: a SEMANTIC space with a
+/// usable null carries its `(mean, std)`; anything else is `uncalibrated` and
+/// carries none. Non-semantic (token-overlap) spaces are uncalibrated whatever
+/// their null: measured, `lexical-fnv-tf` has real spread AND scores two distinct
+/// cards at 0.70 on shared stopwords — the null is honest and the space still
+/// cannot say "the same".
+pub fn gate_for(embedder: &dyn EmbeddingProvider) -> (&'static str, Option<(f32, f32)>) {
+    match embedder.unrelated_null() {
+        Some((mean, std)) if embedder.is_semantic() && std >= MIN_NULL_STD => {
+            ("z", Some((mean, std)))
+        }
+        _ => ("uncalibrated", None),
+    }
+}
 fn default_min_z() -> f32 {
     3.0
 }
@@ -102,8 +127,10 @@ pub struct SimilarResult {
     pub total_candidates: usize,
     /// The embedding space every score lives in.
     pub space: String,
-    /// `"z"` when significance came from the measured null, `"threshold"` when it
-    /// came from the raw cosine floor because the embedder has not calibrated.
+    /// `"z"` when significance came from a measured null with real spread;
+    /// `"threshold"` when the caller passed a raw cosine floor and the null is
+    /// unusable; `"uncalibrated"` when the null is unusable and no floor was given —
+    /// then NOTHING is marked significant (ranking still holds; significance does not).
     pub gate: String,
     /// The measured unrelated-pair `(mean, std)` the `z` values are against.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,17 +164,24 @@ pub async fn rank_texts(
     for c in candidates {
         targets.push(embedder.embed(&c.text).await);
     }
-    let null = embedder.unrelated_null();
-    let gate = if null.is_some() { "z" } else { "threshold" };
-    // Rank everything (threshold 0) so the z gate sees the full ordering, then cut.
+    let (gate, null) = gate_for(embedder.as_ref());
+    // A raw floor is honoured only when the caller gave one AND the null is unusable;
+    // with a real null the z decides; with neither, nothing is significant.
+    let gate = if gate == "uncalibrated" && threshold > 0.0 {
+        "threshold"
+    } else {
+        gate
+    };
+    // Rank everything so the gate sees the full ordering, then cut.
     let ranked = top_k_similar(&q, &targets, k, f32::MIN);
     let results: Vec<SimilarHit> = ranked
         .into_iter()
         .map(|(index, similarity)| {
-            let z = null.map(|(mean, std)| (similarity - mean) / std.max(1e-6));
-            let significant = match z {
-                Some(z) => z >= min_z,
-                None => similarity >= threshold,
+            let z = null.map(|(mean, std)| (similarity - mean) / std);
+            let significant = match (gate, z) {
+                ("z", Some(z)) => z >= min_z,
+                ("threshold", _) => similarity >= threshold,
+                _ => false,
             };
             SimilarHit {
                 id: candidates[index].id.clone(),
@@ -241,10 +275,10 @@ mod tests {
         assert_eq!(out.count, 2);
         assert_eq!(out.total_candidates, 3);
         assert_eq!(
-            out.gate, "threshold",
-            "no measured null ⇒ the raw floor decides, and says so"
+            out.gate, "uncalibrated",
+            "a non-semantic fixture with no floor marks nothing significant, and says so"
         );
-        assert!(out.results.iter().all(|h| h.z.is_none()));
+        assert!(out.results.iter().all(|h| h.z.is_none() && !h.significant));
         assert!(
             out.results[0].similarity >= out.results[1].similarity,
             "descending"
@@ -254,6 +288,27 @@ mod tests {
             "a TensorProduct card outranks the astropy one: {:?}",
             out.results
         );
+    }
+
+    // what this catches (Cormac, #4140): the lexical fallback's measured null is ≈ (0, 0);
+    // a z over it calls every one-token overlap significant. Its gate must read
+    // `uncalibrated`, `z` must be absent, and nothing may be marked significant —
+    // ranking still holds, significance does not.
+    #[tokio::test]
+    async fn a_degenerate_null_marks_nothing_significant_and_says_so() {
+        let e: Arc<dyn EmbeddingProvider> =
+            Arc::new(crate::cognition::embedding::LexicalEmbedder::new());
+        let out = rank_texts(&e, "expand of TensorProduct is incomplete", &cands(), 3, 0.0, 3.0)
+            .await
+            .expect("ranks");
+        assert_eq!(out.gate, "uncalibrated");
+        assert!(out.results.iter().all(|h| h.z.is_none() && !h.significant));
+        assert_eq!(out.count, 3, "ranking is still delivered");
+        // With an explicit raw floor the caller takes responsibility, and the gate says so.
+        let out = rank_texts(&e, "expand of TensorProduct is incomplete", &cands(), 3, 0.5, 3.0)
+            .await
+            .expect("ranks");
+        assert_eq!(out.gate, "threshold");
     }
 
     #[tokio::test]

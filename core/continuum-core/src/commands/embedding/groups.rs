@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::similar::SimilarCandidate;
+use super::similar::{gate_for, SimilarCandidate};
 use crate::cognition::embedding::EmbeddingProvider;
 use crate::modules::embedding::detect_clusters;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -27,7 +27,7 @@ fn default_min_z() -> f32 {
     3.0
 }
 fn default_min_similarity() -> f32 {
-    0.85
+    0.0 // none: with an unusable null the call REFUSES rather than borrowing a floor
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -42,8 +42,9 @@ pub struct GroupsParams {
     /// joins two candidates, when the embedder is calibrated. Default 3.
     #[serde(default = "default_min_z")]
     pub min_z: f32,
-    /// Raw cosine floor that joins two candidates, used ONLY when the embedder has
-    /// no measured null. Default 0.85.
+    /// Raw cosine floor that joins two candidates, honoured ONLY when the embedder
+    /// has no usable null. Default 0 = none: the call then refuses rather than
+    /// grouping at a floor borrowed from another space.
     #[serde(default = "default_min_similarity")]
     pub min_similarity: f32,
 }
@@ -95,10 +96,24 @@ pub async fn group_texts(
     for c in candidates {
         vectors.push(embedder.embed(&c.text).await);
     }
-    let null = embedder.unrelated_null();
-    let (gate, joined_at) = match null {
-        Some((mean, std)) => ("z", mean + min_z * std),
-        None => ("threshold", min_similarity),
+    // A group is what a human then acts on (a close). So this REFUSES rather than
+    // guesses: with no usable null and no explicit floor there is no scale in which
+    // "the same" means anything, and a floor borrowed from a neural space applied to a
+    // term-frequency space merges distinct cards (Cormac, #4140). A caller who passes
+    // `min_similarity` explicitly takes that responsibility and the gate says so.
+    let (gate, joined_at) = match gate_for(embedder.as_ref()) {
+        ("z", Some((mean, std))) => ("z", mean + min_z * std),
+        _ if min_similarity > 0.0 => ("threshold", min_similarity),
+        _ => {
+            return Err(CommandError::Invalid(format!(
+                "embedder '{}' has no usable unrelated-null (spread below {}): grouping \
+                 refused — a floor borrowed from another space would merge distinct items. \
+                 Pass `minSimilarity` explicitly to group at a raw cosine you take \
+                 responsibility for.",
+                embedder.id(),
+                super::similar::MIN_NULL_STD
+            )))
+        }
     };
     let clusters = detect_clusters(&vectors, joined_at, 2);
     let groups: Vec<SimilarGroup> = clusters
@@ -160,6 +175,34 @@ mod tests {
     use super::*;
     use crate::memory::DeterministicEmbeddingProvider;
 
+    // what this catches (Cormac, #4140; Benchy's addendum): on a node whose embedder
+    // resolved to the lexical fallback (the Intel tier, ~11 h straight), the measured
+    // null is ≈ (0, 0). Grouping there must REFUSE and name why — not join every pair
+    // that shares a token, which is a merge a human then acts on.
+    #[tokio::test]
+    async fn the_lexical_fallback_refuses_to_group_without_an_explicit_floor() {
+        let e: Arc<dyn EmbeddingProvider> =
+            Arc::new(crate::cognition::embedding::LexicalEmbedder::new());
+        let cands: Vec<SimilarCandidate> = [
+            ("a", "the serving lane test fails on the card"),
+            ("b", "the desktop build test fails on the client"),
+        ]
+        .into_iter()
+        .map(|(id, text)| SimilarCandidate {
+            id: id.into(),
+            text: text.into(),
+        })
+        .collect();
+        let err = group_texts(&e, &cands, 6.0, 0.0)
+            .await
+            .expect_err("must refuse");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("lexical-fnv-tf") && msg.contains("refused"),
+            "{msg}"
+        );
+    }
+
     // what this catches: identical texts under different ids land in ONE group with
     // the representative first, unrelated text stays out, and an uncalibrated
     // embedder reports `gate: threshold` with the raw floor it actually joined at.
@@ -182,6 +225,13 @@ mod tests {
             text: text.into(),
         })
         .collect();
+        // The deterministic fixture has no null: without an explicit floor the call
+        // REFUSES (a merge is what a human acts on); with one it groups and says so.
+        let refused = group_texts(&e, &cands, 3.0, 0.0).await;
+        assert!(
+            refused.is_err(),
+            "no usable null and no floor ⇒ refuse, never guess"
+        );
         let out = group_texts(&e, &cands, 3.0, 0.95).await.expect("groups");
         assert_eq!(out.gate, "threshold");
         assert_eq!(out.joined_at, 0.95);
