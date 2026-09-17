@@ -77,6 +77,16 @@ const TICK: Duration = Duration::from_secs(5);
 /// the p90. Widen it only with evidence; loosening the tick count is the change that
 /// would actually let noise through.
 const REHOME_MIN_GAIN_PCT: u32 = 15;
+/// A steady hold (an eval, a detached solve) suppresses the OPTIONAL grow-back — a
+/// re-home that would buy a few percent is not worth dropping a held slot for. It does
+/// not get to pin a lane serving at a FRACTION of its plan: measured 2026-09-17 07:5xZ
+/// on the M5, the boot plan came up 8 lanes × 12,800 under the outgoing server's memory
+/// (card 40f53419), the plan wanted 3 × 67,340, and four re-fired control solves held
+/// the lane steady for 255 ticks in a row — every one of the 16 minds, the solves
+/// included, on a 12.8k window because the solves were "protecting" it. Past this gain
+/// the re-home goes ahead and the probe says so; the held work retries its flickered
+/// act (the deliberation retry budget exists for exactly one relaunch).
+const REHOME_HOLD_OVERRIDE_PCT: u32 = 75;
 
 /// How many consecutive ticks the plan must exceed the lane by
 /// [`REHOME_MIN_GAIN_PCT`] before a re-home is justified.
@@ -123,6 +133,12 @@ fn decline_should_log(ticks: u32) -> bool {
 ///
 /// Integer arithmetic that cannot overflow: u64 space on a 1M-token × 8-lane
 /// server is ~8e6; ×100 still fits comfortably.
+/// A steady hold yields when the plan's space exceeds the live space by
+/// [`REHOME_HOLD_OVERRIDE_PCT`] or more — the hold protects a slot, never a starvation.
+fn hold_overridden_by_shortfall(live_space: u64, gain: u64) -> bool {
+    live_space > 0 && gain.saturating_mul(100) >= live_space.saturating_mul(REHOME_HOLD_OVERRIDE_PCT as u64)
+}
+
 fn rehome_gain_evidence(
     live_window: u32,
     live_lanes: u32,
@@ -2242,7 +2258,7 @@ impl ServingDaemonModule {
                 // Hold the lane steady until the eval drops its guard — a model/genome
                 // change or a pressure shrink above still runs (this only gates the
                 // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
-                if serving_held_steady() {
+                if serving_held_steady() && !hold_overridden_by_shortfall(live_space, gain) {
                     crate::probe!(
                         class = "serving.reconcile.window",
                         decision = "declined",
@@ -2267,6 +2283,19 @@ impl ServingDaemonModule {
                 // moved the silence, not removed it. Same probe class, same fields, both
                 // outcomes — so one query over `serving.reconcile.window` reads the
                 // lane's whole decision history, not half of it.
+                if serving_held_steady() {
+                    crate::probe!(
+                        class = "serving.reconcile.window",
+                        decision = "re-homing_over_hold",
+                        live_window = live.served_context_window,
+                        plan_window = served_ctx,
+                        live_lanes = live.lanes,
+                        plan_lanes = lanes,
+                        shortfall = gain,
+                        hold_override_pct = REHOME_HOLD_OVERRIDE_PCT,
+                        "the live lane serves under a fraction of its plan — a steady hold does not pin that; re-homing, the held work retries its flickered act",
+                    );
+                }
                 crate::probe!(
                     class = "serving.reconcile.window",
                     decision = "re-homing",
@@ -5453,6 +5482,19 @@ mod tests {
     // concurrent second eval doesn't release the first's hold. This is the gate that stops
     // the grow-back re-home from relaunching the lane under a running eval (hard-rs 0/8).
     // regression for the 2026-07-20 shared-lane bounce.
+    // what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
+    // 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
+    // shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
+    #[test]
+    fn a_steady_hold_yields_to_a_large_shortfall_and_keeps_a_small_one() {
+        let (live, _plan, gain, _) = rehome_gain_evidence(12_800, 8, 67_340, 3);
+        assert!(hold_overridden_by_shortfall(live, gain), "8 × 12.8k vs 3 × 67k is starvation, not a slot to protect");
+        let (live, _plan, gain, worth) = rehome_gain_evidence(56_000, 5, 67_000, 5);
+        assert!(worth, "a ~20% grow-back is worth a re-home in general");
+        assert!(!hold_overridden_by_shortfall(live, gain), "but not worth dropping a held slot for");
+        assert!(!hold_overridden_by_shortfall(0, 1), "no live space = nothing to compare");
+    }
+
     #[test]
     fn serving_steady_hold_is_refcounted_and_raii() {
         assert!(!serving_held_steady(), "no hold at rest");
