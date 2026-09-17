@@ -438,10 +438,14 @@ pub struct ServingDaemonModule {
     /// the predecessor's window IS the memory the successor inherits, and the existing
     /// overflow protection remains the backstop if it genuinely no longer fits.
     last_healthy_window: Arc<AtomicU32>,
-    /// Device VRAM in use just BEFORE the last engine spawn — the baseline the discrete
-    /// footprint arm subtracts, so the delta at a later tick is the lane's own bytes.
-    /// 0 = no spawn observed by this core (an adopted lane): the discrete arm then
-    /// cannot look, and says so, rather than charging the desktop to the model.
+    /// The discrete footprint arm's baseline: the TROUGH of device VRAM in use between
+    /// the predecessor's reclaim and the successor's load. Armed to `u64::MAX` at spawn,
+    /// lowered to the minimum sampled value on every tick until the lane is ready; the
+    /// delta at a later tick is then the lane's own bytes. A single read at the spawn
+    /// instant was the first cut and it read the DYING predecessor's ~24 GB off the
+    /// board's sampled figure (2026-09-17 13:1xZ: delta 0) — a stale sample, not a
+    /// baseline. `MAX` = armed but never lowered; 0 = no spawn observed (an adopted
+    /// lane); both make the arm say could-not-look rather than charge the desktop.
     spawn_baseline_vram: Arc<AtomicU64>,
     last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
@@ -1730,6 +1734,19 @@ impl ServingDaemonModule {
     /// the per-token cost back to the plan (`inference::lane_footprint`). One probe per
     /// sample carries predicted vs measured so the plan's arithmetic is checked against
     /// the process it launched, every minute, on every box.
+    /// While no lane is ready, the device's sampled used-bytes are the trough the
+    /// discrete footprint arm subtracts: take the minimum seen since the spawn armed it.
+    fn lower_spawn_baseline_to_the_trough(&self) {
+        if self.serving_tx.borrow().ready {
+            return;
+        }
+        let now = vram_physical_used(&self.resource_daemon);
+        if now == 0 {
+            return;
+        }
+        self.spawn_baseline_vram.fetch_min(now, Ordering::Relaxed);
+    }
+
     fn sample_lane_footprint(&self) {
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
@@ -2731,14 +2748,12 @@ impl ServingDaemonModule {
                 self.0.store(false, Ordering::Release);
             }
         }
-        // The discrete footprint arm's baseline: device VRAM in use before THIS spawn.
-        // Read once, here, so the delta at a later tick attributes only what the lane
-        // added (the desktop, the compositor and a game are in the baseline).
-        let baseline = vram_physical_used(&self.resource_daemon);
-        let spawn_baseline_vram = self.spawn_baseline_vram.clone();
+        // ARM the discrete footprint arm's baseline: every tick until the lane is ready
+        // lowers it to the sampled trough (see the field doc — a single read here sees
+        // the dying predecessor).
+        self.spawn_baseline_vram.store(u64::MAX, Ordering::Relaxed);
         Some(tokio::spawn(async move {
             let _gate = GateClear(reconciling);
-            spawn_baseline_vram.store(baseline, Ordering::Relaxed);
             let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
@@ -3960,7 +3975,8 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
 /// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
 /// reading — never a delta against zero, which would charge the desktop to the model.
 fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
-    (baseline > 0 && now > 0).then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
+    (baseline > 0 && baseline != u64::MAX && now > 0)
+        .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
 }
 
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
@@ -5172,6 +5188,7 @@ impl ServiceModule for ServingDaemonModule {
         // LIVE working set (KV grows as slots fill) and publish it through the sticky
         // band to the per-port plan file — the actuator her ResidencyCache polls.
         self.publish_moe_host_cache_lease();
+        self.lower_spawn_baseline_to_the_trough();
         self.sample_lane_footprint();
         Ok(())
     }
@@ -5392,6 +5409,11 @@ mod tests {
             device_delta_beyond_weights(752 * MIB, 0, weights),
             None,
             "no reading = could not look"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(u64::MAX, 31_914 * MIB, weights),
+            None,
+            "armed but never lowered = could not look"
         );
     }
 
