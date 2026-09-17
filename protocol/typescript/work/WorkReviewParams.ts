@@ -2,17 +2,21 @@
 import type { ReviewOutcome } from "./ReviewOutcome";
 import type { WorkArtifactReference } from "./WorkArtifactReference";
 
-export type WorkReviewParams = { room: string, 
+export type WorkReviewParams = { 
 /**
- * The REVIEW card you hold. The parent card, its latest submission and artifact,
- * and your claim on the review card are all read off the board from it when the
- * fields below are omitted — a reviewer never had a way to know a submission id
- * or an artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
+ * The room the review card lives in (id or name).
  */
-review_card_id: string, outcome: ReviewOutcome, 
+room: string, 
 /**
- * What you saw: the test output, the diff read, the reasoning. Hashed into the
- * review's evidence reference when `evidence` is omitted.
+ * The review card you hold.
+ */
+review_card_id: string, 
+/**
+ * Your verdict.
+ */
+outcome: ReviewOutcome, 
+/**
+ * What you ran and saw; becomes the review's evidence.
  */
 evidence_text?: string, 
 /**
@@ -20,22 +24,22 @@ evidence_text?: string,
  */
 review_id?: string, 
 /**
- * The parent card under review; the review card names it.
+ * The card under review; read from the review card when omitted.
  */
 card_id?: string, 
 /**
- * The submission being reviewed; the parent card's latest when omitted.
+ * The submission reviewed; the latest when omitted.
  */
 submission_id?: string, 
 /**
- * That submission's artifact; read off the board when omitted.
+ * Its artifact; read off the board when omitted.
  */
 artifact?: WorkArtifactReference, 
 /**
- * Your live claim on the review card; read off the board when omitted.
+ * Your claim on the review card; read off the board when omitted.
  */
 review_claim_id?: string, 
 /**
- * A typed evidence reference; `evidence_text` is the usual way.
+ * A typed evidence reference instead of evidence_text.
  */
 evidence?: WorkArtifactReference, };

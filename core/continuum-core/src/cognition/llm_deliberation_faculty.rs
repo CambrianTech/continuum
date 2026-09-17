@@ -6852,7 +6852,12 @@ mod tests {
             // models. The full catalog plus framing is 11974 (10688 without
             // these three). This is a test receipt, not a runtime budget increase;
             // per-turn selection and whole-request window accounting stay intact.
-            const AGENTIC_SURFACE_CEILING: u32 = 12000;
+            // 12000 -> 12100, stated plainly (2026-09-17, the reviewer's twin of #4148):
+            // work/review gained `evidence_text` — the one field a reviewer can actually
+            // fill (what she ran and saw) in place of an evidence hash nothing in her
+            // world produced — and work/submit's derivable fields turned optional.
+            // Net +27 guard tokens on the full catalog (12027).
+            const AGENTIC_SURFACE_CEILING: u32 = 12100;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

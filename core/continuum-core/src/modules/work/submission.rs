@@ -457,16 +457,18 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
+    /// The room the review card lives in (id or name).
     pub room: String,
-    /// The REVIEW card you hold. The parent card, its latest submission and artifact,
-    /// and your claim on the review card are all read off the board from it when the
-    /// fields below are omitted — a reviewer never had a way to know a submission id
-    /// or an artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
+    // The REVIEW card she holds. The parent card, its latest submission and artifact,
+    // and her claim on the review card are read off the board from it when the fields
+    // below are omitted — a reviewer never had a way to know a submission id or an
+    // artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
+    /// The review card you hold.
     #[ts(type = "string")]
     pub review_card_id: Uuid,
+    /// Your verdict.
     pub outcome: ReviewOutcome,
-    /// What you saw: the test output, the diff read, the reasoning. Hashed into the
-    /// review's evidence reference when `evidence` is omitted.
+    /// What you ran and saw; becomes the review's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence_text: Option<String>,
@@ -474,23 +476,23 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_id: Option<Uuid>,
-    /// The parent card under review; the review card names it.
+    /// The card under review; read from the review card when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<Uuid>,
-    /// The submission being reviewed; the parent card's latest when omitted.
+    /// The submission reviewed; the latest when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// That submission's artifact; read off the board when omitted.
+    /// Its artifact; read off the board when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Your live claim on the review card; read off the board when omitted.
+    /// Your claim on the review card; read off the board when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_claim_id: Option<Uuid>,
-    /// A typed evidence reference; `evidence_text` is the usual way.
+    /// A typed evidence reference instead of evidence_text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence: Option<WorkArtifactReference>,
