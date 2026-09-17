@@ -156,8 +156,22 @@ fn rehome_gain_evidence(
     let plan_space = (plan_window as u64).saturating_mul(plan_lanes.max(1) as u64);
     let gain = plan_space.saturating_sub(live_space);
     let worth_it = live_space > 0
-        && gain.saturating_mul(100) >= live_space.saturating_mul(REHOME_MIN_GAIN_PCT as u64);
+        && (gain.saturating_mul(100) >= live_space.saturating_mul(REHOME_MIN_GAIN_PCT as u64)
+            || lane_over_its_knee(live_window, live_lanes, plan_window, plan_lanes));
     (live_space, plan_space, gain, worth_it)
+}
+
+/// The plan trades LANES for WIDTH: fewer slots, each at least as wide. That is the
+/// decode knee clamping the roster (`inference::decode_knee`) — the live lane is
+/// serving MORE streams than the box decodes at speed, every stream is slow, and the
+/// only cure is a relaunch at the knee. Token-space says such a plan is "not a gain"
+/// (8 × 51,712 → 7 × 67,340 is +14%, under the margin; → 4 × 67,340 is a LOSS), so
+/// without this arm the knee only ever took effect at boot: measured 2026-09-17, the
+/// M5 sat at 8 lanes / 7.9 t/s per stream all morning while the knee read 7 and the
+/// reconcile declined every tick on the margin. The sustain streak and the cooldown
+/// still gate the relaunch; this only makes a knee shrink COUNT as evidence.
+fn lane_over_its_knee(live_window: u32, live_lanes: u32, plan_window: u32, plan_lanes: u32) -> bool {
+    live_lanes > 0 && plan_lanes > 0 && plan_lanes < live_lanes && plan_window >= live_window
 }
 
 /// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
@@ -2233,7 +2247,13 @@ impl ServingDaemonModule {
                     // state, which is also why that version did not throttle.)
                     // The 2x rule and this decision are untouched; only how often the
                     // same unchanged verdict repeats itself.
-                    let declined = live_space < plan_space;
+                    let over_knee = lane_over_its_knee(
+                        live.served_context_window,
+                        live.lanes,
+                        served_ctx,
+                        lanes,
+                    );
+                    let declined = live_space < plan_space || over_knee;
                     let decline_ticks = if declined {
                         self.decline_log_ticks
                             .fetch_add(1, Ordering::Relaxed)
@@ -2251,12 +2271,13 @@ impl ServingDaemonModule {
                             live_lanes = live.lanes,
                             plan_lanes = lanes,
                             shortfall = gain,
+                            over_knee,
                             streak,
                             decline_ticks,
                             needs_streak = REHOME_SUSTAINED_TICKS,
                             min_gain_pct = REHOME_MIN_GAIN_PCT,
                             cooling,
-                            "lane is serving BELOW plan and has not yet earned a re-home: the gain must persist, not just appear",
+                            "lane is serving BELOW plan (or OVER its decode knee) and has not yet earned a re-home: the evidence must persist, not just appear",
                         );
                     }
                     return None;
@@ -5265,6 +5286,29 @@ mod tests {
         // A dead lane (0 window) never qualifies — recovery is a different path.
         let (_, _, _, worth_it) = rehome_gain_evidence(0, 1, 40_000, 2);
         assert!(!worth_it, "live_space=0 is the recovery arm's job, not re-home");
+    }
+
+    // what this catches (2026-09-17, the M5 at 8 lanes / 7.9 t/s all morning): a plan
+    // that trades lanes for width is the decode knee clamping the roster, and it is
+    // evidence even when token-space calls it a wash or a loss — otherwise the knee
+    // only ever applies at boot. Re-slicing the same space at the SAME lane count, or a
+    // plan with more lanes, still needs the space margin.
+    #[test]
+    fn a_lane_over_its_knee_is_rehome_evidence_whatever_the_token_space_says() {
+        use super::{lane_over_its_knee, rehome_gain_evidence};
+        // The live shape: 8 × 51,712 → 7 × 67,340 (+14%, under the margin) qualifies.
+        let (_, _, _, worth_it) = rehome_gain_evidence(51_712, 8, 67_340, 7);
+        assert!(worth_it, "one lane over the knee is a relaunch, not a rounding error");
+        // The knee at 4: 8 × 51,712 → 4 × 67,340 is a LOSS of space and still qualifies.
+        let (_, _, _, worth_it) = rehome_gain_evidence(51_712, 8, 67_340, 4);
+        assert!(worth_it, "fewer, wider lanes is the knee — space is not the currency here");
+        // Fewer lanes but NARROWER is a pressure shrink, not a knee: not this arm.
+        assert!(!lane_over_its_knee(51_712, 8, 40_000, 4));
+        // Same lanes / more lanes: the space margin still rules.
+        assert!(!lane_over_its_knee(40_000, 2, 44_000, 2));
+        assert!(!lane_over_its_knee(57_600, 2, 47_426, 4));
+        let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
+        assert!(!worth_it, "10% at the same lane count is still under the margin");
     }
 
     // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
