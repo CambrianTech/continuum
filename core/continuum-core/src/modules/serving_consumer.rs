@@ -154,8 +154,14 @@ pub struct ServingConsumer {
     /// process is gone. Evidence, not a timer: the high-water decays only when readiness
     /// is re-verified at the new shape.
     decayed_at_verified_ms: std::sync::atomic::AtomicU64,
-    /// active model id + live shape → resident VRAM bytes (weights + per-lane KV).
+    /// active model id + live shape → resident bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
+    /// The row those bytes live in — `Vram` for a GPU-placed lane, `Ram` for a
+    /// CPU-placed one (`serving_daemon::serving_pool_kind`). Handed in, never resolved
+    /// here: the consumer reports and yields on the SAME row the plan budgets from, or
+    /// the replace-myself credit lands on a row nobody reads and the plan flees its own
+    /// residency (card 7c72c0f0).
+    pool_kind: ResourceKind,
     /// How to find a lane inherited from a previous generation — **injected**, for the
     /// same reason `footprint_of` is.
     ///
@@ -181,6 +187,7 @@ impl ServingConsumer {
         suppress: watch::Sender<Arc<HashSet<String>>>,
         pin: watch::Sender<Option<String>>,
         footprint_of: FootprintFn,
+        pool_kind: ResourceKind,
         tier_down: Arc<dyn TierDownPolicy>,
     ) -> Self {
         Self {
@@ -190,6 +197,7 @@ impl ServingConsumer {
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
+            pool_kind,
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
@@ -318,7 +326,7 @@ impl ResourceConsumer for ServingConsumer {
             return planned
                 .map(|(bytes, detail)| {
                     vec![ConsumerFootprint {
-                        kind: ResourceKind::Vram,
+                        kind: self.pool_kind,
                         bytes,
                         detail,
                     }]
@@ -356,19 +364,20 @@ impl ResourceConsumer for ServingConsumer {
                 .to_string(),
         };
         vec![ConsumerFootprint {
-            kind: ResourceKind::Vram,
+            kind: self.pool_kind,
             bytes: held,
             detail,
         }]
     }
 
     async fn reclaim(&self, request: ReclaimRequest) -> ReclaimOutcome {
-        // Serving only holds VRAM. An ask for any other kind is honestly refused
-        // (named, never a silent freed=0) so the authority does not misread it.
-        if request.kind != ResourceKind::Vram {
+        // Serving holds ONE pool — the row its lane's placement fills. An ask for any
+        // other kind is honestly refused (named, never a silent freed=0) so the
+        // authority does not misread it.
+        if request.kind != self.pool_kind {
             return ReclaimOutcome::refused(format!(
-                "serving holds no {:?}, only Vram",
-                request.kind
+                "serving holds no {:?}, only {:?}",
+                request.kind, self.pool_kind
             ));
         }
 
@@ -531,6 +540,7 @@ mod tests {
             suppress_tx,
             pin_tx,
             footprint_of,
+            ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
             .with_inherited_lane(Arc::new(|| None));
@@ -595,6 +605,7 @@ mod tests {
             suppress_tx,
             pin_tx,
             footprint_of,
+            ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
             .with_inherited_lane(Arc::new(|| None));
@@ -754,6 +765,7 @@ mod tests {
             suppress_tx,
             pin_tx,
             footprint_of,
+            ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
             .with_inherited_lane(Arc::new(|| None));
@@ -847,7 +859,14 @@ mod tests {
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
-        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy)
+        let consumer = ServingConsumer::new(
+            serving_rx,
+            suppress_tx,
+            pin_tx,
+            footprint_of,
+            ResourceKind::Vram,
+            policy,
+        )
             .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx, pin_rx)
     }
