@@ -57,7 +57,25 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if t.starts_with("[occurred ") || t.starts_with("[occurrence time unknown]") {
         return Some("occurrence_header");
     }
+    // A message that is NOTHING BUT one bracketed word — `[execute]` (cf6b4df6, #academy,
+    // 2026-09-17 01:3xZ). A stage tag with no stage, an empty box like the empty fence.
+    // The whole text, not the lead: `[answer] the plan holds` is speech with a tag.
+    if is_one_bare_bracket(t) {
+        return Some("bare_bracket");
+    }
     None
+}
+
+/// The entire text is `[word]` — letters, spaces, underscores — and nothing else.
+fn is_one_bare_bracket(t: &str) -> bool {
+    let t = t.trim();
+    t.strip_prefix('[')
+        .and_then(|r| r.strip_suffix(']'))
+        .is_some_and(|w| {
+            !w.trim().is_empty()
+                && w.len() <= 32
+                && w.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_')
+        })
 }
 
 /// Every non-blank line is a fence marker (```` ``` ```` with an optional language tag)
@@ -392,6 +410,11 @@ mod tests {
         // Mid-sentence, or a citizen's own bracket, stays.
         assert_eq!(is_not_speech("It [occurred 2026-09-17] to me that the plan holds."), None);
         assert_eq!(is_not_speech("[occupied] the lane is mine for this act"), None);
+        // A lone bracketed word is an empty box; a tag with words after it is speech.
+        assert_eq!(is_not_speech("[execute]"), Some("bare_bracket"));
+        assert_eq!(is_not_speech("  [executing actions]\n"), Some("bare_bracket"));
+        assert_eq!(is_not_speech("[answer] the plan holds"), None);
+        assert_eq!(is_not_speech("[code/run]"), Some("tool_envelope"), "the namespaced form keeps its own marker");
     }
 
     // what this catches: an empty code fence posted as a message (Kimi, 2026-09-16) — a
