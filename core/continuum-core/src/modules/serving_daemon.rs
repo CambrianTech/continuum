@@ -438,6 +438,11 @@ pub struct ServingDaemonModule {
     /// the predecessor's window IS the memory the successor inherits, and the existing
     /// overflow protection remains the backstop if it genuinely no longer fits.
     last_healthy_window: Arc<AtomicU32>,
+    /// Device VRAM in use just BEFORE the last engine spawn — the baseline the discrete
+    /// footprint arm subtracts, so the delta at a later tick is the lane's own bytes.
+    /// 0 = no spawn observed by this core (an adopted lane): the discrete arm then
+    /// cannot look, and says so, rather than charging the desktop to the model.
+    spawn_baseline_vram: Arc<AtomicU64>,
     last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
@@ -774,6 +779,7 @@ impl ServingDaemonModule {
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
+            spawn_baseline_vram: Arc::new(AtomicU64::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             pin_store,
@@ -1745,7 +1751,29 @@ impl ServingDaemonModule {
         let Some(fp) = footprint_for(&model) else {
             return;
         };
-        let outcome = match crate::inference::lane_footprint::anon_footprint_of(pid) {
+        // THE FOOTPRINT SOURCE IS PER HOST CLASS (Fable, 2026-09-17, converging #4152 and
+        // #4164): on unified memory the lane's KV lives in system RAM, so its anonymous
+        // process footprint IS the bytes beyond the weights. On a discrete GPU the KV
+        // lives in VRAM, a process read misses it entirely, and WDDM attributes VRAM to
+        // no process at all (`nvidia-smi --query-compute-apps` prints [N/A] for every
+        // pid on the 5090) — so the discrete arm is the DEVICE delta across the launch:
+        // used-now minus used-before-spawn, minus the weights (in VRAM on this class).
+        // Both arms feed the ONE consumer below; the probe names which one spoke.
+        let (source, beyond_weights) = match self.system.gpu_memory_mode() {
+            Some(crate::gpu::monitor::MemoryMode::Discrete) => {
+                let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
+                let now = vram_physical_used(&self.resource_daemon);
+                (
+                    "device_delta",
+                    device_delta_beyond_weights(baseline, now, fp.weights_bytes),
+                )
+            }
+            _ => (
+                "process_anon",
+                crate::inference::lane_footprint::anon_footprint_of(pid),
+            ),
+        };
+        let outcome = match beyond_weights {
             Some(anon) => {
                 let predicted = fp
                     .kv_at(live.served_context_window)
@@ -1762,6 +1790,7 @@ impl ServingDaemonModule {
                     class = "serving.footprint.measured",
                     model = %active,
                     pid = pid as u64,
+                    source,
                     lanes = live.lanes as u64,
                     window = live.served_context_window as u64,
                     anon_bytes = anon,
@@ -1780,8 +1809,10 @@ impl ServingDaemonModule {
                 class = "serving.footprint.measured",
                 model = %active,
                 pid = pid as u64,
+                source,
                 outcome,
-                "the lane's footprint could not be read off its process"
+                "the lane's footprint could not be read: no process reading on this host class, \
+                 or no spawn baseline (an adopted lane) for the device delta"
             );
         }
     }
@@ -2700,8 +2731,14 @@ impl ServingDaemonModule {
                 self.0.store(false, Ordering::Release);
             }
         }
+        // The discrete footprint arm's baseline: device VRAM in use before THIS spawn.
+        // Read once, here, so the delta at a later tick attributes only what the lane
+        // added (the desktop, the compositor and a game are in the baseline).
+        let baseline = vram_physical_used(&self.resource_daemon);
+        let spawn_baseline_vram = self.spawn_baseline_vram.clone();
         Some(tokio::spawn(async move {
             let _gate = GateClear(reconciling);
+            spawn_baseline_vram.store(baseline, Ordering::Relaxed);
             let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
@@ -3907,6 +3944,25 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
 /// never appears on the board), which the caller treats as fail-closed (cap at 0,
 /// serving refuses rather than over-committing blind). A lock-free `watch`
 /// snapshot read, never the governor's accounting lock — safe on the hot tick.
+/// Device VRAM physically in use right now, from the board's Vram row (the GPU
+/// capacity source's sampled `physical_used`). 0 when the board has no Vram row.
+fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
+    resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == ResourceKind::Vram)
+        .map(|k| k.physical_used_bytes)
+        .unwrap_or(0)
+}
+
+/// The discrete footprint arm: what the lane added to the device beyond its weights.
+/// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
+/// reading — never a delta against zero, which would charge the desktop to the model.
+fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
+    (baseline > 0 && now > 0).then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
+}
+
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
     // Serving budgets from ITS OWN view of the board — global available minus
     // every OTHER consumer's unmet reservation floor (`available_for`, the same
@@ -5305,6 +5361,38 @@ mod tests {
             "discrete: sized from the citizens' demand, not squeezed to the floor"
         );
         assert_eq!(on_discrete.serve_host_bytes, 0);
+    }
+
+    // what this catches (2026-09-17, the 5090): the discrete footprint arm. WDDM
+    // attributes VRAM to no process, so the lane's bytes beyond its weights are the
+    // device delta across the spawn. The 5090's two points: 752 MiB idle → 31,914 MiB
+    // at a 144k window and 22,078 MiB at 9.4k, 17 GB of weights; and an adopted lane
+    // (no baseline) must say could-not-look, never charge the desktop to the model.
+    #[test]
+    fn the_discrete_footprint_arm_is_the_device_delta_beyond_the_weights() {
+        use super::*;
+        const MIB: u64 = 1024 * 1024;
+        let weights = 17 << 30;
+        let big = device_delta_beyond_weights(752 * MIB, 31_914 * MIB, weights).expect("read");
+        let small = device_delta_beyond_weights(752 * MIB, 22_078 * MIB, weights).expect("read");
+        assert!(big > small, "a bigger window costs more beyond the weights");
+        // Through the ONE consumer: per-token from the plan's own decomposition.
+        let per_token_big =
+            crate::inference::lane_footprint::per_token_from(big, 1, 144_640, 0).expect("rate");
+        assert!(
+            per_token_big > 60_000 && per_token_big < 110_000,
+            "≈74 KiB/token measured on the 5090, got {per_token_big}"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(0, 31_914 * MIB, weights),
+            None,
+            "no baseline = could not look"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(752 * MIB, 0, weights),
+            None,
+            "no reading = could not look"
+        );
     }
 
     // what this catches (2026-09-17, the 5090 after #4144): with VRAM residency no
