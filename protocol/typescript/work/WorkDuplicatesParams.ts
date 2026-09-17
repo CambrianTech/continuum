@@ -2,8 +2,7 @@
 
 export type WorkDuplicatesParams = { 
 /**
- * Which room's board to read — a room name (`academy`) or channel id you are
- * subscribed to. Default: the room you are standing in. Boards are PER ROOM.
+ * Room whose board to read (name or id); default: this room.
  */
 room?: string, 
 /**

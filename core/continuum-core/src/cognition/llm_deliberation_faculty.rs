@@ -6857,17 +6857,17 @@ mod tests {
             // fill (what she ran and saw) in place of an evidence hash nothing in her
             // world produced — and work/submit's derivable fields turned optional.
             // Net +27 guard tokens on the full catalog (12027).
-            // 12100 -> 12200, stated plainly (2026-09-17, #4158): work/list, work/similar
-            // and work/duplicates gained `room` — boards are PER ROOM (#academy 176,
-            // #continuum 231) and a citizen seated in a triage room saw an EMPTY board
-            // because the read verbs only knew the room she stood in. One optional
-            // documented field on three verbs, +117 guard tokens (12144).
-            const AGENTIC_SURFACE_CEILING: u32 = 12200;
+            // 2026-09-17, #4158: work/list, work/similar and work/duplicates gained `room`
+            // (boards are PER ROOM; a citizen seated in a triage room saw an EMPTY board).
+            // First cut cost +117 guard tokens and tripped this ceiling AND the 8192
+            // survival check below by TWO tokens; the docs were made terse instead of
+            // moving either number. The surface is within the ceiling as it stood.
+            const AGENTIC_SURFACE_CEILING: u32 = 12100;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (schema projection 12144, ceiling \
+                "the agentic surface is now {surface} tokens (schema projection 11974, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );

@@ -2395,8 +2395,7 @@ pub struct WorkList {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkListParams {
-    /// Which room's board to read — a room name (`academy`) or channel id you are
-    /// subscribed to. Default: the room you are standing in. Boards are PER ROOM.
+    /// Room whose board to read (name or id); default: this room.
     #[serde(default)]
     #[ts(optional)]
     pub room: Option<String>,
@@ -2533,9 +2532,7 @@ impl ActionCommand for WorkList {
          `claimable: true` — most takeable cards sit in the `claimed` column with a lapsed lease, \
          so filtering `state: \"open\"` (the COLUMN) will miss them and can come back empty on a \
          full board. The result always reports `total_on_board` and `claimable_now` so an empty \
-         list is never mistaken for an empty board. Boards are PER ROOM: pass `room` \
-         (a name like `academy`) to read another room's board — a fresh activity room \
-         has none of its own.";
+         list is never mistaken for an empty board. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -2693,8 +2690,7 @@ fn default_open_states() -> Vec<String> {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarParams.ts")]
 pub struct WorkSimilarParams {
-    /// Which room's board to read — a room name (`academy`) or channel id you are
-    /// subscribed to. Default: the room you are standing in. Boards are PER ROOM.
+    /// Room whose board to read (name or id); default: this room.
     #[serde(default)]
     #[ts(optional)]
     pub room: Option<String>,
@@ -2839,8 +2835,7 @@ impl ActionCommand for WorkSimilar {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/work/WorkDuplicatesParams.ts")]
 pub struct WorkDuplicatesParams {
-    /// Which room's board to read — a room name (`academy`) or channel id you are
-    /// subscribed to. Default: the room you are standing in. Boards are PER ROOM.
+    /// Room whose board to read (name or id); default: this room.
     #[serde(default)]
     #[ts(optional)]
     pub room: Option<String>,
