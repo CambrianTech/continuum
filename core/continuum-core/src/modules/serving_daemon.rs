@@ -25,7 +25,8 @@ use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID}
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan,
+    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
+    ServingDemand, ServingPlan,
     MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
@@ -3302,7 +3303,28 @@ impl ServingDaemonModule {
                 .as_deref()
                 .and_then(crate::modules::served_window_store::load_for),
         );
-        match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
+        // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
+        // ledger's replace-myself budget: serving's own measured footprint added back,
+        // capped at the device. Once serving has REPORTED that footprint (steady state,
+        // and the inherited lane once its attribution lands), the budget is at rest and
+        // the plan must not credit again — twice planned 2 × 70,093 on a card whose fit
+        // was 2 × 47,098 and the re-home law relaunched the lane three times mid-solve
+        // chasing it (5090, 2026-09-17). Before that report exists (the first ticks of a
+        // boot over an inherited lane, #438) the ledger has nothing to add back, and the
+        // plan's own credit is the one that keeps the successor from fleeing its
+        // predecessor onto a smaller model. One credit, whichever layer holds the fact.
+        let ledger_credited = self
+            .resource_daemon
+            .board()
+            .attributions
+            .iter()
+            .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == ResourceKind::Vram && a.bytes > 0);
+        let stable = if ledger_credited {
+            plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
+        } else {
+            plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
+        };
+        match stable {
             Some(plan) => {
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained
