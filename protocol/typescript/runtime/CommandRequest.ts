@@ -87,5 +87,16 @@ actorKind?: string, contextId?: string,
  * here so the ENVELOPE consumes it and a command's own `requestId: String` never
  * sees an integer (measured 2026-09-06: the airc hop refused every well-formed
  * peer-addressed generate with "invalid type: integer `1`, expected a string").
+ *
+ * AND THE INVERSE (measured 2026-09-17, the first hour cross-grid inference was
+ * addressable at all): a command's own `requestId: String` — `TextGenerationRequest`
+ * stamps a uuid on every persona turn — lands on the RESPONDER in this same flat
+ * namespace, and an `Option<u64>` refused it: "invalid type: string
+ * `05acabe7-…`, expected u64", five of six remote turns dead on arrival, 0 ms.
+ * Two ids share one key. The counter is the framing's (an integer); anything
+ * else under the key is the command's, and the envelope has no counter on that
+ * hop. The command's id does not survive the wire — it is per-hop correlation
+ * and the responder stamps its own — which is the price of the flat namespace,
+ * paid here once rather than by every command that carries a `requestId`.
  */
 requestId?: number, } & P;
