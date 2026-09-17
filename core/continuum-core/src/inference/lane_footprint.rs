@@ -11,8 +11,9 @@
 //! that never checked its own arithmetic against the process it launched.
 //!
 //! This module checks. On the serving tick the daemon reads the lane's ANONYMOUS
-//! footprint (macOS `proc_pid_rusage` phys_footprint: dirty + compressed, mapped files
-//! excluded — llama.cpp mmaps the weights, so this is everything BUT the weights; Linux
+//! footprint (macOS `proc_pid_rusage`: the larger of phys_footprint — dirty + compressed,
+//! mapped files excluded, so everything BUT the mmapped weights — and the process's
+//! lifetime peak of it, since the current figure dips as the pager moves pages; Linux
 //! `RssAnon + VmSwap`), decomposes it with the plan's own formula
 //! (`lanes × (compute_floor + per_token × window)`) into a measured per-token cost, and
 //! keeps it per model in `state/lane-footprint.json` — fresh by its last WRITE, on a
@@ -130,23 +131,33 @@ pub fn anon_footprint_of(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "macos")]
 fn anon_footprint_impl(pid: u32) -> Option<u64> {
-    // struct rusage_info_v0: ri_uuid[16], then ten u64 — ri_phys_footprint is the 8th
-    // u64 (index 7): user_time, system_time, pkg_idle_wkups, interrupt_wkups, pageins,
-    // wired_size, resident_size, PHYS_FOOTPRINT, proc_start_abstime, proc_exit_abstime.
+    // struct rusage_info_v4: ri_uuid[16], then 35 u64. ri_phys_footprint is index 7
+    // (v0: user_time, system_time, pkg_idle_wkups, interrupt_wkups, pageins, wired_size,
+    // resident_size, PHYS_FOOTPRINT, proc_start_abstime, proc_exit_abstime); v1 adds six
+    // child_* fields (10..16), v2 two diskio (16..18), v3 nine cpu_time_qos/billed/serviced
+    // (18..27), v4 logical_writes (27), LIFETIME_MAX_PHYS_FOOTPRINT (28), instructions,
+    // cycles, billed_energy, serviced_energy, interval_max_phys_footprint, runnable_time.
+    //
+    // The measurement is the LARGER of the current footprint and the lifetime peak: the
+    // need is what the process ever held, and the current figure dips as the pager moves
+    // its pages (measured 2026-09-17 11:21Z: 9.0 → 5.9 GB in one minute on a live lane
+    // while swap grew 2 GB — the same server, nothing freed).
     #[repr(C)]
-    struct RusageInfoV0 {
+    struct RusageInfoV4 {
         uuid: [u8; 16],
-        fields: [u64; 10],
+        fields: [u64; 35],
     }
     extern "C" {
-        fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut RusageInfoV0) -> libc::c_int;
+        fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut RusageInfoV4) -> libc::c_int;
     }
-    const RUSAGE_INFO_V0: libc::c_int = 0;
-    let mut info = RusageInfoV0 { uuid: [0; 16], fields: [0; 10] };
-    // SAFETY: the buffer is a correctly sized, writable rusage_info_v0; libproc only
-    // writes within it for flavor V0.
-    let rc = unsafe { proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V0, &mut info) };
-    (rc == 0).then_some(info.fields[7])
+    const RUSAGE_INFO_V4: libc::c_int = 4;
+    const PHYS_FOOTPRINT: usize = 7;
+    const LIFETIME_MAX_PHYS_FOOTPRINT: usize = 28;
+    let mut info = RusageInfoV4 { uuid: [0; 16], fields: [0; 35] };
+    // SAFETY: the buffer is a correctly sized, writable rusage_info_v4; libproc only
+    // writes within it for flavor V4.
+    let rc = unsafe { proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V4, &mut info) };
+    (rc == 0).then(|| info.fields[PHYS_FOOTPRINT].max(info.fields[LIFETIME_MAX_PHYS_FOOTPRINT]))
 }
 
 #[cfg(target_os = "linux")]
