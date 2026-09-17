@@ -6857,6 +6857,11 @@ mod tests {
             // fill (what she ran and saw) in place of an evidence hash nothing in her
             // world produced — and work/submit's derivable fields turned optional.
             // Net +27 guard tokens on the full catalog (12027).
+            // 2026-09-17, #4158: work/list, work/similar and work/duplicates gained `room`
+            // (boards are PER ROOM; a citizen seated in a triage room saw an EMPTY board).
+            // First cut cost +117 guard tokens and tripped this ceiling AND the 8192
+            // survival check below by TWO tokens; the docs were made terse instead of
+            // moving either number. The surface is within the ceiling as it stood.
             const AGENTIC_SURFACE_CEILING: u32 = 12100;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");

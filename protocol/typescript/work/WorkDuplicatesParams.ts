@@ -2,6 +2,10 @@
 
 export type WorkDuplicatesParams = { 
 /**
+ * Room whose board to read (name or id); default: this room.
+ */
+room?: string, 
+/**
  * Which columns to group (default `["open"]`). Empty = every card.
  */
 states: Array<string>, 

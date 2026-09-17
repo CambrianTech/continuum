@@ -397,6 +397,35 @@ pub(crate) async fn card_in_subscribed_rooms(
 /// whole time (2026-09-05; the fold, the cursor and the page size were all
 /// exonerated before the resolver was read). A room whose board fails to read
 /// is skipped, never fatal: a stale run room must not hide the academy.
+/// The board a READ verb looks at: `room`'s when named (a room name or channel id
+/// this persona is subscribed to), else the CURRENT room's. Boards are per room —
+/// #academy holds 176 cards, #continuum 231, a fresh activity room none — and a
+/// citizen seated in a triage room saw an EMPTY board because `work/list` read the
+/// room she was standing in (2026-09-17). The board she triages is the board she
+/// names. Write verbs are unaffected: they resolve a card across every subscribed
+/// board already.
+pub(crate) async fn board_to_read(
+    airc: &Arc<Airc>,
+    room: Option<&str>,
+) -> Result<airc_lib::BoardSnapshot, CommandError> {
+    let projection = match room.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(name) => {
+            let room = airc
+                .room_by_name_or_channel(name, "read the work board of")
+                .await
+                .map_err(|e| CommandError::Invalid(format!("room {name:?}: {e}")))?;
+            airc.project_room_work_board(&room, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                .await
+                .map_err(|e| CommandError::Internal(format!("board read ({name}): {e}")))?
+        }
+        None => airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?,
+    };
+    Ok(projection.snapshot())
+}
+
 pub(crate) async fn subscribed_boards(
     airc: &Arc<Airc>,
 ) -> Result<Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>, airc_lib::AircError> {
@@ -2366,6 +2395,10 @@ pub struct WorkList {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkListParams {
+    /// Room whose board to read (name or id); default: this room.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// Optional COLUMN filter: open | claimed | in_progress | blocked | review | merged | closed.
     ///
     /// This is the card's column, NOT whether you can take it. `state="open"` means
@@ -2499,18 +2532,14 @@ impl ActionCommand for WorkList {
          `claimable: true` — most takeable cards sit in the `claimed` column with a lapsed lease, \
          so filtering `state: \"open\"` (the COLUMN) will miss them and can come back empty on a \
          full board. The result always reports `total_on_board` and `claimable_now` so an empty \
-         list is never mistaken for an empty board.";
+         list is never mistaken for an empty board. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkListParams) -> Result<WorkListResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let filter = p.state.as_deref().map(parse_state).transpose()?;
-        let board = airc
-            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-            .await
-            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-            .snapshot();
+        let board = board_to_read(&airc, p.room.as_deref()).await?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -2661,6 +2690,10 @@ fn default_open_states() -> Vec<String> {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/work/WorkSimilarParams.ts")]
 pub struct WorkSimilarParams {
+    /// Room whose board to read (name or id); default: this room.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// A card to find the likes of (short id or UUID). Its own text is the query and
     /// it is excluded from the hits. Give this OR `text`.
     #[serde(default)]
@@ -2729,11 +2762,7 @@ impl ActionCommand for WorkSimilar {
     ) -> Result<WorkSimilarResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let states = parse_states(&p.states)?;
-        let board = airc
-            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-            .await
-            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-            .snapshot();
+        let board = board_to_read(&airc, p.room.as_deref()).await?;
         let (query_label, query_text, exclude) = match (p.card_id.as_deref(), p.text.as_deref())
         {
             (Some(id), None) => {
@@ -2806,6 +2835,10 @@ impl ActionCommand for WorkSimilar {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/work/WorkDuplicatesParams.ts")]
 pub struct WorkDuplicatesParams {
+    /// Room whose board to read (name or id); default: this room.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// Which columns to group (default `["open"]`). Empty = every card.
     #[serde(default = "default_open_states")]
     pub states: Vec<String>,
@@ -2874,11 +2907,7 @@ impl ActionCommand for WorkDuplicates {
     ) -> Result<WorkDuplicatesResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let states = parse_states(&p.states)?;
-        let board = airc
-            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-            .await
-            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-            .snapshot();
+        let board = board_to_read(&airc, p.room.as_deref()).await?;
         let candidates = card_candidates(&board.cards, &states);
         let searched = candidates.len();
         let grouped = crate::commands::embedding::groups::group_texts(

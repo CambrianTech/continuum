@@ -2,6 +2,10 @@
 
 export type WorkSimilarParams = { 
 /**
+ * Room whose board to read (name or id); default: this room.
+ */
+room?: string, 
+/**
  * A card to find the likes of (short id or UUID). Its own text is the query and
  * it is excluded from the hits. Give this OR `text`.
  */
