@@ -1287,10 +1287,15 @@ impl ServingDaemonModule {
             pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco,
             Ordering::Relaxed,
         );
+        // Ludicrous (an exam) floors it; pressure (Eco) drops it; otherwise the
+        // operator's headroom policy names the everyday mode — the SAME knob the pin
+        // fit-gate budgets with, composed here as a mode rather than stacked under one.
         let mode = if serving_ludicrous_active() {
             crate::provisioning::model_catalog::PowerMode::Performance
-        } else {
+        } else if pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco {
             pressure_mode
+        } else {
+            everyday_drive_mode()
         };
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
@@ -1378,7 +1383,7 @@ impl ServingDaemonModule {
         let mode = if serving_ludicrous_active() {
             crate::provisioning::model_catalog::PowerMode::Performance
         } else {
-            crate::provisioning::model_catalog::PowerMode::Comfort
+            everyday_drive_mode()
         };
         HostBudget {
             usable_bytes: physical_usable_bytes(
@@ -4471,6 +4476,15 @@ fn serve_host_bytes(
         (Some(fp), _) => fp.peak_resident_bytes(served_ctx, lanes),
         (None, _) => 0,
     }
+}
+
+/// The everyday drive mode this node's operator asked for, from
+/// `CONTINUUM_VRAM_HEADROOM` (default 0.8 → Comfort; a dedicated node at 1.0 →
+/// Performance). One reader, cached by `config_env`.
+fn everyday_drive_mode() -> crate::provisioning::model_catalog::PowerMode {
+    crate::provisioning::model_catalog::PowerMode::everyday_for_headroom(
+        crate::config_env::vram_headroom(),
+    )
 }
 
 fn host_os_floor_bytes(physical_bytes: u64) -> u64 {

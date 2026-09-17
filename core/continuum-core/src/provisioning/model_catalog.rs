@@ -255,6 +255,28 @@ impl PowerMode {
     /// the most (a crowded call, battery); Performance floors it (a solo demanding
     /// session). This is the resiliency reserve that keeps 14 personas from OOM-ing the
     /// pool: serving never grabs everything, so the KV of the rest of the call still fits.
+    /// The EVERYDAY drive mode from the operator's headroom policy
+    /// (`CONTINUUM_VRAM_HEADROOM`, "a dedicated foundry sets 1.0"): the mode whose
+    /// serving fraction that policy names. A headless inference node at 1.0 plans at
+    /// Performance every day, not only while a detached benchmark holds a Ludicrous
+    /// lease; a shared desktop at the 0.8 default stays Comfort, byte-identical to
+    /// before. Pressure can still force Eco below this; nothing raises above it but
+    /// a Ludicrous hold. Measured 2026-09-17 on the 5090: at Comfort a 27B on 32 GB
+    /// fits 1 × 37k or 2 × 11.6k, and two residents made the plan pick 2 × 11.6k —
+    /// too narrow for a solve turn (128 `over_window` in 25 min on a claimed card)
+    /// on a box that ran the same model at 31.9 GB all night.
+    pub fn everyday_for_headroom(headroom: f64) -> PowerMode {
+        if headroom >= 0.99 {
+            PowerMode::Performance
+        } else if headroom >= 0.90 {
+            PowerMode::Sport
+        } else if headroom >= 0.70 {
+            PowerMode::Comfort
+        } else {
+            PowerMode::Eco
+        }
+    }
+
     pub fn serving_fraction(self) -> f64 {
         match self {
             PowerMode::Eco => 0.55,
@@ -465,6 +487,22 @@ pub async fn provision_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-17, the 5090): the operator's headroom policy is the
+    // everyday drive mode. The 0.8 default is Comfort — byte-identical to before — and
+    // a dedicated node at 1.0 plans at Performance every day, not only under an exam's
+    // Ludicrous hold. Below Comfort's band the node asks for Eco on purpose.
+    #[test]
+    fn the_everyday_drive_mode_is_the_operators_headroom_policy() {
+        assert_eq!(PowerMode::everyday_for_headroom(0.8), PowerMode::Comfort);
+        assert_eq!(PowerMode::everyday_for_headroom(1.0), PowerMode::Performance);
+        assert_eq!(PowerMode::everyday_for_headroom(0.92), PowerMode::Sport);
+        assert_eq!(PowerMode::everyday_for_headroom(0.5), PowerMode::Eco);
+        assert_eq!(
+            PowerMode::everyday_for_headroom(0.8).serving_fraction(),
+            PowerMode::Comfort.serving_fraction()
+        );
+    }
 
     // what this catches: quant parsing pulls the tag from real GGUF names (right-most
     // token wins over model-name noise) and rejects names with no quant.
