@@ -2312,14 +2312,24 @@ mod tests {
             perf_cores: 8,
         };
         let demand = ServingDemand::new(2, Some(120_000));
-        let plan = plan_serving_at_rest(at_rest, std::slice::from_ref(&m), Some("qwen3.8-27b"), demand)
-            .expect("plan");
+        let plan = plan_serving_at_rest(
+            at_rest,
+            std::slice::from_ref(&m),
+            Some("qwen3.8-27b"),
+            demand,
+        )
+        .expect("plan");
         let fit = m.window_within(at_rest.usable_bytes, plan.lanes);
         assert_eq!(plan.served_context_window, fit, "at rest, the plan's window is the fit");
         // The live-budget path still credits: handed the same number as a LIVE reading it
         // plans a bigger window — which is exactly why the daemon must not use it.
-        let credited = plan_serving_stable(at_rest, std::slice::from_ref(&m), Some("qwen3.8-27b"), demand)
-            .expect("plan");
+        let credited = plan_serving_stable(
+            at_rest,
+            std::slice::from_ref(&m),
+            Some("qwen3.8-27b"),
+            demand,
+        )
+        .expect("plan");
         assert!(credited.served_context_window > plan.served_context_window);
     }
 

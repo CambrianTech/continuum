@@ -3313,12 +3313,9 @@ impl ServingDaemonModule {
         // boot over an inherited lane, #438) the ledger has nothing to add back, and the
         // plan's own credit is the one that keeps the successor from fleeing its
         // predecessor onto a smaller model. One credit, whichever layer holds the fact.
-        let ledger_credited = self
-            .resource_daemon
-            .board()
-            .attributions
-            .iter()
-            .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == ResourceKind::Vram && a.bytes > 0);
+        let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
+            a.consumer_id == SERVING_CONSUMER_ID && a.kind == ResourceKind::Vram && a.bytes > 0
+        });
         let stable = if ledger_credited {
             plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
         } else {
