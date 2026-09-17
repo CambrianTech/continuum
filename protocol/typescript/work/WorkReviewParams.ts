@@ -2,40 +2,40 @@
 import type { ReviewOutcome } from "./ReviewOutcome";
 import type { WorkArtifactReference } from "./WorkArtifactReference";
 
-export type WorkReviewParams = { 
+export type WorkReviewParams = { room: string, 
 /**
- * Submission and review-card room.
+ * The REVIEW card you hold. The parent card, its latest submission and artifact,
+ * and your claim on the review card are all read off the board from it when the
+ * fields below are omitted — a reviewer never had a way to know a submission id
+ * or an artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
  */
-room: string, 
+review_card_id: string, outcome: ReviewOutcome, 
 /**
- * Chosen UUID; retry identical judgement with this id.
+ * What you saw: the test output, the diff read, the reasoning. Hashed into the
+ * review's evidence reference when `evidence` is omitted.
  */
-review_id: string, 
+evidence_text?: string, 
 /**
- * Submission's parent work-card UUID.
+ * Minted when omitted.
  */
-card_id: string, 
+review_id?: string, 
 /**
- * Accepted submission UUID.
+ * The parent card under review; the review card names it.
  */
-submission_id: string, 
+card_id?: string, 
 /**
- * Must match the submitted artifact.
+ * The submission being reviewed; the parent card's latest when omitted.
  */
-artifact: WorkArtifactReference, 
+submission_id?: string, 
 /**
- * Linked review-card UUID.
+ * That submission's artifact; read off the board when omitted.
  */
-review_card_id: string, 
+artifact?: WorkArtifactReference, 
 /**
- * Your claim UUID on the review card.
+ * Your live claim on the review card; read off the board when omitted.
  */
-review_claim_id: string, 
+review_claim_id?: string, 
 /**
- * Your judgement, not an objective grade.
+ * A typed evidence reference; `evidence_text` is the usual way.
  */
-outcome: ReviewOutcome, 
-/**
- * Supporting evidence content identity.
- */
-evidence: WorkArtifactReference, };
+evidence?: WorkArtifactReference, };

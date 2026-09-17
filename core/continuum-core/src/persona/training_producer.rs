@@ -2774,14 +2774,15 @@ pub(crate) mod tests {
             &ctx,
             WorkReviewParams {
                 room: params.room.clone(),
-                review_id: Uuid::new_v4(),
-                card_id: card.as_uuid(),
-                submission_id: params.submission_id.expect("the fixture names its submission"),
-                artifact: params.artifact.clone().expect("the fixture names its artifact"),
+                review_id: Some(Uuid::new_v4()),
+                card_id: Some(card.as_uuid()),
+                submission_id: Some(params.submission_id.expect("the fixture names its submission")),
+                artifact: Some(params.artifact.clone().expect("the fixture names its artifact")),
                 review_card_id: review_card.as_uuid(),
-                review_claim_id: review_claim.as_uuid(),
+                review_claim_id: Some(review_claim.as_uuid()),
                 outcome: ReviewOutcome::Passed,
-                evidence: params.artifact.clone().expect("the fixture names its artifact"),
+                evidence_text: None,
+                evidence: Some(params.artifact.clone().expect("the fixture names its artifact")),
             },
         )
         .await
