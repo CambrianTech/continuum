@@ -510,9 +510,20 @@ impl ActionCommand for BenchmarkRoundStop {
         let run_id = match p.run_id {
             Some(rid) => rid,
             None => {
-                let in_flight = detached_evals_in_flight();
+                // Evals AND detached solves are runs (card 4558eef9: a stop that only knew
+                // evals could not name a solve, and a solve never reached "the next task
+                // boundary" anyway — its act loop now polls the same flag).
+                let mut in_flight: Vec<String> = detached_evals_in_flight()
+                    .into_iter()
+                    .map(|(rid, _, _)| rid)
+                    .collect();
+                in_flight.extend(
+                    crate::cognition::swe_bench::in_flight_solve_runs()
+                        .into_iter()
+                        .map(|(rid, _)| rid),
+                );
                 match in_flight.as_slice() {
-                    [(rid, _, _)] => rid.clone(),
+                    [rid] => rid.clone(),
                     [] => {
                         return Err(CommandError::Invalid(
                             "no round is in flight — nothing to stop".into(),
@@ -520,8 +531,9 @@ impl ActionCommand for BenchmarkRoundStop {
                     }
                     many => {
                         return Err(CommandError::Invalid(format!(
-                            "{} runs in flight — pass --run-id to pick one",
-                            many.len()
+                            "{} runs in flight ({}) — pass --run-id to pick one",
+                            many.len(),
+                            many.join(", ")
                         )))
                     }
                 }
@@ -530,7 +542,9 @@ impl ActionCommand for BenchmarkRoundStop {
         crate::cognition::eval::cancel_eval_run(&run_id);
         Ok(BenchmarkRoundStopResult {
             run_id,
-            note: "cancellation lands at the next task boundary; grades kept; the same                    benchmark/round command resumes later"
+            note: "cancellation lands at the next task boundary (an eval) or the next watchdog poll, \
+                   within a minute (a detached solve; its lane hold is released); grades kept; the \
+                   same benchmark/round command resumes later"
                 .into(),
         })
     }

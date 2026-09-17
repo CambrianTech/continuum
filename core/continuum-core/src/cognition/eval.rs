@@ -1992,7 +1992,7 @@ pub(crate) fn eval_run_cancelled(run_id: &str) -> bool {
         .unwrap_or(false) // poisoned = a panicked writer; run to completion rather than wedge
 }
 
-fn clear_eval_cancel(run_id: &str) {
+pub(crate) fn clear_eval_cancel(run_id: &str) {
     if let Ok(mut g) = CANCELLED_RUNS.lock() {
         g.retain(|r| r != run_id);
     }
