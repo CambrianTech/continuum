@@ -769,10 +769,6 @@ mod tests {
         );
     }
 
-    // what this catches: a bad-args refusal keeps the substrate's own field-naming
-    // reason AND inlines the command's correct call shape — feedback that names the
-    // problem and the fix in the SAME observation, no help-lookup turn (#1916).
-    #[test]
     // what this catches: the manual's placeholder sent as a value — `<replace-with-string>`,
     // `<string>`, a sixty-four-zero hash, the nil uuid — named by FIELD and never dispatched;
     // a real call with a real path, id and hash walks through untouched.
@@ -796,6 +792,9 @@ mod tests {
         })).is_empty());
     }
 
+    // what this catches: a bad-args refusal keeps the substrate's own field-naming
+    // reason AND inlines the command's correct call shape — feedback that names the
+    // problem and the fix in the SAME observation, no help-lookup turn (#1916).
     #[test]
     fn invalid_params_feedback_reinforces_help() {
         let raw = "code/write: [invalid] missing field `filePath`".to_string();
