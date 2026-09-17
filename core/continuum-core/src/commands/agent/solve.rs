@@ -445,20 +445,30 @@ impl ActionCommand for AgentSolve {
                         ceiling_s = attempt_ceiling.as_secs(),
                         "solve attempt starting — pulse anchor for run-liveness watchers"
                     );
+                    let stop_asked = {
+                        let run_id = run_id.clone();
+                        move || crate::cognition::eval::eval_run_cancelled(&run_id)
+                    };
                     let body = match attempt_with_advancement_watchdog(
                         path.as_deref(),
                         ACT_STALL_ALLOWANCE,
                         attempt_ceiling,
+                        stop_asked,
                         AgentSolve::solve_body(this_attempt),
                     )
                     .await
                     {
                         Ok(body) => body,
                         Err(halt) => {
-                            let msg = format!(
-                                "attempt {attempt} of {max_attempts} {halt} — an INFRA fault, \
-                                 never a capability verdict"
-                            );
+                            let cancelled = matches!(halt, AttemptHalt::Cancelled { .. });
+                            let msg = if cancelled {
+                                format!("attempt {attempt} of {max_attempts} {halt}")
+                            } else {
+                                format!(
+                                    "attempt {attempt} of {max_attempts} {halt} — an INFRA fault, \
+                                     never a capability verdict"
+                                )
+                            };
                             crate::probe!(
                                 class = "benchmark.stall",
                                 run_id = %run_id,
@@ -474,6 +484,7 @@ impl ActionCommand for AgentSolve {
                                     path,
                                     serde_json::json!({
                                         "failed": true,
+                                        "cancelled": cancelled,
                                         "infra_error": msg,
                                         "run_id": run_id,
                                         "attempt": attempt,
@@ -481,7 +492,12 @@ impl ActionCommand for AgentSolve {
                                     .to_string(),
                                 );
                             }
-                            tracing::error!(run_id = %run_id, attempt, "agent/solve detached attempt stalled past deadline");
+                            if cancelled {
+                                crate::cognition::eval::clear_eval_cancel(&run_id);
+                                tracing::info!(run_id = %run_id, attempt, "agent/solve detached attempt cancelled by round-stop");
+                            } else {
+                                tracing::error!(run_id = %run_id, attempt, "agent/solve detached attempt stalled past deadline");
+                            }
                             break;
                         }
                     };
@@ -1295,6 +1311,9 @@ pub(crate) enum AttemptHalt {
     Stalled { acts: u64, allowance: Duration },
     /// The attempt advanced the whole way and still outlived its ceiling.
     Ceiling { acts: u64, ceiling: Duration },
+    /// The operator asked for it to stop (`benchmark/round-stop`): the flag reached the
+    /// act loop at the next watchdog poll — not "the next task boundary" a solve never has.
+    Cancelled { acts: u64 },
 }
 
 impl AttemptHalt {
@@ -1302,11 +1321,14 @@ impl AttemptHalt {
         match self {
             AttemptHalt::Stalled { .. } => "stalled",
             AttemptHalt::Ceiling { .. } => "ceiling",
+            AttemptHalt::Cancelled { .. } => "cancelled",
         }
     }
     pub(crate) fn acts(self) -> u64 {
         match self {
-            AttemptHalt::Stalled { acts, .. } | AttemptHalt::Ceiling { acts, .. } => acts,
+            AttemptHalt::Stalled { acts, .. }
+            | AttemptHalt::Ceiling { acts, .. }
+            | AttemptHalt::Cancelled { acts } => acts,
         }
     }
 }
@@ -1323,6 +1345,10 @@ impl std::fmt::Display for AttemptHalt {
                 f,
                 "outlived its ceiling ({}s) still advancing at {acts} act(s) — bounded, not judged",
                 ceiling.as_secs()
+            ),
+            AttemptHalt::Cancelled { acts } => write!(
+                f,
+                "cancelled by round-stop at {acts} act(s) — stopped, not judged"
             ),
         }
     }
@@ -1349,6 +1375,7 @@ async fn attempt_with_advancement_watchdog<F>(
     ledger: Option<&std::path::Path>,
     stall_allowance: Duration,
     ceiling: Duration,
+    cancelled: impl Fn() -> bool,
     attempt: F,
 ) -> Result<F::Output, AttemptHalt>
 where
@@ -1372,6 +1399,14 @@ where
                     last_advance = now;
                 }
                 let acts_n = last_acts.unwrap_or(0);
+                // A stop request lands HERE (card 4558eef9): `benchmark/round-stop` used to
+                // promise "the next task boundary", which a detached solve never reaches —
+                // sklearn-25102 kept acting 22 → 26 for 25 minutes after the stop and its
+                // steady hold kept the lane pinned. Dropping the attempt future releases the
+                // hold and the lane with it.
+                if cancelled() {
+                    return Err(AttemptHalt::Cancelled { acts: acts_n });
+                }
                 if ledger.is_some() && now.duration_since(last_advance) >= stall_allowance {
                     return Err(AttemptHalt::Stalled { acts: acts_n, allowance: stall_allowance });
                 }
@@ -2644,7 +2679,7 @@ mod tests {
                 }
                 "settled"
             };
-            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, attempt).await;
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, || false, attempt).await;
             assert_eq!(out, Ok("settled"), "advancing at 30 min/act is not a stall");
 
             // The wedge: acts stop at 3 and nothing moves again.
@@ -2655,7 +2690,7 @@ mod tests {
                 write_acts(&l, 3);
                 std::future::pending::<&str>().await
             };
-            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, wedged).await;
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, || false, wedged).await;
             assert_eq!(out, Err(AttemptHalt::Stalled { acts: 3, allowance }));
         }
 
@@ -2677,11 +2712,38 @@ mod tests {
                 #[allow(unreachable_code)]
                 ()
             };
-            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, forever).await;
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, || false, forever).await;
             assert!(matches!(out, Err(AttemptHalt::Ceiling { acts, .. }) if acts >= 8), "{out:?}");
             // No ledger (an attached call): stall cannot be judged, the ceiling still can.
-            let out = attempt_with_advancement_watchdog(None, allowance, ceiling, std::future::pending::<()>()).await;
+            let out = attempt_with_advancement_watchdog(None, allowance, ceiling, || false, std::future::pending::<()>()).await;
             assert!(matches!(out, Err(AttemptHalt::Ceiling { acts: 0, .. })), "{out:?}");
+        }
+
+        // what this catches (card 4558eef9): a stop must reach the ACT LOOP — an
+        // advancing solve, never stalled and far under its ceiling, ends at the next poll
+        // once the stop flag is raised, and the halt names itself cancelled with the acts
+        // it had reached.
+        #[tokio::test(start_paused = true)]
+        async fn a_round_stop_ends_an_advancing_attempt_at_the_next_poll() {
+            let dir = dir_with(0);
+            let ledger = dir.path().join("run.json");
+            let allowance = Duration::from_secs(75 * 60);
+            let ceiling = Duration::from_secs(24 * 3600);
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let l = ledger.clone();
+            let s = stop.clone();
+            let advancing = async move {
+                for n in 1..=4u64 {
+                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                    write_acts(&l, n);
+                }
+                // The operator stops the round at act 4; the run would otherwise go on.
+                s.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::future::pending::<&str>().await
+            };
+            let asked = { let s = stop.clone(); move || s.load(std::sync::atomic::Ordering::SeqCst) };
+            let out = attempt_with_advancement_watchdog(Some(&ledger), allowance, ceiling, asked, advancing).await;
+            assert_eq!(out, Err(AttemptHalt::Cancelled { acts: 4 }), "the stop reached the loop within one poll");
         }
 
         fn dir_with(acts: u64) -> tempfile::TempDir {
