@@ -1208,8 +1208,22 @@ pub fn only_stale_or_no_working_rounds(runs: &[CardRunFacts], now_ms: u64) -> bo
 pub fn unworked_backlog(runs: &[CardRunFacts], now_ms: u64) -> usize {
     let mut rounds = live_rounds();
     enrich_rounds(&mut rounds, runs, now_ms);
+    pullable_backlog(&rounds)
+}
+
+/// PURE half of the backlog guard: unstarted cards a citizen can actually PULL —
+/// in a `working` round driven by citizens. A paused round's cards are not offered
+/// (the deck reads working rounds only), and a detached-solve round's cards are the
+/// solver's, never pulled. Measured 2026-09-17: the guard read a backlog of 120 —
+/// every unstarted card of every PAUSED round plus the paused detached control — against
+/// 16 citizens, while the one working round had one card left in review; the roster
+/// idled (`persona.work.gate no_held_work` × 60, `bench.round.pull_none` × 25, 0 acts
+/// in 30 minutes) and the autopilot held "until the backlog drains" — a backlog nobody
+/// could drain.
+pub fn pullable_backlog(rounds: &[RoundSnapshot]) -> usize {
     rounds
         .iter()
+        .filter(|r| r.stage == "working" && r.driver == "citizen")
         .flat_map(|r| r.cards.iter())
         .filter(|c| c.state == "unstarted")
         .count()
@@ -1539,6 +1553,7 @@ pub struct RoundSnapshot {
 #[derive(
     Debug,
     Clone,
+    Default,
     PartialEq,
     Eq,
     serde::Serialize,
@@ -2120,6 +2135,32 @@ mod tests {
             verdict: String::new(),
             idle_secs: idle,
         }
+    }
+
+    // what this catches (2026-09-17): the backlog guard counted unstarted cards in
+    // PAUSED rounds and in the paused detached control — 120 cards no citizen could
+    // pull — and held the autopilot while the whole roster idled. Only cards a citizen
+    // can pull (working, citizen-driven) are backlog.
+    #[test]
+    fn the_backlog_counts_only_cards_a_citizen_can_pull() {
+        use super::{pullable_backlog, RoundCardSnapshot};
+        fn with_cards(mut r: RoundSnapshot, driver: &str, unstarted: usize) -> RoundSnapshot {
+            r.driver = driver.into();
+            r.cards = (0..unstarted)
+                .map(|_| RoundCardSnapshot {
+                    state: "unstarted".into(),
+                    ..Default::default()
+                })
+                .collect();
+            r
+        }
+        let rounds = vec![
+            with_cards(snap("paused", None), "citizen", 100),
+            with_cards(snap("working", None), "detached_solve", 8),
+            with_cards(snap("working", Some(30)), "citizen", 3),
+        ];
+        assert_eq!(pullable_backlog(&rounds), 3, "paused and detached cards are not a citizen's backlog");
+        assert_eq!(pullable_backlog(&[]), 0);
     }
 
     #[test]
