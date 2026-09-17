@@ -154,8 +154,24 @@ pub fn knee_lanes(demand: u32, knee: Option<u32>) -> u32 {
 static CURVES: LazyLock<parking_lot::Mutex<BTreeMap<String, DecodeCurve>>> =
     LazyLock::new(|| parking_lot::Mutex::new(load()));
 
+/// Unix ms of the last write of the curve file by this process (0 = none yet).
+static LAST_SAVE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The curve file is refreshed at least this often while samples flow, whether or not
+/// the knee moved: the file is what the NEXT boot loads, and a point is only as fresh
+/// as its last WRITE. (2026-09-17: saved only on a knee move, the M5's points aged 81
+/// minutes on disk under 144 acts/hour, the boot read them past [`FRESH_MS`], and the
+/// plan launched eight lanes for a knee of four.)
+pub const SAVE_EVERY_MS: u64 = 60 * 1000;
+
+/// Whether this sample writes the file: a knee move always; otherwise once per
+/// [`SAVE_EVERY_MS`] so the record on disk never lags the lane by more than a minute.
+pub fn persists(knee_moved: bool, last_save_ms: u64, now_ms: u64) -> bool {
+    knee_moved || now_ms.saturating_sub(last_save_ms) >= SAVE_EVERY_MS
+}
+
 /// Record one measured decode for `model` (the adapter's seam, every decode — not only
-/// the collapsed ones). Persists the knee when it changes.
+/// the collapsed ones). Persists on a knee move and on cadence while samples flow.
 pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64) {
     if expected_tps <= 0.0 || measured_tps <= 0.0 {
         return;
@@ -179,7 +195,8 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     let before = curve.knee(DECODE_FLOOR_TPS, now);
     curve.observe(inflight, measured_tps, now);
     let after = curve.knee(DECODE_FLOOR_TPS, now);
-    if before != after {
+    let moved = before != after;
+    if moved {
         crate::probe!(
             class = "serving.decode_knee.moved",
             model = model,
@@ -190,7 +207,11 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
             ratio,
             "the measured decode knee moved — lanes follow it, not the roster"
         );
+    }
+    use std::sync::atomic::Ordering;
+    if persists(moved, LAST_SAVE_MS.load(Ordering::Relaxed), now) {
         save_all(&curves);
+        LAST_SAVE_MS.store(now, Ordering::Relaxed);
     }
 }
 
@@ -253,6 +274,18 @@ pub fn save_to(path: &Path, curves: &BTreeMap<String, DecodeCurve>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-17): the curve file was written only when the knee
+    // MOVED, so a lane sampling steadily at the same knee left its points aging on disk;
+    // the next boot loaded them past FRESH_MS and planned unclamped. A sample writes on a
+    // move, and otherwise once per SAVE_EVERY_MS while samples flow.
+    #[test]
+    fn a_steady_knee_still_refreshes_the_file_on_cadence() {
+        assert!(persists(true, T, T), "a move writes at once");
+        assert!(!persists(false, T, T + SAVE_EVERY_MS - 1), "inside the cadence, a steady knee waits");
+        assert!(persists(false, T, T + SAVE_EVERY_MS), "at the cadence a steady knee writes");
+        assert!(persists(false, 0, T), "a process that never saved writes on its first sample");
+    }
 
     const T: u64 = 10_000_000_000; // a fixed "now" — every sample fresh unless a test ages it
     const F: f64 = DECODE_FLOOR_TPS;
