@@ -587,6 +587,7 @@ mod tests {
 
         registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
             crate::persona::PersonaAircRuntimeRegistry::new(),
+            std::sync::Arc::new(crate::memory::DeterministicEmbeddingProvider),
         )));
         registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(
             crate::persona::PersonaAircRuntimeRegistry::new(),

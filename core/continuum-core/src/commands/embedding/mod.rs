@@ -14,6 +14,8 @@
 //! typed JSON.
 
 pub mod cluster;
+pub mod groups;
+pub mod similar;
 pub mod similarity;
 pub mod similarity_matrix;
 pub mod top_k;

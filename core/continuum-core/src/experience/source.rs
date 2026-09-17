@@ -321,6 +321,7 @@ impl RecipeExperienceSource {
             include_str!("recipes/video-chat.json"),
             include_str!("recipes/profile.json"),
             include_str!("recipes/project.json"),
+            include_str!("recipes/board-triage.json"),
         ]
         .into_iter()
         .map(|json| {
