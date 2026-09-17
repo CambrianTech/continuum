@@ -87,6 +87,13 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// the re-home goes ahead and the probe says so; the held work retries its flickered
 /// act (the deliberation retry budget exists for exactly one relaunch).
 const REHOME_HOLD_OVERRIDE_PCT: u32 = 75;
+/// A hold DELAYS a smaller re-home, it never denies it: after this many consecutive
+/// held ticks (5 s each — about one act of held work) a sustained re-home goes ahead
+/// anyway. Measured 2026-09-17 08:3xZ: with the window restored the knee moved 3 → 4
+/// and the plan wanted a fourth lane (+33%, under the override), and the re-fired
+/// solves' hold kept 16 minds on 3 lanes — the health line read STARVED for an hour
+/// while the planner "owed lanes" it had already planned.
+const REHOME_HOLD_DEFER_TICKS: u32 = 24;
 
 /// How many consecutive ticks the plan must exceed the lane by
 /// [`REHOME_MIN_GAIN_PCT`] before a re-home is justified.
@@ -512,6 +519,8 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// Consecutive ticks a sustained re-home has been deferred by a steady hold.
+    rehome_held_ticks: Arc<std::sync::atomic::AtomicU32>,
 
     /// How many CONSECUTIVE ticks the lane has been below plan while declining to
     /// re-home — a clock for the decline probe's cadence and nothing else.
@@ -758,6 +767,7 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            rehome_held_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_last_plan: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = first observation reads FLAT: unknown is not growth
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -2258,7 +2268,16 @@ impl ServingDaemonModule {
                 // Hold the lane steady until the eval drops its guard — a model/genome
                 // change or a pressure shrink above still runs (this only gates the
                 // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
-                if serving_held_steady() && !hold_overridden_by_shortfall(live_space, gain) {
+                let held_ticks = if serving_held_steady() {
+                    self.rehome_held_ticks.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+                } else {
+                    self.rehome_held_ticks.store(0, Ordering::Relaxed);
+                    0
+                };
+                if serving_held_steady()
+                    && !hold_overridden_by_shortfall(live_space, gain)
+                    && held_ticks < REHOME_HOLD_DEFER_TICKS
+                {
                     crate::probe!(
                         class = "serving.reconcile.window",
                         decision = "declined",
@@ -2284,6 +2303,7 @@ impl ServingDaemonModule {
                 // outcomes — so one query over `serving.reconcile.window` reads the
                 // lane's whole decision history, not half of it.
                 if serving_held_steady() {
+                    self.rehome_held_ticks.store(0, Ordering::Relaxed);
                     crate::probe!(
                         class = "serving.reconcile.window",
                         decision = "re-homing_over_hold",
@@ -2292,8 +2312,10 @@ impl ServingDaemonModule {
                         live_lanes = live.lanes,
                         plan_lanes = lanes,
                         shortfall = gain,
+                        held_ticks,
                         hold_override_pct = REHOME_HOLD_OVERRIDE_PCT,
-                        "the live lane serves under a fraction of its plan — a steady hold does not pin that; re-homing, the held work retries its flickered act",
+                        hold_defer_ticks = REHOME_HOLD_DEFER_TICKS,
+                        "a steady hold delays a re-home, never denies it — re-homing over the hold; the held work retries its flickered act",
                     );
                 }
                 crate::probe!(
