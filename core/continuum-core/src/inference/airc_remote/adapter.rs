@@ -11,9 +11,9 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
@@ -23,6 +23,7 @@ use crate::ai::types::{
     TextGenerationResponse,
 };
 
+use super::peer_breaker::{self, PeerBreaker, COLD_AFTER_DEADLINES, COLD_WINDOW};
 use super::protocol::{RemoteInferenceError, RemoteInferenceRequest};
 use super::transport::AircInferenceTransport;
 
@@ -77,20 +78,13 @@ pub struct AircRemoteInferenceAdapter {
     /// fix is no fallback to a false-positive default — admit
     /// "no signal" until traffic proves the peer is reachable.
     has_observed_success: AtomicBool,
-    /// Deadline misses in a row. Reset by any answer from the peer.
-    consecutive_deadlines: AtomicU32,
-    /// While `now < cold_until_ms` the lane is COLD: requests are refused
-    /// here, without a wire round trip. 0 = warm.
-    cold_until_ms: AtomicU64,
+    /// The peer-liveness breaker: deadline misses in a row and, once tripped, the
+    /// cold window. SHARED across every adapter targeting this peer
+    /// (`peer_breaker::breaker_for`, bound in `with_target_peer`) so a per-PEER
+    /// fault is learned once for ALL its personas instead of once each (card
+    /// ad96f5d1). A peer-less adapter (a dream, a test) holds a private one.
+    breaker: Arc<PeerBreaker>,
 }
-
-/// Deadline misses in a row before the lane reads cold. Measured 2026-09-06:
-/// two citizens bound to a peer whose command pump had died sent six requests
-/// in 100 s, each waiting the full 30 s deadline, each burning a turn.
-pub const COLD_AFTER_DEADLINES: u32 = 3;
-/// How long a cold lane stays cold before one request is let through to
-/// re-measure it.
-pub const COLD_WINDOW: Duration = Duration::from_secs(300);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -108,15 +102,13 @@ impl AircRemoteInferenceAdapter {
             persona: None,
             window_sink: None,
             has_observed_success: AtomicBool::new(false),
-            consecutive_deadlines: AtomicU32::new(0),
-            cold_until_ms: AtomicU64::new(0),
+            breaker: Arc::new(PeerBreaker::default()),
         }
     }
 
     /// Whether the lane currently refuses requests without a round trip.
     pub fn is_cold(&self) -> bool {
-        let until = self.cold_until_ms.load(Ordering::Relaxed);
-        until != 0 && now_ms() < until
+        self.breaker.is_cold(now_ms())
     }
 
     /// Fold one transport outcome into the breaker. A deadline miss counts;
@@ -125,23 +117,22 @@ impl AircRemoteInferenceAdapter {
     fn observe(&self, outcome: &Result<(), &RemoteInferenceError>) {
         match outcome {
             Err(RemoteInferenceError::Timeout { .. }) => {
-                let n = self.consecutive_deadlines.fetch_add(1, Ordering::Relaxed) + 1;
-                if n >= COLD_AFTER_DEADLINES {
-                    let until = now_ms().saturating_add(COLD_WINDOW.as_millis() as u64);
-                    self.cold_until_ms.store(until, Ordering::Relaxed);
-                    self.consecutive_deadlines.store(0, Ordering::Relaxed);
+                // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
+                // miss — summed across every persona on the peer — tripped it cold.
+                if let Some(n) = self.breaker.observe_timeout(now_ms()) {
                     crate::probe!(
                         class = "remote_lane.cold",
                         peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
                         persona = %self.persona_label(),
                         deadlines = n,
                         cold_for_s = COLD_WINDOW.as_secs(),
-                        "the remote peer let requests die at the deadline in a row; \
-                         refusing here for the window instead of burning turns"
+                        "the remote peer let requests die at the deadline in a row \
+                         (summed across every persona on it); refusing here for the \
+                         window instead of burning turns"
                     );
                 }
             }
-            _ => self.consecutive_deadlines.store(0, Ordering::Relaxed),
+            _ => self.breaker.observe_answer(),
         }
     }
 
@@ -150,7 +141,11 @@ impl AircRemoteInferenceAdapter {
     /// instance is the dedicated route to one remote inference peer
     /// (e.g. the operator's GPU-rich grid host).
     pub fn with_target_peer(mut self, peer: impl Into<String>) -> Self {
-        self.default_target_peer = Some(peer.into());
+        // Bind the PEER's shared breaker: from here this adapter folds into and
+        // reads the one breaker every adapter on this peer shares (card ad96f5d1).
+        let peer = peer.into();
+        self.breaker = peer_breaker::breaker_for(&peer);
+        self.default_target_peer = Some(peer);
         self
     }
 
