@@ -68,6 +68,18 @@ pub fn context_length(ct: &Content, arch: &str) -> Option<u32> {
 /// `{arch}.block_count` — the transformer layer count. Keyed under the
 /// model's own architecture; required by dimension + residency readers,
 /// surfaced as `Option` so they own the "missing → refuse" error.
+/// `{arch}.full_attention_interval` — on a hybrid artifact (Qwen3.5 / 3.8: Gated
+/// DeltaNet linear layers with a full-attention layer every N), how often a layer
+/// holds per-token KV. The linear layers keep a fixed-size recurrent state, not a
+/// KV cache, so only `block_count / interval` layers count. `None` on an artifact
+/// that never wrote the key = every layer attends (dense / plain GQA).
+pub fn full_attention_interval(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.full_attention_interval"))
+        .and_then(|v| v.to_u32().ok())
+        .filter(|i| *i > 0)
+}
+
 pub fn block_count(ct: &Content, arch: &str) -> Option<u32> {
     ct.metadata
         .get(&format!("{arch}.block_count"))
@@ -152,7 +164,12 @@ pub fn embedding_length(ct: &Content, arch: &str) -> Option<u32> {
 ///
 /// Per-layer `head_count_kv` arrays (hybrid recurrent models) are summed with
 /// zeros counting zero — recurrent layers hold no per-token KV, which is
-/// exactly what their zero declares.
+/// exactly what their zero declares. A hybrid that declares a SCALAR
+/// `head_count_kv` plus `full_attention_interval` (Qwen3.5 / 3.8) holds KV on
+/// `block_count / interval` layers only: measured 2026-09-17 on the 5090, the
+/// all-layers reading of a 64-block `interval = 4` artifact said 256 KiB/token,
+/// the engine held a 144k window in 31.9 GB, and the window arithmetic on the
+/// wrong rate took the served window to 9,430 — every turn `over_window`.
 pub fn kv_bytes_per_token_f16(ct: &Content, arch: &str) -> Option<u64> {
     let key_len = attention_key_length(ct, arch)
         .or_else(|| {
@@ -166,7 +183,12 @@ pub fn kv_bytes_per_token_f16(ct: &Content, arch: &str) -> Option<u64> {
         Some(per_layer) => per_layer.into_iter().map(|h| h as u64).sum(),
         None => {
             let uniform = attention_head_count_kv_scalar(ct, arch)? as u64;
-            uniform.saturating_mul(block_count(ct, arch)? as u64)
+            let blocks = block_count(ct, arch)? as u64;
+            let attending = match full_attention_interval(ct, arch) {
+                Some(interval) => blocks / interval as u64,
+                None => blocks,
+            };
+            uniform.saturating_mul(attending)
         }
     };
     let rate = total_kv_heads.saturating_mul(per_head);
@@ -326,6 +348,27 @@ mod tests {
         // No geometry at all → None (the weights heuristic stands upstream).
         let bare = content_with(vec![("x.block_count", Value::U32(10))]);
         assert_eq!(kv_bytes_per_token_f16(&bare, "x"), None);
+        // Hybrid with a SCALAR kv-head count and a full-attention interval (the
+        // Qwen3.8-27B header, verbatim): 64 blocks, interval 4 → 16 attending
+        // layers × 4 kv-heads × (256 + 256) × 2 = 65,536 — not the 262,144 the
+        // all-layers reading gave (2026-09-17, the 5090's 9,430-token window).
+        let qwen38 = content_with(vec![
+            ("qwen35.block_count", Value::U32(64)),
+            ("qwen35.attention.head_count_kv", Value::U32(4)),
+            ("qwen35.attention.key_length", Value::U32(256)),
+            ("qwen35.attention.value_length", Value::U32(256)),
+            ("qwen35.full_attention_interval", Value::U32(4)),
+        ]);
+        assert_eq!(kv_bytes_per_token_f16(&qwen38, "qwen35"), Some(65_536));
+        // The same header without the interval attends on every layer — the
+        // dense reading stands, so an artifact that never wrote the key is unchanged.
+        let dense = content_with(vec![
+            ("qwen35.block_count", Value::U32(64)),
+            ("qwen35.attention.head_count_kv", Value::U32(4)),
+            ("qwen35.attention.key_length", Value::U32(256)),
+            ("qwen35.attention.value_length", Value::U32(256)),
+        ]);
+        assert_eq!(kv_bytes_per_token_f16(&dense, "qwen35"), Some(262_144));
     }
 
     // what this catches: THE reason this module exists — the context_length
