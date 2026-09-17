@@ -198,6 +198,7 @@ members = [
 airc-core = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "17abc1017a92158351e653540b3bade9bfbd1c7f" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`

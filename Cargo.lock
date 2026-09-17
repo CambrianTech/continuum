@@ -2839,6 +2839,7 @@ dependencies = [
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [
+ "airc-bus",
  "airc-core",
  "airc-ipc",
  "airc-lib",

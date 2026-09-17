@@ -268,6 +268,60 @@ impl CommandRequestHandler {
     /// just a `&CommandExecutor` — no Airc handle required — so the
     /// executor-side of the handler is exercisable without standing
     /// up real airc plumbing.
+    /// [`process_request`](Self::process_request), with the tokens of an `ai/generate`
+    /// on the wire AS THEY ARE PRODUCED — airc stream chunks (`airc.stream.*` headers,
+    /// `DeliveryClass::StreamChunk`, never a durable row) in the room the request
+    /// arrived in, `stream_id` = the request's correlation id, then the settled
+    /// response as the reply exactly as before.
+    ///
+    /// INFERENCE IS A STREAM, NOT A PROMISE. Awaiting the whole answer under one
+    /// deadline is how a working lane and a dead one looked identical for ten
+    /// minutes (2026-09-17: every remote turn in the Intel node's history died at
+    /// 600 s; the first one that was ever answered took 51 s in silence). With the
+    /// chunks on the wire the requester's liveness is the NEXT chunk, and it renders
+    /// as the answer forms. Same primitive the local persona turn rides into a room
+    /// (`service_loop`: `publish_stream_chunk`, coalesced every 250 ms), same
+    /// command path (ACL, interceptors, caller identity) — the only addition is the
+    /// `streamId` the command resolves to the sink registered here.
+    pub async fn process_request_streaming(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+        if parsed.request.path != STREAMED_GENERATE_PATH {
+            return self.process_request(parsed).await;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream_id = parsed.correlation_id;
+        let guard = crate::ai::stream_sinks::register(stream_id, tx);
+        let mut streamed = parsed.clone();
+        if let Some(obj) = streamed.request.params.as_object_mut() {
+            obj.insert(
+                crate::ai::stream_sinks::STREAM_ID_PARAM.to_string(),
+                serde_json::Value::String(stream_id.to_string()),
+            );
+        }
+        let publisher = StreamPublisher {
+            airc: Arc::clone(&self.airc),
+            room: parsed.request_channel,
+            stream_id,
+        };
+        let drain = tokio::spawn(publisher.drain(rx));
+        let response = self.process_request(&streamed).await;
+        // The sink's sender is dropped by the command (or by the guard, if the
+        // command never took it); the drain sees the close, flushes, marks the
+        // end, and only THEN does the settled reply go out — a requester never
+        // sees the reply before the last chunk.
+        drop(guard);
+        match drain.await {
+            Ok(published) => crate::probe!(
+                class = "airc.command.streamed",
+                path = %parsed.request.path,
+                correlation = %stream_id,
+                chunks = published,
+                "the answer's tokens rode the wire as they were produced; the settled reply follows"
+            ),
+            Err(e) => warn!(correlation = %stream_id, error = %e, "stream drain task failed"),
+        }
+        response
+    }
+
     pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
         // Verify any presented capability grant against the AUTHENTICATED sender
         // key; on success its conferred capabilities ride into the gate. Absent /
@@ -564,7 +618,7 @@ impl ConsumerAdapter for CommandRequestHandler {
         } else {
             0
         };
-        let response = self.process_request(&parsed).await;
+        let response = self.process_request_streaming(&parsed).await;
         // Carry the refusal TEXT, not just the fact of refusal. `outcome=error`
         // with elapsed_ms=0 says a gate declined before any work happened but not
         // WHICH gate — and the message is the whole diagnosis (kind/env refusal vs
@@ -601,6 +655,112 @@ impl ConsumerAdapter for CommandRequestHandler {
         );
         self.send_reply(&parsed, &response).await?;
         Ok(())
+    }
+}
+
+/// The one command whose answer is streamed on the wire.
+const STREAMED_GENERATE_PATH: &str = "ai/generate";
+
+/// Tokens are coalesced and flushed at most this often — the same cadence the local
+/// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
+const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Chunk kind for prefill progress — `{processed,total,cached}` as JSON text. Emitted
+/// BEFORE any token exists so a requester's liveness clock has something to reset on
+/// during the long silence a 40 KB prompt buys.
+pub const STREAM_KIND_PREFILL: &str = "inference.prefill";
+
+/// Publishes one generation's chunks into the request's room under its stream id.
+struct StreamPublisher {
+    airc: Arc<Airc>,
+    room: airc_core::RoomId,
+    stream_id: Uuid,
+}
+
+impl StreamPublisher {
+    async fn publish(&self, seq: u64, kind: &str, text: String, is_final: bool) -> bool {
+        let mut headers = airc_core::Headers::new();
+        headers.insert(airc_lib::HEADER_STREAM_ID.into(), self.stream_id.to_string());
+        headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), seq.to_string());
+        headers.insert(airc_lib::HEADER_STREAM_KIND.into(), kind.to_string());
+        if is_final {
+            headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "true".to_string());
+        }
+        match self
+            .airc
+            .publish_with_delivery(
+                airc_lib::PublishTarget::RoomByName(self.room.as_uuid().to_string()),
+                airc_protocol::FrameKind::Event,
+                Body::text(text),
+                headers,
+                airc_bus::DeliveryClass::StreamChunk,
+            )
+            .await
+        {
+            Ok(_) => true,
+            Err(e) => {
+                warn!(correlation = %self.stream_id, seq, error = %e, "stream chunk publish failed");
+                false
+            }
+        }
+    }
+
+    /// Drain the command's sink onto the wire until it closes; returns chunks published.
+    async fn drain(
+        self,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
+    ) -> u64 {
+        use crate::ai::adapter::GenerationChunk;
+        let mut seq = 0u64;
+        let mut published = 0u64;
+        let mut token = String::new();
+        let mut reasoning = String::new();
+        let mut prefill: Option<String> = None;
+        let mut last_flush = std::time::Instant::now();
+        loop {
+            let next = tokio::time::timeout(STREAM_FLUSH_EVERY, rx.recv()).await;
+            let closed = matches!(next, Ok(None));
+            if let Ok(Some(chunk)) = next {
+                match chunk {
+                    GenerationChunk::Token(t) => token.push_str(&t),
+                    GenerationChunk::Reasoning(r) => reasoning.push_str(&r),
+                    GenerationChunk::Prefill { processed, total, cached } => {
+                        prefill = Some(
+                            serde_json::json!({ "processed": processed, "total": total, "cached": cached })
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
+                if let Some(p) = prefill.take() {
+                    published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await as u64;
+                    seq += 1;
+                }
+                if !reasoning.is_empty() {
+                    let flushed = std::mem::take(&mut reasoning);
+                    published += self
+                        .publish(seq, airc_lib::STREAM_KIND_TEXT_REASONING, flushed, false)
+                        .await as u64;
+                    seq += 1;
+                }
+                if !token.is_empty() {
+                    let flushed = std::mem::take(&mut token);
+                    published += self
+                        .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, flushed, false)
+                        .await as u64;
+                    seq += 1;
+                }
+                last_flush = std::time::Instant::now();
+            }
+            if closed {
+                break;
+            }
+        }
+        published += self
+            .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, String::new(), true)
+            .await as u64;
+        published
     }
 }
 

@@ -40,7 +40,7 @@ use uuid::Uuid;
 /// read the peer as cold. Sized like the local generation ceiling.
 pub const REMOTE_INFERENCE_DEADLINE: Duration = Duration::from_secs(600);
 
-use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::adapter::{AIProviderAdapter, GenerationChunk};
 use crate::routing::airc_transport::AircTransport;
 
 use super::protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInferenceResponse};
@@ -65,6 +65,72 @@ pub trait AircInferenceTransport: Send + Sync {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError>;
+
+    /// [`send_request`](Self::send_request) with every chunk the responder streams
+    /// delivered to `sink` the instant it arrives, and the settled response at the
+    /// end. INFERENCE IS A STREAM, NOT A PROMISE: on the live wire the requester's
+    /// liveness is the next chunk, not one deadline for the whole answer.
+    ///
+    /// Default: a transport with no live wire (the stub, the local-adapter loopback)
+    /// has nothing to stream — it answers whole and honestly emits that as a single
+    /// trailing chunk, the same capability statement `AIProviderAdapter::generate_stream`
+    /// makes for a one-shot backend.
+    async fn send_request_streaming(
+        &self,
+        request: RemoteInferenceRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        let response = self.send_request(request).await?;
+        if !sink.is_closed() {
+            if let Some(r) = response.text_response.reasoning.as_ref().filter(|r| !r.is_empty()) {
+                let _ = sink.send(GenerationChunk::Reasoning(r.clone()));
+            }
+            if !response.text_response.text.is_empty() {
+                let _ = sink.send(GenerationChunk::Token(response.text_response.text.clone()));
+            }
+        }
+        Ok(response)
+    }
+}
+
+/// A live stream that has started and then produces NOTHING for this long is dead —
+/// a decode does not pause a minute and resume. Before the first chunk the command
+/// deadline governs (a request queued behind a busy slot is silent, legitimately).
+pub const STREAM_IDLE_BOUND: Duration = Duration::from_secs(90);
+
+/// Forward one wire chunk of `stream_id` to the sink. `Some(is_final)` when the
+/// event was a chunk of THIS stream, `None` for anything else on the bus.
+fn forward_stream_chunk(
+    event: &TranscriptEvent,
+    stream_id: &str,
+    sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+) -> Option<bool> {
+    if event.headers.get(airc_lib::HEADER_STREAM_ID)? != stream_id {
+        return None;
+    }
+    let kind = event.headers.get(airc_lib::HEADER_STREAM_KIND)?;
+    let is_final = event
+        .headers
+        .get(airc_lib::HEADER_STREAM_FINAL)
+        .is_some_and(|v| v == "true");
+    let text = event.body.as_ref().and_then(|b| b.as_text()).unwrap_or_default(); // unwrap_or_default: a final marker carries no text; an empty fragment forwards nothing below
+    if !text.is_empty() {
+        let chunk = match kind.as_str() {
+            airc_lib::STREAM_KIND_TEXT_REASONING => Some(GenerationChunk::Reasoning(text.to_string())),
+            crate::routing::command_handler::STREAM_KIND_PREFILL => serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .map(|v| GenerationChunk::Prefill {
+                    processed: v["processed"].as_u64().unwrap_or(0), // unwrap_or: a malformed progress frame reads as no progress, never as a token
+                    total: v["total"].as_u64().unwrap_or(0),
+                    cached: v["cached"].as_u64().unwrap_or(0),
+                }),
+            _ => Some(GenerationChunk::Token(text.to_string())),
+        };
+        if let Some(c) = chunk {
+            let _ = sink.send(c);
+        }
+    }
+    Some(is_final)
 }
 
 /// Closure-driven stub for unit tests. Construct with a function
@@ -320,6 +386,18 @@ impl AircInferenceTransport for AircLiveTransport {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        // The drain: same wire, the chunks discarded (the sink is dropped, so nothing
+        // is even cloned for it).
+        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(_rx);
+        self.send_request_streaming(request, sink).await
+    }
+
+    async fn send_request_streaming(
+        &self,
+        request: RemoteInferenceRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         // Stamp the send-entry instant up-front so the eventual Timeout
         // surfaces TRUE elapsed wall-clock, not a parroted copy of the
         // deadline constant. Caught by adversarial review on PR #1593:
@@ -360,6 +438,26 @@ impl AircInferenceTransport for AircLiveTransport {
         // body_hint identically; env is None on our envelopes so the
         // env-header branch is a no-op.
         let headers = AircTransport::build_headers(&envelope);
+
+        // Subscribe BEFORE the request leaves, or the first chunks race the
+        // subscription and are lost. No filter: the daemon inverted a header filter
+        // once (2026-09-04) and citizens heard only heartbeats; match on receive.
+        let mut chunks = if sink.is_closed() {
+            None
+        } else {
+            match crate::persona::airc_citizen::subscribe_every_room(&self.airc).await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    crate::probe!(
+                        class = "remote_lane.stream_unsubscribed",
+                        peer = %target.0,
+                        error = %e,
+                        "could not subscribe for the answer's chunks — the turn still completes, whole, at the end"
+                    );
+                    None
+                }
+            }
+        };
 
         // Send-side classification: airc-lib's `request()` cannot
         // surface `CommandDeadline` (the deadline only fires while
@@ -444,7 +542,81 @@ impl AircInferenceTransport for AircLiveTransport {
             room: room.channel,
             correlation: pending_correlation.to_string(),
         };
-        let reply = match self.airc.await_reply(pending).await {
+        // THE HANDLE, NOT THE PROMISE: the reply future settles the turn; the chunk
+        // stream is what proves the lane alive meanwhile. A stream that started and
+        // then goes silent past the idle bound is dead — no waiting out ten minutes.
+        let stream_id = pending_correlation.to_string();
+        let mut reply_fut = std::pin::pin!(self.airc.await_reply(pending));
+        let mut streamed = 0u64;
+        let mut last_chunk_at: Option<std::time::Instant> = None;
+        let awaited = loop {
+            use futures::StreamExt;
+            let idle = async {
+                match last_chunk_at {
+                    Some(at) => tokio::time::sleep_until((at + STREAM_IDLE_BOUND).into()).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let next_chunk = async {
+                match chunks.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                r = &mut reply_fut => break r,
+                ev = next_chunk => match ev {
+                    Some(Ok(event)) => {
+                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink) {
+                            streamed += 1;
+                            last_chunk_at = Some(std::time::Instant::now());
+                            if streamed == 1 {
+                                crate::probe!(
+                                    class = "remote_lane.stream_started",
+                                    peer = %target.0,
+                                    correlation = %stream_id,
+                                    first_chunk_ms = start.elapsed().as_millis() as u64,
+                                    "the remote answer is arriving live"
+                                );
+                            }
+                            if is_final {
+                                // The wire is done; the settled reply is moments behind.
+                                // Stop the idle clock — silence now is not death.
+                                last_chunk_at = None;
+                                chunks = None;
+                            }
+                        }
+                    }
+                    Some(Err(_lag)) => continue,
+                    None => chunks = None,
+                },
+                _ = idle => {
+                    crate::probe!(
+                        class = "remote_lane.stream_stalled",
+                        peer = %target.0,
+                        correlation = %stream_id,
+                        chunks = streamed,
+                        idle_s = STREAM_IDLE_BOUND.as_secs(),
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "the remote answer started and then stopped arriving — the lane is dead, not slow"
+                    );
+                    return Err(RemoteInferenceError::Timeout {
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                }
+            }
+        };
+        if streamed > 0 {
+            crate::probe!(
+                class = "remote_lane.streamed",
+                peer = %target.0,
+                correlation = %stream_id,
+                chunks = streamed,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "the remote answer arrived as chunks; settling on the reply"
+            );
+        }
+        let reply = match awaited {
             Ok(reply) if expected.matches(&reply) => reply,
             // The generic bus can return the first correlated event. Never
             // accept an unrelated responder; recover the intended answer.
@@ -549,6 +721,123 @@ mod tests {
 
     // what this catches: an observed correlation is not authorization to answer
     // for another peer; recovery must enforce the same boundary as live replies.
+    fn chunk_event(stream_id: &str, kind: &str, text: &str, is_final: bool) -> TranscriptEvent {
+        let mut headers = airc_core::Headers::from([
+            (airc_lib::HEADER_STREAM_ID.to_string(), stream_id.to_string()),
+            (airc_lib::HEADER_STREAM_SEQ.to_string(), "3".to_string()),
+            (airc_lib::HEADER_STREAM_KIND.to_string(), kind.to_string()),
+        ]);
+        if is_final {
+            headers.insert(airc_lib::HEADER_STREAM_FINAL.to_string(), "true".to_string());
+        }
+        TranscriptEvent {
+            event_id: airc_core::EventId::new(),
+            room_id: airc_core::RoomId::new(),
+            peer_id: PeerId(Uuid::new_v4()),
+            client_id: airc_core::ClientId::new(),
+            kind: airc_core::TranscriptKind::Message,
+            occurred_at_ms: 0,
+            lamport: 0,
+            target: MentionTarget::All,
+            headers,
+            body: Some(Body::text(text.to_string())),
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    // what this catches (2026-09-17): a remote answer's chunks reach the requester's
+    // sink AS THEY ARRIVE, demuxed on the stream id — another stream's chunk and a
+    // plain message are ignored, reasoning and prefill keep their own variants (no
+    // chain-of-thought leaks into the answer), and the final marker is reported so
+    // the idle clock stops. Inference is a stream, not a promise.
+    #[test]
+    fn wire_chunks_of_this_stream_reach_the_sink_typed_and_others_are_ignored() {
+        use crate::ai::adapter::GenerationChunk;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = Uuid::new_v4().to_string();
+        assert_eq!(
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "fn ", false), &id, &tx),
+            Some(false)
+        );
+        assert_eq!(
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_REASONING, "hmm", false), &id, &tx),
+            Some(false)
+        );
+        assert_eq!(
+            forward_stream_chunk(
+                &chunk_event(&id, crate::routing::command_handler::STREAM_KIND_PREFILL, r#"{"processed":10,"total":40,"cached":2}"#, false),
+                &id,
+                &tx
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            forward_stream_chunk(&chunk_event("other-stream", airc_lib::STREAM_KIND_TEXT_TOKEN, "nope", false), &id, &tx),
+            None,
+            "another stream's chunk is not ours"
+        );
+        let mut plain = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "x", false);
+        plain.headers = airc_core::Headers::new();
+        assert_eq!(forward_stream_chunk(&plain, &id, &tx), None, "a plain message is not a chunk");
+        assert_eq!(
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true), &id, &tx),
+            Some(true),
+            "the final marker is reported"
+        );
+        drop(tx);
+        let mut got = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            got.push(c);
+        }
+        assert_eq!(
+            got,
+            vec![
+                GenerationChunk::Token("fn ".into()),
+                GenerationChunk::Reasoning("hmm".into()),
+                GenerationChunk::Prefill { processed: 10, total: 40, cached: 2 },
+            ]
+        );
+    }
+
+    // what this catches: a transport with no live wire still honours the streaming
+    // contract — the whole answer arrives as one trailing chunk, never silence.
+    #[tokio::test]
+    async fn a_transport_without_a_wire_emits_the_whole_answer_as_one_trailing_chunk() {
+        use crate::ai::adapter::GenerationChunk;
+        let stub = StubInferenceTransport::new(|req| {
+            Ok(RemoteInferenceResponse {
+                correlation_id: req.correlation_id,
+                served_by: "stub".into(),
+                text_response: crate::ai::types::TextGenerationResponse {
+                    text: "whole answer".into(),
+                    finish_reason: crate::ai::types::FinishReason::Stop,
+                    model: "stub".into(),
+                    provider: "stub".into(),
+                    usage: Default::default(),
+                    response_time_ms: 0,
+                    request_id: "stub".into(),
+                    content: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    routing: None,
+                    error: None,
+                    timing: None,
+                },
+            })
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let req = RemoteInferenceRequest::new(crate::ai::types::TextGenerationRequest {
+            messages: Vec::new(),
+            ..Default::default()
+        });
+        let out = stub.send_request_streaming(req, tx).await.expect("stub answers"); // JUSTIFIED: the invariant under test
+        assert_eq!(out.text_response.text, "whole answer");
+        assert_eq!(rx.try_recv().ok(), Some(GenerationChunk::Token("whole answer".into())));
+        assert!(rx.try_recv().is_err(), "exactly one trailing chunk");
+    }
+
     #[test]
     fn reply_identity_room_address_and_framing_are_all_required() {
         let expected = ReplyExpectation {
