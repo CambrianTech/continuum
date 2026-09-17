@@ -37,6 +37,9 @@ fn default_min_similarity() -> f32 {
     export_to = "../../../protocol/typescript/embedding/GroupsParams.ts"
 )]
 pub struct GroupsParams {
+    /// What to group: each an `id` you recognise (a card's short id, a peer id, a
+    /// document key) and the `text` that stands for it. Groups come back as lists of
+    /// these ids.
     pub candidates: Vec<SimilarCandidate>,
     /// Significance floor (standard deviations above the unrelated-pair mean) that
     /// joins two candidates, when the embedder is calibrated. Default 3.
