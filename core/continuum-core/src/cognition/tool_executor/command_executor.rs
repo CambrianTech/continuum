@@ -390,6 +390,41 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     raw
 }
 
+/// The dotted paths of every string value in a call's input that is the manual's
+/// placeholder rather than a value: `<replace-with-…>`, `<string>`, `<any>` (any angle-
+/// bracketed token), or a run of 32+ zeros (an example hash / nil id copied verbatim).
+/// Empty = a real call. Bounded walk; arrays index by position.
+pub(crate) fn manual_blanks_in(input: &Value) -> Vec<String> {
+    fn is_blank(s: &str) -> bool {
+        let t = s.trim();
+        (t.starts_with('<') && t.ends_with('>') && t.len() <= 64 && !t.contains(' '))
+            || (t.len() >= 32 && t.chars().all(|c| c == '0' || c == '-'))
+    }
+    fn walk(v: &Value, path: &mut Vec<String>, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) if is_blank(s) => out.push(path.join(".")),
+            Value::Object(m) => {
+                for (k, v) in m {
+                    path.push(k.clone());
+                    walk(v, path, out);
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, v) in items.iter().enumerate() {
+                    path.push(i.to_string());
+                    walk(v, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(input, &mut Vec::new(), &mut out);
+    out
+}
+
 #[async_trait]
 impl ToolExecutor for CommandToolExecutor {
     fn command_executor(&self) -> Option<Arc<CommandExecutor>> {
@@ -431,10 +466,44 @@ impl ToolExecutor for CommandToolExecutor {
                 // would allocate on every call (TimingGuard is not a no-op when
                 // logging is off), and dispatch latency is already captured by the
                 // executor's command_completed event + measured by the load harness.
-                let outcome: Result<Value, _> = conn
-                    .commands()
-                    .execute_value(command.as_ref(), call.input.clone())
-                    .await;
+                // THE MANUAL'S BLANK IS NOT A VALUE — refused here, once, for every verb.
+                // The manual says "emit this SHAPE; every `<replace-with-…>` is a blank you
+                // fill in" and small tiers copy the block: `code/edit <replace-with-string>`
+                // (Kimi, 5090, 2026-09-16), `work/release({"card_id":"<string>"})` ×12 in
+                // a turn (09-14), sixty-four-zero artifact hashes on work/submit ×56 in a
+                // day (M5, 09-16). Each verb refused in its own words and she tried again.
+                // One seam names the FIELD and what belongs in it, and never dispatches.
+                let outcome: Result<Value, _> = match manual_blanks_in(&call.input) {
+                    blanks if !blanks.is_empty() => {
+                        crate::probe!(
+                            class = "tool.call.manual_blank",
+                            persona = %ctx.persona_name,
+                            command = %command,
+                            fields = %blanks.join(","),
+                            "a tool call carried the manual's placeholder as a value — refused before dispatch"
+                        );
+                        Err(ClientError::Refused {
+                            command: command.to_string(),
+                            reason: format!(
+                                "you sent the manual's blank as a value for {}: the example block is a \
+                                 SHAPE, and `<replace-with-…>` / a run of zeros marks a field YOU fill \
+                                 from your own work (a real path, a real id from work/list, the sha256 of \
+                                 your patch). Nothing was run. Put the real value there — or omit the \
+                                 field where the verb says it derives it — and call again.",
+                                blanks
+                                    .iter()
+                                    .map(|f| format!("`{f}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        })
+                    }
+                    _ => {
+                        conn.commands()
+                            .execute_value(command.as_ref(), call.input.clone())
+                            .await
+                    }
+                };
                 (call.id.clone(), outcome)
             }
         });
@@ -698,6 +767,29 @@ mod tests {
             out.contains("retry with this shape"),
             "must inline the canonical command's manual: {out}"
         );
+    }
+
+    // what this catches: the manual's placeholder sent as a value — `<replace-with-string>`,
+    // `<string>`, a sixty-four-zero hash, the nil uuid — named by FIELD and never dispatched;
+    // a real call with a real path, id and hash walks through untouched.
+    #[test]
+    fn the_manuals_blank_is_named_by_field_and_a_real_call_is_not() {
+        use serde_json::json;
+        let blanks = manual_blanks_in(&json!({
+            "file_path": "<replace-with-string>",
+            "card_id": "<string>",
+            "artifact": {"hash": "0".repeat(64), "size_bytes": 0},
+            "review_id": "00000000-0000-0000-0000-000000000000",
+            "nested": [{"ok": "src/main.rs"}, {"bad": "<any>"}],
+        }));
+        assert_eq!(blanks, ["artifact.hash", "card_id", "file_path", "nested.1.bad", "review_id"]);
+        assert!(manual_blanks_in(&json!({
+            "file_path": "core/continuum-core/src/lib.rs",
+            "card_id": "1f58fc16",
+            "artifact": {"hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "size_bytes": 4},
+            "text": "a <b> tag inside prose is not a blank",
+            "cmd": "echo '<html>'",
+        })).is_empty());
     }
 
     // what this catches: a bad-args refusal keeps the substrate's own field-naming
