@@ -214,6 +214,17 @@ impl SystemResourceMonitor {
         }
     }
 
+    /// The attached GPU's memory topology — `Unified` (one pool: what the engine
+    /// holds on-device IS host RAM) or `Discrete` (VRAM is its own pool: weights and
+    /// KV on the card cost host RAM nothing). `None` when no GPU is attached (CPU
+    /// serving: everything is host-resident, the unified arithmetic applies).
+    pub fn gpu_memory_mode(&self) -> Option<crate::gpu::monitor::MemoryMode> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.gpu.as_ref().map(|g| g.memory_mode()))
+    }
+
     /// Refresh all readings. Call this from the TypeScript watcher on each poll.
     /// Returns the updated snapshot.
     pub fn refresh(&self) -> SystemResourceSnapshot {

@@ -339,8 +339,16 @@ impl ResourceLeaseLedger {
     /// planning; `acquire` must keep using `available_for`, or a consumer could grant
     /// itself bytes it has not yet released.
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        // Never above the device. The add-back is the caller's DECLARED footprint, and
+        // a declaration can exceed what the device holds: the 5090, 2026-09-17 — serving
+        // declared `peak_resident_bytes(144640 ctx)` = 67.5 GB (an f16-KV estimate) on a
+        // 33.6 GB card, the board's available fell to 2.3 GB, and this sum handed the
+        // planner `usable_gb=54` — a budget bigger than the card, which then sized a
+        // window the card could not hold. A replace-myself budget is bounded by
+        // capacity like every other number the ledger speaks.
         self.available_for(consumer_id, kind)
             .saturating_add(self.measured_by(consumer_id, kind))
+            .min(self.capacity(kind))
     }
 
     /// THE over-commit guard. Grant `req.bytes` of `req.kind` only if they fit
@@ -655,6 +663,35 @@ mod tests {
                 "a machine running a 27B must be able to choose a 27B: budget {honest} < {A_27B_NEEDS}"
             );
             assert_eq!(honest, circular + SERVING_RESIDENT);
+        }
+
+        // what this catches (the 5090, 2026-09-17): a declared footprint LARGER than the
+        // device. Serving declared 67.5 GB (`peak_resident_bytes` at a 144k window, f16
+        // KV) on a 33.6 GB card; available fell to 2.3 GB; the add-back produced a 69.8 GB
+        // budget the planner read as `usable_gb=54` and sized a window against. The
+        // replace-myself budget is capped at capacity — the device is the ceiling of
+        // every number this ledger speaks.
+        #[test]
+        fn the_replace_myself_budget_never_exceeds_the_device() {
+            const CARD: u64 = 33_654_046_720; // the 5090 as the board reports it
+            const DECLARED: u64 = 67_555_372_534; // serving's own over-estimate
+            let mut l = ResourceLeaseLedger::new();
+            l.set_capacity(ResourceKind::Vram, CARD);
+            l.set_physical_used(ResourceKind::Vram, 31_372_345_344);
+            l.set_measured(
+                "serving",
+                vec![ConsumerFootprint {
+                    kind: ResourceKind::Vram,
+                    bytes: DECLARED,
+                    detail: "27B at 144640 ctx, f16 KV estimate".into(),
+                }],
+            );
+            let budget = l.budget_for_replacing("serving", ResourceKind::Vram);
+            assert_eq!(budget, CARD, "capped at the device, not the declaration");
+            assert!(
+                l.available_for("serving", ResourceKind::Vram) + DECLARED > CARD,
+                "precondition: the uncapped sum really does exceed the card"
+            );
         }
 
         // what this catches: the add-back leaking into OTHER consumers' budgets. Serving
