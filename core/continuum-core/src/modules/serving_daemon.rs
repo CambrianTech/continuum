@@ -1314,15 +1314,22 @@ impl ServingDaemonModule {
         servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)
     }
 
-    /// The serving budget this host has when the box is OURS — physical VRAM at the
-    /// everyday (Comfort) fraction. Not the live governed number, which sinks under
-    /// an outgoing engine, a game, or a training lease: those decide what the plan
-    /// can do NOW; this decides what the host may never sink below.
+    /// The serving budget this host has when the box is OURS — physical capacity at
+    /// the everyday (Comfort) fraction. Not the live governed number, which sinks
+    /// under an outgoing engine, a game, or a training lease: those decide what the
+    /// plan can do NOW; this decides what the host may never sink below.
+    ///
+    /// "Physical" is [`physical_usable_bytes`]'s job — see it for why the capacity
+    /// is a function of the PLACEMENT and not of the device that happens to be
+    /// present.
     fn physical_budget(&self) -> HostBudget {
         HostBudget {
-            usable_bytes: (self.gpu.total_vram_bytes() as f64
-                * crate::provisioning::model_catalog::PowerMode::Comfort.serving_fraction())
-                as u64,
+            usable_bytes: physical_usable_bytes(
+                crate::inference::llama_server::main_lane_placement(),
+                self.gpu.total_vram_bytes(),
+                self.system.memory().total_bytes,
+                crate::provisioning::model_catalog::PowerMode::Comfort.serving_fraction(),
+            ),
             perf_cores: perf_cores(),
         }
     }
@@ -3488,6 +3495,51 @@ pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
     }
 }
 
+/// The host's PHYSICAL serving capacity — sized against wherever the KV will
+/// actually live, which is a function of the PLACEMENT DECISION and never of the
+/// device that happens to be installed.
+///
+/// A CPU-placed host (`CONTINUUM_SERVING_PLACEMENT=cpu` — the Intel-Mac arm, #3729 /
+/// #129, which builds llama-server with Metal OFF) runs `--n-gpu-layers 0`: every
+/// weight and the entire KV cache live in SYSTEM RAM and the card holds literally
+/// zero bytes. Sizing its window against VRAM bounds the whole node by a decorative
+/// GPU. Measured on the Intel tier 2026-09-17 (#4146 regression): a 3.9 GB Radeon Pro
+/// 560X reporting `used_mb 0.0`, plan 33,527 ctx, the kept window bound to
+/// `MIN_SERVE_CTX` = 2,048, every ~2,300-token prompt hard-refused by the engine,
+/// 36/36 `settle.inference_failed` and ZERO acts across eight citizens — while the
+/// same daemon had already handed that engine `--cache-ram 13452`, i.e. 13.4 GB of
+/// the RAM this function refused to look at.
+///
+/// READ THIS WITH ITS MIRROR IMAGE. `board_authoritative_host_budget` deliberately
+/// does NOT clamp to system RAM, because on UMA the raw `vm_stat` figure under-reports
+/// and "would reject a model that physically fits (the same clamp that floored the
+/// served window to 2048; glass-boxed 2026-07-20)". Both single-source choices produce
+/// the IDENTICAL 2,048 floor from OPPOSITE directions, which is the tell: the quantity
+/// was never one thing. It is VRAM when layers are offloaded and system RAM when they
+/// are not, and a name that means two physical quantities depending on a decision made
+/// elsewhere is the substrate defect shape
+/// ([[one-value-two-meanings-is-the-substrate-defect-shape]]). Hence: branch on the
+/// decision, do not pick a winner between the two sources.
+///
+/// Pure (placement + both capacities + fraction are INPUTS) so the arithmetic is
+/// assertable with no GPU, no daemon and no host, exactly as `host_budget_from` is.
+pub fn physical_usable_bytes(
+    placement: crate::inference::llama_server::LanePlacement,
+    total_vram_bytes: u64,
+    total_ram_bytes: u64,
+    fraction: f64,
+) -> u64 {
+    use crate::inference::llama_server::LanePlacement;
+    // TOTAL, not available, on both arms — this is the "may never sink below" floor,
+    // and the live figure is exactly the teardown transient the wedge-heal law exists
+    // to see through (see `physical_budget`'s caller).
+    let physical = match placement {
+        LanePlacement::Cpu => total_ram_bytes,
+        LanePlacement::Gpu => total_vram_bytes,
+    };
+    (physical as f64 * fraction) as u64
+}
+
 /// Pure pin fit-decision — split from the live-budget read so it is unit-testable.
 /// A pin SWAPS: `serve()` kills the incumbent llama-server child, THEN launches the
 /// candidate — never co-resident — so the candidate only needs to fit AFTER the
@@ -5565,6 +5617,39 @@ mod tests {
         assert!(
             !serving_ludicrous_active(),
             "all holds dropped ⇒ back to pressure-adaptive mode"
+        );
+    }
+
+    // what this catches: regression #4146 on the Intel tier — a CPU-placed host
+    // (`--n-gpu-layers 0`) sized against its decorative GPU instead of the system RAM
+    // the KV actually lives in, which bound the kept window to MIN_SERVE_CTX (2,048),
+    // hard-refused every ~2,300-token prompt and produced 36/36 inference_failed with
+    // ZERO acts across eight citizens. The CPU arm must read RAM and the GPU arm must
+    // read VRAM; a VRAM-only implementation (the pre-fix code) fails the first assert.
+    #[test]
+    fn physical_capacity_follows_the_placement_not_the_installed_device() {
+        use crate::inference::llama_server::LanePlacement;
+        // The measured Intel tier: 3.89 GB Radeon Pro 560X at used_mb 0.0, 32 GB RAM.
+        let vram = 3_891_000_000u64;
+        let ram = 32 * GB;
+
+        let cpu = physical_usable_bytes(LanePlacement::Cpu, vram, ram, 0.80);
+        let gpu = physical_usable_bytes(LanePlacement::Gpu, vram, ram, 0.80);
+
+        // THE REGRESSION ASSERT: a CPU-placed host must not be bounded by a card that
+        // holds zero bytes. Pre-fix both arms returned the VRAM figure, so cpu == gpu.
+        assert!(
+            cpu > gpu,
+            "CPU placement must size against RAM, not the idle card: cpu={cpu} gpu={gpu}"
+        );
+        assert_eq!(cpu, (ram as f64 * 0.80) as u64, "CPU arm reads system RAM");
+        assert_eq!(gpu, (vram as f64 * 0.80) as u64, "GPU arm still reads VRAM");
+
+        // And the fix must not hand a GPU host its (often larger) RAM figure — that
+        // would over-commit the card, which is the 2026-07-20 error in reverse.
+        assert!(
+            gpu < ram,
+            "GPU placement must stay bounded by the device: {gpu} vs {ram} RAM"
         );
     }
 
