@@ -61,34 +61,32 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
+    /// The room the card lives in (id or name).
     pub room: String,
-    /// The card you hold. Everything below is DERIVED from it and your checkout when
-    /// omitted — the citizen's world has no verb that mints an artifact hash, and
-    /// before 2026-09-17 every submit she wrote by hand carried zeros and was refused
-    /// (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
+    // The card you hold. Everything below is DERIVED from it and your checkout when
+    // omitted — the citizen's world has no verb that mints an artifact hash, and
+    // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
+    // (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
+    /// The card you hold.
     #[ts(type = "string")]
     pub card_id: Uuid,
     /// Minted when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your live claim on the card, read off the board when omitted.
+    /// Your claim on the card; read off the board when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<Uuid>,
-    /// The instance name for a benchmark checkout (`workspace/swe/<instance>`), else the
-    /// card id; read off your rooted checkout when omitted.
+    /// Benchmark instance name; read from your checkout when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// The commit your patch is against: the instance's base commit for a benchmark
-    /// checkout, the merge-base with the default branch for a repo worktree; read from
-    /// your checkout when omitted.
+    /// The commit your patch is against; read from your checkout when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
-    /// SHA-256 + size of your patch (`git diff <base_sha>` of the checkout, substrate
-    /// paths excluded); computed from your checkout when omitted. Never zeros.
+    /// SHA-256 + size of your patch; computed when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
