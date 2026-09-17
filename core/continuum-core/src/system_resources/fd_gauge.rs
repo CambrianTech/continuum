@@ -36,6 +36,64 @@ pub fn fd_soft_limit() -> Option<u64> {
     }
 }
 
+/// Raise the process's soft `RLIMIT_NOFILE` at startup so the core never inherits a
+/// low ceiling from its launcher and wedges on ORDINARY operation.
+///
+/// 2026-09-17: the M5 core inherited a ~362 soft limit (launchd/shell default), hit
+/// "Too many open files (os error 24)" on normal load — 148 airc unix sockets + 204
+/// sqlite/file handles — its IPC listener died on the error and could not recover, and
+/// `track-canary` could not even see the wedged core to redeploy it. The node was dark
+/// for hours. The core opens many sockets and sqlite handles BY DESIGN (it is the grid's
+/// hub), so it must set its OWN ceiling rather than depend on whatever launched it —
+/// the same self-reliance the [[reliable-out-of-the-box-recover-itself-on-everyones-machine]]
+/// law asks of every signal owner. This is the ceiling; [`FdGauge`]'s `open_fds.high`
+/// probe is still the early warning that a genuine LEAK is climbing toward it.
+///
+/// Tries a high target and steps down until one takes, so it is correct on Linux (a
+/// concrete hard cap) AND macOS (the kernel caps a per-process soft limit at
+/// `kern.maxfilesperproc`, and a `setrlimit` above it is refused rather than clamped).
+/// Never lowers an already-higher soft limit. Returns the soft limit in force afterward.
+pub fn raise_fd_soft_limit() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: getrlimit writes into the struct we own and reads nothing else.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+            return None;
+        }
+        let cap = if lim.rlim_max == libc::RLIM_INFINITY {
+            u64::MAX
+        } else {
+            lim.rlim_max as u64
+        };
+        for target in [1_048_576u64, 262_144, 65_536, 16_384, 10_240] {
+            let want = target.min(cap);
+            if want <= lim.rlim_cur as u64 {
+                // Already at or above this target (never lower a good limit).
+                break;
+            }
+            let mut next = lim;
+            next.rlim_cur = want as libc::rlim_t;
+            // SAFETY: setrlimit reads the struct we own; raising the SOFT limit up to the
+            // existing HARD limit needs no privilege.
+            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &next) } == 0 {
+                lim = next;
+                break;
+            }
+        }
+        // Report what actually took (a kernel cap can be below what we asked).
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+            return None;
+        }
+        (lim.rlim_cur != libc::RLIM_INFINITY).then_some(lim.rlim_cur as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no RLIMIT_NOFILE; its handle ceiling is orders of magnitude higher.
+        None
+    }
+}
+
 /// Above this share of the soft limit the gauge raises `process.open_fds.high`.
 pub const HIGH_WATER_PCT: u64 = 50;
 
@@ -68,6 +126,21 @@ impl FdReading {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-17 fd wedge): `raise_fd_soft_limit` NEVER lowers the
+    // soft limit and reports the limit in force. The M5 core inherited a ~362 soft limit
+    // and wedged on "Too many open files (os error 24)" during ordinary operation — the
+    // core must set its OWN ceiling at startup rather than depend on the launcher.
+    // Deterministic: whatever the test process's limit is, after the raise it is >= before.
+    #[cfg(unix)]
+    #[test]
+    fn raise_fd_soft_limit_never_lowers_the_limit() {
+        let before = fd_soft_limit();
+        let after = raise_fd_soft_limit();
+        if let (Some(b), Some(a)) = (before, after) {
+            assert!(a >= b, "the raise must never LOWER the fd soft limit: {a} < {b}");
+        }
+    }
 
     // what this catches: the gauge reading nothing on the platforms it exists
     // for (a `/dev/fd` that lists nothing, a limit read that always fails) and the
