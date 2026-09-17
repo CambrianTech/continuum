@@ -839,6 +839,34 @@ pub fn plan_serving_stable(
     incumbent: Option<&str>,
     demand: ServingDemand,
 ) -> Option<ServingPlan> {
+    // The credit is applied HERE, for a caller holding the LIVE budget (the
+    // incumbent's weights read as "used"). A caller whose budget is already at rest
+    // — the daemon, whose `host_budget()` is the ledger's `budget_for_replacing`
+    // (own footprint added back, capped at the device) — calls
+    // [`plan_serving_at_rest`] and must NOT come through here: crediting twice
+    // planned a 27B at 2 × 70,093 on a card whose honest fit was 2 × 47,098, and the
+    // re-home law relaunched the lane three times mid-solve chasing a window the
+    // launch bound kept turning back into the live one (5090, 2026-09-17).
+    let at_rest = match incumbent.and_then(|id| candidates.iter().find(|m| m.model_id == id)) {
+        Some(inc) => HostBudget {
+            usable_bytes: host.usable_bytes.saturating_add(inc.weights_bytes),
+            perf_cores: host.perf_cores,
+        },
+        None => host,
+    };
+    plan_serving_at_rest(at_rest, candidates, incumbent, demand)
+}
+
+/// [`plan_serving_stable`] for a budget that is ALREADY at rest — the incumbent's own
+/// residency already credited back by the caller (the ledger's replace-myself
+/// budget). Same hysteresis, no second credit.
+pub fn plan_serving_at_rest(
+    at_rest: HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+    demand: ServingDemand,
+) -> Option<ServingPlan> {
+    let host = at_rest;
     // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
     // with nothing fitting the depressed budget (`fresh` = None) while a model
     // is STILL resident and serving fine — its memory is its own. Tearing that
@@ -875,10 +903,7 @@ pub fn plan_serving_stable(
     // so a model's OWN load/residency can never flap it out for a smaller model.
     // A genuine EXTERNAL squeeze (another consumer grabbing VRAM) is NOT credited
     // back, so a real over-commit still forces the down-switch to `fresh`.
-    let at_rest = HostBudget {
-        usable_bytes: host.usable_bytes.saturating_add(inc.weights_bytes),
-        perf_cores: host.perf_cores,
-    };
+    let at_rest = host;
     // `fresh` is computed against the POST-EVICTION budget, and that is the whole fix.
     //
     // It used to use `host` — the live budget WITH the incumbent still resident — so the
@@ -2267,6 +2292,47 @@ mod tests {
     // what this catches (2026-09-17, the 5090): the ONE window arithmetic, callable from
     // the launch path. A 144,640 window kept by the sticky / wedge-heal laws must not
     // survive onto a budget that fits ~57k; the same method the plan sizes with says so.
+    // what this catches (2026-09-17, the 5090): the daemon's budget is the ledger's
+    // replace-myself budget — ALREADY at rest — and `plan_serving_stable` credited the
+    // incumbent's weights a second time, planning 2 × 70,093 on a card whose fit was
+    // 2 × 47,098. The re-home law then relaunched the lane three times mid-solve
+    // chasing a window the launch bound kept turning back into the live one. At rest,
+    // the plan's window IS the fit: no shortfall exists to chase.
+    #[test]
+    fn an_at_rest_plan_never_asks_for_more_window_than_the_fit() {
+        let m = ModelFootprint {
+            model_id: "qwen3.8-27b".into(),
+            weights_bytes: 17 * GB,
+            kv_per_token: 65_536,
+            context_window: 262_144,
+            capability_rank: 9,
+        };
+        let at_rest = HostBudget {
+            usable_bytes: 32 * GB, // the ledger's replace-myself budget, capped at the card
+            perf_cores: 8,
+        };
+        let demand = ServingDemand::new(2, Some(120_000));
+        let plan = plan_serving_at_rest(
+            at_rest,
+            std::slice::from_ref(&m),
+            Some("qwen3.8-27b"),
+            demand,
+        )
+        .expect("plan");
+        let fit = m.window_within(at_rest.usable_bytes, plan.lanes);
+        assert_eq!(plan.served_context_window, fit, "at rest, the plan's window is the fit");
+        // The live-budget path still credits: handed the same number as a LIVE reading it
+        // plans a bigger window — which is exactly why the daemon must not use it.
+        let credited = plan_serving_stable(
+            at_rest,
+            std::slice::from_ref(&m),
+            Some("qwen3.8-27b"),
+            demand,
+        )
+        .expect("plan");
+        assert!(credited.served_context_window > plan.served_context_window);
+    }
+
     #[test]
     fn window_within_is_the_plans_own_arithmetic_and_bounds_a_kept_window() {
         let m = ModelFootprint {

@@ -25,7 +25,8 @@ use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID}
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan,
+    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
+    ServingDemand, ServingPlan,
     MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
@@ -438,6 +439,15 @@ pub struct ServingDaemonModule {
     /// the predecessor's window IS the memory the successor inherits, and the existing
     /// overflow protection remains the backstop if it genuinely no longer fits.
     last_healthy_window: Arc<AtomicU32>,
+    /// The discrete footprint arm's baseline: the TROUGH of device VRAM in use between
+    /// the predecessor's reclaim and the successor's load. Armed to `u64::MAX` at spawn,
+    /// lowered to the minimum sampled value on every tick until the lane is ready; the
+    /// delta at a later tick is then the lane's own bytes. A single read at the spawn
+    /// instant was the first cut and it read the DYING predecessor's ~24 GB off the
+    /// board's sampled figure (2026-09-17 13:1xZ: delta 0) — a stale sample, not a
+    /// baseline. `MAX` = armed but never lowered; 0 = no spawn observed (an adopted
+    /// lane); both make the arm say could-not-look rather than charge the desktop.
+    spawn_baseline_vram: Arc<AtomicU64>,
     last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
@@ -774,6 +784,7 @@ impl ServingDaemonModule {
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
+            spawn_baseline_vram: Arc::new(AtomicU64::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             pin_store,
@@ -1277,10 +1288,15 @@ impl ServingDaemonModule {
             pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco,
             Ordering::Relaxed,
         );
+        // Ludicrous (an exam) floors it; pressure (Eco) drops it; otherwise the
+        // operator's headroom policy names the everyday mode — the SAME knob the pin
+        // fit-gate budgets with, composed here as a mode rather than stacked under one.
         let mode = if serving_ludicrous_active() {
             crate::provisioning::model_catalog::PowerMode::Performance
-        } else {
+        } else if pressure_mode == crate::provisioning::model_catalog::PowerMode::Eco {
             pressure_mode
+        } else {
+            everyday_drive_mode()
         };
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
@@ -1360,12 +1376,22 @@ impl ServingDaemonModule {
     /// is a function of the PLACEMENT and not of the device that happens to be
     /// present.
     fn physical_budget(&self) -> HostBudget {
+        // The SAME drive mode the live plan sizes with: a Ludicrous hold (a benchmark's
+        // exam) plans at Performance — the whole GPU — and a bound fixed at Comfort
+        // would then cap the kept window below what the plan legitimately sized
+        // (2026-09-17: 32 GB × 0.80 = 27 GB bound vs a Performance plan). Physical
+        // capacity, current mode; never the live free reading.
+        let mode = if serving_ludicrous_active() {
+            crate::provisioning::model_catalog::PowerMode::Performance
+        } else {
+            everyday_drive_mode()
+        };
         HostBudget {
             usable_bytes: physical_usable_bytes(
                 crate::inference::llama_server::main_lane_placement(),
                 self.gpu.total_vram_bytes(),
                 self.system.memory().total_bytes,
-                crate::provisioning::model_catalog::PowerMode::Comfort.serving_fraction(),
+                mode.serving_fraction(),
             ),
             perf_cores: perf_cores(),
         }
@@ -1724,6 +1750,19 @@ impl ServingDaemonModule {
     /// the per-token cost back to the plan (`inference::lane_footprint`). One probe per
     /// sample carries predicted vs measured so the plan's arithmetic is checked against
     /// the process it launched, every minute, on every box.
+    /// While no lane is ready, the device's sampled used-bytes are the trough the
+    /// discrete footprint arm subtracts: take the minimum seen since the spawn armed it.
+    fn lower_spawn_baseline_to_the_trough(&self) {
+        if self.serving_tx.borrow().ready {
+            return;
+        }
+        let now = vram_physical_used(&self.resource_daemon);
+        if now == 0 {
+            return;
+        }
+        self.spawn_baseline_vram.fetch_min(now, Ordering::Relaxed);
+    }
+
     fn sample_lane_footprint(&self) {
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
@@ -1745,7 +1784,29 @@ impl ServingDaemonModule {
         let Some(fp) = footprint_for(&model) else {
             return;
         };
-        let outcome = match crate::inference::lane_footprint::anon_footprint_of(pid) {
+        // THE FOOTPRINT SOURCE IS PER HOST CLASS (Fable, 2026-09-17, converging #4152 and
+        // #4164): on unified memory the lane's KV lives in system RAM, so its anonymous
+        // process footprint IS the bytes beyond the weights. On a discrete GPU the KV
+        // lives in VRAM, a process read misses it entirely, and WDDM attributes VRAM to
+        // no process at all (`nvidia-smi --query-compute-apps` prints [N/A] for every
+        // pid on the 5090) — so the discrete arm is the DEVICE delta across the launch:
+        // used-now minus used-before-spawn, minus the weights (in VRAM on this class).
+        // Both arms feed the ONE consumer below; the probe names which one spoke.
+        let (source, beyond_weights) = match self.system.gpu_memory_mode() {
+            Some(crate::gpu::monitor::MemoryMode::Discrete) => {
+                let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
+                let now = vram_physical_used(&self.resource_daemon);
+                (
+                    "device_delta",
+                    device_delta_beyond_weights(baseline, now, fp.weights_bytes),
+                )
+            }
+            _ => (
+                "process_anon",
+                crate::inference::lane_footprint::anon_footprint_of(pid),
+            ),
+        };
+        let outcome = match beyond_weights {
             Some(anon) => {
                 let predicted = fp
                     .kv_at(live.served_context_window)
@@ -1762,6 +1823,7 @@ impl ServingDaemonModule {
                     class = "serving.footprint.measured",
                     model = %active,
                     pid = pid as u64,
+                    source,
                     lanes = live.lanes as u64,
                     window = live.served_context_window as u64,
                     anon_bytes = anon,
@@ -1780,8 +1842,10 @@ impl ServingDaemonModule {
                 class = "serving.footprint.measured",
                 model = %active,
                 pid = pid as u64,
+                source,
                 outcome,
-                "the lane's footprint could not be read off its process"
+                "the lane's footprint could not be read: no process reading on this host class, \
+                 or no spawn baseline (an adopted lane) for the device delta"
             );
         }
     }
@@ -2700,6 +2764,10 @@ impl ServingDaemonModule {
                 self.0.store(false, Ordering::Release);
             }
         }
+        // ARM the discrete footprint arm's baseline: every tick until the lane is ready
+        // lowers it to the sampled trough (see the field doc — a single read here sees
+        // the dying predecessor).
+        self.spawn_baseline_vram.store(u64::MAX, Ordering::Relaxed);
         Some(tokio::spawn(async move {
             let _gate = GateClear(reconciling);
             let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
@@ -3235,7 +3303,25 @@ impl ServingDaemonModule {
                 .as_deref()
                 .and_then(crate::modules::served_window_store::load_for),
         );
-        match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
+        // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
+        // ledger's replace-myself budget: serving's own measured footprint added back,
+        // capped at the device. Once serving has REPORTED that footprint (steady state,
+        // and the inherited lane once its attribution lands), the budget is at rest and
+        // the plan must not credit again — twice planned 2 × 70,093 on a card whose fit
+        // was 2 × 47,098 and the re-home law relaunched the lane three times mid-solve
+        // chasing it (5090, 2026-09-17). Before that report exists (the first ticks of a
+        // boot over an inherited lane, #438) the ledger has nothing to add back, and the
+        // plan's own credit is the one that keeps the successor from fleeing its
+        // predecessor onto a smaller model. One credit, whichever layer holds the fact.
+        let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
+            a.consumer_id == SERVING_CONSUMER_ID && a.kind == ResourceKind::Vram && a.bytes > 0
+        });
+        let stable = if ledger_credited {
+            plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
+        } else {
+            plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
+        };
+        match stable {
             Some(plan) => {
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained
@@ -3976,6 +4062,26 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
 /// never appears on the board), which the caller treats as fail-closed (cap at 0,
 /// serving refuses rather than over-committing blind). A lock-free `watch`
 /// snapshot read, never the governor's accounting lock — safe on the hot tick.
+/// Device VRAM physically in use right now, from the board's Vram row (the GPU
+/// capacity source's sampled `physical_used`). 0 when the board has no Vram row.
+fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
+    resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == ResourceKind::Vram)
+        .map(|k| k.physical_used_bytes)
+        .unwrap_or(0)
+}
+
+/// The discrete footprint arm: what the lane added to the device beyond its weights.
+/// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
+/// reading — never a delta against zero, which would charge the desktop to the model.
+fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
+    (baseline > 0 && baseline != u64::MAX && now > 0)
+        .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
+}
+
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
     // Serving budgets from ITS OWN view of the board — global available minus
     // every OTHER consumer's unmet reservation floor (`available_for`, the same
@@ -4458,6 +4564,15 @@ fn serve_host_bytes(
         (Some(fp), _) => fp.peak_resident_bytes(served_ctx, lanes),
         (None, _) => 0,
     }
+}
+
+/// The everyday drive mode this node's operator asked for, from
+/// `CONTINUUM_VRAM_HEADROOM` (default 0.8 → Comfort; a dedicated node at 1.0 →
+/// Performance). One reader, cached by `config_env`.
+fn everyday_drive_mode() -> crate::provisioning::model_catalog::PowerMode {
+    crate::provisioning::model_catalog::PowerMode::everyday_for_headroom(
+        crate::config_env::vram_headroom(),
+    )
 }
 
 fn host_os_floor_bytes(physical_bytes: u64) -> u64 {
@@ -5185,6 +5300,7 @@ impl ServiceModule for ServingDaemonModule {
         // LIVE working set (KV grows as slots fill) and publish it through the sticky
         // band to the per-port plan file — the actuator her ResidencyCache polls.
         self.publish_moe_host_cache_lease();
+        self.lower_spawn_baseline_to_the_trough();
         self.sample_lane_footprint();
         Ok(())
     }
@@ -5374,6 +5490,43 @@ mod tests {
             "discrete: sized from the citizens' demand, not squeezed to the floor"
         );
         assert_eq!(on_discrete.serve_host_bytes, 0);
+    }
+
+    // what this catches (2026-09-17, the 5090): the discrete footprint arm. WDDM
+    // attributes VRAM to no process, so the lane's bytes beyond its weights are the
+    // device delta across the spawn. The 5090's two points: 752 MiB idle → 31,914 MiB
+    // at a 144k window and 22,078 MiB at 9.4k, 17 GB of weights; and an adopted lane
+    // (no baseline) must say could-not-look, never charge the desktop to the model.
+    #[test]
+    fn the_discrete_footprint_arm_is_the_device_delta_beyond_the_weights() {
+        use super::*;
+        const MIB: u64 = 1024 * 1024;
+        let weights = 17 << 30;
+        let big = device_delta_beyond_weights(752 * MIB, 31_914 * MIB, weights).expect("read");
+        let small = device_delta_beyond_weights(752 * MIB, 22_078 * MIB, weights).expect("read");
+        assert!(big > small, "a bigger window costs more beyond the weights");
+        // Through the ONE consumer: per-token from the plan's own decomposition.
+        let per_token_big =
+            crate::inference::lane_footprint::per_token_from(big, 1, 144_640, 0).expect("rate");
+        assert!(
+            per_token_big > 60_000 && per_token_big < 110_000,
+            "≈74 KiB/token measured on the 5090, got {per_token_big}"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(0, 31_914 * MIB, weights),
+            None,
+            "no baseline = could not look"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(752 * MIB, 0, weights),
+            None,
+            "no reading = could not look"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(u64::MAX, 31_914 * MIB, weights),
+            None,
+            "armed but never lowered = could not look"
+        );
     }
 
     // what this catches (2026-09-17, the 5090 after #4144): with VRAM residency no
