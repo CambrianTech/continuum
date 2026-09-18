@@ -92,12 +92,123 @@ impl Drop for GaugeGuard<'_> {
 /// nothing downstream. Wraps a guard on the process-global `INFLIGHT_MODEL_CALLS`, so it carries
 /// NO lifetime and stays storable as a plain field (e.g. `ServingLanePermit._inflight`).
 #[derive(Debug)]
-pub struct InflightModelCall(GaugeGuard<'static>);
+pub struct InflightModelCall {
+    /// Held for its drop — the decrement IS the field's purpose. Named so, rather than a
+    /// positional field rustc rightly reports as never read (it never is; it is released).
+    _guard: GaugeGuard<'static>,
+}
 
 impl InflightModelCall {
     pub fn enter() -> Self {
-        Self(INFLIGHT_MODEL_CALLS.enter())
+        Self {
+            _guard: INFLIGHT_MODEL_CALLS.enter(),
+        }
     }
+}
+
+/// A gauge that also remembers its PEAK since the last read — for a reader that asks
+/// "how many at once, over the interval" (the serving planner's tick) rather than "how
+/// many right now" (the admission gate). Same injectable shape as [`Gauge`], for the same
+/// testability reason: a test drives its own instance, never the process-global one.
+#[derive(Debug)]
+struct PeakGauge {
+    gauge: Gauge,
+    peak: AtomicUsize,
+}
+impl PeakGauge {
+    const fn new() -> Self {
+        Self {
+            gauge: Gauge::new(),
+            peak: AtomicUsize::new(0),
+        }
+    }
+    /// Enter one call and fold the new concurrency into the peak.
+    fn enter(&self) -> GaugeGuard<'_> {
+        let guard = self.gauge.enter();
+        self.peak.fetch_max(self.gauge.inflight(), Ordering::AcqRel);
+        guard
+    }
+    fn inflight(&self) -> usize {
+        self.gauge.inflight()
+    }
+    /// The peak concurrency since the previous take, then re-arm at the CURRENT
+    /// concurrency — a call still in flight at the read is not forgotten by the reset.
+    fn take_peak(&self) -> usize {
+        let now = self.gauge.inflight();
+        self.peak.swap(now, Ordering::AcqRel).max(now)
+    }
+}
+
+/// LEASED-IN model calls: inference THIS seat performs for minds hosted on OTHER nodes —
+/// the `ai/generate` a peer sent over airc when its placement spilled a mind here.
+///
+/// Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the M5's coders
+/// (Benchy 12, Aris 8, Demetri 5, Mara 5 answers in one afternoon) and IntelMac's eight,
+/// on ONE slot, with lane waits of p50 216 s / p90 1,387 s / max 7,058 s — while its
+/// serving plan counted only its own roster, because nothing counted these. A seat's
+/// demand is the minds it SERVES, not only the minds it HOSTS. This gauge is the missing
+/// term; the planner reads its peak per tick ([`take_leased_in_peak`]) and adds it to
+/// the resident lane demand ([`crate::cognition::serving_plan::ServingDemand::leased_in`]).
+/// It is fed at the seam where an inbound remote generate is executed, which today enters
+/// neither this gauge nor the admission gate — the wire slice of the same card.
+static LEASED_IN_CALLS: PeakGauge = PeakGauge::new();
+
+/// RAII marker for one leased-in call, mirror of [`InflightModelCall`]: enters on
+/// construction, leaves on EVERY exit path. Hold it across the whole remote generate.
+#[derive(Debug)]
+pub struct LeasedInCall {
+    /// Held for its drop — the decrement IS the field's purpose (see `InflightModelCall`).
+    _guard: GaugeGuard<'static>,
+}
+impl LeasedInCall {
+    pub fn enter() -> Self {
+        Self {
+            _guard: LEASED_IN_CALLS.enter(),
+        }
+    }
+}
+/// The PROMPT SIZES of leased-in generates this seat served recently — the samples the
+/// serving plan folds into its per-lane window floor beside its own residents' sent peaks.
+/// Without them a two-resident seat's "typical prompt" is one resident's SWE prompt, and
+/// the plan grows lanes for the grid (`leased_in`) it then refuses to fit (BigMama,
+/// 2026-09-18: the 5090 considered 2 × 49k every tick and kept 1 × 101k, because 49k was
+/// under a floor computed from Sahar's prompts alone while twelve leased-in coders sent
+/// ~30k). Bounded ring: the newest [`LEASED_IN_SENT_SAMPLES`] measured `usage.input_tokens`.
+static LEASED_IN_SENT: std::sync::Mutex<std::collections::VecDeque<u32>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// How many leased-in prompt sizes the floor pool remembers. Enough for a median over a
+/// grid's worth of coders across several ticks; small enough that a stale burst ages out.
+pub const LEASED_IN_SENT_SAMPLES: usize = 64;
+/// Record one leased-in generate's measured prompt size (the server's own count, never an
+/// estimate). Zero is the empty-completion fault's territory, not a sample.
+pub fn note_leased_in_sent(input_tokens: u32) {
+    if input_tokens == 0 {
+        return;
+    }
+    let mut ring = LEASED_IN_SENT.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+    ring.push_back(input_tokens);
+    while ring.len() > LEASED_IN_SENT_SAMPLES {
+        ring.pop_front();
+    }
+}
+/// The remembered leased-in prompt sizes, oldest first — the plan's extra median inputs.
+pub fn leased_in_sent_samples() -> Vec<u32> {
+    LEASED_IN_SENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: same policy — read the last state
+        .iter()
+        .copied()
+        .collect()
+}
+/// Leased-in calls outstanding right now.
+pub fn leased_in_calls() -> usize {
+    LEASED_IN_CALLS.inflight()
+}
+/// The peak concurrent leased-in calls since the planner last asked — the seat's measured
+/// demand from the rest of the grid, one number per plan tick. Re-arms at the current
+/// concurrency so a still-running call carries into the next interval.
+pub fn take_leased_in_peak() -> usize {
+    LEASED_IN_CALLS.take_peak()
 }
 
 /// Deliberative model calls outstanding against the shared serving target right now.
@@ -1037,6 +1148,53 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (BigMama's correction on #4197): leased-in LANES with a floor from
+    // local residents alone — the seat grows demand it then refuses to fit. The prompt
+    // sizes of the generates a seat serves for others must be remembered (bounded, newest
+    // kept, zero never a sample) so the plan's median floor sees the grid's prompts.
+    #[test]
+    fn leased_in_prompt_sizes_are_remembered_bounded_and_zero_is_not_a_sample() {
+        // the ring is process-global; assert RELATIVE to what is there (the #1960 rule)
+        let before = leased_in_sent_samples().len();
+        note_leased_in_sent(0);
+        assert_eq!(leased_in_sent_samples().len(), before, "an empty completion is not a prompt size");
+        for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
+            note_leased_in_sent(30_000 + i);
+        }
+        let s = leased_in_sent_samples();
+        assert_eq!(s.len(), LEASED_IN_SENT_SAMPLES, "bounded");
+        assert_eq!(*s.last().expect("nonempty"), 30_000 + LEASED_IN_SENT_SAMPLES as u32 + 8, "newest kept");
+        assert!(s.first().copied().expect("nonempty") > 30_000 + 8, "oldest aged out");
+    }
+
+
+    // what this catches (card c84d885a): a seat that serves other nodes' minds and never
+    // counts them. The planner must see "how many did I serve AT ONCE this interval", so
+    // the gauge keeps a peak; and a call still in flight when the planner reads must not
+    // vanish from the next interval (the re-arm-at-current rule), or a long remote turn
+    // spanning two ticks would read as zero demand on the second.
+    #[test]
+    fn a_leased_in_gauge_remembers_its_peak_per_interval_and_never_forgets_a_running_call() {
+        let g = PeakGauge::new();
+        assert_eq!(g.take_peak(), 0, "nothing served yet");
+        let a = g.enter();
+        let b = g.enter();
+        let c = g.enter();
+        drop(b);
+        assert_eq!(g.inflight(), 2);
+        // the interval's peak was 3, not the 2 in flight at read time
+        assert_eq!(g.take_peak(), 3);
+        // re-armed at the CURRENT concurrency: the two still running are the floor of the
+        // next interval, not forgotten
+        assert_eq!(g.take_peak(), 2);
+        drop(a);
+        drop(c);
+        assert_eq!(g.inflight(), 0);
+        assert_eq!(g.take_peak(), 2, "the last interval still saw two running");
+        assert_eq!(g.take_peak(), 0, "and now nothing");
+    }
+
     use super::*;
 
     // No serialization lock lives here any more, and that is the point. It used to exist

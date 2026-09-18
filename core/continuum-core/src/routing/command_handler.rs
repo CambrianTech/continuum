@@ -394,6 +394,15 @@ impl CommandRequestHandler {
         parsed: &ParsedEnvelope,
         caller: CallerIdentity,
     ) -> AircCommandResponse {
+        // A generate that arrives over the wire is inference THIS seat performs for a
+        // mind hosted on ANOTHER node — leased-in demand. Held across the whole dispatch
+        // (receipt to settled reply; every inbound path converges here, streamed or not),
+        // it is the term the serving plan sizes its slot count to
+        // (`ServingDemand::leased_in`, card c84d885a). Before this guard the seat's plan
+        // saw only its own roster while it served three nodes' coders on one slot —
+        // lane wait p50 216 s, p90 1,387 s, max 7,058 s — and no receipt said why.
+        let _leased_in = (parsed.request.path == STREAMED_GENERATE_PATH)
+            .then(crate::cognition::resource_admission::LeasedInCall::enter);
         Self::execute_command_request(executor, &parsed.request, caller).await
     }
 
@@ -1233,6 +1242,70 @@ mod tests {
         );
     }
 
+    // what this catches (card c84d885a, 2026-09-18): a generate that arrives over the wire
+    // performing inference on this seat WITHOUT the seat counting it. The 5090 served three
+    // nodes' coders on one slot because nothing counted inbound generates as demand. The
+    // gauge must be held for the whole dispatch — the gate runs inside it, so a policy
+    // that reads the gauge at gate time sees the call — and ONLY for `ai/generate`: a
+    // peer's `work/list` is not inference and must not inflate a seat's slot count.
+    // Read relative to a baseline taken before, never as an absolute (the #1960 flake class).
+    #[tokio::test]
+    async fn an_inbound_generate_is_counted_as_leased_in_demand_for_the_whole_dispatch() {
+        use crate::cognition::resource_admission::leased_in_calls;
+        use crate::routing::{ClosurePolicy, RouteDecision};
+        use std::sync::{Arc as StdArc, Mutex};
+        let seen: StdArc<Mutex<Vec<(String, usize)>>> = StdArc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let policy = ClosurePolicy::new(
+            "record-leased-in-at-gate",
+            move |decision: &RouteDecision, _caller: Option<&crate::routing::CallerIdentity>| {
+                seen_clone
+                    .lock()
+                    .unwrap()
+                    .push((format!("{decision:?}"), leased_in_calls()));
+                crate::routing::Verdict::Allowed
+            },
+        );
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor =
+            crate::runtime::CommandExecutor::new(registry).with_policy(StdArc::new(policy));
+        let envelope = |path: &str| ParsedEnvelope {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircCommandRequest {
+                path: path.into(),
+                kind: "peer".into(),
+                env: None,
+                params: serde_json::Value::Null,
+            },
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
+            presented_grant: None,
+        };
+        let baseline = leased_in_calls();
+
+        // a generate: counted for the whole dispatch — the gate, which runs inside, sees it
+        let _ = CommandRequestHandler::process_request_via(&executor, &envelope("ai/generate")).await;
+        let at_gate = seen.lock().unwrap().last().map(|(_, n)| *n).expect("the gate ran");
+        assert!(
+            at_gate >= baseline + 1,
+            "an inbound generate must be counted while it runs: gate saw {at_gate}, baseline {baseline}"
+        );
+        assert_eq!(
+            leased_in_calls(),
+            baseline,
+            "…and released on exit — a finished generate is not standing demand"
+        );
+
+        // not a generate: a peer's work/list is not inference and must not count
+        let _ = CommandRequestHandler::process_request_via(&executor, &envelope("work/list")).await;
+        let at_gate = seen.lock().unwrap().last().map(|(_, n)| *n).expect("the gate ran");
+        assert_eq!(
+            at_gate, baseline,
+            "a non-generate peer command must not inflate the seat's slot count"
+        );
+    }
     /// Reviewer 1 nit: prove the handler refuses non-Json
     /// CommandResult shapes (Handle / Stream / Lambda) cleanly
     /// rather than silently coercing or panicking. Locks the

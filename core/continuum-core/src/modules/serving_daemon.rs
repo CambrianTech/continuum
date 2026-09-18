@@ -934,6 +934,47 @@ pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: 
     }
     boot_floor.max(live_residents as u32).max(1)
 }
+/// The leased-in lane demand the PLANNER may act on: the MINIMUM of the last
+/// [`DOWNSHIFT_SUSTAINED_TICKS`] per-tick peaks — a burst has to be a LOAD for that many
+/// consecutive ticks before it moves a slot. Fewer samples than the window = 0: a fresh
+/// gauge never relaunches anything.
+///
+/// Why (Cormac's review of #4197, 2026-09-18): `--parallel` is a LAUNCH arg, so a lane-count
+/// change is a new llama-server and every in-flight generation dies with the old one. The
+/// planner debounces DOWNshifts by this same constant and adopts UPshifts immediately — so a
+/// raw per-tick peak of bursty grid overflow would go: three leased calls arrive → +3 lanes →
+/// relaunch NOW → the relaunch kills the three that raised the count → next tick reads 0 →
+/// downshift → relaunch back → next burst → again. The 718-replan flap through a new input,
+/// on the one seat everyone queues on, each swing destroying the remote turns it was sized
+/// for. One constant for both directions, on purpose: the guard that stops a squeeze
+/// evicting the best activity is the guard that stops a burst evicting the grid's coders.
+pub fn sustained_leased_in(tick_peaks: &[usize]) -> usize {
+    let window = DOWNSHIFT_SUSTAINED_TICKS as usize;
+    if tick_peaks.len() < window {
+        return 0;
+    }
+    tick_peaks[tick_peaks.len() - window..]
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0) // unwrap_or: unreachable (window >= 1 and len >= window) — an empty slice reads as no demand, never a lane
+}
+/// The last [`DOWNSHIFT_SUSTAINED_TICKS`] per-tick leased-in peaks, oldest first — the
+/// input to [`sustained_leased_in`]. Kept beside the tick that fills it. The most recent
+/// raw peak is also kept so the plan receipt can carry both numbers.
+static LEASED_IN_PEAKS: std::sync::Mutex<std::collections::VecDeque<usize>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+static LAST_LEASED_IN_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Fold this tick's leased-in peak into the ring and return the sustained demand.
+fn note_leased_in_peak(peak: usize) -> usize {
+    LAST_LEASED_IN_PEAK.store(peak.min(u32::MAX as usize) as u32, Ordering::Relaxed);
+    let mut ring = LEASED_IN_PEAKS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+    ring.push_back(peak);
+    while ring.len() > DOWNSHIFT_SUSTAINED_TICKS as usize {
+        ring.pop_front();
+    }
+    sustained_leased_in(ring.make_contiguous())
+}
 
 /// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
 /// need a warm slot now; floored at 1 — a measurement still needs one lane) until released.
@@ -1065,18 +1106,36 @@ impl ServingDaemonModule {
         let live: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas())
             .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no residents measured = cold-start prior
+        // The prompt sizes of the generates this seat served for OTHER nodes join the
+        // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
+        // size them to the prompts those minds send, not to one local resident's. A seat
+        // with no residents of its own but leased-in minds still gets a floor from them.
+        let leased_sent = crate::cognition::resource_admission::leased_in_sent_samples();
         let (demand, sent, median) = if live.is_empty() {
-            (self.working_set.ceiling(), None, None)
+            (
+                self.working_set.ceiling(),
+                None,
+                self.working_set.sent_median_with(&[], &leased_sent),
+            )
         } else {
             (
                 self.working_set.ceiling_of(&live),
                 self.working_set.sent_ceiling_of(&live),
-                self.working_set.sent_median_of(&live),
+                self.working_set.sent_median_with(&live, &leased_sent),
             )
         };
+        // The minds this seat served for OTHER nodes since the last plan — the peak
+        // concurrent leased-in generates (c84d885a), DEBOUNCED: the planner acts on the
+        // minimum over the last DOWNSHIFT_SUSTAINED_TICKS peaks (`sustained_leased_in`),
+        // because a lane-count change relaunches the server and a raw burst would kill
+        // the very calls that raised it. Zero until the inbound-generate seam feeds the
+        // gauge; never invented.
+        let leased_in =
+            note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
         ServingDemand::new(lanes, demand)
             .with_sent_tokens(sent)
             .with_sent_median(median)
+            .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -3545,6 +3604,8 @@ impl ServingDaemonModule {
                         served_window = plan.served_context_window,
                         demand_window = demand.window_tokens,
                         demand_lanes = demand.lanes,
+                        leased_in = demand.leased_in,
+                        leased_in_peak = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed),
                         // `bootstrap` is a THIRD state, not a flavour of `demand`
                         // (2026-08-20). A cold plan reporting `demand` claims the minds
                         // asked for 16384 when none had asked for anything — and that is
@@ -5975,6 +6036,25 @@ mod tests {
         assert_eq!(cell.load(Ordering::Relaxed), 1);
         state.release(b);
         assert_eq!(cell.load(Ordering::Relaxed), 4);
+    }
+
+    // what this catches (Cormac's review of #4197, 2026-09-18): a burst of leased-in calls
+    // on ONE tick must not move the lane count. `--parallel` is a launch arg — a lane-count
+    // change is a new llama-server and every in-flight generation dies with the old one —
+    // so a raw per-tick peak would relaunch the seat and kill the very calls that raised
+    // the count, then downshift, then repeat: the 718 flap through a new input. The
+    // planner may act only on a load sustained for DOWNSHIFT_SUSTAINED_TICKS.
+    #[test]
+    fn a_burst_of_leased_in_calls_on_one_tick_does_not_move_the_lane_count() {
+        let w = DOWNSHIFT_SUSTAINED_TICKS as usize;
+        assert!(w >= 2, "the guard only means something with a window");
+        assert_eq!(sustained_leased_in(&[3]), 0, "a fresh gauge never relaunches");
+        assert_eq!(sustained_leased_in(&[3, 0, 0]), 0, "a burst that vanished is not demand");
+        assert_eq!(sustained_leased_in(&[3, 3, 0]), 0, "two ticks is still a burst");
+        assert_eq!(sustained_leased_in(&[3, 3, 3]), 3, "three consecutive ticks: a load");
+        assert_eq!(sustained_leased_in(&[0, 3, 3, 3]), 3, "the window is the LAST w ticks");
+        assert_eq!(sustained_leased_in(&[2, 3, 3]), 2, "the minimum, not the max: a dip is honored");
+        assert_eq!(sustained_leased_in(&[3, 3, 3, 1]), 1, "a falling load falls at once");
     }
 
     #[test]

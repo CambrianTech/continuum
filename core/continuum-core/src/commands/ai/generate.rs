@@ -150,7 +150,7 @@ crate::action_command! {
     access: Privileged,
     params: Value,
     output: AiGenerateResult,
-    run(this, _ctx, p) => {
+    run(this, ctx, p) => {
         let _timer = TimingGuard::new("module", "ai_generate");
 
         let request = parse_request(&p)?;
@@ -187,6 +187,18 @@ crate::action_command! {
             Some(sink) => adapter.generate_stream(request, sink).await?,
             None => adapter.generate_text(request).await?,
         };
+        // A generate from a cross-grid caller is inference this seat performed for a mind
+        // hosted on ANOTHER node. Its measured prompt size (the server's own count) joins
+        // the serving plan's per-lane window floor beside this node's residents' prompts —
+        // otherwise a seat grows lanes for the grid and then sizes them to one resident's
+        // prompt and refuses to fit them (card c84d885a; the 5090's 1 × 101k).
+        if ctx
+            .caller
+            .as_ref()
+            .is_some_and(|c| matches!(c.source, crate::routing::CallerSource::Airc))
+        {
+            crate::cognition::resource_admission::note_leased_in_sent(response.usage.input_tokens);
+        }
 
         // Preserve the serving node's receipt, model mapping and adapter metadata.
         let route = RoutingInfo::stamp(
