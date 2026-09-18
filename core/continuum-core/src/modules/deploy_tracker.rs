@@ -22,7 +22,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::runtime::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, TickInputs,
+    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome,
+    TickInputs,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
@@ -161,6 +162,21 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
 }
 
 /// Atomically record the deploy request the supervisor consumes.
+/// The recorded request, if one stands. The other half of [`write_deploy_request`] —
+/// until this existed the seam was write-only and nothing ever learned whether what was
+/// asked for arrived.
+fn read_deploy_request(state_dir: &std::path::Path) -> Option<DeployRequest> {
+    let text = std::fs::read_to_string(state_dir.join("deploy-request.json")).ok()?;
+    serde_json::from_str::<DeployRequest>(&text).ok()
+}
+
+/// Retire a request the running build has satisfied. Removing the file IS the record
+/// that it settled: a later tick finds nothing owed rather than re-deciding a deploy that
+/// already happened, and an operator reading the state dir sees only what is outstanding.
+fn clear_deploy_request(state_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(state_dir.join("deploy-request.json"));
+}
+
 fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
     let _ = std::fs::create_dir_all(state_dir);
     if let Ok(bytes) = serde_json::to_vec_pretty(req) {
@@ -176,6 +192,9 @@ pub struct DeployTrackerModule {
     source: Option<Box<dyn DeploySource>>,
     root: PathBuf,
     repo_dir: Option<PathBuf>,
+    /// The tip last reported as stranded, so a durable condition is said ONCE rather than
+    /// every tick — the chatty-floor failure that buries the line it exists to surface.
+    stranded_reported: parking_lot::Mutex<Option<String>>,
 }
 
 impl DeployTrackerModule {
@@ -187,6 +206,7 @@ impl DeployTrackerModule {
             source: source.map(|s| Box::new(s) as Box<dyn DeploySource>),
             root,
             repo_dir,
+            stranded_reported: parking_lot::Mutex::new(None),
         }
     }
 
@@ -256,6 +276,53 @@ impl ServiceModule for DeployTrackerModule {
             tree_dirty: self.tree_dirty(),
             now_ms: now,
         };
+
+        // CLOSE THE LOOP BEFORE DECIDING THE NEXT ONE. `decide` writes a DeployRequest and
+        // nothing ever read one back, so "the deploy I asked for has arrived" was not a
+        // fact this node held — the only way to learn it was to poll `continuum ping`
+        // until the sha changed (measured 2026-09-17: two hours of an operator
+        // re-deriving by hand a comparison available from two values already in hand).
+        // Both facts are right here in `inputs`; this just compares them.
+        let state_dir = self.root.join("state");
+        match crate::runtime::deploy_tracker::reconcile_request(
+            read_deploy_request(&state_dir).as_ref(),
+            running_sha(),
+            build_in_flight,
+            now,
+        ) {
+            RequestOutcome::Settled { tip_sha, waited_ms } => {
+                clear_deploy_request(&state_dir);
+                crate::probe!(
+                    class = "deploy.settled",
+                    tip = tip_sha.as_str(),
+                    running = running_sha(),
+                    waited_ms,
+                    "the requested deploy is now the running build — request retired"
+                );
+            }
+            RequestOutcome::Stranded { tip_sha, elapsed_ms } => {
+                // Once per stranded tip, not every tick: the condition is durable and the
+                // request file on disk is the standing evidence. A per-tick repeat is the
+                // chatty-floor failure that buries the line it exists to surface.
+                let mut last = self.stranded_reported.lock();
+                if last.as_deref() != Some(tip_sha.as_str()) {
+                    *last = Some(tip_sha.clone());
+                    crate::probe!(
+                        class = "deploy.stranded",
+                        tip = tip_sha.as_str(),
+                        running = running_sha(),
+                        elapsed_ms,
+                        "a deploy was requested, nothing is building, and the tip is NOT \
+                         running — the request did not take (a detached build that died, or \
+                         a supervisor that never ran it)"
+                    );
+                }
+            }
+            RequestOutcome::InFlight { .. } | RequestOutcome::Nothing => {
+                // In flight is already named by the BuildInFlight verdict below; nothing
+                // owed is the quiet case and must stay quiet.
+            }
+        }
 
         let verdict = decide(&inputs);
         match &verdict {
