@@ -182,6 +182,30 @@ pub fn lane_bound_seats(h: &CitizenHealth, v: &Verdict, minds: &[(uuid::Uuid, Mi
     out.truncate(over.min(MINDLESS_MAX_PER_TICK));
     out
 }
+/// THE MIRROR (Cormac's condition on S3): a lane-bound rest has a lane-bound WAKE. A
+/// mindless seat returns on a CHANGE in her; a lane-bound seat was fine — the LANES were
+/// short — so she returns when the lanes come back: while `lanes × MINDS_PER_LANE_STARVED_ABOVE`
+/// has room above the residents, the most recently rested lane-bound seat (the most served
+/// of those rested, since the least served rested first) wakes, same cap per tick. Without
+/// this every transient lane dip would permanently shrink the roster — the one-direction
+/// shape (the peak ratchet, the claim expiry, the metronome) in a fourth coat. Mindless
+/// rests are untouched. Pure.
+pub const LANES_RETURNED_REASON: &str = "lanes returned";
+pub fn lane_bound_wakes(h: &CitizenHealth, resting: &[crate::persona::resting_seat::RestingSeat]) -> Vec<crate::persona::resting_seat::RestingSeat> {
+    let edge = h.lanes.saturating_mul(MINDS_PER_LANE_STARVED_ABOVE);
+    let room = edge.saturating_sub(h.resident) as usize;
+    if room == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<crate::persona::resting_seat::RestingSeat> = resting
+        .iter()
+        .filter(|s| s.reason.starts_with(LANE_BOUND_REASON))
+        .cloned()
+        .collect();
+    out.sort_by_key(|s| std::cmp::Reverse(s.since_ms));
+    out.truncate(room.min(MINDLESS_MAX_PER_TICK));
+    out
+}
 fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
@@ -507,6 +531,25 @@ impl ServiceModule for CitizenHealthModule {
             minds.iter().filter(|(_, m)| !paged_out.contains(&m.agent_name)).cloned().collect();
         let after_mindless = CitizenHealth { resident: h.resident.saturating_sub(paged_out.len() as u64), ..h.clone() };
         let rested = rest_seats(lane_bound_seats(&after_mindless, &v, &remaining), RestCause::LaneBound, &after_mindless).await;
+        // THE MIRROR: the lanes came back — the lane-bound seats come back, most served
+        // first, same cap. (Rest and wake cannot both fire: one needs residents above the
+        // edge, the other room below it.)
+        let mut woken: Vec<String> = Vec::new();
+        for seat in lane_bound_wakes(&after_mindless, &crate::persona::resting_seat::resting()) {
+            if crate::persona::resting_seat::wake(&seat.agent_name) {
+                crate::probe!(
+                    class = "persona.lane_bound.woken",
+                    persona = %seat.agent_name,
+                    persona_id = %seat.persona_id,
+                    resident = after_mindless.resident,
+                    lanes = h.lanes,
+                    rested_since_ms = seat.since_ms,
+                    reason = LANES_RETURNED_REASON,
+                    "the lanes came back — a lane-bound seat returns at the next reconcile"
+                );
+                woken.push(seat.agent_name);
+            }
+        }
         crate::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
@@ -522,6 +565,7 @@ impl ServiceModule for CitizenHealthModule {
             credits_settled = h.credits_settled,
             mindless_paged_out = paged_out.len() as u64,
             lane_bound_rested = rested.len() as u64,
+            lane_bound_woken = woken.len() as u64,
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
@@ -531,6 +575,9 @@ impl ServiceModule for CitizenHealthModule {
         }
         if !rested.is_empty() {
             said.push_str(&format!(" · lane-bound: {} rested to the healthy edge ({})", rested.len(), rested.join(", ")));
+        }
+        if !woken.is_empty() {
+            said.push_str(&format!(" · lanes returned: {} woken ({})", woken.len(), woken.join(", ")));
         }
         crate::modules::grid::say_in_org_room(&said).await;
         Ok(())
@@ -719,5 +766,37 @@ mod tests {
         let one_lane = CitizenHealth { resident: 3, lanes: 1, pulls: 50, pulls_deferred: 50, ..m5.clone() };
         assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "3 on 1 is the edge, nobody rests");
         assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
+    }
+
+    // what this catches (Cormac's condition on S3 — the one-direction shape in a fourth
+    // coat): a lane-bound rest has a lane-bound WAKE. Two seats rested at lanes = 1 stay
+    // rested while lanes = 1; the tick at lanes = 2 wakes them, the most recently rested
+    // (the most served) first, under the same cap; a MINDLESS rest is never woken by
+    // lanes — she must have changed.
+    #[test]
+    fn a_lane_bound_rest_has_a_lane_bound_wake_and_a_mindless_rest_does_not() {
+        use crate::persona::resting_seat::RestingSeat;
+        let seat = |name: &str, reason: &str, since_ms: u64| RestingSeat {
+            agent_name: name.into(), persona_id: uuid::Uuid::new_v4(), reason: reason.into(), since_ms, build: "b".into(),
+        };
+        let resting = vec![
+            seat("least", &format!("{LANE_BOUND_REASON}: 5 minds on 1 lanes"), 100),
+            seat("less", &format!("{LANE_BOUND_REASON}: 5 minds on 1 lanes"), 200),
+            seat("recital", "18 of 21 speak verdicts this hour were the gate refusing a recital", 300),
+        ];
+        // Still 1 lane, 3 resident: the edge is 3, no room — nobody wakes.
+        let one = CitizenHealth { pulls: 50, pulls_deferred: 50, ..h(3, 1, 10, 0) };
+        assert!(lane_bound_wakes(&one, &resting).is_empty(), "lanes did not return");
+        // 2 lanes: the edge is 6, room for 3 — both lane-bound seats wake, most served first.
+        let two = CitizenHealth { ..h(3, 2, 10, 0) };
+        let woken: Vec<String> = lane_bound_wakes(&two, &resting).into_iter().map(|s| s.agent_name).collect();
+        assert_eq!(woken, ["less", "least"], "the last to rest is the first back; the recital stays rested");
+        // Room for exactly one: only the most served returns.
+        let tight = CitizenHealth { ..h(5, 2, 10, 0) };
+        let woken: Vec<String> = lane_bound_wakes(&tight, &resting).into_iter().map(|s| s.agent_name).collect();
+        assert_eq!(woken, ["less"]);
+        // Rest and wake never both fire: over the edge there is no room; under it, nothing rests.
+        let over = CitizenHealth { pulls: 50, pulls_deferred: 50, knee: Some(2), ..h(16, 2, 50, 3) };
+        assert!(lane_bound_wakes(&over, &resting).is_empty());
     }
 }
