@@ -11,6 +11,17 @@
 //! The rule names the shape, not a score: STARVED (more minds than lanes can turn),
 //! READING (acts without writes), IDLE (residents, no acts), or HEALTHY. The line is
 //! what a human or a peer acts on; the probe is what a test or a dashboard reads.
+//!
+//! THE RECEIPT HAS AN ACTOR (card c84d885a, S3 — Joel 2026-09-18: "govern for
+//! reliability"). "AT THE KNEE … owed: fewer seats" was said in the org room for hours
+//! on 2026-09-18 with nobody to pay it; an operator paid it by hand (a hold + a reboot).
+//! Now the tick pays it: when the roster is starved or at the knee AND the hour's card
+//! pulls were mostly lane-deferrals (`bench.round.pull_deferred_wip` — the minds were
+//! queued on the lanes, not idle), the least-served seats REST down to the healthy edge
+//! (`lanes × MINDS_PER_LANE_STARVED_ABOVE`), the same resting-seat page-out the mindless
+//! rule uses, with WHY on the record. An hour of `pull_none` pays nothing here — that is
+//! a round-supply defect, not a seat one, and paging a roster for it would delete the
+//! roster and report success.
 //! Cadence follows the RTOS shape: the module's own `tick_interval`, no task of its own
 //! ([[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]).
 
@@ -31,6 +42,11 @@ struct Ledger {
     settles: AtomicU64,
     credits_staged: AtomicU64,
     credits_settled: AtomicU64,
+    /// Card pulls the roster attempted (the three receipted outcomes of
+    /// `work_pull::try_pull_next_card`: pulled, deferred on the lanes, nothing to pull).
+    pulls: AtomicU64,
+    /// Of those, the pulls deferred because the roster already held a card per lane.
+    pulls_deferred: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -40,7 +56,17 @@ static LEDGER: Ledger = Ledger {
     settles: AtomicU64::new(0),
     credits_staged: AtomicU64::new(0),
     credits_settled: AtomicU64::new(0),
+    pulls: AtomicU64::new(0),
+    pulls_deferred: AtomicU64::new(0),
 };
+/// A card pull was decided (the `bench.round.pull_*` seams). `deferred` = the lanes
+/// were full, so she watched the board instead — the lane-bound signal.
+pub fn note_pull(deferred: bool) {
+    LEDGER.pulls.fetch_add(1, Ordering::Relaxed);
+    if deferred {
+        LEDGER.pulls_deferred.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// An act was observed (the `persona.act.observed` seam). `wrote` = it changed a file.
 pub fn note_act(wrote: bool) {
@@ -53,14 +79,14 @@ pub fn note_act(wrote: bool) {
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
 }
-/// Per-mind lane grants this hour — the placement chooser's "least served" order.
-static GRANTS_BY_MIND: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+/// Per-mind lane grants this hour — the placement chooser's and the lane-bound
+/// page-out's "least served" order. One per-mind ledger ([`MindHour`]), not two.
 pub fn note_lane_granted_to(persona: uuid::Uuid) {
     note_lane_granted();
-    *GRANTS_BY_MIND.entry(persona).or_insert(0) += 1;
+    MINDS.entry(persona).or_default().lane_grants += 1;
 }
 pub fn lane_grants_of(persona: uuid::Uuid) -> u64 {
-    GRANTS_BY_MIND.get(&persona).map(|v| *v).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
+    MINDS.get(&persona).map(|m| m.lane_grants).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
 }
 /// Per-mind speech discipline this hour — the MINDLESS receipt's inputs
 /// (card aed15611; Joel: "mindless AIs should be accounted for"). Fed at the two
@@ -73,6 +99,8 @@ pub struct MindHour {
     pub gate_refused: u64,
     pub acts: u64,
     pub writes: u64,
+    /// Serving lanes granted to her this hour — the "least served" order.
+    pub lane_grants: u64,
 }
 static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
 /// A Speak verdict was decided for a mind (the faculty's `verdict` seam).
@@ -124,6 +152,36 @@ pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(u
     out.truncate(room.min(MINDLESS_MAX_PER_TICK));
     out
 }
+/// LANE-BOUND, the rule (card c84d885a, S3): the roster is starved or at the knee, the
+/// hour's pulls are a fair sample, and at least this share of them were deferred on the
+/// lanes — the minds were queued, not idle, not mindless. The same four-in-five bar the
+/// mindless rule uses; the same evidence floor.
+pub const LANE_BOUND_DEFERRED_SHARE: f64 = MINDLESS_GATE_SHARE;
+pub const LANE_BOUND_MIN_PULLS: u64 = MINDLESS_MIN_VERDICTS;
+/// The reason every lane-bound rest carries — a routing defect that pages a roster must
+/// say THIS, never "mindless", so the record explains the empty seats.
+pub const LANE_BOUND_REASON: &str = "lane_bound";
+pub fn is_lane_bound(h: &CitizenHealth, v: &Verdict) -> bool {
+    matches!(v, Verdict::Starved { .. } | Verdict::AtKnee { .. })
+        && h.pulls >= LANE_BOUND_MIN_PULLS
+        && (h.pulls_deferred as f64) >= LANE_BOUND_DEFERRED_SHARE * (h.pulls as f64)
+}
+/// The pure choice: which seats REST this tick so the roster comes down to the healthy
+/// edge (`lanes × MINDS_PER_LANE_STARVED_ABOVE` — the one number the STARVED verdict
+/// already turns on). Least served first (no writes, then fewest lane grants), never
+/// below the resident floor, never more than the per-tick cap, and NOTHING on an hour
+/// whose pulls found no rounds — that is a round-supply defect, not a seat one.
+pub fn lane_bound_seats(h: &CitizenHealth, v: &Verdict, minds: &[(uuid::Uuid, MindHour)]) -> Vec<(uuid::Uuid, MindHour)> {
+    if !is_lane_bound(h, v) {
+        return Vec::new();
+    }
+    let keep = h.lanes.saturating_mul(MINDS_PER_LANE_STARVED_ABOVE).max(MINDLESS_RESIDENT_FLOOR);
+    let over = h.resident.saturating_sub(keep) as usize;
+    let mut out: Vec<(uuid::Uuid, MindHour)> = minds.to_vec();
+    out.sort_by_key(|(_, m)| (m.writes, m.lane_grants));
+    out.truncate(over.min(MINDLESS_MAX_PER_TICK));
+    out
+}
 fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
@@ -156,6 +214,9 @@ pub struct CitizenHealth {
     pub settles: u64,
     pub credits_staged: u64,
     pub credits_settled: u64,
+    /// Card pulls the roster attempted this hour, and how many the full lanes deferred.
+    pub pulls: u64,
+    pub pulls_deferred: u64,
     /// The measured decode knee for the served model (`inference::decode_knee`), when
     /// one is known: the lane count the planner will not exceed because every further
     /// stream would decode below the tax floor. Above it, lanes are not what is owed.
@@ -256,7 +317,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         ),
     };
     format!(
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled — {}",
         h.window_secs / 60,
         h.resident,
         h.lanes,
@@ -264,6 +325,8 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.acts,
         h.writes,
         h.lanes_granted,
+        h.pulls,
+        h.pulls_deferred,
         h.settles,
         h.credits_staged,
         h.credits_settled,
@@ -271,8 +334,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     )
 }
 
-fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
-    GRANTS_BY_MIND.clear();
+fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -280,6 +342,8 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
         LEDGER.settles.swap(0, Ordering::Relaxed),
         LEDGER.credits_staged.swap(0, Ordering::Relaxed),
         LEDGER.credits_settled.swap(0, Ordering::Relaxed),
+        LEDGER.pulls.swap(0, Ordering::Relaxed),
+        LEDGER.pulls_deferred.swap(0, Ordering::Relaxed),
     )
 }
 
@@ -287,9 +351,13 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
 /// checkpoint), take each chosen seat off the grid (the same orderly teardown as
 /// `persona/instances/despawn`), and record the rest so the reconciler does not
 /// re-draw her. Returns the names paged out, for the line.
-async fn page_out_mindless(h: &CitizenHealth) -> Vec<String> {
-    let minds = snapshot_minds_and_reset();
-    let chosen = mindless_seats(&minds, h.resident);
+/// Why a seat rests — the two rules that page out, each with its own receipt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RestCause {
+    Mindless,
+    LaneBound,
+}
+async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &CitizenHealth) -> Vec<String> {
     if chosen.is_empty() {
         return Vec::new();
     }
@@ -306,10 +374,16 @@ async fn page_out_mindless(h: &CitizenHealth) -> Vec<String> {
     let mut out = Vec::new();
     for (persona, m) in chosen {
         let saved = flushed.iter().any(|(id, r)| *id == persona && r.is_ok());
-        let reason = format!(
-            "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
-            m.gate_refused, m.verdicts, m.acts
-        );
+        let reason = match cause {
+            RestCause::Mindless => format!(
+                "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
+                m.gate_refused, m.verdicts, m.acts
+            ),
+            RestCause::LaneBound => format!(
+                "{LANE_BOUND_REASON}: {} minds on {} lanes, {} of {} pulls deferred on the lanes this hour; she had {} lane grants, {} writes — least served rests first",
+                h.resident, h.lanes, h.pulls_deferred, h.pulls, m.lane_grants, m.writes
+            ),
+        };
         let Some(runtime) = registry.shutdown_slot(persona).await else {
             continue; // already gone this tick
         };
@@ -325,18 +399,35 @@ async fn page_out_mindless(h: &CitizenHealth) -> Vec<String> {
             since_ms,
             build: crate::persona::resting_seat::current_build().to_string(),
         });
-        crate::probe!(
-            class = "persona.mindless.paged_out",
-            persona = %agent_name,
-            persona_id = %persona,
-            verdicts = m.verdicts,
-            gate_refused = m.gate_refused,
-            acts = m.acts,
-            checkpoint_saved = saved,
-            recorded = recorded.is_ok(),
-            reason = %reason,
-            "a mindless seat was paged out with her checkpoint — she returns on a change, not a clock"
-        );
+        match cause {
+            RestCause::Mindless => crate::probe!(
+                class = "persona.mindless.paged_out",
+                persona = %agent_name,
+                persona_id = %persona,
+                verdicts = m.verdicts,
+                gate_refused = m.gate_refused,
+                acts = m.acts,
+                checkpoint_saved = saved,
+                recorded = recorded.is_ok(),
+                reason = %reason,
+                "a mindless seat was paged out with her checkpoint — she returns on a change, not a clock"
+            ),
+            RestCause::LaneBound => crate::probe!(
+                class = "persona.lane_bound.rested",
+                persona = %agent_name,
+                persona_id = %persona,
+                resident = h.resident,
+                lanes = h.lanes,
+                pulls = h.pulls,
+                pulls_deferred = h.pulls_deferred,
+                lane_grants = m.lane_grants,
+                writes = m.writes,
+                checkpoint_saved = saved,
+                recorded = recorded.is_ok(),
+                reason = %reason,
+                "the receipt's actor: a lane-bound roster rests its least-served seat with her checkpoint — she returns on a change (a deploy, the operator's word), not a clock"
+            ),
+        }
         out.push(agent_name);
     }
     out
@@ -349,7 +440,7 @@ impl CitizenHealthModule {
         Self
     }
     fn read(&self) -> CitizenHealth {
-        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled) = snapshot_and_reset();
+        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, pulls, pulls_deferred) = snapshot_and_reset();
         let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
@@ -365,6 +456,8 @@ impl CitizenHealthModule {
             settles,
             credits_staged,
             credits_settled,
+            pulls,
+            pulls_deferred,
             knee: knee_of(serving.active_model.as_deref()),
         }
     }
@@ -405,7 +498,15 @@ impl ServiceModule for CitizenHealthModule {
         // is paged out WITH her checkpoint — her lane goes to a working mind, and she
         // returns on a change (a deploy, a trained gene, the operator's word), never
         // on a clock. The lake and the rabbits: her working memory is flushed first.
-        let paged_out = page_out_mindless(&h).await;
+        let minds = snapshot_minds_and_reset();
+        let paged_out = rest_seats(mindless_seats(&minds, h.resident), RestCause::Mindless, &h).await;
+        // THE RECEIPT'S ACTOR (card c84d885a, S3): a starved / at-the-knee roster whose
+        // hour was lane-deferrals rests its least-served seats down to the healthy edge
+        // — what "owed: fewer seats" was asking a human to do. Never on a pull_none hour.
+        let remaining: Vec<(uuid::Uuid, MindHour)> =
+            minds.iter().filter(|(_, m)| !paged_out.contains(&m.agent_name)).cloned().collect();
+        let after_mindless = CitizenHealth { resident: h.resident.saturating_sub(paged_out.len() as u64), ..h.clone() };
+        let rested = rest_seats(lane_bound_seats(&after_mindless, &v, &remaining), RestCause::LaneBound, &after_mindless).await;
         crate::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
@@ -414,16 +515,22 @@ impl ServiceModule for CitizenHealthModule {
             acts = h.acts,
             writes = h.writes,
             lane_grants = h.lanes_granted,
+            pulls = h.pulls,
+            pulls_deferred = h.pulls_deferred,
             settles = h.settles,
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
             mindless_paged_out = paged_out.len() as u64,
+            lane_bound_rested = rested.len() as u64,
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
         let mut said = line(&h, &v);
         if !paged_out.is_empty() {
             said.push_str(&format!(" · mindless {} paged out ({})", paged_out.len(), paged_out.join(", ")));
+        }
+        if !rested.is_empty() {
+            said.push_str(&format!(" · lane-bound: {} rested to the healthy edge ({})", rested.len(), rested.join(", ")));
         }
         crate::modules::grid::say_in_org_room(&said).await;
         Ok(())
@@ -445,6 +552,8 @@ impl ServiceModule for CitizenHealthModule {
                     settles: LEDGER.settles.load(Ordering::Relaxed),
                     credits_staged: LEDGER.credits_staged.load(Ordering::Relaxed),
                     credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
+                    pulls: LEDGER.pulls.load(Ordering::Relaxed),
+                    pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                 };
                 let v = verdict(&h);
@@ -452,6 +561,7 @@ impl ServiceModule for CitizenHealthModule {
                     "resident": h.resident, "lanes": h.lanes, "served_window": h.served_window,
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
+                    "pulls": h.pulls, "pulls_deferred": h.pulls_deferred,
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -483,7 +593,7 @@ mod tests {
     #[test]
     fn a_mind_of_recitals_is_paged_out_worst_first_and_never_below_the_floor() {
         let mind = |name: &str, verdicts, refused, acts, writes| MindHour {
-            agent_name: name.into(), verdicts, gate_refused: refused, acts, writes,
+            agent_name: name.into(), verdicts, gate_refused: refused, acts, writes, lane_grants: acts,
         };
         assert!(is_mindless(&mind("Sigurd", 21, 18, 3, 0)));
         assert!(!is_mindless(&mind("wrote", 21, 18, 3, 1)), "a write is a mind");
@@ -507,7 +617,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, knee: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None }
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -554,9 +664,60 @@ mod tests {
         note_lane_granted();
         note_settle();
         note_credit_staged();
-        let (a, w, l, s, c, _) = snapshot_and_reset();
-        assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1);
-        let (a2, _, _, _, _, _) = snapshot_and_reset();
-        assert_eq!(a2, 0);
+        note_pull(true);
+        let (a, w, l, s, c, _, p, pd) = snapshot_and_reset();
+        assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1 && p >= 1 && pd >= 1);
+        let (a2, _, _, _, _, _, p2, _) = snapshot_and_reset();
+        assert_eq!((a2, p2), (0, 0));
+    }
+
+    // what this catches (card c84d885a, S3 — the receipt's actor): the M5's 2026-09-18
+    // hour, 16 minds on 2 lanes with 424 lane-deferred pulls, rests its least-served seats
+    // toward the healthy edge (2 lanes × 3) — bounded per tick, worst-served first, WHY
+    // on the record; and the IntelMac's hour, 8 minds with 278 pulls that found NO
+    // round, rests NOBODY — that is a round-supply defect, and paging the roster for it
+    // would delete the roster and report success. The edge, the floor and the cap are the
+    // rule's own constants, not a grid's numbers.
+    #[test]
+    fn a_lane_bound_roster_rests_its_least_served_seats_and_a_roundless_one_rests_nobody() {
+        let mind = |name: &str, grants: u64, writes: u64| MindHour {
+            agent_name: name.into(), verdicts: 10, gate_refused: 1, acts: grants, writes, lane_grants: grants,
+        };
+        let roster: Vec<(uuid::Uuid, MindHour)> = [
+            mind("wrote", 30, 2), mind("busy", 40, 0), mind("least", 1, 0), mind("less", 3, 0), mind("some", 9, 0),
+        ]
+        .into_iter()
+        .map(|m| (uuid::Uuid::new_v4(), m))
+        .collect();
+        // The M5 hour: 16 on 2, 424 of 430 pulls deferred, AT THE KNEE.
+        let m5 = CitizenHealth { pulls: 430, pulls_deferred: 424, knee: Some(2), ..h(16, 2, 50, 3) };
+        let v = verdict(&m5);
+        assert_eq!(v, Verdict::AtKnee { resident: 16, lanes: 2, knee: 2 });
+        assert!(is_lane_bound(&m5, &v));
+        let rested = lane_bound_seats(&m5, &v, &roster);
+        let names: Vec<&str> = rested.iter().map(|(_, m)| m.agent_name.as_str()).collect();
+        assert_eq!(names, ["least", "less", "some"], "least served first, capped at {MINDLESS_MAX_PER_TICK}; a mind that wrote rests last");
+        // Toward the edge, never past it: 7 minds on 2 lanes is one over the edge of 6.
+        let seven = CitizenHealth { resident: 7, ..m5.clone() };
+        assert_eq!(lane_bound_seats(&seven, &verdict(&seven), &roster).len(), 1);
+        // Starved below the knee pays the same debt.
+        let starved = CitizenHealth { knee: Some(8), ..m5.clone() };
+        assert_eq!(verdict(&starved), Verdict::Starved { resident: 16, lanes: 2 });
+        assert_eq!(lane_bound_seats(&starved, &verdict(&starved), &roster).len(), MINDLESS_MAX_PER_TICK);
+        // The IntelMac hour: 8 minds, 278 pulls, none deferred — NOTHING rests.
+        let intel = CitizenHealth { pulls: 278, pulls_deferred: 0, ..h(8, 1, 12, 0) };
+        assert!(matches!(verdict(&intel), Verdict::Starved { .. }), "starved by the numbers");
+        assert!(!is_lane_bound(&intel, &verdict(&intel)), "but a roundless hour is not lane-bound");
+        assert!(lane_bound_seats(&intel, &verdict(&intel), &roster).is_empty());
+        // Too few pulls to judge, or a healthy verdict: nothing.
+        let thin = CitizenHealth { pulls: LANE_BOUND_MIN_PULLS - 1, pulls_deferred: LANE_BOUND_MIN_PULLS - 1, ..m5.clone() };
+        assert!(!is_lane_bound(&thin, &verdict(&thin)));
+        let fine = CitizenHealth { pulls: 100, pulls_deferred: 100, ..h(4, 2, 20, 4) };
+        assert_eq!(verdict(&fine), Verdict::Healthy);
+        assert!(lane_bound_seats(&fine, &verdict(&fine), &roster).is_empty(), "a healthy roster is never paged");
+        // The edge on one lane is 3: 3 minds on 1 lane is AT the edge, nobody rests.
+        let one_lane = CitizenHealth { resident: 3, lanes: 1, pulls: 50, pulls_deferred: 50, ..m5.clone() };
+        assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "3 on 1 is the edge, nobody rests");
+        assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
     }
 }
