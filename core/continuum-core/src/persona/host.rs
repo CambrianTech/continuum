@@ -335,14 +335,28 @@ impl PersonaSpawnSupervisor {
         self.host_plans(plans, tool_command_executor, &mut summary)
             .await;
 
-        tracing::info!(
-            hosted = summary.hosted,
-            failed = summary.failed(),
-            "🌐 PersonaSpawnSupervisor: boot composition complete — \
-             {} citizen(s) hosted, {} failed",
-            summary.hosted,
-            summary.failed(),
-        );
+        // A pass that composed nothing is a no-op and says so at debug, never at
+        // info. The supervisor stays resident and re-runs on EVERY serving edge
+        // (each serving tick — 1/s on the 5090), and until 2026-09-18 this line
+        // fired unconditionally: 2,991 "boot composition complete — 0 citizen(s)
+        // hosted" rows in 56 minutes, evicting the real boot record from the
+        // bounded log while saying nothing. The callers in ipc/mod.rs already
+        // gate their own summary lines on `hosted > 0`; this one now matches.
+        if summary.hosted > 0 || summary.failed() > 0 {
+            tracing::info!(
+                hosted = summary.hosted,
+                failed = summary.failed(),
+                "🌐 PersonaSpawnSupervisor: boot composition complete — \
+                 {} citizen(s) hosted, {} failed",
+                summary.hosted,
+                summary.failed(),
+            );
+        } else {
+            tracing::debug!(
+                "PersonaSpawnSupervisor: composition pass hosted nothing \
+                 (roster full or nothing plannable) — quiet no-op"
+            );
+        }
 
         summary
     }
