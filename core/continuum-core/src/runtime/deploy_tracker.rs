@@ -192,6 +192,75 @@ pub fn decide(inp: &TickInputs) -> DeployVerdict {
     DeployVerdict::Deploy { tip_sha: tip.to_string() }
 }
 
+/// What a recorded [`DeployRequest`] MEANS once the running build is known — the other
+/// half of the seam.
+///
+/// [`decide`] writes a request and, until now, nothing ever read one back: the only
+/// non-test references to [`DeployRequest`] in the tree were the struct and the write
+/// site. So "the deploy I asked for has arrived" was not a fact the substrate held, and
+/// the only way to learn it was to poll `continuum ping` until the sha changed — measured
+/// 2026-09-17, two hours of an operator re-deriving by hand a comparison the node could
+/// make every tick from two values it already has.
+///
+/// Worse than the polling: a request that never took is INDISTINGUISHABLE from one still
+/// working. `continuum reboot` returns exit 1 while its build continues detached (card
+/// 79faf35d), so "recorded a request, nothing happened" and "recorded a request, it is
+/// compiling" looked the same from outside. [`Stranded`](Self::Stranded) is that
+/// difference made readable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestOutcome {
+    /// No request on record — nothing was asked for, nothing is owed.
+    Nothing,
+    /// The running build IS the requested tip: the deploy ARRIVED. Carries how long it
+    /// took, so the cost of a deploy on this tier is a measured number rather than an
+    /// impression (this box: ~40-120 min; the M5: ~75).
+    Settled { tip_sha: String, waited_ms: u64 },
+    /// Requested, not yet running, and a build claim is active — working. Expected.
+    InFlight { tip_sha: String, elapsed_ms: u64 },
+    /// Requested, not yet running, and NOTHING is building. The request did not take:
+    /// the supervisor never ran it, or its build died. This is the state that used to be
+    /// silent, and it is the one worth waking someone for.
+    Stranded { tip_sha: String, elapsed_ms: u64 },
+}
+
+/// Do two git shas name the same commit when one may be abbreviated?
+///
+/// NOT `==`. `running_sha()` is the short form the build stamps (`90194bead`) while a
+/// [`DeployRequest`] records the full tip (`90194beadf4fbf9d8e08a55c9262a3860c37a76e`) —
+/// an equality check would never fire, [`reconcile_request`] would never return
+/// [`RequestOutcome::Settled`], and the whole reconcile would be correct code on a branch
+/// nothing reaches. Compare as a prefix, shorter against longer, and require enough
+/// characters that a coincidence is not a match.
+fn same_commit(a: &str, b: &str) -> bool {
+    const MIN_ABBREV: usize = 7; // git's own floor for an unambiguous short sha
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.len() >= MIN_ABBREV && long.starts_with(short)
+}
+
+/// Close the deploy loop: given the request on record and the build actually running,
+/// say whether what was asked for has arrived. Pure — the module supplies the two facts
+/// it already gathers every tick, so this costs nothing and can be asserted with no
+/// filesystem, no git and no clock.
+pub fn reconcile_request(
+    request: Option<&DeployRequest>,
+    running_sha: &str,
+    build_in_flight: bool,
+    now_ms: u64,
+) -> RequestOutcome {
+    let Some(req) = request else {
+        return RequestOutcome::Nothing;
+    };
+    let elapsed_ms = now_ms.saturating_sub(req.requested_ms);
+    if same_commit(&req.tip_sha, running_sha) {
+        return RequestOutcome::Settled { tip_sha: req.tip_sha.clone(), waited_ms: elapsed_ms };
+    }
+    if build_in_flight {
+        RequestOutcome::InFlight { tip_sha: req.tip_sha.clone(), elapsed_ms }
+    } else {
+        RequestOutcome::Stranded { tip_sha: req.tip_sha.clone(), elapsed_ms }
+    }
+}
+
 /// The source of the deployable tip and its check-state, behind a trait so the decision
 /// never touches gh directly and a LAN/gist/Reticulum fallback can slot in (gh is never
 /// on the liveness path). The `ServiceModule` calls this via `spawn_blocking` + a
@@ -285,5 +354,66 @@ mod tests {
         let b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
         assert_eq!(a.tip_sha, b.tip_sha);
         assert_ne!(DeployRequest::new("ccc", NOW).tip_sha, a.tip_sha);
+    }
+
+    // what this catches, and it is the whole reason this reconcile is not dead code:
+    // a DeployRequest records the FULL tip sha while `running_sha()` is the SHORT form the
+    // build stamps. An `==` comparison never fires, `Settled` is never returned, and the
+    // loop stays open while looking closed. These are the real values from this tier on
+    // 2026-09-17. Against a `==` implementation the first assertion fails.
+    #[test]
+    fn a_short_running_sha_settles_a_full_requested_tip() {
+        let req = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", NOW);
+        assert_eq!(
+            reconcile_request(Some(&req), "c2344d758", false, NOW + 90_000),
+            RequestOutcome::Settled {
+                tip_sha: "c2344d758225d87911d1ee2934b4e7e42673c26e".into(),
+                waited_ms: 90_000
+            },
+            "the short stamped sha IS the requested tip — abbreviation is not a difference"
+        );
+        // and the reverse orientation, so the comparison is not accidentally one-sided
+        let req_short = DeployRequest::new("c2344d758", NOW);
+        assert!(matches!(
+            reconcile_request(Some(&req_short), "c2344d758225d87911d1ee2934b4e7e42673c26e", false, NOW),
+            RequestOutcome::Settled { .. }
+        ));
+    }
+
+    // what this catches: a sha too short to be unambiguous must NOT match, or any request
+    // could be "settled" by coincidence. git's own floor is 7.
+    #[test]
+    fn an_abbreviation_too_short_to_be_unambiguous_is_not_a_match() {
+        let req = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", NOW);
+        assert!(
+            !matches!(reconcile_request(Some(&req), "c2344", false, NOW), RequestOutcome::Settled { .. }),
+            "five characters is a coincidence, not a commit"
+        );
+    }
+
+    // what this catches (the silent half, measured 2026-09-17): a request that never took
+    // and a request still building were INDISTINGUISHABLE — `continuum reboot` exits 1
+    // while its build continues detached (card 79faf35d), so both looked like nothing.
+    // The build claim is what separates them, and Stranded is the state worth surfacing.
+    #[test]
+    fn a_request_that_did_not_take_is_stranded_not_in_flight() {
+        let req = DeployRequest::new("aaaaaaaaa111bbbb", NOW);
+        assert_eq!(
+            reconcile_request(Some(&req), "999999999", true, NOW + 60_000),
+            RequestOutcome::InFlight { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 60_000 },
+            "a build claim is active — this is working, not broken"
+        );
+        assert_eq!(
+            reconcile_request(Some(&req), "999999999", false, NOW + 60_000),
+            RequestOutcome::Stranded { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 60_000 },
+            "nothing is building and the tip is not running — the request did not take"
+        );
+    }
+
+    // what this catches: no request on record must be quiet, not a false Stranded every
+    // tick on a node that is simply up to date.
+    #[test]
+    fn no_request_on_record_is_nothing_owed() {
+        assert_eq!(reconcile_request(None, "c2344d758", false, NOW), RequestOutcome::Nothing);
     }
 }
