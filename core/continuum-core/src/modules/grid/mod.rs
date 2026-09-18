@@ -381,6 +381,9 @@ impl ServiceModule for GridModule {
                     lanes: offer.lanes,
                     residents: offer.residents,
                     beacon_age_ms: now.saturating_sub(heard_at_ms),
+                    free_slots_live: offer.free_slots_live,
+                    lane_wait_p50_ms: offer.lane_wait_p50_ms,
+                    lane_wait_samples: offer.lane_wait_samples,
                 })
                 .collect();
             let serving = crate::inference::llama_server::current_serving();

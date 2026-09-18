@@ -301,6 +301,9 @@ impl CommandRequestHandler {
             airc: Arc::clone(&self.airc),
             room: parsed.request_channel,
             stream_id,
+            // The seat's receipt instant: its own queue clock starts here, not on the
+            // requester's node (card c84d885a, S1 — the wait is measured where it forms).
+            received_at: std::time::Instant::now(),
         };
         let drain = tokio::spawn(publisher.drain(rx));
         let response = self.process_request(&streamed).await;
@@ -684,6 +687,10 @@ struct StreamPublisher {
     airc: Arc<Airc>,
     room: airc_core::RoomId,
     stream_id: Uuid,
+    /// When this seat RECEIVED the request. The first prefill frame or token published
+    /// after it is the seat's own receipt-to-first-progress wait — the queue as the seat
+    /// experiences it, which is what it may honestly advertise on its beacon.
+    received_at: std::time::Instant,
 }
 
 impl StreamPublisher {
@@ -726,6 +733,10 @@ impl StreamPublisher {
         let mut reasoning = String::new();
         let mut prefill: Option<String> = None;
         let mut last_flush = std::time::Instant::now();
+        // Recorded once, at the FIRST progress the requester can see (prefill frame or
+        // token) — receipt-to-first-progress is the seat's queue, and only the first
+        // publish is that measurement; every later flush is generation.
+        let mut first_progress_recorded = false;
         loop {
             let next = tokio::time::timeout(STREAM_FLUSH_EVERY, rx.recv()).await;
             let closed = matches!(next, Ok(None));
@@ -742,6 +753,12 @@ impl StreamPublisher {
                 }
             }
             if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
+                if !first_progress_recorded && (prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
+                    first_progress_recorded = true;
+                    crate::cognition::resource_admission::note_leased_in_first_progress_ms(
+                        self.received_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    );
+                }
                 if let Some(p) = prefill.take() {
                     published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await as u64;
                     seq += 1;

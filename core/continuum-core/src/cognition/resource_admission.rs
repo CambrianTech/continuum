@@ -200,6 +200,41 @@ pub fn leased_in_sent_samples() -> Vec<u32> {
         .copied()
         .collect()
 }
+/// THE SEAT'S OWN QUEUE, measured where it forms: for each leased-in generate, the wait from
+/// the seat RECEIVING the request to its first progress (a prefill frame or a token) —
+/// receipt-to-first-token, in ms. A citizen's `delib.gate.lane_wait` is stamped on her HOME
+/// node and includes the wire; this is the number the seat can honestly advertise, and the
+/// number a spiller must compare against the latency budget before choosing this seat
+/// (card c84d885a, S1: a seat whose own wait is minutes is not capacity, whatever its rank).
+/// Bounded ring, newest kept; the beacon carries the p50 AND the sample count, so
+/// "0 ms, 0 samples" (unmeasured) is never read as "0 ms wait".
+static LEASED_IN_FIRST_PROGRESS_MS: std::sync::Mutex<std::collections::VecDeque<u64>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// How many leased-in first-progress waits the seat remembers. A plan window's worth.
+pub const LEASED_IN_WAIT_SAMPLES: usize = 64;
+/// Record one leased-in generate's receipt-to-first-progress wait.
+pub fn note_leased_in_first_progress_ms(ms: u64) {
+    let mut ring = LEASED_IN_FIRST_PROGRESS_MS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+    ring.push_back(ms);
+    while ring.len() > LEASED_IN_WAIT_SAMPLES {
+        ring.pop_front();
+    }
+}
+/// The seat's leased-in wait as (p50 ms, samples). `samples == 0` means UNMEASURED — the p50
+/// is then 0 and must not be read as a fast seat; the beacon carries both for that reason.
+pub fn leased_in_wait_p50_ms() -> (u64, u32) {
+    let ring = LEASED_IN_FIRST_PROGRESS_MS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
+    p50_of(ring.iter().copied())
+}
+/// PURE: the median of a sample stream with its count; (0, 0) for none.
+pub fn p50_of(samples: impl Iterator<Item = u64>) -> (u64, u32) {
+    let mut v: Vec<u64> = samples.collect();
+    if v.is_empty() {
+        return (0, 0);
+    }
+    v.sort_unstable();
+    (v[v.len() / 2], v.len().min(u32::MAX as usize) as u32)
+}
 /// Leased-in calls outstanding right now.
 pub fn leased_in_calls() -> usize {
     LEASED_IN_CALLS.inflight()
@@ -1148,6 +1183,20 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card c84d885a, S1): a seat's queue measured where it forms, and
+    // "unmeasured" never reading as "fast". The beacon carries (p50, samples); a spiller
+    // that saw p50 = 0 with 0 samples and treated it as a zero-wait seat would pile onto
+    // an unmeasured one — the same absence-read-as-a-value error that cost a day.
+    #[test]
+    fn a_seats_measured_wait_is_a_median_with_a_count_and_unmeasured_is_not_fast() {
+        assert_eq!(p50_of(std::iter::empty()), (0, 0), "no samples: unmeasured, not 0 ms");
+        assert_eq!(p50_of([5_000u64].into_iter()), (5_000, 1));
+        // the median, not the mean: one 7,058 s outlier does not become the seat's wait
+        assert_eq!(p50_of([100u64, 200, 300, 7_058_000].into_iter()).0, 300);
+        assert_eq!(p50_of([216_000u64, 216_000, 1_387_000].into_iter()), (216_000, 3));
+    }
+
 
     // what this catches (BigMama's correction on #4197): leased-in LANES with a floor from
     // local residents alone — the seat grows demand it then refuses to fit. The prompt

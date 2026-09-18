@@ -79,6 +79,21 @@ pub struct CapacityOffer {
     pub lanes: u32,
     #[serde(default)]
     pub residents: u32,
+    /// WHAT THIS SEAT CAN ACTUALLY TAKE (2026-09-18, card c84d885a, S1): served lanes minus
+    /// everything in flight on them — local turns AND leased-in generates — read off the
+    /// seat's own admission gauges. `lanes − residents` (above) counts only the seat's own
+    /// minds; every node reading it spilled onto the same 27B slot at once. Absent on an
+    /// older beacon (default 0): the peer offers no free slot until it says otherwise.
+    #[serde(default)]
+    pub free_slots_live: u32,
+    /// The seat's OWN queue: median receipt-to-first-progress of the generates it served
+    /// for other nodes, in ms — measured where the queue forms, not on the requester's
+    /// node. Paired with `lane_wait_samples` so 0 ms with 0 samples reads as UNMEASURED,
+    /// never as a fast seat.
+    #[serde(default)]
+    pub lane_wait_p50_ms: u64,
+    #[serde(default)]
+    pub lane_wait_samples: u32,
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -258,6 +273,9 @@ mod tests {
                     served_model: None,
                     lanes: 0,
                     residents: 0,
+                    free_slots_live: 0,
+            lane_wait_p50_ms: 0,
+            lane_wait_samples: 0,
         }
     }
     fn local() -> DeviceCapacity {
