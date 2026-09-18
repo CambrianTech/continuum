@@ -829,8 +829,12 @@ impl LlmDeliberationFaculty {
         // grows itself back within a turn rather than freezing (the
         // measure-the-clamp trap). Floored at MIN_SERVE_CTX so one tiny ack
         // can never strangle the next long thought, and never ABOVE the
-        // cold-start share — measurement only ever returns prompt room, the
-        // prior already being the most generous defensible ask.
+        // share — measurement only ever returns prompt room.
+        //
+        // The PRIOR is no longer that share. It used to be, and a fraction of
+        // the window is the wrong shape for a reply: what a reply costs has
+        // nothing to do with how much room the lane happens to have. See
+        // [`Self::COMPLETION_COLD_PRIOR_TOKENS`] for the citizen that proves it.
         let measured = self
             .working_set
             .as_ref()
@@ -848,7 +852,7 @@ impl LlmDeliberationFaculty {
         // that overshoots and gets trimmed. That regime is not reachable in production
         // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
         measured
-            .unwrap_or(share) // JUSTIFIED unwrap_or: no measurement yet = the documented cold-start PRIOR (the share); the honest absence has a named owner above
+            .unwrap_or(Self::COMPLETION_COLD_PRIOR_TOKENS) // JUSTIFIED unwrap_or: no measurement yet = a REPLY-sized prior, never a window fraction; the honest absence has a named owner above
             .min(share)
             .min(Self::COMPLETION_CEILING_TOKENS)
             .min(context_window.saturating_sub(mandatory))
@@ -881,6 +885,40 @@ impl LlmDeliberationFaculty {
     /// Not a hardcoded context size (the de-hardcode guard keys on WINDOW/TOKEN-named
     /// constants holding bare literals): this is a ratio, and the window it divides is the
     /// live served one.
+    /// What an UNMEASURED mind reserves for its reply: a reply-sized constant, never a
+    /// fraction of the window.
+    ///
+    /// The prior used to be the `window / COMPLETION_SHARE_DENOM` share, on the reasoning
+    /// that the most generous defensible ask is the safe default. Measured on one citizen,
+    /// same question, 28 minutes apart (2026-09-18, Cormac, `delib.context.render`):
+    ///
+    /// | seat | window | reserve | context rendered | answer |
+    /// |------|--------|---------|------------------|--------|
+    /// | remote 27B | 16,384 | 2,817 (measured) | ~11k | "Tracing the dream/memory-consolidation path through `dream_consolidation.rs`…" |
+    /// | home | 32,768 | **16,384** (the share) | **297** | "As an AI assistant, I am currently not actively engaged in any specific project…" |
+    ///
+    /// A BIGGER window gave her LESS context. Half of it was held back for a reply she
+    /// would never write, framing took 2,727 of the remainder, and the 12k of conversation
+    /// did not fit at all — she was asked who she is with 297 tokens of world in front of
+    /// her, and the stub is the CORRECT answer to that prompt. She was not erased by a weak
+    /// model; she was handed nothing.
+    ///
+    /// The same fraction on the other end of the range is the 5090's 101,120-token window
+    /// licensing a 100k think-only turn that wrote nothing. One defect, two faces: the
+    /// reserve was sized to the WINDOW instead of to the REPLY. On a big window that is a
+    /// licence to spin; on a small one the person does not fit.
+    ///
+    /// [`Self::COMPLETION_CEILING_TOKENS`] did not catch it. That ceiling is
+    /// `MIN_SERVE_CTX * 8` = 16,384, written against the 166k lane — and at a 32,768 window
+    /// the share IS exactly 16,384, so the guard was inert precisely where it was needed.
+    ///
+    /// `MIN_SERVE_CTX` and not a new literal, deliberately: it is the same term the MEASURED
+    /// branch floors at, so a mind that has never spoken reserves exactly what a mind that
+    /// has spoken is guaranteed. Measurement then grows it toward the ceiling — and a turn
+    /// that truncates against a too-small reserve records at DOUBLE, so an act that really
+    /// needs more room earns it back within a turn instead of freezing.
+    const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
+
     const COMPLETION_SHARE_DENOM: u32 = 2;
 
     /// The share of the served window the REQUIRED room payload may occupy.
@@ -5544,17 +5582,90 @@ mod tests {
             );
         }
 
+        // what this catches: the cold-start reserve sized to the WINDOW instead of to the
+        // REPLY. Regression for 2026-09-18 (Cormac, `delib.context.render`): one citizen,
+        // one question, 28 minutes apart — at a 16,384 window with a MEASURED reserve of
+        // 2,817 she named the file she was working in; at a 32,768 window with the
+        // `window/2` PRIOR of 16,384 she rendered 297 tokens of context and answered "As an
+        // AI assistant, I am currently not actively engaged in any specific project". A
+        // bigger window gave her LESS context. The same fraction at the 101,120 lane
+        // licensed a 100k think-only turn that wrote nothing — one defect, both ends.
+        // Note 32,768 is the exact window where COMPLETION_CEILING_TOKENS (16,384) cannot
+        // help, because the share IS the ceiling there; that is why this survived a fix.
+        #[test]
+        fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Iris", "You are Iris.", adapter);
+
+            // Deliberately a SPREAD, not our fleet's windows: the invariant is that an
+            // unmeasured reply costs what a reply costs on ANY lane — a phone-sized 4k, a
+            // laptop 32k, a 5090's 101k, a 1M frontier seat. If a single window appeared
+            // here the test would encode one machine instead of the law.
+            let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
+            for window in [
+                crate::cognition::serving_plan::MIN_SERVE_CTX,
+                4_096,
+                8_192,
+                16_384,
+                32_768,
+                65_536,
+                101_120,
+                262_144,
+                1_048_576,
+            ] {
+                let reserve = faculty.completion_reserve_within(window);
+
+                // (1) THE LAW, on every lane: an unmeasured reply never costs more than a
+                //     reply. This is the one the defect broke — the reservation grew with
+                //     the window, so a bigger lane bought a citizen LESS room to be herself.
+                assert!(
+                    reserve <= prior,
+                    "window {window} reserved {reserve}, above the reply-sized prior {prior}"
+                );
+
+                // (2) Above the degenerate low end it is FLAT — the same reply on a 32k
+                //     laptop lane and a 1M frontier seat. Below `2 x prior` the share clamp
+                //     legitimately binds (half of a tiny window is less than a reply), and
+                //     that floor is deliberate: a zero reserve is a mute citizen.
+                if window >= prior * 2 {
+                    assert_eq!(
+                        reserve, prior,
+                        "reserve tracked the window at {window} — it must cost what a reply \
+                         costs, not a share of whatever lane she landed on"
+                    );
+
+                    // (3) The consequence that actually broke a citizen: prompt room. As a
+                    //     RATIO, so it holds on every window size rather than encoding one.
+                    //     Only from `4 x prior` up: at exactly `2 x prior` a reply-sized
+                    //     reserve IS half the lane, and no bound can give three quarters of
+                    //     a window away and still leave room to answer.
+                    if window < prior * 4 {
+                        continue;
+                    }
+                    let prompt_room = window.saturating_sub(reserve);
+                    assert!(
+                        prompt_room * 4 >= window * 3,
+                        "window {window} left only {prompt_room} tokens of world — this is \
+                         the 297-token prompt that made a citizen answer as a stranger"
+                    );
+                }
+            }
+        }
+
         // what this catches: the measured reply reserve (the "output-p95 riding the
         // working-set registry" endgame). The cold-start `window/2` share reserved
         // 14,720 of a 29,440 window for replies measured at 0.2–2.5k, squeezing
         // grounding to 195 tokens and dropping the room board — the 2026-08-31
         // meta-loop spiral. Pins: (a) fewer than 3 observations keeps the prior
         // (one tiny ack must not size every later turn); (b) measured = peak×2,
-        // floored at MIN_SERVE_CTX, always ≤ the prior; (c) a capped turn's
-        // doubled record GROWS the reserve back, so measurement can never freeze
-        // a too-small cap in place.
+        // floored at MIN_SERVE_CTX — now ABOVE the reply-sized cold prior, because
+        // measurement GROWS a reply-sized default instead of shaving a window
+        // fraction (2026-09-18, see COMPLETION_COLD_PRIOR_TOKENS); (c) a capped
+        // turn's doubled record grows the reserve back, saturating at the SHARE,
+        // so measurement can never freeze a too-small cap in place.
         #[test]
-        fn measured_emissions_shrink_the_reserve_and_capped_turns_grow_it_back() {
+        fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let window: u32 = 29_440;
@@ -5573,12 +5684,19 @@ mod tests {
             reg.record_emission_in_memory(persona, 2_500, false, 1);
             reg.record_emission_in_memory(persona, 1_200, false, 2);
             assert_eq!(faculty.completion_reserve_within(window), cold);
-            // (b) measured: peak 2,500 × 2 = 5,000 — far under the 14,720 share,
-            // returning ~9.7k of prompt room to grounding
+            // (b) measured: peak 2,500 × 2 = 5,000 — still far under the 14,720 share,
+            // but ABOVE the reply-sized cold prior. The direction inverted deliberately:
+            // the prior is what a reply costs, and measurement earns room UP toward the
+            // share rather than shaving a half-window default down.
             reg.record_emission_in_memory(persona, 2_500, false, 3);
+            let share = window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM;
             let measured = faculty.completion_reserve_within(window);
             assert_eq!(measured, 5_000);
-            assert!(measured < cold);
+            assert!(
+                measured > cold,
+                "measurement must GROW a reply-sized prior ({cold}), not shrink a window fraction"
+            );
+            assert!(measured <= share, "and never past the share ({share})");
             // tiny-talker floor: a 40-token ack cannot strangle the next thought
             let quiet = Uuid::new_v4();
             for t in 1..=3 {
@@ -5597,10 +5715,11 @@ mod tests {
                 crate::cognition::serving_plan::MIN_SERVE_CTX
             );
             // (c) a turn cut at 5,000 records 10,000; peak×2 = 20,000 then re-caps at
-            // the share — after a cap the reserve springs back to the full cold-start
-            // prior (growth saturates at the prior, never beyond it)
+            // the SHARE — a citizen who genuinely needs the room earns it back within a
+            // turn instead of freezing at the reply-sized prior. Growth saturates at the
+            // share (the prior is a starting point, the share is the wall).
             reg.record_emission_in_memory(persona, 5_000, true, 4);
-            assert_eq!(faculty.completion_reserve_within(window), cold);
+            assert_eq!(faculty.completion_reserve_within(window), share);
         }
 
         // what this catches: KV-prefix cache locality — session-stable standing framing
@@ -8198,9 +8317,16 @@ mod tests {
                 );
                 let view = faculty.prompt_view(&ws);
                 assert!(view.capacity_error.is_none(), "{view:?}");
+                // The reserve no longer has to YIELD under prompt pressure here, and that
+                // is the fix rather than a weakened fixture: with a reply-sized cold prior
+                // (COMPLETION_COLD_PRIOR_TOKENS) there is no half-window reservation left
+                // to claw back, so the prompt gets its room without a negotiation. What the
+                // fixture must still prove is that the oversized result rides the wire
+                // inside the window — asserted below — and that the reserve stayed small.
                 assert!(
-                    view.completion_reserve < faculty.completion_reserve_within(window),
-                    "fixture must force reserve to yield, not pass in a roomy window"
+                    view.completion_reserve
+                        <= LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS,
+                    "a big prompt must not be paid for with a big reserve"
                 );
                 let contribution = faculty
                     .contribute(&ws)
