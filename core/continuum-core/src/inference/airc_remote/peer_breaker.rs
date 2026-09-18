@@ -37,7 +37,38 @@ use std::time::Duration;
 /// personas on that peer (card ad96f5d1), not counted once each.
 pub const COLD_AFTER_DEADLINES: u32 = 3;
 /// How long a cold peer stays cold before ONE request is let through to re-measure it.
+/// This is the FIRST window; a peer that keeps tripping earns a longer one — see
+/// [`cold_window_for`].
 pub const COLD_WINDOW: Duration = Duration::from_secs(300);
+
+/// Longest a flapping peer stays cold. Caps the per-trip doubling so a host is never
+/// exiled forever: past this, one request re-measures it like any other cold peer.
+pub const MAX_COLD: Duration = Duration::from_secs(1800);
+
+/// Stable for this long since its last trip and a peer's escalation is FORGIVEN — the
+/// next trip starts the backoff over at one window. Deliberately not reset by a mere
+/// answer: a box that dies every few minutes answers plenty, briefly, between deaths.
+pub const TRIP_DECAY: Duration = Duration::from_secs(3600);
+
+/// The cold window for a peer's `trips`-th trip: doubles each time, capped at
+/// [`MAX_COLD`]. Pure, so the backoff schedule is a TEST rather than a comment.
+///
+/// Measured 2026-09-18 on the 5090's PCIe/hypervisor fault: a fixed 300 s window let a
+/// host that hard-resets every few minutes reclaim its ENTIRE roster on each brief
+/// beacon — shed, return, shed, return — so no citizen ever settled and the ones pinned
+/// to that box (a 27B that fits nowhere else) were killed mid-turn on repeat. The
+/// breaker handled every individual flap correctly and the aggregate was a doom loop:
+/// the grid never learned the machine was unfit. Escalation is how it learns.
+pub fn cold_window_for(trips: u32) -> Duration {
+    // Cap the shift before it reaches the multiply — 2^6 × 300 s already exceeds MAX_COLD.
+    let shift = trips.saturating_sub(1).min(6);
+    let scaled = COLD_WINDOW.saturating_mul(1u32 << shift);
+    if scaled > MAX_COLD {
+        MAX_COLD
+    } else {
+        scaled
+    }
+}
 
 /// One peer's liveness breaker: deadline misses in a row and, once tripped, the
 /// instant it may be re-measured. Shared across every adapter that targets the peer
@@ -58,6 +89,13 @@ pub struct PeerBreaker {
     /// [`served_ok`](Self::served_ok) tell a proven-bad peer (tried, never served)
     /// from a brand-new one (never tried, deserves its first chance).
     ever_observed: AtomicBool,
+    /// How many times this peer has tripped cold, NOT counting trips older than
+    /// [`TRIP_DECAY`]. Drives the escalating quarantine in [`cold_window_for`] so a
+    /// chronically-unfit host stops reclaiming its roster every few minutes.
+    trips: AtomicU32,
+    /// When the peer last tripped, so the escalation can decay once it proves stable.
+    /// 0 = never tripped.
+    last_trip_ms: AtomicU64,
 }
 
 impl PeerBreaker {
@@ -77,7 +115,18 @@ impl PeerBreaker {
         if n < COLD_AFTER_DEADLINES {
             return None;
         }
-        let until = now_ms.saturating_add(COLD_WINDOW.as_millis() as u64);
+        // A host that keeps flapping must EARN its citizens back: each trip within
+        // TRIP_DECAY doubles the window (capped). Computed BEFORE the CAS so racers at
+        // the threshold agree on the instant; only the winner commits the new count.
+        let last_trip = self.last_trip_ms.load(Ordering::Relaxed);
+        let forgiven =
+            last_trip != 0 && now_ms.saturating_sub(last_trip) >= TRIP_DECAY.as_millis() as u64;
+        let trips = if forgiven {
+            1
+        } else {
+            self.trips.load(Ordering::Relaxed).saturating_add(1)
+        };
+        let until = now_ms.saturating_add(cold_window_for(trips).as_millis() as u64);
         // Claim the trip with a CAS so concurrent misses at the threshold emit the
         // cold probe EXACTLY once (Cormac's #4173 review: a plain `fetch_add` + `>=`
         // lets two callers both cross — n=3 and n=4 — and both fire; harmless for the
@@ -93,11 +142,20 @@ impl PeerBreaker {
                 .compare_exchange(prev, until, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
         {
+            self.trips.store(trips, Ordering::Relaxed);
+            self.last_trip_ms.store(now_ms, Ordering::Relaxed);
             self.consecutive_deadlines.store(0, Ordering::Relaxed);
             Some(n)
         } else {
             None
         }
+    }
+
+    /// Trips on record for this peer (decayed by [`TRIP_DECAY`] at the next trip).
+    /// The grid's memory that a machine is unfit — read by probes and the placement
+    /// gate so an operator can see WHY a host stopped getting citizens.
+    pub fn trips(&self) -> u32 {
+        self.trips.load(Ordering::Relaxed)
     }
 
     /// Fold ANY answer from the peer (even a refusal): it evaluated our mail, so it is
@@ -248,5 +306,61 @@ mod tests {
         let dead = breaker_for("servedok-dead");
         dead.observe_timeout(NOW);
         assert!(!dead.served_ok(), "tried and never served → do not return a citizen to it");
+    }
+
+    // what this catches (2026-09-18, the 5090's PCIe/hypervisor flapping): a FIXED cold
+    // window let a host that hard-resets every few minutes reclaim its whole roster on
+    // every brief beacon. Each flap was handled correctly and the aggregate was a doom
+    // loop — nobody settled. The schedule below is the grid LEARNING a machine is unfit.
+    #[test]
+    fn a_flapping_host_earns_a_longer_quarantine_each_trip_and_is_capped() {
+        assert_eq!(cold_window_for(1), COLD_WINDOW, "first trip is one window");
+        assert_eq!(cold_window_for(2), COLD_WINDOW * 2, "second doubles");
+        assert_eq!(cold_window_for(3), COLD_WINDOW * 4, "third doubles again");
+        // Never exiled forever: the doubling stops at MAX_COLD so one request always
+        // re-measures a recovered host within a bounded time.
+        assert_eq!(cold_window_for(9), MAX_COLD, "escalation is capped");
+        assert!(MAX_COLD > COLD_WINDOW, "the cap must actually be an escalation");
+    }
+
+    // what this catches: the escalation must be driven by REPEATED trips and must NOT be
+    // forgiven by a mere answer — a box that dies every few minutes answers plenty,
+    // briefly, between deaths. Only sustained stability (TRIP_DECAY) forgives.
+    #[test]
+    fn repeated_trips_lengthen_the_cold_window_and_an_answer_does_not_forgive_them() {
+        const NOW: u64 = 9_000_000;
+        let flapper = breaker_for("flap-escalates");
+        let trip = |at: u64| {
+            for _ in 0..COLD_AFTER_DEADLINES {
+                flapper.observe_timeout(at);
+            }
+        };
+
+        trip(NOW);
+        assert_eq!(flapper.trips(), 1);
+        assert!(flapper.is_cold(NOW + COLD_WINDOW.as_millis() as u64 - 1), "cold for one window");
+
+        // It beacons and answers mid-flap — that must NOT wipe the flap history.
+        flapper.observe_answer();
+        assert_eq!(flapper.trips(), 1, "an answer is not stability; the record stands");
+
+        // Second trip shortly after → double window.
+        let second = NOW + COLD_WINDOW.as_millis() as u64;
+        trip(second);
+        assert_eq!(flapper.trips(), 2);
+        let doubled = second + (COLD_WINDOW * 2).as_millis() as u64;
+        assert!(
+            flapper.is_cold(doubled - 1),
+            "second trip must hold the roster off twice as long"
+        );
+
+        // Sustained stability past TRIP_DECAY forgives: the next trip starts over.
+        let much_later = doubled + TRIP_DECAY.as_millis() as u64;
+        trip(much_later);
+        assert_eq!(
+            flapper.trips(),
+            1,
+            "a host stable for TRIP_DECAY earns a clean slate"
+        );
     }
 }
