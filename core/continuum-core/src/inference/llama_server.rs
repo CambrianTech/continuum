@@ -1412,6 +1412,43 @@ pub fn main_lane_mmproj_decision(
     }
 }
 
+/// The live decision for a model row on THIS node: consults the registry + the
+/// sidecar search only when the row prefers a sidecar and a projector resolved
+/// (the two cases where the answer depends on what else is on the box). ONE call
+/// site shape for the spawn, the grow-check and the serving daemon, so the intent
+/// they compare against is the same intent.
+pub fn main_lane_mmproj_decision_for(
+    model: &crate::model_registry::types::Model,
+    is_sidecar_lane: bool,
+) -> MainLaneMmproj {
+    let mmproj_resolved =
+        crate::model_registry::artifacts::resolve_mmproj_for_model(model).is_some();
+    let sidecar_available = if model.serving.mmproj_on_main_lane
+        || is_sidecar_lane
+        || !mmproj_resolved
+    {
+        None // not consulted: the decision does not depend on it
+    } else {
+        let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
+            .map(|r| r.models().cloned().collect())
+            .unwrap_or_default();
+        Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id)).is_ok())
+    };
+    main_lane_mmproj_decision(
+        model.serving.mmproj_on_main_lane,
+        is_sidecar_lane,
+        mmproj_resolved,
+        sidecar_available,
+    )
+}
+
+impl MainLaneMmproj {
+    /// Does this decision put a projector on the lane?
+    pub fn wears(self) -> bool {
+        matches!(self, Self::Wear | Self::WearAsOnlyEyes)
+    }
+}
+
 pub fn vision_lane_ready(
     declares_vision: bool,
     mmproj_on_lane: bool,
@@ -2008,6 +2045,14 @@ pub trait LlamaServerControl: Send + Sync {
         Ok(None)
     }
 
+    /// Did THIS control's own spawn pass a projector? A FACT about the running
+    /// process, never a re-derivation of policy. `None` = unknown: adopted from an
+    /// earlier core, not yet spawned by this one, or a fake/remote control that has
+    /// no spawn — the default, so fakes stay honest by construction.
+    fn mmproj_on_lane(&self) -> Option<bool> {
+        None
+    }
+
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
     /// while EVERY `llama_decode` returns 500 "Compute error" — observed live in
@@ -2331,7 +2376,34 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 Ok(n) => n.to_string(),
                 Err(e) => format!("unreadable ({e})"),
             };
-            if !window_ok || !lanes_ok {
+            // SIGHT grow-back — the third sibling (2026-09-18). Today's decision may put
+            // the projector on this lane (the only eyes on the node) while the running
+            // server was spawned by an earlier core or policy without one: /props says
+            // vision=false, and adopting it would keep the node blind until an
+            // unrelated relaunch. A lane whose sight is below target relaunches for
+            // that alone, exactly like a window or lane count below target. A build
+            // that publishes no modalities block is unverifiable and is NOT relaunched
+            // in a loop for it (the daemon reports that case as unverified sight).
+            let wants_sight =
+                main_lane_mmproj_decision_for(&target.model, target.vision_sidecar).wears();
+            let sight_ok = if !wants_sight {
+                true
+            } else {
+                match ctrl.multimodal_support().await {
+                    Ok(Some(m)) => m.vision,
+                    Ok(None) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "could not read the served modalities — treating sight as OK (no \
+                             spurious relaunch); a blind lane will not grow while this probe \
+                             keeps failing"
+                        );
+                        true
+                    }
+                }
+            };
+            if !window_ok || !lanes_ok || !sight_ok {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -2340,11 +2412,12 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     served_lanes = served_lanes.as_str(),
                     window_ok,
                     lanes_ok,
-                    "served capacity is below target (window and/or lanes) — relaunching to \
-                     grow (llama.cpp has no hot-resize; a genome-set match alone must not \
-                     strand a starved lane at the boot floor)",
+                    sight_ok,
+                    "served capacity is below target (window, lanes and/or sight) — relaunching \
+                     to grow (llama.cpp has no hot-resize; a genome-set match alone must not \
+                     strand a starved lane at the boot floor, nor a blind one without its eyes)",
                 );
-                // fall through to relaunch at the larger window / more lanes.
+                // fall through to relaunch at the larger window / more lanes / with eyes.
             } else {
                 // Window matches. Is the COMPUTE path alive? A child we spawned
                 // ourselves was decode-verified at `wait_ready` and is trusted
@@ -2447,6 +2520,10 @@ pub struct LlamaServerProcess {
     /// naturally with the lane; the model catalog inherits this as a declared field
     /// when the recipe/entity work lands.
     smoke_proven_thinking: std::sync::atomic::AtomicBool,
+    /// Whether THIS handle's spawn passed `--mmproj`: 0 = unknown (adopted, or not
+    /// yet spawned by this core), 1 = no, 2 = yes. A fact about the running process,
+    /// read by the serving daemon's sight check — never re-derived from policy.
+    mmproj_on_lane: std::sync::atomic::AtomicU8,
 }
 
 impl LlamaServerProcess {
@@ -2484,6 +2561,18 @@ impl LlamaServerProcess {
         Ok(super::weight_residency::WeightResidency::from_props(&body))
     }
 
+    /// Did THIS handle's spawn pass a projector? `None` = unknown: the lane was
+    /// adopted from an earlier core or has not been spawned by this one. The serving
+    /// daemon's sight check reads this fact; the grow-check relaunches a lane whose
+    /// fact is below today's decision.
+    pub fn mmproj_on_lane(&self) -> Option<bool> {
+        match self.mmproj_on_lane.load(std::sync::atomic::Ordering::Relaxed) {
+            2 => Some(true),
+            1 => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_client(reqwest::Client::new())
     }
@@ -2503,6 +2592,7 @@ impl LlamaServerProcess {
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
+            mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -2532,6 +2622,7 @@ impl LlamaServerProcess {
             wedge: None,
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
+            mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -2966,6 +3057,10 @@ impl EphemeralServingLane {
 
 #[async_trait]
 impl LlamaServerControl for LlamaServerProcess {
+    fn mmproj_on_lane(&self) -> Option<bool> {
+        LlamaServerProcess::mmproj_on_lane(self)
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         // `/v1/models` reports the id we launched with via `--alias`, so the
         // comparison in `ensure_model_serving` is exact. A connection error
@@ -3384,31 +3479,18 @@ impl LlamaServerControl for LlamaServerProcess {
         // the sidecar); none → the main lane wears the projector and pays the reuse
         // cost, named in the probe. A citizen is never blind because of a cache knob
         // (CLAUDE.md, Sensory Architecture).
-        let sidecar_available = if target.model.serving.mmproj_on_main_lane
-            || target.vision_sidecar
-            || resolved_mmproj.is_none()
-        {
-            None // not consulted: the decision does not depend on it
+        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar);
+        let mmproj: Option<std::path::PathBuf> = if decision.wears() {
+            resolved_mmproj.clone()
         } else {
-            let rows: Vec<crate::model_registry::types::Model> =
-                crate::model_registry::try_global()
-                    .map(|r| r.models().cloned().collect())
-                    .unwrap_or_default();
-            Some(
-                crate::inference::vision_sidecar::find_candidate(&rows, Some(&target.model.id))
-                    .is_ok(),
-            )
+            None
         };
-        let decision = main_lane_mmproj_decision(
-            target.model.serving.mmproj_on_main_lane,
-            target.vision_sidecar,
-            resolved_mmproj.is_some(),
-            sidecar_available,
-        );
-        let mmproj: Option<std::path::PathBuf> = match decision {
-            MainLaneMmproj::Wear | MainLaneMmproj::WearAsOnlyEyes => resolved_mmproj.clone(),
-            MainLaneMmproj::Withhold | MainLaneMmproj::NoneResolved => None,
-        };
+        // The FACT, recorded on the handle: what this spawn passed. The daemon's
+        // readiness check reads this, never a re-derivation of the intent — a lane
+        // adopted from an earlier core (or an earlier policy) may carry less than
+        // today's decision wants, and the grow-check above relaunches it for that.
+        self.mmproj_on_lane
+            .store(if mmproj.is_some() { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
         match decision {
             MainLaneMmproj::Withhold => crate::probe!(
                 class = "serving.vision.mmproj_withheld",

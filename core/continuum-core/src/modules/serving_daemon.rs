@@ -2822,17 +2822,8 @@ impl ServingDaemonModule {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
                     let declares_vision =
                         target.model.has(crate::model_registry::Capability::Vision);
-                    let mmproj_resolved =
-                        crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
-                            .is_some();
-                    // The sidecar search, ONCE — it decides both whether the main
-                    // lane wore its projector at spawn (the same decision the spawn
-                    // made, [`llama_server::main_lane_mmproj_decision`]) and, below,
-                    // which row a sidecar would run. Until 2026-09-18 the readiness
-                    // check was fed "resolved on disk" as if it meant "passed to the
-                    // lane", so a withheld projector read as a projector that failed
-                    // to load ("--mmproj was passed but…"), on the 5090 whose only
-                    // VL weights were the main lane's own.
+                    // The sidecar search, ONCE per reconcile — below it names which
+                    // row a sidecar would run.
                     let sidecar_rows: Vec<crate::model_registry::types::Model> =
                         crate::model_registry::try_global()
                             .map(|r| r.models().cloned().collect())
@@ -2841,16 +2832,17 @@ impl ServingDaemonModule {
                         &sidecar_rows,
                         Some(desired.as_str()),
                     );
-                    let main_lane_wears = matches!(
-                        crate::inference::llama_server::main_lane_mmproj_decision(
-                            target.model.serving.mmproj_on_main_lane,
-                            false,
-                            mmproj_resolved,
-                            Some(sidecar_candidate.is_ok()),
-                        ),
-                        crate::inference::llama_server::MainLaneMmproj::Wear
-                            | crate::inference::llama_server::MainLaneMmproj::WearAsOnlyEyes
-                    );
+                    // Does the RUNNING lane carry a projector? A FACT recorded on the
+                    // handle at spawn — never a re-derivation of today's intent. Until
+                    // 2026-09-18 the readiness check was fed "resolved on disk" as if
+                    // it meant "passed to the lane" (a withheld projector read as one
+                    // that failed to load); the first fix re-derived the intent, which
+                    // was wrong for a lane ADOPTED from an earlier core (the 5090 at
+                    // 04:08Z: intent = wear, lane spawned at 03:51Z without). `None`
+                    // (adopted / unknown) reads as "not carried": the grow-check in
+                    // `ensure` relaunches such a lane when today's decision wants sight,
+                    // and the fact becomes known on that spawn.
+                    let main_lane_wears = server.mmproj_on_lane().unwrap_or(false); // unwrap_or: unknown = not carried, the grow-check owns the relaunch
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
