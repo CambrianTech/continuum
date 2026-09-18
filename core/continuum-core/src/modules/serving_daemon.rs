@@ -2832,17 +2832,6 @@ impl ServingDaemonModule {
                         &sidecar_rows,
                         Some(desired.as_str()),
                     );
-                    // Does the RUNNING lane carry a projector? A FACT recorded on the
-                    // handle at spawn — never a re-derivation of today's intent. Until
-                    // 2026-09-18 the readiness check was fed "resolved on disk" as if
-                    // it meant "passed to the lane" (a withheld projector read as one
-                    // that failed to load); the first fix re-derived the intent, which
-                    // was wrong for a lane ADOPTED from an earlier core (the 5090 at
-                    // 04:08Z: intent = wear, lane spawned at 03:51Z without). `None`
-                    // (adopted / unknown) reads as "not carried": the grow-check in
-                    // `ensure` relaunches such a lane when today's decision wants sight,
-                    // and the fact becomes known on that spawn.
-                    let main_lane_wears = server.mmproj_on_lane().unwrap_or(false); // unwrap_or: unknown = not carried, the grow-check owns the relaunch
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
@@ -2856,6 +2845,21 @@ impl ServingDaemonModule {
                             None
                         }
                     };
+                    // Does the RUNNING lane carry a projector? A FACT, never a
+                    // re-derivation of today's intent. Two sources, in order: what THIS
+                    // core's spawn passed (recorded on the handle), and for a lane this
+                    // core did not spawn — ADOPTED across a reboot — what the server
+                    // itself reports on /props. The 2026-09-18 ladder: readiness was fed
+                    // "resolved on disk" as if it meant "passed" (a withheld projector
+                    // read as a failed load); then the intent (wrong for a lane adopted
+                    // at 04:08Z that was spawned without); then the handle's fact with
+                    // unknown = "not carried" (wrong at 07:17Z for a lane adopted WITH
+                    // its projector: /props said vision=true, readiness said no). The
+                    // grow-check in `ensure` already trusts /props for an adopted lane;
+                    // readiness now reads the same truth.
+                    let main_lane_wears = server.mmproj_on_lane().unwrap_or_else(|| {
+                        props.as_ref().is_some_and(|m| m.vision) // an adopted lane's fact is what it reports
+                    });
                     let main_sees = match crate::inference::llama_server::vision_lane_ready(
                         declares_vision,
                         main_lane_wears,
