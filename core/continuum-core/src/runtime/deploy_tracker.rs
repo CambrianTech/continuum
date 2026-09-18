@@ -237,6 +237,26 @@ fn same_commit(a: &str, b: &str) -> bool {
     short.len() >= MIN_ABBREV && long.starts_with(short)
 }
 
+/// How long a request with NO observable build is carried before it is called stranded.
+///
+/// `build_in_flight` is the deploy CLAIM, and a claim does not cover a deploy's whole life:
+/// it is dropped when the build ends, while the running sha only changes once the new core
+/// answers. Everything in between — stop the old core, hand off the artifact, the new
+/// core's own startup compile and boot — is a healthy deploy with no claim and the old sha,
+/// which is bit-for-bit the state a genuinely dead reboot leaves behind. Only DURATION
+/// separates them, and they are orders of magnitude apart, so the grace is not delicate.
+///
+/// Sized from the measurement that exposed this (Intel tier, 2026-09-18): the probe fired
+/// one 300 s tick after the request was written, on a deploy that came up healthy. The old
+/// code had no grace at all — the first tick that could not see a build condemned the
+/// deploy. Twenty minutes comfortably covers the observed claim-drop-to-core-up window on
+/// the slowest tier and still names a reboot that died within the hour.
+///
+/// Same shape, and the same reasoning, as `COLD_BOOT_BELOW_FLOOR_GRACE` in the serving
+/// planner: a transient and a real fault present identically in one sample, so wait rather
+/// than invent a second signal.
+pub const STRANDED_GRACE_MS: u64 = 20 * 60 * 1000;
+
 /// Close the deploy loop: given the request on record and the build actually running,
 /// say whether what was asked for has arrived. Pure — the module supplies the two facts
 /// it already gathers every tick, so this costs nothing and can be asserted with no
@@ -254,7 +274,7 @@ pub fn reconcile_request(
     if same_commit(&req.tip_sha, running_sha) {
         return RequestOutcome::Settled { tip_sha: req.tip_sha.clone(), waited_ms: elapsed_ms };
     }
-    if build_in_flight {
+    if build_in_flight || elapsed_ms < STRANDED_GRACE_MS {
         RequestOutcome::InFlight { tip_sha: req.tip_sha.clone(), elapsed_ms }
     } else {
         RequestOutcome::Stranded { tip_sha: req.tip_sha.clone(), elapsed_ms }
@@ -403,11 +423,42 @@ mod tests {
             RequestOutcome::InFlight { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 60_000 },
             "a build claim is active — this is working, not broken"
         );
+        let late = STRANDED_GRACE_MS + 1;
         assert_eq!(
-            reconcile_request(Some(&req), "999999999", false, NOW + 60_000),
-            RequestOutcome::Stranded { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 60_000 },
-            "nothing is building and the tip is not running — the request did not take"
+            reconcile_request(Some(&req), "999999999", false, NOW + late),
+            RequestOutcome::Stranded { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: late },
+            "past the grace with nothing building and the tip not running — it did not take"
         );
+    }
+
+    // what this catches: the live falsification of this module's own prediction, Intel
+    // tier 2026-09-18. deploy.stranded fired at elapsed_ms=300004 — ONE tick after the
+    // request was written — for a deploy that came up healthy 25 minutes later. Two causes
+    // in one chain: the deploy claim had expired mid-build (a 4,197 s build under a 1 h
+    // ceiling, fixed in deploy_claim.rs), and this function had no grace of its own, so the
+    // first tick that could not see a build condemned the deploy. A claim does not cover a
+    // deploy's whole life — stop, handoff, startup compile and boot all run with no claim
+    // and the OLD sha, which is exactly what a dead reboot looks like. Only duration tells
+    // them apart. Calling a live deploy stranded is not cosmetic: stranded is the signal to
+    // relaunch, and a second build races the first on the shared CARGO_TARGET_DIR.
+    #[test]
+    fn a_handoff_window_with_no_claim_is_not_yet_stranded() {
+        let req = DeployRequest::new("aaaaaaaaa111bbbb", NOW);
+        // The exact measured moment, replayed: one 300 s tick, no claim, old sha running.
+        assert_eq!(
+            reconcile_request(Some(&req), "38be2e1a9", false, NOW + 300_004),
+            RequestOutcome::InFlight { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 300_004 },
+            "a deploy mid-handoff has no claim and the old sha — that is not a strand"
+        );
+        // And the boundary is not off by one in the forgiving direction either.
+        assert!(matches!(
+            reconcile_request(Some(&req), "38be2e1a9", false, NOW + STRANDED_GRACE_MS),
+            RequestOutcome::Stranded { .. }
+        ));
+        assert!(matches!(
+            reconcile_request(Some(&req), "38be2e1a9", false, NOW + STRANDED_GRACE_MS - 1),
+            RequestOutcome::InFlight { .. }
+        ));
     }
 
     // what this catches: no request on record must be quiet, not a false Stranded every
