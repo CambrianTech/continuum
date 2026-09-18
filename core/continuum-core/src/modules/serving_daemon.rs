@@ -2825,6 +2825,32 @@ impl ServingDaemonModule {
                     let mmproj_resolved =
                         crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
                             .is_some();
+                    // The sidecar search, ONCE — it decides both whether the main
+                    // lane wore its projector at spawn (the same decision the spawn
+                    // made, [`llama_server::main_lane_mmproj_decision`]) and, below,
+                    // which row a sidecar would run. Until 2026-09-18 the readiness
+                    // check was fed "resolved on disk" as if it meant "passed to the
+                    // lane", so a withheld projector read as a projector that failed
+                    // to load ("--mmproj was passed but…"), on the 5090 whose only
+                    // VL weights were the main lane's own.
+                    let sidecar_rows: Vec<crate::model_registry::types::Model> =
+                        crate::model_registry::try_global()
+                            .map(|r| r.models().cloned().collect())
+                            .unwrap_or_default();
+                    let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
+                        &sidecar_rows,
+                        Some(desired.as_str()),
+                    );
+                    let main_lane_wears = matches!(
+                        crate::inference::llama_server::main_lane_mmproj_decision(
+                            target.model.serving.mmproj_on_main_lane,
+                            false,
+                            mmproj_resolved,
+                            Some(sidecar_candidate.is_ok()),
+                        ),
+                        crate::inference::llama_server::MainLaneMmproj::Wear
+                            | crate::inference::llama_server::MainLaneMmproj::WearAsOnlyEyes
+                    );
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
@@ -2840,7 +2866,7 @@ impl ServingDaemonModule {
                     };
                     let main_sees = match crate::inference::llama_server::vision_lane_ready(
                         declares_vision,
-                        mmproj_resolved,
+                        main_lane_wears,
                         props,
                     ) {
                         Ok(ready) => ready,
@@ -2881,11 +2907,7 @@ impl ServingDaemonModule {
                         None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
-                        let rows: Vec<crate::model_registry::types::Model> =
-                            crate::model_registry::try_global()
-                                .map(|r| r.models().cloned().collect())
-                                .unwrap_or_default();
-                        let candidate = sidecar::find_candidate(&rows, Some(desired.as_str()));
+                        let candidate = sidecar_candidate;
                         match &candidate {
                             Err(skipped) => {
                                 crate::probe!(
