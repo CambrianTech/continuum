@@ -2526,6 +2526,42 @@ mod tests {
         })
     }
 
+    // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps
+    // RoutingInfo.served_context_window (ai/generate no longer gates on `is_local`, which
+    // blocked this adapter and permitted the in-process one), and its two refusal arms had no
+    // test at all. Both exist to stop a lane reporting a window that describes a DIFFERENT
+    // server — the failure that starved an eval fork's prompt, webdev-rs 0/6, 2026-07-20. A
+    // requester on another node BUDGETS against whatever crosses the wire here, so a wrong
+    // number is worse than none.
+    //
+    // NOT covered, deliberately and stated rather than implied: the third arm, where a shared
+    // single-resident gateway returns the live `/props` window. That arm reads the
+    // process-wide `SERVING_STATE` OnceLock, and installing it from a test would poison every
+    // other test in the same binary. It is covered live instead, by the card's one-command
+    // repro (`continuum ai/generate --provider llama-server --model <served>` must return a
+    // servedContextWindow equal to `serving/status`).
+    #[test]
+    fn a_lane_that_is_not_the_shared_gateway_reports_no_window_at_all() {
+        // A dedicated lane owns its own server; its window rides on the binding, pinned from
+        // ITS /props at spawn. The global snapshot is a different process entirely.
+        let mut dedicated = test_adapter().with_dedicated_lane();
+        dedicated.config.single_resident_model = true;
+        assert_eq!(
+            dedicated.live_served_window(),
+            None,
+            "a dedicated lane must never report the GLOBAL serving snapshot as its own"
+        );
+
+        // A multi-model gateway has no single resident slot to describe, so the global
+        // snapshot does not describe "the" lane this answer came from either.
+        let shared_multi = test_adapter(); // single_resident_model: false
+        assert_eq!(
+            shared_multi.live_served_window(),
+            None,
+            "a non-single-resident gateway has no one lane to report"
+        );
+    }
+
     // what this catches: aa5888a9 — the actual HTTP boundary must preserve
     // structured counts, and a transport retry must send the same prepared bytes.
     #[tokio::test]
