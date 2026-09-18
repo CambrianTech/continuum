@@ -1511,11 +1511,9 @@ pub fn start_server(
                 // Resolved per class: the two caches can live on different volumes
                 // (an operator who moves worktree builds to a second drive is exactly
                 // who this pool is for), so each gets the budget ITS drive earns.
-                let volume_total = drives
-                    .iter()
-                    .filter(|d| cargo_dir.path().starts_with(&d.mount))
-                    .max_by_key(|d| d.mount.as_os_str().len())
-                    .map(|d| d.total_bytes);
+                let volume_total =
+                    crate::capacity::system_profile::drive_holding(&drives, cargo_dir.path())
+                        .map(|d| d.total_bytes);
                 let budget = volume_total
                     .map(crate::system_resources::cargo_target_budget_bytes)
                     .unwrap_or(crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES);

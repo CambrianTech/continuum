@@ -23,7 +23,7 @@
 //! SAME resolution logic, and must resolve UP vs DOWN — never one included, the other
 //! excluded.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::DeviceCapacity;
 use crate::governor::types::HardwareClass;
@@ -206,10 +206,74 @@ pub fn detect_drives() -> Vec<DriveInfo> {
     infos
 }
 
+/// THE drive that holds `path` — the ONE resolver every disk-shaped decision uses,
+/// so the platform's mount naming lives here and nowhere else. The mount that is the
+/// LONGEST prefix of the path wins (a nested mount beats its parent); `C:\` on
+/// Windows, `/` on Unix, `/Volumes/x` for a home on a second disk — resolved, never
+/// named by a constant one platform does not have.
+///
+/// Until 2026-09-18 the disk-pressure monitor matched mount points against the
+/// string `"/"`. On Windows nothing matches, so it read `(0, 0)` and reported
+/// pressure 0.0 / `Normal` for as long as it existed — the 5090 filled its 1.9 TB
+/// volume to 0 bytes free with the broker never asked to relieve a byte. The cargo
+/// budget already resolved its drive by longest prefix (`ipc/mod.rs`); this is that
+/// rule, hoisted, so the two can never disagree again.
+pub fn drive_holding<'a>(drives: &'a [DriveInfo], path: &Path) -> Option<&'a DriveInfo> {
+    drives
+        .iter()
+        .filter(|d| path.starts_with(&d.mount))
+        .max_by_key(|d| d.mount.as_os_str().len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::governor::types::{PowerSource, TargetSilicon, ThermalClass};
+
+    // what this catches (2026-09-18, the 5090 at 0 bytes free reading Normal): the
+    // drive holding a path is found by LONGEST mount prefix in the platform's own
+    // spelling — never by a constant one platform lacks — and a path on no listed
+    // drive is None, an absence, not a zero-sized reading.
+    #[test]
+    fn the_drive_holding_a_path_is_the_longest_mount_prefix_never_a_named_root() {
+        let drive = |mount: &str, total: u64| DriveInfo {
+            mount: PathBuf::from(mount),
+            total_bytes: total,
+            available_bytes: total / 2,
+            role: DriveRole::System,
+        };
+        // Each platform in ITS OWN spelling — `Path` components are platform-defined,
+        // so `C:\Users\x` is ONE component on Unix and this case can only mean
+        // anything where backslash separates. (CI on Linux caught the first version
+        // asserting Windows spelling everywhere: the same class as the bug.)
+        #[cfg(windows)]
+        {
+            let win = [drive("C:\\", 2_000), drive("D:\\", 16_000)];
+            let home = Path::new("C:\\Users\\joelt\\.continuum");
+            assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
+            assert!(
+                drive_holding(&win, Path::new("Z:\\nowhere")).is_none(),
+                "no drive = None, never (0, 0)"
+            );
+        }
+        // Unix spelling: a nested mount beats its parent by prefix length; a path on
+        // no listed drive is None. Valid on every platform (forward slash separates
+        // everywhere), so it runs everywhere.
+        let unix = [drive("/", 500), drive("/Volumes/big", 4_000)];
+        assert_eq!(
+            drive_holding(&unix, Path::new("/Volumes/big/continuum")).map(|d| d.total_bytes),
+            Some(4_000)
+        );
+        assert_eq!(
+            drive_holding(&unix, Path::new("/home/x/.continuum")).map(|d| d.total_bytes),
+            Some(500)
+        );
+        let none = [drive("/Volumes/big", 4_000)];
+        assert!(
+            drive_holding(&none, Path::new("/home/x/.continuum")).is_none(),
+            "no drive = None, never (0, 0)"
+        );
+    }
 
     fn hw(silicon: TargetSilicon, vram_mb: u64, ram_mb: u64) -> HardwareClass {
         HardwareClass {
