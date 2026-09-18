@@ -184,12 +184,9 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
             .map(|r| r.live_personas().len() as u32)
             .unwrap_or(0), // JUSTIFIED unwrap_or: no registry yet = no residents, the truth at boot
         // The seat's own admission truth, not roster arithmetic: lanes minus everything in
-        // flight on them, local and leased-in alike (card c84d885a, S1).
-        free_slots_live: {
-            let busy = crate::cognition::resource_admission::inflight_model_calls()
-                .saturating_add(crate::cognition::resource_admission::leased_in_calls());
-            serving.lanes.saturating_sub(busy.min(u32::MAX as usize) as u32)
-        },
+        // flight on them, local and leased-in alike, minus the slots it has GRANTED to
+        // spillers that have not arrived yet (card c84d885a, S1) — one owner for the number.
+        free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
         lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
         lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
     })
