@@ -2817,6 +2817,7 @@ impl ServingDaemonModule {
         let system = self.system.clone();
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
+        let rehome_cooldown = self.rehome_cooldown.clone();
         // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
         // reconcile and MUST clear even if the relaunch task panics or is cancelled
         // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
@@ -2840,6 +2841,22 @@ impl ServingDaemonModule {
         Some(tokio::spawn(async move {
             let _gate = GateClear(reconciling);
             let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
+            // EVERY LAUNCH GETS THE SETTLE WINDOW A RE-HOME GETS (9/18, the mirror): the
+            // cooldown was armed only at the re-home fire point, so a boot's first spawn
+            // could be re-homed 40 s later by its own load transient (the weights counted
+            // as external before the ledger credited them — 8 lanes declined at tick 1,
+            // re-homed at tick 3). A lane just launched is not evidence against itself.
+            if matches!(outcome, EnsureOutcome::Spawned { .. }) {
+                rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
+                crate::probe!(
+                    class = "serving.reconcile.window",
+                    decision = "spawn-settling",
+                    plan_lanes = target.lanes,
+                    plan_window = target.context_window,
+                    cooling = REHOME_COOLDOWN_TICKS as u64,
+                    "a fresh launch settles for the same cooldown a re-home gets before any re-home evidence counts"
+                );
+            }
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
             // metadata every persona budgets its prompt to. llama.cpp pads the
@@ -3388,11 +3405,43 @@ impl ServingDaemonModule {
         );
         // The window this host served the incumbent at last time (across runs) is
         // the plan's first choice — the KV page geometry holds still (card 6e8214e8).
-        let demand = self.serving_demand().with_sticky_window(
-            incumbent
-                .as_deref()
-                .and_then(crate::modules::served_window_store::load_for),
-        );
+        // A COLD BOOT PLANS THE LAST STEADY GEOMETRY FIRST (9/18). The store was keyed by
+        // the incumbent, and a cold boot has none — so it was never consulted at the one
+        // moment it mattered, and every boot planned against the transient minimum of
+        // external RAM: 8 × 28k on the M5, re-homed to 1 × 67k in 40 s, then 2 × 67k. Three
+        // geometries per boot, every first turn killed. The store now carries lanes with
+        // the window; with no incumbent, the remembered geometry is the plan's first choice
+        // when its model is still a candidate.
+        let boot = if incumbent.is_none() {
+            crate::modules::served_window_store::load_geometry()
+                .filter(|g| g.lanes > 0 && candidates.iter().any(|c| c.model_id == g.model_id))
+        } else {
+            None
+        };
+        if let Some(g) = &boot {
+            static SAID: std::sync::Mutex<Option<(String, u32, u32)>> = std::sync::Mutex::new(None);
+            let key = (g.model_id.clone(), g.per_slot_window, g.lanes);
+            let mut said = SAID.lock().unwrap_or_else(|p| p.into_inner()); // unwrap_or_else: a probe dedupe, never truth
+            if said.as_ref() != Some(&key) {
+                crate::probe!(
+                    class = "serving.plan.boot_geometry",
+                    model = g.model_id.as_str(),
+                    per_slot_window = g.per_slot_window as u64,
+                    lanes = g.lanes as u64,
+                    "cold boot: planning the last steady geometry first — the first launch is the steady one"
+                );
+                *said = Some(key);
+            }
+        }
+        let demand = self
+            .serving_demand()
+            .with_sticky_window(
+                incumbent
+                    .as_deref()
+                    .and_then(crate::modules::served_window_store::load_for)
+                    .or(boot.as_ref().map(|g| g.per_slot_window)),
+            )
+            .with_boot_geometry(boot.as_ref().map(|g| (g.per_slot_window, g.lanes)));
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
