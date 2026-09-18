@@ -54,10 +54,36 @@ use std::path::{Path, PathBuf};
 /// How long a claim may block before it is treated as abandoned.
 ///
 /// It must comfortably exceed a COLD full build, because blocking is the correct behaviour
-/// for the whole of one: measured 292s and 530s here, 772s on BIGMAMA (#422). One hour is
-/// far above any of those and still bounded, so the worst case of a `kill -9`'d reboot on a
-/// machine that later reuses its pid is a one-hour degradation, never a permanent wedge.
-pub const CLAIM_MAX_AGE_MS: u64 = 60 * 60 * 1000;
+/// for the whole of one: measured 292s and 530s here, 772s on BIGMAMA (#422).
+///
+/// One hour was "far above any of those" ONLY because the slowest tier had not reported
+/// yet. The Intel Mac's WARM build is **4,197 s (70 min)** — measured 2026-09-18, the
+/// reboot's own "warm artifact validated in 4197s" line — which is 5.4x the largest number
+/// this constant was sized against. So on that tier the claim expired at the 60-minute mark
+/// of every deploy, i.e. during the LAST TEN MINUTES of the build, which is precisely the
+/// window the claim exists to protect: the swap. From then on `blocks()` read false, the
+/// guard against an implicit autostart minting a core from the pre-swap image was silently
+/// off, and `deploy.stranded` fired for a deploy that finished healthy ten minutes later
+/// (probe at claim age 66.2 min; the artifact validated at 70.0 min).
+///
+/// The ceiling is therefore sized against the RECYCLED-PID RISK, not against build
+/// duration — a live claim is already gated on `owner_alive(pid)`, so age only covers "the
+/// reboot was `kill -9`'d and this pid got reused". Four hours is ~3.4x the slowest build
+/// on record (restoring the margin the doc above always claimed) and still bounded: the
+/// worst case of a killed reboot on a machine that later reuses its pid is a four-hour
+/// degradation of an ADVISORY guard, never a permanent wedge.
+///
+/// The rule this encodes, for the next constant of this shape: a timeout sized against the
+/// fastest machines that have reported is not a bound, it is a race the slow tier loses
+/// every time — and it loses SILENTLY, because an expired advisory guard looks exactly like
+/// no guard at all.
+pub const CLAIM_MAX_AGE_MS: u64 = 4 * 60 * 60 * 1000;
+
+/// The slowest real build on record, and the reason [`CLAIM_MAX_AGE_MS`] is what it is:
+/// the Intel Mac's warm `continuum reboot` build, 2026-09-18. Named so the invariant "the
+/// ceiling comfortably exceeds a real build" is a TEST and not a sentence in a doc comment
+/// that the next slow tier quietly falsifies.
+pub const SLOWEST_OBSERVED_BUILD_MS: u64 = 4_197 * 1000;
 
 /// What one deploying process published about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +279,28 @@ mod tests {
 
         // One millisecond under the cap still blocks — the boundary is not off by one.
         assert!(decide(Some(&claim(4242, 0)), true, CLAIM_MAX_AGE_MS - 1).blocks());
+    }
+
+    // what this catches: the ceiling being sized against the machines that report FIRST.
+    // Measured 2026-09-18 on the Intel tier: a 4,197 s warm build under a 1 h ceiling, so
+    // the claim expired at minute 60 — inside the last ten minutes of the build, the exact
+    // window the guard protects — `blocks()` went false, and deploy.stranded fired at claim
+    // age 66.2 min for a deploy that validated its artifact at 70.0 min. The failure is
+    // SILENT: an expired advisory guard is indistinguishable from no guard.
+    #[test]
+    fn the_claim_outlives_the_slowest_build_on_record_with_room_to_spare() {
+        // The whole of a real build must block — the pre-fix ceiling fails this outright.
+        assert!(
+            decide(Some(&claim(4242, 0)), true, SLOWEST_OBSERVED_BUILD_MS).blocks(),
+            "a claim must still block at the end of the slowest build we have measured \
+             ({SLOWEST_OBSERVED_BUILD_MS} ms); it is the swap window that needs the guard"
+        );
+        // And with margin, so the NEXT slower tier does not rediscover this the hard way.
+        assert!(
+            CLAIM_MAX_AGE_MS >= SLOWEST_OBSERVED_BUILD_MS * 2,
+            "the ceiling ({CLAIM_MAX_AGE_MS} ms) must comfortably exceed the slowest build \
+             ({SLOWEST_OBSERVED_BUILD_MS} ms), not merely clear it"
+        );
     }
 
     // what this catches: clock skew making a claim instantly "expired". A claim stamped in
