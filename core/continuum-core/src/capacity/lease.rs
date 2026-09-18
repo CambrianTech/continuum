@@ -203,6 +203,9 @@ mod tests {
             served_model: None,
             lanes: 0,
             residents: 0,
+            free_slots_live: 0,
+            lane_wait_p50_ms: 0,
+            lane_wait_samples: 0,
         }
         .capacity()
     }

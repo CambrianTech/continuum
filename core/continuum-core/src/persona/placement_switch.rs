@@ -478,6 +478,15 @@ pub struct PeerOffer {
     pub lanes: u32,
     pub residents: u32,
     pub beacon_age_ms: u64,
+    /// The seat's OWN free slots (lanes minus everything in flight, local and leased-in),
+    /// from its beacon (card c84d885a, S1). `lanes − residents` is roster arithmetic that
+    /// every node evaluated independently and so spilled onto the same slot; this is the
+    /// seat's admission truth. 0 on an older beacon = no free slot offered.
+    pub free_slots_live: u32,
+    /// The seat's own median receipt-to-first-progress wait for leased-in generates, ms,
+    /// with its sample count — unmeasured (0 samples) is never a fast seat.
+    pub lane_wait_p50_ms: u64,
+    pub lane_wait_samples: u32,
 }
 
 /// This node's own shape for the chooser.
@@ -676,10 +685,10 @@ mod tests {
         let gpu = Uuid::from_u128(0x5090);
         let rank = |m: &str| -> Option<u8> { match m { "qwen-27b" => Some(42), "tiny" => Some(10), _ => None } };
         let peers = vec![
-            PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000 },
-            PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000 },
-            PeerOffer { peer: Uuid::from_u128(2), served_model: Some("qwen-27b".into()), lanes: 2, residents: 2, beacon_age_ms: 5_000 },
-            PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1 },
+            PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000 , free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
+            PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000 , free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
+            PeerOffer { peer: Uuid::from_u128(2), served_model: Some("qwen-27b".into()), lanes: 2, residents: 2, beacon_age_ms: 5_000 , free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
+            PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1 , free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
         ];
         let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
         let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40 }, &peers, &rank, &minds);
