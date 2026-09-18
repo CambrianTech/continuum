@@ -29,6 +29,7 @@ pub mod allocate;
 pub mod catalog;
 pub mod identity;
 pub mod instances;
+pub mod placement_reserve;
 pub mod rag_inspect;
 pub mod reassign_model;
 pub mod spawn;

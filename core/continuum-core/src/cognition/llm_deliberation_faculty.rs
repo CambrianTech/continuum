@@ -1105,6 +1105,7 @@ impl LlmDeliberationFaculty {
             // here is her CHOICE to answer first, named by the probe — not a fault.
             // A held card outranks a musing turn for the non-directed budget
             // (`LanePriority::Work`): the lane goes to the mind that will write.
+            let lane_wait_started = std::time::Instant::now();
             let _lane = if ws.attention.requires_priority() {
                 crate::cognition::resource_admission::acquire_serving_lane(
                     crate::cognition::resource_admission::LanePriority::Directed,
@@ -1133,6 +1134,11 @@ impl LlmDeliberationFaculty {
                     }
                 }
             };
+            // The node's own queue, measured where SHE waits for it (card c84d885a, S1b):
+            // the comparator every spill is judged against.
+            crate::cognition::resource_admission::note_local_lane_wait_ms(
+                lane_wait_started.elapsed().as_millis() as u64,
+            );
             // HER task-positive system is engaged from here: the per-citizen boredom gate
             // (dreams) reads this stamp, never a room wake.
             crate::cognition::activity_gate::persona_engaged(self.persona_id);

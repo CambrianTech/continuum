@@ -391,6 +391,10 @@ impl ServiceModule for GridModule {
                 crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
             };
             let local = crate::persona::placement_switch::LocalShape {
+                lane_wait_p50_ms: {
+                    let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
+                    (samples > 0).then_some(p50)
+                },
                 resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                     .map(|r| r.live_personas().len() as u32)
                     .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents = nothing to place

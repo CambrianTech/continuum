@@ -70,6 +70,7 @@ pub mod message_cache;
 pub mod mission_source;
 pub mod model_override;
 pub mod grid_roster_memory;
+pub mod placement_reservation;
 pub mod placement_switch;
 pub mod remote_lane_factory;
 pub mod model_selection;

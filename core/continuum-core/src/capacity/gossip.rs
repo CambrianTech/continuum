@@ -81,9 +81,12 @@ pub struct CapacityOffer {
     pub residents: u32,
     /// WHAT THIS SEAT CAN ACTUALLY TAKE (2026-09-18, card c84d885a, S1): served lanes minus
     /// everything in flight on them — local turns AND leased-in generates — read off the
-    /// seat's own admission gauges. `lanes − residents` (above) counts only the seat's own
-    /// minds; every node reading it spilled onto the same 27B slot at once. Absent on an
-    /// older beacon (default 0): the peer offers no free slot until it says otherwise.
+    /// seat's own admission gauges — MINUS the slots it has already granted to spillers
+    /// that have not arrived (`persona/placement/reserve`, S1b): a spill is a lease the
+    /// seat grants, so the second node to read this sees what the first node's grant
+    /// left. `lanes − residents` (above) counts only the seat's own minds; every node
+    /// reading it spilled onto the same 27B slot at once. Absent on an older beacon
+    /// (default 0): the peer offers no free slot until it says otherwise.
     #[serde(default)]
     pub free_slots_live: u32,
     /// The seat's OWN queue: median receipt-to-first-progress of the generates it served

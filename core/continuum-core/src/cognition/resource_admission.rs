@@ -208,23 +208,50 @@ pub fn leased_in_sent_samples() -> Vec<u32> {
 /// (card c84d885a, S1: a seat whose own wait is minutes is not capacity, whatever its rank).
 /// Bounded ring, newest kept; the beacon carries the p50 AND the sample count, so
 /// "0 ms, 0 samples" (unmeasured) is never read as "0 ms wait".
-static LEASED_IN_FIRST_PROGRESS_MS: std::sync::Mutex<std::collections::VecDeque<u64>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
-/// How many leased-in first-progress waits the seat remembers. A plan window's worth.
-pub const LEASED_IN_WAIT_SAMPLES: usize = 64;
+static LEASED_IN_FIRST_PROGRESS_MS: WaitRing = WaitRing::new();
 /// Record one leased-in generate's receipt-to-first-progress wait.
 pub fn note_leased_in_first_progress_ms(ms: u64) {
-    let mut ring = LEASED_IN_FIRST_PROGRESS_MS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
-    ring.push_back(ms);
-    while ring.len() > LEASED_IN_WAIT_SAMPLES {
-        ring.pop_front();
-    }
+    LEASED_IN_FIRST_PROGRESS_MS.note(ms);
 }
 /// The seat's leased-in wait as (p50 ms, samples). `samples == 0` means UNMEASURED — the p50
 /// is then 0 and must not be read as a fast seat; the beacon carries both for that reason.
 pub fn leased_in_wait_p50_ms() -> (u64, u32) {
-    let ring = LEASED_IN_FIRST_PROGRESS_MS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
-    p50_of(ring.iter().copied())
+    LEASED_IN_FIRST_PROGRESS_MS.p50()
+}
+/// THIS NODE'S OWN LANE QUEUE: each home turn's wait at the serving-lane admission gate
+/// (`delib.gate.lane_wait` → `lane_acquired`), in ms. The comparator a spill is judged
+/// against: a peer seat is capacity only when its measured wait is UNDER this node's own —
+/// "offload only when the remote turn is expected faster" (card c84d885a, S1b). A median
+/// under a millisecond means the lanes here are not contended, and nobody moves.
+static LOCAL_LANE_WAIT_MS: WaitRing = WaitRing::new();
+/// Record one home turn's wait for a serving lane on this node.
+pub fn note_local_lane_wait_ms(ms: u64) {
+    LOCAL_LANE_WAIT_MS.note(ms);
+}
+/// This node's own lane wait as (p50 ms, samples); `samples == 0` = UNMEASURED.
+pub fn local_lane_wait_p50_ms() -> (u64, u32) {
+    LOCAL_LANE_WAIT_MS.p50()
+}
+/// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
+/// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
+pub struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
+/// How many waits a ring remembers. A plan window's worth.
+pub const WAIT_RING_SAMPLES: usize = 64;
+impl WaitRing {
+    pub const fn new() -> Self {
+        Self(std::sync::Mutex::new(std::collections::VecDeque::new()))
+    }
+    pub fn note(&self, ms: u64) {
+        let mut ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+        ring.push_back(ms);
+        while ring.len() > WAIT_RING_SAMPLES {
+            ring.pop_front();
+        }
+    }
+    pub fn p50(&self) -> (u64, u32) {
+        let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
+        p50_of(ring.iter().copied())
+    }
 }
 /// PURE: the median of a sample stream with its count; (0, 0) for none.
 pub fn p50_of(samples: impl Iterator<Item = u64>) -> (u64, u32) {
@@ -1793,5 +1820,22 @@ mod tests {
             .expect("ambient takes the lane once no work waits")
             .expect("join");
         drop(ambient_permit);
+    }
+
+    // what this catches (card c84d885a, S1b): the node's OWN lane wait is one more ring of the
+    // same shape as the seat's — a median with its count, (0, 0) when nothing was measured —
+    // so a chooser never reads an unmeasured home as "no queue" or a measured home as "0".
+    #[test]
+    fn a_nodes_own_lane_wait_is_a_median_with_a_count_of_the_same_shape_as_the_seats() {
+        let ring = WaitRing::new();
+        assert_eq!(ring.p50(), (0, 0), "unmeasured is (0, 0), never a fast lane");
+        for ms in [40_000u64, 5, 210_000, 7, 9] {
+            ring.note(ms);
+        }
+        assert_eq!(ring.p50(), (9, 5), "the median, not the mean — one outlier is not the queue");
+        for _ in 0..(WAIT_RING_SAMPLES * 2) {
+            ring.note(1);
+        }
+        assert_eq!(ring.p50(), (1, WAIT_RING_SAMPLES as u32), "bounded: the window forgets");
     }
 }
