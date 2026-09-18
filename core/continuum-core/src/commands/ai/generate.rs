@@ -207,16 +207,37 @@ crate::action_command! {
             is_local,
             "adapter_selected",
         );
-        if is_local {
-            route.served_context_window = served_window_now().or(route.served_context_window);
-        }
+        // THE LANE REPORTS ITS OWN WINDOW. This used to be gated on `is_local` and read the
+        // global `llama_server::current_serving()` snapshot, which is very nearly the INVERSE
+        // of the right question (card be553169):
+        //
+        //   is_local BLOCKED  the local gateway adapter — an `OpenAiAdapter` talking the
+        //                     OpenAI wire protocol to 127.0.0.1, so `capabilities()` says
+        //                     `.remote()` truthfully — and the global snapshot describes
+        //                     EXACTLY its lane. Measured on the Intel tier 2026-09-18: a
+        //                     loopback answer from a lane serving 32,768 returned
+        //                     `servedContextWindow: null`, and 88 of 88 cross-grid answers
+        //                     read `served_window=None`, because every responder stamps here.
+        //   is_local PERMITTED `LlamaCppAdapter`, which loads the GGUF IN PROCESS ("no HTTP
+        //                     hop") — so the gateway snapshot describes a DIFFERENT server,
+        //                     potentially a different model, certainly a different window.
+        //
+        // `live_served_window()` is that question asked of the party that knows: "the live
+        // served window of the lane THIS adapter is bound to." It already refuses on exactly
+        // the grounds this needs — a dedicated lane reports `None` because "the global
+        // gateway snapshot describes a DIFFERENT server and must never be consulted for it"
+        // (glass-boxed 2026-07-20; reading the global slot starved an eval fork, webdev-rs
+        // 0/6) — and its default `None` is the right answer for cloud and in-process alike:
+        // the binding window stands. An adapter with a live lane to report is the only one
+        // that reports.
+        //
+        // `.or()` and not `=`: a relayed remote answer already carries the RESPONDER's stamp
+        // in `route.served_context_window`, and the remote adapter takes the `None` default,
+        // so a peer's window is preserved rather than overwritten with ours. That preservation
+        // is the whole point of the field (card 1ab60567).
+        route.served_context_window = adapter
+            .live_served_window()
+            .or(route.served_context_window);
         Ok(AiGenerateResult::from(response))
     }
-}
-
-/// The window the local lane serves right now, or None when no lane is ready —
-/// never a stand-in number (a requester would budget against it).
-fn served_window_now() -> Option<u32> {
-    let s = crate::inference::llama_server::current_serving();
-    (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
 }
