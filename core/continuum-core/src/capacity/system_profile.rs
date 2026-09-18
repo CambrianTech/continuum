@@ -242,15 +242,37 @@ mod tests {
             available_bytes: total / 2,
             role: DriveRole::System,
         };
-        // Windows spelling: the home lives under C:\, no mount is "/".
-        let win = [drive("C:\\", 2_000), drive("D:\\", 16_000)];
-        let home = Path::new("C:\\Users\\joelt\\.continuum");
-        assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
-        assert!(drive_holding(&win, Path::new("Z:\\nowhere")).is_none(), "no drive = None, never (0, 0)");
-        // Unix spelling: a nested mount beats its parent by prefix length.
+        // Each platform in ITS OWN spelling — `Path` components are platform-defined,
+        // so `C:\Users\x` is ONE component on Unix and this case can only mean
+        // anything where backslash separates. (CI on Linux caught the first version
+        // asserting Windows spelling everywhere: the same class as the bug.)
+        #[cfg(windows)]
+        {
+            let win = [drive("C:\\", 2_000), drive("D:\\", 16_000)];
+            let home = Path::new("C:\\Users\\joelt\\.continuum");
+            assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
+            assert!(
+                drive_holding(&win, Path::new("Z:\\nowhere")).is_none(),
+                "no drive = None, never (0, 0)"
+            );
+        }
+        // Unix spelling: a nested mount beats its parent by prefix length; a path on
+        // no listed drive is None. Valid on every platform (forward slash separates
+        // everywhere), so it runs everywhere.
         let unix = [drive("/", 500), drive("/Volumes/big", 4_000)];
-        assert_eq!(drive_holding(&unix, Path::new("/Volumes/big/continuum")).map(|d| d.total_bytes), Some(4_000));
-        assert_eq!(drive_holding(&unix, Path::new("/home/x/.continuum")).map(|d| d.total_bytes), Some(500));
+        assert_eq!(
+            drive_holding(&unix, Path::new("/Volumes/big/continuum")).map(|d| d.total_bytes),
+            Some(4_000)
+        );
+        assert_eq!(
+            drive_holding(&unix, Path::new("/home/x/.continuum")).map(|d| d.total_bytes),
+            Some(500)
+        );
+        let none = [drive("/Volumes/big", 4_000)];
+        assert!(
+            drive_holding(&none, Path::new("/home/x/.continuum")).is_none(),
+            "no drive = None, never (0, 0)"
+        );
     }
 
     fn hw(silicon: TargetSilicon, vram_mb: u64, ram_mb: u64) -> HardwareClass {
