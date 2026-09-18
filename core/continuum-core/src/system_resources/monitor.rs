@@ -114,6 +114,12 @@ pub struct SystemResourceSnapshot {
     /// SYS gauge reads this next to cpu+mem.
     #[ts(optional)]
     pub gpu: Option<GpuSnapshot>,
+    /// The volume holding the substrate's home — pressure tier, bytes, and every
+    /// tracked cache class the disk reporters weighed. `None` only before the disk
+    /// monitor's first poll. Added 2026-09-18: the 5090 sat at 0 bytes free reading
+    /// `Normal` and no command surface could have shown it.
+    #[ts(optional)]
+    pub disk: Option<super::DiskPressureSnapshot>,
     /// Top processes (optional, only when requested)
     #[ts(optional)]
     pub processes: Option<ProcessStats>,
@@ -246,6 +252,7 @@ impl SystemResourceMonitor {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
                 gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: None,
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -294,6 +301,7 @@ impl SystemResourceMonitor {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
                 gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: Some(processes),
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -339,6 +347,7 @@ impl SystemResourceMonitor {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
                 gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: None,
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -361,6 +370,7 @@ impl SystemResourceMonitor {
                     swap_used_bytes: 0,
                 },
                 gpu: None,
+                disk: None,
                 processes: None,
                 timestamp_ms: 0,
                 uptime_seconds: 0,

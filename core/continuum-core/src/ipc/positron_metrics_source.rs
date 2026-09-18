@@ -198,6 +198,7 @@ mod tests {
                 swap_used_bytes: 0,
             },
             gpu,
+            disk: None,
             processes: None,
             timestamp_ms: 0,
             uptime_seconds: 0,

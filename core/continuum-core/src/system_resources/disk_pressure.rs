@@ -92,6 +92,12 @@ static DISK_GATE_CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// Global atomic level — updated every poll. Lock-free reads anywhere.
 static CURRENT_DISK_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+/// The last published snapshot, for the command surface (`system/resources`). A
+/// brief `RwLock` written once per 30 s poll and read on demand — never across an
+/// await.
+static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<DiskPressureSnapshot>> =
+    parking_lot::RwLock::new(None);
+
 /// Check if the disk gate is closed (critical pressure sustained).
 /// Subsystems should refuse new bulk writes when this returns true.
 pub fn is_disk_gate_closed() -> bool {
@@ -331,11 +337,18 @@ const QUARANTINE_AFTER: u32 = 3;
 /// Reporter call budget — 100 ms hard ceiling per call.
 const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Root mount point we measure disk pressure against. On macOS and
-/// Linux this is `/`; other mounts (network shares, secondary volumes)
-/// are deliberately ignored — the pressure we care about is "is the
-/// substrate's home filesystem about to fill".
-const ROOT_MOUNT: &str = "/";
+/// THE VOLUME WE MEASURE IS THE ONE THAT HOLDS THE SUBSTRATE'S HOME — resolved
+/// through the drive adapter ([`crate::capacity::system_profile::drive_holding`]),
+/// never named. Until 2026-09-18 this file held `const ROOT_MOUNT = "/"` and
+/// matched every mount point against it by string equality. On Windows no mount is
+/// `/` (`C:\`), so the lookup found nothing, read `(0, 0)`, computed pressure 0.0,
+/// and the level stayed `Normal` on every Windows host for as long as the monitor
+/// existed: the 5090 filled its 1.9 TB volume to 0 bytes free with the broker never
+/// asked to relieve a byte, the cargo-target pool sitting "within budget", and the
+/// core's own checkpoints dying with os error 112. Two of this codebase's own laws in
+/// one constant: a platform that chooses differently, silently, and an absence
+/// rendered as a positive fact — `(0, 0)` reads as "fine". Now: no drive holds the
+/// home = `disk.pressure.unmeasured`, said on every blind poll, never a zero.
 
 impl DiskPressureMonitor {
     /// Spawn the monitor on the shared [`Daemon`] runner. Returns the handle.
@@ -381,6 +394,13 @@ impl DiskPressureMonitor {
         // hold the returned handle — subscribers reach the channel through us.
         let _ = spawn_daemon(monitor.clone());
         monitor
+    }
+
+    /// The last published snapshot, process-wide — what `system/resources` shows
+    /// beside cpu/memory/gpu. `None` before the first poll: "not measured yet", never
+    /// a zero-sized volume.
+    pub fn current_snapshot() -> Option<DiskPressureSnapshot> {
+        CURRENT_DISK_SNAPSHOT.read().clone()
     }
 
     /// Lock-free current level. Updated every poll.
@@ -453,12 +473,34 @@ impl DiskPressureMonitor {
             // cheap once warmed. The lock is uncontended (only this task locks
             // it), so even a momentarily slow stat can't stall a reader.
             st.disks.refresh(true);
-            let (total, available) = st
+            let home = crate::modules::persona_instance_manager::resolve_continuum_root();
+            let drives: Vec<crate::capacity::system_profile::DriveInfo> = st
                 .disks
                 .iter()
-                .find(|d| d.mount_point().to_string_lossy() == ROOT_MOUNT)
-                .map(|d| (d.total_space(), d.available_space()))
-                .unwrap_or((0, 0));
+                .map(|d| crate::capacity::system_profile::DriveInfo {
+                    mount: d.mount_point().to_path_buf(),
+                    total_bytes: d.total_space(),
+                    available_bytes: d.available_space(),
+                    role: crate::capacity::system_profile::DriveRole::System,
+                })
+                .collect();
+            let measured = crate::capacity::system_profile::drive_holding(&drives, &home)
+                .filter(|d| d.total_bytes > 0)
+                .map(|d| (d.total_bytes, d.available_bytes));
+            let (total, available) = match measured {
+                Some(reading) => reading,
+                None => {
+                    // NOT pressure 0.0. A volume the monitor cannot find is a monitor
+                    // that cannot see, and it says so on every poll it stays blind.
+                    crate::probe!(
+                        class = "disk.pressure.unmeasured",
+                        home = %home.display(),
+                        mounts = drives.len() as u64,
+                        "no mounted volume holds the substrate's home — disk pressure is UNKNOWN, not Normal"
+                    );
+                    (0, 0)
+                }
+            };
             let used = total.saturating_sub(available);
             let pressure = if total > 0 {
                 used as f64 / total as f64
@@ -652,7 +694,11 @@ impl DiskPressureMonitor {
             (snapshot, fire_ready)
         };
 
-        // Publish lock-free. The channel overwrites; readers never block us.
+        // Publish lock-free. The channel overwrites; readers never block us. The
+        // process-wide copy is what `system/resources` reads: until 2026-09-18 the
+        // disk had NO field on any command surface, so a monitor reading (0, 0) for
+        // months was invisible from every seat — the absence had nowhere to show.
+        *CURRENT_DISK_SNAPSHOT.write() = Some(snapshot.clone());
         self.channel.publish(snapshot);
 
         if fire_ready {
