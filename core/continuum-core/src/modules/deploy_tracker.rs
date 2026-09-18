@@ -410,13 +410,24 @@ impl ServiceModule for DeployTrackerModule {
         let verdict = decide(&inputs);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
-                write_deploy_request(state_dir, &DeployRequest::new(tip_sha.clone(), now));
-                crate::probe!(
-                    class = "deploy.track.request_written",
-                    tip = tip_sha.as_str(),
-                    running = running_sha(),
-                    "deploy wanted — recorded a DeployRequest for the supervisor"
-                );
+                // Write ONLY when the tip changed. An unchanged tip keeps its original
+                // `requested_ms`, which is the only record of how long this deploy has been
+                // owed — re-stamping it every tick pinned `elapsed_ms` at the tick period and
+                // made every age-based decision downstream meaningless (card c48fc453). The
+                // probe follows the write, so a standing request stops repeating itself too.
+                if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(
+                    read_deploy_request(state_dir).as_ref(),
+                    tip_sha,
+                    now,
+                ) {
+                    write_deploy_request(state_dir, &req);
+                    crate::probe!(
+                        class = "deploy.track.request_written",
+                        tip = tip_sha.as_str(),
+                        running = running_sha(),
+                        "deploy wanted — recorded a DeployRequest for the supervisor"
+                    );
+                }
             }
             DeployVerdict::UpToDate => {}
             DeployVerdict::Held { reason, stale } => {
