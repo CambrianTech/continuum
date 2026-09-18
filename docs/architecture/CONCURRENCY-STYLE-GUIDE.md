@@ -228,6 +228,8 @@ Each of these is a recurring slop pattern the model reflex-codes under amnesia. 
 
 10. **Custom thread spawning (`std::thread::spawn`).** Use `tokio::spawn`. The runtime owns the executor; your concern is the work. Exception: blocking C FFI that won't yield — those go through `tokio::task::spawn_blocking`, never raw threads.
 
+11. **A state that moves in one direction.** A measurement that can only rise, a page-out with no page-in, a claim that only expires, a placement that only returns to the same peer: each is a RATCHET, and a ratchet is a slow outage — every transient dip shrinks the thing forever and no receipt says why. Four were found and fixed on 2026-09-18 alone, by three of us, each the same shape: the emission peak that only doubled (#4195), the claim expiry with no renewal (#4190), the placement metronome that only went back (#4193 damped, #4199 closed), the lane-bound rest with no lane-bound wake (#4200). The rule: **the mirror ships in the same commit as the mover, keyed on the SAME number that fired it** (rest at `resident > lanes×3` ↔ wake at `resident < lanes×3`; a peak that decays 7/8; a claim that renews while held), and **the test is a round trip** — fire it, reverse the input, assert the state came back. If you cannot write the reverse direction, the forward one is not finished.
+
 ---
 
 ## The acceptance test for a new concern
