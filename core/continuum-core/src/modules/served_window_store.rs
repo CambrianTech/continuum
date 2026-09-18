@@ -19,6 +19,11 @@ const FILE: &str = "served-window.json";
 pub struct StoredServedWindow {
     pub model_id: String,
     pub per_slot_window: u32,
+    /// The lane count that served beside that window — the other half of the geometry a
+    /// cold boot plans first (9/18: a window alone let the boot launch 8 lanes at 28k).
+    /// Absent on an older record (default 0 = unknown): the window still carries over.
+    #[serde(default)]
+    pub lanes: u32,
     pub set_at_ms: u64,
 }
 
@@ -32,6 +37,11 @@ fn default_path() -> Option<PathBuf> {
         .map(|h| path_under(&h))
 }
 
+/// THE LAST STEADY GEOMETRY this host served, whatever the model — a cold boot's first
+/// choice (the caller checks the model is still a candidate). Missing/corrupt = `None`.
+pub fn load_geometry() -> Option<StoredServedWindow> {
+    default_path().and_then(|p| load_from(&p))
+}
 /// The remembered window for `model_id`, if the store holds one for THAT model.
 /// Missing or foreign = `None` silently; corrupt = `None` with a probe.
 pub fn load_for(model_id: &str) -> Option<u32> {
@@ -66,22 +76,23 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
     }
 }
 
-/// Remember what actually served. Called by the spawn; idempotent.
-pub fn save(model_id: &str, per_slot_window: u32) {
+/// Remember what actually served — the window AND the lane count. Called by the spawn;
+/// idempotent.
+pub fn save(model_id: &str, per_slot_window: u32, lanes: u32) {
     if let Some(p) = default_path() {
-        save_to(&p, model_id, per_slot_window);
+        save_to(&p, model_id, per_slot_window, lanes);
     }
 }
 
-pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32) {
-    if load_from(path).is_some_and(|s| s.model_id == model_id && s.per_slot_window == per_slot_window) {
+pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32) {
+    if load_from(path).is_some_and(|s| s.model_id == model_id && s.per_slot_window == per_slot_window && s.lanes == lanes) {
         return;
     }
     let set_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0); // JUSTIFIED unwrap_or: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
-    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, set_at_ms };
+    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, set_at_ms };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -90,7 +101,8 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32) {
             class = "serving.window.stored",
             model = model_id,
             per_slot_window = per_slot_window as u64,
-            "served per-slot window remembered — the next boot plans this geometry first, so KV pages carry over"
+            lanes = lanes as u64,
+            "served geometry remembered (window AND lanes) — the next boot plans it first, so KV pages carry over and the first launch is the steady one"
         ),
         _ => crate::probe!(
             class = "serving.window.store_failed",
@@ -110,9 +122,13 @@ mod tests {
     fn the_store_answers_only_for_its_own_model_and_discards_corruption() {
         let dir = tempfile::tempdir().unwrap(); // JUSTIFIED unwrap: test scaffolding
         let path = dir.path().join("state").join("served-window.json");
-        save_to(&path, "a/model", 65_536);
+        save_to(&path, "a/model", 65_536, 2);
         let s = load_from(&path).expect("stored");
-        assert_eq!((s.model_id.as_str(), s.per_slot_window), ("a/model", 65_536));
+        assert_eq!((s.model_id.as_str(), s.per_slot_window, s.lanes), ("a/model", 65_536, 2));
+        // An older record (window only) still carries its window; lanes read as unknown (0).
+        std::fs::write(&path, br#"{"model_id":"a/model","per_slot_window":40000,"set_at_ms":1}"#).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let old = load_from(&path).expect("old record reads");
+        assert_eq!((old.per_slot_window, old.lanes), (40_000, 0));
         std::fs::write(&path, b"{not json").unwrap(); // JUSTIFIED unwrap: test scaffolding
         assert!(load_from(&path).is_none(), "corrupt store reads as absent");
         assert!(!path.exists(), "and is discarded");
