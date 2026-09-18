@@ -11,7 +11,7 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -71,6 +71,12 @@ pub struct AircRemoteInferenceAdapter {
     /// The persona's lane factory hangs her override's writer here so the
     /// window she budgets against follows the responder's (card 1ab60567).
     window_sink: Option<Arc<dyn Fn(u32) + Send + Sync>>,
+    /// The window the RESPONDER last said it served (0 = not yet heard). Reported live
+    /// through `live_served_window` so a bound mind's prompt budget follows the seat the
+    /// moment its first answer arrives — not at her next re-host (the sink records it
+    /// for that). Measured 2026-09-18: every bound mind budgeted to the 16,384 floor
+    /// against a 67k–101k seat until re-hosted, and every large prompt came back empty.
+    learned_window: AtomicU32,
     /// Flipped to true the first time a `generate_text` round-trip
     /// succeeds. `health_check` returns `Unknown` while this is
     /// false (no observation yet) and `Healthy` once it's true.
@@ -103,6 +109,7 @@ impl AircRemoteInferenceAdapter {
             default_model: None,
             persona: None,
             window_sink: None,
+            learned_window: AtomicU32::new(0),
             has_observed_success: AtomicBool::new(false),
             breaker: Arc::new(PeerBreaker::default()),
         }
@@ -316,15 +323,17 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             ),
         }
         let response = sent.map_err(|e| e.to_string())?;
-        if let (Some(sink), Some(window)) = (
-            self.window_sink.as_ref(),
-            response
-                .text_response
-                .routing
-                .as_ref()
-                .and_then(|x| x.served_context_window),
-        ) {
-            sink(window);
+        if let Some(window) = response
+            .text_response
+            .routing
+            .as_ref()
+            .and_then(|x| x.served_context_window)
+            .filter(|w| *w > 0)
+        {
+            self.learned_window.store(window, Ordering::Relaxed);
+            if let Some(sink) = self.window_sink.as_ref() {
+                sink(window);
+            }
         }
         // First successful round-trip flips the health observation
         // bit so subsequent health_check calls can report Healthy.
@@ -392,6 +401,15 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     async fn get_available_models(&self) -> Vec<ModelInfo> {
         // Future slice: discover peer's models via airc handshake.
         Vec::new()
+    }
+
+    /// The responder's served slot, once heard (see `learned_window`); `None` until the
+    /// first answer — the binding window stands until the seat has spoken for itself.
+    fn live_served_window(&self) -> Option<u32> {
+        match self.learned_window.load(Ordering::Relaxed) {
+            0 => None,
+            w => Some(w),
+        }
     }
 
     fn device_type(&self) -> InferenceDevice {
@@ -872,6 +890,9 @@ mod tests {
         assert!(!route.is_local);
         assert_eq!(route.provider, AIRC_REMOTE_PROVIDER_ID);
         assert_eq!(route.served_context_window, Some(26_112));
+        // what this catches (2026-09-18): the window is LIVE on the adapter the moment it
+        // is heard — a bound mind's next prompt budgets to the seat, not to her re-host.
+        assert_eq!(adapter.live_served_window(), Some(26_112), "the seat's window is reported live once heard");
         assert_eq!(route.adapters_applied, ["served-adapter"]);
         assert_eq!(route.model_mapped.as_deref(), Some("served-model"));
         assert_eq!(route.model_requested.as_deref(), Some("requested-model"));
