@@ -148,6 +148,14 @@ pub fn cargo_target_budget_bytes(volume_total_bytes: u64) -> u64 {
     (volume_total_bytes / 10).max(DEFAULT_CARGO_TARGET_BUDGET_BYTES)
 }
 
+/// The pressure the broker sees for a derived-artifact cache: its own budget
+/// pressure OR the pressure of the volume it sits on, whichever is higher. A
+/// per-pool budget cut from the volume's TOTAL cannot see a volume filled by other
+/// classes; the volume can, and a cache is the first thing a hot volume should shed.
+pub fn cache_pool_pressure(own: f64, volume: f64) -> f64 {
+    own.max(volume)
+}
+
 /// Non-blocking exclusive flock on `path`. `Some(file)` holds the lock
 /// until dropped; `None` = someone else (a live cargo build) holds it.
 /// A missing lock file is created — holding it makes a cargo invocation
@@ -513,6 +521,28 @@ impl ResourcePool for CargoTargetPool {
 
     fn usage_bytes(&self) -> u64 {
         self.tracked.bytes()
+    }
+
+    /// A CACHE ON A CRITICAL VOLUME IS A CRITICAL POOL. The broker relieves a pool
+    /// only when ITS pressure crosses `act_above`; this pool's own pressure is
+    /// usage over a budget derived from the volume's TOTAL, so it cannot see a
+    /// volume filled by other classes. Measured 2026-09-18 on the 5090 the moment
+    /// the disk daemon could see at all: volume `critical` (95 %+, 92 GB of
+    /// 1.9 TB free), cargo-target 0.34 of budget, cargo-target-wt 0.65 — both
+    /// below the act line, nothing evicted, the disk-root signal pool alerting
+    /// "hot and stuck" every tick. A derived artifact cache is exactly what a
+    /// critical volume should shed first, so the volume's pressure is this pool's
+    /// floor: over budget OR on a hot volume, either one brings the broker.
+    fn pressure(&self) -> f64 {
+        let own = if self.budget_bytes == 0 {
+            0.0
+        } else {
+            self.usage_bytes() as f64 / self.budget_bytes as f64
+        };
+        let volume = super::DiskPressureMonitor::current_snapshot()
+            .map(|s| s.pressure)
+            .unwrap_or(0.0); // unwrap_or: no disk reading yet = the pool's own budget alone governs, as before
+        cache_pool_pressure(own, volume)
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -938,6 +968,19 @@ impl ResourcePool for NvmeServingTierPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-18, the 5090 at 95 % with both cargo caches "within
+    // budget"): a cache pool on a critical volume reads AT LEAST the volume's
+    // pressure, so the broker's act line is crossed by the volume filling — not only
+    // by the pool outgrowing a budget cut from that volume's total. Under budget on a
+    // calm volume it still reads its own number, so nothing evicts for no reason.
+    #[test]
+    fn a_cache_on_a_hot_volume_reads_the_volumes_pressure() {
+        assert_eq!(cache_pool_pressure(0.34, 0.95), 0.95, "the volume brings the broker");
+        assert_eq!(cache_pool_pressure(0.34, 0.40), 0.40);
+        assert_eq!(cache_pool_pressure(0.90, 0.40), 0.90, "over budget still governs");
+        assert_eq!(cache_pool_pressure(0.34, 0.0), 0.34, "no disk reading = own budget alone");
+    }
 
     fn seeded_target(tmp: &Path) -> Arc<TrackedDir> {
         std::fs::create_dir_all(tmp.join("debug/incremental")).expect("mkdir");
