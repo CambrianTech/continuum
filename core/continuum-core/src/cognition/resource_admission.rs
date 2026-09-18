@@ -100,6 +100,73 @@ impl InflightModelCall {
     }
 }
 
+/// A gauge that also remembers its PEAK since the last read — for a reader that asks
+/// "how many at once, over the interval" (the serving planner's tick) rather than "how
+/// many right now" (the admission gate). Same injectable shape as [`Gauge`], for the same
+/// testability reason: a test drives its own instance, never the process-global one.
+#[derive(Debug)]
+struct PeakGauge {
+    gauge: Gauge,
+    peak: AtomicUsize,
+}
+impl PeakGauge {
+    const fn new() -> Self {
+        Self {
+            gauge: Gauge::new(),
+            peak: AtomicUsize::new(0),
+        }
+    }
+    /// Enter one call and fold the new concurrency into the peak.
+    fn enter(&self) -> GaugeGuard<'_> {
+        let guard = self.gauge.enter();
+        self.peak.fetch_max(self.gauge.inflight(), Ordering::AcqRel);
+        guard
+    }
+    fn inflight(&self) -> usize {
+        self.gauge.inflight()
+    }
+    /// The peak concurrency since the previous take, then re-arm at the CURRENT
+    /// concurrency — a call still in flight at the read is not forgotten by the reset.
+    fn take_peak(&self) -> usize {
+        let now = self.gauge.inflight();
+        self.peak.swap(now, Ordering::AcqRel).max(now)
+    }
+}
+
+/// LEASED-IN model calls: inference THIS seat performs for minds hosted on OTHER nodes —
+/// the `ai/generate` a peer sent over airc when its placement spilled a mind here.
+///
+/// Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the M5's coders
+/// (Benchy 12, Aris 8, Demetri 5, Mara 5 answers in one afternoon) and IntelMac's eight,
+/// on ONE slot, with lane waits of p50 216 s / p90 1,387 s / max 7,058 s — while its
+/// serving plan counted only its own roster, because nothing counted these. A seat's
+/// demand is the minds it SERVES, not only the minds it HOSTS. This gauge is the missing
+/// term; the planner reads its peak per tick ([`take_leased_in_peak`]) and adds it to
+/// the resident lane demand ([`crate::cognition::serving_plan::ServingDemand::leased_in`]).
+/// It is fed at the seam where an inbound remote generate is executed, which today enters
+/// neither this gauge nor the admission gate — the wire slice of the same card.
+static LEASED_IN_CALLS: PeakGauge = PeakGauge::new();
+
+/// RAII marker for one leased-in call, mirror of [`InflightModelCall`]: enters on
+/// construction, leaves on EVERY exit path. Hold it across the whole remote generate.
+#[derive(Debug)]
+pub struct LeasedInCall(GaugeGuard<'static>);
+impl LeasedInCall {
+    pub fn enter() -> Self {
+        Self(LEASED_IN_CALLS.enter())
+    }
+}
+/// Leased-in calls outstanding right now.
+pub fn leased_in_calls() -> usize {
+    LEASED_IN_CALLS.inflight()
+}
+/// The peak concurrent leased-in calls since the planner last asked — the seat's measured
+/// demand from the rest of the grid, one number per plan tick. Re-arms at the current
+/// concurrency so a still-running call carries into the next interval.
+pub fn take_leased_in_peak() -> usize {
+    LEASED_IN_CALLS.take_peak()
+}
+
 /// Deliberative model calls outstanding against the shared serving target right now.
 /// The served lane count the admission gate is sized to (0 before the first plan).
 pub fn served_lane_count() -> usize {
@@ -1037,6 +1104,33 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card c84d885a): a seat that serves other nodes' minds and never
+    // counts them. The planner must see "how many did I serve AT ONCE this interval", so
+    // the gauge keeps a peak; and a call still in flight when the planner reads must not
+    // vanish from the next interval (the re-arm-at-current rule), or a long remote turn
+    // spanning two ticks would read as zero demand on the second.
+    #[test]
+    fn a_leased_in_gauge_remembers_its_peak_per_interval_and_never_forgets_a_running_call() {
+        let g = PeakGauge::new();
+        assert_eq!(g.take_peak(), 0, "nothing served yet");
+        let a = g.enter();
+        let b = g.enter();
+        let c = g.enter();
+        drop(b);
+        assert_eq!(g.inflight(), 2);
+        // the interval's peak was 3, not the 2 in flight at read time
+        assert_eq!(g.take_peak(), 3);
+        // re-armed at the CURRENT concurrency: the two still running are the floor of the
+        // next interval, not forgotten
+        assert_eq!(g.take_peak(), 2);
+        drop(a);
+        drop(c);
+        assert_eq!(g.inflight(), 0);
+        assert_eq!(g.take_peak(), 2, "the last interval still saw two running");
+        assert_eq!(g.take_peak(), 0, "and now nothing");
+    }
+
     use super::*;
 
     // No serialization lock lives here any more, and that is the point. It used to exist

@@ -174,6 +174,17 @@ pub struct ServingDemand {
     /// KV page geometry — `<model>--c<window>` — is the same across boots and the
     /// citizens' pages carry over. `None` = no memory (first serve of this model).
     pub sticky_window: Option<u32>,
+    /// Concurrent lanes this seat serves for minds hosted on OTHER nodes — the `ai/generate`
+    /// a peer sends here when its placement spills a mind onto this seat — measured at the
+    /// seat's own admission as the peak per plan tick
+    /// ([`crate::cognition::resource_admission::take_leased_in_peak`]). Added to `lanes` when
+    /// the plan sizes the slot count: a seat's demand is the minds it SERVES, not only the
+    /// minds it HOSTS. Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the
+    /// M5's four coders and IntelMac's eight on ONE slot — lane wait p50 216 s, p90 1,387 s,
+    /// max 7,058 s — while its plan counted only its own roster and nothing counted these.
+    /// `0` is the honest value on a seat nobody leases into, and on every seat until the
+    /// inbound-generate seam feeds the gauge (the wire slice of the same card).
+    pub leased_in: u32,
     /// The largest prompt any resident actually SENT (post-fit), when measured. The
     /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
     /// `window_tokens` (which is the whole assembled context and saturates at
@@ -226,7 +237,13 @@ impl ServingDemand {
             sticky_window: None,
             sent_tokens: None,
             sent_median: None,
+            leased_in: 0,
         }
+    }
+    /// Fold in the minds this seat serves for other nodes (see `leased_in`).
+    pub fn with_leased_in(mut self, leased_in: u32) -> Self {
+        self.leased_in = leased_in;
+        self
     }
     pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
         self.sent_median = median.filter(|m| *m > 0);
@@ -532,7 +549,10 @@ pub fn plan_serving(
     candidates: &[ModelFootprint],
     demand: ServingDemand,
 ) -> Option<ServingPlan> {
-    let demand_lanes = demand.lanes;
+    // The slot count is sized to every mind this seat SERVES: its residents plus the
+    // minds leased in from other nodes. Counting only residents is how one seat carried
+    // three nodes' coders on one slot (c84d885a). Saturating: a wild peak never wraps.
+    let demand_lanes = demand.lanes.saturating_add(demand.leased_in);
     if candidates.is_empty() {
         return None;
     }
@@ -1463,6 +1483,67 @@ mod tests {
             measured.served_context_window <= 48_000,
             "…but never above what was actually demanded (got {})",
             measured.served_context_window
+        );
+    }
+
+    // what this catches (card c84d885a, 2026-09-18): a seat that plans for the minds it
+    // HOSTS and not the minds it SERVES. The 5090's 27B seat had one resident of its own and
+    // served twelve coders leased in from the M5 and IntelMac — on one slot, because the
+    // plan's lane demand was its roster. A seat with a roomy budget and 3 leased-in minds
+    // beside 1 resident must plan 4 warm slots, exactly as it would for 4 residents; and a
+    // solve-lease override that pins resident demand to 1 must not erase the leased-in three.
+    #[test]
+    fn a_seat_plans_for_the_minds_it_serves_not_only_the_minds_it_hosts() {
+        let roomy = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let hosts_only = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None),
+        )
+        .expect("servable");
+        assert_eq!(hosts_only.lanes, 1, "one resident, nothing leased in: one slot");
+
+        let serves = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None).with_leased_in(3),
+        )
+        .expect("servable");
+        assert_eq!(
+            serves.lanes, 4,
+            "one resident plus three leased-in minds is FOUR minds served: four warm slots"
+        );
+        assert_eq!(serves.grid_overflow_lanes, 0, "the roomy host seats all four");
+
+        // the same seat, read as if a solve lease had overridden resident demand to 1
+        // (the 5090's shape): the leased-in three are still served here and still count
+        let overridden_but_leased = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, Some(40_000)).with_leased_in(3),
+        )
+        .expect("servable");
+        assert_eq!(overridden_but_leased.lanes, 4);
+
+        // a tight host still says so honestly: it plans what fits and names the rest
+        let tight = HostBudget {
+            usable_bytes: 26 * GB,
+            perf_cores: 10,
+        };
+        let capped = plan_serving(
+            tight,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None).with_leased_in(3),
+        )
+        .expect("servable");
+        assert_eq!(capped.lanes, 2, "the floor caps warm slots at 2 on 26 GB");
+        assert_eq!(
+            capped.grid_overflow_lanes, 2,
+            "two of the four minds this seat serves are visibly unslotted, never silently crammed"
         );
     }
 

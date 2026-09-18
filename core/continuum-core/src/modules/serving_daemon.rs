@@ -1074,9 +1074,14 @@ impl ServingDaemonModule {
                 self.working_set.sent_median_of(&live),
             )
         };
+        // The minds this seat served for OTHER nodes since the last plan — the peak
+        // concurrent leased-in generates (c84d885a). Zero until the inbound-generate
+        // seam feeds the gauge; never invented.
+        let leased_in = crate::cognition::resource_admission::take_leased_in_peak();
         ServingDemand::new(lanes, demand)
             .with_sent_tokens(sent)
             .with_sent_median(median)
+            .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -3545,6 +3550,7 @@ impl ServingDaemonModule {
                         served_window = plan.served_context_window,
                         demand_window = demand.window_tokens,
                         demand_lanes = demand.lanes,
+                        leased_in = demand.leased_in,
                         // `bootstrap` is a THIRD state, not a flavour of `demand`
                         // (2026-08-20). A cold plan reporting `demand` claims the minds
                         // asked for 16384 when none had asked for anything — and that is
