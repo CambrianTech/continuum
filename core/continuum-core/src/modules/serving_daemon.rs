@@ -2822,9 +2822,27 @@ impl ServingDaemonModule {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
                     let declares_vision =
                         target.model.has(crate::model_registry::Capability::Vision);
-                    let mmproj_resolved =
-                        crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
-                            .is_some();
+                    // The sidecar search, ONCE per reconcile — below it names which
+                    // row a sidecar would run.
+                    let sidecar_rows: Vec<crate::model_registry::types::Model> =
+                        crate::model_registry::try_global()
+                            .map(|r| r.models().cloned().collect())
+                            .unwrap_or_default();
+                    let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
+                        &sidecar_rows,
+                        Some(desired.as_str()),
+                    );
+                    // Does the RUNNING lane carry a projector? A FACT recorded on the
+                    // handle at spawn — never a re-derivation of today's intent. Until
+                    // 2026-09-18 the readiness check was fed "resolved on disk" as if
+                    // it meant "passed to the lane" (a withheld projector read as one
+                    // that failed to load); the first fix re-derived the intent, which
+                    // was wrong for a lane ADOPTED from an earlier core (the 5090 at
+                    // 04:08Z: intent = wear, lane spawned at 03:51Z without). `None`
+                    // (adopted / unknown) reads as "not carried": the grow-check in
+                    // `ensure` relaunches such a lane when today's decision wants sight,
+                    // and the fact becomes known on that spawn.
+                    let main_lane_wears = server.mmproj_on_lane().unwrap_or(false); // unwrap_or: unknown = not carried, the grow-check owns the relaunch
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
@@ -2840,7 +2858,7 @@ impl ServingDaemonModule {
                     };
                     let main_sees = match crate::inference::llama_server::vision_lane_ready(
                         declares_vision,
-                        mmproj_resolved,
+                        main_lane_wears,
                         props,
                     ) {
                         Ok(ready) => ready,
@@ -2881,11 +2899,7 @@ impl ServingDaemonModule {
                         None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
-                        let rows: Vec<crate::model_registry::types::Model> =
-                            crate::model_registry::try_global()
-                                .map(|r| r.models().cloned().collect())
-                                .unwrap_or_default();
-                        let candidate = sidecar::find_candidate(&rows, Some(desired.as_str()));
+                        let candidate = sidecar_candidate;
                         match &candidate {
                             Err(skipped) => {
                                 crate::probe!(

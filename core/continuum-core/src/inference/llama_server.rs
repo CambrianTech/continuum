@@ -1364,19 +1364,109 @@ pub struct MultimodalSupport {
 ///   modalities at all (unverifiable ≠ working). The daemon logs the reason
 ///   loud and publishes `vision_ready: false` — the capability lie is surfaced,
 ///   never served ([[fallbacks-are-illegal-fail-loud]]).
+/// Where a lane's resolved projector goes. ONE decision, pure, so the spawn site
+/// and the test agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainLaneMmproj {
+    /// The row opted in (`mmproj_on_main_lane`) or this IS the sidecar lane: wear it.
+    Wear,
+    /// The row prefers a sidecar and one is available on this node: withhold, keep
+    /// `cache_reuse`, sight routes through the sidecar + description bridge.
+    Withhold,
+    /// The row prefers a sidecar but this node has no other VL candidate: wear it
+    /// anyway — the only eyes on the node beat `cache_reuse`.
+    WearAsOnlyEyes,
+    /// Nothing resolved; nothing to decide.
+    NoneResolved,
+}
+
+/// The sidecar + description bridge are a PROSTHESIS for text-only minds (Joel,
+/// 2026-09-18: "be smart about models even needing the feature if all loaded have
+/// it naturally"). A model that sees natively wears its own projector when that is
+/// the only sight on the node; a node whose loaded models all see natively needs no
+/// sidecar at all — the daemon drops any sidecar the moment the main lane verifies
+/// sight (`main_sees`). The withhold exists only to preserve `cache_reuse` when a
+/// SEPARATE VL lane can carry sight; it is never a reason for a node to be blind.
+///
+/// `sidecar_available` is `None` when the caller did not consult the sidecar search
+/// because the answer does not depend on it (row opted in, this is the sidecar,
+/// or nothing resolved).
+fn main_lane_mmproj_decision(
+    row_opts_in: bool,
+    is_sidecar_lane: bool,
+    mmproj_resolved: bool,
+    sidecar_available: Option<bool>,
+) -> MainLaneMmproj {
+    if !mmproj_resolved {
+        return MainLaneMmproj::NoneResolved;
+    }
+    if row_opts_in || is_sidecar_lane {
+        return MainLaneMmproj::Wear;
+    }
+    match sidecar_available {
+        Some(true) => MainLaneMmproj::Withhold,
+        // unwrap-free by construction: `None` here means "not consulted" on a row
+        // that prefers a sidecar — the caller always consults in that case, and if
+        // it ever did not, blindness is the wrong default, so the lane wears them.
+        Some(false) | None => MainLaneMmproj::WearAsOnlyEyes,
+    }
+}
+
+/// The live decision for a model row on THIS node: consults the registry + the
+/// sidecar search only when the row prefers a sidecar and a projector resolved
+/// (the two cases where the answer depends on what else is on the box). ONE call
+/// site shape for the spawn, the grow-check and the serving daemon, so the intent
+/// they compare against is the same intent.
+fn main_lane_mmproj_decision_for(
+    model: &crate::model_registry::types::Model,
+    is_sidecar_lane: bool,
+) -> MainLaneMmproj {
+    let mmproj_resolved =
+        crate::model_registry::artifacts::resolve_mmproj_for_model(model).is_some();
+    let sidecar_available = if model.serving.mmproj_on_main_lane
+        || is_sidecar_lane
+        || !mmproj_resolved
+    {
+        None // not consulted: the decision does not depend on it
+    } else {
+        let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
+            .map(|r| r.models().cloned().collect())
+            .unwrap_or_default();
+        Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id)).is_ok())
+    };
+    main_lane_mmproj_decision(
+        model.serving.mmproj_on_main_lane,
+        is_sidecar_lane,
+        mmproj_resolved,
+        sidecar_available,
+    )
+}
+
+impl MainLaneMmproj {
+    /// Does this decision put a projector on the lane?
+    fn wears(self) -> bool {
+        matches!(self, Self::Wear | Self::WearAsOnlyEyes)
+    }
+}
+
 pub fn vision_lane_ready(
     declares_vision: bool,
-    mmproj_resolved: bool,
+    mmproj_on_lane: bool,
     props: Option<MultimodalSupport>,
 ) -> Result<bool, String> {
     if !declares_vision {
         return Ok(false);
     }
-    if !mmproj_resolved {
+    // `mmproj_on_lane` is whether the projector was PASSED TO THIS LANE — not whether
+    // one exists on disk. A projector withheld for a sidecar is not a projector that
+    // failed to load; conflating the two produced "--mmproj was passed but…" about a
+    // lane that was never given one (2026-09-18).
+    if !mmproj_on_lane {
         return Err(
-            "model row declares Vision but no mmproj projector resolved at spawn — \
-             the lane serves TEXT ONLY; pull the model's `*-GGUF` repo (projector ships \
-             alongside) or set `mmproj_local_path` on the row"
+            "model row declares Vision but this lane carries no mmproj projector — none \
+             resolved at spawn (pull the model's `*-GGUF` repo, projector ships alongside, \
+             or set `mmproj_local_path`), or it was withheld for a vision sidecar; the \
+             lane serves TEXT ONLY"
                 .to_string(),
         );
     }
@@ -1955,6 +2045,14 @@ pub trait LlamaServerControl: Send + Sync {
         Ok(None)
     }
 
+    /// Did THIS control's own spawn pass a projector? A FACT about the running
+    /// process, never a re-derivation of policy. `None` = unknown: adopted from an
+    /// earlier core, not yet spawned by this one, or a fake/remote control that has
+    /// no spawn — the default, so fakes stay honest by construction.
+    fn mmproj_on_lane(&self) -> Option<bool> {
+        None
+    }
+
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
     /// while EVERY `llama_decode` returns 500 "Compute error" — observed live in
@@ -2278,7 +2376,34 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 Ok(n) => n.to_string(),
                 Err(e) => format!("unreadable ({e})"),
             };
-            if !window_ok || !lanes_ok {
+            // SIGHT grow-back — the third sibling (2026-09-18). Today's decision may put
+            // the projector on this lane (the only eyes on the node) while the running
+            // server was spawned by an earlier core or policy without one: /props says
+            // vision=false, and adopting it would keep the node blind until an
+            // unrelated relaunch. A lane whose sight is below target relaunches for
+            // that alone, exactly like a window or lane count below target. A build
+            // that publishes no modalities block is unverifiable and is NOT relaunched
+            // in a loop for it (the daemon reports that case as unverified sight).
+            let wants_sight =
+                main_lane_mmproj_decision_for(&target.model, target.vision_sidecar).wears();
+            let sight_ok = if !wants_sight {
+                true
+            } else {
+                match ctrl.multimodal_support().await {
+                    Ok(Some(m)) => m.vision,
+                    Ok(None) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "could not read the served modalities — treating sight as OK (no \
+                             spurious relaunch); a blind lane will not grow while this probe \
+                             keeps failing"
+                        );
+                        true
+                    }
+                }
+            };
+            if !window_ok || !lanes_ok || !sight_ok {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -2287,11 +2412,12 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     served_lanes = served_lanes.as_str(),
                     window_ok,
                     lanes_ok,
-                    "served capacity is below target (window and/or lanes) — relaunching to \
-                     grow (llama.cpp has no hot-resize; a genome-set match alone must not \
-                     strand a starved lane at the boot floor)",
+                    sight_ok,
+                    "served capacity is below target (window, lanes and/or sight) — relaunching \
+                     to grow (llama.cpp has no hot-resize; a genome-set match alone must not \
+                     strand a starved lane at the boot floor, nor a blind one without its eyes)",
                 );
-                // fall through to relaunch at the larger window / more lanes.
+                // fall through to relaunch at the larger window / more lanes / with eyes.
             } else {
                 // Window matches. Is the COMPUTE path alive? A child we spawned
                 // ourselves was decode-verified at `wait_ready` and is trusted
@@ -2394,6 +2520,10 @@ pub struct LlamaServerProcess {
     /// naturally with the lane; the model catalog inherits this as a declared field
     /// when the recipe/entity work lands.
     smoke_proven_thinking: std::sync::atomic::AtomicBool,
+    /// Whether THIS handle's spawn passed `--mmproj`: 0 = unknown (adopted, or not
+    /// yet spawned by this core), 1 = no, 2 = yes. A fact about the running process,
+    /// read by the serving daemon's sight check — never re-derived from policy.
+    mmproj_on_lane: std::sync::atomic::AtomicU8,
 }
 
 impl LlamaServerProcess {
@@ -2431,6 +2561,18 @@ impl LlamaServerProcess {
         Ok(super::weight_residency::WeightResidency::from_props(&body))
     }
 
+    /// Did THIS handle's spawn pass a projector? `None` = unknown: the lane was
+    /// adopted from an earlier core or has not been spawned by this one. The serving
+    /// daemon's sight check reads this fact; the grow-check relaunches a lane whose
+    /// fact is below today's decision.
+    pub fn mmproj_on_lane(&self) -> Option<bool> {
+        match self.mmproj_on_lane.load(std::sync::atomic::Ordering::Relaxed) {
+            2 => Some(true),
+            1 => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_client(reqwest::Client::new())
     }
@@ -2450,6 +2592,7 @@ impl LlamaServerProcess {
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
+            mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -2479,6 +2622,7 @@ impl LlamaServerProcess {
             wedge: None,
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
+            mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -2913,6 +3057,10 @@ impl EphemeralServingLane {
 
 #[async_trait]
 impl LlamaServerControl for LlamaServerProcess {
+    fn mmproj_on_lane(&self) -> Option<bool> {
+        LlamaServerProcess::mmproj_on_lane(self)
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         // `/v1/models` reports the id we launched with via `--alias`, so the
         // comparison in `ensure_model_serving` is exact. A connection error
@@ -3320,21 +3468,47 @@ impl LlamaServerControl for LlamaServerProcess {
         // VL-first deployment opts in per model and pays the reuse cost knowingly.
         let resolved_mmproj =
             crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
-        let mmproj: Option<std::path::PathBuf> =
-            if target.model.serving.mmproj_on_main_lane || target.vision_sidecar {
-                resolved_mmproj.clone()
-            } else {
-                None
-            };
-        if mmproj.is_none() && resolved_mmproj.is_some() {
-            crate::probe!(
+        // THE ONLY EYES ON THE NODE GO ON THE MAIN LANE (2026-09-18, the 5090 after
+        // its reset): Qwen3.8-27B's projector was on disk and resolved, this withhold
+        // handed sight to "the sidecar", and the sidecar search — which rightly never
+        // duplicates the main lane's weights — found no OTHER VL row on the box. Two
+        // correct rules composed into a sightless node with its eyes in the cache,
+        // and `vision_lane_ready` then said "--mmproj was passed" about a projector
+        // that was withheld. So the withhold consults the same sidecar search FIRST:
+        // another candidate exists → withhold as before (cache_reuse alive, sight via
+        // the sidecar); none → the main lane wears the projector and pays the reuse
+        // cost, named in the probe. A citizen is never blind because of a cache knob
+        // (CLAUDE.md, Sensory Architecture).
+        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar);
+        let mmproj: Option<std::path::PathBuf> = if decision.wears() {
+            resolved_mmproj.clone()
+        } else {
+            None
+        };
+        // The FACT, recorded on the handle: what this spawn passed. The daemon's
+        // readiness check reads this, never a re-derivation of the intent — a lane
+        // adopted from an earlier core (or an earlier policy) may carry less than
+        // today's decision wants, and the grow-check above relaunches it for that.
+        self.mmproj_on_lane
+            .store(if mmproj.is_some() { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+        match decision {
+            MainLaneMmproj::Withhold => crate::probe!(
                 class = "serving.vision.mmproj_withheld",
                 model = %target.model.id,
                 "mmproj resolved but WITHHELD from the main lane (model row: \
-                 mmproj_on_main_lane=false — multimodal disables cache_reuse); sight \
-                 routes via the vision sidecar + description bridge"
-            );
-        } else if resolved_mmproj.is_none() && target
+                 mmproj_on_main_lane=false — multimodal disables cache_reuse); a \
+                 sidecar VL candidate exists on this node and sight routes through it"
+            ),
+            MainLaneMmproj::WearAsOnlyEyes => crate::probe!(
+                class = "serving.vision.mmproj_on_main_lane_as_only_eyes",
+                model = %target.model.id,
+                "mmproj goes on the MAIN lane: the row prefers a sidecar but no other \
+                 VL candidate is on this node — the only eyes here beat cache_reuse \
+                 (multimodal disables it); pull a *-VL-* row to restore the split"
+            ),
+            MainLaneMmproj::Wear | MainLaneMmproj::NoneResolved => {}
+        }
+        if resolved_mmproj.is_none() && target
             .model
             .capabilities
             .contains(&crate::model_registry::Capability::Vision)
@@ -5262,6 +5436,29 @@ mod tests {
         assert_eq!(got.active_model.as_deref(), Some("coder"));
     }
 
+    // what this catches (2026-09-18, the 5090 sightless with Qwen3.8-27B's projector on
+    // disk): the sidecar is a prosthesis for text-only minds. A row that prefers a
+    // sidecar withholds its projector ONLY when another VL candidate is on the node;
+    // with none, the main lane wears its own eyes — never blind because of a cache
+    // knob. Opt-in rows and the sidecar lane itself always wear; nothing resolved is
+    // nothing to decide; a row that prefers a sidecar but was not consulted errs toward
+    // sight.
+    #[test]
+    fn the_only_eyes_on_the_node_go_on_the_main_lane() {
+        use MainLaneMmproj::*;
+        assert_eq!(main_lane_mmproj_decision(false, false, true, Some(true)), Withhold);
+        assert_eq!(main_lane_mmproj_decision(false, false, true, Some(false)), WearAsOnlyEyes);
+        assert_eq!(main_lane_mmproj_decision(false, false, true, None), WearAsOnlyEyes);
+        assert_eq!(main_lane_mmproj_decision(true, false, true, Some(true)), Wear);
+        assert_eq!(main_lane_mmproj_decision(false, true, true, Some(true)), Wear);
+        assert_eq!(main_lane_mmproj_decision(false, false, false, Some(false)), NoneResolved);
+        // And the readiness check names a withheld/absent projector as what it is —
+        // never "--mmproj was passed" about a lane that was given none.
+        let err = vision_lane_ready(true, false, None).unwrap_err();
+        assert!(err.contains("carries no mmproj"), "{err}");
+        assert!(!err.contains("was passed"), "{err}");
+    }
+
     // what this catches: the #106 vision-readiness verdict must only claim sight when
     // ALL THREE facts line up — the row declares Vision, an mmproj resolved at spawn,
     // AND the running server's own /props confirms modalities.vision. A regression that
@@ -5283,7 +5480,7 @@ mod tests {
         assert_eq!(vision_lane_ready(false, true, Some(sees)), Ok(false));
         // Declared Vision but no projector resolved → loud error naming the gap.
         let err = vision_lane_ready(true, false, None).unwrap_err();
-        assert!(err.contains("no mmproj projector resolved"), "{err}");
+        assert!(err.contains("carries no mmproj projector"), "{err}");
         // Projector passed, server confirms vision → the ONLY Ok(true) path.
         assert_eq!(vision_lane_ready(true, true, Some(sees)), Ok(true));
         // Projector passed but the server says it can't see (wrong/failed mmproj).
