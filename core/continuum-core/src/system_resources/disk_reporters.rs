@@ -232,6 +232,15 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
         // cache class rather than data.
         TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        // THE LARGEST THING ON THE 5090'S SYSTEM VOLUME WAS INVISIBLE (2026-09-18, the
+        // day it hit 0 bytes free): the Kimi K3 expert-bank container, 760 GB, plus
+        // 25 GB of MoE probe runs — both written under the home by the K3 pager work
+        // and registered nowhere, so the daemon weighed 200 GB of caches on a 1.9 TB
+        // volume that was 1.8 TB used and could not say where the rest went. Same law
+        // as every row above: a directory the substrate writes unbounded data into gets
+        // a row and an eviction decision (deferred, named, in `disk_eviction.rs`).
+        TrackedDir::new("k3-container", home.join(".continuum/kimi-k3-container")),
+        TrackedDir::new("moe-probe", home.join(".continuum/moe-probe")),
         // The substrate's OWN rotation-generation dirs. Registered
         // 2026-08-06 — they had been the two directories continuum
         // writes to most continuously and the only ones the disk

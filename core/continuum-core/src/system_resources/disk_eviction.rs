@@ -1192,6 +1192,26 @@ mod tests {
                  resolves to NO catalog id and no active/pinned lane, oldest access first; \
                  served tiers are the NvmeServingTierPool's, never this pool's",
             ),
+            // Registered 2026-09-18, the day the 5090's system volume hit 0 bytes free
+            // with 760 GB of K3 expert bank sitting on it unweighed. The bank is a SERVING
+            // artifact when K3 is the served model (per-token paged off NVMe — never the
+            // cold HDD tier, [[hdd-vs-nvme-is-a-residency-tier]]) and a COLD artifact the
+            // rest of the time. The owner is the NvmeServingTierPool's migrate rule
+            // extended to this class: not on a serving path → migrate to the cold tier
+            // (`<cold>/continuum-cold/k3-container`), never blind-delete; on a serving
+            // path → protected by `serving_active_artifacts`, exactly like a served GGUF.
+            (
+                "k3-container",
+                "a5d4c876/#155: cold-tier MIGRATION when K3 is not the served model, through \
+                 NvmeServingTierPool's migrate rule with the container as one artifact; \
+                 protected by serving_active_artifacts while served; never deleted in place",
+            ),
+            (
+                "moe-probe",
+                "a5d4c876/#155: age-based sweep — every run is a re-creatable measurement \
+                 (expert-activation traces, coverage curves); the K3 predictor memories hold \
+                 the conclusions. Owner when built: a capped appender like the log pool",
+            ),
             (
                 "eval-captures",
                 "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
