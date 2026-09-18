@@ -315,6 +315,20 @@ impl WorkingSetRegistry {
         }
     }
 
+    /// How much of a past peak survives each new observation (7/8).
+    ///
+    /// The peak must be able to FALL, or `hit_cap`'s doubling is a one-way ratchet to the
+    /// ceiling (see [`Self::record_emission_in_memory`]). 7/8 per observation is ~16 turns
+    /// to forget a measurement that was never real — fast enough that a poisoned record
+    /// heals within a work session, slow enough that a citizen who genuinely writes long
+    /// replies keeps her room across the quiet turns between them.
+    ///
+    /// Expressed as a ratio on integers rather than a float: this value is persisted and
+    /// compared, and a rounding difference between platforms would make two nodes disagree
+    /// about the same citizen's reply size.
+    const PEAK_DECAY_NUM: u32 = 7;
+    const PEAK_DECAY_DEN: u32 = 8;
+
     /// The in-memory half of [`Self::record_emission`], without the disk write —
     /// same split (and same reason) as [`Self::record_in_memory`].
     pub(crate) fn record_emission_in_memory(
@@ -333,7 +347,27 @@ impl WorkingSetRegistry {
             .emitted
             .entry(persona)
             .and_modify(|e| {
-                e.peak_tokens = e.peak_tokens.max(observed);
+                // A RECENT high-water mark, not an eternal one. `.max()` alone is a
+                // one-way ratchet: `hit_cap` records at DOUBLE, so a single truncated
+                // turn pins the peak at twice the cap forever, the reserve derived from
+                // it saturates at the ceiling, and — because this file is persisted so a
+                // mind "must not re-earn its reply size per boot" — the poisoned value
+                // outlives every restart. Measured 2026-09-18 (Cormac): emission.json
+                // holding peak_tokens 16384 for a citizen whose real replies are a few
+                // hundred tokens, reserving half her window against a reply she would
+                // never write until she had 297 tokens of context left and answered
+                // "As an AI assistant" when asked who she was.
+                //
+                // Decaying by PEAK_DECAY_NUM/PEAK_DECAY_DEN each observation keeps both
+                // properties that mattered: a genuine large reply still takes the peak
+                // instantly (the growth path `hit_cap` exists for), and a peak that was
+                // never real fades on its own — so poisoned records SELF-HEAL over a few
+                // dozen turns with no migration and no operator step.
+                e.peak_tokens = observed.max(
+                    e.peak_tokens
+                        .saturating_mul(Self::PEAK_DECAY_NUM)
+                        / Self::PEAK_DECAY_DEN,
+                );
                 e.last_tokens = observed;
                 e.last_seen_ms = now_ms;
                 e.turns += 1;
@@ -580,9 +614,51 @@ mod tests {
             "a Length stop is a floor, not a measurement"
         );
         assert_eq!(e.turns, 2);
-        // and, as on the demand side, a later small reply never lowers the peak
+        // A later small reply lowers the peak, but only by the decay step — it must not
+        // collapse to the size of one ack (that is the tiny-talker trap the floor exists
+        // for), and it must not stay pinned either (that is the ratchet that poisoned a
+        // citizen's emission.json at 16,384 and left her 297 tokens of context).
         reg.record_emission_in_memory(p(1), 40, false, 3_000);
-        assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(6_000));
+        let decayed = reg
+            .emission_of(p(1))
+            .map(|e| e.peak_tokens)
+            .expect("observed");
+        assert!(decayed < 6_000, "a peak that can only rise is a ratchet");
+        assert!(decayed > 40, "one small reply must not erase a real measurement");
+        assert_eq!(decayed, 6_000 * 7 / 8);
+    }
+
+    // what this catches: the poisoned-record half of the 2026-09-18 identity defect. A
+    // capped turn records at DOUBLE, and with an all-time `.max()` that value outlived
+    // every restart because emission.json is persisted on purpose ("a restart is a pause").
+    // One truncation therefore reserved half of every future window forever. The decay must
+    // make such a record heal ON ITS OWN — no migration, no operator step, no command —
+    // because the citizens carrying poisoned files are the ones least able to ask for help.
+    #[test]
+    fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
+        let reg = WorkingSetRegistry::new();
+        // Exactly the poisoned value read off a real citizen's emission.json.
+        reg.record_emission_in_memory(p(7), 8_192, true, 1_000);
+        assert_eq!(
+            reg.emission_of(p(7)).map(|e| e.peak_tokens),
+            Some(16_384),
+            "fixture must reproduce the poisoning, not assume it"
+        );
+
+        // Her actual replies are a few hundred tokens. Within a work session of them the
+        // measurement must come back to something a reply-sized reserve can be built on.
+        for turn in 2..=40u64 {
+            reg.record_emission_in_memory(p(7), 300, false, turn * 1_000);
+        }
+        let healed = reg
+            .emission_of(p(7))
+            .map(|e| e.peak_tokens)
+            .expect("observed");
+        assert!(
+            healed <= 2_048,
+            "a peak that was never real is still {healed} after 39 honest turns"
+        );
+        assert!(healed >= 300, "and it must not fall below what she actually writes");
     }
 
     // what this catches: a restart that demotes her. The registry is in-memory, so
