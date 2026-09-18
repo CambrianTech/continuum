@@ -1193,6 +1193,7 @@ impl ServingDaemonModule {
             self.suppress_sender(),
             self.pin_sender(),
             serving_footprint_fn(self.catalog.clone()),
+            serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own
             // capacity down to yield, keep answering" — instead of the whole-lease dark.
@@ -1239,7 +1240,9 @@ impl ServingDaemonModule {
     /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
     /// `serving/pin` fit-gate compute the budget from the ONE source.
     fn host_budget(&self) -> HostBudget {
-        // The autonomic plan's VRAM budget = the LIVE governed available (net of every
+        // The autonomic plan's budget = the LIVE governed available of the lane's POOL
+        // (`serving_pool_kind`: the Ram row for a CPU-placed lane, the Vram row otherwise;
+        // the Vram wording below predates that split and reads for the GPU arm) — net of every
         // external consumer + the 512MB driver reserve the GpuCapacitySource already holds)
         // × the pressure-adaptive drive mode. ONE reserve, the DYNAMIC one: Performance
         // (hard task + room) floors the whole GPU (1.0), Comfort is the everyday 0.80, and
@@ -1791,9 +1794,16 @@ impl ServingDaemonModule {
         // no process at all (`nvidia-smi --query-compute-apps` prints [N/A] for every
         // pid on the 5090) — so the discrete arm is the DEVICE delta across the launch:
         // used-now minus used-before-spawn, minus the weights (in VRAM on this class).
-        // Both arms feed the ONE consumer below; the probe names which one spoke.
-        let (source, beyond_weights) = match self.system.gpu_memory_mode() {
-            Some(crate::gpu::monitor::MemoryMode::Discrete) => {
+        // Both arms feed the ONE consumer below; the probe names which one spoke. A
+        // CPU-placed lane (#3729) holds nothing on the device whatever the host class,
+        // so the device delta would read zero for a lane whose KV fills system RAM —
+        // the process read is the one that sees it.
+        let placement = crate::inference::llama_server::main_lane_placement();
+        let (source, beyond_weights) = match (placement, self.system.gpu_memory_mode()) {
+            (
+                crate::inference::llama_server::LanePlacement::Gpu,
+                Some(crate::gpu::monitor::MemoryMode::Discrete),
+            ) => {
                 let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
                 let now = vram_physical_used(&self.resource_daemon);
                 (
@@ -3314,7 +3324,7 @@ impl ServingDaemonModule {
         // plan's own credit is the one that keeps the successor from fleeing its
         // predecessor onto a smaller model. One credit, whichever layer holds the fact.
         let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
-            a.consumer_id == SERVING_CONSUMER_ID && a.kind == ResourceKind::Vram && a.bytes > 0
+            a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
         let stable = if ledger_credited {
             plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
@@ -4006,6 +4016,29 @@ impl Drop for ServingLudicrousHold {
 /// Last VRAM ceiling the governed board actually reported this process, and when.
 /// The middle rung of the substitute-value ladder: when the board goes quiet, an old
 /// REAL number keeps the planner honest where a fabricated zero floors it.
+/// The pool the main lane's bytes live in — the ONE decision every serving site
+/// keyed by a resource kind reads through: the plan's ceiling, the replace-myself
+/// credit, the credited-once check and the consumer's own attribution. A CPU-placed
+/// lane (`--n-gpu-layers 0`, #3729's Intel-Mac arm) puts weights AND KV in system
+/// RAM, so all four belong to the `Ram` row, not the `Vram` row of a card holding
+/// none of them. #4169 made the physical bound follow the placement; this makes the
+/// PLAN follow it. Card 7c72c0f0 (Intel Mac, 2026-09-17): nine citizens sized against
+/// a 5.7 GB Vram row on a box with 34.4 GB of RAM and 0 MB of VRAM in use — one warm
+/// slot, eight exiled to a remote lane that timed out at 600 s.
+pub fn serving_pool_kind() -> ResourceKind {
+    pool_kind_for(crate::inference::llama_server::main_lane_placement())
+}
+
+/// Pure so the mapping is assertable without config: where the placement puts the
+/// bytes is which row governs them.
+pub fn pool_kind_for(placement: crate::inference::llama_server::LanePlacement) -> ResourceKind {
+    use crate::inference::llama_server::LanePlacement;
+    match placement {
+        LanePlacement::Cpu => ResourceKind::Ram,
+        LanePlacement::Gpu => ResourceKind::Vram,
+    }
+}
+
 static LAST_GOOD_VRAM_CEILING: AtomicU64 = AtomicU64::new(0);
 static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -4083,6 +4116,13 @@ fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> O
 }
 
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
+    governed_pool_ceiling(resource_daemon, serving_pool_kind())
+}
+
+/// [`governed_vram_ceiling`] for a named pool — the row the lane's placement puts its
+/// bytes in (see [`serving_pool_kind`]). Split so the arithmetic is assertable against
+/// a Ram row without a config decision in the test.
+fn governed_pool_ceiling(resource_daemon: &ResourceDaemon, kind: ResourceKind) -> Option<u64> {
     // Serving budgets from ITS OWN view of the board — global available minus
     // every OTHER consumer's unmet reservation floor (`available_for`, the same
     // math `acquire` enforces) — never the reservation-blind global number.
@@ -4096,7 +4136,7 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         .board()
         .kinds
         .iter()
-        .find(|k| k.kind == ResourceKind::Vram)
+        .find(|k| k.kind == kind)
         // THE LAST FABRICATION POINT IN THE CHAIN (#438). A row can EXIST while its
         // capacity reads 0 — `ledger.rs`'s `capacity.get(&kind).unwrap_or(0)` invents
         // that zero for a kind whose capacity source has not reported yet, which at boot
@@ -4118,7 +4158,7 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         // it abandoned the 27B it was ALREADY RUNNING for a 7B, then a 0.5B. `acquire`
         // still uses available_for — a lease must never be granted against bytes not yet
         // released; only the replace-myself DECISION gets the add-back.
-        .map(|_| resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, ResourceKind::Vram))
+        .map(|_| resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, kind))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",
@@ -4146,18 +4186,21 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
     // boot and got a 0.5B spawned on a 64 GB machine. See
     // [`crate::resources::ceiling_prior`] for why 0 is safe for a GRANTER and
     // catastrophic for a PLANNER, and why every rung below beats it.
-    // DISCRIMINATOR (#438): if a Vram row exists but carries zero capacity, say so with
-    // the numbers, so the next boot PROVES the mechanism instead of leaving it inferred.
+    // DISCRIMINATOR (#438): if the pool's row exists but carries zero capacity, say so
+    // with the numbers, so the next boot PROVES the mechanism instead of leaving it
+    // inferred.
+    let kind = serving_pool_kind();
     if let Some(row) = resource_daemon
         .board()
         .kinds
         .iter()
-        .find(|k| k.kind == ResourceKind::Vram)
+        .find(|k| k.kind == kind)
     {
         if row.capacity_bytes == 0 {
             crate::probe!(
                 class = "serving.vram_capacity_absent",
                 site = site,
+                kind = kind.label(),
                 capacity_bytes = row.capacity_bytes,
                 physical_used_bytes = row.physical_used_bytes,
                 available_bytes = row.available_bytes,
@@ -4185,9 +4228,12 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
                 epoch_ms().saturating_sub(last_at),
             )
         }),
-        device_total_bytes: match DEVICE_VRAM_TOTAL.load(Ordering::Relaxed) {
-            0 => None,
-            n => Some(n),
+        // The device prior is a VRAM fact. The Ram row is never cold — its ceiling is
+        // read once at construction (`HostRamCapacitySource`), so a CPU-placed lane has
+        // a measured row from the first tick and no prior to fall to.
+        device_total_bytes: match (kind, DEVICE_VRAM_TOTAL.load(Ordering::Relaxed)) {
+            (ResourceKind::Vram, n) if n > 0 => Some(n),
+            _ => None,
         },
     });
 
@@ -8103,6 +8149,43 @@ mod tests {
         assert_eq!(
             downshift_gate(&plan_for("qwen-0.5b"), None, &both),
             DownshiftVerdict::NotADownshift,
+        );
+    }
+
+    // what this catches (card 7c72c0f0, Intel Mac 2026-09-17): the plan's budget is the
+    // row the lane's PLACEMENT puts its bytes in. A CPU-placed lane budgets against the
+    // Ram row — the 30 GB the KV actually fills — not the 4 GB Vram row of a card that
+    // holds nothing of it (nine citizens sized against 5.7 GB on a 34.4 GB box: one warm
+    // slot, eight exiled to a remote lane). The GPU arm is byte-identical to before.
+    #[tokio::test]
+    async fn a_cpu_placed_lane_budgets_against_the_ram_row_not_the_card() {
+        use crate::inference::llama_server::LanePlacement;
+        use crate::resources::{DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon};
+        let vram = Arc::new(MockCapacitySource::new(crate::resources::ResourceKind::Vram, 4_000));
+        let ram = Arc::new(MockCapacitySource::new(crate::resources::ResourceKind::Ram, 30_000));
+        let daemon = ResourceDaemon::start(
+            vec![vram, ram],
+            vec![],
+            DaemonConfig {
+                tick_interval: std::time::Duration::from_millis(20),
+                min_reclaim_budget: std::time::Duration::from_millis(100),
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
+            },
+        );
+        assert_eq!(pool_kind_for(LanePlacement::Cpu), crate::resources::ResourceKind::Ram);
+        assert_eq!(pool_kind_for(LanePlacement::Gpu), crate::resources::ResourceKind::Vram);
+        assert_eq!(
+            governed_pool_ceiling(&daemon, pool_kind_for(LanePlacement::Cpu)),
+            Some(30_000),
+            "a CPU-placed lane plans against the RAM its KV lives in"
+        );
+        assert_eq!(
+            governed_pool_ceiling(&daemon, pool_kind_for(LanePlacement::Gpu)),
+            Some(4_000),
+            "a GPU-placed lane plans against the card"
         );
     }
 
