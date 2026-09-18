@@ -253,6 +253,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                     "no pull: the roster already holds as many cards as there are lanes"
                 );
             }
+            crate::modules::citizen_health::note_pull(true);
             return PullOutcome::DeferredWip;
         }
     }
@@ -275,6 +276,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                 "no pull: the decks in the rooms she stands in offer nothing"
             );
         }
+        crate::modules::citizen_health::note_pull(false);
         return PullOutcome::Nothing;
     }
     let candidate_count = candidates.len();
@@ -327,6 +329,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
     match citizen.claim_card(card_id).await {
         Ok(true) => {
             note_hold_boundary(ctx.identity.peer_id.as_uuid());
+            crate::modules::citizen_health::note_pull(false);
             crate::probe!(
                 class = "bench.round.pulled",
                 persona = %ctx.identity.agent_name,
