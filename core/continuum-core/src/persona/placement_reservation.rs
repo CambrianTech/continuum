@@ -209,7 +209,7 @@ pub async fn request_reservation(
     let requester = airc.peer_id().0;
     let params = serde_json::json!({ "mind": mind, "requester": requester });
     let envelope = AircCommandRequest::new(RESERVE_PATH.to_string(), KIND_PEER.to_string(), None, params);
-    let body = Body::Json(serde_json::to_value(&envelope).map_err(|e| format!("serialize reserve envelope: {e}"))?);
+    let body = Body::Json(serde_json::to_value(&envelope).map_err(|e| format!("serialize reserve envelope: {e}"))?); // airc wire: the ask leaves this process for the seat's core over the mesh
     let headers = crate::routing::airc_transport::AircTransport::build_headers(&envelope);
     let room = airc.current_room().await.map_err(|e| format!("no room to ask in: {e}"))?;
     let pending = airc
@@ -225,10 +225,9 @@ pub async fn request_reservation(
         Some(Body::Binary(_)) => return Err("seat replied with binary; expected json".to_string()),
         None => return Err("seat replied with no body".to_string()),
     };
-    let response: AircCommandResponse =
-        serde_json::from_value(value).map_err(|e| format!("decode reserve reply: {e}"))?;
+    let response: AircCommandResponse = serde_json::from_value(value).map_err(|e| format!("decode reserve reply: {e}"))?; // airc wire: the seat's reply arrives as the mesh's JSON body
     let result = response.into_result().map_err(|e| format!("seat refused the ask: {e}"))?;
-    serde_json::from_value(result).map_err(|e| format!("decode reservation report: {e}"))
+    serde_json::from_value(result).map_err(|e| format!("decode reservation report: {e}")) // airc wire: the report inside the seat's command reply
 }
 
 #[cfg(test)]

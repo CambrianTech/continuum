@@ -234,21 +234,21 @@ pub fn local_lane_wait_p50_ms() -> (u64, u32) {
 }
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
-pub struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
+struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
 /// How many waits a ring remembers. A plan window's worth.
 pub const WAIT_RING_SAMPLES: usize = 64;
 impl WaitRing {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self(std::sync::Mutex::new(std::collections::VecDeque::new()))
     }
-    pub fn note(&self, ms: u64) {
+    fn note(&self, ms: u64) {
         let mut ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
         ring.push_back(ms);
         while ring.len() > WAIT_RING_SAMPLES {
             ring.pop_front();
         }
     }
-    pub fn p50(&self) -> (u64, u32) {
+    fn p50(&self) -> (u64, u32) {
         let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
         p50_of(ring.iter().copied())
     }
