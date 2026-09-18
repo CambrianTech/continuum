@@ -118,6 +118,16 @@ impl DecodeCurve {
     /// collapsed, one below the smallest collapsed one, never below [`MIN_KNEE_LANES`] —
     /// shrink and re-measure. `None` = nothing fresh and trusted (no clamp; the roster
     /// rules).
+    /// The freshest trusted point's rate, whatever its in-flight count: the rate
+    /// she is decoding at NOW, for deriving a time-sized output allowance.
+    pub fn measured_tps(&self, now_ms: u64) -> Option<f64> {
+        self.points
+            .values()
+            .filter(|p| p.trusted_at(now_ms))
+            .max_by_key(|p| p.last_ms)
+            .map(|p| p.tps_ema)
+    }
+
     pub fn knee(&self, floor_tps: f64, now_ms: u64) -> Option<u32> {
         // FRESH points first: a fresh measurement is trusted enough to EXPLORE one lane
         // above the largest holding point when the constant-aggregate prediction says so.
@@ -267,6 +277,16 @@ pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
 pub fn knee_for(model: &str) -> Option<u32> {
     let now = now_ms();
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
+}
+
+/// Her MEASURED decode rate on this lane, tokens per second: the freshest trusted
+/// point on the curve (the same EMA the knee is cut from). `None` until measured.
+/// This is the rate an output allowance is derived from — seconds × this — so a
+/// budget written in TIME tightens by itself on a slow lane (Fable, 2026-09-18:
+/// "we size budgets in tokens when the requirement is time").
+pub fn measured_tps_for(model: &str) -> Option<f64> {
+    let now = now_ms();
+    CURVES.lock().get(model).and_then(|c| c.measured_tps(now))
 }
 
 fn default_path() -> Option<PathBuf> {
