@@ -251,9 +251,19 @@ impl WorkingSetRegistry {
     /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
     /// served window instead.
     pub fn sent_median_of(&self, personas: &[Uuid]) -> Option<u32> {
+        self.sent_median_with(personas, &[])
+    }
+    /// The typical prompt over the residents' sent peaks PLUS `extra` samples — the prompt
+    /// sizes of the generates this seat served for minds hosted on other nodes
+    /// ([`crate::cognition::resource_admission::leased_in_sent_samples`]). ONE median for
+    /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
+    /// those lanes to the prompts they actually send, not to one local resident's. Zeros
+    /// are not samples on either side.
+    pub fn sent_median_with(&self, personas: &[Uuid], extra: &[u32]) -> Option<u32> {
         let mut peaks: Vec<u32> = personas
             .iter()
             .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .chain(extra.iter().copied())
             .filter(|&t| t > 0)
             .collect();
         if peaks.is_empty() {
@@ -550,6 +560,31 @@ impl WorkingSetRegistry {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (BigMama's correction on #4197, 2026-09-18): a seat whose floor is
+    // its residents' median alone. The 5090 had two residents; the median WAS one SWE
+    // prompt (~60k+), so 2 × 49k stayed under the floor and the seat kept one lane while
+    // twelve leased-in coders sending ~30k queued on it. Their prompts must pull the median
+    // to what the seat actually serves; and a seat with NO local residents but leased-in
+    // minds must still have a floor.
+    #[test]
+    fn the_typical_prompt_includes_the_prompts_a_seat_serves_for_other_nodes() {
+        let reg = WorkingSetRegistry::new();
+        let local = Uuid::new_v4();
+        reg.record_sent(local, 64_000, 1);
+        assert_eq!(reg.sent_median_of(&[local]), Some(64_000), "one resident: her prompt is the median");
+        // twelve leased-in coders at ~30k pull the typical prompt to theirs
+        let leased: Vec<u32> = (0..12).map(|i| 30_000 + i * 100).collect();
+        let m = reg.sent_median_with(&[local], &leased).expect("a pool");
+        assert!(m < 40_000, "the median follows the grid's prompts, not the one resident's: {m}");
+        assert!(m >= 30_000);
+        // no local residents at all, only leased-in: still a floor
+        assert_eq!(reg.sent_median_with(&[], &[30_000, 32_000, 34_000]), Some(32_000));
+        // zeros are not samples on either side
+        assert_eq!(reg.sent_median_with(&[], &[0, 0]), None);
+        assert_eq!(reg.sent_median_of(&[Uuid::new_v4()]), None);
+    }
+
     use super::*;
 
     fn p(n: u8) -> Uuid {

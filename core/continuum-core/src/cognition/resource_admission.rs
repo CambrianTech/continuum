@@ -92,11 +92,17 @@ impl Drop for GaugeGuard<'_> {
 /// nothing downstream. Wraps a guard on the process-global `INFLIGHT_MODEL_CALLS`, so it carries
 /// NO lifetime and stays storable as a plain field (e.g. `ServingLanePermit._inflight`).
 #[derive(Debug)]
-pub struct InflightModelCall(GaugeGuard<'static>);
+pub struct InflightModelCall {
+    /// Held for its drop — the decrement IS the field's purpose. Named so, rather than a
+    /// positional field rustc rightly reports as never read (it never is; it is released).
+    _guard: GaugeGuard<'static>,
+}
 
 impl InflightModelCall {
     pub fn enter() -> Self {
-        Self(INFLIGHT_MODEL_CALLS.enter())
+        Self {
+            _guard: INFLIGHT_MODEL_CALLS.enter(),
+        }
     }
 }
 
@@ -150,11 +156,49 @@ static LEASED_IN_CALLS: PeakGauge = PeakGauge::new();
 /// RAII marker for one leased-in call, mirror of [`InflightModelCall`]: enters on
 /// construction, leaves on EVERY exit path. Hold it across the whole remote generate.
 #[derive(Debug)]
-pub struct LeasedInCall(GaugeGuard<'static>);
+pub struct LeasedInCall {
+    /// Held for its drop — the decrement IS the field's purpose (see `InflightModelCall`).
+    _guard: GaugeGuard<'static>,
+}
 impl LeasedInCall {
     pub fn enter() -> Self {
-        Self(LEASED_IN_CALLS.enter())
+        Self {
+            _guard: LEASED_IN_CALLS.enter(),
+        }
     }
+}
+/// The PROMPT SIZES of leased-in generates this seat served recently — the samples the
+/// serving plan folds into its per-lane window floor beside its own residents' sent peaks.
+/// Without them a two-resident seat's "typical prompt" is one resident's SWE prompt, and
+/// the plan grows lanes for the grid (`leased_in`) it then refuses to fit (BigMama,
+/// 2026-09-18: the 5090 considered 2 × 49k every tick and kept 1 × 101k, because 49k was
+/// under a floor computed from Sahar's prompts alone while twelve leased-in coders sent
+/// ~30k). Bounded ring: the newest [`LEASED_IN_SENT_SAMPLES`] measured `usage.input_tokens`.
+static LEASED_IN_SENT: std::sync::Mutex<std::collections::VecDeque<u32>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// How many leased-in prompt sizes the floor pool remembers. Enough for a median over a
+/// grid's worth of coders across several ticks; small enough that a stale burst ages out.
+pub const LEASED_IN_SENT_SAMPLES: usize = 64;
+/// Record one leased-in generate's measured prompt size (the server's own count, never an
+/// estimate). Zero is the empty-completion fault's territory, not a sample.
+pub fn note_leased_in_sent(input_tokens: u32) {
+    if input_tokens == 0 {
+        return;
+    }
+    let mut ring = LEASED_IN_SENT.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+    ring.push_back(input_tokens);
+    while ring.len() > LEASED_IN_SENT_SAMPLES {
+        ring.pop_front();
+    }
+}
+/// The remembered leased-in prompt sizes, oldest first — the plan's extra median inputs.
+pub fn leased_in_sent_samples() -> Vec<u32> {
+    LEASED_IN_SENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: same policy — read the last state
+        .iter()
+        .copied()
+        .collect()
 }
 /// Leased-in calls outstanding right now.
 pub fn leased_in_calls() -> usize {
@@ -1104,6 +1148,26 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (BigMama's correction on #4197): leased-in LANES with a floor from
+    // local residents alone — the seat grows demand it then refuses to fit. The prompt
+    // sizes of the generates a seat serves for others must be remembered (bounded, newest
+    // kept, zero never a sample) so the plan's median floor sees the grid's prompts.
+    #[test]
+    fn leased_in_prompt_sizes_are_remembered_bounded_and_zero_is_not_a_sample() {
+        // the ring is process-global; assert RELATIVE to what is there (the #1960 rule)
+        let before = leased_in_sent_samples().len();
+        note_leased_in_sent(0);
+        assert_eq!(leased_in_sent_samples().len(), before, "an empty completion is not a prompt size");
+        for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
+            note_leased_in_sent(30_000 + i);
+        }
+        let s = leased_in_sent_samples();
+        assert_eq!(s.len(), LEASED_IN_SENT_SAMPLES, "bounded");
+        assert_eq!(*s.last().expect("nonempty"), 30_000 + LEASED_IN_SENT_SAMPLES as u32 + 8, "newest kept");
+        assert!(s.first().copied().expect("nonempty") > 30_000 + 8, "oldest aged out");
+    }
+
 
     // what this catches (card c84d885a): a seat that serves other nodes' minds and never
     // counts them. The planner must see "how many did I serve AT ONCE this interval", so
