@@ -2987,18 +2987,21 @@ impl ServingDaemonModule {
                                 // planned term counts the full weights, the KV at the served
                                 // window × lanes, the compute reserve and the OS floor.
                                 let live_free = system.snapshot().memory.available_bytes;
+                                let physical = system.memory().total_bytes;
                                 let planned_headroom = sidecar_planned_headroom_bytes(
                                     &target,
                                     served_window,
-                                    system.memory().total_bytes,
+                                    physical,
                                 );
-                                let free = live_free.min(planned_headroom);
+                                let free = sidecar_admissible_bytes(live_free, planned_headroom, physical);
                                 crate::probe!(
                                     class = "serving.vision.sidecar_headroom",
                                     live_free,
+                                    live_free_after_floor = live_free.saturating_sub(host_os_floor_bytes(physical)),
                                     planned_headroom,
+                                    admissible = free,
                                     need_bytes = cand.need_bytes,
-                                    "sidecar admission reads the tighter of the live free read and the planned headroom"
+                                    "sidecar admission reads the tighter of the live free read (minus the OS floor) and the planned headroom"
                                 );
                                 match sidecar::plan_sidecar(false, Ok(cand), free) {
                                     sidecar::SidecarVerdict::Spawn => {
@@ -4662,6 +4665,20 @@ fn sidecar_planned_headroom_bytes(
         .saturating_add((target.host_prompt_cache_mib as u64) * 1024 * 1024)
         .saturating_add(host_os_floor_bytes(physical_bytes));
     physical_bytes.saturating_sub(working_set)
+}
+
+/// ONE FLOOR EVERYWHERE: the bytes a sidecar may take is the tighter of the LIVE free
+/// read minus the OS floor and the PLANNED headroom (which already keeps that floor).
+/// The live read compared RAW admitted a 24.1 GB sidecar into 26.7 GB "free" on the M5
+/// (2026-09-18 21:56:03Z, the 1800bd90b deploy): `available_bytes` counts purgeable and
+/// inactive pages as free, and 2.6 GB of slack on a 64 GB box is the core's own RSS —
+/// swap 6.7 GB, compressor 20 GB, the serving node paging. The planned term had kept
+/// the floor (physical/8) all along; the live term did not. Pure, so the measured
+/// numbers are a test.
+fn sidecar_admissible_bytes(live_free: u64, planned_headroom: u64, physical_bytes: u64) -> u64 {
+    live_free
+        .saturating_sub(host_os_floor_bytes(physical_bytes))
+        .min(planned_headroom)
 }
 
 /// What the serve's working set costs HOST RAM, by memory topology.
@@ -8613,5 +8630,33 @@ mod tests {
                 "past the budget, headroom floors at zero: {why}"
             );
         }
+    }
+
+    // what this catches (2026-09-18 21:56:03Z, the M5, card below): the live free read
+    // compared RAW admitted a 24.1 GB sidecar into 26.7 GB "free" beside the 27B, and
+    // the box paged (swap 6.7 GB, compressor 20 GB). With the same OS floor the planned
+    // term keeps, every measured tick of that boot refuses it, the tighter term still
+    // wins, and a small VL sidecar is still admitted — sight is not refused, a mind-sized
+    // sidecar is. Numbers are the measured ones; the floor is the rule's own.
+    #[test]
+    fn the_live_free_read_keeps_the_same_os_floor_the_planned_term_keeps() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let physical = 64 * GB;
+        let floor = host_os_floor_bytes(physical);
+        let need = 24_078_233_892u64;
+        // 21:55:27Z: live 14.2 GB, planned 16.6 GB → refused either way.
+        assert!(sidecar_admissible_bytes(14_215_921_664, 16_647_885_296, physical) < need);
+        // 21:56:03Z: live 26.7 GB, planned 31.8 GB → admitted before; REFUSED now.
+        let admitted_before = 26_689_634_304u64.min(31_805_592_074);
+        assert!(admitted_before >= need, "the raw comparison said yes — that is the defect");
+        let now = sidecar_admissible_bytes(26_689_634_304, 31_805_592_074, physical);
+        assert!(now < need, "with the floor ({} GB) the same tick refuses: {} < {}", floor / GB, now, need);
+        assert_eq!(now, 26_689_634_304 - floor, "the live term after the floor is the tighter one here");
+        // The planned term still wins when it is the tighter one.
+        assert_eq!(sidecar_admissible_bytes(40 * GB, 10_374_868_340, physical), 10_374_868_340);
+        // A small VL sidecar (4 GB) is still admitted on the same tick.
+        assert!(now >= 4 * GB, "sight is not refused, a mind-sized sidecar is");
+        // An over-full box yields zero, never a wrap.
+        assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
     }
 }
