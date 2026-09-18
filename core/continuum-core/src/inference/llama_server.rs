@@ -1367,7 +1367,7 @@ pub struct MultimodalSupport {
 /// Where a lane's resolved projector goes. ONE decision, pure, so the spawn site
 /// and the test agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MainLaneMmproj {
+enum MainLaneMmproj {
     /// The row opted in (`mmproj_on_main_lane`) or this IS the sidecar lane: wear it.
     Wear,
     /// The row prefers a sidecar and one is available on this node: withhold, keep
@@ -1391,7 +1391,7 @@ pub enum MainLaneMmproj {
 /// `sidecar_available` is `None` when the caller did not consult the sidecar search
 /// because the answer does not depend on it (row opted in, this is the sidecar,
 /// or nothing resolved).
-pub fn main_lane_mmproj_decision(
+fn main_lane_mmproj_decision(
     row_opts_in: bool,
     is_sidecar_lane: bool,
     mmproj_resolved: bool,
@@ -1417,7 +1417,7 @@ pub fn main_lane_mmproj_decision(
 /// (the two cases where the answer depends on what else is on the box). ONE call
 /// site shape for the spawn, the grow-check and the serving daemon, so the intent
 /// they compare against is the same intent.
-pub fn main_lane_mmproj_decision_for(
+fn main_lane_mmproj_decision_for(
     model: &crate::model_registry::types::Model,
     is_sidecar_lane: bool,
 ) -> MainLaneMmproj {
@@ -1444,7 +1444,7 @@ pub fn main_lane_mmproj_decision_for(
 
 impl MainLaneMmproj {
     /// Does this decision put a projector on the lane?
-    pub fn wears(self) -> bool {
+    fn wears(self) -> bool {
         matches!(self, Self::Wear | Self::WearAsOnlyEyes)
     }
 }
