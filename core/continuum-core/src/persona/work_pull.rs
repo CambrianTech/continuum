@@ -54,6 +54,42 @@ pub(crate) fn review_candidates<C: HasCard>(
         .collect()
 }
 
+/// A round a citizen may pull from: working, and driven by citizens (a detached solve's
+/// cards are the solver's). One predicate, used by both the WIP count and the absence
+/// counts, so the two can never disagree about what a "working citizen round" is.
+fn is_working_citizen_round(round: &crate::cognition::bench_round::RoundSnapshot) -> bool {
+    round.stage.eq_ignore_ascii_case("working") && round.driver.to_ascii_lowercase().contains("citizen")
+}
+
+/// Why a pull found nothing — the ONE WORD the `bench.round.pull_none` probe carries, and
+/// the word a reader must be able to act on. PURE, so the vocabulary is pinned by a test
+/// without a board or the ROUNDS global.
+///
+/// Three absences that used to share the word `no_candidates`:
+/// - `no_rounds_on_node` — this node has no working citizen round AT ALL. Not a seating
+///   problem and not a supply-of-cards problem: there is nothing to seat her into. The fix
+///   is a round supply on the node (or not hosting workers there).
+/// - `not_seated_in_any_working_round` — rounds exist here, she is subscribed to none of
+///   them. A seating problem; re-seat her.
+/// - `no_candidates` — she stands in working rounds whose decks are genuinely empty.
+/// `reviews_only` wins over all three: a holder's empty deck is about review cards, and
+/// naming a round absence for her would send a reader chasing the wrong thing.
+pub(crate) fn pull_none_reason(
+    reviews_only: bool,
+    working_rounds: usize,
+    working_rounds_resident: usize,
+) -> &'static str {
+    if reviews_only {
+        "no_review_cards"
+    } else if working_rounds == 0 {
+        "no_rounds_on_node"
+    } else if working_rounds_resident == 0 {
+        "not_seated_in_any_working_round"
+    } else {
+        "no_candidates"
+    }
+}
+
 /// The one field the review filter needs off a deck entry.
 pub(crate) trait HasCard {
     fn card(&self) -> Uuid;
@@ -163,6 +199,20 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             return PullOutcome::Nothing;
         }
     };
+    // THE ROUNDS THIS NODE HAS, read once per tick and shared with the WIP loop below.
+    // Two counts, because the pull_none probe below must be able to say WHICH absence it
+    // is — measured 2026-09-18: IntelMac emitted 2,609 `pull_none reason=no_candidates`
+    // rows over ~30 h while the node had NEVER HAD A ROUND (benchmark/rounds: []), and
+    // the M5's sixteen read the same word while seated in live rounds. One word for
+    // "no rounds exist here", "rounds exist but she is in none", and "her decks are
+    // genuinely empty" is why 81adc95b took a day to split into three defects.
+    let live = crate::cognition::bench_round::live_rounds();
+    let working_rounds = live.iter().filter(|r| is_working_citizen_round(r)).count();
+    let working_rounds_resident = live
+        .iter()
+        .filter(|r| is_working_citizen_round(r))
+        .filter(|r| Uuid::parse_str(&r.round_id).is_ok_and(|id| resident.contains(&id)))
+        .count();
     // WIP = LANES (2026-09-05, Joel: "get this working"). Twelve citizens on five
     // lanes gave each ~two model calls an hour: 23 lane grants, 19 acts, 0 writes in
     // 55 minutes on a fully claimed round. A card only progresses when its holder
@@ -176,10 +226,8 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         let lanes = crate::cognition::resource_admission::served_lane_count();
         let now = crate::modules::chat::now_ms();
         let mut in_flight = 0usize;
-        for round in crate::cognition::bench_round::live_rounds() {
-            if !round.stage.eq_ignore_ascii_case("working")
-                || !round.driver.to_ascii_lowercase().contains("citizen")
-            {
+        for round in &live {
+            if !is_working_citizen_round(round) {
                 continue;
             }
             let Ok(room) = Uuid::parse_str(&round.round_id) else { continue };
@@ -220,8 +268,10 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
             crate::probe!(
                 class = "bench.round.pull_none",
                 persona = %ctx.identity.agent_name,
-                reason = if reviews_only { "no_review_cards" } else { "no_candidates" },
+                reason = pull_none_reason(reviews_only, working_rounds, working_rounds_resident),
                 resident_rooms = resident.len() as u64,
+                working_rounds = working_rounds as u64,
+                working_rounds_resident = working_rounds_resident as u64,
                 "no pull: the decks in the rooms she stands in offer nothing"
             );
         }
@@ -330,5 +380,25 @@ mod tests {
         let deck = vec![Entry(round_card), Entry(review_of_mine), Entry(review_of_theirs)];
         let takeable: Vec<Uuid> = review_candidates(deck, &[mine], parent).into_iter().map(|e| e.0).collect();
         assert_eq!(takeable, vec![review_of_theirs]);
+    }
+
+    // what this catches (2026-09-18, card 81adc95b): three different absences read as ONE
+    // word. IntelMac logged 2,609 `pull_none reason=no_candidates` over ~30 h while the node
+    // had never had a round; the M5's sixteen logged the same word while seated in live
+    // rounds; a citizen stranded in finished rooms would log it too. Nobody could tell
+    // "open a round here" from "re-seat her" from "her decks are empty" without a day of
+    // cross-node measurement. The probe's reason must name which absence it is.
+    #[test]
+    fn a_pull_that_finds_nothing_names_which_absence_it_is() {
+        // no working citizen round exists on this node: not seating, not supply of cards
+        assert_eq!(pull_none_reason(false, 0, 0), "no_rounds_on_node");
+        // rounds exist, she is subscribed to none of them: seating
+        assert_eq!(pull_none_reason(false, 3, 0), "not_seated_in_any_working_round");
+        // she stands in working rounds and their decks are genuinely empty
+        assert_eq!(pull_none_reason(false, 3, 2), "no_candidates");
+        // a holder's empty deck is about REVIEW cards, whatever the rounds say — naming a
+        // round absence for her would send a reader after the wrong thing
+        assert_eq!(pull_none_reason(true, 0, 0), "no_review_cards");
+        assert_eq!(pull_none_reason(true, 3, 2), "no_review_cards");
     }
 }
