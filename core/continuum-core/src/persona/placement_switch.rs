@@ -109,6 +109,12 @@ pub struct PlacementInputs {
     pub home_wait_p50_ms: Option<u64>,
     /// The bound seat is one of this node's own airc ids ([`crate::persona::self_peer`]).
     pub seat_is_self: bool,
+    /// The seat's freshest beacon offers at least one free slot (`free_slots_live > 0`).
+    /// A RETURN asks for its slot like a spill does, and a spill only asks a seat whose
+    /// beacon offers one; without this mirror every home-bound mind asked a full seat
+    /// every tick (the M5, 2026-09-19 22:3xZ: 15 minds × 60 s into "no free slot: 0
+    /// free", 30 wire messages a minute for nothing).
+    pub seat_offers_slot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,7 +173,9 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
             // ANSWER (or has never been tried). Without the service term a rescued
             // citizen is returned to a never-serving peer the moment the 5-minute cold
             // window lapses — the flap card ad96f5d1 measured.
-            if fresh && !i.lane_cold && cooled && i.peer_served_ok && !queued {
+            // …and the beacon must OFFER a slot before she asks for one: the ask is the
+            // seat's admission, the beacon is its invitation. A full seat is not asked.
+            if fresh && !i.lane_cold && cooled && i.peer_served_ok && !queued && i.seat_offers_slot {
                 PlacementMove::ReturnRemote
             } else {
                 PlacementMove::Stay
@@ -655,6 +663,9 @@ pub async fn follow_the_fleet(
     };
     let mut lines = Vec::new();
     let mut at_home: Vec<(Uuid, u64)> = Vec::new();
+    // Home-bound minds whose seat is fresh and serving but offers no slot this tick —
+    // one line per seat per tick, not one refused ask per mind per tick.
+    let mut withheld: std::collections::HashMap<Uuid, u32> = std::collections::HashMap::new();
     for sw in switches() {
         let cooled = now_ms.saturating_sub(sw.moved_at_ms()) >= MOVE_COOLDOWN_MS;
         let Some(peer) = sw.peer() else {
@@ -686,7 +697,16 @@ pub async fn follow_the_fleet(
                 .and_then(|o| (o.lane_wait_samples > 0).then_some(o.lane_wait_p50_ms)),
             home_wait_p50_ms,
             seat_is_self,
+            seat_offers_slot: offers.get(&peer).is_some_and(|o| o.free_slots_live > 0),
         };
+        // Withheld = she would have returned had the seat offered a slot. Pure and exact:
+        // the same rule with the offer granted, so a cooldown or a queued seat is never
+        // miscounted as "no slot".
+        if !inputs.seat_offers_slot
+            && decide(PlacementInputs { seat_offers_slot: true, ..inputs }) == PlacementMove::ReturnRemote
+        {
+            *withheld.entry(peer).or_default() += 1;
+        }
         let mut mv = decide(inputs);
         // A RETURN ASKS FOR ITS SLOT LIKE A SPILL DOES (2026-09-19 00:3xZ): the 5090's beacon
         // first carried its measured wait, read QUEUED, and the IntelMac brought all seven
@@ -749,6 +769,21 @@ pub async fn follow_the_fleet(
         if mv == PlacementMove::Stay && sw.seat() == Seat::Home && cooled {
             at_home.push((sw.persona_id(), crate::modules::citizen_health::lane_grants_of(sw.persona_id())));
         }
+    }
+    for (peer, minds) in withheld {
+        let Some(o) = offers.get(&peer) else { continue };
+        if o.beacon_age_ms > REMOTE_SEAT_FRESH_MS {
+            continue; // a dark seat is the fall-home story, not a full one
+        }
+        crate::probe!(
+            class = "placement.return.withheld",
+            peer = %peer,
+            minds = minds,
+            seat_free = o.free_slots_live,
+            seat_wait_p50_ms = o.lane_wait_p50_ms,
+            seat_wait_samples = o.lane_wait_samples,
+            "her seat's beacon offers no slot this tick — no return ask sent; she stays home until it does"
+        );
     }
     let moves = choose_offloads(local, &peers, rank_of, &at_home);
     if !moves.is_empty() {
@@ -839,7 +874,7 @@ mod tests {
         // peer_served_ok defaults TRUE here: these cases predate the return-gate service
         // term and assume a serving peer; `a_fresh_but_never_serving_seat_is_not_returned`
         // exercises the false case.
-        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None, seat_is_self: false }
+        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None, seat_is_self: false, seat_offers_slot: true }
     }
 
     // what this catches (card 2500d2f1, the M5 2026-09-19): a "remote" seat that is one
@@ -1027,5 +1062,23 @@ mod tests {
         assert_eq!(decide(h.clone()), PlacementMove::Stay, "a queued seat is not returned to");
         h.seat_wait_p50_ms = None;
         assert_eq!(decide(h), PlacementMove::ReturnRemote, "unmeasured changes nothing");
+    }
+
+    // what this catches (the M5, 2026-09-19 22:3xZ): fifteen home-bound minds, their
+    // seat fresh, serving, faster than home and past the cooldown — and FULL. Every tick
+    // each one asked the 5090 for its slot back and was told "no free slot: 0 free": 30
+    // wire messages a minute buying nothing. A spill only asks a seat whose beacon
+    // offers a slot (`choose_offloads`); the return is its mirror. Nothing else about
+    // the return rule changes: a free slot on a fresh, serving, unqueued seat still
+    // returns her, and a remote-seated mind is untouched by the offer.
+    #[test]
+    fn a_return_is_asked_only_of_a_seat_whose_beacon_offers_a_slot() {
+        let mut h = inputs(Seat::Home, Some(10_000), false, true, MOVE_COOLDOWN_MS);
+        assert_eq!(decide(h.clone()), PlacementMove::ReturnRemote, "the seat offers a slot: ask");
+        h.seat_offers_slot = false;
+        assert_eq!(decide(h.clone()), PlacementMove::Stay, "a full seat is not asked");
+        let mut r = inputs(Seat::Remote, Some(10_000), false, true, MOVE_COOLDOWN_MS);
+        r.seat_offers_slot = false;
+        assert_eq!(decide(r), PlacementMove::Stay, "seated there already: the offer is not hers to need");
     }
 }
