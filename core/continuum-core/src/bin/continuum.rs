@@ -45,6 +45,8 @@ use owned_engines::owned_engine_candidate;
 #[cfg(windows)]
 #[path = "continuum/windows_launch.rs"]
 mod windows_launch;
+#[path = "continuum/supervisor_install.rs"]
+mod supervisor_install;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
@@ -99,6 +101,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "orphans"
                 | "deploy-verify"
                 | "deploy-consume"
+                | "install"
                 | "verify"
                 | "checkpoint"
                 | "service-host"
@@ -244,6 +247,7 @@ async fn run() -> Result<(), CliError> {
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
         "deploy-verify" | "verify" => verify_deployed_build(false).await,
         "deploy-consume" => deploy_consume(DeployConsumeOptions::parse(args)?).await,
+        "install" => install(supervisor_install::InstallOptions::parse(args)?).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -1270,28 +1274,9 @@ impl PreparedCoreService {
 
     #[cfg(windows)]
     async fn powershell(script: &str) -> Result<String, String> {
-        use base64::Engine;
-        use std::os::windows::process::CommandExt;
-        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // PowerShell -EncodedCommand requires UTF-16LE base64 at this process boundary.
-        let mut command = std::process::Command::new(Self::shell()?);
-        command
-            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-            .stdin(Stdio::null())
-            .creation_flags(0x0800_0000);
-        let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
-        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+        supervisor_install::powershell(script, Duration::from_secs(30))
             .await
-            .map_err(|_| "ContinuumCore scheduler operation timed out".to_string())?
-            .map_err(|e| format!("cannot invoke Task Scheduler: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "ContinuumCore scheduler operation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .map_err(|e| format!("ContinuumCore: {e}"))
     }
 
     #[cfg(windows)]
@@ -2220,35 +2205,23 @@ fn record_repo_checkout() {
 // deploy claim it takes is what the tracker's #4187 reconcile reads; `deploy.settled`
 // on this node with no human in the loop is the receipt.
 
-/// How often the supervisor's sibling task asks whether a deploy is owed.
-const DEPLOY_CONSUME_EVERY_MIN: u32 = 10;
-const DEPLOY_CONSUME_TASK: &str = "ContinuumDeploy";
-
 #[derive(Debug, Default, PartialEq, Eq)]
-struct DeployConsumeOptions {
-    install: bool,
-    uninstall: bool,
-}
+struct DeployConsumeOptions {}
 
 impl DeployConsumeOptions {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
-        let mut options = Self::default();
         for arg in args {
-            match arg.as_str() {
-                "--install" if !options.install => options.install = true,
-                "--uninstall" if !options.uninstall => options.uninstall = true,
-                "--install" | "--uninstall" => return Err(format!("duplicate option {arg}")),
-                _ => {
-                    return Err(format!(
-                        "unknown deploy-consume option {arg}; use --install or --uninstall"
-                    ))
-                }
+            if matches!(arg.as_str(), "--install" | "--uninstall") {
+                // ONE registrar for the consumer's task: `continuum install --supervisor`
+                // registers it S4U beside ContinuumCore. The unelevated `--install` of
+                // 2026-09-18 made an Interactive task that died with the session.
+                return Err(format!(
+                    "deploy-consume {arg} is gone: the ContinuumDeploy task is registered by `continuum install --supervisor` (S4U, beside ContinuumCore)"
+                ));
             }
+            return Err(format!("unknown deploy-consume option {arg}"));
         }
-        if options.install && options.uninstall {
-            return Err("deploy-consume: --install and --uninstall are exclusive".to_string());
-        }
-        Ok(options)
+        Ok(Self::default())
     }
 }
 
@@ -2394,41 +2367,38 @@ async fn running_build_sha() -> Option<String> {
     reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string)
 }
 
-fn deploy_consume_task_install() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("deploy-consume: own path: {e}"))?;
-    let action = format!("\"{}\" deploy-consume", exe.display());
-    let out = std::process::Command::new("schtasks")
-        .args([
-            "/create", "/tn", DEPLOY_CONSUME_TASK, "/sc", "minute", "/mo",
-            &DEPLOY_CONSUME_EVERY_MIN.to_string(), "/tr", &action, "/f",
-        ])
-        .output()
-        .map_err(|e| format!("schtasks: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "deploy-consume --install: schtasks refused: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    println!(
-        "✓ {DEPLOY_CONSUME_TASK} registered: every {DEPLOY_CONSUME_EVERY_MIN} min, {action}"
-    );
-    Ok(())
-}
+// =============================================================================
+// install — converge this machine to the contract, from the binary (Joel 2026-09-18:
+// "What's the repeatable process or inside an install? … Do NOT hand jack"; "it
+// needs to be in our own binary here"). Arms land one at a time; each is a module
+// under `continuum/`. First: the OS supervisor (`supervisor_install`).
+// =============================================================================
 
-fn deploy_consume_task_uninstall() -> Result<(), String> {
-    let out = std::process::Command::new("schtasks")
-        .args(["/delete", "/tn", DEPLOY_CONSUME_TASK, "/f"])
-        .output()
-        .map_err(|e| format!("schtasks: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "deploy-consume --uninstall: schtasks refused: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+async fn install(options: supervisor_install::InstallOptions) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = options;
+        Err(format!(
+            "continuum install --supervisor: this platform's arm is not in the binary yet — \
+             macOS (a LaunchDaemon with KeepAlive, no generated wrapper) is Fable's lane, \
+             Linux (`systemd --user` + linger) is Cormac's; Windows (S4U Scheduled Tasks) is here. \
+             Until it lands: tools/scripts/install-service.sh ({} arm).",
+            std::env::consts::OS
+        ))
     }
-    println!("✓ {DEPLOY_CONSUME_TASK} removed");
-    Ok(())
+    #[cfg(windows)]
+    {
+        if let Some(plan) = options.plan.as_deref().filter(|_| options.elevated) {
+            return supervisor_install::install_supervisor_elevated(plan);
+        }
+        supervisor_install::install_supervisor(options.check, |description| {
+            let d: CoreServiceDescription = serde_json::from_str(description).map_err(|e| {
+                format!("ContinuumCore is not prepared by the current installer (its description is not a release descriptor): {e}; rerun the installer")
+            })?;
+            Ok(d.cli)
+        })
+        .await
+    }
 }
 
 /// The consumer's log — the only place its output can land, since the scheduled task
@@ -2458,12 +2428,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if options.install {
-        return deploy_consume_task_install();
-    }
-    if options.uninstall {
-        return deploy_consume_task_uninstall();
-    }
+    let DeployConsumeOptions {} = options;
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
         continuum_core::modules::persona_instance_manager::resolve_continuum_root()
@@ -4338,6 +4303,8 @@ fn usage() -> String {
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
+       continuum install --supervisor [--check]
+                                       converge the OS supervisor: ContinuumCore S4U at boot + the\n                                       ContinuumDeploy consumer every 10 min, one elevation, verified\n                                       by re-reading the scheduler (Windows; mac/linux arms pending)\n\
      \n\
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
@@ -4398,8 +4365,8 @@ mod tests {
         assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
         assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install); // unwrap: the valid case — an Err here IS the failure
-        assert!(DeployConsumeOptions::parse(["--install".to_string(), "--uninstall".to_string()].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
+        assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
     }
 
