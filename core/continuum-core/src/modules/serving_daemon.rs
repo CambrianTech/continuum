@@ -6073,14 +6073,23 @@ mod tests {
         let carried = crate::cognition::serving_plan::ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
         let raised = crate::cognition::serving_plan::ModelFootprint { kv_per_token: 44_740, ..base.clone() };
         let lanes_at = |fp: &crate::cognition::serving_plan::ModelFootprint, usable: u64| (1..=4u32).rev().find(|&l| fp.window_within(usable, l) >= 67_340).unwrap_or(0);
+        // Carried never fits MORE than header-only (the fixed term only costs), and costs a
+        // lane somewhere in the range. It is NOT ordered against the raised-rate plan: a
+        // fixed cost bites hardest at small lane counts (31 GB: carried 1, raised 2) and a
+        // raised rate at large ones — which is the whole point of carrying it as fixed.
         let mut strict = false;
         for usable_gb in 28..=46u64 {
             let usable = usable_gb * 1_000_000_000;
-            let (h, c, r) = (lanes_at(&base, usable), lanes_at(&carried, usable), lanes_at(&raised, usable));
-            assert!(h >= c && c >= r, "{usable_gb} GB: header {h} ≥ carried {c} ≥ raised {r}");
+            let (h, c) = (lanes_at(&base, usable), lanes_at(&carried, usable));
+            assert!(h >= c, "{usable_gb} GB: header {h} ≥ carried {c}");
             strict |= h > c;
         }
         assert!(strict, "the carried term costs at least one lane somewhere in the range");
+        // The M5's own numbers, pinned: header-only 2 lanes at 30 GB and 3 at 34; carried 1
+        // at 30 and 2 at 34; the raised rate the old code produced: 1 at 30, 2 at 34.
+        assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (2, 3));
+        assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (1, 2));
+        assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (1, 2));
         let kv = kv_per_token_from_measured(10_240, 36_000);
         assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
         assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
