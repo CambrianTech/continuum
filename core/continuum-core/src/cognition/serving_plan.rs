@@ -192,6 +192,13 @@ pub struct ServingDemand {
     /// `0` is the honest value on a seat nobody leases into, and on every seat until the
     /// inbound-generate seam feeds the gauge (the wire slice of the same card).
     pub leased_in: u32,
+    /// The measured decode knee of the model this seat serves — the slot count past which
+    /// every stream slows (`inference::decode_knee`) — when one is known. It bounds the
+    /// slot count the plan SERVES: residents, scratch AND leased-in together. Measured
+    /// 2026-09-19 23:14Z on the M5: the roster was clamped to the knee (17 → 2) before
+    /// `leased_in` (1) was added, so the plan said 3 lanes against a knee of 2 and the
+    /// [health] hour read "AT THE KNEE: 16 minds on 3 lanes, the measured decode knee is 2".
+    pub knee: Option<u32>,
     /// The largest prompt any resident actually SENT (post-fit), when measured. The
     /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
     /// `window_tokens` (which is the whole assembled context and saturates at
@@ -246,11 +253,17 @@ impl ServingDemand {
             sent_tokens: None,
             sent_median: None,
             leased_in: 0,
+            knee: None,
         }
     }
     /// Fold in the minds this seat serves for other nodes (see `leased_in`).
     pub fn with_leased_in(mut self, leased_in: u32) -> Self {
         self.leased_in = leased_in;
+        self
+    }
+    /// The model's measured decode knee on this box (see `knee`); `None` = unmeasured.
+    pub fn with_knee(mut self, knee: Option<u32>) -> Self {
+        self.knee = knee;
         self
     }
     pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
@@ -595,7 +608,12 @@ pub fn plan_serving(
     // The slot count is sized to every mind this seat SERVES: its residents plus the
     // minds leased in from other nodes. Counting only residents is how one seat carried
     // three nodes' coders on one slot (c84d885a). Saturating: a wild peak never wraps.
-    let demand_lanes = demand.lanes.saturating_add(demand.leased_in);
+    // …and the knee bounds that TOTAL: a leased-in stream decodes on the same box as a
+    // resident's, so it is one of the streams the knee was measured on (see `knee`).
+    let demand_lanes = crate::inference::decode_knee::knee_lanes(
+        demand.lanes.saturating_add(demand.leased_in),
+        demand.knee,
+    );
     if candidates.is_empty() {
         return None;
     }
@@ -1542,6 +1560,42 @@ mod tests {
             "…but never above what was actually demanded (got {})",
             measured.served_context_window
         );
+    }
+
+    // what this catches (the M5, 2026-09-19 23:14Z): the decode knee clamped the ROSTER
+    // (17 → 2) and then `leased_in` was added on top, so the plan served 3 slots against a
+    // knee of 2 — "AT THE KNEE: 16 minds on 3 lanes, the measured decode knee is 2" in the
+    // [health] hour. The knee is a property of the box's decode and bounds every stream it
+    // decodes, leased-in included. Same roomy host and model as the test below: 1 resident
+    // + 3 leased-in is 4 slots without a knee and 2 with a knee of 2; a knee never RAISES.
+    #[test]
+    fn the_knee_bounds_the_served_total_leased_in_included() {
+        let roomy = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let unclamped = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None).with_leased_in(3),
+        )
+        .expect("servable");
+        assert_eq!(unclamped.lanes, 4, "no knee: four minds served, four slots");
+        let kneed = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(2)),
+        )
+        .expect("servable");
+        assert_eq!(kneed.lanes, 2, "a knee of 2 bounds the served total, leased-in included");
+        let roomy_knee = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(8)),
+        )
+        .expect("servable");
+        assert_eq!(roomy_knee.lanes, 4, "a knee above the demand changes nothing");
     }
 
     // what this catches (card c84d885a, 2026-09-18): a seat that plans for the minds it

@@ -605,6 +605,10 @@ pub struct ServingDaemonModule {
     /// the daemon's own decision cadence, so it stays exact under a stopped clock,
     /// a suspended host, or a test that drives ticks by hand.
     rehome_cooldown: Arc<std::sync::atomic::AtomicU32>,
+    /// The `ready_verified_at_ms` stamp of the launch the reconcile last settled on. A
+    /// stamp it has not seen is a lane that just came READY, and a launch settles AFTER
+    /// it is ready — see [`ready_edge`]. 0 = none yet.
+    settled_ready_at_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Per-persona MEASURED turn demand — the window half of `serving_demand()`.
     /// Personas write (their deliberation faculty records every turn's unclamped
     /// cost); this daemon reads the ceiling when it plans. Replaces the
@@ -812,6 +816,7 @@ impl ServingDaemonModule {
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            settled_ready_at_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             last_plan_probe: Arc::new(std::sync::Mutex::new(None)),
             working_set: crate::cognition::working_set::global(),
@@ -946,6 +951,14 @@ pub fn lane_demand_overridden() -> bool {
 /// the lane ready and serving. Only a settled geometry is remembered for the next boot.
 pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
     cooling_before == 1 && ready && lanes > 0
+}
+
+/// PURE: has a launch just come READY that the reconcile has not settled on? `settled` is
+/// the ready stamp last settled on (0 = none); `now` is the live snapshot's stamp (`None` =
+/// not ready). A stamp not seen before is a new launch and re-arms the settle cooldown;
+/// the same stamp again, or no stamp, is not.
+pub fn ready_edge(settled: u64, now: Option<u64>) -> bool {
+    matches!(now, Some(t) if t != settled)
 }
 
 /// The model whose decode knee bounds the plan: the one a lane is serving, else the one
@@ -1175,6 +1188,10 @@ impl ServingDaemonModule {
             .with_sent_tokens(sent)
             .with_sent_median(median)
             .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
+            // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
+            // above covers the roster and the scratch slot; the plan re-applies it over
+            // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
+            .with_knee(knee)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -2446,6 +2463,30 @@ impl ServingDaemonModule {
                 // Conflating them is how a guard ends up firing on a burst of good
                 // evidence. (BigMama's spec 2026-08-06 — she owns this guard; the
                 // outage it came from is hers.)
+                // A LAUNCH SETTLES AFTER IT IS READY, NOT AFTER IT WAS SPAWNED (2026-09-19
+                // 23:13–23:15Z, the M5): the spawn arm charged the cooldown at launch, the
+                // OLD lane kept serving through the 27B's ~90 s cold load, so every tick of
+                // the cooldown was spent before the new lane answered — it came ready with
+                // zero settle left. Its predecessor's freed pages read as a 32 GB budget for
+                // one minute, the plan said 3 lanes, and a second relaunch fired 15 s after
+                // the first came ready: 12 settles in the hour, acts 5. The ready stamp is
+                // the edge that matters: a stamp this reconcile has not settled on re-arms
+                // the full cooldown (and the streak), so the memory picture the next
+                // evidence is read from is the one this lane made, not the one it inherited.
+                if ready_edge(self.settled_ready_at_ms.load(Ordering::Relaxed), live.ready_verified_at_ms) {
+                    self.settled_ready_at_ms
+                        .store(live.ready_verified_at_ms.unwrap_or(0), Ordering::Relaxed); // JUSTIFIED unwrap_or: `ready_edge` is true only for Some
+                    self.rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
+                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    crate::probe!(
+                        class = "serving.reconcile.window",
+                        decision = "ready-settling",
+                        live_window = live.served_context_window,
+                        live_lanes = live.lanes,
+                        cooling = REHOME_COOLDOWN_TICKS as u64,
+                        "the lane just came ready — it settles for the full cooldown from HERE before any re-home evidence counts"
+                    );
+                }
                 let cooling = self.rehome_cooldown.load(Ordering::Relaxed);
                 if cooling > 0 {
                     self.rehome_cooldown.store(cooling - 1, Ordering::Relaxed);
@@ -5100,7 +5141,13 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     if header_rate.is_some() {
         if let Some(record) = &measured {
             fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record);
-            if fp.fixed_per_lane_bytes > 0 {
+            // One row when the value CHANGES: this runs on every footprint read (measured
+            // 2026-09-19 23:2xZ on the M5: 840 identical rows in 12 minutes, 70/min — the
+            // ledger-rotation class, the same shape the knee clamp's row had).
+            static LAST_FIXED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+            if fp.fixed_per_lane_bytes > 0
+                && LAST_FIXED.swap(fp.fixed_per_lane_bytes, std::sync::atomic::Ordering::Relaxed) != fp.fixed_per_lane_bytes
+            {
                 crate::probe!(
                     class = "serving.footprint.excess_is_fixed",
                     model = fp.model_id.as_str(),
@@ -5780,6 +5827,21 @@ mod tests {
         assert!(!settles_this_tick(0, true, 2), "already settled — no re-save every tick");
         assert!(!settles_this_tick(1, false, 2), "not ready is not settled");
         assert!(!settles_this_tick(1, true, 0), "no lanes is nothing to remember");
+    }
+
+    // what this catches (the M5, 2026-09-19 23:13–23:15Z): the spawn cooldown (18 ticks) was
+    // spent DURING the 27B's 90 s cold load — the old lane kept serving, so the ticks
+    // counted — and the new lane came ready with zero settle left; its predecessor's freed
+    // memory read as a 32 GB budget for a minute, the plan said 3 lanes, and a second
+    // relaunch fired 15 s after the first came ready (12 settles in the hour, acts 5). A
+    // launch settles AFTER it is ready: a ready stamp not yet settled on is the edge; the
+    // same stamp again is not; a not-ready snapshot never is.
+    #[test]
+    fn a_launch_settles_after_it_is_ready_not_after_it_was_spawned() {
+        assert!(ready_edge(0, Some(1_000)), "the first ready stamp: settle from here");
+        assert!(!ready_edge(1_000, Some(1_000)), "the same stamp is the same launch");
+        assert!(ready_edge(1_000, Some(2_000)), "a new stamp is a new launch: settle again");
+        assert!(!ready_edge(1_000, None), "not ready: nothing to settle on");
     }
 
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
