@@ -1125,7 +1125,9 @@ mod tests {
     // the roster; the ceiling shapes the window only when it still fits.
     #[test]
     fn lanes_multiply_to_the_roster_at_the_typical_prompt_not_the_outlier() {
-        let host = HostBudget { usable_bytes: 61 * GB, perf_cores: 12 };
+        // 51.85 GB — what the old 15% plan reserve left of 61 GB; the outlier/typical
+        // contrast below was measured there (#4230: the plan sizes to the budget as handed).
+        let host = HostBudget { usable_bytes: 51_850_000_000, perf_cores: 12 };
         let ornith = fp("ornith", 21, 41_984, 262_144, 200);
         let c = vec![ornith];
         let outlier_only = ServingDemand::new(17, Some(120_000)).with_sent_tokens(Some(96_000));
@@ -1379,7 +1381,9 @@ mod tests {
         // get a persistent slot locally. That excess is the honest overflow, surfaced (not
         // crammed onto shared slots to thrash) for the governor to place off-box.
         let host = HostBudget {
-            usable_bytes: 26 * GB,
+            // 22.1 GB — what the old 15% plan reserve left of 26 GB; the pins below were
+            // measured there (#4230: the plan sizes to the budget as handed).
+            usable_bytes: 22_100_000_000,
             perf_cores: 10,
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
@@ -1453,7 +1457,9 @@ mod tests {
         // over-subscription signal a probe also names at the decision), and — critically — does
         // NOT drop the per-slot window below the floor to squeeze 4 in.
         let tight = HostBudget {
-            usable_bytes: 26 * GB,
+            // 22.1 GB — what the old 15% plan reserve left of 26 GB; the pins below were
+            // measured there (#4230: the plan sizes to the budget as handed).
+            usable_bytes: 22_100_000_000,
             perf_cores: 10,
         };
         let capped = plan_serving(
@@ -1572,7 +1578,9 @@ mod tests {
 
         // a tight host still says so honestly: it plans what fits and names the rest
         let tight = HostBudget {
-            usable_bytes: 26 * GB,
+            // 22.1 GB — what the old 15% plan reserve left of 26 GB; the pins below were
+            // measured there (#4230: the plan sizes to the budget as handed).
+            usable_bytes: 22_100_000_000,
             perf_cores: 10,
         };
         let capped = plan_serving(
@@ -1939,7 +1947,9 @@ mod tests {
         // 24B-class: 13.6GB weights, kv_per_token ~156KB/token (measured), ~26GB usable.
         let m = fp("devstral-24b", 13, 156_000, 131_072, 9);
         let host = HostBudget {
-            usable_bytes: 26 * GB,
+            // 22.1 GB — what the old 15% plan reserve left of 26 GB; the pins below were
+            // measured there (#4230: the plan sizes to the budget as handed).
+            usable_bytes: 22_100_000_000,
             perf_cores: 10,
         };
 

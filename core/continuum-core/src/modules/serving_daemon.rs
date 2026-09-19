@@ -4286,8 +4286,18 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
-        budget_fraction: crate::config_env::vram_headroom(),
+        budget_fraction: plan_fraction(crate::config_env::vram_headroom()),
     })
+}
+
+/// The fraction a production budget may hand the plan: the operator's headroom policy,
+/// never above what Performance keeps. Since #4230 the plan withholds nothing itself, so
+/// a foundry's `CONTINUUM_VRAM_HEADROOM=1.0` would otherwise size weights + KV + compute
+/// to 100% of the governed ceiling with no room for the serving process's own fixed
+/// overhead (the CUDA context, the Metal heap) — BigMama's condition on #4230: no
+/// production `HostBudget` hands the plan 1.0.
+pub fn plan_fraction(headroom: f64) -> f64 {
+    headroom.min(crate::provisioning::model_catalog::PowerMode::Performance.serving_fraction())
 }
 
 /// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`
@@ -6477,6 +6487,17 @@ mod tests {
     // what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
     // 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
     // shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
+    // what this catches (#4230, BigMama's condition): with the plan's own reserve gone, a
+    // foundry's headroom of 1.0 must still stop at what Performance keeps — the serving
+    // process's fixed overhead is not in the footprint, and 100% of the ceiling is an OOM.
+    #[test]
+    fn a_foundry_headroom_of_one_still_keeps_the_process_overhead() {
+        use crate::provisioning::model_catalog::PowerMode;
+        assert_eq!(plan_fraction(1.0), PowerMode::Performance.serving_fraction());
+        assert!(plan_fraction(1.0) < 1.0);
+        assert_eq!(plan_fraction(0.8), 0.8, "the everyday default is the operator's own number");
+    }
+
     #[test]
     fn a_steady_hold_yields_to_a_large_shortfall_and_keeps_a_small_one() {
         let (live, _plan, gain, _) = rehome_gain_evidence(12_800, 8, 67_340, 3);
