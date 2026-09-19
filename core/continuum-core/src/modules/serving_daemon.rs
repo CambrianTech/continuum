@@ -4712,6 +4712,23 @@ fn prompt_cache_decision(
         } else {
             headroom
         };
+        // A cache that fills INTO the pressure band throttles its own planner. The live
+        // budget steps the serving mode to Eco (budget × 0.55) when available RAM drops
+        // under ECO_ENTER_BYTES and only leaves it above ECO_EXIT_BYTES. Measured
+        // 2026-09-19 on the M5: a 17,021 MiB grant from 29.6 GB available filled, the
+        // box crossed Comfort ↔ Eco five times in a morning (available 7 ↔ 12 GiB), and
+        // at 12:19Z the lane RELAUNCHED at `--parallel 1` — five coders on one lane, a
+        // seat that had read HEALTHY at three lanes two hours earlier — while the same
+        // 17 GB grant was handed out again. The grant leaves the Eco EXIT band free
+        // after it fills, so a full cache can never step the mode down by itself.
+        let afford = if available_bytes > 0 {
+            afford.min(
+                available_bytes
+                    .saturating_sub(crate::provisioning::model_catalog::ECO_EXIT_BYTES),
+            )
+        } else {
+            afford
+        };
         // A cache FILLS to its grant by design, so "everything above the OS floor" is a
         // grant to end the serve at the floor with nothing left for the co-consumers the
         // planner reserves for (the core's own growth, a sidecar, the eye). Measured
@@ -5709,6 +5726,16 @@ mod tests {
         (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64
     }
 
+    /// The grant out of a known `available` reading: the smaller of "above the OS
+    /// floor" and "above the Eco exit band", less the co-consumer share.
+    fn grantable_from_available(physical: u64, available: u64) -> u64 {
+        grantable(
+            available
+                .saturating_sub(host_os_floor_bytes(physical))
+                .min(available.saturating_sub(crate::provisioning::model_catalog::ECO_EXIT_BYTES)),
+        )
+    }
+
     #[test]
     fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         use super::*;
@@ -5804,6 +5831,41 @@ mod tests {
     // states are saved. The second ceiling is what is AVAILABLE now, less the floor.
     // And it is not the commit charge: the first cut used it and read 75.5 GB
     // committed on that same box with 43 GB free → afford 0 → the 256 MiB floor again.
+    // what this catches (2026-09-19, the M5 relaunched at one lane): a grant sized to
+    // "everything above the OS floor" fills into the Eco pressure band and steps the
+    // serving mode down — the cache throttles its own planner. For every available
+    // reading the box can report, what is left after the grant fills stays above the
+    // Eco EXIT band, so a full cache never enters Eco by itself; and the grant is still
+    // a real cache where there is room (the 46 GB reading gets more than the 20 GB one).
+    #[test]
+    fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
+        use crate::provisioning::model_catalog::ECO_EXIT_BYTES;
+        let fp = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "eco-fixture".into(),
+            weights_bytes: 16 << 30,
+            kv_per_token: 32_768,
+            context_window: 67_340,
+            capability_rank: 1,
+        };
+        let physical = 64u64 << 30;
+        let demands = [67_340u32; 16]; // sixteen seeds on disk: the want is far past any box
+        let mut last = 0u64;
+        for available_gib in [13u64, 20, 29, 46] {
+            let available = available_gib << 30;
+            let d = prompt_cache_decision(Some(&fp), &demands, 16, 67_340, 2, physical, fp.peak_resident_bytes(67_340, 2), available);
+            let grant = (d.desired_mib as u64) << 20;
+            assert!(
+                available - grant >= ECO_EXIT_BYTES,
+                "available {available_gib} GiB: a full {} MiB cache would leave {} GiB — inside the Eco band",
+                d.desired_mib,
+                (available - grant) >> 30
+            );
+            assert!(grant >= last, "more room, no smaller grant: {available_gib} GiB → {} MiB", d.desired_mib);
+            last = grant;
+        }
+        assert!(last > (8u64 << 30), "with 46 GiB free the cache is still a real cache: {} MiB", last >> 20);
+    }
+
     #[test]
     fn the_cache_never_promises_past_what_is_available_now() {
         use super::*;
@@ -5835,8 +5897,8 @@ mod tests {
         );
         assert_eq!(
             bound.affordable_bytes,
-            Some(grantable(available - host_os_floor_bytes(physical))),
-            "bounded by what the box can give now, less the co-consumer share"
+            Some(grantable_from_available(physical, available)),
+            "bounded by what the box can give now, less the Eco exit band and the co-consumer share"
         );
         assert!(bound.desired_mib < unknown.desired_mib);
         assert_eq!(bound.available_bytes, available);
