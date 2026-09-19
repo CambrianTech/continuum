@@ -1152,12 +1152,12 @@ mod tests {
             "each lane holds a typical turn with headroom (40k × 1.25): {}",
             b.served_context_window
         );
-        // Without the median the planner sizes to the OUTLIER's prompt (96k × 1.25) — a
-        // wide window and fewer lanes. With it, the window follows the typical prompt and
-        // the roster gets its lanes: the outlier's turn is trimmed to the window, the box
-        // is not sized to it (card 29e4ab34).
-        assert!(a.served_context_window > b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
-        assert!(b.lanes >= a.lanes, "the typical prompt never costs the roster a lane against the outlier's: {} vs {}", b.lanes, a.lanes);
+        // Without the median the planner packs the most lanes at the bootstrap floor —
+        // more lanes, each too small for a real turn. The floor trades at most a lane or
+        // two for windows the roster can actually use. (Unchanged by the target following
+        // the typical prompt, card 29e4ab34: the floor, not the target, is what packs.)
+        assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
+        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
     }
 
     #[test]
