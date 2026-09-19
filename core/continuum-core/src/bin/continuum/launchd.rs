@@ -204,6 +204,17 @@ fn xml(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// The digest that binds a draft plist to the elevated argv. The consent a human gives
+/// to `sudo` covers the command line it shows and nothing read later from a file any
+/// same-user process can rewrite — so the elevated half refuses a draft whose bytes are
+/// not the ones the unelevated half hashed (Fable on #4232; the same window here).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The plist, verbatim what launchd will read. Pure so the round trip is a unit test:
 /// [`slot_from_plist`] of the rendered text is the slot that went in — the stage step
 /// and the installer can never disagree on where the binary lives.
@@ -467,16 +478,21 @@ pub mod live {
         let target = job.domain.target();
         match &job.domain {
             Domain::System => {
-                // A stale registration in either domain is booted out first: two jobs
-                // for one socket is the mistake `choose_domain` names, not one to make.
-                let _ = Command::new("launchctl").args(["bootout", &Domain::Gui(uid()).target()]).output();
-                let _ = Command::new("sudo").args(["launchctl", "bootout", &target]).output();
-                run(
-                    Command::new("sudo").args(["install", "-m", "0644", "-o", "root", "-g", "wheel", &draft.display().to_string(), &plist_path.display().to_string()]),
-                    "sudo install (plist)",
+                // ONE consent, for this binary with the draft's digest on the argv. The
+                // elevated half (`register_elevated`) re-reads the draft, refuses it if a
+                // byte moved, installs it root-owned, bootstraps (RunAtLoad starts the
+                // core) — and nothing else. `sudo install`/`launchctl` on the draft path
+                // directly would register whatever the file said at that moment.
+                let bytes = std::fs::read(&draft).map_err(|e| format!("cannot re-read {}: {e}", draft.display()))?;
+                let digest = sha256_hex(&bytes);
+                let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
+                let receipt = run(
+                    Command::new("sudo").arg(&exe).args(["install", "--elevated", "--plan", &draft.display().to_string(), "--plan-sha", &digest]),
+                    "sudo continuum install --elevated",
                 )?;
-                run(Command::new("sudo").args(["launchctl", "bootstrap", "system", &plist_path.display().to_string()]), "sudo launchctl bootstrap system")?;
-                let _ = Command::new("sudo").args(["launchctl", "enable", &target]).output();
+                for line in receipt.lines().filter(|l| !l.trim().is_empty()) {
+                    println!("  {line}");
+                }
             }
             Domain::Gui(uid) => {
                 if let Some(dir) = plist_path.parent() {
@@ -490,6 +506,45 @@ pub mod live {
         }
         let _ = std::fs::remove_file(&draft);
         Ok(job)
+    }
+
+    /// The elevated half of a system install, run as root by `sudo` with the draft's
+    /// digest on its argv: verify, install root-owned under /Library/LaunchDaemons,
+    /// bootstrap into the system domain. No query, no decision, no other write.
+    pub fn register_elevated(plan: &Path, sha256: &str) -> Result<Vec<String>, String> {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            return Err("install --elevated runs as root under sudo; it is not a verb to type".to_string());
+        }
+        let bytes = std::fs::read(plan).map_err(|e| format!("cannot read the plan {}: {e}", plan.display()))?;
+        let actual = sha256_hex(&bytes);
+        if actual != sha256 {
+            return Err(format!(
+                "REFUSED: the plan at {} is not the one consented to (sha256 {actual} ≠ {sha256}) — it changed between the consent and this read; nothing was registered",
+                plan.display()
+            ));
+        }
+        if slot_from_plist(&String::from_utf8_lossy(&bytes)).is_none() {
+            return Err("REFUSED: the plan names no core artifact; nothing was registered".to_string());
+        }
+        let plist_path = Domain::System.plist_path(Path::new("/"));
+        let target = Domain::System.target();
+        // The invoking user's agent, if any, goes first: two jobs for one socket is the
+        // mistake `choose_domain` names, not one to make. SUDO_UID is sudo's own record.
+        if let Some(uid) = std::env::var("SUDO_UID").ok().and_then(|u| u.parse::<u32>().ok()) {
+            let _ = Command::new("launchctl").args(["bootout", &Domain::Gui(uid).target()]).output();
+        }
+        let _ = Command::new("launchctl").args(["bootout", &target]).output();
+        std::fs::write(&plist_path, &bytes).map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
+        std::os::unix::fs::chown(&plist_path, Some(0), Some(0)).map_err(|e| format!("cannot chown {}: {e}", plist_path.display()))?;
+        std::fs::set_permissions(&plist_path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .map_err(|e| format!("cannot chmod {}: {e}", plist_path.display()))?;
+        run(Command::new("launchctl").args(["bootstrap", "system", &plist_path.display().to_string()]), "launchctl bootstrap system")?;
+        let _ = Command::new("launchctl").args(["enable", &target]).output();
+        Ok(vec![
+            format!("registered {target} from a plan whose sha256 matched the consent ({})", &sha256[..12]),
+            format!("plist {} root:wheel 0644; bootstrapped (RunAtLoad starts the core)", plist_path.display()),
+        ])
     }
 
     /// Unregister the job from whichever domain holds it (both are tried; the daemon's
@@ -605,5 +660,19 @@ mod tests {
         let agent = spec(&Domain::Gui(501));
         assert!(!agent.contains("UserName"), "an agent already runs as its user");
         assert_eq!(slot_from_plist(&agent), Some(slot));
+    }
+
+    // what this catches (Fable on #4232, the same window here): the consent covers the
+    // argv, and the elevated half reads the draft AFTER it — so the digest on the argv
+    // must change with any byte of the draft, and the system-domain path the elevated
+    // half writes is the constant one, never taken from the plan.
+    #[test]
+    fn the_elevated_half_is_bound_to_the_consented_bytes() {
+        let a = sha256_hex(b"<plist>a</plist>");
+        let b = sha256_hex(b"<plist>b</plist>");
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b, "one byte moved, the digest moved");
+        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(Domain::System.plist_path(Path::new("/")), PathBuf::from("/Library/LaunchDaemons/com.continuum.core.plist"));
     }
 }

@@ -2629,18 +2629,36 @@ struct InstallOptions {
     user: bool,
     /// Register only; do not stop a running orphan core or kickstart the job.
     no_start: bool,
+    /// The elevated half (root under `sudo`): install exactly `plan`, whose bytes must
+    /// hash to `sha256` — the digest the consent showed. Never a verb to type.
+    elevated: bool,
+    plan: Option<PathBuf>,
+    sha256: Option<String>,
 }
 
 impl InstallOptions {
-    fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut options = Self::default();
-        for arg in args {
+        while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--user" if !options.user => options.user = true,
                 "--system" => {}
                 "--no-start" if !options.no_start => options.no_start = true,
+                "--elevated" if !options.elevated => options.elevated = true,
+                "--plan" if options.plan.is_none() => {
+                    options.plan = Some(PathBuf::from(args.next().ok_or("install: --plan needs a path")?));
+                }
+                "--plan-sha" if options.sha256.is_none() => {
+                    options.sha256 = Some(args.next().ok_or("install: --plan-sha needs a 64-hex SHA-256 digest")?);
+                }
                 _ => return Err(format!("unknown install option {arg}; use [--system|--user] [--no-start]")),
             }
+        }
+        if options.elevated != (options.plan.is_some() && options.sha256.is_some()) {
+            return Err("install: --elevated, --plan and --plan-sha travel together (the elevated half registers exactly one consented plan)".to_string());
+        }
+        if options.elevated && (options.user || options.no_start) {
+            return Err("install: the elevated half takes no other option".to_string());
         }
         Ok(options)
     }
@@ -2660,6 +2678,12 @@ async fn install(options: InstallOptions) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use launchd::{live, Domain};
+        if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.sha256.as_deref()) {
+            for line in live::register_elevated(plan, sha)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
         let artifact = resolve_core_artifact()?;
         let socket = socket_path();
         // What launchd must carry for the exec to find its libraries: ORT and the runtime
@@ -2722,7 +2746,12 @@ async fn install(options: InstallOptions) -> Result<(), String> {
             }
             return Ok(());
         }
-        live::kickstart(&job.domain)?;
+        // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated
+        // half — a kickstart there needs root and is not owed. The agent is kickstarted:
+        // on a gui domain in on-demand-only mode bootstrap does NOT start it (measured).
+        if matches!(job.domain, Domain::Gui(_)) {
+            live::kickstart(&job.domain)?;
+        }
         let core_pid = || live::serving_core_pid(&socket);
         match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
             Ok(pid) => {
