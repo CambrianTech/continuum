@@ -175,6 +175,20 @@ fn lane_over_its_knee(live_window: u32, live_lanes: u32, plan_window: u32, plan_
     live_lanes > 0 && plan_lanes > 0 && plan_lanes < live_lanes && plan_window >= live_window
 }
 
+/// The knee's mirror: the plan wants MORE warm slots than the live lane serves. The plan
+/// never asks for more lanes than the roster demands (`lane_cap` is the demand, then the
+/// fit), so a plan with more lanes than are live is minds WITHOUT a warm slot — the #266
+/// shape: every turn of an unslotted mind re-prefills cold. Token-space calls such a plan
+/// a wash or a loss (measured 2026-09-19 15:4xZ, the M5: a cold boot launched 1 × 161,792
+/// under a transient 44 GB budget; the steady plan said 2 × 67,340 — 17% LESS space —
+/// and the reconcile declined it every tick, so a second coder lane could never appear
+/// at runtime, and the settled 1-lane geometry then capped the next boot: a one-way
+/// ratchet with no mover the other way). The sustain streak, the flat-plan check and the
+/// cooldown still gate the relaunch; this only makes a slot shortfall COUNT as evidence.
+fn roster_short_of_slots(live_lanes: u32, plan_lanes: u32) -> bool {
+    live_lanes > 0 && plan_lanes > live_lanes
+}
+
 /// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
 /// adopted. #368 (2nd occurrence, 2026-08-08): a ~6-second RAM transient at
 /// agent/solve launch collapsed the planner's budget to zero for ONE tick, the
@@ -2443,6 +2457,8 @@ impl ServingDaemonModule {
                     served_ctx,
                     lanes,
                 );
+                let short_of_slots = roster_short_of_slots(live.lanes, lanes);
+                let worth_it = worth_it || short_of_slots;
                 // A STILL-CLIMBING plan is not settled (2026-09-02, the boot
                 // staircase): personas register footprints serially at boot,
                 // demand climbs in 15%+ stairs, and each stair "sustained" for
@@ -2517,7 +2533,7 @@ impl ServingDaemonModule {
                         served_ctx,
                         lanes,
                     );
-                    let declined = live_space < plan_space || over_knee;
+                    let declined = live_space < plan_space || over_knee || short_of_slots;
                     let decline_ticks = if declined {
                         self.decline_log_ticks
                             .fetch_add(1, Ordering::Relaxed)
@@ -4755,14 +4771,14 @@ fn prompt_cache_decision(
             afford
         };
         // A cache FILLS to its grant by design, so "everything above the OS floor" is a
-        // grant to end the serve at the floor with nothing left for the co-consumers the
-        // planner reserves for (the core's own growth, a sidecar, the eye). Measured
-        // 2026-09-19 on the M5: a 19,519 MiB grant from a 20,468 MiB afford, and the box
-        // sat 6 GB into swap with 25 GB in the compressor an hour later. The same
-        // headroom the planner keeps for co-consumers when it sizes the window
-        // (`CO_CONSUMER_HEADROOM`) — one constant, both decisions.
+        // grant to end the serve at the floor with nothing left for the co-consumers
+        // (the core's own growth, a sidecar, the eye). Measured 2026-09-19 on the M5: a
+        // 19,519 MiB grant from a 20,468 MiB afford, and the box sat 6 GB into swap with
+        // 25 GB in the compressor an hour later. The cache keeps this fraction back; the
+        // planner's window no longer does (the mode's fraction and the board's live
+        // subtraction are its headroom — `CACHE_GRANT_HEADROOM`).
         let afford = (afford as f64
-            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
+            * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =
@@ -5784,7 +5800,7 @@ mod tests {
         // grant, so a grant of everything above the floor ends at the floor (the M5,
         // 2026-09-19: 6 GB of swap under a 19.5 GB grant).
         let afford = (above_floor as f64
-            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
+            * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         assert!(afford < above_floor, "the cache never gets everything above the floor");
         assert_eq!(measured.affordable_bytes, Some(afford));
         assert_eq!(
@@ -5811,9 +5827,9 @@ mod tests {
     // unified pays the working set, discrete does not, and the discrete answer is the
     // demand-sized one.
     /// The grant the cache may be promised out of a ceiling: the ceiling less the
-    /// planner's co-consumer headroom (#4216 — a cache fills to its grant).
+    /// cache's grant headroom (#4216 — a cache fills to its grant).
     fn grantable(ceiling: u64) -> u64 {
-        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64
+        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64
     }
 
     /// The grant out of a known `available` reading: the smaller of "above the OS
@@ -6125,11 +6141,13 @@ mod tests {
             strict |= h > c;
         }
         assert!(strict, "the carried term costs at least one lane somewhere in the range");
-        // The M5's own numbers, pinned: header-only 2 lanes at 30 GB and 3 at 34; carried 1
-        // at 30 and 2 at 34; the raised rate the old code produced: 1 at 30, 2 at 34.
-        assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (2, 3));
-        assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (1, 2));
-        assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (1, 2));
+        // The M5's own numbers, pinned, with the budget sized as handed (no second
+        // headroom on top of the mode's — `CACHE_GRANT_HEADROOM`): header-only 3 lanes at
+        // 30 GB and 4 at 34; carried 2 at 30 and 3 at 34; the raised rate the old code
+        // produced: 2 at 30, 3 at 34. (Under the stacked fractions these read 2/3, 1/2, 1/2.)
+        assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (3, 4));
+        assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (2, 3));
+        assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (2, 3));
         let kv = kv_per_token_from_measured(10_240, 36_000);
         assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
         assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
@@ -6177,6 +6195,26 @@ mod tests {
         assert!(!lane_over_its_knee(57_600, 2, 47_426, 4));
         let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
         assert!(!worth_it, "10% at the same lane count is still under the margin");
+    }
+
+    // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
+    // A cold boot launched 1 × 161,792 under a transient budget; the steady plan said
+    // 2 × 67,340 — a 17% LOSS of token-space — and token-space alone declined it every
+    // tick, so the roster's second coder lane could never appear at runtime, and the
+    // settled 1-lane geometry then capped every later boot. A plan with more lanes than
+    // are live is minds without a warm slot; that is evidence whatever the space says.
+    // Fewer or equal lanes is not this arm (the knee and the margin rule those), and a
+    // dead lane (0 live lanes) is recovery's job, never re-home's.
+    #[test]
+    fn a_roster_short_of_warm_slots_is_rehome_evidence_whatever_the_token_space_says() {
+        use super::{rehome_gain_evidence, roster_short_of_slots};
+        assert!(roster_short_of_slots(1, 2), "1 × 161k → 2 × 67k: a second warm slot for the roster");
+        let (_, _, _, by_space) = rehome_gain_evidence(161_792, 1, 67_340, 2);
+        assert!(!by_space, "token-space alone calls the second lane a loss — the arm above is what carries it");
+        assert!(roster_short_of_slots(2, 4), "2 × 40k → 4 × 20k: two more slots the roster asked for");
+        assert!(!roster_short_of_slots(2, 2), "the same count is the margin's business");
+        assert!(!roster_short_of_slots(8, 4), "fewer lanes is the knee's business");
+        assert!(!roster_short_of_slots(0, 2), "a dead lane is recovery, not re-home");
     }
 
     // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick

@@ -315,16 +315,22 @@ pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) 
 /// thrash: free memory jitters, the "best fit" flips, the model reloads).
 pub const SWITCH_UP_HEADROOM: f64 = 0.10;
 
-/// Co-consumer headroom (Joel 2026-07-16). The live GPU budget is a SHARED,
-/// fluctuating Metal pool — a browser, LiveKit, the compositor, or a game can grab
-/// (or, minutes later, RELEASE) memory the spawn-time free-VRAM snapshot can't
-/// predict. Sizing to 100% of that snapshot is what let a high-free reading pick a
-/// 53k window that then OOM'd (`kIOGPU…OutOfMemory`) when those consumers spiked.
-/// Reserve this fraction so serving never fills a pool it doesn't solely own; the
-/// ResourceGovernor (#56) re-plans the window UP into VRAM a closing game frees, DOWN
-/// under live pressure. Bias: a smaller window is a slower turn; overcommit is an OOM
-/// that takes the whole shared lane down. [[capacity-fabric-live-never-block-sim-as-gym]]
-pub const CO_CONSUMER_HEADROOM: f64 = 0.15;
+/// The prompt cache's grant headroom (#4216): a cache FILLS to its grant, so the grant
+/// is the affordable figure less this fraction, never the whole of it.
+///
+/// This constant was born as the PLAN's co-consumer headroom (Joel 2026-07-16: the
+/// spawn-time free-VRAM snapshot could not see a browser or a game spike, so the window
+/// was sized to 85% of it). Two things have since made that reservation a second copy
+/// of itself: the governor's board subtracts every other holder's LIVE residency before
+/// serving is handed its budget (`budget_for_replacing`, 2026-08-19), and the power mode
+/// withholds its own fraction of that budget (`PowerMode::serving_fraction`: Eco 0.55,
+/// Comfort 0.80). Stacked, the plan kept 0.80 × 0.85 = 68% of a budget that already
+/// excluded the co-consumers. Measured 2026-09-19 on the M5 (64 GB, Comfort): board
+/// budget 37 GB after 18.7 GB of other holders → 25 GB for weights + lanes → ONE lane
+/// under a 19 GB model, while 2 × 67k lanes physically fit in 27.4 GB with 26% of the
+/// budget to spare. The plan now sizes to the budget the mode hands it — the mode IS
+/// the headroom policy, one place — and only the cache grant keeps this fraction.
+pub const CACHE_GRANT_HEADROOM: f64 = 0.15;
 
 /// The transient prefill compute buffer, expressed as a fraction of the KV rate
 /// (`kv_per_token / this`). llama.cpp sizes the prefill graph for the FULL served
@@ -424,8 +430,10 @@ impl ModelFootprint {
         if self.kv_per_token == 0 {
             return self.context_window;
         }
-        let effective = (usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
-        let after_weights = effective.saturating_sub(self.weights_bytes);
+        // The budget as handed: the mode's fraction and the board's live subtraction of
+        // every other holder are the headroom (see `CACHE_GRANT_HEADROOM` for the copy
+        // this used to keep on top of them).
+        let after_weights = usable_bytes.saturating_sub(self.weights_bytes);
         let compute_floor = self.compute_buffer_per_lane();
         let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
         let per_token_cost = self.kv_per_token.saturating_add(compute_rate).max(1);
@@ -707,11 +715,12 @@ pub fn plan_serving(
     // 2026-07-14 OOM). With the buffer accounted, the lane count can follow persona
     // demand on a roomy host (each persona its OWN warm slot → no cross-persona
     // clobber → prefill caches) and still degrade to fewer lanes on a small one.
-    // Effective budget = the live snapshot MINUS co-consumer headroom (the shared,
-    // fluctuating Metal pool this process doesn't solely own). Everything downstream
-    // sizes against THIS, so a mid-session spike from a game/browser can't OOM the
-    // window we picked (Joel 2026-07-16; the governor #56 grows it back on reclaim).
-    let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+    // Effective budget = the budget as handed. The co-consumers are already out of it:
+    // the governor's board subtracts every other holder's live residency, and the power
+    // mode withholds its fraction (Comfort keeps 20% of the box free for a spike; Eco
+    // 45%). A further 15% here was the same reservation a second time — on the M5 it was
+    // the difference between one lane and two (see `CACHE_GRANT_HEADROOM`).
+    let effective = host.usable_bytes;
     let window_for = |l: u64| -> u32 { model.window_within(host.usable_bytes, l as u32) };
 
     // THE DAEMON'S PURPOSE, made concrete (#213): serve as many concurrent minds as DEMAND
@@ -1342,17 +1351,17 @@ mod tests {
         let footprint = devstral.weights_bytes
             + devstral.kv_at(c as u32) * lanes
             + (compute_floor + compute_rate * c) * lanes;
-        let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+        let effective = host.usable_bytes;
         assert!(
             footprint <= effective,
             "served window {c} overcommits: footprint {footprint} > effective {effective}"
         );
-        // And it's strictly smaller than the compute-blind, headroom-blind math would pick
-        // (weights + KV filling the FULL usable budget) — the fix demonstrably shrinks it.
+        // And it's strictly smaller than the compute-blind math would pick (weights + KV
+        // filling the FULL usable budget) — the compute buffers demonstrably shrink it.
         let naive = (host.usable_bytes - devstral.weights_bytes) / lanes / devstral.kv_per_token;
         assert!(
             c < naive,
-            "window-scaled + headroom reserve must shrink the window ({c} < {naive})"
+            "window-scaled compute must shrink the window ({c} < {naive})"
         );
     }
 
@@ -1696,7 +1705,7 @@ mod tests {
         let footprint = devstral.weights_bytes
             + devstral.kv_at(c as u32) * lanes
             + (compute_floor + compute_rate * c) * lanes;
-        let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+        let effective = host.usable_bytes;
         assert!(
             footprint <= effective,
             "degraded plan still overcommits: {footprint} > {effective}"
