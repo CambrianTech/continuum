@@ -160,11 +160,6 @@ pub fn measured_record(model: &str) -> Option<MeasuredCost> {
     COSTS.lock().get(model).filter(|c| c.fresh_at(now)).cloned()
 }
 
-/// The fresh measured per-token cost for `model`, if any.
-pub fn measured_per_token(model: &str) -> Option<u64> {
-    let now = now_ms();
-    COSTS.lock().get(model).filter(|c| c.fresh_at(now)).map(|c| c.per_token_bytes)
-}
 
 /// The ANONYMOUS memory a process holds — dirty + compressed/swapped, mapped files
 /// excluded. On macOS `proc_pid_rusage` (libproc, no entitlement for our own user's

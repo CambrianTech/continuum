@@ -4987,27 +4987,30 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // budget where the arithmetic at the header rate holds two (84k) and at 34 GB three.
     // The excess is a real fixed term — named on the probe below so a fixed-residency
     // model can learn it — never a per-token one.
-    match header_rate {
-        Some(_) => {
-            let mut fp = fp;
-            if let Some(record) = crate::inference::lane_footprint::measured_record(&fp.model_id) {
-                fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, &record);
-                if fp.fixed_per_lane_bytes > 0 {
-                    crate::probe!(
-                        class = "serving.footprint.excess_is_fixed",
-                        model = fp.model_id.as_str(),
-                        header_rate = fp.kv_per_token,
-                        measured_per_token = record.per_token_bytes,
-                        measured_window = record.window as u64,
-                        fixed_per_lane_bytes = fp.fixed_per_lane_bytes,
-                        "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers) and is carried per lane; the header rate stands"
-                    );
-                }
+    let mut fp = fp;
+    let measured = crate::inference::lane_footprint::measured_record(&fp.model_id);
+    fp.kv_per_token = kv_rate_for_plan(
+        header_rate.is_some(),
+        fp.kv_per_token,
+        measured.as_ref().map(|r| r.per_token_bytes),
+    );
+    if header_rate.is_some() {
+        if let Some(record) = &measured {
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record);
+            if fp.fixed_per_lane_bytes > 0 {
+                crate::probe!(
+                    class = "serving.footprint.excess_is_fixed",
+                    model = fp.model_id.as_str(),
+                    header_rate = fp.kv_per_token,
+                    measured_per_token = record.per_token_bytes,
+                    measured_window = record.window as u64,
+                    fixed_per_lane_bytes = fp.fixed_per_lane_bytes,
+                    "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers) and is carried per lane; the header rate stands"
+                );
             }
-            Some(fp)
         }
-        None => Some(apply_measured_cost(fp)),
     }
+    Some(fp)
 }
 
 /// The residency a sample measured BEYOND the header's per-token rate, as fixed bytes per
@@ -5039,12 +5042,6 @@ pub fn kv_rate_for_plan(header_known: bool, estimate: u64, measured: Option<u64>
     }
 }
 
-fn apply_measured_cost(mut fp: ModelFootprint) -> ModelFootprint {
-    if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
-        fp.kv_per_token = kv_per_token_from_measured(fp.kv_per_token, measured);
-    }
-    fp
-}
 
 /// Pure half of [`apply_measured_cost`]: the kv rate whose plan cost (`kv + kv / D`)
 /// equals `measured`, or the estimate when the measurement does not correct it.
