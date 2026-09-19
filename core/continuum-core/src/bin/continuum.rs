@@ -253,6 +253,9 @@ async fn run() -> Result<(), CliError> {
         "deploy-verify" | "verify" => verify_deployed_build(false).await,
         "deploy-consume" => deploy_consume(DeployConsumeOptions::parse(args)?).await,
         "supervisor-status" => supervisor_status(args.into_iter().any(|a| a == "--crash-test")).await,
+        // ONE idempotent verb converges the machine (Joel, 2026-09-19): each arm reads,
+        // changes only what drifted, says so. Windows arms in `supervisor_install` /
+        // `install_cli`; the macOS supervisor arm is `launchd` (card a1bd8b58).
         "install" => install(supervisor_install::InstallOptions::parse(args)?).await,
         "uninstall" => uninstall().await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
@@ -2493,21 +2496,51 @@ async fn running_build_sha() -> Option<String> {
 // =============================================================================
 
 async fn install(options: supervisor_install::InstallOptions) -> Result<(), String> {
+    #[cfg(any(windows, target_os = "macos"))]
     use supervisor_install::{Arm, ArmReport};
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
         return Err(format!(
             "continuum install: this platform's arms are not in the binary yet — \
-             the macOS arm is #4228 (launchd), the Linux arm (`systemd --user` + linger) is owed; \
-             Windows is here. Until it lands: tools/scripts/install-service.sh ({} arm).",
+             the Linux arm (`systemd --user` + linger) is owed; Windows and macOS are here. \
+             Until it lands: tools/scripts/install-service.sh ({} arm).",
             std::env::consts::OS
         ));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.plan_sha.as_deref()) {
+            for line in launchd::live::register_elevated(plan, sha)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        let check = options.check;
+        let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
+        if options.runs(Arm::Supervisor) {
+            reports.push((Arm::Supervisor, install_supervisor_macos(check, options.user).await?));
+        }
+        if options.runs(Arm::Core) {
+            reports.push((Arm::Core, install_core(check).await?));
+        }
+        if options.runs(Arm::Cli) {
+            // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
+            // slot carries no CLI descriptor yet. Said, never counted as converged.
+            if options.cli {
+                return Err("install --cli: the macOS CLI arm is not in the binary yet (the slot carries no CLI descriptor on this OS)".to_string());
+            }
+            println!("  cli: the macOS arm is owed — skipped, not counted");
+        }
+        return finish_install(check, &reports);
     }
     #[cfg(windows)]
     {
         if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.plan_sha.as_deref()) {
             return supervisor_install::install_supervisor_elevated(plan, sha);
+        }
+        if options.user {
+            return Err("install --user is the macOS agent choice; Windows registers the S4U task".to_string());
         }
         let check = options.check;
         let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
@@ -2526,22 +2559,29 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         if options.runs(Arm::Cli) {
             reports.push((Arm::Cli, install_cli(check).await?));
         }
-        let remaining: usize = reports.iter().map(|(_, r)| r.drift_after).sum();
-        let found: usize = reports.iter().map(|(_, r)| r.drift_before).sum();
-        if remaining > 0 {
-            return Err(if check {
-                format!("install --check: {remaining} way(s) drifted across {} arm(s); `continuum install` converges them", reports.len())
-            } else {
-                format!("install: {remaining} way(s) still drifted after running {} arm(s) — read the lines above", reports.len())
-            });
-        }
-        println!(
-            "✓ install: {} arm(s) converged{}",
-            reports.len(),
-            if found == 0 { " — nothing changed" } else { "" }
-        );
-        Ok(())
+        finish_install(check, &reports)
     }
+}
+
+/// The orchestrator's verdict, one for every platform: drift summed across the arms
+/// that ran, exit non-zero only on what remains; twice = "nothing changed".
+#[cfg(any(windows, target_os = "macos"))]
+fn finish_install(check: bool, reports: &[(supervisor_install::Arm, supervisor_install::ArmReport)]) -> Result<(), String> {
+    let remaining: usize = reports.iter().map(|(_, r)| r.drift_after).sum();
+    let found: usize = reports.iter().map(|(_, r)| r.drift_before).sum();
+    if remaining > 0 {
+        return Err(if check {
+            format!("install --check: {remaining} way(s) drifted across {} arm(s); `continuum install` converges them", reports.len())
+        } else {
+            format!("install: {remaining} way(s) still drifted after running {} arm(s) — read the lines above", reports.len())
+        });
+    }
+    println!(
+        "✓ install: {} arm(s) converged{}",
+        reports.len(),
+        if found == 0 { " — nothing changed" } else { "" }
+    );
+    Ok(())
 }
 
 /// The installed CLI, read out of the ContinuumCore task's description (the release
@@ -2555,7 +2595,7 @@ fn installed_cli_from_descriptor(description: &str) -> Result<String, String> {
 }
 
 /// The core arm: running build vs the checkout's HEAD.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, String> {
     use supervisor_install::ArmReport;
     let head = git_head_short_sha().ok_or("install: no checkout HEAD to converge to — run from the repository")?;
@@ -2572,7 +2612,10 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         println!("✗ core: drifted; `continuum install` builds HEAD, stages it and hands it to the supervisor");
         return Ok(ArmReport::read_only(1));
     }
-    reboot(RebootOptions { service: true, ..Default::default() }).await?;
+    // Windows hands the built core to the prepared task. macOS `reboot` implies the
+    // supervisor when a launchd job exists (stage + kickstart) and builds direct when
+    // none does — the same idempotent answer either way.
+    reboot(RebootOptions { service: cfg!(windows), ..Default::default() }).await?;
     let now = running_build_sha().await;
     match now.as_deref() {
         Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
@@ -2727,157 +2770,121 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct InstallOptions {
-    /// The per-user LaunchAgent (no sudo). NOT the default: measured 2026-09-19 on
-    /// IntelMac, a gui domain in on-demand-only mode neither starts it at bootstrap nor
-    /// relaunches it after `kill -9` — it registers, it does not supervise. The verb
-    /// accepts it for the tiers where it works and proves it before reporting success.
-    user: bool,
-    /// Register only; do not stop a running orphan core or kickstart the job.
-    no_start: bool,
-    /// The elevated half (root under `sudo`): install exactly `plan`, whose bytes must
-    /// hash to `sha256` — the digest the consent showed. Never a verb to type.
-    elevated: bool,
-    plan: Option<PathBuf>,
-    sha256: Option<String>,
-}
-
-impl InstallOptions {
-    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
-        let mut options = Self::default();
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--user" if !options.user => options.user = true,
-                "--system" => {}
-                "--no-start" if !options.no_start => options.no_start = true,
-                "--elevated" if !options.elevated => options.elevated = true,
-                "--plan" if options.plan.is_none() => {
-                    options.plan = Some(PathBuf::from(args.next().ok_or("install: --plan needs a path")?));
-                }
-                "--plan-sha" if options.sha256.is_none() => {
-                    options.sha256 = Some(args.next().ok_or("install: --plan-sha needs a 64-hex SHA-256 digest")?);
-                }
-                _ => return Err(format!("unknown install option {arg}; use [--system|--user] [--no-start]")),
+/// The macOS supervisor arm of `continuum install` (card a1bd8b58): READ the registered
+/// supervision against the contract ([`launchd::mac_drift`]), and on drift — unless
+/// `--check` — WRITE: stop any core on the socket through the save rail, register with
+/// the binary as the command (the system LaunchDaemon by default, one sudo, the draft
+/// bound to the consent by its digest; `--user` = the agent), hand it the launch, and
+/// refuse a core launchd does not own. Then read again: the report is what remains.
+#[cfg(target_os = "macos")]
+async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_install::ArmReport, String> {
+    use launchd::{live, mac_drift, Domain, MacDrift};
+    use supervisor_install::ArmReport;
+    let socket = socket_path();
+    let want = if user {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        Domain::Gui(unsafe { libc::getuid() })
+    } else {
+        Domain::System
+    };
+    let home = home_dir()?;
+    let read = || -> Result<Vec<MacDrift>, String> {
+        let job = live::job()?;
+        let plist = match &job {
+            Some(j) => {
+                let path = j.domain.plist_path(Path::new(&home));
+                Some(std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?)
             }
-        }
-        if options.elevated != (options.plan.is_some() && options.sha256.is_some()) {
-            return Err("install: --elevated, --plan and --plan-sha travel together (the elevated half registers exactly one consented plan)".to_string());
-        }
-        if options.elevated && (options.user || options.no_start) {
-            return Err("install: the elevated half takes no other option".to_string());
-        }
-        Ok(options)
-    }
-}
-
-/// `continuum install`: register the core with the host supervisor, hand it the launch,
-/// and prove ownership before reporting success. macOS: the system LaunchDaemon by
-/// default (sudo, once — the consent this OS requires), the binary as the command, the
-/// launch environment computed by the same code a direct launch uses. The receipt is
-/// [`launchd::live::wait_owned`]: a core answering that launchd does not own is refused.
-async fn install(options: InstallOptions) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = options;
-        Err("continuum install: the macOS arm is here; Windows registers through register-core-service.ps1 (card 7b56a84b) until its arm lands in this verb".to_string())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use launchd::{live, Domain};
-        if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.sha256.as_deref()) {
-            for line in live::register_elevated(plan, sha)? {
-                println!("{line}");
-            }
-            return Ok(());
-        }
-        let artifact = resolve_core_artifact()?;
-        let socket = socket_path();
-        // What launchd must carry for the exec to find its libraries: ORT and the runtime
-        // library dirs, read off a Command so it is the direct launch's computation. NOT
-        // config.env — the core applies that file to itself on every boot
-        // (`config_env::apply_to_process`); frozen into the plist it would outlive an edit
-        // until the next `install` (Fable, #4228 review).
-        let mut probe = direct_core_command(&artifact, &socket);
-        apply_runtime_library_path(&mut probe);
-        let mut env: Vec<(String, String)> = probe
-            .get_envs()
-            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
-            .collect();
-        // launchd's PATH is the system's; the core finds airc and the engines on the
-        // operator's. Captured at install, visible in the plist, no login shell needed.
-        if let Ok(path) = std::env::var("PATH") {
-            env.push(("PATH".to_string(), path));
-        }
-        let domain = if options.user {
-            // SAFETY: getuid has no preconditions and cannot fail.
-            Domain::Gui(unsafe { libc::getuid() })
-        } else {
-            Domain::System
+            None => None,
         };
-        // Whatever core holds the socket — an orphan, or the previous registration's own
-        // pid (the first live run said "outside launchd" of a core launchd owned; the
-        // job's pid is read first now) — goes down through the save rail before the job
-        // is booted out, which would end it without one. Like `reboot`, an unsaved module
-        // is printed, not fatal: the goal is a supervised core, and refusing would leave
-        // the node down. On `--no-start` it is left running and named.
-        let running = live::serving_core_pid(&socket);
-        if !options.no_start {
-            if let Some(pid) = running {
-                let owned = live::job()?.and_then(|j| live::job_pid(&j.domain)) == Some(pid);
-                println!(
-                    "▶ a core (pid {pid}) is serving {socket}{} — stopping it through the save rail before re-registering",
-                    if owned { " under the existing launchd job" } else { " outside launchd" }
-                );
-                let _ = stop_with(true).await?;
-            }
-        }
-        let job = live::install(domain, &artifact, &socket, &env)?;
-        // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a
-        // node that already has one this REGISTERS what is in the slot; a new build reaches
-        // the slot through `continuum reboot` (stage + kickstart), or `CONTINUUM_CORE_BIN`.
-        if artifact.canonicalize().ok() == job.slot.canonicalize().ok() {
-            println!("  artifact: the slot's own binary (a new build gets there through `continuum reboot`, or set CONTINUUM_CORE_BIN)");
-        } else {
-            println!("  artifact: staged {} into the slot", artifact.display());
-        }
+        let job_pid = job.as_ref().and_then(|j| live::job_pid(&j.domain));
+        let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(15 * 60));
+        Ok(mac_drift(
+            job.as_ref().zip(plist.as_deref()).map(|(j, p)| (&j.domain, p)),
+            &want,
+            job_pid,
+            live::serving_core_pid(&socket),
+            on_demand,
+        ))
+    };
+    let before = read()?;
+    if before.is_empty() {
+        println!("✓ supervisor: converged — {} owns the core, binary as the command, lanes survive a kickstart", want.target());
+        return Ok(ArmReport::converged());
+    }
+    for d in &before {
+        println!("  supervisor: {d:?}");
+    }
+    if check {
+        println!("✗ supervisor: drifted; `continuum install` registers {} and hands it the launch", want.target());
+        return Ok(ArmReport::read_only(before.len()));
+    }
+
+    let artifact = resolve_core_artifact()?;
+    // What launchd must carry for the exec to find its libraries: ORT and the runtime
+    // library dirs, read off a Command so it is the direct launch's computation. NOT
+    // config.env — the core applies that file to itself on every boot
+    // (`config_env::apply_to_process`); frozen into the plist it would outlive an edit
+    // until the next `install` (Fable, #4228 review).
+    let mut probe = direct_core_command(&artifact, &socket);
+    apply_runtime_library_path(&mut probe);
+    let mut env: Vec<(String, String)> = probe
+        .get_envs()
+        .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+        .collect();
+    // launchd's PATH is the system's; the core finds airc and the engines on the
+    // operator's. Captured at install, visible in the plist, no login shell needed.
+    if let Ok(path) = std::env::var("PATH") {
+        env.push(("PATH".to_string(), path));
+    }
+    // Whatever core holds the socket — an orphan, or the previous registration's own pid
+    // — goes down through the save rail before the job is booted out, which would end it
+    // without one. Like `reboot`, an unsaved module is printed, not fatal: the goal is a
+    // supervised core, and refusing would leave the node down.
+    if let Some(pid) = live::serving_core_pid(&socket) {
+        let owned = live::job()?.and_then(|j| live::job_pid(&j.domain)) == Some(pid);
         println!(
-            "✓ registered {} → {} {socket} (plist {})",
-            job.domain.target(),
-            job.slot.display(),
-            job.domain.plist_path(Path::new(&home_dir()?)).display()
+            "▶ a core (pid {pid}) is serving {socket}{} — stopping it through the save rail before re-registering",
+            if owned { " under the existing launchd job" } else { " outside launchd" }
         );
-        if options.no_start {
-            if let Some(pid) = running {
-                println!("  --no-start: the running core (pid {pid}) is NOT supervised; `continuum reboot` hands the launch to launchd");
-            }
-            return Ok(());
-        }
-        // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated
-        // half — a kickstart there needs root and is not owed. The agent is kickstarted:
-        // on a gui domain in on-demand-only mode bootstrap does NOT start it (measured).
-        if matches!(job.domain, Domain::Gui(_)) {
-            live::kickstart(&job.domain)?;
-        }
-        let core_pid = || live::serving_core_pid(&socket);
-        match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
-            Ok(pid) => {
-                println!("✅ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target());
-                Ok(())
-            }
-            Err(why) => {
-                let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
-                Err(format!(
-                    "registered but NOT supervised: {why}{}",
-                    if on_demand {
-                        " — launchd: \"pending spawn, domain in on-demand-only mode\": the user agent cannot run on this Mac; run `continuum install` (system, sudo once)"
-                    } else {
-                        ""
-                    }
-                ))
-            }
+        let _ = stop_with(true).await?;
+    }
+    let job = live::install(want.clone(), &artifact, &socket, &env)?;
+    // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a node
+    // that already has one this REGISTERS what is in the slot; the core arm (or `reboot`)
+    // is what brings HEAD to the slot.
+    if artifact.canonicalize().ok() == job.slot.canonicalize().ok() {
+        println!("  artifact: the slot's own binary (the core arm brings HEAD to the slot)");
+    } else {
+        println!("  artifact: staged {} into the slot", artifact.display());
+    }
+    println!("✓ registered {} → {} {socket}", job.domain.target(), job.slot.display());
+    // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated half
+    // — a kickstart there needs root and is not owed. The agent is kickstarted: on a gui
+    // domain in on-demand-only mode bootstrap does NOT start it (measured).
+    if matches!(job.domain, Domain::Gui(_)) {
+        live::kickstart(&job.domain)?;
+    }
+    let core_pid = || live::serving_core_pid(&socket);
+    match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+        Ok(pid) => println!("✓ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target()),
+        Err(why) => {
+            let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
+            return Err(format!(
+                "registered but NOT supervised: {why}{}",
+                if on_demand {
+                    " — launchd: \"pending spawn, domain in on-demand-only mode\": the user agent cannot run on this Mac; run `continuum install` (system, sudo once)"
+                } else {
+                    ""
+                }
+            ));
         }
     }
+    let after = read()?;
+    for d in &after {
+        println!("  supervisor: still {d:?}");
+    }
+    Ok(ArmReport { drift_before: before.len(), drift_after: after.len() })
 }
 
 /// `continuum uninstall`: unregister the job from launchd (both domains). The staged
@@ -4818,8 +4825,8 @@ fn usage() -> String {
        continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
-       continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
-       continuum install [--check]     converge this machine: the OS supervisor (S4U at boot + the\n                                       deploy consumer, one elevation), the core (build HEAD, stage,\n                                       hand off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (Windows; mac/linux arms pending)\n\n  \
+       continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
+       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (linux arms pending)\n  \
        continuum uninstall             unregister the supervisor job (the staged binary stays)\n  \
        continuum supervisor-status [--crash-test]\n                                       who owns the running core; --crash-test = kill -9, expect a heal < 60 s\n\
      \n\

@@ -183,6 +183,57 @@ impl SupervisionVerdict {
     }
 }
 
+/// One way the registered supervision differs from the contract — the read half of the
+/// macOS supervisor arm of `continuum install` (Joel: one idempotent verb; each arm
+/// reads, changes only what drifted, says so). The write half is the register + hand-off;
+/// the verb re-reads after it and demands this list empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacDrift {
+    /// No launchd job at all.
+    Absent,
+    /// Registered in the other domain than asked for (agent vs daemon).
+    Domain { have: Domain, want: Domain },
+    /// The plist execs a bash wrapper, not the binary (audit item 7).
+    WrapperCommand,
+    /// The plist lacks `AbandonProcessGroup`: a kickstart or heal would kill the lanes.
+    KillsLanes,
+    /// The job exists but the core on the socket is not its pid (or nothing answers).
+    NotOwned { job_pid: Option<u32>, core_pid: Option<u32> },
+    /// The agent's domain is on-demand-only: registered, cannot heal.
+    CannotHeal,
+}
+
+/// The pure rule over what the node can read: the job (if any) and its plist text, the
+/// pids, launchd's word on the domain. `want` is the domain asked for.
+pub fn mac_drift(
+    have: Option<(&Domain, &str)>,
+    want: &Domain,
+    job_pid: Option<u32>,
+    core_pid: Option<u32>,
+    on_demand_only: bool,
+) -> Vec<MacDrift> {
+    let Some((domain, plist)) = have else {
+        return vec![MacDrift::Absent];
+    };
+    let mut out = Vec::new();
+    if domain != want {
+        out.push(MacDrift::Domain { have: domain.clone(), want: want.clone() });
+    }
+    if plist.contains("<string>/bin/bash</string>") || plist.contains("<string>/bin/sh</string>") {
+        out.push(MacDrift::WrapperCommand);
+    }
+    if !plist.contains("<key>AbandonProcessGroup</key><true/>") {
+        out.push(MacDrift::KillsLanes);
+    }
+    match supervision_verdict(Some(domain.clone()), job_pid, core_pid, on_demand_only) {
+        SupervisionVerdict::Supervised { .. } => {}
+        SupervisionVerdict::OwnedButCannotHeal { .. } => out.push(MacDrift::CannotHeal),
+        SupervisionVerdict::JobPresentCoreOrphaned { job_pid, core_pid } => out.push(MacDrift::NotOwned { job_pid, core_pid }),
+        SupervisionVerdict::Unsupervised => out.push(MacDrift::Absent),
+    }
+    out
+}
+
 /// Everything the plist `continuum install` writes is built from — the binary as the
 /// command (audit #4223 item 7: no `bash -lc` wrapper). `env` is what launchd must
 /// carry for the exec to find its libraries and tools (PATH, the runtime library dirs);
@@ -660,6 +711,37 @@ mod tests {
         let agent = spec(&Domain::Gui(501));
         assert!(!agent.contains("UserName"), "an agent already runs as its user");
         assert_eq!(slot_from_plist(&agent), Some(slot));
+    }
+
+    // what this catches (the one-verb contract): a converged daemon reads as NOTHING —
+    // twice = nothing changed — and each way a Mac can leave the contract is named so the
+    // write half changes only that: the script's wrapper plist (two drifts at once), the
+    // agent where the daemon was asked for, an owned-but-cannot-heal agent, an orphan.
+    #[test]
+    fn mac_drift_is_empty_when_converged_and_names_each_departure() {
+        let slot = PathBuf::from("/Users/j/.continuum/bin/continuum-core-server");
+        let env = vec![("PATH".to_string(), "/a".to_string())];
+        let daemon = render_plist(&PlistSpec { domain: &Domain::System, slot: &slot, socket: "/tmp/c.sock", home: Path::new("/Users/j"), user: "j", env: &env });
+        assert!(mac_drift(Some((&Domain::System, &daemon)), &Domain::System, Some(7), Some(7), false).is_empty(), "converged is silent");
+        assert_eq!(mac_drift(None, &Domain::System, None, Some(3), false), vec![MacDrift::Absent]);
+        let wrapper = "<key>ProgramArguments</key><array><string>/bin/bash</string><string>-lc</string><string>exec \"/x\" \"/s\"</string></array>";
+        assert_eq!(
+            mac_drift(Some((&Domain::Gui(501), wrapper)), &Domain::System, Some(9), Some(9), true),
+            vec![
+                MacDrift::Domain { have: Domain::Gui(501), want: Domain::System },
+                MacDrift::WrapperCommand,
+                MacDrift::KillsLanes,
+                MacDrift::CannotHeal,
+            ],
+            "the script-installed agent on IntelMac, read against the daemon contract"
+        );
+        let agent = render_plist(&PlistSpec { domain: &Domain::Gui(501), slot: &slot, socket: "/tmp/c.sock", home: Path::new("/Users/j"), user: "j", env: &env });
+        assert_eq!(
+            mac_drift(Some((&Domain::Gui(501), &agent)), &Domain::Gui(501), Some(9), Some(11), false),
+            vec![MacDrift::NotOwned { job_pid: Some(9), core_pid: Some(11) }],
+            "an agent asked for, registered right, beside an orphan core"
+        );
+        assert!(mac_drift(Some((&Domain::Gui(501), &agent)), &Domain::Gui(501), Some(9), Some(9), false).is_empty());
     }
 
     // what this catches (Fable on #4232, the same window here): the consent covers the
