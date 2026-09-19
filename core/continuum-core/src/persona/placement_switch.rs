@@ -631,7 +631,53 @@ pub async fn follow_the_fleet(
                 .and_then(|o| (o.lane_wait_samples > 0).then_some(o.lane_wait_p50_ms)),
             home_wait_p50_ms,
         };
-        let mv = decide(inputs);
+        let mut mv = decide(inputs);
+        // A RETURN ASKS FOR ITS SLOT LIKE A SPILL DOES (2026-09-19 00:3xZ): the 5090's beacon
+        // first carried its measured wait, read QUEUED, and the IntelMac brought all seven
+        // bound minds home in one tick — correct. The moment that seat's wait dips under
+        // the bound, `decide` says ReturnRemote for all seven at once, and a return re-bound
+        // without a grant would rebuild the very queue they left: the flap at fleet scale.
+        // The seat grants what it has (`free_slots_live` − outstanding grants); the rest
+        // stay home until its beacon shows room. Refused or unanswered = Stay, receipted.
+        if mv == PlacementMove::ReturnRemote {
+            let asked = match crate::persona::operator_peer::operator_airc() {
+                Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, sw.persona_id()).await,
+                None => Err("no airc handle on this node — cannot ask the seat".to_string()),
+            };
+            match asked {
+                Ok(g) if g.granted => crate::probe!(
+                    class = "placement.return.leased",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    until_ms = g.until_ms,
+                    seat_free_after = g.free_slots_live,
+                    seat_wait_p50_ms = g.lane_wait_p50_ms,
+                    "the seat granted her slot back — returning"
+                ),
+                Ok(g) => {
+                    crate::probe!(
+                        class = "placement.return.refused",
+                        persona = %sw.persona_name(),
+                        peer = %peer,
+                        reason = %g.reason,
+                        seat_free = g.free_slots_live,
+                        seat_outstanding = g.outstanding,
+                        "the seat has no slot for her return this tick — she stays home"
+                    );
+                    mv = PlacementMove::Stay;
+                }
+                Err(e) => {
+                    crate::probe!(
+                        class = "placement.return.refused",
+                        persona = %sw.persona_name(),
+                        peer = %peer,
+                        reason = %e,
+                        "the seat did not answer the return ask in time — she stays home"
+                    );
+                    mv = PlacementMove::Stay;
+                }
+            }
+        }
         if let Some(line) = sw.apply(&mv, now_ms).await {
             lines.push(line);
         }

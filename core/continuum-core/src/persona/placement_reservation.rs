@@ -271,6 +271,24 @@ mod tests {
         assert_eq!(c.until_ms, later + RESERVATION_TTL_MS);
     }
 
+    // what this catches (2026-09-19, the return storm): seven minds that fell home from one
+    // seat all qualify to RETURN the tick its wait dips under the bound; the seat grants
+    // only what it has, so a 2-slot seat takes two back and the other five stay home until
+    // its beacon shows room — the same ledger a spill asks, so a return can never take a
+    // slot a spill was granted. The seat's own arithmetic bounds the fleet's swing.
+    #[test]
+    fn seven_returning_minds_take_only_the_seats_free_slots_and_the_rest_stay_home() {
+        let mut reg = ThroughputLeaseRegistry::new();
+        let node = Uuid::from_u128(0xa);
+        let grants: Vec<bool> = (1..=7u128)
+            .map(|i| decide_grant(&mut reg, Uuid::from_u128(0x700 + i), node, 2, (150_000, 40), NOW).granted)
+            .collect();
+        assert_eq!(grants.iter().filter(|g| **g).count(), 2, "two slots, two returns: {grants:?}");
+        assert!(grants[..2].iter().all(|g| *g) && grants[2..].iter().all(|g| !*g), "first come, first granted; the rest wait");
+        // A spill from another node now finds nothing either — one ledger for both paths.
+        assert!(!decide_grant(&mut reg, Uuid::from_u128(0xb1), Uuid::from_u128(0xb), 2, (150_000, 40), NOW + 1).granted);
+    }
+
     // what this catches: the grant carries the seat's measured wait WITH its sample count,
     // so a refusal or a grant from a seat that has never served leased-in work reads as
     // unmeasured (0, 0) — the absence-read-as-a-value guard, kept at the grant too.
