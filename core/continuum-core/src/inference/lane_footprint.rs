@@ -53,14 +53,32 @@ impl MeasuredCost {
     }
 }
 
-/// The plan's own decomposition, inverted: `anon = lanes × (compute_floor + per_token ×
-/// window)` → per_token. `None` when the shape is degenerate or the process holds less
-/// than its compute floors (nothing to attribute to tokens).
-pub fn per_token_from(anon_bytes: u64, lanes: u32, window: u32, compute_floor_per_lane: u64) -> Option<u64> {
+/// The plan's own decomposition, inverted: `anon = host_cache + lanes × (compute_floor +
+/// per_token × window)` → per_token. `None` when the shape is degenerate or the process
+/// holds no more than the host prompt cache it was granted plus its compute floors
+/// (nothing to attribute to tokens).
+///
+/// `host_cache_bytes` is the `--cache-ram` the daemon itself handed the engine: that
+/// RAM fills with saved prompt states over the serve's life and lives in the same
+/// anonymous footprint as the KV. Measured 2026-09-19 on the M5: a 19,519 MiB grant
+/// filled the lane's footprint from 16.7 to 20.4 GB across an hour at 2 × 67,584, and
+/// read as 133,720 B/token against a 32,768 estimate — the planner "corrected" to
+/// ~107k, found two lanes could not fit, and starved five minds on one lane while the
+/// process still ran two. Subtracting the whole grant makes the reading a LOWER bound
+/// on the KV-attributable bytes, which is the only direction a footprint may correct
+/// an estimate ([`corrects`]).
+pub fn per_token_from(
+    anon_bytes: u64,
+    lanes: u32,
+    window: u32,
+    compute_floor_per_lane: u64,
+    host_cache_bytes: u64,
+) -> Option<u64> {
     if lanes == 0 || window == 0 {
         return None;
     }
-    let per_lane = anon_bytes / lanes as u64;
+    let beyond_cache = anon_bytes.checked_sub(host_cache_bytes)?;
+    let per_lane = beyond_cache / lanes as u64;
     let beyond_floor = per_lane.checked_sub(compute_floor_per_lane)?;
     let per_token = beyond_floor / window as u64;
     (per_token > 0).then_some(per_token)
@@ -97,22 +115,42 @@ pub fn sample_due(now_ms: u64) -> bool {
 /// in a bad minute rules for one sample interval, and a record older than [`FRESH_MS`]
 /// is ignored entirely — the plan falls back to its arithmetic, never to a remembered
 /// maximum.
-pub fn observe(model: &str, lanes: u32, window: u32, anon_bytes: u64, compute_floor_per_lane: u64) -> Option<u64> {
-    let per_token = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane)?;
+pub fn observe(
+    model: &str,
+    lanes: u32,
+    window: u32,
+    anon_bytes: u64,
+    compute_floor_per_lane: u64,
+    host_cache_bytes: u64,
+) -> Option<u64> {
     let now = now_ms();
+    let sample = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane, host_cache_bytes)
+        .map(|per_token| MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes, last_ms: now });
     let mut costs = COSTS.lock();
-    let before = costs.get(model).map(|c| c.per_token_bytes).unwrap_or(0);
-    costs.insert(
-        model.to_string(),
-        MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes, last_ms: now },
-    );
+    let moved = apply_sample(&mut costs, model, sample.as_ref());
     use std::sync::atomic::Ordering;
-    let moved = before == 0 || corrects(before, per_token) || corrects(per_token, before);
     if moved || now.saturating_sub(LAST_SAVE_MS.load(Ordering::Relaxed)) >= SAVE_EVERY_MS {
         save_all(&costs);
         LAST_SAVE_MS.store(now, Ordering::Relaxed);
     }
-    Some(per_token)
+    sample.map(|c| c.per_token_bytes)
+}
+
+/// One sample against the record: a reading replaces the model's record; NO reading
+/// (nothing attributable this minute) RETIRES it. Returns whether the record moved
+/// materially (a save is due). A record that cannot be re-confirmed by the live
+/// process must not keep ruling the plan from disk — the M5's 133,720 B/token record
+/// (2026-09-19) would otherwise survive a relaunch for [`FRESH_MS`] while every fresh
+/// sample of the new process read "nothing beyond the cache" and left it standing.
+fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample: Option<&MeasuredCost>) -> bool {
+    let before = costs.get(model).map(|c| c.per_token_bytes).unwrap_or(0);
+    match sample {
+        Some(cost) => {
+            costs.insert(model.to_string(), cost.clone());
+            before == 0 || corrects(before, cost.per_token_bytes) || corrects(cost.per_token_bytes, before)
+        }
+        None => costs.remove(model).is_some(),
+    }
 }
 
 /// The fresh measured per-token cost for `model`, if any.
@@ -235,15 +273,40 @@ mod tests {
     fn the_measured_cost_inverts_the_plans_decomposition_and_only_corrects_upward() {
         let gb = 1u64 << 30;
         // The live shape: 25.7 GB anonymous, 8 lanes × 51,712, compute floor 1.36 GB/lane.
-        let per_token = per_token_from(25_700_000_000, 8, 51_712, 1_357_000_000).expect("attributable");
+        let per_token = per_token_from(25_700_000_000, 8, 51_712, 1_357_000_000, 0).expect("attributable");
         assert!((35_000..38_000).contains(&per_token), "{per_token} B/token");
         assert!(corrects(10_240, per_token), "3.5× the estimate is a correction");
         assert!(!corrects(per_token, 10_240), "a smaller reading never corrects downward");
         assert!(!corrects(10_240, 12_000), "17% is agreement, not a correction");
         // Degenerate shapes attribute nothing.
-        assert_eq!(per_token_from(gb, 0, 51_712, 0), None);
-        assert_eq!(per_token_from(gb, 2, 0, 0), None);
-        assert_eq!(per_token_from(gb, 2, 4096, gb), None, "under the compute floors: nothing beyond them to attribute");
+        assert_eq!(per_token_from(gb, 0, 51_712, 0, 0), None);
+        assert_eq!(per_token_from(gb, 2, 0, 0, 0), None);
+        assert_eq!(per_token_from(gb, 2, 4096, gb, 0), None, "under the compute floors: nothing beyond them to attribute");
+    }
+
+    // what this catches (2026-09-19, the M5 starved to one lane while running two): the
+    // host prompt cache the daemon granted the engine fills the same anonymous footprint
+    // as the KV and is NOT per-token cost. The live shape: 20.4 GB footprint at
+    // 2 × 67,584 under a 19,519 MiB `--cache-ram` — nothing is attributable (the
+    // estimate rules), and a record left from before the grant was subtracted RETIRES on
+    // that sample instead of ruling the plan from disk for an hour. Under a cache the
+    // process has outgrown, what lies beyond it is attributed — a lower bound, upward-only.
+    #[test]
+    fn the_prompt_cache_the_daemon_granted_is_not_kv_and_an_unattributable_sample_retires_the_record() {
+        let mib = 1u64 << 20;
+        let (anon, lanes, window, compute) = (20_446_525_320u64, 2u32, 67_584u32, 512 * mib);
+        assert_eq!(per_token_from(anon, lanes, window, compute, 19_519 * mib), None, "the cache can explain the whole footprint");
+        let inflated = per_token_from(anon, lanes, window, compute, 0).expect("without the cache term it reads as KV");
+        assert!(inflated > 130_000, "{inflated} B/token — the reading that starved the M5");
+        let beyond = per_token_from(anon, lanes, window, compute, 4_096 * mib).expect("beyond a cache the process outgrew");
+        assert!(beyond < inflated && beyond > 32_768, "{beyond}: less than the inflated read, still a real excess");
+
+        let mut costs = BTreeMap::new();
+        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, anon_bytes: anon, last_ms: 1 };
+        assert!(apply_sample(&mut costs, "m", Some(&stale)), "first record is a move");
+        assert!(apply_sample(&mut costs, "m", None), "an unattributable sample retires it — a save is due");
+        assert!(costs.get("m").is_none(), "nothing rules the plan from disk");
+        assert!(!apply_sample(&mut costs, "m", None), "already retired: nothing moved");
     }
 
     // what this catches: the record survives a reboot by its last write and a corrupt

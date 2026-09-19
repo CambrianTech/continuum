@@ -1881,12 +1881,21 @@ impl ServingDaemonModule {
                     .kv_at(live.served_context_window)
                     .saturating_mul(live.lanes as u64)
                     .saturating_add(fp.prefill_compute_reserve(live.served_context_window, live.lanes));
+                // The host prompt cache the daemon granted THIS serve (`--cache-ram`):
+                // it fills the same anonymous footprint over the serve's life and is
+                // not per-token cost — subtracted before anything is attributed.
+                let host_cache_bytes = self
+                    .served_prompt_cache_mib
+                    .lock()
+                    .map(|g| (*g as u64) * 1024 * 1024)
+                    .unwrap_or(0); // unwrap_or: a poisoned grant reads as no cache — the reading stays a lower bound only in the other direction, and the probe carries 0 so the poisoning is visible
                 let measured = crate::inference::lane_footprint::observe(
                     &active,
                     live.lanes,
                     live.served_context_window,
                     anon,
                     fp.compute_buffer_per_lane(),
+                    host_cache_bytes,
                 );
                 crate::probe!(
                     class = "serving.footprint.measured",
@@ -1896,6 +1905,7 @@ impl ServingDaemonModule {
                     lanes = live.lanes as u64,
                     window = live.served_context_window as u64,
                     anon_bytes = anon,
+                    host_cache_bytes,
                     predicted_beyond_weights = predicted,
                     ratio = anon as f64 / predicted.max(1) as f64,
                     per_token_estimate = fp.kv_per_token,
@@ -4702,6 +4712,15 @@ fn prompt_cache_decision(
         } else {
             headroom
         };
+        // A cache FILLS to its grant by design, so "everything above the OS floor" is a
+        // grant to end the serve at the floor with nothing left for the co-consumers the
+        // planner reserves for (the core's own growth, a sidecar, the eye). Measured
+        // 2026-09-19 on the M5: a 19,519 MiB grant from a 20,468 MiB afford, and the box
+        // sat 6 GB into swap with 25 GB in the compressor an hour later. The same
+        // headroom the planner keeps for co-consumers when it sizes the window
+        // (`CO_CONSUMER_HEADROOM`) — one constant, both decisions.
+        let afford = (afford as f64
+            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =
@@ -5652,8 +5671,14 @@ mod tests {
         assert_ne!(measured, missing);
         assert_eq!(measured.estimated_kv_bytes, Some(4 << 30));
         assert_eq!(measured.reason, "resident_demand_kv_estimate");
-        let afford =
+        let above_floor =
             (32u64 << 30) - fp.peak_resident_bytes(65536, 1) - host_os_floor_bytes(32 << 30);
+        // The grant leaves the planner's co-consumer headroom — a cache fills to its
+        // grant, so a grant of everything above the floor ends at the floor (the M5,
+        // 2026-09-19: 6 GB of swap under a 19.5 GB grant).
+        let afford = (above_floor as f64
+            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
+        assert!(afford < above_floor, "the cache never gets everything above the floor");
         assert_eq!(measured.affordable_bytes, Some(afford));
         assert_eq!(
             measured.desired_mib,
@@ -5678,6 +5703,12 @@ mod tests {
     // sat free — every turn a full re-prefill. Same footprint, same demand, same box:
     // unified pays the working set, discrete does not, and the discrete answer is the
     // demand-sized one.
+    /// The grant the cache may be promised out of a ceiling: the ceiling less the
+    /// planner's co-consumer headroom (#4216 — a cache fills to its grant).
+    fn grantable(ceiling: u64) -> u64 {
+        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64
+    }
+
     #[test]
     fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         use super::*;
@@ -5720,7 +5751,7 @@ mod tests {
         let want_bytes = demands.iter().map(|t| fp.kv_per_token * *t as u64).sum::<u64>();
         assert_eq!(
             on_discrete.affordable_bytes,
-            Some(physical - host_os_floor_bytes(physical))
+            Some(grantable(physical - host_os_floor_bytes(physical)))
         );
         assert_eq!(
             on_discrete.desired_mib as u64,
@@ -5745,7 +5776,7 @@ mod tests {
         assert!(big > small, "a bigger window costs more beyond the weights");
         // Through the ONE consumer: per-token from the plan's own decomposition.
         let per_token_big =
-            crate::inference::lane_footprint::per_token_from(big, 1, 144_640, 0).expect("rate");
+            crate::inference::lane_footprint::per_token_from(big, 1, 144_640, 0, 0).expect("rate");
         assert!(
             per_token_big > 60_000 && per_token_big < 110_000,
             "≈74 KiB/token measured on the 5090, got {per_token_big}"
@@ -5788,8 +5819,8 @@ mod tests {
         let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 0);
         assert_eq!(
             unknown.affordable_bytes,
-            Some(physical - host_os_floor_bytes(physical)),
-            "no availability reading: headroom alone"
+            Some(grantable(physical - host_os_floor_bytes(physical))),
+            "no availability reading: headroom alone, less the co-consumer share"
         );
         let available = 31u64 << 30;
         let bound = prompt_cache_decision(
@@ -5804,8 +5835,8 @@ mod tests {
         );
         assert_eq!(
             bound.affordable_bytes,
-            Some(available - host_os_floor_bytes(physical)),
-            "bounded by what the box can give now"
+            Some(grantable(available - host_os_floor_bytes(physical))),
+            "bounded by what the box can give now, less the co-consumer share"
         );
         assert!(bound.desired_mib < unknown.desired_mib);
         assert_eq!(bound.available_bytes, available);
