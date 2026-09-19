@@ -316,14 +316,18 @@ impl PlacementSwitch {
         Ok(())
     }
 
-    /// Her bound seat was this node (card 2500d2f1): drop the loopback lane and the
-    /// durable override that named it, so she is home-born from here and the next boot
-    /// does not bear her on a lane to herself. The override is a record of the old
-    /// confusion, never an assignment to honour.
+    /// Her bound seat was this node (card 2500d2f1): retire the durable override that
+    /// named it, and — once she is home — the loopback lane and the peer, so she is
+    /// home-born from here and the next boot does not bear her on a lane to herself.
+    /// Idempotent; the override is a record of the old confusion, never an assignment.
     pub fn retire_self_seat(&self) {
-        let peer = self.peer().map(|p| p.to_string()).unwrap_or_default(); // JUSTIFIED unwrap_or_default: probe label only
-        *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
-        *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        if self.seat() == Seat::Home {
+            *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+            *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        }
         let cleared = match &self.home {
             Some(home) => PersonaModelOverride::clear(home).map_err(|e| e.to_string()),
             None => Ok(()),
@@ -334,7 +338,8 @@ impl PlacementSwitch {
             peer = %peer,
             cleared = cleared.is_ok(),
             error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
-            "her bound seat was this very node — the loopback lane and the override naming it are retired; she is home-born from here"
+            at_home = self.seat() == Seat::Home,
+            "her bound seat was this very node — the override naming it is retired, and the loopback lane once she is home"
         );
     }
 
@@ -732,7 +737,10 @@ pub async fn follow_the_fleet(
         if let Some(line) = sw.apply(&mv, now_ms).await {
             lines.push(line);
         }
-        if mv == (PlacementMove::FallHome { reason: SELF_SEAT_REASON }) {
+        // A seat that is this node is retired whatever the move (idempotent): the
+        // override goes now, so the record never outlives the run that found it; the
+        // loopback lane goes once she is home (a parked mind keeps the lane she has).
+        if seat_is_self {
             sw.retire_self_seat();
         }
         // A bound switch sitting HOME past her cooldown is a chooser candidate again —

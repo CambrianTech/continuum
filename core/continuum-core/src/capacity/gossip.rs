@@ -278,16 +278,13 @@ impl GridCapacityLedger {
             .collect()
     }
 
-    /// The peer ids the grid hears THIS process under — one per scope it beacons in.
-    /// The durable half of the self-seat fix (card 2500d2f1): whatever id a scope
-    /// stamped on our offer is an id of ours.
-    pub fn own_peer_ids(&self) -> Vec<Uuid> {
+    /// Does the grid hear THIS process under `peer`? Whatever id a scope stamped on our
+    /// own offer (the row carries our origin nonce) is an id of ours — the durable half
+    /// of the self-seat fix (card 2500d2f1). A membership question, so it allocates
+    /// nothing: it is asked per mind per placement tick.
+    pub fn hears_self_as(&self, peer: Uuid) -> bool {
         let mine = this_process_origin();
-        self.heard
-            .iter()
-            .filter(|r| r.value().offer.is_from(mine))
-            .map(|r| *r.key())
-            .collect()
+        self.heard.get(&peer).is_some_and(|r| r.offer.is_from(mine))
     }
 
     pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
@@ -358,9 +355,11 @@ mod tests {
         let foreign: Vec<Uuid> = ledger.foreign_offers_with_age().into_iter().map(|(p, _, _)| p).collect();
         assert_eq!(foreign.len(), 2);
         assert!(!foreign.contains(&me_as_scope_a) && !foreign.contains(&me_as_scope_b));
-        let mut own = ledger.own_peer_ids();
-        own.sort();
-        assert_eq!(own, vec![me_as_scope_a, me_as_scope_b], "every id the grid hears me under is mine");
+        assert!(
+            ledger.hears_self_as(me_as_scope_a) && ledger.hears_self_as(me_as_scope_b),
+            "every id the grid hears me under is mine"
+        );
+        assert!(!ledger.hears_self_as(other) && !ledger.hears_self_as(older), "a stranger's row is not me");
         let elsewhere = ledger.residents_elsewhere(None, 2_000);
         assert_eq!((elsewhere.peers, elsewhere.residents), (1, 2), "only the other node's residents are elsewhere");
     }

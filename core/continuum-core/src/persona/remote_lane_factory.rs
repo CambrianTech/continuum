@@ -444,8 +444,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (f, calls) = factory_over(tmp.path()); // cell is empty: a real remote seat would refuse here
         let home = home_for(tmp.path(), "Aris");
+        // The id enters the self set the way it does at boot: the airc module built from
+        // a Healthy discovery registers the id this node beacons under — before any
+        // persona build, before any echo (Cormac's condition on #4229).
         let me = uuid::Uuid::new_v4();
-        crate::persona::self_peer::register(me);
+        let _module = crate::modules::airc::AircModule::from_discovery(&crate::airc::AircDiscovery::Healthy {
+            socket: tmp.path().join("airc.sock"),
+            default_room: airc_core::RoomId::from_uuid(uuid::Uuid::new_v4()),
+            room_name: "general".to_string(),
+            peer_id: me,
+        });
         PersonaModelOverride::new_remote("ggml-org/Qwen3.8-27B-GGUF", Some("placement:fleet".to_string()), 1, me.to_string())
             .write(&home)
             .expect("write override");

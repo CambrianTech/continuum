@@ -43,7 +43,7 @@ pub fn is_this_node(peer: Uuid) -> bool {
     if registered().lock().unwrap_or_else(|p| p.into_inner()).contains(&peer) { // JUSTIFIED unwrap_or_else: a poisoned set still holds the ids; membership is bookkeeping, never truth
         return true;
     }
-    crate::capacity::gossip::global_ledger().own_peer_ids().contains(&peer)
+    crate::capacity::gossip::global_ledger().hears_self_as(peer)
 }
 
 #[cfg(test)]
