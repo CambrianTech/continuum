@@ -270,12 +270,22 @@ impl ServingDemand {
         self
     }
 
-    /// The window a plan should TARGET per slot: the sent prompt with headroom when
-    /// measured (capped by the untrimmed demand, which is an upper bound by
-    /// construction), else the untrimmed demand as before.
+    /// The window a plan should TARGET per slot: the roster's TYPICAL sent prompt with
+    /// headroom when one is known (measured this boot, or remembered from the last
+    /// serve), else the largest sent prompt with headroom, else the untrimmed demand —
+    /// always capped by the untrimmed demand, an upper bound by construction.
+    ///
+    /// The typical, not the outlier (2026-09-19 19:37Z, the M5, card 29e4ab34): the
+    /// lanes already follow the typical prompt (the per-lane floor), but the window
+    /// followed the PEAK — one 144,891-token prompt ever sent made the target 181,114
+    /// on every boot, the remembered 67,584 could not "cover" it and was discarded, and
+    /// under the boot's transient budget the plan launched 2 × 179k (44 GB of serving on
+    /// a box whose steady budget is 27 GB), then Eco, then the collapse. A single outlier
+    /// prompt is that turn's cost (it is trimmed to the window); it does not size the box.
     pub fn window_target(&self) -> u32 {
-        match self.sent_tokens {
-            Some(sent) => ((sent as f64 * SENT_HEADROOM) as u32).min(self.window_tokens).max(MIN_SERVE_CTX),
+        let with_headroom = |t: u32| (t as f64 * SENT_HEADROOM) as u32;
+        match self.sent_median.map(with_headroom).or(self.sent_tokens.map(with_headroom)) {
+            Some(t) => t.min(self.window_tokens).max(MIN_SERVE_CTX),
             None => self.window_tokens,
         }
     }
@@ -1142,11 +1152,12 @@ mod tests {
             "each lane holds a typical turn with headroom (40k × 1.25): {}",
             b.served_context_window
         );
-        // Without the median the planner packs the most lanes at the bootstrap floor —
-        // more lanes, each too small for a real turn. The floor trades at most a lane or
-        // two for windows the roster can actually use.
-        assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
-        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
+        // Without the median the planner sizes to the OUTLIER's prompt (96k × 1.25) — a
+        // wide window and fewer lanes. With it, the window follows the typical prompt and
+        // the roster gets its lanes: the outlier's turn is trimmed to the window, the box
+        // is not sized to it (card 29e4ab34).
+        assert!(a.served_context_window > b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
+        assert!(b.lanes >= a.lanes, "the typical prompt never costs the roster a lane against the outlier's: {} vs {}", b.lanes, a.lanes);
     }
 
     #[test]
@@ -2495,6 +2506,10 @@ mod tests {
     fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
         let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
         assert_eq!(d.window_target(), 37_500, "sent × 1.25, not the untrimmed 505k");
+        // The M5's boot, 2026-09-19 19:37Z: peak 144,891 (one prompt, ever), typical 51,242.
+        let m5 = ServingDemand::new(5, Some(505_342)).with_sent_tokens(Some(144_891)).with_sent_median(Some(51_242));
+        assert_eq!(m5.window_target(), 64_052, "the typical prompt with headroom, not the outlier's 181,114");
+        assert_eq!(choose_served_window(505_342, 64_052, Some(67_584)), 67_584, "and the remembered 67,584 covers it — served verbatim, no boot relaunch");
         assert_eq!(ServingDemand::new(4, Some(505_342)).window_target(), 505_342, "unmeasured sent: the untrimmed demand, as before");
         assert_eq!(ServingDemand::new(4, Some(20_000)).with_sent_tokens(Some(30_000)).window_target(), 20_000, "the untrimmed demand is the upper bound");
         assert_eq!(choose_served_window(137_222, 37_500, Some(47_280)), 47_280, "the remembered 47k window covers a 37.5k target: served verbatim — pages carry over");
