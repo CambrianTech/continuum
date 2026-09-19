@@ -948,6 +948,14 @@ pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
     cooling_before == 1 && ready && lanes > 0
 }
 
+/// The model whose decode knee bounds the plan: the one a lane is serving, else the one
+/// this box served last (card 29e4ab34 — the boot window before a lane reports its model
+/// is not "no knee", it is the remembered model's knee). `remembered` is read lazily: it
+/// is a file, and it is only consulted in the boot window, never on every plan tick.
+pub fn knee_model(active: Option<String>, remembered: impl FnOnce() -> Option<String>) -> Option<String> {
+    active.or_else(remembered)
+}
+
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
     if overridden {
         return boot_floor.max(1);
@@ -1087,8 +1095,19 @@ impl ServingDaemonModule {
         // curve is the ceiling. 16 minds on 8 lanes decoded 7 t/s per stream against a
         // catalog 68 — a ten-times tax; with KV pages restoring from disk, fewer warm
         // slots is the restore economy, not starvation. `inference::decode_knee`.
+        // THE KNEE IS THE MODEL'S, NOT THE LANE'S (2026-09-19 17:20:35Z, the M5, card
+        // 29e4ab34): for the thirteen seconds between boot and the adopted lane reporting
+        // its model, `active_model` was None, so the knee read as unknown, the roster's 17
+        // runtimes went unclamped into the demand, the plan said 8 lanes under the
+        // transient budget and RELAUNCHED the warm adopted lane into 8 × 49k — then the
+        // 27B's knee of 2 arrived and it relaunched again to 2 × 67k. The knee is a
+        // property of the model on this box; when no lane has reported one yet, the model
+        // the box served last (the remembered geometry) is the one being planned for.
         let active_model = crate::inference::llama_server::current_serving().active_model;
-        let knee = active_model.as_deref().and_then(crate::inference::decode_knee::knee_for);
+        let model_for_knee = knee_model(active_model, || {
+            crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
+        });
+        let knee = model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -1112,7 +1131,7 @@ impl ServingDaemonModule {
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
             crate::probe!(
                 class = "serving.decode_knee.clamped",
-                model = %active_model.unwrap_or_default(), // unwrap_or_default: no model = no knee = the roster's own count, still worth one row
+                model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
                 clamped = clamped < lanes,
@@ -6205,6 +6224,31 @@ mod tests {
         assert!(!lane_over_its_knee(57_600, 2, 47_426, 4));
         let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
         assert!(!worth_it, "10% at the same lane count is still under the margin");
+    }
+
+    // what this catches (card 29e4ab34, the M5 2026-09-19 17:20:35Z): the thirteen-second
+    // boot window in which no lane has reported a model. The knee lookup must key on the
+    // remembered model then — otherwise the roster (17 runtimes) goes unclamped into the
+    // demand, the plan says 8 lanes under the transient budget, and the warm adopted lane
+    // is relaunched twice (8 × 49k, then 2 × 67k). A reported model still wins; a box
+    // that remembers nothing plans the roster, as before.
+    #[test]
+    fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
+        use crate::inference::decode_knee::knee_lanes;
+        let remembered = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
+        assert_eq!(knee_model(None, || remembered.clone()), remembered, "the boot window plans the last model");
+        let read = std::cell::Cell::new(false);
+        assert_eq!(
+            knee_model(Some("other".into()), || { read.set(true); remembered.clone() }).as_deref(),
+            Some("other"),
+            "a serving lane's model wins"
+        );
+        assert!(!read.get(), "with a lane serving, the remembered geometry (a file) is never read");
+        assert_eq!(knee_model(None, || None), None, "nothing remembered: the roster rules, as before");
+        // With the remembered model's knee (2 on the M5) the roster of 17 is clamped at boot;
+        // with none it is not — the first stair of the staircase.
+        assert_eq!(knee_lanes(17, Some(2)), 2);
+        assert_eq!(knee_lanes(17, None), 17);
     }
 
     // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
