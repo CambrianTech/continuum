@@ -4989,14 +4989,18 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // model can learn it — never a per-token one.
     match header_rate {
         Some(_) => {
-            if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
-                if crate::inference::lane_footprint::corrects(fp.kv_per_token, measured) {
+            let mut fp = fp;
+            if let Some(record) = crate::inference::lane_footprint::measured_record(&fp.model_id) {
+                fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, &record);
+                if fp.fixed_per_lane_bytes > 0 {
                     crate::probe!(
                         class = "serving.footprint.excess_is_fixed",
                         model = fp.model_id.as_str(),
                         header_rate = fp.kv_per_token,
-                        measured_per_token = measured,
-                        "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers), not per-token; the header rate stands"
+                        measured_per_token = record.per_token_bytes,
+                        measured_window = record.window as u64,
+                        fixed_per_lane_bytes = fp.fixed_per_lane_bytes,
+                        "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers) and is carried per lane; the header rate stands"
                     );
                 }
             }
@@ -5004,6 +5008,16 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         }
         None => Some(apply_measured_cost(fp)),
     }
+}
+
+/// The residency a sample measured BEYOND the header's per-token rate, as fixed bytes per
+/// lane: `(measured − rate) × the window it was measured at`. Zero when the sample agrees
+/// with the header. The rate stays physics; the residency stays counted.
+pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_footprint::MeasuredCost) -> u64 {
+    record
+        .per_token_bytes
+        .saturating_sub(header_rate)
+        .saturating_mul(record.window as u64)
 }
 
 /// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
@@ -5663,6 +5677,7 @@ mod tests {
             kv_per_token: 65536,
             context_window: 65536,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
         assert_eq!(missing.reason, "prior_missing_footprint");
@@ -5783,6 +5798,7 @@ mod tests {
             kv_per_token: 262_144, // ~256 KiB/token: a 144k window is ~36 GiB of KV
             context_window: 262_144,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 63u64 << 30;
         let (ctx, lanes) = (144_530u32, 1u32);
@@ -5883,6 +5899,7 @@ mod tests {
             kv_per_token: 32_768,
             context_window: 67_340,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 64u64 << 30;
         let demands = [67_340u32; 16]; // sixteen seeds on disk: the want is far past any box
@@ -5912,6 +5929,7 @@ mod tests {
             kv_per_token: 262_144,
             context_window: 262_144,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 63u64 << 30;
         let demands = [115_000u32, 115_000]; // ~58 GB wanted
@@ -6043,6 +6061,28 @@ mod tests {
         assert_eq!(kv_rate_for_plan(true, 32_768, None), 32_768);
         assert_eq!(kv_rate_for_plan(false, 32_768, None), 32_768);
         assert!(kv_rate_for_plan(false, 10_240, Some(36_000)) > 10_240, "a guess still learns from the process");
+        // The excess is carried, not dropped: the M5 shape (header 32,768 q8, a one-lane
+        // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
+        // across budgets the plan with it fits no more lanes than the header-only plan
+        // and no fewer than the raised-rate plan — strictly between them somewhere.
+        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, anon_bytes: 0, last_ms: 0 };
+        let fixed = fixed_per_lane_from(32_768, &record);
+        assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
+        assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
+        let base = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+        };
+        let carried = crate::cognition::serving_plan::ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
+        let raised = crate::cognition::serving_plan::ModelFootprint { kv_per_token: 44_740, ..base.clone() };
+        let lanes_at = |fp: &crate::cognition::serving_plan::ModelFootprint, usable: u64| (1..=4u32).rev().find(|&l| fp.window_within(usable, l) >= 67_340).unwrap_or(0);
+        let mut strict = false;
+        for usable_gb in 28..=46u64 {
+            let usable = usable_gb * 1_000_000_000;
+            let (h, c, r) = (lanes_at(&base, usable), lanes_at(&carried, usable), lanes_at(&raised, usable));
+            assert!(h >= c && c >= r, "{usable_gb} GB: header {h} ≥ carried {c} ≥ raised {r}");
+            strict |= h > c;
+        }
+        assert!(strict, "the carried term costs at least one lane somewhere in the range");
         let kv = kv_per_token_from_measured(10_240, 36_000);
         assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
         assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
@@ -6319,6 +6359,7 @@ mod tests {
             kv_per_token: 100_000, // ~0.2GB KV at 2048 ctx — small, not the binding term
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let candidate = footprint("devstral-24b", 14, 8);
         let incumbent = footprint("qwen-32b", 20, 10);
@@ -8386,6 +8427,7 @@ mod tests {
             kv_per_token: 100_000,
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let big = footprint("qwen3.8-27b", 17, 9);
         let tiny = footprint("qwen-0.5b", 1, 1);
@@ -8457,6 +8499,7 @@ mod tests {
             kv_per_token: 100_000,
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);

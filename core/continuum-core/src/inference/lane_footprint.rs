@@ -153,6 +153,13 @@ fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample:
     }
 }
 
+/// The fresh measured record for `model`, if any — per-token AND the geometry it was
+/// taken at, so a caller can turn an excess over a known rate into fixed bytes.
+pub fn measured_record(model: &str) -> Option<MeasuredCost> {
+    let now = now_ms();
+    COSTS.lock().get(model).filter(|c| c.fresh_at(now)).cloned()
+}
+
 /// The fresh measured per-token cost for `model`, if any.
 pub fn measured_per_token(model: &str) -> Option<u64> {
     let now = now_ms();
