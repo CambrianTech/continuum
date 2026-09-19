@@ -245,6 +245,14 @@ pub struct CitizenHealth {
     /// one is known: the lane count the planner will not exceed because every further
     /// stream would decode below the tax floor. Above it, lanes are not what is owed.
     pub knee: Option<u64>,
+    /// Working citizen rounds on this node at the tick, and whether the standing
+    /// autopilot is switched on. An IDLE roster with NO round is not a lanes story and
+    /// not a seating story — there is nothing to seat into — and the line must say so.
+    /// IntelMac 2026-09-19: thirty hours of "AT THE KNEE … owed: fewer seats here or
+    /// more decode" over eight minds whose every pull read `no_rounds_on_node`, because
+    /// the switch (`benchmark/standing`) defaults OFF and was silent about it.
+    pub rounds_working: u64,
+    pub standing_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,8 +268,10 @@ pub enum Verdict {
     AtKnee { resident: u64, lanes: u64, knee: u64 },
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
-    /// Residents, no acts at all.
-    Idle { resident: u64 },
+    /// Residents, no acts at all — and WHY, as far as the node can read it: with no
+    /// working round there is nothing to act on (a round is owed, not lanes); with
+    /// rounds and no acts the seating is the question (`bench.round.pull_none`).
+    Idle { resident: u64, rounds_working: u64, standing_enabled: bool },
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
     Slow { writes: u64, resident: u64 },
@@ -302,7 +312,11 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
         return Verdict::Empty { lanes: h.lanes, lanes_granted: h.lanes_granted };
     }
     if h.acts == 0 {
-        return Verdict::Idle { resident: h.resident };
+        return Verdict::Idle {
+            resident: h.resident,
+            rounds_working: h.rounds_working,
+            standing_enabled: h.standing_enabled,
+        };
     }
     if h.lanes > 0 && h.resident > h.lanes * MINDS_PER_LANE_STARVED_ABOVE {
         return match h.knee {
@@ -332,7 +346,18 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         Verdict::Reading { acts } => {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
-        Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts"),
+        Verdict::Idle { resident, rounds_working: 0, standing_enabled: false } => format!(
+            "IDLE: {resident} resident, no acts — NO ROUND on this node and the standing autopilot is OFF \
+             (`benchmark/standing --enabled true`); owed: a round, not lanes"
+        ),
+        Verdict::Idle { resident, rounds_working: 0, standing_enabled: true } => format!(
+            "IDLE: {resident} resident, no acts — NO ROUND on this node with standing ON; the autopilot's \
+             skip reason is on the probe stream (bench.standing.skipped)"
+        ),
+        Verdict::Idle { resident, rounds_working, .. } => format!(
+            "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — a seating question \
+             (bench.round.pull_none names it per mind)"
+        ),
         Verdict::Empty { lanes, lanes_granted } => format!(
             "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
         ),
@@ -469,6 +494,7 @@ impl CitizenHealthModule {
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
         let serving = crate::inference::llama_server::current_serving();
+        let (rounds_working, standing_enabled) = round_supply();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
@@ -483,8 +509,21 @@ impl CitizenHealthModule {
             pulls,
             pulls_deferred,
             knee: knee_of(serving.active_model.as_deref()),
+            rounds_working,
+            standing_enabled,
         }
     }
+}
+
+/// The node's round supply at the tick: working citizen rounds, and whether the standing
+/// autopilot is on — the two facts that turn "IDLE" into "IDLE because …". One reader
+/// for both the hourly receipt and the `citizen/health` command.
+fn round_supply() -> (u64, bool) {
+    let rounds_working = crate::cognition::bench_round::live_rounds()
+        .iter()
+        .filter(|r| crate::persona::work_pull::is_working_citizen_round(r))
+        .count() as u64;
+    (rounds_working, crate::modules::benchmark_standing::is_enabled())
 }
 
 /// The served model's measured decode knee, if any — the fact that turns "owes lanes"
@@ -602,6 +641,8 @@ impl ServiceModule for CitizenHealthModule {
                     pulls: LEDGER.pulls.load(Ordering::Relaxed),
                     pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
+                    rounds_working: round_supply().0,
+                    standing_enabled: round_supply().1,
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
@@ -609,6 +650,7 @@ impl ServiceModule for CitizenHealthModule {
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred,
+                    "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -664,7 +706,30 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
+    }
+
+    // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
+    // "AT THE KNEE … owed: fewer seats here or more decode" over eight minds whose every
+    // pull read `no_rounds_on_node` — the standing switch was OFF and nothing said so.
+    // No round + switch off names the switch; no round + switch on points at the
+    // autopilot's own skip probe; rounds + no acts is a seating question, not a supply one.
+    #[test]
+    fn an_idle_roster_names_the_reason_it_is_idle() {
+        let idle = |rounds_working: u64, standing_enabled: bool| CitizenHealth { rounds_working, standing_enabled, ..h(8, 2, 0, 0) };
+        let off = idle(0, false);
+        let v = verdict(&off);
+        assert_eq!(v, Verdict::Idle { resident: 8, rounds_working: 0, standing_enabled: false });
+        let said = line(&off, &v);
+        assert!(said.contains("NO ROUND") && said.contains("autopilot is OFF") && said.contains("benchmark/standing"), "{said}");
+        assert!(said.contains("not lanes"), "the owed thing is named: {said}");
+        let on = idle(0, true);
+        let said = line(&on, &verdict(&on));
+        assert!(said.contains("standing ON") && said.contains("bench.standing.skipped"), "{said}");
+        let seated = idle(1, true);
+        let said = line(&seated, &verdict(&seated));
+        assert!(said.contains("1 working round") && said.contains("seating"), "{said}");
+        assert!(!said.contains("autopilot"), "with a round in flight the switch is not the story: {said}");
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -674,7 +739,10 @@ mod tests {
     fn the_verdict_names_the_afternoons_shapes() {
         assert_eq!(verdict(&h(16, 3, 39, 4)), Verdict::Starved { resident: 16, lanes: 3 });
         assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Reading { acts: 39 });
-        assert_eq!(verdict(&h(16, 6, 0, 0)), Verdict::Idle { resident: 16 });
+        assert_eq!(
+            verdict(&h(16, 6, 0, 0)),
+            Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true }
+        );
         assert_eq!(verdict(&h(16, 6, 39, 4)), Verdict::Healthy);
         // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
         // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
