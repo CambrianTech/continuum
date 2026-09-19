@@ -4970,12 +4970,40 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // every restore a miss, hit_rate 0.0 fleet-wide) AND under-granted lanes
     // vs resident demand. Header read is memoized per path: this runs on the
     // governor's accounting tick and a GGUF header parse is real I/O.
-    if let Some(path) = crate::model_registry::artifacts::resolve_gguf_for_model(model) {
-        if let Some(rate) = kv_rate_from_header_cached(&path) {
-            fp.kv_per_token = rate;
-        }
+    let header_rate = crate::model_registry::artifacts::resolve_gguf_for_model(model)
+        .and_then(|path| kv_rate_from_header_cached(&path));
+    if let Some(rate) = header_rate {
+        fp.kv_per_token = rate;
     }
-    Some(apply_measured_cost(apply_kv_quantization(fp)))
+    let fp = apply_kv_quantization(fp);
+    // A header-declared KV rate (÷ the launched cache type) is the physical cost of a
+    // token: the measurement may not raise it. "The process beats the arithmetic" was
+    // written for the weights-scaled GUESS; against the header it can only mis-attribute
+    // fixed residency (the draft model's KV, the vision projector, engine buffers) to
+    // tokens — and it does so WORST at the smallest geometry, which is exactly when a
+    // raised rate pins the shrink. Measured 2026-09-19 on the M5 (97f480e19): the header
+    // said 65,536 f16 → 32,768 q8; a one-lane sample at 67,584 read 55,925 B/token,
+    // `corrects()` fired, the plan carried 44,740, and two lanes stopped fitting a 30 GB
+    // budget where the arithmetic at the header rate holds two (84k) and at 34 GB three.
+    // The excess is a real fixed term — named on the probe below so a fixed-residency
+    // model can learn it — never a per-token one.
+    match header_rate {
+        Some(_) => {
+            if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
+                if crate::inference::lane_footprint::corrects(fp.kv_per_token, measured) {
+                    crate::probe!(
+                        class = "serving.footprint.excess_is_fixed",
+                        model = fp.model_id.as_str(),
+                        header_rate = fp.kv_per_token,
+                        measured_per_token = measured,
+                        "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers), not per-token; the header rate stands"
+                    );
+                }
+            }
+            Some(fp)
+        }
+        None => Some(apply_measured_cost(fp)),
+    }
 }
 
 /// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
@@ -4988,6 +5016,15 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
 /// per-token cost is `kv + kv / PREFILL_COMPUTE_KV_DIVISOR`, so kv is set to make that
 /// sum the measurement; a smaller measurement never lowers it (a footprint is a lower
 /// bound of the need).
+/// The per-token rate the plan carries: a header-declared rate is physics and stands
+/// whatever the process measured; only a heuristic estimate is open to correction.
+pub fn kv_rate_for_plan(header_known: bool, estimate: u64, measured: Option<u64>) -> u64 {
+    match (header_known, measured) {
+        (true, _) | (false, None) => estimate,
+        (false, Some(m)) => kv_per_token_from_measured(estimate, m),
+    }
+}
+
 fn apply_measured_cost(mut fp: ModelFootprint) -> ModelFootprint {
     if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
         fp.kv_per_token = kv_per_token_from_measured(fp.kv_per_token, measured);
@@ -5999,6 +6036,13 @@ mod tests {
     fn a_measured_per_token_cost_corrects_the_plans_rate_upward_only() {
         use super::kv_per_token_from_measured;
         use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
+        // what this catches (2026-09-19, the M5 pinned at one lane): a header-declared
+        // rate is never raised by a measurement — the excess is fixed residency; a
+        // heuristic estimate still is.
+        assert_eq!(kv_rate_for_plan(true, 32_768, Some(55_925)), 32_768, "header rate is physics");
+        assert_eq!(kv_rate_for_plan(true, 32_768, None), 32_768);
+        assert_eq!(kv_rate_for_plan(false, 32_768, None), 32_768);
+        assert!(kv_rate_for_plan(false, 10_240, Some(36_000)) > 10_240, "a guess still learns from the process");
         let kv = kv_per_token_from_measured(10_240, 36_000);
         assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
         assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
