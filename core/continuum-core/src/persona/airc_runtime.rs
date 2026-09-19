@@ -1026,6 +1026,9 @@ impl PersonaAircRuntime {
             ),
         }
 
+        // Every id this process wears is registered so no placement path ever treats
+        // it as another machine (card 2500d2f1).
+        crate::persona::self_peer::register(airc_arc.peer_id().as_uuid());
         Ok(Self {
             persona_id,
             agent_name,

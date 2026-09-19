@@ -370,14 +370,14 @@ impl ServiceModule for GridModule {
         // 2026-09-07, now the substrate's, once per tick, receipted in the org room.
         {
             let now = crate::modules::grid::frame::now_millis();
-            let self_peer = crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid());
             // Foreign offers only: a node hears its own beacon back under every scope it
-            // speaks in, each with its own transport id — the operator id alone (below)
-            // missed the M5's project-scope self and it spilled minds to itself (#2500d2f1).
+            // speaks in, each with its own transport id — the operator id alone once
+            // missed the M5's project-scope self and it spilled minds to itself
+            // (card 2500d2f1); `is_this_node` is the one resolver over every id it wears.
             let peers: Vec<crate::persona::placement_switch::PeerOffer> = crate::capacity::gossip::global_ledger()
                 .foreign_offers_with_age()
                 .into_iter()
-                .filter(|(p, _, _)| Some(*p) != self_peer)
+                .filter(|(p, _, _)| !crate::persona::self_peer::is_this_node(*p))
                 .map(|(peer, offer, heard_at_ms)| crate::persona::placement_switch::PeerOffer {
                     peer,
                     served_model: offer.served_model.clone(),

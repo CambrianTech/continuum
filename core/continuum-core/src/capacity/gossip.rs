@@ -278,6 +278,15 @@ impl GridCapacityLedger {
             .collect()
     }
 
+    /// Does the grid hear THIS process under `peer`? Whatever id a scope stamped on our
+    /// own offer (the row carries our origin nonce) is an id of ours — the durable half
+    /// of the self-seat fix (card 2500d2f1). A membership question, so it allocates
+    /// nothing: it is asked per mind per placement tick.
+    pub fn hears_self_as(&self, peer: Uuid) -> bool {
+        let mine = this_process_origin();
+        self.heard.get(&peer).is_some_and(|r| r.offer.is_from(mine))
+    }
+
     pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
         self.heard
             .iter()
@@ -346,6 +355,11 @@ mod tests {
         let foreign: Vec<Uuid> = ledger.foreign_offers_with_age().into_iter().map(|(p, _, _)| p).collect();
         assert_eq!(foreign.len(), 2);
         assert!(!foreign.contains(&me_as_scope_a) && !foreign.contains(&me_as_scope_b));
+        assert!(
+            ledger.hears_self_as(me_as_scope_a) && ledger.hears_self_as(me_as_scope_b),
+            "every id the grid hears me under is mine"
+        );
+        assert!(!ledger.hears_self_as(other) && !ledger.hears_self_as(older), "a stranger's row is not me");
         let elsewhere = ledger.residents_elsewhere(None, 2_000);
         assert_eq!((elsewhere.peers, elsewhere.residents), (1, 2), "only the other node's residents are elsewhere");
     }
