@@ -12,14 +12,16 @@
 //! is a 100 ms budget on the blocking pool — far too tight to walk a
 //! 300 GB tree — so reporters read a cached `AtomicU64` and the walking
 //! happens on [`DiskUsageScanner`], a canonical [`Daemon`] ticking every
-//! 5 minutes (disk grows slowly; the cadence ladder says lean slower).
+//! 5 minutes (disk grows slowly; the cadence ladder says lean slower) — and
+//! each tree is re-walked no sooner than 20× what its last walk cost
+//! ([`next_scan_delay`]), so a million-entry tree cannot own a core.
 //! One scanner for all paths, not a task per reporter — one concurrent
 //! concern, one task (CONCURRENCY-STYLE-GUIDE: no parallel managers).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
@@ -37,6 +39,14 @@ pub struct TrackedDir {
     /// the reporter labels the value as pending instead of claiming "0 B"
     /// (an honest void, never a false zero).
     scanned: std::sync::atomic::AtomicBool,
+    /// What the last walk COST — entries visited and wall time — so the number
+    /// carries its price and the scanner can pace itself by it (see
+    /// [`next_scan_delay`]). 0 entries / 0 ms = set directly, never walked.
+    entries: AtomicU64,
+    walk_ms: AtomicU64,
+    /// Scanner-clock ms (monotonic, from the scanner's own start) before which
+    /// this dir is NOT walked again. 0 = due now.
+    next_due_ms: AtomicU64,
 }
 
 impl TrackedDir {
@@ -46,6 +56,9 @@ impl TrackedDir {
             path,
             bytes: AtomicU64::new(0),
             scanned: std::sync::atomic::AtomicBool::new(false),
+            entries: AtomicU64::new(0),
+            walk_ms: AtomicU64::new(0),
+            next_due_ms: AtomicU64::new(0),
         })
     }
 
@@ -83,6 +96,30 @@ impl TrackedDir {
     pub(crate) fn set_bytes(&self, bytes: u64) {
         self.bytes.store(bytes, Ordering::Relaxed);
         self.scanned.store(true, Ordering::Relaxed);
+    }
+
+    /// The scanner's write seam proper: the walk's yield AND its cost. The cost
+    /// sets when this dir is walked again — [`next_scan_delay`] — so a tree
+    /// that takes 90 s to measure is measured every 30 min, not every 5.
+    pub(crate) fn record_walk(&self, walk: TreeWalk, took: Duration, now_ms: u64) {
+        self.set_bytes(walk.bytes);
+        self.entries.store(walk.entries, Ordering::Relaxed);
+        self.walk_ms.store(took.as_millis() as u64, Ordering::Relaxed);
+        self.next_due_ms
+            .store(now_ms.saturating_add(next_scan_delay(took).as_millis() as u64), Ordering::Relaxed);
+    }
+
+    /// Is this dir due for a walk on the scanner's clock? Always true before the
+    /// first walk.
+    pub(crate) fn due(&self, now_ms: u64) -> bool {
+        now_ms >= self.next_due_ms.load(Ordering::Relaxed)
+    }
+
+    /// The last walk's cost as (entries visited, wall time); `None` when the
+    /// value was set directly (tests, eviction write-through) and never walked.
+    pub fn walk_cost(&self) -> Option<(u64, Duration)> {
+        let ms = self.walk_ms.load(Ordering::Relaxed);
+        (ms > 0).then(|| (self.entries.load(Ordering::Relaxed), Duration::from_millis(ms)))
     }
 
     /// Subtract freed bytes immediately after an eviction so pressure
@@ -132,10 +169,15 @@ impl DiskReporter for TrackedDir {
             name: self.name.to_string(),
             path: self.path.clone(),
             bytes: self.bytes.load(Ordering::Relaxed),
-            detail: if scanned {
-                "cached recursive size (5 min scanner)".to_string()
-            } else {
-                "first scan pending".to_string()
+            detail: match (scanned, self.walk_cost()) {
+                (false, _) => "first scan pending".to_string(),
+                (true, None) => "cached recursive size (set directly, not walked)".to_string(),
+                (true, Some((entries, took))) => format!(
+                    "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
+                    took.as_secs_f64(),
+                    entries,
+                    next_scan_delay(took).as_secs()
+                ),
             },
         }
     }
@@ -302,28 +344,66 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
 /// them into its class). Unreadable entries are skipped, not fatal —
 /// a half-measured tree is still a truthful lower bound.
 pub(crate) fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    walk_tree(path).bytes
+}
+
+/// A walk's yield: the bytes under the root and every directory entry it read to
+/// learn them (files, dirs, symlinks). The entries are the walk's PRICE — one
+/// `lstat` each — and the price is what paces the next walk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TreeWalk {
+    pub bytes: u64,
+    pub entries: u64,
+}
+
+/// Recursive size of `path` with the count of entries visited. Same contract as
+/// [`dir_size_bytes`]: symlinks are counted as entries but never followed, an
+/// unreadable entry is skipped, a missing root is an empty walk.
+pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
     let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
+        return TreeWalk::default();
     };
-    let mut total = 0u64;
+    let mut walk = TreeWalk::default();
     for entry in entries.flatten() {
+        walk.entries = walk.entries.saturating_add(1);
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_symlink() {
             continue;
         }
         if meta.is_dir() {
-            total = total.saturating_add(dir_size_bytes(&entry.path()));
+            let sub = walk_tree(&entry.path());
+            walk.bytes = walk.bytes.saturating_add(sub.bytes);
+            walk.entries = walk.entries.saturating_add(sub.entries);
         } else {
-            total = total.saturating_add(meta.len());
+            walk.bytes = walk.bytes.saturating_add(meta.len());
         }
     }
-    total
+    walk
 }
 
-/// Scanner cadence — 5 minutes. A full walk of a 300 GB cargo-target is
-/// seconds of blocking-pool work; every 5 min it is noise, and disk-class
-/// sizes move on build/download timescales, not milliseconds.
+/// Scanner tick — 5 minutes, and the FLOOR between two walks of one tree.
+/// Disk-class sizes move on build/download timescales, not milliseconds.
 const SCAN_INTERVAL: Duration = Duration::from_secs(300);
+
+/// A WALK'S COST PACES THE WALK (2026-09-19, the M5): `citizens` had grown to
+/// 2.44 M entries — 755 peer workspaces, 335 staged SWE checkouts, 95 GB — and
+/// the recursive `lstat` of it took 90.7 s wall / 49 s sys, every 300 s, on a
+/// node serving two 27B lanes: a 30% duty cycle of one core in the kernel,
+/// forever, growing with every checkout (Joel: "never look up again … eats
+/// CPU like mad"). The 9/4 fix (card 7c956bb4) only moved that walk off the
+/// boot path; nothing bounded it. The bound: a tree is re-walked no sooner
+/// than `SCAN_DUTY_DIVISOR` × the time its last walk took — a walk may cost at
+/// most 1/20 of one core on average — and never sooner than [`SCAN_INTERVAL`].
+/// The measurement stays exact (no sampling, no partial trees); only its
+/// cadence follows its price. A 2 s cargo-target walk keeps the 5 min; the
+/// 90 s citizens walk moves to 30 min, and the report says so.
+pub const SCAN_DUTY_DIVISOR: u32 = 20;
+
+/// PURE: how long after a walk that took `last_walk` the same tree is walked
+/// again — the duty-cycle bound above, floored at [`SCAN_INTERVAL`].
+pub fn next_scan_delay(last_walk: Duration) -> Duration {
+    SCAN_INTERVAL.max(last_walk.saturating_mul(SCAN_DUTY_DIVISOR))
+}
 
 /// Refreshes every [`TrackedDir`]'s cached size on its own tick, off the
 /// hot path via `spawn_blocking`. Publishes a unit snapshot (the real
@@ -333,6 +413,9 @@ pub struct DiskUsageScanner {
     dirs: Vec<Arc<TrackedDir>>,
     channel: DaemonChannel<u64>,
     ticks: AtomicU64,
+    /// The scanner's own clock: `TrackedDir::next_due_ms` is ms on it. Monotonic,
+    /// so a wall-clock jump can neither skip a walk nor storm them.
+    started: Instant,
 }
 
 impl DiskUsageScanner {
@@ -345,6 +428,7 @@ impl DiskUsageScanner {
             dirs,
             channel: DaemonChannel::ungated(0),
             ticks: AtomicU64::new(0),
+            started: Instant::now(),
         });
         let _ = spawn_daemon(scanner.clone());
         scanner
@@ -382,13 +466,42 @@ impl Daemon for DiskUsageScanner {
             }
         }
         for dir in &self.dirs {
+            // A tree whose last walk was expensive is not due yet: its own cost set
+            // the wait ([`next_scan_delay`]). The cached size stands meanwhile.
+            if !dir.due(self.started.elapsed().as_millis() as u64) {
+                continue;
+            }
             let path = dir.path.clone();
             // Walk on the blocking pool — a deep tree must never stall
             // the async runtime the substrate's minds run on.
-            let bytes = tokio::task::spawn_blocking(move || dir_size_bytes(&path))
-                .await
-                .unwrap_or(0);
-            dir.set_bytes(bytes);
+            let began = Instant::now();
+            let walked = tokio::task::spawn_blocking(move || walk_tree(&path)).await;
+            let took = began.elapsed();
+            match walked {
+                Ok(walk) => {
+                    dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
+                    crate::probe!(
+                        class = "disk.scan.walk",
+                        class_name = dir.name,
+                        bytes = walk.bytes,
+                        entries = walk.entries,
+                        walk_ms = took.as_millis() as u64,
+                        next_walk_in_s = next_scan_delay(took).as_secs(),
+                        "one cache class measured — its walk's cost sets when it is measured again"
+                    );
+                }
+                // A walk that panicked measured nothing: the last value stands, never
+                // a false zero, and it is retried on the next tick.
+                Err(e) => {
+                    crate::probe!(
+                        class = "disk.scan.walk_failed",
+                        class_name = dir.name,
+                        walk_ms = took.as_millis() as u64,
+                        error = %e,
+                        "the walk did not complete — cached size kept, retried next tick"
+                    );
+                }
+            }
             // A breath between directories so one deep tree does not own the disk.
             tokio::task::yield_now().await;
         }
@@ -470,6 +583,48 @@ mod tests {
 
         assert_eq!(dir_size_bytes(tmp.path()), 1500);
         assert_eq!(dir_size_bytes(std::path::Path::new("/nonexistent-xyz")), 0);
+        // The walk names its price: every entry read, the symlink included, the
+        // missing root none.
+        let walk = walk_tree(tmp.path());
+        assert_eq!(walk.bytes, 1500);
+        assert_eq!(walk.entries, 3 + u64::from(cfg!(unix)));
+        assert_eq!(walk_tree(std::path::Path::new("/nonexistent-xyz")), TreeWalk::default());
+    }
+
+    // what this catches (the M5, 2026-09-19): a 2.44 M-entry `citizens` tree walked
+    // in 90.7 s every 300 s — a 30% duty cycle of one core, forever. The bound is a
+    // duty cycle: a walk is repeated no sooner than 20× its own cost, and a cheap
+    // walk keeps the 5-minute floor. Mutation check: dropping the `max` fails the
+    // first assert; dropping the multiply fails the second.
+    #[test]
+    fn a_walks_cost_paces_the_next_walk_to_a_five_percent_duty_cycle() {
+        assert_eq!(next_scan_delay(Duration::from_secs(2)), SCAN_INTERVAL);
+        assert_eq!(next_scan_delay(Duration::from_millis(90_700)), Duration::from_millis(1_814_000));
+        assert_eq!(next_scan_delay(Duration::ZERO), SCAN_INTERVAL);
+    }
+
+    // what this catches: the scanner's tick re-walking an expensive tree on its
+    // next 5-minute tick anyway — the pacing must live on the TrackedDir the tick
+    // consults, not only in a constant. A dir is due before any walk, not due
+    // 300 s after a 90 s walk, due again once its 30 min have passed; a cheap
+    // walk is due again at the floor. The report carries the cost.
+    #[test]
+    fn a_tracked_dir_whose_walk_was_expensive_is_not_walked_on_the_next_tick() {
+        let dir = TrackedDir::new("citizens", PathBuf::from("/nonexistent"));
+        assert!(dir.due(0), "never walked = due now");
+        let now = 1_000_000;
+        dir.record_walk(TreeWalk { bytes: 95_000_000_000, entries: 2_440_220 }, Duration::from_secs(90), now);
+        assert!(!dir.due(now + 300_000), "one tick later: the 90 s walk bought 30 min");
+        assert!(!dir.due(now + 1_799_999));
+        assert!(dir.due(now + 1_800_000));
+        assert_eq!(dir.walk_cost(), Some((2_440_220, Duration::from_secs(90))));
+        let detail = dir.report().detail;
+        assert!(detail.contains("90.0 s") && detail.contains("2440220 entries") && detail.contains("1800 s"), "{detail}");
+
+        let cheap = TrackedDir::new("cargo-target", PathBuf::from("/nonexistent"));
+        cheap.record_walk(TreeWalk { bytes: 1, entries: 1 }, Duration::from_secs(2), now);
+        assert!(!cheap.due(now + 299_999));
+        assert!(cheap.due(now + 300_000), "a cheap walk keeps the 5-minute floor");
     }
 
     // what this catches: the standard cache-class registry names exactly
