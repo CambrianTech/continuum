@@ -203,6 +203,54 @@ pub async fn request_reservation(
     peer: Uuid,
     mind: Uuid,
 ) -> Result<PlacementReservationReport, String> {
+    let now = crate::persona::trace::now_ms();
+    if let Some(left_ms) = ask_backoff_remaining(&ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()), peer, now) {
+        return Err(format!("seat {peer} faulted an ask {}s ago — not asked again for {}s", (ASK_BACKOFF_MS.saturating_sub(left_ms)) / 1000, left_ms / 1000));
+    }
+    let asked = send_reservation_ask(airc, peer, mind).await;
+    if let Err(fault) = &asked {
+        note_ask_fault(&mut ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()), peer, now);
+        crate::probe!(
+            class = "placement.reserve.backoff",
+            peer = %peer,
+            mind = %mind,
+            fault = %fault,
+            backoff_ms = ASK_BACKOFF_MS,
+            "a seat that faulted the ask (policy, transport, deadline) is not asked again by ANY mind until the backoff passes"
+        );
+    }
+    asked
+}
+
+/// A seat is asked again only after this long once an ask FAULTED — refused by policy,
+/// not routed, or unanswered within [`RESERVE_DEADLINE`]. A fault is a property of the
+/// seat, not of the mind that asked ([[a-per-peer-fault-counted-per-persona-never-trips-the-breaker]]),
+/// so the backoff is keyed by peer: measured 2026-09-19 04:26–04:50Z, five M5 minds re-asked
+/// the 5090 every tick through a policy refusal — ~6 asks/min into the seat everyone queues
+/// on, each an ACL evaluation there and a 30 s deadline wait here when the seat was silent.
+/// A capacity refusal (`granted: false`) is the seat's honest "not this tick" and is NOT a
+/// fault — it re-asks next tick, since the seat's ledger changes every turn.
+pub const ASK_BACKOFF_MS: u64 = super::placement_switch::MOVE_COOLDOWN_MS;
+
+static ASK_BACKOFF: LazyLock<Mutex<std::collections::HashMap<Uuid, u64>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Milliseconds still to wait before `peer` may be asked again, if a fault is in force.
+pub fn ask_backoff_remaining(faults: &std::collections::HashMap<Uuid, u64>, peer: Uuid, now_ms: u64) -> Option<u64> {
+    let until = *faults.get(&peer)?;
+    (until > now_ms).then(|| until - now_ms)
+}
+
+/// Record that `peer` faulted an ask at `now_ms`: no mind asks it again for [`ASK_BACKOFF_MS`].
+pub fn note_ask_fault(faults: &mut std::collections::HashMap<Uuid, u64>, peer: Uuid, now_ms: u64) {
+    faults.insert(peer, now_ms.saturating_add(ASK_BACKOFF_MS));
+}
+
+async fn send_reservation_ask(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    peer: Uuid,
+    mind: Uuid,
+) -> Result<PlacementReservationReport, String> {
     use airc_core::{Body, MentionTarget, PeerId};
     use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse, KIND_PEER};
 
@@ -241,6 +289,22 @@ mod tests {
     // the grant the seat says yes to the first two asks and no to the rest — total spill
     // ≤ the seat's free slots, whatever the spillers believed. A lapsed grant frees the
     // slot; a re-ask for the same mind renews, never double-counts.
+    // what this catches (2026-09-19, ~6 asks/min into the 5090 through a policy refusal):
+    // a seat that FAULTED an ask is a fact about the seat — every mind on this node holds
+    // off it for the backoff, one fault row per peer, and the row expires by time (its own
+    // mirror). A second seat is unaffected.
+    #[test]
+    fn a_seat_that_faulted_an_ask_is_not_asked_again_by_any_mind_until_the_backoff_passes() {
+        let (seat, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut faults = std::collections::HashMap::new();
+        assert_eq!(ask_backoff_remaining(&faults, seat, NOW), None, "no fault: ask freely");
+        note_ask_fault(&mut faults, seat, NOW);
+        assert_eq!(ask_backoff_remaining(&faults, seat, NOW + 1), Some(ASK_BACKOFF_MS - 1));
+        assert_eq!(ask_backoff_remaining(&faults, other, NOW + 1), None, "keyed on the seat that faulted, not on all seats");
+        assert_eq!(ask_backoff_remaining(&faults, seat, NOW + ASK_BACKOFF_MS), None, "expires by time — the mirror of the fault");
+        assert_eq!(faults.len(), 1, "five minds asking one faulted seat share ONE row");
+    }
+
     #[test]
     fn two_nodes_over_by_n_against_one_seat_with_two_free_slots_spill_at_most_two() {
         let mut reg = ThroughputLeaseRegistry::new();
