@@ -221,6 +221,54 @@ const PREFILL_TARGET_SECONDS: usize = 30;
 // context-budget-exempt: a measured throughput floor (tokens/second), not a context-size constant
 const CONSERVATIVE_PREFILL_TOKENS_PER_S: usize = 500;
 
+/// The kind of turn a completion is for — it selects the LATENCY budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnKind {
+    /// A tool call plus a short plan (a work turn: deliverable + hands).
+    Act,
+    /// A workspace turn with nothing deliverable: a sentence and a reason.
+    Pass,
+    /// A reply in a room.
+    Message,
+}
+
+impl TurnKind {
+    fn latency_budget_secs(self) -> f64 {
+        match self {
+            Self::Act => LlmDeliberationFaculty::ACT_LATENCY_BUDGET_SECS,
+            Self::Pass => LlmDeliberationFaculty::PASS_LATENCY_BUDGET_SECS,
+            Self::Message => LlmDeliberationFaculty::MESSAGE_LATENCY_BUDGET_SECS,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Act => "act",
+            Self::Pass => "pass",
+            Self::Message => "message",
+        }
+    }
+}
+
+/// THE output allowance for a turn: her latency budget × her measured decode
+/// rate, floored at the smallest useful act, ceilinged by the act runaway bound
+/// and by the reserved room. ONE derivation, in TIME (Fable's STOP, 2026-09-18):
+/// a budget in seconds tightens by itself on a slow lane; a budget in tokens
+/// recurred at three magnitudes because each fix moved the number, never the
+/// unit. `measured_tps = None` (not yet measured) assumes the knee's floor rate
+/// (10 tok/s, the slowest lane we call alive) — the allowance is bounded before
+/// the first sample, never the reserve.
+fn output_allowance(kind: TurnKind, measured_tps: Option<f64>, reserve: u32) -> u32 {
+    let tps = measured_tps
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .unwrap_or(crate::inference::decode_knee::DECODE_FLOOR_TPS); // unwrap_or: unmeasured = the floor rate, so the allowance is time-bounded before the first sample
+    let derived = (kind.latency_budget_secs() * tps).round() as u32;
+    derived
+        .max(LlmDeliberationFaculty::MIN_OUTPUT_ALLOWANCE)
+        .min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)
+        .min(reserve.max(1))
+}
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -517,6 +565,19 @@ impl LlmDeliberationFaculty {
     /// rather than being spelled twice and drifting.
     fn is_work_turn(&self, ws: &Workspace) -> bool {
         ws.workspace_deliverable && !self.hands_specs.is_empty()
+    }
+
+    /// What kind of turn this workspace turn is, for its latency budget. A work
+    /// turn (deliverable + hands) is an ACT; a workspace turn with nothing
+    /// deliverable is a PASS. Until 2026-09-18 the cap was gated on
+    /// `is_work_turn` alone, so the pass — the turn with the least to do — ran on
+    /// the reserve and generated the whole window.
+    fn workspace_turn_kind(&self, ws: &Workspace) -> TurnKind {
+        if self.is_work_turn(ws) {
+            TurnKind::Act
+        } else {
+            TurnKind::Pass
+        }
     }
 
     /// The tool surface THIS turn will send, what it COSTS, and WHY — decided once.
@@ -951,7 +1012,39 @@ impl LlmDeliberationFaculty {
     /// zero committed work (IntelMac's review of #3824). This binds only past
     /// the largest committed act we have seen; the real lever is bounding the
     /// THINKING on act turns, which is card 61b6e54d's next slice.
+    ///
+    /// Since 2026-09-18 this is the CEILING of the derived allowance, never the
+    /// allowance itself — see [`output_allowance`].
     pub const ACT_OUTPUT_CAP: u32 = 12_288;
+
+    /// LATENCY BUDGETS, in SECONDS, per turn kind. The allowance a turn may
+    /// generate is `budget × her measured decode rate` ([`output_allowance`]),
+    /// so a slow lane tightens by itself and the budget stays what it is: time.
+    ///
+    /// Why seconds and not tokens (Fable's STOP, 2026-09-18, after Joel: "a slow
+    /// persona is as good as dead"): the output cap recurred at THREE magnitudes —
+    /// 5,316 → 12,288 → 100,704 (Kimi on the 5090, one turn, 8–10 minutes on the
+    /// lane to choose "workspace-pass", ~2 cycles/hour) — because each fix
+    /// adjusted the NUMBER and never the UNIT. The requirement is time-to-act;
+    /// a budget written in tokens cannot express it and drifts every time the
+    /// window grows. Joel's law: 1.5× tax acceptable, 5–10× disqualifying.
+    ///
+    /// ACT: a tool call plus a short plan. The 27B still thinks 4–10k tokens
+    /// before it calls (see [`ACT_OUTPUT_CAP`]); 150 s at 40 tok/s = 6,000
+    /// covers the median committed act today and names the cost honestly — the
+    /// next slice bounds the thinking itself so this budget can fall to seconds.
+    /// PASS: a workspace turn with nothing deliverable — a sentence and a reason.
+    /// Until 2026-09-18 this turn was NOT a work turn and ran on the reserve (the
+    /// whole window); the turn with the least to do was licensed to generate the
+    /// most. MESSAGE: a reply in a room.
+    pub const ACT_LATENCY_BUDGET_SECS: f64 = 150.0;
+    pub const PASS_LATENCY_BUDGET_SECS: f64 = 20.0;
+    pub const MESSAGE_LATENCY_BUDGET_SECS: f64 = 90.0;
+
+    /// The smallest allowance that can still hold a tool call plus a short plan.
+    /// A floor of USEFULNESS on a very slow lane, not a budget: 20 s × 10 tok/s
+    /// is 200 tokens, which cannot carry a call.
+    pub const MIN_OUTPUT_ALLOWANCE: u32 = 768;
 
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
     /// floor uses for a minimum burst.
@@ -1204,26 +1297,31 @@ impl LlmDeliberationFaculty {
         // slot instead of all N collapsing onto one and thrashing (the 2026-08-26
         // KV-reuse-0% bug). None only for the roomless test rig.
         room_id: Option<uuid::Uuid>,
-        // A ceiling on the completion for THIS turn kind, applied under the
-        // reserved room. An ACT turn is a tool call plus a short plan; the
-        // reserve (half the window, or twice her measured peak) let the 27B write
-        // 5,316 tokens per act — 157 s on the lane (2026-09-07 02:47Z, card
-        // 61b6e54d). None = the reserve alone (message turns, tests).
-        output_cap: Option<u32>,
+        // The kind of turn — it selects the LATENCY budget the completion is
+        // derived from ([`output_allowance`]: seconds × her measured decode
+        // rate). Every turn is bounded in time; none runs on the reserve alone.
+        // History: the reserve (half the window, or twice her measured peak) let
+        // the 27B write 5,316 tokens per act (2026-09-07, card 61b6e54d); the
+        // token cap that followed applied only to deliverable work turns, so on
+        // 2026-09-18 a pass turn wrote 100,704 tokens — the whole window — to
+        // choose silence, 8–10 minutes on the lane, twice an hour.
+        kind: TurnKind,
     ) -> TextGenerationRequest {
-        let max_tokens = match output_cap {
-            Some(cap) if cap < reserve => {
-                crate::probe!(
-                    class = "delib.act.output_capped",
-                    persona = %self.persona_name,
-                    cap = cap,
-                    reserve = reserve,
-                    "act turn completion capped under the reserved room"
-                );
-                cap
-            }
-            _ => reserve,
-        };
+        let measured_tps = binding
+            .model
+            .as_deref()
+            .and_then(crate::inference::decode_knee::measured_tps_for);
+        let max_tokens = output_allowance(kind, measured_tps, reserve);
+        crate::probe!(
+            class = "delib.turn.output_allowance",
+            persona = %self.persona_name,
+            kind = kind.label(),
+            budget_secs = kind.latency_budget_secs(),
+            measured_tps = measured_tps.unwrap_or(0.0), // unwrap_or: 0.0 = not yet measured, the floor rate governed
+            allowance = max_tokens,
+            reserve = reserve,
+            "completion bounded in TIME — budget × her decode rate, under the reserved room"
+        );
         TextGenerationRequest {
             messages,
             system_prompt: Some(system_prompt),
@@ -1279,14 +1377,15 @@ impl LlmDeliberationFaculty {
             request_id: None,
             user_id: None,
             room_id: room_id.map(|r| r.to_string()),
-            // An ACT turn (the caller passed an output cap — the hands surface is
-            // offered) announces itself: the body builder bounds the model's
-            // thinking on it (card 12ef9c10), the lane class stays Turn.
+            // An ACT or PASS turn announces itself: the body builder bounds the
+            // model's THINKING on it (`reasoning_budget_tokens`, card 12ef9c10), the
+            // lane class stays Turn. Until 2026-09-18 only deliverable work turns
+            // carried the purpose, so a pass turn thought without bound and then
+            // generated without bound. A pass needs even less thought than an act.
             purpose: Some(
-                if output_cap.is_some() {
-                    "cognition/act"
-                } else {
-                    "cognition/deliberation"
+                match kind {
+                    TurnKind::Act | TurnKind::Pass => "cognition/act",
+                    TurnKind::Message => "cognition/deliberation",
                 }
                 .to_string(),
             ),
@@ -3786,7 +3885,7 @@ impl LlmDeliberationFaculty {
                     (!stops.is_empty()).then_some(stops)
                 },
                 Some(ws.room_id),
-                self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
+                self.workspace_turn_kind(ws),
             );
 
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
@@ -5483,12 +5582,37 @@ mod tests {
         // This asserts the closed invariant: worst-case prompt (at its budget ceiling)
         // PLUS the generation cap never exceeds the served window. Regression for the
         // abstain-every-tick reliability bug.
-        // what this catches: an ACT turn's completion is bounded by ACT_OUTPUT_CAP
-        // under the reserve, and a message turn (no cap) still gets the whole
-        // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
-        // the lane); capping message turns would truncate answers.
         #[tokio::test]
-        async fn an_act_turn_is_capped_under_the_reserved_room() {
+        async fn every_turn_is_bounded_in_time_never_the_reserve() {
+            // what this catches (2026-09-18, Kimi on the 5090: one pass turn wrote
+            // 100,704 tokens — the whole window — 8–10 min on the lane, twice an
+            // hour): the allowance is her latency budget × her decode rate for
+            // EVERY kind, floored at a useful act, ceilinged by the runaway bound
+            // and the reserve; a pass costs a pass; unmeasured assumes the floor
+            // rate so nothing runs on the reserve alone before the first sample.
+            use crate::inference::decode_knee::DECODE_FLOOR_TPS;
+            let reserve = 50_000u32;
+            let at = |kind: TurnKind, tps: f64| output_allowance(kind, Some(tps), reserve);
+            // Derived in TIME: a faster lane earns more tokens for the same seconds.
+            assert_eq!(at(TurnKind::Act, 40.0), 6_000);
+            assert_eq!(at(TurnKind::Pass, 40.0), 800);
+            assert_eq!(at(TurnKind::Message, 40.0), 3_600);
+            assert!(at(TurnKind::Act, 20.0) < at(TurnKind::Act, 40.0));
+            assert!(at(TurnKind::Pass, 40.0) < at(TurnKind::Act, 40.0), "a pass costs a pass");
+            // Runaway bound still binds on a very fast lane.
+            assert_eq!(at(TurnKind::Act, 400.0), LlmDeliberationFaculty::ACT_OUTPUT_CAP);
+            // Floor of usefulness on a very slow lane.
+            assert_eq!(at(TurnKind::Pass, 5.0), LlmDeliberationFaculty::MIN_OUTPUT_ALLOWANCE);
+            // Unmeasured = the floor rate, never the reserve.
+            assert_eq!(
+                output_allowance(TurnKind::Message, None, reserve),
+                (LlmDeliberationFaculty::MESSAGE_LATENCY_BUDGET_SECS * DECODE_FLOOR_TPS) as u32
+            );
+            // Never past the reserved room.
+            assert_eq!(output_allowance(TurnKind::Act, Some(40.0), 1_000), 1_000);
+
+            // And the request carries it: a workspace pass on a fresh faculty (no
+            // decode measured) is bounded well under the reserve.
             let window = 32_768u32;
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -5503,7 +5627,7 @@ mod tests {
             let view = faculty.prompt_view(&ws);
             let binding = faculty.binding.load_full();
             let reserve = faculty.completion_reserve_within(window);
-            let act = faculty.build_request_within(
+            let pass = faculty.build_request_within(
                 &binding,
                 view.completion_reserve,
                 view.messages.clone(),
@@ -5511,13 +5635,14 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+                TurnKind::Pass,
             );
             assert_eq!(
-                act.max_tokens,
-                Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
-                "an act turn is capped under the reserve"
+                pass.max_tokens,
+                Some(output_allowance(TurnKind::Pass, None, reserve)),
+                "a pass turn is bounded in time, never the reserve"
             );
+            assert!(pass.max_tokens.unwrap_or(0) < reserve);
             let msg = faculty.build_request_within(
                 &binding,
                 view.completion_reserve,
@@ -5526,13 +5651,9 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                None,
+                TurnKind::Message,
             );
-            assert_eq!(
-                msg.max_tokens,
-                Some(reserve),
-                "a message turn keeps the reserved room"
-            );
+            assert!(msg.max_tokens.unwrap_or(0) <= reserve, "never past the reserved room");
         }
 
         #[test]
@@ -5569,15 +5690,15 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                None,
+                TurnKind::Message,
             );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
                 .max_tokens
                 .expect("deliberation must bound generation to the reserved room");
-            assert_eq!(
-                cap, view.completion_reserve,
-                "the generation cap IS the reserved room — one source of truth"
+            assert!(
+                cap <= view.completion_reserve,
+                "the generation cap fits the reserved room — since 2026-09-18 it is the TIME \n                 allowance under that room, never past it"
             );
             // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
             let prompt_tokens = est_tokens(&view.system) + est_tokens(&view.user_text());
@@ -7717,7 +7838,8 @@ mod tests {
                     request.tools.as_ref().expect("native tools retained"),
                 );
                 assert_eq!(schemas, faculty.select_tool_surface(&ws, expected).tokens);
-                assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+                // Since 2026-09-18 the bound is the TIME allowance under the reserve.
+                assert!(request.max_tokens.unwrap_or(u32::MAX) <= expected_view.completion_reserve);
                 let cost = LlmDeliberationFaculty::framing_cost(
                     request.system_prompt.as_deref().expect("system framing"),
                 ) + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -7798,9 +7920,11 @@ mod tests {
                     let seen = old_adapter.seen.lock().expect("old route requests");
                     assert_eq!(seen.len(), 1);
                     assert_eq!(seen[0].model.as_deref(), Some("original-model"));
-                    assert_eq!(
-                        seen[0].max_tokens,
-                        Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
+                    // Since 2026-09-18 the bound is the TIME allowance under the reserve:
+                    // never past the room the winning binding left.
+                    assert!(
+                        seen[0].max_tokens.unwrap_or(u32::MAX)
+                            <= faculty.prompt_view_within(&ws, 16_384).completion_reserve
                     );
                 }
                 let verdict = faculty.contribute(&ws).await.expect("next verdict");
@@ -7811,13 +7935,11 @@ mod tests {
                 assert_eq!(request.model, replacement.model);
                 let next_window = if same_route { 16_384 } else { 24_576 };
                 assert_eq!(binding.load().context_window, next_window);
-                assert_eq!(
-                    request.max_tokens,
-                    Some(
-                        faculty
-                            .prompt_view_within(&ws, next_window)
-                            .completion_reserve
-                    )
+                // Since 2026-09-18 the bound is the TIME allowance under the reserve
+                // the winning binding left.
+                assert!(
+                    request.max_tokens.unwrap_or(u32::MAX)
+                        <= faculty.prompt_view_within(&ws, next_window).completion_reserve
                 );
             }
         }
@@ -8403,12 +8525,11 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .contains("Held activity context"));
-                assert_eq!(
-                    request.max_tokens,
-                    Some(
-                        view.completion_reserve
-                            .min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)
-                    )
+                // Since 2026-09-18 an act turn's bound is the TIME allowance under the
+                // reserve and the runaway cap.
+                assert!(
+                    request.max_tokens.unwrap_or(u32::MAX)
+                        <= view.completion_reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)
                 );
                 let schema_tokens =
                     LlmDeliberationFaculty::tool_surface_tokens_of(request.tools.as_ref().unwrap());
