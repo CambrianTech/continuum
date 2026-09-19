@@ -420,7 +420,7 @@ fn volume_reading(
         .max_by(|a, b| {
             let pa = 1.0 - a.available_bytes as f64 / a.total_bytes as f64;
             let pb = 1.0 - b.available_bytes as f64 / b.total_bytes as f64;
-            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: a NaN pressure (total 0 is filtered above) ranks as equal, never panics the poll
         });
     match hottest {
         Some(d) => VolumeReading {
