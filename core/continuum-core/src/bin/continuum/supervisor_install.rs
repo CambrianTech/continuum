@@ -386,6 +386,10 @@ pub(super) struct InstallOptions {
     pub cli: bool,
     /// The running core is the checkout's HEAD: build, stage, hand off when not.
     pub core: bool,
+    /// macOS only: the per-user LaunchAgent instead of the system LaunchDaemon (no sudo;
+    /// cannot heal on a gui domain in on-demand-only mode — measured, IntelMac). The
+    /// daemon is the default nobody has to remember; this is the explicit other choice.
+    pub user: bool,
     /// Report drift and change nothing (exit non-zero when drifted).
     pub check: bool,
     /// The elevated child: register from `plan`, exit. Never spawns another elevation.
@@ -405,6 +409,7 @@ impl InstallOptions {
                 "--supervisor" if !options.supervisor => options.supervisor = true,
                 "--cli" if !options.cli => options.cli = true,
                 "--core" if !options.core => options.core = true,
+                "--user" if !options.user => options.user = true,
                 "--check" if !options.check => options.check = true,
                 "--elevated" if !options.elevated => options.elevated = true,
                 "--plan" if options.plan.is_none() => {
@@ -418,7 +423,7 @@ impl InstallOptions {
                     }
                     options.plan_sha = Some(sha.to_ascii_lowercase());
                 }
-                "--supervisor" | "--cli" | "--core" | "--check" | "--elevated" | "--plan" | "--plan-sha" => {
+                "--supervisor" | "--cli" | "--core" | "--user" | "--check" | "--elevated" | "--plan" | "--plan-sha" => {
                     return Err(format!("duplicate option {arg}"))
                 }
                 _ => return Err(format!("unknown install option {arg}; use --check, or name arms: --supervisor --core --cli")),
@@ -430,7 +435,7 @@ impl InstallOptions {
         if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some() {
             return Err("install: --elevated, --plan and --plan-sha go together (the elevated child registers exactly one plan, bound by its digest)".to_string());
         }
-        if options.elevated && (options.cli || options.core) {
+        if options.elevated && (options.cli || options.core || options.user) {
             return Err("install: the elevated child registers the supervisor plan only".to_string());
         }
         Ok(options)
