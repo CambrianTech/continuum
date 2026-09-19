@@ -2756,7 +2756,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
         let job = live::job()?;
         let job_pid = job.as_ref().and_then(|j| live::job_pid(&j.domain));
         let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(15 * 60));
-        let verdict = supervision_verdict(job.as_ref().map(|j| j.domain.clone()), job_pid, core_pid(), on_demand);
+        let verdict: launchd::SupervisionVerdict = supervision_verdict(job.as_ref().map(|j| j.domain.clone()), job_pid, core_pid(), on_demand);
         eprintln!("{}", verdict.line());
         println!(
             "{}",

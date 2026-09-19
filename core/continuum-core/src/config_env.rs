@@ -98,7 +98,7 @@ pub fn read_all() -> Vec<(String, String)> {
 /// Must run while the process is single-threaded — `set_var` races any concurrent
 /// `getenv`. The one caller is the first line of `main`, before tokio exists.
 pub fn apply_to_process() -> usize {
-    config_path().map(|p| apply_from(&p)).unwrap_or(0)
+    config_path().map(|p| apply_from(&p)).unwrap_or(0) // unwrap_or: no home dir = no file = zero assignments, the honest count
 }
 
 /// Path-taking core of [`apply_to_process`]. Returns how many assignments were applied.
