@@ -5703,6 +5703,12 @@ mod tests {
     // sat free — every turn a full re-prefill. Same footprint, same demand, same box:
     // unified pays the working set, discrete does not, and the discrete answer is the
     // demand-sized one.
+    /// The grant the cache may be promised out of a ceiling: the ceiling less the
+    /// planner's co-consumer headroom (#4216 — a cache fills to its grant).
+    fn grantable(ceiling: u64) -> u64 {
+        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64
+    }
+
     #[test]
     fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         use super::*;
@@ -5745,7 +5751,7 @@ mod tests {
         let want_bytes = demands.iter().map(|t| fp.kv_per_token * *t as u64).sum::<u64>();
         assert_eq!(
             on_discrete.affordable_bytes,
-            Some(physical - host_os_floor_bytes(physical))
+            Some(grantable(physical - host_os_floor_bytes(physical)))
         );
         assert_eq!(
             on_discrete.desired_mib as u64,
@@ -5813,8 +5819,8 @@ mod tests {
         let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 0);
         assert_eq!(
             unknown.affordable_bytes,
-            Some(physical - host_os_floor_bytes(physical)),
-            "no availability reading: headroom alone"
+            Some(grantable(physical - host_os_floor_bytes(physical))),
+            "no availability reading: headroom alone, less the co-consumer share"
         );
         let available = 31u64 << 30;
         let bound = prompt_cache_decision(
@@ -5829,8 +5835,8 @@ mod tests {
         );
         assert_eq!(
             bound.affordable_bytes,
-            Some(available - host_os_floor_bytes(physical)),
-            "bounded by what the box can give now"
+            Some(grantable(available - host_os_floor_bytes(physical))),
+            "bounded by what the box can give now, less the co-consumer share"
         );
         assert!(bound.desired_mib < unknown.desired_mib);
         assert_eq!(bound.available_bytes, available);
