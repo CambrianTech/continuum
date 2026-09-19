@@ -3448,26 +3448,17 @@ impl ServingDaemonModule {
         // bootstrap prior and the 5090 chose 2 × 17k for coders sending ~30k. Measured now:
         // the record follows the live median; unmeasured now: the record's last median is
         // the floor until prompts land. A boot never plans thinner than what it served.
-        match demand.sent_median {
-            Some(median) => {
-                if let Some(model) = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str())) {
-                    crate::modules::served_window_store::save_typical_prompt(model, median);
+        {
+            let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
+            let record = crate::modules::served_window_store::load_geometry();
+            match typical_prompt_for_plan(demand.sent_median, seat_model, record.as_ref()) {
+                TypicalPrompt::Live(median) => {
+                    if let Some(model) = seat_model {
+                        crate::modules::served_window_store::save_typical_prompt(model, median);
+                    }
                 }
-            }
-            None => {
-                let remembered = boot
-                    .as_ref()
-                    .map(|g| g.typical_prompt_tokens)
-                    .or_else(|| {
-                        incumbent
-                            .as_deref()
-                            .and_then(|m| crate::modules::served_window_store::load_geometry().filter(|g| g.model_id == m))
-                            .map(|g| g.typical_prompt_tokens)
-                    })
-                    .filter(|t| *t > 0);
-                if remembered.is_some() {
-                    demand = demand.with_sent_median(remembered);
-                }
+                TypicalPrompt::Remembered(t) => demand = demand.with_sent_median(Some(t)),
+                TypicalPrompt::None => {}
             }
         }
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
@@ -4742,6 +4733,34 @@ fn sidecar_planned_headroom_bytes(
         .saturating_add((target.host_prompt_cache_mib as u64) * 1024 * 1024)
         .saturating_add(host_os_floor_bytes(physical_bytes));
     physical_bytes.saturating_sub(working_set)
+}
+
+/// The typical prompt a plan floors from — the three arms, pure (card c84d885a, 9/19):
+/// a LIVE median always wins and is what gets remembered; with no live median the
+/// remembered one for THE SAME model is the floor; a different model's record, or a 0 on
+/// disk, floors nothing. "Typical" is the median of the prompts the seat SERVES — residents
+/// and leased-in minds in one pool (#4197) — so on a seat that mostly serves other nodes'
+/// coders the remembered median is theirs, which is correct for a seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypicalPrompt {
+    Live(u32),
+    Remembered(u32),
+    None,
+}
+fn typical_prompt_for_plan(
+    live_median: Option<u32>,
+    seat_model: Option<&str>,
+    record: Option<&crate::modules::served_window_store::StoredServedWindow>,
+) -> TypicalPrompt {
+    if let Some(m) = live_median.filter(|m| *m > 0) {
+        return TypicalPrompt::Live(m);
+    }
+    match (seat_model, record) {
+        (Some(model), Some(r)) if r.model_id == model && r.typical_prompt_tokens > 0 => {
+            TypicalPrompt::Remembered(r.typical_prompt_tokens)
+        }
+        _ => TypicalPrompt::None,
+    }
 }
 
 /// ONE FLOOR EVERYWHERE: the bytes a sidecar may take is the tighter of the LIVE free
@@ -8735,5 +8754,25 @@ mod tests {
         assert!(now >= 4 * GB, "sight is not refused, a mind-sized sidecar is");
         // An over-full box yields zero, never a wrap.
         assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
+    }
+
+    // what this catches (Cormac's three arms on #4207 — the 5090's 2 × 17k for 30k coders on
+    // a fresh boot): (1) a live median wins and is the one remembered; (2) no live median +
+    // a record for the SAME model → the plan floors from it; (3) no live median + a record
+    // for a DIFFERENT model, or a 0 on disk → nothing: a seat is never pinned to a stale or
+    // foreign prompt size. Pure over the store's record, so no daemon and no disk.
+    #[test]
+    fn the_typical_prompt_is_live_when_measured_remembered_for_the_same_model_and_never_foreign() {
+        use crate::modules::served_window_store::StoredServedWindow;
+        let rec = |model: &str, typical: u32| StoredServedWindow {
+            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, set_at_ms: 1,
+        };
+        let same = rec("qwen-27b", 30_000);
+        assert_eq!(typical_prompt_for_plan(Some(31_000), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
+        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "arm 2: unmeasured → the same model's remembered prompt");
+        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("other-4b", 33_000))), TypicalPrompt::None, "arm 3a: a different model's record floors nothing");
+        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("qwen-27b", 0))), TypicalPrompt::None, "arm 3b: a 0 on disk is not a floor");
+        assert_eq!(typical_prompt_for_plan(None, None, Some(&same)), TypicalPrompt::None, "no seat model (a cold boot with no record model) floors nothing");
+        assert_eq!(typical_prompt_for_plan(Some(0), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
     }
 }
