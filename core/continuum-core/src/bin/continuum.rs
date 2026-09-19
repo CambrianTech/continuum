@@ -45,6 +45,10 @@ use owned_engines::owned_engine_candidate;
 #[cfg(windows)]
 #[path = "continuum/windows_launch.rs"]
 mod windows_launch;
+#[path = "continuum/supervisor_install.rs"]
+mod supervisor_install;
+#[path = "continuum/install_cli.rs"]
+mod install_cli;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
@@ -99,6 +103,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "orphans"
                 | "deploy-verify"
                 | "deploy-consume"
+                | "install"
                 | "verify"
                 | "checkpoint"
                 | "service-host"
@@ -244,6 +249,7 @@ async fn run() -> Result<(), CliError> {
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
         "deploy-verify" | "verify" => verify_deployed_build(false).await,
         "deploy-consume" => deploy_consume(DeployConsumeOptions::parse(args)?).await,
+        "install" => install(supervisor_install::InstallOptions::parse(args)?).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -1270,28 +1276,9 @@ impl PreparedCoreService {
 
     #[cfg(windows)]
     async fn powershell(script: &str) -> Result<String, String> {
-        use base64::Engine;
-        use std::os::windows::process::CommandExt;
-        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // PowerShell -EncodedCommand requires UTF-16LE base64 at this process boundary.
-        let mut command = std::process::Command::new(Self::shell()?);
-        command
-            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-            .stdin(Stdio::null())
-            .creation_flags(0x0800_0000);
-        let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
-        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+        supervisor_install::powershell(script, Duration::from_secs(30))
             .await
-            .map_err(|_| "ContinuumCore scheduler operation timed out".to_string())?
-            .map_err(|e| format!("cannot invoke Task Scheduler: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "ContinuumCore scheduler operation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .map_err(|e| format!("ContinuumCore: {e}"))
     }
 
     #[cfg(windows)]
@@ -2232,35 +2219,23 @@ fn record_repo_checkout() {
 // deploy claim it takes is what the tracker's #4187 reconcile reads; `deploy.settled`
 // on this node with no human in the loop is the receipt.
 
-/// How often the supervisor's sibling task asks whether a deploy is owed.
-const DEPLOY_CONSUME_EVERY_MIN: u32 = 10;
-const DEPLOY_CONSUME_TASK: &str = "ContinuumDeploy";
-
 #[derive(Debug, Default, PartialEq, Eq)]
-struct DeployConsumeOptions {
-    install: bool,
-    uninstall: bool,
-}
+struct DeployConsumeOptions {}
 
 impl DeployConsumeOptions {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
-        let mut options = Self::default();
         for arg in args {
-            match arg.as_str() {
-                "--install" if !options.install => options.install = true,
-                "--uninstall" if !options.uninstall => options.uninstall = true,
-                "--install" | "--uninstall" => return Err(format!("duplicate option {arg}")),
-                _ => {
-                    return Err(format!(
-                        "unknown deploy-consume option {arg}; use --install or --uninstall"
-                    ))
-                }
+            if matches!(arg.as_str(), "--install" | "--uninstall") {
+                // ONE registrar for the consumer's task: `continuum install --supervisor`
+                // registers it S4U beside ContinuumCore. The unelevated `--install` of
+                // 2026-09-18 made an Interactive task that died with the session.
+                return Err(format!(
+                    "deploy-consume {arg} is gone: the ContinuumDeploy task is registered by `continuum install --supervisor` (S4U, beside ContinuumCore)"
+                ));
             }
+            return Err(format!("unknown deploy-consume option {arg}"));
         }
-        if options.install && options.uninstall {
-            return Err("deploy-consume: --install and --uninstall are exclusive".to_string());
-        }
-        Ok(options)
+        Ok(Self::default())
     }
 }
 
@@ -2406,41 +2381,165 @@ async fn running_build_sha() -> Option<String> {
     reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string)
 }
 
-fn deploy_consume_task_install() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("deploy-consume: own path: {e}"))?;
-    let action = format!("\"{}\" deploy-consume", exe.display());
-    let out = std::process::Command::new("schtasks")
-        .args([
-            "/create", "/tn", DEPLOY_CONSUME_TASK, "/sc", "minute", "/mo",
-            &DEPLOY_CONSUME_EVERY_MIN.to_string(), "/tr", &action, "/f",
-        ])
-        .output()
-        .map_err(|e| format!("schtasks: {e}"))?;
-    if !out.status.success() {
+// =============================================================================
+// install — converge this machine to the contract, from the binary (Joel 2026-09-18:
+// "What's the repeatable process or inside an install? … Do NOT hand jack"; "it
+// needs to be in our own binary here"). Arms land one at a time; each is a module
+// under `continuum/`. First: the OS supervisor (`supervisor_install`).
+// =============================================================================
+
+async fn install(options: supervisor_install::InstallOptions) -> Result<(), String> {
+    use supervisor_install::{Arm, ArmReport};
+    #[cfg(not(windows))]
+    {
+        let _ = options;
         return Err(format!(
-            "deploy-consume --install: schtasks refused: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "continuum install: this platform's arms are not in the binary yet — \
+             the macOS arm is #4228 (launchd), the Linux arm (`systemd --user` + linger) is owed; \
+             Windows is here. Until it lands: tools/scripts/install-service.sh ({} arm).",
+            std::env::consts::OS
         ));
     }
-    println!(
-        "✓ {DEPLOY_CONSUME_TASK} registered: every {DEPLOY_CONSUME_EVERY_MIN} min, {action}"
-    );
-    Ok(())
+    #[cfg(windows)]
+    {
+        if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.plan_sha.as_deref()) {
+            return supervisor_install::install_supervisor_elevated(plan, sha);
+        }
+        let check = options.check;
+        let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
+        // 1. The supervisor: a core can only be handed to a prepared one.
+        if options.runs(Arm::Supervisor) {
+            let r = supervisor_install::install_supervisor(check, installed_cli_from_descriptor).await?;
+            reports.push((Arm::Supervisor, r));
+        }
+        // 2. The core: the running build is the checkout's HEAD, or it is built, staged
+        //    into the slot and handed to the supervisor — `reboot --service`, the same
+        //    path the unattended consumer takes. Hand-run, the tip is what you have.
+        if options.runs(Arm::Core) {
+            reports.push((Arm::Core, install_core(check).await?));
+        }
+        // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
+        if options.runs(Arm::Cli) {
+            reports.push((Arm::Cli, install_cli(check).await?));
+        }
+        let remaining: usize = reports.iter().map(|(_, r)| r.drift_after).sum();
+        let found: usize = reports.iter().map(|(_, r)| r.drift_before).sum();
+        if remaining > 0 {
+            return Err(if check {
+                format!("install --check: {remaining} way(s) drifted across {} arm(s); `continuum install` converges them", reports.len())
+            } else {
+                format!("install: {remaining} way(s) still drifted after running {} arm(s) — read the lines above", reports.len())
+            });
+        }
+        println!(
+            "✓ install: {} arm(s) converged{}",
+            reports.len(),
+            if found == 0 { " — nothing changed" } else { "" }
+        );
+        Ok(())
+    }
 }
 
-fn deploy_consume_task_uninstall() -> Result<(), String> {
-    let out = std::process::Command::new("schtasks")
-        .args(["/delete", "/tn", DEPLOY_CONSUME_TASK, "/f"])
-        .output()
-        .map_err(|e| format!("schtasks: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "deploy-consume --uninstall: schtasks refused: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+/// The installed CLI, read out of the ContinuumCore task's description (the release
+/// descriptor) — the slot's single source.
+#[cfg(windows)]
+fn installed_cli_from_descriptor(description: &str) -> Result<String, String> {
+    let d: CoreServiceDescription = serde_json::from_str(description).map_err(|e| {
+        format!("ContinuumCore is not prepared by the current installer (its description is not a release descriptor): {e}; rerun the installer")
+    })?;
+    Ok(d.cli)
+}
+
+/// The core arm: running build vs the checkout's HEAD.
+#[cfg(windows)]
+async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use supervisor_install::ArmReport;
+    let head = git_head_short_sha().ok_or("install: no checkout HEAD to converge to — run from the repository")?;
+    let running = running_build_sha().await;
+    match running.as_deref() {
+        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+            println!("✓ core: converged — running build {r} is HEAD");
+            return Ok(ArmReport::converged());
+        }
+        Some(r) => println!("  core: running build {r}, HEAD is {head}"),
+        None => println!("  core: no core answering; HEAD is {head}"),
     }
-    println!("✓ {DEPLOY_CONSUME_TASK} removed");
-    Ok(())
+    if check {
+        println!("✗ core: drifted; `continuum install` builds HEAD, stages it and hands it to the supervisor");
+        return Ok(ArmReport::read_only(1));
+    }
+    reboot(RebootOptions { service: true, ..Default::default() }).await?;
+    let now = running_build_sha().await;
+    match now.as_deref() {
+        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+            println!("✓ core: converged — running build {r} is HEAD");
+            Ok(ArmReport { drift_before: 1, drift_after: 0 })
+        }
+        other => Err(format!(
+            "install: the handoff ran but the running core reports {} against HEAD {head}",
+            other.unwrap_or("nothing") // unwrap_or: None = no core answering, reported as such — never a sha
+        )),
+    }
+}
+
+/// The CLI arm: `~/.local/bin/{continuum,uu}.exe` are the slot's CLI, and the dir is
+/// on the user's PATH.
+#[cfg(windows)]
+async fn install_cli(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use install_cli::CliDrift;
+    use supervisor_install::ArmReport;
+    let core = supervisor_install::task_report(supervisor_install::CORE_TASK).await?;
+    if !core.present {
+        println!("  cli: no installed release (no ContinuumCore task) — nothing to follow yet");
+        return Ok(ArmReport::read_only(1));
+    }
+    let slot_cli = PathBuf::from(installed_cli_from_descriptor(&core.description)?);
+    let dir = install_cli::cli_dir(Path::new(&home_dir()?));
+    let user_path = supervisor_install::powershell(
+        "[Environment]::GetEnvironmentVariable('PATH','User')",
+        Duration::from_secs(30),
+    )
+    .await?;
+    let drift = install_cli::cli_drift(&slot_cli, &dir, &user_path)?;
+    if drift.is_empty() {
+        println!("✓ cli: converged — {} and uu on PATH are the slot's CLI ({})", dir.join("continuum.exe").display(), slot_cli.display());
+        return Ok(ArmReport::converged());
+    }
+    for d in &drift {
+        println!("  cli: {d:?}");
+    }
+    if check {
+        println!("✗ cli: drifted; `continuum install` refreshes the copies and the user PATH");
+        return Ok(ArmReport::read_only(drift.len()));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("install: cannot create {}: {e}", dir.display()))?;
+    for d in &drift {
+        match d {
+            CliDrift::Missing(name) | CliDrift::Stale(name) => {
+                let to = dir.join(install_cli::cli_file_name(name));
+                install_cli::copy_with_retry(&slot_cli, &to, Duration::from_secs(10))?;
+                println!("  cli: refreshed {}", to.display());
+            }
+            CliDrift::NotOnPath(dir) => {
+                let script = format!(
+                    "$d='{}'; $p=[Environment]::GetEnvironmentVariable('PATH','User'); if (-not $p) {{ $p='' }}; [Environment]::SetEnvironmentVariable('PATH', ($d + ';' + $p).TrimEnd(';'), 'User')",
+                    dir.display().to_string().replace('\'', "''")
+                );
+                supervisor_install::powershell(&script, Duration::from_secs(30)).await?;
+                println!("  cli: added {} to the user PATH (new terminals see it)", dir.display());
+            }
+        }
+    }
+    let after = install_cli::cli_drift(
+        &slot_cli,
+        &dir,
+        &supervisor_install::powershell("[Environment]::GetEnvironmentVariable('PATH','User')", Duration::from_secs(30)).await?,
+    )?;
+    if !after.is_empty() {
+        return Err(format!("install: the CLI still drifts after the refresh: {after:?}"));
+    }
+    println!("✓ cli: converged — continuum and uu on PATH are the slot's CLI");
+    Ok(ArmReport { drift_before: drift.len(), drift_after: 0 })
 }
 
 /// The consumer's log — the only place its output can land, since the scheduled task
@@ -2487,12 +2586,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if options.install {
-        return deploy_consume_task_install();
-    }
-    if options.uninstall {
-        return deploy_consume_task_uninstall();
-    }
+    let DeployConsumeOptions {} = options;
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
         continuum_core::modules::persona_instance_manager::resolve_continuum_root()
@@ -4367,6 +4461,7 @@ fn usage() -> String {
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
+       continuum install [--check]     converge this machine: the OS supervisor (S4U at boot + the\n                                       deploy consumer, one elevation), the core (build HEAD, stage,\n                                       hand off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (Windows; mac/linux arms pending)\n\
      \n\
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
@@ -4427,8 +4522,8 @@ mod tests {
         assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
         assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install); // unwrap: the valid case — an Err here IS the failure
-        assert!(DeployConsumeOptions::parse(["--install".to_string(), "--uninstall".to_string()].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
+        assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
     }
 
