@@ -210,11 +210,13 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:aclRegistrations = 0
         function Register-ScheduledTask { $script:aclRegistrations++ }
         $planPath = Join-Path $scratch 'acl-plan.json'
-        @{ userSid = $callerSid; shell = 'fixture'; arguments = 'fixture'; description = 'fixture' } |
+        @{ userSid = $callerSid; shell = 'fixture'; arguments = 'fixture'; description = 'fixture'; cli = 'fixture' } |
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
         . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath
-        if ($script:aclRegistrations -ne 1 -or -not (Test-CoreServiceCallerAccess -Sddl $script:aclTask.Sddl -UserSid $callerSid)) {
-            throw 'Registrar did not persist and verify the caller grant'
+        # Two registrations: ContinuumCore, then the ContinuumDeploy consumer under the
+        # same S4U principal — one registrar, one elevation, both tasks.
+        if ($script:aclRegistrations -ne 2 -or -not (Test-CoreServiceCallerAccess -Sddl $script:aclTask.Sddl -UserSid $callerSid)) {
+            throw 'Registrar did not register both tasks and persist/verify the caller grant'
         }
         $script:aclTask.Sddl = $acl
         $script:aclTask.Save = $false

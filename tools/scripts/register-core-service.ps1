@@ -2,7 +2,7 @@ param([Parameter(Mandatory = $true)][string]$PlanPath)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\windows-service.ps1')
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
-if (-not $plan.userSid -or -not $plan.shell -or -not $plan.arguments -or -not $plan.description) {
+if (-not $plan.userSid -or -not $plan.shell -or -not $plan.arguments -or -not $plan.description -or -not $plan.cli) {
     throw 'Incomplete service registration plan.'
 }
 $scheduler = New-Object -ComObject 'Schedule.Service'
@@ -55,9 +55,9 @@ try {
 # CLI unelevated (an Interactive task dies with the session, exactly as the core
 # did on 2026-09-19). `deploy-consume --install` remains only as the dev-box
 # convenience it says it is; this registration supersedes it (same task name).
-$release = $plan.description | ConvertFrom-Json
-if (-not $release.cli) { throw 'The prepared release names no CLI; cannot register the deploy consumer.' }
-$deployAction = New-ScheduledTaskAction -Execute $release.cli -Argument 'deploy-consume'
+# The plan names the installed CLI as its own field (`cli`); the description is the
+# task's human label, not a channel to smuggle the release through.
+$deployAction = New-ScheduledTaskAction -Execute $plan.cli -Argument 'deploy-consume'
 $deployPrincipal = New-ScheduledTaskPrincipal -UserId $plan.userSid -LogonType S4U -RunLevel Limited
 $deployTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 10)
 $deploySettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

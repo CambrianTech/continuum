@@ -245,7 +245,7 @@ function Register-CoreServiceRelease {
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
-        @{ shell = $shell; arguments = $arguments; description = $description; userSid = $userSid } |
+        @{ shell = $shell; arguments = $arguments; description = $description; userSid = $userSid; cli = $Release.cli } |
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
         # Elevate registration only, with the caller's SID explicit. The core and
         # build stay unelevated. Registration deliberately does not start a core.
