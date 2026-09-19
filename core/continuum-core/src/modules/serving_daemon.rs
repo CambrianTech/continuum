@@ -1349,7 +1349,7 @@ impl ServingDaemonModule {
         let available = self.system.snapshot().memory.available_bytes;
         let live = governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget");
         // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
-        // (Performance, fraction 1.0) — the biggest window the model+machine allow, past the
+        // (Performance, fraction 0.96) — the biggest window the model+machine allow, past the
         // conservative pressure read (which on UMA under-reports free memory). The drive mode
         // follows the ACTIVITY, not just the pressure. Otherwise the live pressure-adaptive
         // mode (a game opening still drops us to Eco). [[serving-mode-follows-activity-ludicrous-to-dream]]
@@ -4183,7 +4183,7 @@ pub fn serving_held_steady() -> bool {
 /// LUDICROUS mode (Joel 2026-07-21: "extreme mode for benchmarks or ludicrous lol"). A
 /// benchmark / project / "the fight" wants the biggest window the model+machine can give —
 /// not the timid pressure-derived fraction. While any caller holds this, [`host_budget`]
-/// forces `PowerMode::Performance` (fraction 1.0 — "floors the whole GPU"), OVERRIDING
+/// forces `PowerMode::Performance` (fraction 0.96 — nearly the whole GPU, less the process's own overhead), OVERRIDING
 /// `serving_mode_for_pressure`'s conservative read (which on UMA under-reports free memory
 /// and floored a 47872-capable model to 2048 with ~28GB idle). This is the drive mode
 /// following the ACTIVITY, not just the pressure: a declared Ludicrous intent → serve
