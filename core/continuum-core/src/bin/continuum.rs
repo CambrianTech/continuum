@@ -2389,15 +2389,15 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     );
     println!(
         "deploy-consume: request={} running={} dirty={dirty} in_flight={build_in_flight} prior_failures={prior_failures} → {verdict:?}",
-        tip.as_deref().unwrap_or("none"),
-        running.as_deref().unwrap_or("none")
+        tip.as_deref().unwrap_or("none"), // unwrap_or: a status line label — "none" IS the fact (no request on disk); the verdict above already decided on the Option
+        running.as_deref().unwrap_or("none") // unwrap_or: same — no core answering prints as "none"; the verdict decided on the Option, this only names it
     );
     match verdict {
         ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
         ConsumeVerdict::GaveUp => Err(format!(
             "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
              the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
-            tip.as_deref().unwrap_or("?")
+            tip.as_deref().unwrap_or("?") // unwrap_or: a log label only — "?" names an absent tip in text; nothing budgets on it
         )),
         ConsumeVerdict::RefuseDirty => Err(format!(
             "deploy-consume: {} has uncommitted work — a consumer never stashes an operator's \
