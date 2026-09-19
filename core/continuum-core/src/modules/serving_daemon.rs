@@ -3433,7 +3433,7 @@ impl ServingDaemonModule {
                 *said = Some(key);
             }
         }
-        let demand = self
+        let mut demand = self
             .serving_demand()
             .with_sticky_window(
                 incumbent
@@ -3442,6 +3442,34 @@ impl ServingDaemonModule {
                     .or(boot.as_ref().map(|g| g.per_slot_window)),
             )
             .with_boot_geometry(boot.as_ref().map(|g| (g.per_slot_window, g.lanes)));
+        // THE FLOOR REMEMBERS (2026-09-19): the typical prompt the seat served last time is
+        // the per-lane floor a boot starts from. The leased-in sample ring is process-static
+        // — empty on a fresh core — so the first plans after a boot floored at the 16,384
+        // bootstrap prior and the 5090 chose 2 × 17k for coders sending ~30k. Measured now:
+        // the record follows the live median; unmeasured now: the record's last median is
+        // the floor until prompts land. A boot never plans thinner than what it served.
+        match demand.sent_median {
+            Some(median) => {
+                if let Some(model) = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str())) {
+                    crate::modules::served_window_store::save_typical_prompt(model, median);
+                }
+            }
+            None => {
+                let remembered = boot
+                    .as_ref()
+                    .map(|g| g.typical_prompt_tokens)
+                    .or_else(|| {
+                        incumbent
+                            .as_deref()
+                            .and_then(|m| crate::modules::served_window_store::load_geometry().filter(|g| g.model_id == m))
+                            .map(|g| g.typical_prompt_tokens)
+                    })
+                    .filter(|t| *t > 0);
+                if remembered.is_some() {
+                    demand = demand.with_sent_median(remembered);
+                }
+            }
+        }
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
