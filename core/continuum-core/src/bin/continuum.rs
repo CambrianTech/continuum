@@ -2465,7 +2465,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         }
         other => Err(format!(
             "install: the handoff ran but the running core reports {} against HEAD {head}",
-            other.unwrap_or("nothing")
+            other.unwrap_or("nothing") // unwrap_or: None = no core answering, reported as such — never a sha
         )),
     }
 }
