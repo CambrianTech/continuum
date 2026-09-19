@@ -950,9 +950,10 @@ pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
 
 /// The model whose decode knee bounds the plan: the one a lane is serving, else the one
 /// this box served last (card 29e4ab34 — the boot window before a lane reports its model
-/// is not "no knee", it is the remembered model's knee).
-pub fn knee_model(active: Option<String>, remembered: Option<String>) -> Option<String> {
-    active.or(remembered)
+/// is not "no knee", it is the remembered model's knee). `remembered` is read lazily: it
+/// is a file, and it is only consulted in the boot window, never on every plan tick.
+pub fn knee_model(active: Option<String>, remembered: impl FnOnce() -> Option<String>) -> Option<String> {
+    active.or_else(remembered)
 }
 
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
@@ -1103,10 +1104,9 @@ impl ServingDaemonModule {
         // property of the model on this box; when no lane has reported one yet, the model
         // the box served last (the remembered geometry) is the one being planned for.
         let active_model = crate::inference::llama_server::current_serving().active_model;
-        let model_for_knee = knee_model(
-            active_model,
-            crate::modules::served_window_store::load_geometry().map(|g| g.model_id),
-        );
+        let model_for_knee = knee_model(active_model, || {
+            crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
+        });
         let knee = model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
@@ -6236,9 +6236,15 @@ mod tests {
     fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
         use crate::inference::decode_knee::knee_lanes;
         let remembered = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
-        assert_eq!(knee_model(None, remembered.clone()), remembered, "the boot window plans the last model");
-        assert_eq!(knee_model(Some("other".into()), remembered.clone()).as_deref(), Some("other"), "a serving lane's model wins");
-        assert_eq!(knee_model(None, None), None, "nothing remembered: the roster rules, as before");
+        assert_eq!(knee_model(None, || remembered.clone()), remembered, "the boot window plans the last model");
+        let read = std::cell::Cell::new(false);
+        assert_eq!(
+            knee_model(Some("other".into()), || { read.set(true); remembered.clone() }).as_deref(),
+            Some("other"),
+            "a serving lane's model wins"
+        );
+        assert!(!read.get(), "with a lane serving, the remembered geometry (a file) is never read");
+        assert_eq!(knee_model(None, || None), None, "nothing remembered: the roster rules, as before");
         // With the remembered model's knee (2 on the M5) the roster of 17 is clamped at boot;
         // with none it is not — the first stair of the staircase.
         assert_eq!(knee_lanes(17, Some(2)), 2);
