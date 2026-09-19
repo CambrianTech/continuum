@@ -57,7 +57,7 @@ pub(crate) fn review_candidates<C: HasCard>(
 /// A round a citizen may pull from: working, and driven by citizens (a detached solve's
 /// cards are the solver's). One predicate, used by both the WIP count and the absence
 /// counts, so the two can never disagree about what a "working citizen round" is.
-fn is_working_citizen_round(round: &crate::cognition::bench_round::RoundSnapshot) -> bool {
+pub(crate) fn is_working_citizen_round(round: &crate::cognition::bench_round::RoundSnapshot) -> bool {
     round.stage.eq_ignore_ascii_case("working") && round.driver.to_ascii_lowercase().contains("citizen")
 }
 

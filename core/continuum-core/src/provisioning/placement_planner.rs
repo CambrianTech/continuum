@@ -242,6 +242,7 @@ mod tests {
             kv_per_token: 1024, // ~2 MiB KV at the 2048 MIN_SERVE_CTX — weights dominate
             context_window: 32_768,
             capability_rank: 5,
+            fixed_per_lane_bytes: 0,
         }
     }
 

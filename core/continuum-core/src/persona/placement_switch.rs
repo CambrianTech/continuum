@@ -76,6 +76,11 @@ pub fn seat_queued(wait_p50_ms: u64, wait_samples: u32, home_wait_p50_ms: Option
 /// never twice a minute.
 pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 
+/// The bound "remote" seat is one of THIS node's own ids (card 2500d2f1): she was never
+/// off-box, so she comes home at once — no cooldown, no beacon read — and the durable
+/// record that named the seat is retired so the next boot does not repeat it.
+pub const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Seat {
@@ -102,6 +107,8 @@ pub struct PlacementInputs {
     pub seat_wait_p50_ms: Option<u64>,
     /// This node's own median lane wait; `None` = unmeasured. "Home, if home is faster."
     pub home_wait_p50_ms: Option<u64>,
+    /// The bound seat is one of this node's own airc ids ([`crate::persona::self_peer`]).
+    pub seat_is_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +122,16 @@ pub enum PlacementMove {
 
 /// The rule. Pure so the four scenarios are hand-computed tests.
 pub fn decide(i: PlacementInputs) -> PlacementMove {
+    // A seat that is this node is no seat: bound to it she runs a loopback lane, so she
+    // comes home now (cooldown is for moves between machines); at home she is never
+    // "returned" to it, however fresh its beacon reads (card 2500d2f1).
+    if i.seat_is_self {
+        return match i.seat {
+            Seat::Remote if i.local_available => PlacementMove::FallHome { reason: SELF_SEAT_REASON },
+            Seat::Remote => PlacementMove::Park { reason: SELF_SEAT_REASON },
+            Seat::Home => PlacementMove::Stay,
+        };
+    }
     let dark = i.beacon_age_ms.map(|a| a > REMOTE_SEAT_SILENT_MS).unwrap_or(true); // JUSTIFIED unwrap_or: never heard = dark, by definition
     let cooled = i.since_last_move_ms >= MOVE_COOLDOWN_MS;
     // A measured seat whose queue is past the bound (this node's own wait, else the
@@ -235,6 +252,16 @@ impl PlacementSwitch {
         }
     }
 
+    /// HER airc — the wire her generates ride (`go_remote` builds the transport on it, in
+    /// her current room, where the seat's core listens). A reservation ask must ride the
+    /// same wire: sent on the OPERATOR's airc it left in the operator's current room (the
+    /// academy on the M5, 2026-09-19 01:4xZ) where the seat never hears it — six asks,
+    /// six "unanswered within 30 s", every return refused, every spill impossible. Fail
+    /// closed was the right default; this is the right wire. `None` = no airc on this node.
+    pub fn airc_handle(&self) -> Option<Arc<Airc>> {
+        self.airc.as_ref().and_then(|c| c.get().cloned())
+    }
+
     pub fn seat(&self) -> Seat {
         if self.seat.load(Ordering::Relaxed) == Seat::Home as u8 { Seat::Home } else { Seat::Remote }
     }
@@ -287,6 +314,33 @@ impl PlacementSwitch {
             }
         }
         Ok(())
+    }
+
+    /// Her bound seat was this node (card 2500d2f1): retire the durable override that
+    /// named it, and — once she is home — the loopback lane and the peer, so she is
+    /// home-born from here and the next boot does not bear her on a lane to herself.
+    /// Idempotent; the override is a record of the old confusion, never an assignment.
+    pub fn retire_self_seat(&self) {
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        if self.seat() == Seat::Home {
+            *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+            *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        }
+        let cleared = match &self.home {
+            Some(home) => PersonaModelOverride::clear(home).map_err(|e| e.to_string()),
+            None => Ok(()),
+        };
+        crate::probe!(
+            class = "persona.placement.self_seat_retired",
+            persona = %self.persona_name,
+            peer = %peer,
+            cleared = cleared.is_ok(),
+            error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
+            at_home = self.seat() == Seat::Home,
+            "her bound seat was this very node — the override naming it is retired, and the loopback lane once she is home"
+        );
     }
 
     /// Build (once) or fetch her home adapter. `None` = this node cannot host her.
@@ -610,6 +664,7 @@ pub async fn follow_the_fleet(
             }
             continue;
         };
+        let seat_is_self = crate::persona::self_peer::is_this_node(peer);
         let inputs = PlacementInputs {
             seat: sw.seat(),
             beacon_age_ms: heard.get(&peer).copied(),
@@ -630,6 +685,7 @@ pub async fn follow_the_fleet(
                 .get(&peer)
                 .and_then(|o| (o.lane_wait_samples > 0).then_some(o.lane_wait_p50_ms)),
             home_wait_p50_ms,
+            seat_is_self,
         };
         let mut mv = decide(inputs);
         // A RETURN ASKS FOR ITS SLOT LIKE A SPILL DOES (2026-09-19 00:3xZ): the 5090's beacon
@@ -640,9 +696,9 @@ pub async fn follow_the_fleet(
         // The seat grants what it has (`free_slots_live` − outstanding grants); the rest
         // stay home until its beacon shows room. Refused or unanswered = Stay, receipted.
         if mv == PlacementMove::ReturnRemote {
-            let asked = match crate::persona::operator_peer::operator_airc() {
+            let asked = match sw.airc_handle() {
                 Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, sw.persona_id()).await,
-                None => Err("no airc handle on this node — cannot ask the seat".to_string()),
+                None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             match asked {
                 Ok(g) if g.granted => crate::probe!(
@@ -681,6 +737,12 @@ pub async fn follow_the_fleet(
         if let Some(line) = sw.apply(&mv, now_ms).await {
             lines.push(line);
         }
+        // A seat that is this node is retired whatever the move (idempotent): the
+        // override goes now, so the record never outlives the run that found it; the
+        // loopback lane goes once she is home (a parked mind keeps the lane she has).
+        if seat_is_self {
+            sw.retire_self_seat();
+        }
         // A bound switch sitting HOME past her cooldown is a chooser candidate again —
         // the chooser may bind her to a seat that is capacity now (S1b). Her old seat is
         // only re-chosen if it is; `decide` above already refused a queued return.
@@ -692,14 +754,14 @@ pub async fn follow_the_fleet(
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();
-        let airc = crate::persona::operator_peer::operator_airc();
         for (mind, peer, model) in moves {
             let Some(sw) = by_id.get(&mind) else { continue };
-            // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves. Refused or
-            // unanswered = she stays home this tick, receipted (S1b).
-            let asked = match airc.as_ref() {
-                Some(a) => crate::persona::placement_reservation::request_reservation(a, peer, mind).await,
-                None => Err("no airc handle on this node — cannot ask the seat".to_string()),
+            // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves — on HER wire, in
+            // her room, where the seat's core listens. Refused or unanswered = she stays
+            // home this tick, receipted (S1b).
+            let asked = match sw.airc_handle() {
+                Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, mind).await,
+                None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             let grant = match asked {
                 Ok(g) if g.granted => g,
@@ -777,7 +839,29 @@ mod tests {
         // peer_served_ok defaults TRUE here: these cases predate the return-gate service
         // term and assume a serving peer; `a_fresh_but_never_serving_seat_is_not_returned`
         // exercises the false case.
-        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None }
+        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None, seat_is_self: false }
+    }
+
+    // what this catches (card 2500d2f1, the M5 2026-09-19): a "remote" seat that is one
+    // of this node's own ids. Bound to it she must come home NOW — not after the cooldown,
+    // not after 90 s of "silence" from a seat that is herself — and at home a fresh beacon
+    // from that id (her own node's) must never read as a seat to return to.
+    #[test]
+    fn a_seat_that_is_this_node_is_never_a_remote_seat() {
+        let mut bound = inputs(Seat::Remote, Some(1_000), false, true, 0);
+        bound.seat_is_self = true;
+        assert_eq!(
+            decide(bound),
+            PlacementMove::FallHome { reason: SELF_SEAT_REASON },
+            "fresh beacon, no cooldown: still home, it is a loopback lane"
+        );
+        let mut no_lane = bound;
+        no_lane.local_available = false;
+        assert_eq!(decide(no_lane), PlacementMove::Park { reason: SELF_SEAT_REASON });
+        let mut home = inputs(Seat::Home, Some(1_000), false, true, MOVE_COOLDOWN_MS);
+        assert_eq!(decide(home), PlacementMove::ReturnRemote, "a real fresh seat returns");
+        home.seat_is_self = true;
+        assert_eq!(decide(home), PlacementMove::Stay, "her own node is never a seat to return to");
     }
 
     // what this catches: the 2026-09-07 hand moves, as the rule — a dark seat (no

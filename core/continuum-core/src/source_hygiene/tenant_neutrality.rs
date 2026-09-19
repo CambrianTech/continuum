@@ -54,10 +54,103 @@ impl SourceRule for NoTenantIdentityInProduction {
     }
 }
 
+/// **Machine neutrality: a real user's home directory never enters the tree — test
+/// fixtures included.**
+///
+/// Joel, 2026-09-18: *"No hard coding to this machine's characteristics. I'd look
+/// for 'joelt' user string."* The drive-resolver test had `C:\Users\joelt\.continuum`
+/// as its fixture home — the box it was written on, not a placeholder. Test code is
+/// where this lands, because a fixture is the one place a developer types a path
+/// they can see; so unlike [`NoTenantIdentityInProduction`] this rule reads the WHOLE
+/// file. A home path is matched as a PATH (`/Users/<name>`, `C:\Users\<name>`,
+/// `/home/<name>`), not as the bare word — a chat fixture speaking as "joel" is a
+/// name in a transcript, not a machine characteristic.
+///
+/// Baseline is ZERO: there is no product reason to name a real home.
+pub struct NoRealUserHomePathAnywhere;
+
+impl NoRealUserHomePathAnywhere {
+    /// A home-directory path whose user component is one of ours, in either
+    /// separator spelling. Backslashes are folded to `/` (a Rust literal doubles
+    /// them, so `C:\\Users\\joelt` reads as `c://users//joelt`) and runs collapsed.
+    fn names_a_real_home(code: &str) -> bool {
+        let mut folded = code.to_ascii_lowercase().replace('\\', "/");
+        while folded.contains("//") {
+            folded = folded.replace("//", "/");
+        }
+        TENANT_TOKENS
+            .iter()
+            .any(|t| folded.contains(&format!("users/{t}")) || folded.contains(&format!("home/{t}")))
+    }
+}
+
+impl SourceRule for NoRealUserHomePathAnywhere {
+    fn name(&self) -> &'static str {
+        "no_real_user_home_path_anywhere"
+    }
+
+    fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        if file.rel == "source_hygiene/tenant_neutrality.rs" {
+            return Vec::new();
+        }
+        file.raw
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let (code, _comment) = split_code_and_comment(l);
+                Self::names_a_real_home(code)
+            })
+            .map(|(i, l)| Violation {
+                rule: self.name(),
+                file: file.rel.clone(),
+                line: i + 1,
+                source: l.trim().to_string(),
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::source_hygiene::scan;
+
+    // what this catches: a developer's own home path typed into a fixture (the
+    // `C:\Users\joelt` drive-resolver test, 2026-09-18) — the tree describing the
+    // box it was written on. Use a placeholder user (`someone`, `alice`).
+    #[test]
+    fn no_real_user_home_path_anywhere_in_the_tree() {
+        let violations = scan(&[&NoRealUserHomePathAnywhere]);
+        assert!(
+            violations.is_empty(),
+            "the tree names a real user's home directory — this is a repo for other people's machines.\nOffenders:\n{}",
+            violations
+                .iter()
+                .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    // what this catches: the home-path predicate erring in either direction — a
+    // path under our user in either separator spelling is a violation; a chat
+    // fixture that merely speaks as "joel" is not, and neither is a placeholder home.
+    #[test]
+    fn home_path_predicate_matches_paths_not_names() {
+        let rule = NoRealUserHomePathAnywhere;
+        let win = SourceFile::for_test("x/y.rs", r#"    let home = Path::new("C:\\Users\\joelt\\.continuum");"#);
+        let mac = SourceFile::for_test("x/y.rs", r#"    is_not_speech("the file is at /users/joel/x.rs");"#);
+        let linux = SourceFile::for_test("x/y.rs", r#"    let p = "/home/joelt/.airc";"#);
+        let speaker = SourceFile::for_test("x/y.rs", r#"    let line = "Joel: morning all";"#);
+        let placeholder = SourceFile::for_test("x/y.rs", r#"    let home = Path::new("C:\\Users\\someone\\.continuum");"#);
+        let prose = SourceFile::for_test("x/y.rs", "    // measured under C:\\Users\\joelt on BigMama");
+        assert_eq!(rule.check(&win).len(), 1, "a Windows home path under our user");
+        assert_eq!(rule.check(&mac).len(), 1, "a macOS home path under our user, in a test string");
+        assert_eq!(rule.check(&linux).len(), 1, "a Linux home path under our user");
+        assert_eq!(rule.check(&speaker).len(), 0, "a transcript speaker is a name, not a machine");
+        assert_eq!(rule.check(&placeholder).len(), 0, "a placeholder user is the point");
+        assert_eq!(rule.check(&prose).len(), 0, "a comment is provenance");
+    }
 
     // what this catches: our org name creeping into a code path — a default room,
     // a repo key, an example the runtime actually uses. If this fails on your

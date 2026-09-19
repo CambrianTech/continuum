@@ -2338,6 +2338,7 @@ pub fn start_server(
             .await
             {
                 Ok(airc) => {
+                    crate::persona::self_peer::register(airc.peer_id().as_uuid());
                     // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
                     // share it as `Arc<Airc>`.
                     let _ = cell.set(Arc::new(airc));

@@ -72,6 +72,7 @@ pub mod model_override;
 pub mod grid_roster_memory;
 pub mod placement_reservation;
 pub mod placement_switch;
+pub mod self_peer;
 pub mod remote_lane_factory;
 pub mod model_selection;
 pub mod name_generator;

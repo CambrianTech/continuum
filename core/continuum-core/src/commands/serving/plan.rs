@@ -97,6 +97,7 @@ mod tests {
                 kv_per_token: 0,
                 context_window: 32_768,
                 capability_rank: 0,
+                fixed_per_lane_bytes: 0,
             },
             served_context_window: 32_768,
             lanes: 2,

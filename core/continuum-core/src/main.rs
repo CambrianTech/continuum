@@ -206,8 +206,22 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 // must ship together — both land in A.2.2 alongside the
 // `libloading::Library::new("libonnxruntime.dylib")` dlopen probe.
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `~/.continuum/config.env` is THIS process's to apply, on every boot, before any
+    // thread exists (`set_var` must not race a reader). A launcher that applied it to the
+    // child froze it into a supervisor's plist/task at install time; the core owning it
+    // means "edit the file, reboot" holds under launchd exactly as on the direct path.
+    let applied = continuum_core::config_env::apply_to_process();
+    if applied > 0 {
+        eprintln!("continuum-core: applied {applied} assignment(s) from config.env");
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
     continuum_core::runtime::boot_clock::mark();
     // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
@@ -312,6 +326,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keeps Rust quiet about "unused" while still binding (vs.
     // `let _ = ...` which drops immediately).
     let _log_writer_guard = probe_install.fmt_writer_guard;
+
+    // A hosting node does not sleep (card 94a95a98): the assertion the start script held
+    // around the core through `caffeinate -s -i` is held by the core itself now, for its
+    // own lifetime — so a supervised launch (launchd, no script) keeps the seat awake too.
+    continuum_core::system_resources::power_assertion::hold_for_process();
 
     // ORT panic-filter deferred to A.2.2 (lands together with the
     // libonnxruntime dlopen probe + 🔊/🔇 voice subsystem indicator

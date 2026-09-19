@@ -4329,6 +4329,19 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             if n == "code/git/apply" {
                 return false;
             }
+            // The same reflex, measured 2026-09-19 (Joel: "she could do all this
+            // before"): `work/submission` ("Inspect a submission…", params card_id +
+            // room) reads to a model holding a card as "look at my card", and
+            // `work/review` as "review the spec". Kimi called work/submission 6 of 6
+            // times failed and work/review 3 of 3; Delia on IntelMac 48 and 72 in one
+            // day; Sahar the same shape — every one an act spent on a refusal, so the
+            // turn that should have edited read instead. Both joined the surface on
+            // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
+            // review card, or a citizen reading receipts, reaches them through
+            // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
+            if n == "work/submission" || n == "work/review" {
+                return false;
+            }
             n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
@@ -4501,6 +4514,9 @@ mod tests {
             "room/join",
             "code/git/status",
             "code/git/apply",
+            "work/submission",
+            "work/review",
+            "work/submit",
         ]
         .iter()
         .map(|n| NativeToolSpec {
@@ -4521,9 +4537,10 @@ mod tests {
                 "code/read",
                 "work/state",
                 "commands/list",
-                "code/git/status"
+                "code/git/status",
+                "work/submit"
             ],
-            "git/apply is a reviewer verb, not a hand"
+            "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );
     }
 

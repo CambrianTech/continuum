@@ -67,7 +67,7 @@ const SHAPES: &[&str] = &[
 /// `orm/sqlite.rs` 33, `commands/agent/solve.rs` 32. (First measured at 2253; the
 /// correct code-vs-prose split then revealed 14 more that a doc-comment mention of
 /// `#[cfg(test)]` had been hiding — see `scan`.)
-const BASELINE_UNJUSTIFIED: usize = 2267;
+const BASELINE_UNJUSTIFIED: usize = 2264;
 
 pub struct UnwrapJustification;
 
@@ -114,7 +114,15 @@ mod tests {
     fn the_unjustified_unwrap_count_never_rises() {
         let violations = scan(&[&UnwrapJustification]);
         let count = violations.len();
+        // Visible under `--nocapture` on a PASS too, so lowering the baseline after a
+        // clean-up is one build, not a deliberately-failing second one.
+        eprintln!("unjustified production unwraps: {count} (baseline {BASELINE_UNJUSTIFIED})");
 
+        // The scan cannot know which occurrences are NEW — it has no old set — so it does
+        // not pretend to. The label used to say "First few new ones" and list the
+        // alphabetically-first files in tree (anthropic_adapter.rs:52…), which sent the
+        // reader to lines that predate the guard; the four real ones (#4211) were in
+        // files starting with `b` and `s`. Say what is printed, and how to find yours.
         assert!(
             count <= BASELINE_UNJUSTIFIED,
             "unjustified production unwraps rose to {count} (baseline {BASELINE_UNJUSTIFIED}).\n\
@@ -122,7 +130,12 @@ mod tests {
              `unwrap_or` especially: an Option means UNKNOWN, and a default turns unknown into a \
              quantity the governor then budgets against — that is how the Metal free-VRAM lie \
              happened (gpu::device_probe).\n\
-             First few new ones:\n{}",
+             This scan cannot tell new from old. To find yours: diff your branch against its \
+             base and look for added `.unwrap`/`.expect`/`.unwrap_or` lines with no same-line \
+             `//` comment. Note a branch can be green alone and red on the merge — the ratchet's \
+             slack is shared, and two branches may each spend it.\n\
+             First {} of {count} in tree order (NOT necessarily new):\n{}",
+            violations.len().min(10),
             violations
                 .iter()
                 .take(10)

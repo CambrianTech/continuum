@@ -437,12 +437,12 @@ mod tests {
         // The observed 73-char path is past the third dialect's 64-char verb bound; the
         // path rule is what refuses it.
         assert_eq!(
-            is_not_speech("[/users/joel/.continuum/citizens/peers/a027688a-06ef381b4/workspace/main.rs]; [/room]"),
+            is_not_speech("[/users/someone/.continuum/citizens/peers/a027688a-06ef381b4/workspace/main.rs]; [/room]"),
             Some("bracketed_path")
         );
         // A short bracketed route is already the third envelope dialect; either marker refuses it.
         assert!(is_not_speech("[/room]\n[code/read({\"file_path\":\"src/main.rs\"})]").is_some());
-        assert_eq!(is_not_speech("the file is at /users/joel/x.rs"), None);
+        assert_eq!(is_not_speech("the file is at /users/someone/x.rs"), None);
     }
 
     // what this catches: an empty code fence posted as a message (Kimi, 2026-09-16) — a

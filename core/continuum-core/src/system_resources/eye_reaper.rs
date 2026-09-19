@@ -222,7 +222,7 @@ mod tests {
             row(100, 1, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --user-data-dir=/var/folders/63/x/T/playwright_chromiumdev_profile-mSvwLY"),
             row(101, 90326, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --user-data-dir=/var/folders/63/x/T/org.chromium.Chromium.scoped_dir.YbFD3j"),
             row(102, 1, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            row(103, 1, "/Users/joel/.hermes/node/bin/node --require x /Users/joel/Development/continuum/apps/eye-node/src/index.ts"),
+            row(103, 1, "/Users/someone/.hermes/node/bin/node --require x /Users/someone/Development/continuum/apps/eye-node/src/index.ts"),
             row(104, 500, "/Applications/Opera.app/Contents/MacOS/Opera"),
             row(1, 0, "/sbin/launchd"),
         ];
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(rows[0].pid, 100);
         assert_eq!(rows[0].ppid, 1);
         assert!(is_removable_profile(Path::new("/var/folders/a/T/playwright_chromiumdev_profile-Z")));
-        assert!(!is_removable_profile(Path::new("/Users/joel/Development/continuum")));
-        assert!(!is_removable_profile(Path::new("/Users/joel/playwright_chromiumdev_profile-Z")), "our marker outside a temp root is still not a rm -rf target");
+        assert!(!is_removable_profile(Path::new("/Users/someone/Development/continuum")));
+        assert!(!is_removable_profile(Path::new("/Users/someone/playwright_chromiumdev_profile-Z")), "our marker outside a temp root is still not a rm -rf target");
     }
 }

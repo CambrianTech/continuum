@@ -231,7 +231,7 @@ pub enum RequestOutcome {
 /// [`RequestOutcome::Settled`], and the whole reconcile would be correct code on a branch
 /// nothing reaches. Compare as a prefix, shorter against longer, and require enough
 /// characters that a coincidence is not a match.
-fn same_commit(a: &str, b: &str) -> bool {
+pub fn same_commit(a: &str, b: &str) -> bool {
     const MIN_ABBREV: usize = 7; // git's own floor for an unambiguous short sha
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
     short.len() >= MIN_ABBREV && long.starts_with(short)

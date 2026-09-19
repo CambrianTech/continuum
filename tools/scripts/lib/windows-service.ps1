@@ -232,21 +232,20 @@ function Register-CoreServiceRelease {
     }
     if ($task -and $canRun -and $task.Description -eq $description -and $task.Actions.Count -eq 1 -and
         $task.Actions[0].Execute -eq $shell -and $task.Actions[0].Arguments -eq $arguments -and
-        (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid) -and $task.Principal.LogonType -eq 'Interactive' -and
+        (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid) -and $task.Principal.LogonType -eq 'S4U' -and
         $task.Principal.RunLevel -eq 'Limited' -and $task.Settings.Enabled -and
         $task.Settings.RestartCount -eq 999 -and $task.Settings.RestartInterval -eq 'PT1M' -and
         $task.Settings.ExecutionTimeLimit -eq 'PT0S' -and $task.Settings.MultipleInstances -eq 'IgnoreNew' -and
         $task.Settings.StartWhenAvailable -and -not $task.Settings.DisallowStartIfOnBatteries -and
         -not $task.Settings.StopIfGoingOnBatteries -and @($task.Triggers).Count -eq 1 -and
-        $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and
-        (Test-CoreTaskUser -UserId $task.Triggers[0].UserId -ExpectedSid $userSid) -and $task.Triggers[0].Enabled) {
+        $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' -and $task.Triggers[0].Enabled) {
         Module-Skip 'service' 'prepared startup task already matches this release'
         return
     }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
-        @{ shell = $shell; arguments = $arguments; description = $description; userSid = $userSid } |
+        @{ shell = $shell; arguments = $arguments; description = $description; userSid = $userSid; cli = $Release.cli } |
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
         # Elevate registration only, with the caller's SID explicit. The core and
         # build stay unelevated. Registration deliberately does not start a core.
@@ -259,8 +258,10 @@ function Register-CoreServiceRelease {
     $verified = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ($verified.Description -ne $description -or @($verified.Actions).Count -ne 1 -or
         $verified.Actions[0].Execute -ne $shell -or $verified.Actions[0].Arguments -ne $arguments -or
-        -not (Test-CoreTaskUser -UserId $verified.Principal.UserId -ExpectedSid $userSid) -or -not $verified.Settings.Enabled) {
-        throw 'Startup registration did not match the prepared release; refusing handoff.'
+        -not (Test-CoreTaskUser -UserId $verified.Principal.UserId -ExpectedSid $userSid) -or -not $verified.Settings.Enabled -or
+        $verified.Principal.LogonType -ne 'S4U' -or @($verified.Triggers).Count -ne 1 -or
+        $verified.Triggers[0].CimClass.CimClassName -ne 'MSFT_TaskBootTrigger') {
+        throw 'Startup registration did not match the prepared release (session-independent S4U at boot is required); refusing handoff.'
     }
     $scheduler = New-Object -ComObject 'Schedule.Service'
     $scheduler.Connect()

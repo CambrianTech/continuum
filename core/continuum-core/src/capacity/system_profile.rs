@@ -249,7 +249,7 @@ mod tests {
         #[cfg(windows)]
         {
             let win = [drive("C:\\", 2_000), drive("D:\\", 16_000)];
-            let home = Path::new("C:\\Users\\joelt\\.continuum");
+            let home = Path::new("C:\\Users\\someone\\.continuum");
             assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
             assert!(
                 drive_holding(&win, Path::new("Z:\\nowhere")).is_none(),

@@ -223,7 +223,11 @@ impl DeployTrackerModule {
         };
         let out = crate::system_resources::bounded_command::probe(
             "git",
-            &["-C", &dir, "status", "--porcelain"],
+            // TRACKED changes only. An untracked file cannot change what a detached checkout
+            // of the tip builds, and the 5090's first unattended deploy sat at RefuseDirty
+            // behind a stale sock lock and five locally regenerated ts-rs bindings
+            // (2026-09-19 03:3xZ). Same rule the consumer applies before it checks the tip out.
+            &["-C", &dir, "status", "--porcelain", "--untracked-files=no"],
             GIT_TIMEOUT,
         );
         out.stdout_if_ok().map(|s| !s.trim().is_empty()).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
