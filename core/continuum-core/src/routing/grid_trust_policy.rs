@@ -668,4 +668,27 @@ mod tests {
             Verdict::Forbidden { .. }
         ));
     }
+
+    // what this catches (2026-09-19 03:45:24Z, the 5090): a PEER node asking a seat for a
+    // slot before it spills or returns a mind — persona/placement/reserve — fell to the
+    // Owner wildcard and was refused, so the lease (S1b) could never grant. The ask is a
+    // Provisional-tier verb like the ai/generate it precedes; its persona/ siblings that
+    // change who is hosted (instances/hold, spawn, despawn) stay Owner — the grant is one
+    // exact verb, never the namespace.
+    #[test]
+    fn a_peer_may_ask_a_seat_for_a_slot_but_may_not_touch_its_roster() {
+        let policy = GridTrustAuthPolicy::new();
+        let airc = CallerIdentity::airc(crate::identity::PeerId::new());
+        assert_eq!(
+            policy.gate(&decision("persona/placement/reserve"), Some(&airc)),
+            Verdict::Allowed,
+            "the reservation ask is the cross-grid call that precedes a generate"
+        );
+        for roster in ["persona/instances/hold", "persona/spawn", "persona/instances/despawn", "persona/placement"] {
+            assert!(
+                matches!(policy.gate(&decision(roster), Some(&airc)), Verdict::Forbidden { .. }),
+                "{roster} must stay Owner — a peer never changes who this node hosts"
+            );
+        }
+    }
 }

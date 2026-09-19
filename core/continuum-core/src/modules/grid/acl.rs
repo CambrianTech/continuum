@@ -128,6 +128,19 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 prefix: "ai/generate",
                 access: CommandAccess::Provisional,
             },
+            // A PEER MAY ASK A SEAT FOR A SLOT (card c84d885a, S1b). The reservation ask
+            // precedes the cross-grid generate it guards; without this rule every ask fell
+            // to the ""=Owner wildcard and the seat refused it — measured 2026-09-19
+            // 03:45:24Z on the 5090: routing.acl.refused path=persona/placement/reserve
+            // trust=Provisional had_capabilities=false, six asks, zero grants, no node could
+            // ever spill onto or return to a seat (fail-closed, correctly). The ask commits
+            // one slot for one cooldown, bounded by the seat's own ledger; it mutates no data.
+            // Exact verb, not the persona/ namespace: persona/instances/hold and friends stay
+            // Owner.
+            AccessRule {
+                prefix: "persona/placement/reserve",
+                access: CommandAccess::Provisional,
+            },
             // L3 genome convert: the training-completion sentinel converts a
             // persona's freshly-trained MLX adapter → GGUF-lora by dispatching
             // `forge/export` AS that persona (`CallerIdentity::local_persona`,
