@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::runtime::{
@@ -75,6 +76,24 @@ impl Default for StandingConfig {
             doctrine: None,
         }
     }
+}
+
+/// The team the standing round SEATS: the configured names, or — when none are
+/// configured — every resident, by name. The config doc has always promised
+/// "empty = every resident pulls", and `benchmark/dispatch` keeps that promise
+/// (`resolve_dispatch_roster`: "empty request → the whole live roster"). The recipe
+/// round does not: its only seating step is `activity/invite { members: $args.team }`,
+/// and an empty team invites nobody. Measured 2026-09-19 on IntelMac: standing
+/// enabled with `team: []`, seed 2 dispatched at 06:22:06Z, and every pull for the
+/// next ten minutes read `bench.round.pull_none reason=not_seated_in_any_working_round`
+/// with `resident_rooms: 1` — eight minds resident, a round in flight, nobody in it.
+/// Seating the eight by hand with the recipe's own verb had two cards claimed inside
+/// two minutes. PURE, so the rule is pinned without a registry.
+fn team_for_round(configured: &[String], residents: &[(String, Uuid)]) -> Vec<String> {
+    if !configured.is_empty() {
+        return configured.to_vec();
+    }
+    residents.iter().map(|(name, _)| name.clone()).collect()
 }
 
 fn standing_path() -> Result<PathBuf, String> {
@@ -210,9 +229,13 @@ impl BenchmarkStandingModule {
             "seed": seed,
             "review_gate": cfg.review_gate,
         });
-        if !cfg.team.is_empty() {
-            params["team"] = json!(cfg.team);
-        }
+        // ALWAYS a team: the recipe's only seating step is `activity/invite` on
+        // `$args.team`, so an empty team is a round nobody stands in — every pull on
+        // the node then reads `not_seated_in_any_working_round` until an operator
+        // invites by hand. Empty config means the whole resident roster, the rule
+        // `benchmark/dispatch` already applies (`team_for_round`).
+        let team = team_for_round(&cfg.team, &residents);
+        params["team"] = json!(team);
         if let Some(d) = &cfg.doctrine {
             params["doctrine"] = json!(d);
         }
@@ -233,7 +256,8 @@ impl BenchmarkStandingModule {
             benchmark = %next.benchmark,
             sample = next.sample as u64,
             seed = seed,
-            team = next.team.len() as u64,
+            team = team.len() as u64,
+            team_from = if cfg.team.is_empty() { "residents" } else { "config" },
             review_gate = next.review_gate,
             "standing round spawned from the recipe — benchmarks run themselves, as activities"
         );
@@ -338,6 +362,25 @@ impl ServiceModule for BenchmarkStandingModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-19, IntelMac: a standing round in flight and eight
+    // resident minds reading `not_seated_in_any_working_round` for ten minutes): an
+    // empty configured team must seat EVERY resident, because the recipe's only
+    // seating step is `activity/invite` on the team it is handed. A configured team
+    // still wins over residency (an operator naming three of eight means three), and
+    // the names are the roster's names — what `activity/invite` resolves.
+    #[test]
+    fn an_empty_standing_team_seats_every_resident_and_a_named_team_still_wins() {
+        let residents = vec![
+            ("Iris".to_string(), Uuid::from_u128(1)),
+            ("Soren".to_string(), Uuid::from_u128(2)),
+            ("Delia".to_string(), Uuid::from_u128(3)),
+        ];
+        assert_eq!(team_for_round(&[], &residents), vec!["Iris", "Soren", "Delia"], "empty = every resident, by name");
+        let named = vec!["Soren".to_string()];
+        assert_eq!(team_for_round(&named, &residents), vec!["Soren"], "a configured team is the team");
+        assert!(team_for_round(&[], &[]).is_empty(), "no residents = nobody to seat (the residency guard refuses first)");
+    }
 
     // what this catches: the standing config surviving a round trip and the
     // seed sequence having NO HOLES — the seed bumps only after a successful
