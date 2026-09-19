@@ -172,6 +172,7 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         return None;
     }
     Some(CapacityOffer {
+        origin: crate::capacity::gossip::this_process_origin(),
         gpu_total_bytes: vram.map(|k| k.capacity_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: no VRAM kind = a CPU node offers 0 accelerator bytes, which is the truth
         gpu_free_bytes_live: vram.map(|k| k.available_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: same — absence of an accelerator is 0 bytes of it
         system_ram_free_bytes: ram.map(|k| k.available_bytes).unwrap_or(0), // JUSTIFIED unwrap_or: a VRAM-only board (no RAM kind governed) offers 0 RAM rather than a guess

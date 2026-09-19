@@ -194,6 +194,7 @@ mod tests {
     // (constructor kept honest: CapacityOffer→capacity is the same shape the ledger folds)
     fn _offer_shape() -> DeviceCapacity {
         CapacityOffer {
+            origin: uuid::Uuid::nil(),
             gpu_total_bytes: 32 * GB,
             gpu_free_bytes_live: 7 * GB,
             system_ram_free_bytes: 16 * GB,
