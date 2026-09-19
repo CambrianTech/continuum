@@ -2518,11 +2518,19 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         }
         let check = options.check;
         let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
+        let mut failed: Vec<(Arm, String)> = Vec::new();
+        let mut take = |arm: Arm, r: Result<ArmReport, String>| match r {
+            Ok(report) => reports.push((arm, report)),
+            Err(why) => {
+                println!("✗ {}: {why}", arm.name());
+                failed.push((arm, why));
+            }
+        };
         if options.runs(Arm::Supervisor) {
-            reports.push((Arm::Supervisor, install_supervisor_macos(check, options.user).await?));
+            take(Arm::Supervisor, install_supervisor_macos(check, options.user).await);
         }
         if options.runs(Arm::Core) {
-            reports.push((Arm::Core, install_core(check).await?));
+            take(Arm::Core, install_core(check).await);
         }
         if options.runs(Arm::Cli) {
             // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
@@ -2532,7 +2540,7 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
             }
             println!("  cli: the macOS arm is owed — skipped, not counted");
         }
-        return finish_install(check, &reports);
+        return finish_install(check, &reports, &failed);
     }
     #[cfg(windows)]
     {
@@ -2543,42 +2551,69 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
             return Err("install --user is the macOS agent choice; Windows registers the S4U task".to_string());
         }
         let check = options.check;
+        // Every arm runs, whatever the one before it did: an arm that cannot do its
+        // job is REPORTED as one remaining drift (with its reason) and the next arm
+        // still runs. 2026-09-19, Joel's first run: the core arm's error ended the
+        // verb before the CLI arm ever ran — the supervisor was converged, the CLI on
+        // PATH stayed stale, and the line said "run from the repository".
         let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
+        let mut failed: Vec<(Arm, String)> = Vec::new();
+        let mut take = |arm: Arm, r: Result<ArmReport, String>| match r {
+            Ok(report) => reports.push((arm, report)),
+            Err(why) => {
+                println!("✗ {}: {why}", arm.name());
+                failed.push((arm, why));
+            }
+        };
         // 1. The supervisor: a core can only be handed to a prepared one.
         if options.runs(Arm::Supervisor) {
-            let r = supervisor_install::install_supervisor(check, installed_cli_from_descriptor).await?;
-            reports.push((Arm::Supervisor, r));
+            take(Arm::Supervisor, supervisor_install::install_supervisor(check, installed_cli_from_descriptor).await);
         }
-        // 2. The core: the running build is the checkout's HEAD, or it is built, staged
-        //    into the slot and handed to the supervisor — `reboot --service`, the same
-        //    path the unattended consumer takes. Hand-run, the tip is what you have.
+        // 2. The core: the running build is the tracked checkout's HEAD, or it is built,
+        //    staged into the slot and handed to the supervisor — `reboot --service`, the
+        //    same path the unattended consumer takes. Hand-run, the tip is what you have.
         if options.runs(Arm::Core) {
-            reports.push((Arm::Core, install_core(check).await?));
+            take(Arm::Core, install_core(check).await);
         }
         // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
         if options.runs(Arm::Cli) {
-            reports.push((Arm::Cli, install_cli(check).await?));
+            take(Arm::Cli, install_cli(check).await);
         }
-        finish_install(check, &reports)
+        finish_install(check, &reports, &failed)
     }
 }
 
 /// The orchestrator's verdict, one for every platform: drift summed across the arms
 /// that ran, exit non-zero only on what remains; twice = "nothing changed".
 #[cfg(any(windows, target_os = "macos"))]
-fn finish_install(check: bool, reports: &[(supervisor_install::Arm, supervisor_install::ArmReport)]) -> Result<(), String> {
-    let remaining: usize = reports.iter().map(|(_, r)| r.drift_after).sum();
-    let found: usize = reports.iter().map(|(_, r)| r.drift_before).sum();
+fn finish_install(
+    check: bool,
+    reports: &[(supervisor_install::Arm, supervisor_install::ArmReport)],
+    failed: &[(supervisor_install::Arm, String)],
+) -> Result<(), String> {
+    // An arm that could not run is one remaining drift with its reason (#4236) — the
+    // verb's exit is the sum over every arm, never the first error.
+    let remaining: usize = reports.iter().map(|(_, r)| r.drift_after).sum::<usize>() + failed.len();
+    let found: usize = reports.iter().map(|(_, r)| r.drift_before).sum::<usize>() + failed.len();
+    let ran = reports.len() + failed.len();
     if remaining > 0 {
-        return Err(if check {
-            format!("install --check: {remaining} way(s) drifted across {} arm(s); `continuum install` converges them", reports.len())
+        let could_not = if failed.is_empty() {
+            String::new()
         } else {
-            format!("install: {remaining} way(s) still drifted after running {} arm(s) — read the lines above", reports.len())
+            format!(
+                " ({} arm(s) could not run: {})",
+                failed.len(),
+                failed.iter().map(|(a, _)| a.name()).collect::<Vec<_>>().join(", ")
+            )
+        };
+        return Err(if check {
+            format!("install --check: {remaining} way(s) drifted across {ran} arm(s){could_not}; `continuum install` converges them")
+        } else {
+            format!("install: {remaining} way(s) still drifted after running {ran} arm(s){could_not} — read the lines above")
         });
     }
     println!(
-        "✓ install: {} arm(s) converged{}",
-        reports.len(),
+        "✓ install: {ran} arm(s) converged{}",
         if found == 0 { " — nothing changed" } else { "" }
     );
     Ok(())
@@ -2594,11 +2629,20 @@ fn installed_cli_from_descriptor(description: &str) -> Result<String, String> {
     Ok(d.cli)
 }
 
-/// The core arm: running build vs the checkout's HEAD.
+/// The core arm: running build vs the TRACKED checkout's HEAD. The checkout is the
+/// one the consumer deploys from (`CONTINUUM_TRACK_REPO_DIR`, else the source tree
+/// this binary was built from) — never the current directory: a user types
+/// `uu install` from wherever they are (Joel, from his home dir, 2026-09-19:
+/// "no checkout HEAD to converge to — run from the repository" was the wrong answer).
 #[cfg(any(windows, target_os = "macos"))]
 async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, String> {
     use supervisor_install::ArmReport;
-    let head = git_head_short_sha().ok_or("install: no checkout HEAD to converge to — run from the repository")?;
+    let repo = tracked_repo_dir().map_err(|e| format!("{e} — `uu install` converges the tracked checkout, from any directory"))?;
+    let head = git_in(&repo, &["rev-parse", "--short", "HEAD"])?;
+    println!("  core: checkout {} at {head}", repo.display());
+    // The handoff path (`reboot --service`) locates its script and registers the
+    // checkout from the working directory, as the consumer does before it.
+    std::env::set_current_dir(&repo).map_err(|e| format!("install: cannot enter {}: {e}", repo.display()))?;
     let running = running_build_sha().await;
     match running.as_deref() {
         Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
