@@ -134,6 +134,13 @@ pub enum DiskPressureLevel {
     High,
     /// > 95 %. Emergency: refuse new bulk writes; broker evicts aggressively.
     Critical,
+    /// The monitor CANNOT SEE: no mounted volume was found at all. A typed absence
+    /// — never derived from a zero-sized reading. Until 2026-09-19 the no-volume
+    /// branch announced "UNKNOWN" in a probe and then handed on `(0, 0)`, so the
+    /// number said Normal while the words said unknown (Cormac + a027688a's review
+    /// of #4185). Ordered last so `level >= High` treats it as hot: an unseen disk
+    /// is not a disk with room.
+    Unknown,
 }
 
 impl DiskPressureLevel {
@@ -155,6 +162,7 @@ impl DiskPressureLevel {
             Self::Warning => 1,
             Self::High => 2,
             Self::Critical => 3,
+            Self::Unknown => 4,
         }
     }
 }
@@ -166,6 +174,7 @@ impl std::fmt::Display for DiskPressureLevel {
             Self::Warning => write!(f, "warning"),
             Self::High => write!(f, "high"),
             Self::Critical => write!(f, "critical"),
+            Self::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -237,6 +246,12 @@ pub struct DiskPressureSnapshot {
     pub timestamp_ms: u64,
     /// Consecutive polls at this level (hysteresis input).
     pub consecutive_at_level: u32,
+    /// WHICH volume the numbers describe: `home` (the volume holding the substrate's
+    /// home — the normal case), `hottest_volume` (no volume holds the home; the numbers
+    /// are the most-pressured mounted volume's — a real reading, conservatively
+    /// chosen, named as a fallback), or `none` (no mounted volume at all; level is
+    /// `Unknown` and the byte fields are meaningless).
+    pub volume_source: String,
 }
 
 impl Default for DiskPressureSnapshot {
@@ -250,6 +265,7 @@ impl Default for DiskPressureSnapshot {
             paths: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
+            volume_source: "none".to_string(),
         }
     }
 }
@@ -350,6 +366,78 @@ const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 /// rendered as a positive fact — `(0, 0)` reads as "fine". Now: no drive holds the
 /// home = `disk.pressure.unmeasured`, said on every blind poll, never a zero.
 
+/// Which volume a reading describes — see [`DiskPressureSnapshot::volume_source`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolumeSource {
+    Home,
+    HottestVolume,
+    None,
+}
+
+impl VolumeSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Home => "home",
+            Self::HottestVolume => "hottest_volume",
+            Self::None => "none",
+        }
+    }
+}
+
+/// One poll's volume reading, PURE over the mount list so the absence cases are
+/// pinned by a test without sysinfo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VolumeReading {
+    total: u64,
+    available: u64,
+    source: VolumeSource,
+    /// `Some(Unknown)` only when there is no volume to measure at all.
+    level_override: Option<DiskPressureLevel>,
+}
+
+/// THE reading for this poll: the volume holding the home; else the hottest mounted
+/// volume (a real number, conservatively chosen, named as a fallback); else a typed
+/// Unknown. Never `(0, 0)` presented as a measurement — that read as pressure 0.0 =
+/// Normal, which is the lie #4185 was written to end and then re-committed in its
+/// own no-match arm (2026-09-19).
+fn volume_reading(
+    drives: &[crate::capacity::system_profile::DriveInfo],
+    home: &std::path::Path,
+) -> VolumeReading {
+    if let Some(d) = crate::capacity::system_profile::drive_holding(drives, home)
+        .filter(|d| d.total_bytes > 0)
+    {
+        return VolumeReading {
+            total: d.total_bytes,
+            available: d.available_bytes,
+            source: VolumeSource::Home,
+            level_override: None,
+        };
+    }
+    let hottest = drives
+        .iter()
+        .filter(|d| d.total_bytes > 0)
+        .max_by(|a, b| {
+            let pa = 1.0 - a.available_bytes as f64 / a.total_bytes as f64;
+            let pb = 1.0 - b.available_bytes as f64 / b.total_bytes as f64;
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    match hottest {
+        Some(d) => VolumeReading {
+            total: d.total_bytes,
+            available: d.available_bytes,
+            source: VolumeSource::HottestVolume,
+            level_override: None,
+        },
+        None => VolumeReading {
+            total: 0,
+            available: 0,
+            source: VolumeSource::None,
+            level_override: Some(DiskPressureLevel::Unknown),
+        },
+    }
+}
+
 impl DiskPressureMonitor {
     /// Spawn the monitor on the shared [`Daemon`] runner. Returns the handle.
     pub fn start(reporters: Vec<Arc<dyn DiskReporter>>) -> Arc<Self> {
@@ -409,6 +497,7 @@ impl DiskPressureMonitor {
             1 => DiskPressureLevel::Warning,
             2 => DiskPressureLevel::High,
             3 => DiskPressureLevel::Critical,
+            4 => DiskPressureLevel::Unknown,
             _ => DiskPressureLevel::Normal,
         }
     }
@@ -451,7 +540,7 @@ impl DiskPressureMonitor {
     /// an await; `self.channel.publish` happens last, lock-free.
     async fn poll(&self) {
         // --- Phase 1: brief lock — ingest + plan. ---
-        let (total, available, used, pressure, level, consecutive_at_level, live) = {
+        let (total, available, used, pressure, level, consecutive_at_level, live, volume_source) = {
             let mut st = self.state.lock();
 
             // Drain dynamically-added reporters.
@@ -484,30 +573,32 @@ impl DiskPressureMonitor {
                     role: crate::capacity::system_profile::DriveRole::System,
                 })
                 .collect();
-            let measured = crate::capacity::system_profile::drive_holding(&drives, &home)
-                .filter(|d| d.total_bytes > 0)
-                .map(|d| (d.total_bytes, d.available_bytes));
-            let (total, available) = match measured {
-                Some(reading) => reading,
-                None => {
-                    // NOT pressure 0.0. A volume the monitor cannot find is a monitor
-                    // that cannot see, and it says so on every poll it stays blind.
-                    crate::probe!(
-                        class = "disk.pressure.unmeasured",
-                        home = %home.display(),
-                        mounts = drives.len() as u64,
-                        "no mounted volume holds the substrate's home — disk pressure is UNKNOWN, not Normal"
-                    );
-                    (0, 0)
-                }
-            };
+            let reading = volume_reading(&drives, &home);
+            match reading.source {
+                VolumeSource::Home => {}
+                VolumeSource::HottestVolume => crate::probe!(
+                    class = "disk.pressure.unmeasured_home",
+                    home = %home.display(),
+                    mounts = drives.len() as u64,
+                    fallback_total = reading.total,
+                    fallback_available = reading.available,
+                    "no mounted volume holds the substrate's home — reporting the HOTTEST mounted volume, named as a fallback, never a zero"
+                ),
+                VolumeSource::None => crate::probe!(
+                    class = "disk.pressure.unmeasured",
+                    home = %home.display(),
+                    "no mounted volume at all — disk pressure is UNKNOWN (typed), not Normal"
+                ),
+            }
+            let volume_source = reading.source.label();
+            let (total, available) = (reading.total, reading.available);
             let used = total.saturating_sub(available);
             let pressure = if total > 0 {
                 used as f64 / total as f64
             } else {
                 0.0
             };
-            let level = DiskPressureLevel::from_pressure(pressure);
+            let level = reading.level_override.unwrap_or_else(|| DiskPressureLevel::from_pressure(pressure)); // unwrap_or_else: a measured volume derives its level from pressure; only "no volume at all" overrides to Unknown
 
             // Atomic publish — lock-free reads from anywhere.
             self.current_pressure
@@ -543,6 +634,7 @@ impl DiskPressureMonitor {
                 level,
                 consecutive_at_level,
                 live,
+                volume_source,
             )
         };
 
@@ -651,6 +743,7 @@ impl DiskPressureMonitor {
                 paths: path_reports,
                 timestamp_ms: now_ms,
                 consecutive_at_level,
+                volume_source: volume_source.to_string(),
             };
 
             // Periodic logging — quiet under Normal, louder under stress.
@@ -658,7 +751,7 @@ impl DiskPressureMonitor {
             let should_log = match level {
                 DiskPressureLevel::Normal => st.log_counter.is_multiple_of(10),
                 DiskPressureLevel::Warning => st.log_counter.is_multiple_of(3),
-                DiskPressureLevel::High | DiskPressureLevel::Critical => true,
+                DiskPressureLevel::High | DiskPressureLevel::Critical | DiskPressureLevel::Unknown => true,
             };
             if should_log {
                 let total_gb = total / (1024 * 1024 * 1024);
@@ -797,6 +890,37 @@ mod tests {
     //! the watch — a follow-up PR adds that under the test-fixtures
     //! gate once a synthetic mount-point fake exists.
     use super::*;
+
+    // what this catches (2026-09-19, Cormac + a027688a on #4185): the no-match arm
+    // said UNKNOWN and handed on (0, 0) → pressure 0.0 → Normal. Now: the home's
+    // volume when one holds it; else the HOTTEST mounted volume, named as a fallback;
+    // else a typed Unknown — never a zero that reads as room.
+    #[test]
+    fn a_monitor_that_cannot_see_says_unknown_never_normal() {
+        use crate::capacity::system_profile::{DriveInfo, DriveRole};
+        let drive = |mount: &str, total: u64, avail: u64| DriveInfo {
+            mount: std::path::PathBuf::from(mount),
+            total_bytes: total,
+            available_bytes: avail,
+            role: DriveRole::System,
+        };
+        let drives = [drive("/", 1_000, 900), drive("/Volumes/hot", 1_000, 20)];
+        let home_on_root = volume_reading(&drives, std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(home_on_root.source, VolumeSource::Home);
+        assert_eq!((home_on_root.total, home_on_root.available), (1_000, 900));
+        // No volume holds the home (a path no mount prefixes): the hottest volume, named.
+        let nowhere = [drive("/Volumes/a", 1_000, 900), drive("/Volumes/hot", 1_000, 20)];
+        let fallback = volume_reading(&nowhere, std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(fallback.source, VolumeSource::HottestVolume);
+        assert_eq!(fallback.available, 20, "the most-pressured volume, not the first");
+        assert_eq!(fallback.level_override, None);
+        // No volumes at all: typed Unknown, and Unknown is ordered as HOT.
+        let none = volume_reading(&[], std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(none.source, VolumeSource::None);
+        assert_eq!(none.level_override, Some(DiskPressureLevel::Unknown));
+        assert!(DiskPressureLevel::Unknown > DiskPressureLevel::Critical);
+        assert_eq!(DiskPressureLevel::Unknown.to_string(), "unknown");
+    }
 
     #[test]
     fn pressure_tiers_match_substrate_doctrine() {

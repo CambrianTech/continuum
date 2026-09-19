@@ -4,4 +4,4 @@
  * Disk pressure severity. Same tier boundaries as memory pressure
  * (`PressureLevel` in `memory_pressure.rs`) — substrate-wide one ladder.
  */
-export type DiskPressureLevel = "normal" | "warning" | "high" | "critical";
+export type DiskPressureLevel = "normal" | "warning" | "high" | "critical" | "unknown";
