@@ -1453,7 +1453,12 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
   command: {cmd:?}
   envs: {:?}
   cwd: {:?}",
-            cmd.get_envs().map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.map(|v| v.to_string_lossy().into_owned()).unwrap_or("<unset>".into()))).collect::<Vec<_>>(),
+            cmd.get_envs()
+                .map(|(k, v)| {
+                    let value = v.map(|v| v.to_string_lossy().into_owned()).unwrap_or("<unset>".into()); // unwrap_or: a None env value IS an unset (env_remove), shown as such
+                    format!("{}={value}", k.to_string_lossy())
+                })
+                .collect::<Vec<_>>(),
             cmd.get_current_dir().map(|p| p.to_path_buf()).or_else(|| std::env::current_dir().ok())
         ));
     }
