@@ -2185,27 +2185,71 @@ enum ConsumeVerdict {
     RefuseDirty,
     /// Check the tip out and hand it to `reboot --service`.
     Deploy,
+    /// A deploy claim is live (its owner alive, under the ceiling): a build is in
+    /// flight from an earlier tick. The task fires every 10 min and a build takes
+    /// 50 on this box (70 on IntelMac); without this arm tick N+10 fired a second
+    /// `reboot --service` into the first one's build — two builds racing one target
+    /// dir, the second swap shipping whichever artifact it found (Cormac, review of
+    /// #4208; `reboot` itself never consults the claim — `deploy_gate` is the START
+    /// verb's). The fifth arm, mirroring `runtime::deploy_tracker::decide`.
+    BuildInFlight,
+    /// This tip failed to build/hand off [`CONSUME_MAX_ATTEMPTS`] times here: a tip
+    /// green on CI can still fail on THIS box (a Windows-only wall, a vendor drift).
+    /// Without a bound the consumer would rebuild it every tick until the claim aged
+    /// out (Fable, review of #4208). The tracker's `deploy.stranded` is the receipt.
+    GaveUp,
 }
+
+/// Attempts per tip before the consumer stops trying it and lets `deploy.stranded`
+/// speak. Three: one for a transient (a fetch hiccup, a RAM dip), one to confirm it
+/// is not, one more than that is a rebuild loop.
+const CONSUME_MAX_ATTEMPTS: u32 = 3;
 
 fn consume_verdict(
     request_tip: Option<&str>,
     running_sha: Option<&str>,
     checkout_dirty: bool,
+    build_in_flight: bool,
+    prior_failures_for_tip: u32,
 ) -> ConsumeVerdict {
     let Some(tip) = request_tip else {
         return ConsumeVerdict::NothingOwed;
     };
-    if running_sha.is_some_and(|running| {
-        // git's own floor for an unambiguous short sha; shorter as a prefix of longer.
-        let (short, long) = if tip.len() <= running.len() { (tip, running) } else { (running, tip) };
-        short.len() >= 7 && long.starts_with(short)
-    }) {
+    // ONE sha-equivalence rule for the fleet's deploy owner (the 7-char floor, either
+    // spelling as the prefix) — the tracker's, not a second copy of it.
+    if running_sha.is_some_and(|running| continuum_core::runtime::deploy_tracker::same_commit(tip, running)) {
         return ConsumeVerdict::AlreadyRunning;
+    }
+    if build_in_flight {
+        return ConsumeVerdict::BuildInFlight;
     }
     if checkout_dirty {
         return ConsumeVerdict::RefuseDirty;
     }
+    if prior_failures_for_tip >= CONSUME_MAX_ATTEMPTS {
+        return ConsumeVerdict::GaveUp;
+    }
     ConsumeVerdict::Deploy
+}
+
+/// The consumer's own memory of a tip that would not land here: `{tip, failures}`
+/// beside the request, cleared the moment the requested tip changes.
+fn consume_attempts_path() -> Result<PathBuf, String> {
+    deploy_request_path().map(|p| p.with_file_name("deploy-consume-attempts.json"))
+}
+
+fn read_consume_failures(path: &Path, tip: &str) -> u32 {
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else { return 0 };
+    if v.get("tip").and_then(|t| t.as_str()) != Some(tip) {
+        return 0; // a different tip: the ledger is about a request that no longer stands
+    }
+    v.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32 // unwrap_or: a malformed ledger counts as no failures, never as give-up
+}
+
+fn write_consume_failures(path: &Path, tip: &str, failures: u32) {
+    let body = serde_json::json!({ "tip": tip, "failures": failures });
+    let _ = std::fs::write(path, body.to_string());
 }
 
 fn deploy_request_path() -> Result<PathBuf, String> {
@@ -2326,14 +2370,35 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
     let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
-    let verdict = consume_verdict(tip.as_deref(), running.as_deref(), dirty);
+    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`): a live
+    // owner under the ceiling blocks; an abandoned claim is swept by `reboot` itself.
+    let build_in_flight = continuum_root()
+        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()).blocks())
+        .unwrap_or(false); // unwrap_or: no root = no claim file = nothing in flight
+    let attempts_path = consume_attempts_path()?;
+    let prior_failures = tip
+        .as_deref()
+        .map(|t| read_consume_failures(&attempts_path, t))
+        .unwrap_or(0); // unwrap_or: no request = nothing to have failed
+    let verdict = consume_verdict(
+        tip.as_deref(),
+        running.as_deref(),
+        dirty,
+        build_in_flight,
+        prior_failures,
+    );
     println!(
-        "deploy-consume: request={} running={} dirty={dirty} → {verdict:?}",
+        "deploy-consume: request={} running={} dirty={dirty} in_flight={build_in_flight} prior_failures={prior_failures} → {verdict:?}",
         tip.as_deref().unwrap_or("none"),
         running.as_deref().unwrap_or("none")
     );
     match verdict {
-        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning => Ok(()),
+        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
+        ConsumeVerdict::GaveUp => Err(format!(
+            "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
+             the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
+            tip.as_deref().unwrap_or("?")
+        )),
         ConsumeVerdict::RefuseDirty => Err(format!(
             "deploy-consume: {} has uncommitted work — a consumer never stashes an operator's \
              tree; commit or stash it and the next tick deploys",
@@ -2341,10 +2406,26 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         )),
         ConsumeVerdict::Deploy => {
             let tip = tip.unwrap_or_default(); // unwrap_or_default: Deploy is only returned with a tip present
-            git_in(&repo, &["fetch", "--quiet", "origin"])?;
-            git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
-            println!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display());
-            reboot(RebootOptions { service: true, ..Default::default() }).await
+            let attempt = async {
+                git_in(&repo, &["fetch", "--quiet", "origin"])?;
+                git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
+                println!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display());
+                reboot(RebootOptions { service: true, ..Default::default() }).await
+            }
+            .await;
+            match &attempt {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&attempts_path);
+                }
+                Err(why) => {
+                    write_consume_failures(&attempts_path, &tip, prior_failures + 1);
+                    println!(
+                        "deploy-consume: attempt {} of {CONSUME_MAX_ATTEMPTS} for {tip} failed: {why}",
+                        prior_failures + 1
+                    );
+                }
+            }
+            attempt
         }
     }
 }
@@ -4174,19 +4255,35 @@ mod tests {
     #[test]
     fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() {
         use super::{consume_verdict, ConsumeVerdict, DeployConsumeOptions};
-        assert_eq!(consume_verdict(None, Some("6d8fc04de"), false), ConsumeVerdict::NothingOwed);
+        let v = |tip: Option<&str>, running: Option<&str>, dirty: bool| consume_verdict(tip, running, dirty, false, 0);
+        assert_eq!(v(None, Some("6d8fc04de"), false), ConsumeVerdict::NothingOwed);
+        assert_eq!(v(Some("6d8fc04de"), Some("6d8fc04de1234567"), false), ConsumeVerdict::AlreadyRunning);
+        assert_eq!(v(Some("6d8fc04de1234567"), Some("6d8fc04de"), false), ConsumeVerdict::AlreadyRunning, "either spelling as the prefix");
         assert_eq!(
-            consume_verdict(Some("6d8fc04de"), Some("6d8fc04de1234567"), false),
-            ConsumeVerdict::AlreadyRunning
-        );
-        assert_eq!(
-            consume_verdict(Some("6d8fc0"), Some("6d8fc04de"), false),
+            v(Some("6d8fc0"), Some("6d8fc04de"), false),
             ConsumeVerdict::Deploy,
             "under git's 7-char floor a prefix is a coincidence, not a match"
         );
-        assert_eq!(consume_verdict(Some("abc1234"), Some("6d8fc04de"), true), ConsumeVerdict::RefuseDirty);
-        assert_eq!(consume_verdict(Some("abc1234"), Some("6d8fc04de"), false), ConsumeVerdict::Deploy);
-        assert_eq!(consume_verdict(Some("abc1234"), None, false), ConsumeVerdict::Deploy, "no core answering = deploy, the request stands");
+        assert_eq!(v(Some("abc1234"), Some("6d8fc04de"), true), ConsumeVerdict::RefuseDirty);
+        assert_eq!(v(Some("abc1234"), Some("6d8fc04de"), false), ConsumeVerdict::Deploy);
+        assert_eq!(v(Some("abc1234"), None, false), ConsumeVerdict::Deploy, "no core answering = deploy, the request stands");
+        // A live deploy claim = a build in flight from an earlier tick: NEVER a second
+        // reboot into it (the 10-min task vs a 50-min build). It outranks dirty and the
+        // ledger because nothing about this tick should act at all.
+        assert_eq!(consume_verdict(Some("abc1234"), None, false, true, 0), ConsumeVerdict::BuildInFlight);
+        assert_eq!(consume_verdict(Some("abc1234"), None, true, true, 9), ConsumeVerdict::BuildInFlight);
+        // A tip that would not land here is tried CONSUME_MAX_ATTEMPTS times, then left to
+        // deploy.stranded — never a rebuild loop every tick until the claim ages out.
+        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 2), ConsumeVerdict::Deploy);
+        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 3), ConsumeVerdict::GaveUp);
+        // The ledger is per tip: a new tip starts at zero.
+        let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("deploy-consume-attempts.json");
+        super::write_consume_failures(&ledger, "abc1234", 3);
+        assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
+        assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
+        let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install);
         assert!(DeployConsumeOptions::parse(["--install".to_string(), "--uninstall".to_string()].into_iter()).is_err());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
