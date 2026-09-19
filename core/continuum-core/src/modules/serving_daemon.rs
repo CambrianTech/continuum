@@ -928,6 +928,12 @@ pub fn lane_demand_overridden() -> bool {
 /// mind, and the "let me take stock" loops that come from re-orienting every turn.
 /// The roster is the demand; the boot floor is only its lower bound; a measurement
 /// lease still wins while it is held.
+/// The tick on which a launch SETTLES: its spawn cooldown reaches zero on this tick with
+/// the lane ready and serving. Only a settled geometry is remembered for the next boot.
+pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
+    cooling_before == 1 && ready && lanes > 0
+}
+
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
     if overridden {
         return boot_floor.max(1);
@@ -2411,6 +2417,25 @@ impl ServingDaemonModule {
                     // a minute and a half ago. Re-proving costs 3 ticks and keeps
                     // "sustained" meaning sustained-NOW.
                     self.rehome_streak.store(0, Ordering::Relaxed);
+                }
+                // The geometry a cold boot plans first is the last SETTLED one — the lane
+                // that outlived its own spawn cooldown without a re-home — never the last
+                // SPAWNED one. Measured 2026-09-19 on the M5: the 12:19Z Eco relaunch spawned
+                // `--parallel 1`, the spawn wrote `lanes: 1` to the store, and every boot after
+                // (13:2xZ, 13:36Z) planned `min(fit, 1)` = one lane on a box whose fit held two
+                // — a shrink-only ratchet across boots. Saving on settle makes "the first
+                // launch is the steady one" (the boot probe's own words) true.
+                if settles_this_tick(cooling, live.ready, live.lanes) {
+                    if let Some(model) = live.active_model.as_deref() {
+                        crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                        crate::probe!(
+                            class = "serving.geometry.settled",
+                            model,
+                            per_slot_window = live.served_context_window as u64,
+                            lanes = live.lanes as u64,
+                            "the launch outlived its spawn cooldown without a re-home — this geometry is what the next boot plans first"
+                        );
+                    }
                 }
                 let (live_space, plan_space, gain, worth_it) = rehome_gain_evidence(
                     live.served_context_window,
@@ -5615,6 +5640,21 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-19, the M5 pinned at one lane across boots): the store is
+    // written on the tick a launch SETTLES — cooldown 1 → 0 with the lane serving — and on
+    // no other tick: not at spawn (cooling = full), not while cooling, not after (0), not
+    // for a lane that is not ready, not for zero lanes.
+    #[test]
+    fn only_the_tick_a_launch_settles_on_remembers_its_geometry() {
+        use super::{settles_this_tick, REHOME_COOLDOWN_TICKS};
+        assert!(settles_this_tick(1, true, 2));
+        assert!(!settles_this_tick(REHOME_COOLDOWN_TICKS, true, 2), "spawn tick: cooling is full");
+        assert!(!settles_this_tick(2, true, 2), "still cooling");
+        assert!(!settles_this_tick(0, true, 2), "already settled — no re-save every tick");
+        assert!(!settles_this_tick(1, false, 2), "not ready is not settled");
+        assert!(!settles_this_tick(1, true, 0), "no lanes is nothing to remember");
+    }
+
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
     // and treated a desired KV estimate as observed serialized cache capacity.
     #[test]
