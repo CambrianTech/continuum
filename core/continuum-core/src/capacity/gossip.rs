@@ -47,6 +47,16 @@ use crate::identity::PeerId;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityOffer {
+    /// The PROCESS that published this offer — one nonce per core process, minted at
+    /// first use, never persisted. A node hears its own offer back under every airc
+    /// scope it speaks in, and each scope carries a DIFFERENT transport peer id: the M5
+    /// (2026-09-19) beaconed as 2f0aed7f in its project scope while its placement
+    /// switch knew itself as the operator handle's id, so its own seat read as a foreign
+    /// one and it spilled Demetri and Aris to ITSELF (card 2500d2f1). Identity from the
+    /// wire names the scope; this names the process. Nil from an older core = unknown,
+    /// treated as foreign (the pre-existing behavior).
+    #[serde(default)]
+    pub origin: Uuid,
     /// Total GPU / UMA-serving-slice bytes on the offering device.
     pub gpu_total_bytes: u64,
     /// Free GPU bytes on the offering device RIGHT NOW (net of everything resident).
@@ -157,6 +167,20 @@ pub struct GridCapacityLedger {
 
 /// The one process-global ledger — the resource it mirrors (this node's view of the
 /// grid) is process-global, same granularity argument as the admission gates.
+/// This core process's offer origin — minted once, lives as long as the process.
+pub fn this_process_origin() -> Uuid {
+    static ORIGIN: OnceLock<Uuid> = OnceLock::new();
+    *ORIGIN.get_or_init(Uuid::new_v4)
+}
+
+impl CapacityOffer {
+    /// Whether this offer was published by `origin` — for the caller, "is this my own
+    /// offer heard back", whatever peer id the scope stamped on it.
+    pub fn is_from(&self, origin: Uuid) -> bool {
+        !self.origin.is_nil() && self.origin == origin
+    }
+}
+
 pub fn global_ledger() -> &'static GridCapacityLedger {
     static LEDGER: OnceLock<GridCapacityLedger> = OnceLock::new();
     LEDGER.get_or_init(GridCapacityLedger::default)
@@ -184,7 +208,7 @@ impl GridCapacityLedger {
             if age > EVICTION_WINDOW_MS {
                 return false; // silent too long — left the grid
             }
-            if *peer != own_peer {
+            if *peer != own_peer && !heard.offer.is_from(this_process_origin()) {
                 peers.push(PeerCapacity {
                     peer: PeerId::from_uuid(*peer),
                     capacity: heard.offer.capacity(),
@@ -209,7 +233,7 @@ impl GridCapacityLedger {
     pub fn residents_elsewhere(&self, own_peer: Option<Uuid>, now_ms: u64) -> RosterHeard {
         let mut heard = RosterHeard::default();
         for r in self.heard.iter() {
-            if Some(*r.key()) == own_peer {
+            if Some(*r.key()) == own_peer || r.value().offer.is_from(this_process_origin()) {
                 continue;
             }
             let at = r.value().heard_at_ms;
@@ -242,6 +266,18 @@ impl GridCapacityLedger {
             .collect()
     }
 
+    /// Every heard offer that this process did NOT publish — the seats a placement
+    /// decision may consider. `heard_offers_with_age` keeps the own rows: seeing your own
+    /// row refresh is the publish→hear verification, but it is never a seat.
+    pub fn foreign_offers_with_age(&self) -> Vec<(Uuid, CapacityOffer, u64)> {
+        let mine = this_process_origin();
+        self.heard
+            .iter()
+            .filter(|r| !r.value().offer.is_from(mine))
+            .map(|r| (*r.key(), r.value().offer.clone(), r.value().heard_at_ms))
+            .collect()
+    }
+
     pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
         self.heard
             .iter()
@@ -267,6 +303,7 @@ mod tests {
 
     fn offer(free_gb: u64, at_ms: u64) -> CapacityOffer {
         CapacityOffer {
+            origin: Uuid::nil(),
             gpu_total_bytes: 32 * GB,
             gpu_free_bytes_live: free_gb * GB,
             system_ram_free_bytes: 16 * GB,
@@ -281,6 +318,38 @@ mod tests {
             lane_wait_samples: 0,
         }
     }
+    // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
+    // its own offer back under a second scope's peer id. The own row still refreshes
+    // (the publish→hear verification), but it is not a seat: excluded from the
+    // snapshot, from the foreign offers the switch chooses among, and from the roster
+    // heard elsewhere — whatever peer id the scope stamped on it. An older core's nil
+    // origin stays foreign; a real foreign origin stays foreign.
+    #[test]
+    fn a_node_recognises_its_own_offer_under_any_scope_id_and_never_seats_on_it() {
+        let ledger = GridCapacityLedger::default();
+        let (me_as_scope_a, me_as_scope_b, other, older) =
+            (Uuid::from_u128(0xa), Uuid::from_u128(0xb), Uuid::from_u128(0xc), Uuid::from_u128(0xd));
+        let mut mine = offer(8, 1_000);
+        mine.origin = this_process_origin();
+        mine.residents = 3;
+        let mut theirs = offer(8, 1_000);
+        theirs.origin = Uuid::new_v4();
+        theirs.residents = 2;
+        ledger.hear(me_as_scope_a, mine.clone(), 1_000);
+        ledger.hear(me_as_scope_b, mine, 1_000);
+        ledger.hear(other, theirs, 1_000);
+        ledger.hear(older, offer(8, 1_000), 1_000);
+        assert_eq!(ledger.heard_count(), 4, "own rows still land — the verification stays");
+        let snap = ledger.snapshot(Uuid::nil(), local(), 2_000);
+        let seen: Vec<Uuid> = snap.peers.iter().map(|p| p.peer.as_uuid()).collect();
+        assert_eq!(seen, vec![other, older], "neither of my scope ids is a seat: {seen:?}");
+        let foreign: Vec<Uuid> = ledger.foreign_offers_with_age().into_iter().map(|(p, _, _)| p).collect();
+        assert_eq!(foreign.len(), 2);
+        assert!(!foreign.contains(&me_as_scope_a) && !foreign.contains(&me_as_scope_b));
+        let elsewhere = ledger.residents_elsewhere(None, 2_000);
+        assert_eq!((elsewhere.peers, elsewhere.residents), (1, 2), "only the other node's residents are elsewhere");
+    }
+
     fn local() -> DeviceCapacity {
         DeviceCapacity {
             gpu_total_bytes: 55 * GB,
