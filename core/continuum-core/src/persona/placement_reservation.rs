@@ -203,6 +203,9 @@ pub async fn request_reservation(
     peer: Uuid,
     mind: Uuid,
 ) -> Result<PlacementReservationReport, String> {
+    if crate::persona::self_peer::is_this_node(peer) {
+        return Err(format!("seat {peer} is this node — a node never asks itself for a slot"));
+    }
     let now = crate::persona::trace::now_ms();
     // The guard lives in its own block: this fn awaits the wire below, and a std
     // MutexGuard in scope across an await point makes the future !Send.

@@ -89,6 +89,12 @@ impl AircModule {
                 peer_id,
             } => {
                 let from_client = uuid::Uuid::new_v4();
+                // The id the grid hears this node's capacity beacon under (on the M5,
+                // 2f0aed7f — THE id of card 2500d2f1). Registered here, at module
+                // construction, so it is in the self set before the first persona build
+                // reads a durable override — not only after this node hears its own
+                // beacon echo back.
+                crate::persona::self_peer::register(*peer_id);
                 Self {
                     queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
                     // #3849: the socket is re-resolved when the daemon
@@ -320,6 +326,12 @@ mod from_discovery_tests {
             module.default_room_name(),
             Some("general"),
             "Healthy must preserve the discovered room name"
+        );
+        // card 2500d2f1: the beacon's identity is one of this node's own ids from the
+        // moment the module exists — before any persona build, before any echo.
+        assert!(
+            crate::persona::self_peer::is_this_node(peer),
+            "the id this node beacons under must read as itself at construction"
         );
     }
 

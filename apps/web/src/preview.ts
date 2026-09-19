@@ -371,7 +371,7 @@ const SYS_FIXTURE: SystemMetricsViewState = {
     },
   ],
   sample_interval_ms: 2000,
-  node: 'bigmama.local',
+  node: 'example-node.local',
 };
 
 /** The serving glass-box fixture (`?fixture=serving`) — the beat-WASTE

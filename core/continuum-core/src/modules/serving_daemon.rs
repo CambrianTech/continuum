@@ -175,6 +175,20 @@ fn lane_over_its_knee(live_window: u32, live_lanes: u32, plan_window: u32, plan_
     live_lanes > 0 && plan_lanes > 0 && plan_lanes < live_lanes && plan_window >= live_window
 }
 
+/// The knee's mirror: the plan wants MORE warm slots than the live lane serves. The plan
+/// never asks for more lanes than the roster demands (`lane_cap` is the demand, then the
+/// fit), so a plan with more lanes than are live is minds WITHOUT a warm slot — the #266
+/// shape: every turn of an unslotted mind re-prefills cold. Token-space calls such a plan
+/// a wash or a loss (measured 2026-09-19 15:4xZ, the M5: a cold boot launched 1 × 161,792
+/// under a transient 44 GB budget; the steady plan said 2 × 67,340 — 17% LESS space —
+/// and the reconcile declined it every tick, so a second coder lane could never appear
+/// at runtime, and the settled 1-lane geometry then capped the next boot: a one-way
+/// ratchet with no mover the other way). The sustain streak, the flat-plan check and the
+/// cooldown still gate the relaunch; this only makes a slot shortfall COUNT as evidence.
+fn roster_short_of_slots(live_lanes: u32, plan_lanes: u32) -> bool {
+    live_lanes > 0 && plan_lanes > live_lanes
+}
+
 /// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
 /// adopted. #368 (2nd occurrence, 2026-08-08): a ~6-second RAM transient at
 /// agent/solve launch collapsed the planner's budget to zero for ONE tick, the
@@ -928,6 +942,12 @@ pub fn lane_demand_overridden() -> bool {
 /// mind, and the "let me take stock" loops that come from re-orienting every turn.
 /// The roster is the demand; the boot floor is only its lower bound; a measurement
 /// lease still wins while it is held.
+/// The tick on which a launch SETTLES: its spawn cooldown reaches zero on this tick with
+/// the lane ready and serving. Only a settled geometry is remembered for the next boot.
+pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
+    cooling_before == 1 && ready && lanes > 0
+}
+
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
     if overridden {
         return boot_floor.max(1);
@@ -1329,7 +1349,7 @@ impl ServingDaemonModule {
         let available = self.system.snapshot().memory.available_bytes;
         let live = governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget");
         // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
-        // (Performance, fraction 1.0) — the biggest window the model+machine allow, past the
+        // (Performance, fraction 0.96) — the biggest window the model+machine allow, past the
         // conservative pressure read (which on UMA under-reports free memory). The drive mode
         // follows the ACTIVITY, not just the pressure. Otherwise the live pressure-adaptive
         // mode (a game opening still drops us to Eco). [[serving-mode-follows-activity-ludicrous-to-dream]]
@@ -2412,12 +2432,33 @@ impl ServingDaemonModule {
                     // "sustained" meaning sustained-NOW.
                     self.rehome_streak.store(0, Ordering::Relaxed);
                 }
+                // The geometry a cold boot plans first is the last SETTLED one — the lane
+                // that outlived its own spawn cooldown without a re-home — never the last
+                // SPAWNED one. Measured 2026-09-19 on the M5: the 12:19Z Eco relaunch spawned
+                // `--parallel 1`, the spawn wrote `lanes: 1` to the store, and every boot after
+                // (13:2xZ, 13:36Z) planned `min(fit, 1)` = one lane on a box whose fit held two
+                // — a shrink-only ratchet across boots. Saving on settle makes "the first
+                // launch is the steady one" (the boot probe's own words) true.
+                if settles_this_tick(cooling, live.ready, live.lanes) {
+                    if let Some(model) = live.active_model.as_deref() {
+                        crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                        crate::probe!(
+                            class = "serving.geometry.settled",
+                            model,
+                            per_slot_window = live.served_context_window as u64,
+                            lanes = live.lanes as u64,
+                            "the launch outlived its spawn cooldown without a re-home — this geometry is what the next boot plans first"
+                        );
+                    }
+                }
                 let (live_space, plan_space, gain, worth_it) = rehome_gain_evidence(
                     live.served_context_window,
                     live.lanes,
                     served_ctx,
                     lanes,
                 );
+                let short_of_slots = roster_short_of_slots(live.lanes, lanes);
+                let worth_it = worth_it || short_of_slots;
                 // A STILL-CLIMBING plan is not settled (2026-09-02, the boot
                 // staircase): personas register footprints serially at boot,
                 // demand climbs in 15%+ stairs, and each stair "sustained" for
@@ -2492,7 +2533,7 @@ impl ServingDaemonModule {
                         served_ctx,
                         lanes,
                     );
-                    let declined = live_space < plan_space || over_knee;
+                    let declined = live_space < plan_space || over_knee || short_of_slots;
                     let decline_ticks = if declined {
                         self.decline_log_ticks
                             .fetch_add(1, Ordering::Relaxed)
@@ -4142,7 +4183,7 @@ pub fn serving_held_steady() -> bool {
 /// LUDICROUS mode (Joel 2026-07-21: "extreme mode for benchmarks or ludicrous lol"). A
 /// benchmark / project / "the fight" wants the biggest window the model+machine can give —
 /// not the timid pressure-derived fraction. While any caller holds this, [`host_budget`]
-/// forces `PowerMode::Performance` (fraction 1.0 — "floors the whole GPU"), OVERRIDING
+/// forces `PowerMode::Performance` (fraction 0.96 — nearly the whole GPU, less the process's own overhead), OVERRIDING
 /// `serving_mode_for_pressure`'s conservative read (which on UMA under-reports free memory
 /// and floored a 47872-capable model to 2048 with ~28GB idle). This is the drive mode
 /// following the ACTIVITY, not just the pressure: a declared Ludicrous intent → serve
@@ -4245,8 +4286,18 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
-        budget_fraction: crate::config_env::vram_headroom(),
+        budget_fraction: plan_fraction(crate::config_env::vram_headroom()),
     })
+}
+
+/// The fraction a production budget may hand the plan: the operator's headroom policy,
+/// never above what Performance keeps. Since #4230 the plan withholds nothing itself, so
+/// a foundry's `CONTINUUM_VRAM_HEADROOM=1.0` would otherwise size weights + KV + compute
+/// to 100% of the governed ceiling with no room for the serving process's own fixed
+/// overhead (the CUDA context, the Metal heap) — BigMama's condition on #4230: no
+/// production `HostBudget` hands the plan 1.0.
+pub fn plan_fraction(headroom: f64) -> f64 {
+    headroom.min(crate::provisioning::model_catalog::PowerMode::Performance.serving_fraction())
 }
 
 /// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`
@@ -4730,14 +4781,14 @@ fn prompt_cache_decision(
             afford
         };
         // A cache FILLS to its grant by design, so "everything above the OS floor" is a
-        // grant to end the serve at the floor with nothing left for the co-consumers the
-        // planner reserves for (the core's own growth, a sidecar, the eye). Measured
-        // 2026-09-19 on the M5: a 19,519 MiB grant from a 20,468 MiB afford, and the box
-        // sat 6 GB into swap with 25 GB in the compressor an hour later. The same
-        // headroom the planner keeps for co-consumers when it sizes the window
-        // (`CO_CONSUMER_HEADROOM`) — one constant, both decisions.
+        // grant to end the serve at the floor with nothing left for the co-consumers
+        // (the core's own growth, a sidecar, the eye). Measured 2026-09-19 on the M5: a
+        // 19,519 MiB grant from a 20,468 MiB afford, and the box sat 6 GB into swap with
+        // 25 GB in the compressor an hour later. The cache keeps this fraction back; the
+        // planner's window no longer does (the mode's fraction and the board's live
+        // subtraction are its headroom — `CACHE_GRANT_HEADROOM`).
         let afford = (afford as f64
-            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
+            * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =
@@ -4970,12 +5021,57 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // every restore a miss, hit_rate 0.0 fleet-wide) AND under-granted lanes
     // vs resident demand. Header read is memoized per path: this runs on the
     // governor's accounting tick and a GGUF header parse is real I/O.
-    if let Some(path) = crate::model_registry::artifacts::resolve_gguf_for_model(model) {
-        if let Some(rate) = kv_rate_from_header_cached(&path) {
-            fp.kv_per_token = rate;
+    let header_rate = crate::model_registry::artifacts::resolve_gguf_for_model(model)
+        .and_then(|path| kv_rate_from_header_cached(&path));
+    if let Some(rate) = header_rate {
+        fp.kv_per_token = rate;
+    }
+    let fp = apply_kv_quantization(fp);
+    // A header-declared KV rate (÷ the launched cache type) is the physical cost of a
+    // token: the measurement may not raise it. "The process beats the arithmetic" was
+    // written for the weights-scaled GUESS; against the header it can only mis-attribute
+    // fixed residency (the draft model's KV, the vision projector, engine buffers) to
+    // tokens — and it does so WORST at the smallest geometry, which is exactly when a
+    // raised rate pins the shrink. Measured 2026-09-19 on the M5 (97f480e19): the header
+    // said 65,536 f16 → 32,768 q8; a one-lane sample at 67,584 read 55,925 B/token,
+    // `corrects()` fired, the plan carried 44,740, and two lanes stopped fitting a 30 GB
+    // budget where the arithmetic at the header rate holds two (84k) and at 34 GB three.
+    // The excess is a real fixed term — named on the probe below so a fixed-residency
+    // model can learn it — never a per-token one.
+    let mut fp = fp;
+    let measured = crate::inference::lane_footprint::measured_record(&fp.model_id);
+    fp.kv_per_token = kv_rate_for_plan(
+        header_rate.is_some(),
+        fp.kv_per_token,
+        measured.as_ref().map(|r| r.per_token_bytes),
+    );
+    if header_rate.is_some() {
+        if let Some(record) = &measured {
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record);
+            if fp.fixed_per_lane_bytes > 0 {
+                crate::probe!(
+                    class = "serving.footprint.excess_is_fixed",
+                    model = fp.model_id.as_str(),
+                    header_rate = fp.kv_per_token,
+                    measured_per_token = record.per_token_bytes,
+                    measured_window = record.window as u64,
+                    fixed_per_lane_bytes = fp.fixed_per_lane_bytes,
+                    "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers) and is carried per lane; the header rate stands"
+                );
+            }
         }
     }
-    Some(apply_measured_cost(apply_kv_quantization(fp)))
+    Some(fp)
+}
+
+/// The residency a sample measured BEYOND the header's per-token rate, as fixed bytes per
+/// lane: `(measured − rate) × the window it was measured at`. Zero when the sample agrees
+/// with the header. The rate stays physics; the residency stays counted.
+pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_footprint::MeasuredCost) -> u64 {
+    record
+        .per_token_bytes
+        .saturating_sub(header_rate)
+        .saturating_mul(record.window as u64)
 }
 
 /// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
@@ -4988,12 +5084,15 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
 /// per-token cost is `kv + kv / PREFILL_COMPUTE_KV_DIVISOR`, so kv is set to make that
 /// sum the measurement; a smaller measurement never lowers it (a footprint is a lower
 /// bound of the need).
-fn apply_measured_cost(mut fp: ModelFootprint) -> ModelFootprint {
-    if let Some(measured) = crate::inference::lane_footprint::measured_per_token(&fp.model_id) {
-        fp.kv_per_token = kv_per_token_from_measured(fp.kv_per_token, measured);
+/// The per-token rate the plan carries: a header-declared rate is physics and stands
+/// whatever the process measured; only a heuristic estimate is open to correction.
+pub fn kv_rate_for_plan(header_known: bool, estimate: u64, measured: Option<u64>) -> u64 {
+    match (header_known, measured) {
+        (true, _) | (false, None) => estimate,
+        (false, Some(m)) => kv_per_token_from_measured(estimate, m),
     }
-    fp
 }
+
 
 /// Pure half of [`apply_measured_cost`]: the kv rate whose plan cost (`kv + kv / D`)
 /// equals `measured`, or the estimate when the measurement does not correct it.
@@ -5124,6 +5223,7 @@ fn footprint_from_parts(
         // entry with a bogus 0 window can't degrade below runnable.
         context_window: context_window.max(MIN_SERVE_CTX),
         capability_rank,
+        fixed_per_lane_bytes: 0,
     })
 }
 
@@ -5615,6 +5715,21 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-19, the M5 pinned at one lane across boots): the store is
+    // written on the tick a launch SETTLES — cooldown 1 → 0 with the lane serving — and on
+    // no other tick: not at spawn (cooling = full), not while cooling, not after (0), not
+    // for a lane that is not ready, not for zero lanes.
+    #[test]
+    fn only_the_tick_a_launch_settles_on_remembers_its_geometry() {
+        use super::{settles_this_tick, REHOME_COOLDOWN_TICKS};
+        assert!(settles_this_tick(1, true, 2));
+        assert!(!settles_this_tick(REHOME_COOLDOWN_TICKS, true, 2), "spawn tick: cooling is full");
+        assert!(!settles_this_tick(2, true, 2), "still cooling");
+        assert!(!settles_this_tick(0, true, 2), "already settled — no re-save every tick");
+        assert!(!settles_this_tick(1, false, 2), "not ready is not settled");
+        assert!(!settles_this_tick(1, true, 0), "no lanes is nothing to remember");
+    }
+
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
     // and treated a desired KV estimate as observed serialized cache capacity.
     #[test]
@@ -5626,6 +5741,7 @@ mod tests {
             kv_per_token: 65536,
             context_window: 65536,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
         assert_eq!(missing.reason, "prior_missing_footprint");
@@ -5694,7 +5810,7 @@ mod tests {
         // grant, so a grant of everything above the floor ends at the floor (the M5,
         // 2026-09-19: 6 GB of swap under a 19.5 GB grant).
         let afford = (above_floor as f64
-            * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64;
+            * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
         assert!(afford < above_floor, "the cache never gets everything above the floor");
         assert_eq!(measured.affordable_bytes, Some(afford));
         assert_eq!(
@@ -5721,9 +5837,9 @@ mod tests {
     // unified pays the working set, discrete does not, and the discrete answer is the
     // demand-sized one.
     /// The grant the cache may be promised out of a ceiling: the ceiling less the
-    /// planner's co-consumer headroom (#4216 — a cache fills to its grant).
+    /// cache's grant headroom (#4216 — a cache fills to its grant).
     fn grantable(ceiling: u64) -> u64 {
-        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CO_CONSUMER_HEADROOM)) as u64
+        (ceiling as f64 * (1.0 - crate::cognition::serving_plan::CACHE_GRANT_HEADROOM)) as u64
     }
 
     /// The grant out of a known `available` reading: the smaller of "above the OS
@@ -5746,6 +5862,7 @@ mod tests {
             kv_per_token: 262_144, // ~256 KiB/token: a 144k window is ~36 GiB of KV
             context_window: 262_144,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 63u64 << 30;
         let (ctx, lanes) = (144_530u32, 1u32);
@@ -5846,6 +5963,7 @@ mod tests {
             kv_per_token: 32_768,
             context_window: 67_340,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 64u64 << 30;
         let demands = [67_340u32; 16]; // sixteen seeds on disk: the want is far past any box
@@ -5875,6 +5993,7 @@ mod tests {
             kv_per_token: 262_144,
             context_window: 262_144,
             capability_rank: 1,
+            fixed_per_lane_bytes: 0,
         };
         let physical = 63u64 << 30;
         let demands = [115_000u32, 115_000]; // ~58 GB wanted
@@ -5999,6 +6118,46 @@ mod tests {
     fn a_measured_per_token_cost_corrects_the_plans_rate_upward_only() {
         use super::kv_per_token_from_measured;
         use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
+        // what this catches (2026-09-19, the M5 pinned at one lane): a header-declared
+        // rate is never raised by a measurement — the excess is fixed residency; a
+        // heuristic estimate still is.
+        assert_eq!(kv_rate_for_plan(true, 32_768, Some(55_925)), 32_768, "header rate is physics");
+        assert_eq!(kv_rate_for_plan(true, 32_768, None), 32_768);
+        assert_eq!(kv_rate_for_plan(false, 32_768, None), 32_768);
+        assert!(kv_rate_for_plan(false, 10_240, Some(36_000)) > 10_240, "a guess still learns from the process");
+        // The excess is carried, not dropped: the M5 shape (header 32,768 q8, a one-lane
+        // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
+        // across budgets the plan with it fits no more lanes than the header-only plan
+        // and no fewer than the raised-rate plan — strictly between them somewhere.
+        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, anon_bytes: 0, last_ms: 0 };
+        let fixed = fixed_per_lane_from(32_768, &record);
+        assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
+        assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
+        let base = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+        };
+        let carried = crate::cognition::serving_plan::ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
+        let raised = crate::cognition::serving_plan::ModelFootprint { kv_per_token: 44_740, ..base.clone() };
+        let lanes_at = |fp: &crate::cognition::serving_plan::ModelFootprint, usable: u64| (1..=4u32).rev().find(|&l| fp.window_within(usable, l) >= 67_340).unwrap_or(0);
+        // Carried never fits MORE than header-only (the fixed term only costs), and costs a
+        // lane somewhere in the range. It is NOT ordered against the raised-rate plan: a
+        // fixed cost bites hardest at small lane counts (31 GB: carried 1, raised 2) and a
+        // raised rate at large ones — which is the whole point of carrying it as fixed.
+        let mut strict = false;
+        for usable_gb in 28..=46u64 {
+            let usable = usable_gb * 1_000_000_000;
+            let (h, c) = (lanes_at(&base, usable), lanes_at(&carried, usable));
+            assert!(h >= c, "{usable_gb} GB: header {h} ≥ carried {c}");
+            strict |= h > c;
+        }
+        assert!(strict, "the carried term costs at least one lane somewhere in the range");
+        // The M5's own numbers, pinned, with the budget sized as handed (no second
+        // headroom on top of the mode's — `CACHE_GRANT_HEADROOM`): header-only 3 lanes at
+        // 30 GB and 4 at 34; carried 2 at 30 and 3 at 34; the raised rate the old code
+        // produced: 2 at 30, 3 at 34. (Under the stacked fractions these read 2/3, 1/2, 1/2.)
+        assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (3, 4));
+        assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (2, 3));
+        assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (2, 3));
         let kv = kv_per_token_from_measured(10_240, 36_000);
         assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
         assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
@@ -6046,6 +6205,26 @@ mod tests {
         assert!(!lane_over_its_knee(57_600, 2, 47_426, 4));
         let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
         assert!(!worth_it, "10% at the same lane count is still under the margin");
+    }
+
+    // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
+    // A cold boot launched 1 × 161,792 under a transient budget; the steady plan said
+    // 2 × 67,340 — a 17% LOSS of token-space — and token-space alone declined it every
+    // tick, so the roster's second coder lane could never appear at runtime, and the
+    // settled 1-lane geometry then capped every later boot. A plan with more lanes than
+    // are live is minds without a warm slot; that is evidence whatever the space says.
+    // Fewer or equal lanes is not this arm (the knee and the margin rule those), and a
+    // dead lane (0 live lanes) is recovery's job, never re-home's.
+    #[test]
+    fn a_roster_short_of_warm_slots_is_rehome_evidence_whatever_the_token_space_says() {
+        use super::{rehome_gain_evidence, roster_short_of_slots};
+        assert!(roster_short_of_slots(1, 2), "1 × 161k → 2 × 67k: a second warm slot for the roster");
+        let (_, _, _, by_space) = rehome_gain_evidence(161_792, 1, 67_340, 2);
+        assert!(!by_space, "token-space alone calls the second lane a loss — the arm above is what carries it");
+        assert!(roster_short_of_slots(2, 4), "2 × 40k → 4 × 20k: two more slots the roster asked for");
+        assert!(!roster_short_of_slots(2, 2), "the same count is the margin's business");
+        assert!(!roster_short_of_slots(8, 4), "fewer lanes is the knee's business");
+        assert!(!roster_short_of_slots(0, 2), "a dead lane is recovery, not re-home");
     }
 
     // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
@@ -6275,6 +6454,7 @@ mod tests {
             kv_per_token: 100_000, // ~0.2GB KV at 2048 ctx — small, not the binding term
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let candidate = footprint("devstral-24b", 14, 8);
         let incumbent = footprint("qwen-32b", 20, 10);
@@ -6307,6 +6487,17 @@ mod tests {
     // what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
     // 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
     // shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
+    // what this catches (#4230, BigMama's condition): with the plan's own reserve gone, a
+    // foundry's headroom of 1.0 must still stop at what Performance keeps — the serving
+    // process's fixed overhead is not in the footprint, and 100% of the ceiling is an OOM.
+    #[test]
+    fn a_foundry_headroom_of_one_still_keeps_the_process_overhead() {
+        use crate::provisioning::model_catalog::PowerMode;
+        assert_eq!(plan_fraction(1.0), PowerMode::Performance.serving_fraction());
+        assert!(plan_fraction(1.0) < 1.0);
+        assert_eq!(plan_fraction(0.8), 0.8, "the everyday default is the operator's own number");
+    }
+
     #[test]
     fn a_steady_hold_yields_to_a_large_shortfall_and_keeps_a_small_one() {
         let (live, _plan, gain, _) = rehome_gain_evidence(12_800, 8, 67_340, 3);
@@ -8342,6 +8533,7 @@ mod tests {
             kv_per_token: 100_000,
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let big = footprint("qwen3.8-27b", 17, 9);
         let tiny = footprint("qwen-0.5b", 1, 1);
@@ -8413,6 +8605,7 @@ mod tests {
             kv_per_token: 100_000,
             context_window: 32768,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         };
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);

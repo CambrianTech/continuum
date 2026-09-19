@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn ps_rows_parse_with_paths_and_kib_and_skip_garbage() {
         let out = "27893760 340 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/Support/fseventsd\n\
-                   7549952 60469 /Users/joel/.continuum/bin/llama-server\n\
+                   7549952 60469 /Users/someone/.continuum/bin/llama-server\n\
                    garbage line\n\
                    1024 1 launchd\n";
         let rows = parse_ps_rss(out);
