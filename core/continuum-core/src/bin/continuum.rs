@@ -2389,15 +2389,15 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     );
     println!(
         "deploy-consume: request={} running={} dirty={dirty} in_flight={build_in_flight} prior_failures={prior_failures} → {verdict:?}",
-        tip.as_deref().unwrap_or("none"),
-        running.as_deref().unwrap_or("none")
+        tip.as_deref().unwrap_or("none"), // unwrap_or: display only — "none" is the honest word for no request
+        running.as_deref().unwrap_or("none") // unwrap_or: display only — no core answering prints as "none"
     );
     match verdict {
         ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
         ConsumeVerdict::GaveUp => Err(format!(
             "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
              the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
-            tip.as_deref().unwrap_or("?")
+            tip.as_deref().unwrap_or("?") // unwrap_or: GaveUp is only returned with a tip present; "?" would mean the verdict lied
         )),
         ConsumeVerdict::RefuseDirty => Err(format!(
             "deploy-consume: {} has uncommitted work — a consumer never stashes an operator's \
@@ -2409,6 +2409,12 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             let attempt = async {
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
+                // The warm build locates tools/scripts/start-server.sh by walking UP FROM
+                // THE CWD, and a scheduled task starts in System32 — the same wall the
+                // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
+                // then finds no source"). The consumer knows the repo; it stands in it.
+                std::env::set_current_dir(&repo)
+                    .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 println!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display());
                 reboot(RebootOptions { service: true, ..Default::default() }).await
             }
@@ -4278,13 +4284,13 @@ mod tests {
         assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 3), ConsumeVerdict::GaveUp);
         // The ledger is per tip: a new tip starts at zero.
         let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture — a temp dir that cannot be made fails the test loudly
         let ledger = dir.join("deploy-consume-attempts.json");
         super::write_consume_failures(&ledger, "abc1234", 3);
         assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
         assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install);
+        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install); // unwrap: the valid case — an Err here IS the failure
         assert!(DeployConsumeOptions::parse(["--install".to_string(), "--uninstall".to_string()].into_iter()).is_err());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
     }
