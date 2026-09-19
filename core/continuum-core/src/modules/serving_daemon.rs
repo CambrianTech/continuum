@@ -948,6 +948,14 @@ pub fn settles_this_tick(cooling_before: u32, ready: bool, lanes: u32) -> bool {
     cooling_before == 1 && ready && lanes > 0
 }
 
+/// The model whose decode knee bounds the plan: the one a lane is serving, else the one
+/// this box served last (card 29e4ab34 — the boot window before a lane reports its model
+/// is not "no knee", it is the remembered model's knee). `remembered` is read lazily: it
+/// is a file, and it is only consulted in the boot window, never on every plan tick.
+pub fn knee_model(active: Option<String>, remembered: impl FnOnce() -> Option<String>) -> Option<String> {
+    active.or_else(remembered)
+}
+
 pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: bool) -> u32 {
     if overridden {
         return boot_floor.max(1);
@@ -1087,8 +1095,19 @@ impl ServingDaemonModule {
         // curve is the ceiling. 16 minds on 8 lanes decoded 7 t/s per stream against a
         // catalog 68 — a ten-times tax; with KV pages restoring from disk, fewer warm
         // slots is the restore economy, not starvation. `inference::decode_knee`.
+        // THE KNEE IS THE MODEL'S, NOT THE LANE'S (2026-09-19 17:20:35Z, the M5, card
+        // 29e4ab34): for the thirteen seconds between boot and the adopted lane reporting
+        // its model, `active_model` was None, so the knee read as unknown, the roster's 17
+        // runtimes went unclamped into the demand, the plan said 8 lanes under the
+        // transient budget and RELAUNCHED the warm adopted lane into 8 × 49k — then the
+        // 27B's knee of 2 arrived and it relaunched again to 2 × 67k. The knee is a
+        // property of the model on this box; when no lane has reported one yet, the model
+        // the box served last (the remembered geometry) is the one being planned for.
         let active_model = crate::inference::llama_server::current_serving().active_model;
-        let knee = active_model.as_deref().and_then(crate::inference::decode_knee::knee_for);
+        let model_for_knee = knee_model(active_model, || {
+            crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
+        });
+        let knee = model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -1112,7 +1131,7 @@ impl ServingDaemonModule {
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
             crate::probe!(
                 class = "serving.decode_knee.clamped",
-                model = %active_model.unwrap_or_default(), // unwrap_or_default: no model = no knee = the roster's own count, still worth one row
+                model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
                 clamped = clamped < lanes,
@@ -1402,8 +1421,12 @@ impl ServingDaemonModule {
                 );
             }
         }
+        let unified = matches!(
+            self.system.gpu_memory_mode(),
+            Some(crate::gpu::monitor::MemoryMode::Unified)
+        );
         HostBudget {
-            usable_bytes: (live as f64 * mode.serving_fraction()) as u64,
+            usable_bytes: plan_fill(live, mode.serving_fraction(), unified),
             perf_cores: perf_cores(),
         }
     }
@@ -4290,6 +4313,35 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
     })
 }
 
+/// The bytes the plan may fill out of the replace-myself budget `live` under a mode's
+/// fraction. On UNIFIED memory the serving pool and the pressure monitor measure the
+/// same bytes, so a fill to the mode's fraction can leave the box inside the Eco band:
+/// measured 2026-09-19 17:56–18:20Z on the M5 (64 GB, Comfort, budget 40 GB) — 2 × 67k
+/// (27 GB) became 3 × 67k (32 GB) the tick the fit allowed it, with zero slack; the
+/// compressor took 6 GB of other processes' pages, "external" read 15 → 23 GB, the budget
+/// fell 40 → 33, Eco entered, the plan collapsed to one lane at the floor and admission
+/// followed it: five minds on one of three slots for the hour. Comfort's 20% of a 40 GB
+/// budget is 8 GB — UNDER the 12 GiB Eco exit line — so a full Comfort fill is already
+/// inside the band. The plan therefore never fills within [`ECO_EXIT_BYTES`] of the
+/// budget on unified memory: the band the mode machinery already defines, one place,
+/// where #4230's removed 15% used to sit by accident. A box small enough that Eco's own
+/// fraction is the tighter bound keeps the mode alone (the band is absolute; the mode
+/// scales). Discrete VRAM is a different pool from host memory: the band does not apply.
+pub fn plan_fill(live: u64, fraction: f64, unified: bool) -> u64 {
+    use crate::provisioning::model_catalog::{PowerMode, ECO_EXIT_BYTES};
+    let by_mode = (live as f64 * fraction) as u64;
+    if !unified {
+        return by_mode;
+    }
+    let eco_floor = (live as f64 * PowerMode::Eco.serving_fraction()) as u64;
+    let above_band = live.saturating_sub(ECO_EXIT_BYTES);
+    if above_band > eco_floor {
+        by_mode.min(above_band)
+    } else {
+        by_mode
+    }
+}
+
 /// The fraction a production budget may hand the plan: the operator's headroom policy,
 /// never above what Performance keeps. Since #4230 the plan withholds nothing itself, so
 /// a foundry's `CONTINUUM_VRAM_HEADROOM=1.0` would otherwise size weights + KV + compute
@@ -6207,6 +6259,31 @@ mod tests {
         assert!(!worth_it, "10% at the same lane count is still under the margin");
     }
 
+    // what this catches (card 29e4ab34, the M5 2026-09-19 17:20:35Z): the thirteen-second
+    // boot window in which no lane has reported a model. The knee lookup must key on the
+    // remembered model then — otherwise the roster (17 runtimes) goes unclamped into the
+    // demand, the plan says 8 lanes under the transient budget, and the warm adopted lane
+    // is relaunched twice (8 × 49k, then 2 × 67k). A reported model still wins; a box
+    // that remembers nothing plans the roster, as before.
+    #[test]
+    fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
+        use crate::inference::decode_knee::knee_lanes;
+        let remembered = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
+        assert_eq!(knee_model(None, || remembered.clone()), remembered, "the boot window plans the last model");
+        let read = std::cell::Cell::new(false);
+        assert_eq!(
+            knee_model(Some("other".into()), || { read.set(true); remembered.clone() }).as_deref(),
+            Some("other"),
+            "a serving lane's model wins"
+        );
+        assert!(!read.get(), "with a lane serving, the remembered geometry (a file) is never read");
+        assert_eq!(knee_model(None, || None), None, "nothing remembered: the roster rules, as before");
+        // With the remembered model's knee (2 on the M5) the roster of 17 is clamped at boot;
+        // with none it is not — the first stair of the staircase.
+        assert_eq!(knee_lanes(17, Some(2)), 2);
+        assert_eq!(knee_lanes(17, None), 17);
+    }
+
     // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
     // A cold boot launched 1 × 161,792 under a transient budget; the steady plan said
     // 2 × 67,340 — a 17% LOSS of token-space — and token-space alone declined it every
@@ -6487,6 +6564,38 @@ mod tests {
     // what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
     // 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
     // shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
+    // what this catches (2026-09-19 17:56–18:20Z, the M5 at 3 lanes then 1): on unified
+    // memory a plan filled to Comfort's fraction sat inside the Eco band, the third lane
+    // went in with zero slack, the compressor's response read as co-consumer growth, and
+    // the plan collapsed. The fill on unified memory stops ECO_EXIT_BYTES short of the
+    // budget: the M5's 40.3 GB budget plans 2 × 67k (27.4 GB) and never 3; Eco's own
+    // fraction still rules when it is tighter; a small box keeps the mode alone; discrete
+    // VRAM is unchanged.
+    #[test]
+    fn a_unified_plan_never_fills_within_the_eco_band() {
+        use crate::cognition::serving_plan::ModelFootprint;
+        use crate::provisioning::model_catalog::{PowerMode, ECO_EXIT_BYTES};
+        let live = 40_300_000_000u64; // the M5 at rest: available 13.4 GB + serving 26.9 GB
+        let comfort = PowerMode::Comfort.serving_fraction();
+        let fill = plan_fill(live, comfort, true);
+        assert_eq!(fill, live - ECO_EXIT_BYTES, "the band, not the fraction, is the ceiling on the M5");
+        assert!(fill < (live as f64 * comfort) as u64);
+        assert_eq!(plan_fill(live, comfort, false), (live as f64 * comfort) as u64, "discrete VRAM: the mode alone");
+        let eco = PowerMode::Eco.serving_fraction();
+        assert_eq!(plan_fill(live, eco, true), (live as f64 * eco) as u64, "Eco is tighter than the band: Eco rules");
+        let small = 20_000_000_000u64;
+        assert_eq!(plan_fill(small, comfort, true), (small as f64 * comfort) as u64, "a small box: the band would leave less than Eco does; the mode alone");
+        // The M5's own fit at that ceiling: two 67k lanes of the 27B, never three.
+        let m5 = ModelFootprint {
+            model_id: "qwen-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+        };
+        let floor = 64_052; // typical prompt 51,242 × 1.25
+        assert!(m5.window_within(fill, 2) >= floor, "two lanes clear the floor: {}", m5.window_within(fill, 2));
+        assert!(m5.window_within(fill, 3) < floor, "three do not — the zero-slack third lane is what collapsed the box");
+        let by_mode = (live as f64 * comfort) as u64;
+        assert!(m5.window_within(by_mode, 3) >= floor, "under the bare fraction the third lane fit, with nothing to spare");
+    }
+
     // what this catches (#4230, BigMama's condition): with the plan's own reserve gone, a
     // foundry's headroom of 1.0 must still stop at what Performance keeps — the serving
     // process's fixed overhead is not in the footprint, and 100% of the ceiling is an OOM.
