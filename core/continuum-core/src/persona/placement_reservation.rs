@@ -204,12 +204,15 @@ pub async fn request_reservation(
     mind: Uuid,
 ) -> Result<PlacementReservationReport, String> {
     let now = crate::persona::trace::now_ms();
-    if let Some(left_ms) = ask_backoff_remaining(&ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()), peer, now) {
+    let faults = ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned backoff map is still a map of peer → until_ms; the worst a panicked holder leaves is one stale row, which expires by time
+    let remaining = ask_backoff_remaining(&faults, peer, now);
+    drop(faults);
+    if let Some(left_ms) = remaining {
         return Err(format!("seat {peer} faulted an ask {}s ago — not asked again for {}s", (ASK_BACKOFF_MS.saturating_sub(left_ms)) / 1000, left_ms / 1000));
     }
     let asked = send_reservation_ask(airc, peer, mind).await;
     if let Err(fault) = &asked {
-        note_ask_fault(&mut ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()), peer, now);
+        note_ask_fault(&mut ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()), peer, now); // unwrap_or_else: same map, same reason — a fault row written into a poisoned map still expires by time
         crate::probe!(
             class = "placement.reserve.backoff",
             peer = %peer,
