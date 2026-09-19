@@ -358,10 +358,34 @@ pub(super) fn caller_has_read_execute(sddl: &str, sid: &str) -> bool {
     granted
 }
 
-/// The install verb's options.
+/// What one arm of `install` found and did. The orchestrator sums these: a bare
+/// `install` exits non-zero only when drift remains after every arm has run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ArmReport {
+    /// Ways the arm's subject differed from the contract when read.
+    pub drift_before: usize,
+    /// Ways still differing after the arm ran (equal to `drift_before` under --check).
+    pub drift_after: usize,
+}
+
+impl ArmReport {
+    pub fn converged() -> Self {
+        Self::default()
+    }
+    pub fn read_only(drift: usize) -> Self {
+        Self { drift_before: drift, drift_after: drift }
+    }
+}
+
+/// The install verb's options. Bare `install` runs EVERY arm (Joel: "you want users
+/// to remember almost nothing"); naming arms restricts it to those.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct InstallOptions {
     pub supervisor: bool,
+    /// The CLI on PATH (`continuum`, `uu`) follows the installed release's CLI.
+    pub cli: bool,
+    /// The running core is the checkout's HEAD: build, stage, hand off when not.
+    pub core: bool,
     /// Report drift and change nothing (exit non-zero when drifted).
     pub check: bool,
     /// The elevated child: register from `plan`, exit. Never spawns another elevation.
@@ -379,6 +403,8 @@ impl InstallOptions {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--supervisor" if !options.supervisor => options.supervisor = true,
+                "--cli" if !options.cli => options.cli = true,
+                "--core" if !options.core => options.core = true,
                 "--check" if !options.check => options.check = true,
                 "--elevated" if !options.elevated => options.elevated = true,
                 "--plan" if options.plan.is_none() => {
@@ -392,8 +418,10 @@ impl InstallOptions {
                     }
                     options.plan_sha = Some(sha.to_ascii_lowercase());
                 }
-                "--supervisor" | "--check" | "--elevated" | "--plan" | "--plan-sha" => return Err(format!("duplicate option {arg}")),
-                _ => return Err(format!("unknown install option {arg}; use --supervisor [--check]")),
+                "--supervisor" | "--cli" | "--core" | "--check" | "--elevated" | "--plan" | "--plan-sha" => {
+                    return Err(format!("duplicate option {arg}"))
+                }
+                _ => return Err(format!("unknown install option {arg}; use --check, or name arms: --supervisor --core --cli")),
             }
         }
         if options.check && options.elevated {
@@ -402,11 +430,31 @@ impl InstallOptions {
         if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some() {
             return Err("install: --elevated, --plan and --plan-sha go together (the elevated child registers exactly one plan, bound by its digest)".to_string());
         }
-        if !options.supervisor {
-            return Err("install: name what to converge — `continuum install --supervisor` (the OS supervisor + deploy consumer)".to_string());
+        if options.elevated && (options.cli || options.core) {
+            return Err("install: the elevated child registers the supervisor plan only".to_string());
         }
         Ok(options)
     }
+
+    /// Bare `install` = every arm.
+    pub fn runs(&self, arm: Arm) -> bool {
+        let named = self.supervisor || self.cli || self.core;
+        !named
+            || match arm {
+                Arm::Supervisor => self.supervisor,
+                Arm::Core => self.core,
+                Arm::Cli => self.cli,
+            }
+    }
+}
+
+/// The arms of `install`, in the order they run: the supervisor must be prepared
+/// before a core can be handed to it; the slot's CLI is fresh only after a stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arm {
+    Supervisor,
+    Core,
+    Cli,
 }
 
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
@@ -529,7 +577,7 @@ fn receipt_path(plan: &Path) -> PathBuf {
 pub(super) async fn install_supervisor(
     check_only: bool,
     descriptor_cli: impl Fn(&str) -> Result<String, String>,
-) -> Result<(), String> {
+) -> Result<ArmReport, String> {
     let core = task_report(CORE_TASK).await?;
     if !core.present {
         return Err(format!(
@@ -550,19 +598,20 @@ pub(super) async fn install_supervisor(
     let before = drift(&core, &deploy, &plan);
     if before.is_empty() {
         println!(
-            "✓ supervisor already converged: {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {})",
+            "✓ supervisor: converged — {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {})",
             core.state, deploy.state
         );
-        return Ok(());
+        return Ok(ArmReport::converged());
     }
     for (task, d) in &before {
-        println!("  {task}: {d:?}");
+        println!("  supervisor: {task}: {d:?}");
     }
     if check_only {
-        return Err(format!(
-            "supervisor drifted from the contract in {} way(s); `continuum install --supervisor` converges it (one elevation)",
+        println!(
+            "✗ supervisor: drifted from the contract in {} way(s); `continuum install` converges it (one elevation)",
             before.len()
-        ));
+        );
+        return Ok(ArmReport::read_only(before.len()));
     }
     println!(
         "→ one elevation to register both tasks under the contract (S4U, boot / every {DEPLOY_EVERY_MIN} min); the core and builds stay unelevated"
@@ -612,10 +661,10 @@ pub(super) async fn install_supervisor(
         ));
     }
     println!(
-        "✓ supervisor converged: {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {}); the caller has read/execute on both",
+        "✓ supervisor: converged — {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {}); the caller has read/execute on both",
         core.state, deploy.state
     );
-    Ok(())
+    Ok(ArmReport { drift_before: before.len(), drift_after: 0 })
 }
 
 /// The elevated child: register exactly the plan, grant the caller read/execute,
@@ -881,7 +930,11 @@ mod tests {
     fn install_options_pair_elevated_with_a_plan() {
         let parse = |a: &[&str]| InstallOptions::parse(a.iter().map(|s| s.to_string()));
         assert!(parse(&["--supervisor"]).is_ok());
-        assert!(parse(&[]).is_err(), "install names what it converges");
+        let bare = parse(&[]).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        assert!([Arm::Supervisor, Arm::Core, Arm::Cli].iter().all(|a| bare.runs(*a)), "bare install runs every arm");
+        let one = parse(&["--cli"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        assert!(one.runs(Arm::Cli) && !one.runs(Arm::Core) && !one.runs(Arm::Supervisor), "naming an arm restricts to it");
+        assert!(parse(&["--cli", "--elevated", "--plan", "x", "--plan-sha", &"b".repeat(64)]).is_err(), "the elevated child is the supervisor's only");
         assert!(parse(&["--supervisor", "--elevated"]).is_err());
         assert!(parse(&["--supervisor", "--plan", "x.json"]).is_err());
         assert!(parse(&["--supervisor", "--elevated", "--plan", "x.json"]).is_err(), "a plan without its digest is unbound");
