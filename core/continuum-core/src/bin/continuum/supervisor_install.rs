@@ -457,6 +457,16 @@ pub(super) enum Arm {
     Cli,
 }
 
+impl Arm {
+    pub fn name(self) -> &'static str {
+        match self {
+            Arm::Supervisor => "supervisor",
+            Arm::Core => "core",
+            Arm::Cli => "cli",
+        }
+    }
+}
+
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
 /// document's own `encoding="UTF-16"` declaration.
 pub(super) fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
