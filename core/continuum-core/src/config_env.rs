@@ -86,6 +86,32 @@ pub fn read_all() -> Vec<(String, String)> {
     config_path().map(|p| read_all_from(&p)).unwrap_or_default()
 }
 
+/// Apply `config.env` to THIS process's environment, left to right (last assignment
+/// wins — shell `source` semantics). Called by the core server before its runtime is
+/// built, on EVERY boot, so a supervised launch (launchd / the Windows task, whose
+/// environment is fixed at install) and a direct `continuum start` see the same
+/// settings: edit the file, `reboot`, the new values run. Before this, the launcher
+/// applied the file to the child and a supervisor's plist froze it at install time
+/// (Fable, #4228 review: `SERVING_KV_CACHE_TYPE` edited → old value ran, silently).
+///
+/// # Safety contract
+/// Must run while the process is single-threaded — `set_var` races any concurrent
+/// `getenv`. The one caller is the first line of `main`, before tokio exists.
+pub fn apply_to_process() -> usize {
+    config_path().map(|p| apply_from(&p)).unwrap_or(0)
+}
+
+/// Path-taking core of [`apply_to_process`]. Returns how many assignments were applied.
+pub fn apply_from(path: &Path) -> usize {
+    let vars = read_all_from(path);
+    for (k, v) in &vars {
+        // SAFETY: the caller's contract — single-threaded, before any runtime or thread
+        // exists — is the condition under which set_var cannot race a reader.
+        unsafe { std::env::set_var(k, v) };
+    }
+    vars.len()
+}
+
 /// Path-taking core of [`read_all`] — testable without touching `$HOME`.
 /// THE parser for this format; [`read_from`] is a projection of it, so a fix to
 /// comment/quote handling can never apply to one reader and miss the other.
@@ -215,6 +241,23 @@ pub fn disk_headroom() -> f64 {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (Fable, #4228 review): a key present in config.env but absent
+    // from the launcher's environment must reach the core — the core applies the file
+    // itself, so a supervisor whose env was fixed at install cannot freeze a setting.
+    // Last assignment wins, as `source` would have it.
+    #[test]
+    fn the_core_applies_config_env_to_its_own_process_last_assignment_wins() {
+        let key = format!("CONTINUUM_CONFIG_ENV_APPLY_TEST_{}", std::process::id());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.env");
+        std::fs::write(&path, format!("# comment\n{key}=first\n{key}=\"second\"\n")).expect("write");
+        assert!(std::env::var(&key).is_err(), "not in the launcher's environment");
+        assert_eq!(super::apply_from(&path), 2);
+        assert_eq!(std::env::var(&key).as_deref(), Ok("second"));
+        // SAFETY: test-local key, removed by the test that set it.
+        unsafe { std::env::remove_var(&key) };
+    }
+
     use super::*;
 
     fn tmp_config() -> PathBuf {

@@ -184,9 +184,11 @@ impl SupervisionVerdict {
 }
 
 /// Everything the plist `continuum install` writes is built from — the binary as the
-/// command (audit #4223 item 7: no `bash -lc` wrapper; the launch environment is
-/// launchd's own `EnvironmentVariables` dict, computed by the SAME code the direct launch
-/// uses, so the supervised core and a `continuum start` core see one environment).
+/// command (audit #4223 item 7: no `bash -lc` wrapper). `env` is what launchd must
+/// carry for the exec to find its libraries and tools (PATH, the runtime library dirs);
+/// it is NOT `config.env` — that file is applied by the core to its own process on every
+/// boot (`config_env::apply_to_process`), so an edit followed by `reboot` takes effect
+/// under launchd exactly as it does on the direct path, with no re-install.
 pub struct PlistSpec<'a> {
     pub domain: &'a Domain,
     /// The artifact launchd execs — the slot `stage` writes into.
@@ -230,6 +232,11 @@ pub fn render_plist(spec: &PlistSpec<'_>) -> String {
        Unconditional KeepAlive would relaunch a deliberate stop, fighting the developer
        AND an operator draining a grid node. -->
   <key>KeepAlive</key><dict><key>Crashed</key><true/></dict>
+  <!-- The serving lanes (llama-server) share the core's process group. launchd's
+       default on a job exit is to SIGKILL the rest of that group, which would turn
+       every kickstart and every heal into a cold model load; `reboot` leaves a lane
+       up for the next core to ADOPT, and this keeps that true under launchd. -->
+  <key>AbandonProcessGroup</key><true/>
   <key>WorkingDirectory</key><string>{data}</string>
   <key>StandardOutPath</key><string>{out}</string>
   <key>StandardErrorPath</key><string>{err}</string>
@@ -298,14 +305,29 @@ pub mod live {
     /// job as ORPHANED on that missing file (2026-09-19 14:1xZ). The socket's holder is
     /// the truth; a pidfile is a note the launcher left.
     pub fn serving_core_pid(socket: &str) -> Option<u32> {
+        // Anchored: on a node still on the script path the core's argv also appears
+        // inside `caffeinate -s -i …continuum-core-server …sock`, a lower pid that an
+        // unanchored match returned first (Fable, #4228 review).
         let out = Command::new("pgrep")
-            .args(["-f", &format!("continuum-core-server {socket}")])
+            .args(["-f", &format!("^([^ ]*/)?continuum-core-server {}$", regex_escape(socket))])
             .output()
             .ok()?;
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| l.trim().parse::<u32>().ok())
             .next()
+    }
+
+    /// Escape a path for the ERE `pgrep -f` matches: the socket path is data, not pattern.
+    fn regex_escape(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if "\\.^$|()[]{}*+?".contains(c) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
     }
 
     /// The pid launchd holds for the job right now, if running.
@@ -576,6 +598,10 @@ mod tests {
         assert!(daemon.contains("<key>UserName</key><string>j</string>"), "a LaunchDaemon runs as the operator");
         assert!(daemon.contains("<key>ORT_DYLIB_PATH</key><string>/l/x&amp;y.dylib</string>"), "escaped, in launchd's dict");
         assert!(daemon.contains("<key>Crashed</key><true/>") && daemon.contains("<key>RunAtLoad</key><true/>"));
+        assert!(
+            daemon.contains("<key>AbandonProcessGroup</key><true/>"),
+            "a kickstart or a heal must not SIGKILL the serving lanes in the core's process group (M5: a cold 27B load per deploy)"
+        );
         let agent = spec(&Domain::Gui(501));
         assert!(!agent.contains("UserName"), "an agent already runs as its user");
         assert_eq!(slot_from_plist(&agent), Some(slot));

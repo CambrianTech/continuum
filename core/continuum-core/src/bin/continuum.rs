@@ -2662,10 +2662,13 @@ async fn install(options: InstallOptions) -> Result<(), String> {
         use launchd::{live, Domain};
         let artifact = resolve_core_artifact()?;
         let socket = socket_path();
-        // The same environment a `continuum start` child gets — config.env, ORT, the
-        // runtime library dirs — read off a Command so there is one computation of it.
+        // What launchd must carry for the exec to find its libraries: ORT and the runtime
+        // library dirs, read off a Command so it is the direct launch's computation. NOT
+        // config.env — the core applies that file to itself on every boot
+        // (`config_env::apply_to_process`); frozen into the plist it would outlive an edit
+        // until the next `install` (Fable, #4228 review).
         let mut probe = direct_core_command(&artifact, &socket);
-        apply_core_runtime_env(&mut probe);
+        apply_runtime_library_path(&mut probe);
         let mut env: Vec<(String, String)> = probe
             .get_envs()
             .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
@@ -2699,6 +2702,14 @@ async fn install(options: InstallOptions) -> Result<(), String> {
             }
         }
         let job = live::install(domain, &artifact, &socket, &env)?;
+        // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a
+        // node that already has one this REGISTERS what is in the slot; a new build reaches
+        // the slot through `continuum reboot` (stage + kickstart), or `CONTINUUM_CORE_BIN`.
+        if artifact.canonicalize().ok() == job.slot.canonicalize().ok() {
+            println!("  artifact: the slot's own binary (a new build gets there through `continuum reboot`, or set CONTINUUM_CORE_BIN)");
+        } else {
+            println!("  artifact: staged {} into the slot", artifact.display());
+        }
         println!(
             "✓ registered {} → {} {socket} (plist {})",
             job.domain.target(),
