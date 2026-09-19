@@ -270,8 +270,12 @@ pub enum Verdict {
     Reading { acts: u64 },
     /// Residents, no acts at all — and WHY, as far as the node can read it: with no
     /// working round there is nothing to act on (a round is owed, not lanes); with
-    /// rounds and no acts the seating is the question (`bench.round.pull_none`).
-    Idle { resident: u64, rounds_working: u64, standing_enabled: bool },
+    /// rounds and the hour's pulls DEFERRED on the lanes the minds were seated and
+    /// queued (the lanes are the block — M5 2026-09-19 13:0xZ: 4 minds, 1 lane, 0 lane
+    /// grants, 398 of 398 pulls deferred, and the line said "a seating question");
+    /// with rounds and pulls that found nothing, the seating is the question
+    /// (`bench.round.pull_none` names it per mind).
+    Idle { resident: u64, rounds_working: u64, standing_enabled: bool, lane_bound: bool },
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
     Slow { writes: u64, resident: u64 },
@@ -316,6 +320,10 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
             resident: h.resident,
             rounds_working: h.rounds_working,
             standing_enabled: h.standing_enabled,
+            // The same bar the lane-bound rest uses, so "queued on the lanes" means one
+            // thing everywhere: a fair sample of pulls, four in five deferred.
+            lane_bound: h.pulls >= LANE_BOUND_MIN_PULLS
+                && (h.pulls_deferred as f64) >= LANE_BOUND_DEFERRED_SHARE * (h.pulls as f64),
         };
     }
     if h.lanes > 0 && h.resident > h.lanes * MINDS_PER_LANE_STARVED_ABOVE {
@@ -346,13 +354,18 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         Verdict::Reading { acts } => {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
-        Verdict::Idle { resident, rounds_working: 0, standing_enabled: false } => format!(
+        Verdict::Idle { resident, rounds_working: 0, standing_enabled: false, .. } => format!(
             "IDLE: {resident} resident, no acts — NO ROUND on this node and the standing autopilot is OFF \
              (`benchmark/standing --enabled true`); owed: a round, not lanes"
         ),
-        Verdict::Idle { resident, rounds_working: 0, standing_enabled: true } => format!(
+        Verdict::Idle { resident, rounds_working: 0, standing_enabled: true, .. } => format!(
             "IDLE: {resident} resident, no acts — NO ROUND on this node with standing ON; the autopilot's \
              skip reason is on the probe stream (bench.standing.skipped)"
+        ),
+        Verdict::Idle { resident, rounds_working, lane_bound: true, .. } => format!(
+            "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — {} of {} pulls deferred on \
+             {} lane(s), {} lane grants: the minds are seated and queued; the lanes are the block, not the seating",
+            h.pulls_deferred, h.pulls, h.lanes, h.lanes_granted
         ),
         Verdict::Idle { resident, rounds_working, .. } => format!(
             "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — a seating question \
@@ -720,7 +733,7 @@ mod tests {
         let idle = |rounds_working: u64, standing_enabled: bool| CitizenHealth { rounds_working, standing_enabled, ..h(8, 2, 0, 0) };
         let off = idle(0, false);
         let v = verdict(&off);
-        assert_eq!(v, Verdict::Idle { resident: 8, rounds_working: 0, standing_enabled: false });
+        assert_eq!(v, Verdict::Idle { resident: 8, rounds_working: 0, standing_enabled: false, lane_bound: false });
         let said = line(&off, &v);
         assert!(said.contains("NO ROUND") && said.contains("autopilot is OFF") && said.contains("benchmark/standing"), "{said}");
         assert!(said.contains("not lanes"), "the owed thing is named: {said}");
@@ -731,6 +744,18 @@ mod tests {
         let said = line(&seated, &verdict(&seated));
         assert!(said.contains("1 working round") && said.contains("seating"), "{said}");
         assert!(!said.contains("autopilot"), "with a round in flight the switch is not the story: {said}");
+        // The M5's hour (2026-09-19 13:0xZ): 4 minds, 1 lane, 0 grants, 398/398 pulls
+        // deferred, 7 rounds. Seated and queued — the lanes, not the seating.
+        let queued = CitizenHealth { pulls: 398, pulls_deferred: 398, lanes: 1, lanes_granted: 0, ..idle(7, true) };
+        let v = verdict(&queued);
+        assert!(matches!(v, Verdict::Idle { lane_bound: true, .. }), "{v:?}");
+        let said = line(&queued, &v);
+        assert!(said.contains("398 of 398 pulls deferred") && said.contains("lanes are the block"), "{said}");
+        assert!(!said.contains("seating question"), "queued minds are not a seating question: {said}");
+        // Below the evidence floor (a handful of pulls) it stays a seating question — one
+        // deferred pull is not a lane-bound hour.
+        let thin = CitizenHealth { pulls: 3, pulls_deferred: 3, lanes: 1, ..idle(7, true) };
+        assert!(matches!(verdict(&thin), Verdict::Idle { lane_bound: false, .. }));
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -742,7 +767,7 @@ mod tests {
         assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(
             verdict(&h(16, 6, 0, 0)),
-            Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true }
+            Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true, lane_bound: false }
         );
         assert_eq!(verdict(&h(16, 6, 39, 4)), Verdict::Healthy);
         // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
