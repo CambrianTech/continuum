@@ -1185,6 +1185,69 @@ impl PreparedCoreService {
         }
     }
 
+    /// Stage a freshly built artifact INTO the slot the supervisor is bound to, and
+    /// return the staged core as the candidate the handoff validates. The supervisor's
+    /// descriptor names one artifact path and the CLI beside it; a warm build lands in
+    /// the cargo target dir. This is the copy every hand deploy did before
+    /// `--prebuilt <slot>` — the old files move aside as `.prev.exe` (a running exe can
+    /// be renamed, never overwritten), the new ones copy in, and the slot's CLI follows
+    /// the core so the two never drift (#422's STALE CLI). Nothing here stops the core.
+    async fn stage(built: &PrebuiltCore, socket: &str) -> Result<PrebuiltCore, String> {
+        #[cfg(not(windows))]
+        {
+            let _ = (built, socket);
+            Err("reboot --service is supported only on Windows".to_string())
+        }
+        #[cfg(windows)]
+        {
+            let task = Self::query().await?;
+            let description: CoreServiceDescription = serde_json::from_str(&task.description)
+                .map_err(|e| format!("ContinuumCore is not prepared by the current installer: {e}; rerun the installer"))?;
+            let slot_core = PathBuf::from(&description.artifact);
+            let slot_cli = PathBuf::from(&description.cli);
+            let built_cli = built
+                .path
+                .with_file_name("continuum.exe");
+            let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
+                if to.exists() {
+                    let prev = to.with_extension("prev.exe");
+                    let _ = std::fs::remove_file(&prev);
+                    std::fs::rename(to, &prev)
+                        .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
+                }
+                std::fs::copy(from, to)
+                    .map(|_| ())
+                    .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
+            };
+            move_aside_and_copy(&built.path, &slot_core)?;
+            if built_cli.is_file() {
+                move_aside_and_copy(&built_cli, &slot_cli)?;
+            } else {
+                println!(
+                    "⚠ no CLI beside the warm artifact ({}) — the slot's CLI stays as it was",
+                    built_cli.display()
+                );
+            }
+            let staged_path = slot_core
+                .canonicalize()
+                .map_err(|e| format!("staged artifact cannot be resolved: {e}"))?;
+            let sha = binary_build_sha(&staged_path).await?;
+            if sha != built.build_sha {
+                return Err(format!(
+                    "staged artifact reports build {sha}, the warm build was {} — refusing the handoff",
+                    built.build_sha
+                ));
+            }
+            println!(
+                "✓ staged build {} into the supervisor's slot: {}",
+                built.build_sha,
+                staged_path.display()
+            );
+            let _ = socket;
+            PrebuiltCore::from_report(staged_path, sha, None)
+        }
+    }
+
     async fn prepare(candidate: &PrebuiltCore, socket: &str) -> Result<Self, String> {
         #[cfg(not(windows))]
         {
@@ -1371,6 +1434,14 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
     cmd.env("CONTINUUM_BUILD_ONLY", "1")
         .env("CONTINUUM_BUILD_RECEIPT", &receipt.0)
         .stdin(Stdio::null());
+    // Under the deploy consumer there is no terminal: the build's output goes to the
+    // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
+    // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
+    if let Some(log) = deploy_log_file() {
+        if let Ok(err) = log.try_clone() {
+            cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err));
+        }
+    }
     let status = cmd.status().map_err(|e| {
         format!("warm build could not start: {e}; leaving the running core untouched")
     })?;
@@ -1564,10 +1635,18 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                     started.elapsed().as_secs()
                 );
                 // `--service` with no hand-supplied artifact: the warm build's artifact is
-                // the one the supervisor takes — prepared here, before the old core stops.
+                // the one the supervisor takes — STAGED into the slot the supervisor is
+                // bound to, then prepared, all before the old core stops. The supervisor
+                // validates the exact artifact path in its descriptor; a warm build lands
+                // in the cargo target dir, so without this step the handoff refused
+                // ("does not select the requested artifact") — measured 2026-09-19
+                // 05:1xZ, the 5090's first unattended deploy: a 1,145 s build, validated,
+                // then refused at the door. Every hand deploy had done this copy by hand.
                 if options.service && service.is_none() {
-                    if let Some(candidate) = prebuilt.as_ref() {
-                        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
+                    if let Some(built) = prebuilt.take() {
+                        let staged = PreparedCoreService::stage(&built, &socket).await?;
+                        service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
+                        prebuilt = Some(staged);
                     }
                 }
             }
@@ -2352,6 +2431,26 @@ fn deploy_consume_task_uninstall() -> Result<(), String> {
     Ok(())
 }
 
+/// The consumer's log — the only place its output can land, since the scheduled task
+/// has no stdout. Set once by `deploy-consume`; read by the warm build to redirect
+/// the build's own output there too.
+static DEPLOY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn deploy_log_file() -> Option<std::fs::File> {
+    let path = DEPLOY_LOG.get()?;
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+/// Say it on stdout AND in the log, stamped.
+fn deploy_note(line: &str) {
+    println!("{line}");
+    if let Some(mut f) = deploy_log_file() {
+        use std::io::Write;
+        let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+        let _ = writeln!(f, "{stamp} {line}");
+    }
+}
+
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     if !cfg!(windows) {
         return Err(
@@ -2366,6 +2465,14 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         return deploy_consume_task_uninstall();
     }
     let request_path = deploy_request_path()?;
+    let _ = DEPLOY_LOG.set(
+        continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+            .join("logs")
+            .join("deploy-consume.log"),
+    );
+    if let Some(dir) = DEPLOY_LOG.get().and_then(|p| p.parent()) {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let tip = read_deploy_request_tip(&request_path);
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
@@ -2387,11 +2494,11 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         build_in_flight,
         prior_failures,
     );
-    println!(
+    deploy_note(&format!(
         "deploy-consume: request={} running={} dirty={dirty} in_flight={build_in_flight} prior_failures={prior_failures} → {verdict:?}",
         tip.as_deref().unwrap_or("none"), // unwrap_or: display only — "none" is the honest word for no request
         running.as_deref().unwrap_or("none") // unwrap_or: display only — no core answering prints as "none"
-    );
+    ));
     match verdict {
         ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
         ConsumeVerdict::GaveUp => Err(format!(
@@ -2415,20 +2522,21 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // then finds no source"). The consumer knows the repo; it stands in it.
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
-                println!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display());
+                deploy_note(&format!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display()));
                 reboot(RebootOptions { service: true, ..Default::default() }).await
             }
             .await;
             match &attempt {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&attempts_path);
+                    deploy_note(&format!("✓ deploy-consume: {tip} handed to the supervisor"));
                 }
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
-                    println!(
+                    deploy_note(&format!(
                         "deploy-consume: attempt {} of {CONSUME_MAX_ATTEMPTS} for {tip} failed: {why}",
                         prior_failures + 1
-                    );
+                    ));
                 }
             }
             attempt
