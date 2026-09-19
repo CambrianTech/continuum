@@ -5175,6 +5175,7 @@ fn footprint_from_parts(
         // entry with a bogus 0 window can't degrade below runnable.
         context_window: context_window.max(MIN_SERVE_CTX),
         capability_rank,
+        fixed_per_lane_bytes: 0,
     })
 }
 
