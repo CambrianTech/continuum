@@ -278,6 +278,18 @@ impl GridCapacityLedger {
             .collect()
     }
 
+    /// The peer ids the grid hears THIS process under — one per scope it beacons in.
+    /// The durable half of the self-seat fix (card 2500d2f1): whatever id a scope
+    /// stamped on our offer is an id of ours.
+    pub fn own_peer_ids(&self) -> Vec<Uuid> {
+        let mine = this_process_origin();
+        self.heard
+            .iter()
+            .filter(|r| r.value().offer.is_from(mine))
+            .map(|r| *r.key())
+            .collect()
+    }
+
     pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
         self.heard
             .iter()
@@ -346,6 +358,9 @@ mod tests {
         let foreign: Vec<Uuid> = ledger.foreign_offers_with_age().into_iter().map(|(p, _, _)| p).collect();
         assert_eq!(foreign.len(), 2);
         assert!(!foreign.contains(&me_as_scope_a) && !foreign.contains(&me_as_scope_b));
+        let mut own = ledger.own_peer_ids();
+        own.sort();
+        assert_eq!(own, vec![me_as_scope_a, me_as_scope_b], "every id the grid hears me under is mine");
         let elsewhere = ledger.residents_elsewhere(None, 2_000);
         assert_eq!((elsewhere.peers, elsewhere.residents), (1, 2), "only the other node's residents are elsewhere");
     }

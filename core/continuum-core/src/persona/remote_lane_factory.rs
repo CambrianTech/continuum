@@ -137,6 +137,29 @@ impl RemoteLaneAdapterFactory {
     }
 }
 
+impl RemoteLaneAdapterFactory {
+    /// STAGE B: every persona runs on a switch, born at HOME, so the placement pass can
+    /// offload her to a peer's free lane later with no ids typed by anyone.
+    async fn born_home(
+        &self,
+        profile: &PersonaInferenceProfile,
+        home: PersonaHome,
+    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
+        let local = self.inner.build_adapter(profile).await?;
+        let switch = Arc::new(crate::persona::placement_switch::PlacementSwitch::home(
+            profile.persona_id,
+            profile.persona_name.clone(),
+            Some(local),
+            Arc::clone(&self.inner),
+            profile.clone(),
+            Some(Arc::clone(&self.airc)),
+            Some(home),
+        ));
+        crate::persona::placement_switch::register(Arc::clone(&switch));
+        Ok(switch)
+    }
+}
+
 #[async_trait::async_trait]
 impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
     async fn build_adapter(
@@ -161,20 +184,7 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         })?;
 
         let Some(over) = over.filter(|o| o.is_remote()) else {
-            // STAGE B: every persona runs on a switch, born at HOME, so the placement pass
-            // can offload her to a peer's free lane later with no ids typed by anyone.
-            let local = self.inner.build_adapter(profile).await?;
-            let switch = Arc::new(crate::persona::placement_switch::PlacementSwitch::home(
-                profile.persona_id,
-                profile.persona_name.clone(),
-                Some(local),
-                Arc::clone(&self.inner),
-                profile.clone(),
-                Some(Arc::clone(&self.airc)),
-                Some(home.clone()),
-            ));
-            crate::persona::placement_switch::register(Arc::clone(&switch));
-            return Ok(switch);
+            return self.born_home(profile, home).await;
         };
 
         // From here she is explicitly assigned to a peer. Every failure below is an
@@ -191,6 +201,23 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
                 profile.persona_name, over.model_id
             )
         })?;
+
+        // A record naming THIS node as her remote seat is the old self-spill written down
+        // (card 2500d2f1: the M5 bound Aris, Solomon and Aiko to its own project-scope id
+        // and every boot bore them on a loopback lane, then "fell them home"). Not an
+        // assignment to honour: retire it and bear her at home.
+        if crate::persona::self_peer::is_this_node(peer) {
+            let cleared = PersonaModelOverride::clear(&home).map_err(|e| e.to_string());
+            crate::probe!(
+                class = "persona.placement.self_seat_retired",
+                persona = %profile.persona_name,
+                peer = %peer,
+                cleared = cleared.is_ok(),
+                error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
+                "her durable override named THIS node as her remote seat — retired at build; she is born home"
+            );
+            return self.born_home(profile, home).await;
+        }
 
         let airc = self.airc.get().ok_or_else(|| {
             format!(
@@ -404,6 +431,30 @@ mod tests {
         assert!(
             err.contains("airc is not attached"),
             "must say WHY it could not be honoured: {err}"
+        );
+    }
+
+    // what this catches (card 2500d2f1, the M5 2026-09-19): a durable override naming
+    // one of THIS node's own ids as her remote seat. With no airc attached a remote seat
+    // would REFUSE (the test above); a seat that is herself must instead be retired and
+    // she born home — the local factory reached once, the record gone so the next boot
+    // does not bear her on a loopback lane again.
+    #[tokio::test]
+    async fn an_override_naming_this_node_is_retired_at_build_and_she_is_born_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (f, calls) = factory_over(tmp.path()); // cell is empty: a real remote seat would refuse here
+        let home = home_for(tmp.path(), "Aris");
+        let me = uuid::Uuid::new_v4();
+        crate::persona::self_peer::register(me);
+        PersonaModelOverride::new_remote("ggml-org/Qwen3.8-27B-GGUF", Some("placement:fleet".to_string()), 1, me.to_string())
+            .write(&home)
+            .expect("write override");
+
+        let _ = f.build_adapter(&profile("Aris")).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "born home: the local factory is reached once");
+        assert!(
+            PersonaModelOverride::load(&home).expect("readable").is_none(),
+            "the record naming her own node as a seat is retired"
         );
     }
 
