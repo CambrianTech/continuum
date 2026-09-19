@@ -235,6 +235,16 @@ impl PlacementSwitch {
         }
     }
 
+    /// HER airc — the wire her generates ride (`go_remote` builds the transport on it, in
+    /// her current room, where the seat's core listens). A reservation ask must ride the
+    /// same wire: sent on the OPERATOR's airc it left in the operator's current room (the
+    /// academy on the M5, 2026-09-19 01:4xZ) where the seat never hears it — six asks,
+    /// six "unanswered within 30 s", every return refused, every spill impossible. Fail
+    /// closed was the right default; this is the right wire. `None` = no airc on this node.
+    pub fn airc_handle(&self) -> Option<Arc<Airc>> {
+        self.airc.as_ref().and_then(|c| c.get().cloned())
+    }
+
     pub fn seat(&self) -> Seat {
         if self.seat.load(Ordering::Relaxed) == Seat::Home as u8 { Seat::Home } else { Seat::Remote }
     }
@@ -640,9 +650,9 @@ pub async fn follow_the_fleet(
         // The seat grants what it has (`free_slots_live` − outstanding grants); the rest
         // stay home until its beacon shows room. Refused or unanswered = Stay, receipted.
         if mv == PlacementMove::ReturnRemote {
-            let asked = match crate::persona::operator_peer::operator_airc() {
+            let asked = match sw.airc_handle() {
                 Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, sw.persona_id()).await,
-                None => Err("no airc handle on this node — cannot ask the seat".to_string()),
+                None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             match asked {
                 Ok(g) if g.granted => crate::probe!(
@@ -692,14 +702,14 @@ pub async fn follow_the_fleet(
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();
-        let airc = crate::persona::operator_peer::operator_airc();
         for (mind, peer, model) in moves {
             let Some(sw) = by_id.get(&mind) else { continue };
-            // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves. Refused or
-            // unanswered = she stays home this tick, receipted (S1b).
-            let asked = match airc.as_ref() {
-                Some(a) => crate::persona::placement_reservation::request_reservation(a, peer, mind).await,
-                None => Err("no airc handle on this node — cannot ask the seat".to_string()),
+            // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves — on HER wire, in
+            // her room, where the seat's core listens. Refused or unanswered = she stays
+            // home this tick, receipted (S1b).
+            let asked = match sw.airc_handle() {
+                Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, mind).await,
+                None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             let grant = match asked {
                 Ok(g) if g.granted => g,
