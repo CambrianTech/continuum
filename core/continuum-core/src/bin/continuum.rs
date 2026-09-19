@@ -98,6 +98,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "ui"
                 | "orphans"
                 | "deploy-verify"
+                | "deploy-consume"
                 | "verify"
                 | "checkpoint"
                 | "service-host"
@@ -242,6 +243,7 @@ async fn run() -> Result<(), CliError> {
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
         "deploy-verify" | "verify" => verify_deployed_build(false).await,
+        "deploy-consume" => deploy_consume(DeployConsumeOptions::parse(args)?).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -943,9 +945,10 @@ impl RebootOptions {
                 }
             }
         }
-        if options.service && options.prebuilt.is_none() {
-            return Err("reboot --service requires --prebuilt <path>".to_string());
-        }
+        // `--service` alone (2026-09-19, card 82af11f5): the warm build produces the
+        // artifact and the supervisor takes it — the path the deploy consumer runs
+        // unattended. Until now `--service` demanded a hand-supplied `--prebuilt`,
+        // which is exactly why the 5090 ran whatever a hand last typed.
         if options.service && !cfg!(windows) {
             return Err("reboot --service is supported only on Windows".to_string());
         }
@@ -1400,11 +1403,13 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     }
     let force = options.force;
     let socket = socket_path();
-    let service = if options.service {
-        let candidate = prebuilt.as_ref().ok_or("--service requires --prebuilt")?;
-        Some(PreparedCoreService::prepare(candidate, &socket).await?)
-    } else {
-        None
+    // With a hand-supplied artifact the supervisor is prepared NOW, while the old core
+    // still serves (its loader + provenance checked before anything stops). Without
+    // one, it is prepared right after the warm build below — same check, same
+    // ordering, the artifact simply comes from the build instead of a hand.
+    let mut service = match (options.service, prebuilt.as_ref()) {
+        (true, Some(candidate)) => Some(PreparedCoreService::prepare(candidate, &socket).await?),
+        _ => None,
     };
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
     // the policy AND the path). A core swap kills spawned trainer children
@@ -1558,8 +1563,25 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                     "✓ warm artifact validated in {}s — stopping now for direct artifact handoff",
                     started.elapsed().as_secs()
                 );
+                // `--service` with no hand-supplied artifact: the warm build's artifact is
+                // the one the supervisor takes — prepared here, before the old core stops.
+                if options.service && service.is_none() {
+                    if let Some(candidate) = prebuilt.as_ref() {
+                        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
+                    }
+                }
             }
-            Err(why) => println!("▶ no warm build: {why} — stopping first, then building"),
+            Err(why) => {
+                if options.service {
+                    // The supervisor path has no source-launch fallback: a service handoff
+                    // without an artifact would be the child-of-launcher launch this card
+                    // (82af11f5) exists to end. Say so and leave the running core standing.
+                    return Err(format!(
+                        "reboot --service: no artifact to hand the supervisor — {why}; the running core stands"
+                    ));
+                }
+                println!("▶ no warm build: {why} — stopping first, then building")
+            }
         }
     }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
@@ -2095,6 +2117,235 @@ fn record_repo_checkout() {
     };
     if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
         continuum_core::modules::repo_registry::record(&repo, &root);
+    }
+}
+
+// =============================================================================
+// deploy-consume — the ACTION half of the deploy seam, on Windows (card 82af11f5)
+// =============================================================================
+//
+// The DECISION half is Rust and runs on every node: `DeployTrackerModule` records a
+// `DeployRequest` (state/deploy-request.json) when canary's tip is green and not the
+// running build. The ACTION half was per-platform: on the Macs a launchd script
+// consumes the request and runs `continuum reboot`; on Windows nothing did, so the
+// 5090 ran whatever a hand last typed — every merged fix sat unfelt on the one seat
+// that mattered (2026-09-18: five hand deploys in a day, Fable's count).
+//
+// This verb IS that consumer, in Rust, run by its own scheduled task
+// (`ContinuumDeploy`, the supervisor's sibling): read the request → nothing owed if
+// the running build already is the tip → refuse a dirty checkout (the same law the
+// tracker's RefuseDirty applies; a consumer that stashes an operator's work is a
+// consumer that loses it) → check the tip out detached → `reboot --service`, whose
+// warm build is RAM-gated (`warm_build_allowed`, Fable's build-path rule) and whose
+// handoff goes to the ContinuumCore supervisor, never a child of this process. The
+// deploy claim it takes is what the tracker's #4187 reconcile reads; `deploy.settled`
+// on this node with no human in the loop is the receipt.
+
+/// How often the supervisor's sibling task asks whether a deploy is owed.
+const DEPLOY_CONSUME_EVERY_MIN: u32 = 10;
+const DEPLOY_CONSUME_TASK: &str = "ContinuumDeploy";
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DeployConsumeOptions {
+    install: bool,
+    uninstall: bool,
+}
+
+impl DeployConsumeOptions {
+    fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
+        let mut options = Self::default();
+        for arg in args {
+            match arg.as_str() {
+                "--install" if !options.install => options.install = true,
+                "--uninstall" if !options.uninstall => options.uninstall = true,
+                "--install" | "--uninstall" => return Err(format!("duplicate option {arg}")),
+                _ => {
+                    return Err(format!(
+                        "unknown deploy-consume option {arg}; use --install or --uninstall"
+                    ))
+                }
+            }
+        }
+        if options.install && options.uninstall {
+            return Err("deploy-consume: --install and --uninstall are exclusive".to_string());
+        }
+        Ok(options)
+    }
+}
+
+/// What the consumer decided about one request — PURE, so the vocabulary is pinned by
+/// a test without a checkout, a core, or a scheduler.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsumeVerdict {
+    /// No request stands: nothing owed.
+    NothingOwed,
+    /// The running build already is the requested tip: the tracker retires it.
+    AlreadyRunning,
+    /// The checkout has uncommitted work: never stash an operator's tree.
+    RefuseDirty,
+    /// Check the tip out and hand it to `reboot --service`.
+    Deploy,
+}
+
+fn consume_verdict(
+    request_tip: Option<&str>,
+    running_sha: Option<&str>,
+    checkout_dirty: bool,
+) -> ConsumeVerdict {
+    let Some(tip) = request_tip else {
+        return ConsumeVerdict::NothingOwed;
+    };
+    if running_sha.is_some_and(|running| {
+        // git's own floor for an unambiguous short sha; shorter as a prefix of longer.
+        let (short, long) = if tip.len() <= running.len() { (tip, running) } else { (running, tip) };
+        short.len() >= 7 && long.starts_with(short)
+    }) {
+        return ConsumeVerdict::AlreadyRunning;
+    }
+    if checkout_dirty {
+        return ConsumeVerdict::RefuseDirty;
+    }
+    ConsumeVerdict::Deploy
+}
+
+fn deploy_request_path() -> Result<PathBuf, String> {
+    // The same home the tracker writes under (`resolve_continuum_root`: CONTINUUM_HOME
+    // or ~/.continuum) — one resolver, so the consumer reads where the decision wrote.
+    Ok(continuum_core::modules::persona_instance_manager::resolve_continuum_root()
+        .join("state")
+        .join("deploy-request.json"))
+}
+
+fn read_deploy_request_tip(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Value>(&text)
+        .ok()?
+        .get("tip_sha")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// The checkout the tracker decides over: `CONTINUUM_TRACK_REPO_DIR`, else the source
+/// root this binary was built from — the same resolution the tracker uses.
+fn tracked_repo_dir() -> Result<PathBuf, String> {
+    continuum_core::config_env::read("CONTINUUM_TRACK_REPO_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .map(|p| p.to_path_buf())
+        })
+        .filter(|p| p.join(".git").exists())
+        .ok_or_else(|| {
+            "deploy-consume: no checkout to deploy from (set CONTINUUM_TRACK_REPO_DIR)".to_string()
+        })
+}
+
+fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+async fn running_build_sha() -> Option<String> {
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection()
+            .commands()
+            .execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn deploy_consume_task_install() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("deploy-consume: own path: {e}"))?;
+    let action = format!("\"{}\" deploy-consume", exe.display());
+    let out = std::process::Command::new("schtasks")
+        .args([
+            "/create", "/tn", DEPLOY_CONSUME_TASK, "/sc", "minute", "/mo",
+            &DEPLOY_CONSUME_EVERY_MIN.to_string(), "/tr", &action, "/f",
+        ])
+        .output()
+        .map_err(|e| format!("schtasks: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "deploy-consume --install: schtasks refused: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    println!(
+        "✓ {DEPLOY_CONSUME_TASK} registered: every {DEPLOY_CONSUME_EVERY_MIN} min, {action}"
+    );
+    Ok(())
+}
+
+fn deploy_consume_task_uninstall() -> Result<(), String> {
+    let out = std::process::Command::new("schtasks")
+        .args(["/delete", "/tn", DEPLOY_CONSUME_TASK, "/f"])
+        .output()
+        .map_err(|e| format!("schtasks: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "deploy-consume --uninstall: schtasks refused: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    println!("✓ {DEPLOY_CONSUME_TASK} removed");
+    Ok(())
+}
+
+async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err(
+            "deploy-consume is the Windows consumer; the Macs' launchd tracker owns this there"
+                .to_string(),
+        );
+    }
+    if options.install {
+        return deploy_consume_task_install();
+    }
+    if options.uninstall {
+        return deploy_consume_task_uninstall();
+    }
+    let request_path = deploy_request_path()?;
+    let tip = read_deploy_request_tip(&request_path);
+    let running = running_build_sha().await;
+    let repo = tracked_repo_dir()?;
+    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    let verdict = consume_verdict(tip.as_deref(), running.as_deref(), dirty);
+    println!(
+        "deploy-consume: request={} running={} dirty={dirty} → {verdict:?}",
+        tip.as_deref().unwrap_or("none"),
+        running.as_deref().unwrap_or("none")
+    );
+    match verdict {
+        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning => Ok(()),
+        ConsumeVerdict::RefuseDirty => Err(format!(
+            "deploy-consume: {} has uncommitted work — a consumer never stashes an operator's \
+             tree; commit or stash it and the next tick deploys",
+            repo.display()
+        )),
+        ConsumeVerdict::Deploy => {
+            let tip = tip.unwrap_or_default(); // unwrap_or_default: Deploy is only returned with a tip present
+            git_in(&repo, &["fetch", "--quiet", "origin"])?;
+            git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
+            println!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display());
+            reboot(RebootOptions { service: true, ..Default::default() }).await
+        }
     }
 }
 
@@ -3914,6 +4165,33 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
+    // verdict vocabulary — no request = nothing owed; the tip already running (short
+    // sha as a prefix, git's 7-char floor) = the tracker retires it, never a reboot;
+    // a dirty checkout is REFUSED (a consumer never stashes an operator's tree); only
+    // a clean checkout with a different tip deploys. And the option parse: --install
+    // and --uninstall are exclusive, nothing else is accepted.
+    #[test]
+    fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() {
+        use super::{consume_verdict, ConsumeVerdict, DeployConsumeOptions};
+        assert_eq!(consume_verdict(None, Some("6d8fc04de"), false), ConsumeVerdict::NothingOwed);
+        assert_eq!(
+            consume_verdict(Some("6d8fc04de"), Some("6d8fc04de1234567"), false),
+            ConsumeVerdict::AlreadyRunning
+        );
+        assert_eq!(
+            consume_verdict(Some("6d8fc0"), Some("6d8fc04de"), false),
+            ConsumeVerdict::Deploy,
+            "under git's 7-char floor a prefix is a coincidence, not a match"
+        );
+        assert_eq!(consume_verdict(Some("abc1234"), Some("6d8fc04de"), true), ConsumeVerdict::RefuseDirty);
+        assert_eq!(consume_verdict(Some("abc1234"), Some("6d8fc04de"), false), ConsumeVerdict::Deploy);
+        assert_eq!(consume_verdict(Some("abc1234"), None, false), ConsumeVerdict::Deploy, "no core answering = deploy, the request stands");
+        assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).unwrap().install);
+        assert!(DeployConsumeOptions::parse(["--install".to_string(), "--uninstall".to_string()].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
+    }
+
     // Regression for #3929: a first upgrade must leave the legacy core available
     // for explicit checkpoint recovery, while normal reboot outcomes may continue.
     #[test]
@@ -4121,7 +4399,8 @@ mod tests {
             vec!["--force", "--force"],
             vec!["--prebuilt", "one", "--prebuilt", "two"],
             vec!["--force", "--prebuilt", "core.exe", "--from-source"],
-            vec!["--service"],
+            // `--service` ALONE is valid since card 82af11f5 (the warm build supplies the
+            // artifact); it is exercised in the valid cases above on Windows.
             vec!["--service", "--service", "--prebuilt", "core.exe"],
             vec!["--validate-only"],
             vec!["--validate-only", "--force", "--prebuilt", "core.exe"],
