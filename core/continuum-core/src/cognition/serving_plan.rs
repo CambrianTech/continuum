@@ -378,6 +378,14 @@ pub struct ModelFootprint {
     /// still fits at least one lane — "give them the most powerful persona we
     /// can," never tiering down for its own sake.
     pub capability_rank: u8,
+    /// Fixed residency per lane LEARNED from the live process beyond the header's KV rate
+    /// and the compute floor: the draft model's KV, the vision projector, engine buffers.
+    /// Measured 2026-09-19 on the M5: (55,925 − 32,768) B/token × 67,340 ≈ 1.56 GB per
+    /// lane that a header-only plan would drop. Counted in [`Self::compute_buffer_per_lane`].
+    /// Runtime-learned, never on the wire: the bindings and the row stay as they are.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub fixed_per_lane_bytes: u64,
 }
 
 impl ModelFootprint {
@@ -431,7 +439,9 @@ impl ModelFootprint {
         // margin), and scales DOWN for smaller models (a 4B ≈ 140 MiB). Floored so a
         // tiny/degenerate footprint still reserves a real buffer, never zero.
         const COMPUTE_BUFFER_FLOOR: u64 = 256 * 1024 * 1024; // 256 MiB
-        (self.weights_bytes / 16).max(COMPUTE_BUFFER_FLOOR)
+        (self.weights_bytes / 16)
+            .max(COMPUTE_BUFFER_FLOOR)
+            .saturating_add(self.fixed_per_lane_bytes)
     }
 
     /// Total on-device residency for a live server: the weights (shared across
@@ -1088,6 +1098,7 @@ mod tests {
             kv_per_token,
             context_window: ctx,
             capability_rank: rank,
+            fixed_per_lane_bytes: 0,
         }
     }
 
@@ -2408,6 +2419,7 @@ mod tests {
             kv_per_token: 65_536,
             context_window: 262_144,
             capability_rank: 9,
+            fixed_per_lane_bytes: 0,
         };
         let at_rest = HostBudget {
             usable_bytes: 32 * GB, // the ledger's replace-myself budget, capped at the card
@@ -2443,6 +2455,7 @@ mod tests {
             kv_per_token: 262_144,
             context_window: 262_144,
             capability_rank: 9,
+            fixed_per_lane_bytes: 0,
         };
         let physical = HostBudget {
             usable_bytes: (33.6 * GB as f64 * 0.80) as u64,
