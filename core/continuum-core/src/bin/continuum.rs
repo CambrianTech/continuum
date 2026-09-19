@@ -1446,8 +1446,15 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
         format!("warm build could not start: {e}; leaving the running core untouched")
     })?;
     if !status.success() {
+        // Say WHAT ran. Three consumer attempts on the 5090 (2026-09-19) each died
+        // in one second with nothing in the log; the exit code alone named nothing.
         return Err(format!(
-            "warm build exited {status}; leaving the running core untouched"
+            "warm build exited {status}; leaving the running core untouched
+  command: {cmd:?}
+  envs: {:?}
+  cwd: {:?}",
+            cmd.get_envs().map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.map(|v| v.to_string_lossy().into_owned()).unwrap_or("<unset>".into()))).collect::<Vec<_>>(),
+            cmd.get_current_dir().map(|p| p.to_path_buf()).or_else(|| std::env::current_dir().ok())
         ));
     }
     PrebuiltCore::prepare(&receipt.artifact()?).await
@@ -2437,8 +2444,21 @@ fn deploy_consume_task_uninstall() -> Result<(), String> {
 static DEPLOY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn deploy_log_file() -> Option<std::fs::File> {
-    let path = DEPLOY_LOG.get()?;
-    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+    open_log_for_child(DEPLOY_LOG.get()?).ok()
+}
+
+/// A log handle a CHILD can be handed as its stdout/stderr. NOT `.append(true)`:
+/// on Windows that opens the handle with FILE_APPEND_DATA and no FILE_WRITE_DATA,
+/// and an MSYS bash handed such a handle as its stdout exits 1 before running a
+/// line — every unattended deploy on the 5090 died in one second with an EMPTY
+/// log, "warm build exited exit code: 1" and nothing else, for a day (2026-09-19).
+/// Full write access, positioned at the end: the same append, in a handle every
+/// child accepts.
+fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::io::Seek;
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+    file.seek(std::io::SeekFrom::End(0))?;
+    Ok(file)
 }
 
 /// Say it on stdout AND in the log, stamped.
@@ -5061,6 +5081,31 @@ mod tests {
             warm_build_allowed(u64::MAX, None).is_err(),
             "no script = no build definition"
         );
+    }
+
+    // what this catches (2026-09-19, the 5090's consumer): a log handle opened with
+    // `.append(true)` is FILE_APPEND_DATA-only on Windows, and an MSYS bash handed it
+    // as stdout exits 1 before running a line — every unattended deploy on the node
+    // died in one second with an EMPTY log, and the exit code named nothing. The
+    // handle a child is given must be one bash runs under and writes through, and
+    // it must still append.
+    #[cfg(windows)]
+    #[test]
+    fn the_deploy_log_handle_is_one_bash_can_run_under() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("deploy.log");
+        std::fs::write(&log, "seed\n").expect("seed");
+        let bash = continuum_core::shell_portable::locate_bash().expect("Git bash is a build prerequisite on Windows");
+        let status = std::process::Command::new(bash)
+            .args(["-c", "echo from-bash"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(open_log_for_child(&log).expect("open")))
+            .stderr(Stdio::from(open_log_for_child(&log).expect("open")))
+            .status()
+            .expect("spawn");
+        assert!(status.success(), "bash under the log handle exited {status}");
+        let text = std::fs::read_to_string(&log).expect("read");
+        assert_eq!(text.replace("\r", ""), "seed\nfrom-bash\n", "the child wrote through the handle, after the seed");
     }
 
     // Regression for card 571d6e0b: an old script's absent receipt, malformed
