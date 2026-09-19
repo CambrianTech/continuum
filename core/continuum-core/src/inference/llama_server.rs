@@ -3546,7 +3546,9 @@ impl LlamaServerControl for LlamaServerProcess {
         let slot_save_dir = kv_page_dir(&target.model.id, total_ctx / lanes.max(1));
         // Remember this geometry ACROSS RUNS: the next boot's plan serves it first, so
         // the pages under this dir are still restorable after a reboot.
-        crate::modules::served_window_store::save(&target.model.id, total_ctx / lanes.max(1), lanes);
+        // The geometry is remembered when the launch SETTLES (serving_daemon: cooldown
+        // 1 → 0 with the lane serving), never at spawn — a spawn that gets re-homed within
+        // its cooldown must not become the next boot's ceiling.
         // The dirs OTHER live lanes page into: protected from the sweep below. The
         // inventory is the durable lane registry (every recorded llama-server still
         // alive), not a process-local "last spawn" — a core restart that ADOPTS a
