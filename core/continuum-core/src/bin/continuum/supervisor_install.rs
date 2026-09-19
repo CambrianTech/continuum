@@ -306,6 +306,19 @@ fn same_path(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+/// The digest that binds a plan file to the elevated child. Computed from the bytes
+/// the parent WROTE (never a re-read), carried on the RunAs argv, re-derived by the
+/// child from what it reads: a same-user process can rewrite a file in `%TEMP%`
+/// between the write and the consent, but not the argv of a process already spawned
+/// (Fable, review of #4232 — the elevated child would otherwise register a boot task
+/// as ANY account, from a file anyone running as this user can edit).
+pub(super) fn plan_digest(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Does `sddl` grant `sid` read + execute on the task, with no explicit deny for it?
 ///
 /// The scheduler stores a task's security as the task file's DACL; a grant of RX
@@ -325,7 +338,15 @@ pub(super) fn caller_has_read_execute(sddl: &str, sid: &str) -> bool {
             "D" => return false,
             "A" => {
                 let rights = fields[2].to_ascii_uppercase();
-                granted |= rights == "0X1200A9"
+                // A hex mask is read as BITS: RX = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+                // (0x1200a9); any mask containing them (full control 0x1f01ff included)
+                // grants it — never a string match on one spelling (Cormac, #4232).
+                const RX: u32 = 0x1200a9;
+                let mask_grants = rights
+                    .strip_prefix("0X")
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .is_some_and(|mask| mask & RX == RX);
+                granted |= mask_grants
                     || rights == "FA"
                     || rights == "GA"
                     || (rights.contains("FR") && rights.contains("FX"))
@@ -346,6 +367,9 @@ pub(super) struct InstallOptions {
     /// The elevated child: register from `plan`, exit. Never spawns another elevation.
     pub elevated: bool,
     pub plan: Option<PathBuf>,
+    /// SHA-256 (hex) of the plan bytes the parent wrote, carried on the RunAs argv —
+    /// the one thing another same-user process cannot rewrite after the spawn.
+    pub plan_sha: Option<String>,
 }
 
 impl InstallOptions {
@@ -361,15 +385,22 @@ impl InstallOptions {
                     let path = args.next().ok_or("install: --plan needs a path")?;
                     options.plan = Some(PathBuf::from(path));
                 }
-                "--supervisor" | "--check" | "--elevated" | "--plan" => return Err(format!("duplicate option {arg}")),
+                "--plan-sha" if options.plan_sha.is_none() => {
+                    let sha = args.next().ok_or("install: --plan-sha needs a hex digest")?;
+                    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err("install: --plan-sha is a 64-hex SHA-256".to_string());
+                    }
+                    options.plan_sha = Some(sha.to_ascii_lowercase());
+                }
+                "--supervisor" | "--check" | "--elevated" | "--plan" | "--plan-sha" => return Err(format!("duplicate option {arg}")),
                 _ => return Err(format!("unknown install option {arg}; use --supervisor [--check]")),
             }
         }
         if options.check && options.elevated {
             return Err("install: --check reads; --elevated writes — not both".to_string());
         }
-        if options.elevated != options.plan.is_some() {
-            return Err("install: --elevated and --plan go together (the elevated child registers exactly one plan)".to_string());
+        if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some() {
+            return Err("install: --elevated, --plan and --plan-sha go together (the elevated child registers exactly one plan, bound by its digest)".to_string());
         }
         if !options.supervisor {
             return Err("install: name what to converge — `continuum install --supervisor` (the OS supervisor + deploy consumer)".to_string());
@@ -540,12 +571,13 @@ pub(super) async fn install_supervisor(
     let plan_path = std::env::temp_dir().join(format!("continuum-supervisor-{}.json", std::process::id()));
     let receipt = receipt_path(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("install: cannot write the plan: {e}"))?;
+    let plan_bytes = serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?;
+    let plan_sha = plan_digest(&plan_bytes);
+    std::fs::write(&plan_path, &plan_bytes).map_err(|e| format!("install: cannot write the plan: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("install: own path: {e}"))?;
     let quote = |s: String| s.replace('\'', "''");
     let script = format!(
-        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList @('install','--supervisor','--elevated','--plan','{}') -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList @('install','--supervisor','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
         quote(exe.display().to_string()),
         quote(plan_path.display().to_string()),
     );
@@ -589,9 +621,9 @@ pub(super) async fn install_supervisor(
 /// The elevated child: register exactly the plan, grant the caller read/execute,
 /// leave a receipt. No query, no decision, no second elevation.
 #[cfg(windows)]
-pub(super) fn install_supervisor_elevated(plan_path: &Path) -> Result<(), String> {
+pub(super) fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
     let receipt = receipt_path(plan_path);
-    let result = register_plan(plan_path);
+    let result = read_bound_plan(plan_path, plan_sha).and_then(|plan| register_plan(plan_path, plan));
     let text = match &result {
         Ok(lines) => lines.join("\n"),
         Err(why) => format!("elevated registration failed: {why}"),
@@ -600,12 +632,24 @@ pub(super) fn install_supervisor_elevated(plan_path: &Path) -> Result<(), String
     result.map(|_| ())
 }
 
+/// The plan the consent was given for, or a refusal: the bytes on disk must hash to
+/// the digest on this process's argv. Pure and pinned — the one gate between "a file
+/// in %TEMP%" and "a task that runs as some account at boot".
+pub(super) fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPlan, String> {
+    let bytes = std::fs::read(plan_path).map_err(|e| format!("cannot read the plan {}: {e}", plan_path.display()))?;
+    let actual = plan_digest(&bytes);
+    if !actual.eq_ignore_ascii_case(plan_sha) {
+        return Err(format!(
+            "the plan at {} is not the one the consent was given for (sha {} on argv, {actual} on disk) — refusing to register anything",
+            plan_path.display(),
+            &plan_sha[..12]
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| format!("the plan is not a SupervisorPlan: {e}"))
+}
+
 #[cfg(windows)]
-fn register_plan(plan_path: &Path) -> Result<Vec<String>, String> {
-    let plan: SupervisorPlan = serde_json::from_slice(
-        &std::fs::read(plan_path).map_err(|e| format!("cannot read the plan {}: {e}", plan_path.display()))?,
-    )
-    .map_err(|e| format!("the plan is not a SupervisorPlan: {e}"))?;
+fn register_plan(plan_path: &Path, plan: SupervisorPlan) -> Result<Vec<String>, String> {
     let start = (chrono::Local::now() + chrono::Duration::minutes(1))
         .format("%Y-%m-%dT%H:%M:%S")
         .to_string();
@@ -777,6 +821,8 @@ mod tests {
         assert!(caller_has_read_execute(&format!("D:(A;;FA;;;{sid})"), sid));
         assert!(!caller_has_read_execute("D:(A;ID;FA;;;BA)(A;ID;0x1f019f;;;SY)", sid), "admins' inherited ACEs are not the caller's grant");
         assert!(!caller_has_read_execute(&format!("D:(A;;FR;;;{sid})"), sid), "read without execute cannot run the task");
+        assert!(caller_has_read_execute(&format!("D:(A;;0x1f01ff;;;{sid})"), sid), "full control as a mask contains RX");
+        assert!(!caller_has_read_execute(&format!("D:(A;;0x120089;;;{sid})"), sid), "a read-only mask lacks execute");
         assert!(!caller_has_read_execute(&format!("D:(D;;GX;;;{sid})(A;;0x1200a9;;;{sid})"), sid), "a deny outranks the grant");
         assert!(!caller_has_read_execute("", sid));
     }
@@ -794,6 +840,28 @@ mod tests {
             "Start-Process : This command cannot be run due to the error: The operation was canceled by the user."
         );
         assert_eq!(plain_stderr("  Access is denied.\n"), "Access is denied.");
+    }
+
+    // what this catches (Fable, review of #4232): the elevated child registers only
+    // the plan the consent was given for. A plan file rewritten under the child —
+    // another principal, another command — hashes differently from the digest the
+    // parent put on the argv, and the child refuses before touching the scheduler.
+    #[test]
+    fn a_plan_rewritten_under_the_elevated_child_is_refused() {
+        let dir = std::env::temp_dir().join(format!("plan-bind-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap(); // unwrap: a temp dir the test owns
+        let path = dir.join("plan.json");
+        let bytes = serde_json::to_vec_pretty(&plan()).unwrap(); // unwrap: the fixture serializes
+        std::fs::write(&path, &bytes).unwrap(); // unwrap: the test's own file
+        let sha = plan_digest(&bytes);
+        assert_eq!(read_bound_plan(&path, &sha).unwrap(), plan(), "the bytes the parent wrote"); // unwrap: the valid case — an Err here IS the failure
+        assert!(read_bound_plan(&path, &sha.to_ascii_uppercase()).is_ok(), "digest case is not identity");
+        let mut swapped = plan();
+        swapped.user_sid = "S-1-5-21-9-9-9-500".to_string();
+        std::fs::write(&path, serde_json::to_vec_pretty(&swapped).unwrap()).unwrap(); // unwrap: the test's own file
+        let why = read_bound_plan(&path, &sha).unwrap_err();
+        assert!(why.contains("not the one the consent was given for"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // what this catches: a one-element trigger list arriving as a bare string
@@ -816,8 +884,11 @@ mod tests {
         assert!(parse(&[]).is_err(), "install names what it converges");
         assert!(parse(&["--supervisor", "--elevated"]).is_err());
         assert!(parse(&["--supervisor", "--plan", "x.json"]).is_err());
-        let child = parse(&["--supervisor", "--elevated", "--plan", "x.json"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!(child.elevated && child.plan.as_deref() == Some(Path::new("x.json")));
+        assert!(parse(&["--supervisor", "--elevated", "--plan", "x.json"]).is_err(), "a plan without its digest is unbound");
+        let sha = "a".repeat(64);
+        let child = parse(&["--supervisor", "--elevated", "--plan", "x.json", "--plan-sha", &sha]).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        assert!(child.elevated && child.plan.as_deref() == Some(Path::new("x.json")) && child.plan_sha.as_deref() == Some(sha.as_str()));
+        assert!(parse(&["--supervisor", "--elevated", "--plan", "x.json", "--plan-sha", "not-hex"]).is_err());
         assert!(parse(&["--supervisor", "--supervisor"]).is_err());
         assert!(parse(&["--supervisor", "--check"]).unwrap().check); // unwrap: the valid case — an Err here IS the failure
         assert!(parse(&["--supervisor", "--check", "--elevated", "--plan", "x.json"]).is_err(), "check reads, elevated writes");

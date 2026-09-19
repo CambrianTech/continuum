@@ -2380,16 +2380,15 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         let _ = options;
         Err(format!(
             "continuum install --supervisor: this platform's arm is not in the binary yet — \
-             macOS (a LaunchDaemon with KeepAlive, no generated wrapper) is Fable's lane, \
-             Linux (`systemd --user` + linger) is Cormac's; Windows (S4U Scheduled Tasks) is here. \
-             Until it lands: tools/scripts/install-service.sh ({} arm).",
+             the macOS arm is #4228 (launchd), the Linux arm (`systemd --user` + linger) is owed; \
+             Windows (S4U Scheduled Tasks) is here. Until it lands: tools/scripts/install-service.sh ({} arm).",
             std::env::consts::OS
         ))
     }
     #[cfg(windows)]
     {
-        if let Some(plan) = options.plan.as_deref().filter(|_| options.elevated) {
-            return supervisor_install::install_supervisor_elevated(plan);
+        if let (true, Some(plan), Some(sha)) = (options.elevated, options.plan.as_deref(), options.plan_sha.as_deref()) {
+            return supervisor_install::install_supervisor_elevated(plan, sha);
         }
         supervisor_install::install_supervisor(options.check, |description| {
             let d: CoreServiceDescription = serde_json::from_str(description).map_err(|e| {
