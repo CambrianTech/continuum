@@ -34,4 +34,12 @@ timestamp_ms: number,
 /**
  * Consecutive polls at this level (hysteresis input).
  */
-consecutive_at_level: number, };
+consecutive_at_level: number, 
+/**
+ * WHICH volume the numbers describe: `home` (the volume holding the substrate's
+ * home — the normal case), `hottest_volume` (no volume holds the home; the numbers
+ * are the most-pressured mounted volume's — a real reading, conservatively
+ * chosen, named as a fallback), or `none` (no mounted volume at all; level is
+ * `Unknown` and the byte fields are meaningless).
+ */
+volume_source: string, };
