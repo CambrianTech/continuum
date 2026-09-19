@@ -625,6 +625,7 @@ impl ServiceModule for CitizenHealthModule {
         match command {
             // A read WITHOUT reset: the hour's running counters as they stand.
             "citizen/health" => {
+                let (rounds_working, standing_enabled) = round_supply();
                 let h = CitizenHealth {
                     window_secs: HEALTH_WINDOW.as_secs(),
                     resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
@@ -641,8 +642,8 @@ impl ServiceModule for CitizenHealthModule {
                     pulls: LEDGER.pulls.load(Ordering::Relaxed),
                     pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
-                    rounds_working: round_supply().0,
-                    standing_enabled: round_supply().1,
+                    rounds_working,
+                    standing_enabled,
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
