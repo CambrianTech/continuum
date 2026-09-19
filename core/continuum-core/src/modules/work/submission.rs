@@ -752,7 +752,12 @@ impl ActionCommand for WorkSubmission {
                     .find(|s| s.submission_id.as_uuid() == p.submission_id)
             })
             .ok_or_else(|| {
-                CommandError::NotFound("submission is absent from this card and room".into())
+                CommandError::NotFound(
+                    "submission is absent from this card and room — this verb inspects a SUBMISSION by \
+                     submission_id; to read the card itself use work/get {card_id}, to publish yours \
+                     use work/submit"
+                        .into(),
+                )
             })?;
         let credit = async {
             let Some(owner) = self.registry.get(submitted.publisher.as_uuid()) else {
