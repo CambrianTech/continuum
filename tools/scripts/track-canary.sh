@@ -66,8 +66,16 @@ else: print("green")
 PY
 }
 
+# A build is in flight when a `continuum reboot` COMMAND is running — matched at token
+# boundaries, never as a phrase: `pgrep -f "continuum reboot"` matched any process whose
+# arguments merely CONTAINED the words (2026-09-19 00:02–00:17Z: an operator's watch loop
+# carrying an airc message that said "please `continuum reboot` the IntelMac" held this
+# tracker at "already in flight" for fifteen minutes with no build running). The deploy
+# claim (`~/.continuum/run/deploy.claim`, pid-checked by the core) is the honest source;
+# until the tracker moves into the core, the token-anchored match is the smallest fix.
 build_in_flight() {
-  pgrep -f "continuum reboot" >/dev/null 2>&1 || pgrep -f "cargo build --manifest-path $REPO_DIR" >/dev/null 2>&1
+  pgrep -f "(^|/)continuum reboot( |\$)" >/dev/null 2>&1 \
+    || pgrep -f "(^|/)cargo build --manifest-path $REPO_DIR" >/dev/null 2>&1
 }
 
 status() {
