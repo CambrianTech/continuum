@@ -1437,7 +1437,7 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
     // Under the deploy consumer there is no terminal: the build's output goes to the
     // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
     // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
-    if let Some(log) = deploy_log_file() {
+    if let Some(log) = DEPLOY_LOG.get().and_then(|p| open_log_for_child(p).ok()) {
         if let Ok(err) = log.try_clone() {
             cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err));
         }
@@ -2443,8 +2443,12 @@ fn deploy_consume_task_uninstall() -> Result<(), String> {
 /// the build's own output there too.
 static DEPLOY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// The parent's OWN notes: `.append(true)` is the atomic append (FILE_APPEND_DATA
+/// positions every write at the end, whoever else is writing); a Rust `writeln!` is
+/// fine with it. Only a CHILD needs `open_log_for_child` (Fable, #4233).
 fn deploy_log_file() -> Option<std::fs::File> {
-    open_log_for_child(DEPLOY_LOG.get()?).ok()
+    let path = DEPLOY_LOG.get()?;
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
 /// A log handle a CHILD can be handed as its stdout/stderr. NOT `.append(true)`:
