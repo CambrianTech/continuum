@@ -103,6 +103,18 @@ fn standing_path() -> Result<PathBuf, String> {
         .join("benchmark_standing.json"))
 }
 
+/// Whether the standing autopilot is switched on — the one fact the citizen-health
+/// line needs to say WHY an idle roster is idle (a round is owed, not lanes).
+pub fn is_enabled() -> bool {
+    load_config().enabled
+}
+
+/// Said ONCE per transition, both ways: the switch is OFF (so the node's idleness has a
+/// name on the probe stream), and the switch came back ON. Not per tick — the module
+/// ticks every five minutes and a steady state is not news. Mirror rule: a probe that
+/// only ever said "off" would leave "on again" invisible.
+static SAID_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn load_config() -> StandingConfig {
     let Ok(path) = standing_path() else {
         return StandingConfig::default();
@@ -140,7 +152,27 @@ impl BenchmarkStandingModule {
     async fn standing_check(&self) -> Result<bool, String> {
         let cfg = load_config();
         if !cfg.enabled {
-            return Ok(false); // silent: disabled is the configured steady state
+            // The module header promises every skip states its reason; this was the
+            // one skip that said nothing, and a node with the switch off looked, from
+            // every instrument, like a node whose lanes were the problem (IntelMac
+            // 2026-09-19: thirty hours, eight minds, ~3,500 pulls reading
+            // `no_rounds_on_node`, the health line saying "owed: fewer seats").
+            if !SAID_OFF.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::probe!(
+                    class = "bench.standing.off",
+                    benchmark = %cfg.benchmark,
+                    "standing autopilot is OFF — no round will be dispatched on this node until \
+                     `benchmark/standing --enabled true`; resident minds have nothing to pull"
+                );
+            }
+            return Ok(false);
+        }
+        if SAID_OFF.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            crate::probe!(
+                class = "bench.standing.on",
+                benchmark = %cfg.benchmark,
+                "standing autopilot is ON again — the next tick with no working round dispatches"
+            );
         }
         // A HEALTHY working round is the goal state — hold. But a round wedged
         // past the abandon window (dead citizens, no task boundary) must NOT
