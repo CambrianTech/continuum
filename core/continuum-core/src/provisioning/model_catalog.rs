@@ -277,12 +277,22 @@ impl PowerMode {
         }
     }
 
+    /// The fraction of the replace-myself budget the plan may size to. Since #4230 this
+    /// is THE headroom the plan keeps (the board has already subtracted every other
+    /// holder's live residency; the plan withholds nothing more), so no mode may hand
+    /// the plan 1.0: the footprint has no term for the serving process's own fixed
+    /// overhead — the CUDA context + cuBLAS workspace on a discrete card, the Metal heap
+    /// + command queues on UMA — which llama-server allocates on top of weights + KV +
+    /// compute. Performance (the benchmark's mode, `ServingLudicrousHold`) keeps 4% for
+    /// exactly that: measured 2026-09-19 on the 5090, 2.3 GB of slack on a 32.6 GB card
+    /// under a 30 GB plan, and a plan sized to 100% of the ceiling is an OOM by
+    /// arithmetic (BigMama's condition on #4230).
     pub fn serving_fraction(self) -> f64 {
         match self {
             PowerMode::Eco => 0.55,
             PowerMode::Comfort => 0.80,
             PowerMode::Sport => 0.92,
-            PowerMode::Performance => 1.0,
+            PowerMode::Performance => 0.96,
         }
     }
 }
@@ -693,14 +703,18 @@ mod tests {
     }
 
     // what this catches: the serving reserve is monotonic (Eco leaves the most free for
-    // the rest of the call, Performance claims all of it) — the knob that keeps a crowded
-    // call from OOM-ing the shared pool.
+    // the rest of the call, Performance claims nearly all of it) — the knob that keeps a
+    // crowded call from OOM-ing the shared pool — and since #4230 it is the plan's ONLY
+    // headroom, so even Performance keeps the serving process's own fixed overhead
+    // (CUDA context / Metal heap) out of the plan: a mode at 1.0 would size weights + KV
+    // + compute to 100% of the ceiling and OOM by arithmetic on the benchmark path.
     #[test]
-    fn serving_fraction_is_monotonic_and_performance_takes_all() {
+    fn serving_fraction_is_monotonic_and_even_performance_keeps_the_process_overhead() {
         assert!(PowerMode::Eco.serving_fraction() < PowerMode::Comfort.serving_fraction());
         assert!(PowerMode::Comfort.serving_fraction() < PowerMode::Sport.serving_fraction());
         assert!(PowerMode::Sport.serving_fraction() < PowerMode::Performance.serving_fraction());
-        assert_eq!(PowerMode::Performance.serving_fraction(), 1.0);
+        assert!(PowerMode::Performance.serving_fraction() < 1.0, "no mode hands the plan the whole ceiling");
+        assert!(PowerMode::Performance.serving_fraction() >= 0.95, "but Performance takes nearly all of it");
     }
 
     // what this catches: the auto-downshift — tight free memory picks Eco (reserve
