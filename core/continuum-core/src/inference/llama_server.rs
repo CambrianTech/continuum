@@ -2463,7 +2463,33 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 // decode probe — UNLESS `force_probe` is set, in which case the
                 // liveness heartbeat flagged it wedged and we must re-prove decode
                 // before re-adopting (#175). A non-owned orphan is always probed.
-                if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
+                if ctrl.owns_child() && !force_probe {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                // BUSY IS NOT DEAD, at adoption too (card 59052747). The heartbeat already
+                // reads a missed probe against the server's own `/slots` account (L11,
+                // `judge_smoke_miss`); the adopt rail did not, so ONE missed probe reaped
+                // the warm engine — measured 2026-09-20 20:44Z on the IntelMac: the adoptee
+                // answered `/v1/models`, its decode probe missed while the box was on the
+                // deploy's link step, and "compute-wedged" reaped a lane whose slots were
+                // moving. The fingerprint is taken before and after the probe: a lane that
+                // advanced during the probe's own window is alive by its own account and
+                // is adopted; the heartbeat keeps verifying it from there. A FROZEN or
+                // unreadable fingerprint is the wedge signature and is reaped as before.
+                let before = ctrl.slots_activity_fingerprint().await;
+                if ctrl.decode_smoke_ok().await {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                let after = ctrl.slots_activity_fingerprint().await;
+                if judge_smoke_miss(before, after) == SmokeMissVerdict::AliveViaSlotProgress {
+                    crate::probe!(
+                        class = "serving.adopt_busy_alive",
+                        model = target.model_id(),
+                        owned = ctrl.owns_child(),
+                        force_probe,
+                        "lane missed the decode smoke-probe but its slots advanced during it — \
+                         busy, not wedged; adopted, the heartbeat verifies from here",
+                    );
                     return EnsureOutcome::AlreadyServing;
                 }
                 crate::probe!(
@@ -2471,8 +2497,10 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     model = target.model_id(),
                     owned = ctrl.owns_child(),
                     force_probe,
-                    "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
-                     — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
+                    slots_moved = false,
+                    "lane answers /v1/models, fails the decode smoke-probe AND its slots did \
+                     not move during it (compute-wedged — a poisoned Metal backend / OOM, \
+                     #175); reaping + respawning a fresh lane",
                 );
                 // fall through to relaunch.
             }
@@ -3845,6 +3873,15 @@ impl LlamaServerControl for LlamaServerProcess {
             crate::inference::backend_receipt::BackendVerdict::Gpu { .. }
             | crate::inference::backend_receipt::BackendVerdict::CpuByPlan => {}
         }
+        // THE LANE IS ITS OWN PROCESS GROUP (card 59052747). A plain child sat in the
+        // core's group, so every group-addressed signal aimed at the core — the stop
+        // rail's `kill(-core_pid, SIGTERM)`, launchd reaping a job's group on exit —
+        // took the warm engine with it, eleven lines before the reboot path promised to
+        // leave it for adoption. Its fate is decided by NAME (the lane registry, the
+        // ownership sweep, the adopt-or-reap rail), never by which group it happened
+        // to be born into. Windows has no process groups here; ownership does the job.
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -4821,6 +4858,9 @@ mod tests {
         /// Whether the fake's decode smoke-probe succeeds. `true` = a healthy lane
         /// (adoptable); `false` = a compute-wedged orphan (must be rejected).
         decode_ok: bool,
+        /// `Some(_)` = the fake's `/slots` fingerprint ADVANCES on every look (a busy
+        /// lane); `None` = no slots account (the default: no exoneration, as before).
+        slots_busy: Option<AtomicUsize>,
         /// Whether the fake "owns" the running child (we spawned it). `false` =
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
@@ -4845,6 +4885,7 @@ mod tests {
                 serve_ok: true,
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
+                slots_busy: None,
                 owns: false,
                 served_lanes: 0,
                 served_window: 32768,
@@ -4876,6 +4917,12 @@ mod tests {
         /// 500s.
         fn decode_wedged(mut self) -> Self {
             self.decode_ok = false;
+            self
+        }
+        /// Model a lane whose `/slots` account advances on every look — a busy lane
+        /// (mid-prefill for a client this core never knew, or under a build's load).
+        fn slots_busy(mut self) -> Self {
+            self.slots_busy = Some(AtomicUsize::new(0));
             self
         }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
@@ -4919,6 +4966,11 @@ mod tests {
         }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
+        }
+        async fn slots_activity_fingerprint(&self) -> Option<u64> {
+            self.slots_busy
+                .as_ref()
+                .map(|n| n.fetch_add(1, Ordering::SeqCst) as u64)
         }
         fn owns_child(&self) -> bool {
             self.owns
@@ -5172,6 +5224,27 @@ mod tests {
             1,
             "wedged orphan → fresh spawn"
         );
+    }
+
+    // what this catches (card 59052747, 2026-09-20 20:44Z on the IntelMac): an adoptee
+    // that misses the decode smoke-probe because it is BUSY — its `/slots` account
+    // advanced during the probe's own window — was reaped as "compute-wedged", a cold
+    // prefill for every seated mind. Busy is not dead: it is adopted; the frozen one
+    // (the case above) is still reaped.
+    #[tokio::test]
+    async fn a_busy_adoptee_that_misses_the_probe_is_adopted_not_reaped() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .decode_wedged()
+            .slots_busy();
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing, "its slots moved during the probe: alive by its own account");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "nothing respawned over a working lane");
+        // The same shape on an OWNED child the heartbeat flagged (force_probe): still busy, still kept.
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .decode_wedged()
+            .slots_busy();
+        assert_eq!(ensure_model_serving(&ctrl, &target("coder-14b"), true).await, EnsureOutcome::AlreadyServing);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode

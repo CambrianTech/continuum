@@ -3621,21 +3621,30 @@ fn kill_pid_tree(pid: i32) {
     }
     #[cfg(windows)]
     {
-        let _ = WindowsKill::Tree(pid).command().output();
+        let _ = KillStep::Tree(pid).command().output();
     }
 }
 
-/// The distinction matters before the OS sees a kill: `/T` on a core also
-/// terminates its warm gateway, even if a later orphan sweep excludes that lane.
-#[cfg(any(windows, test))]
+/// One step of a kill plan. The distinction matters before the OS sees a kill: a
+/// TREE kill on a core also terminates its warm gateway, even if a later orphan sweep
+/// excludes that lane. Windows: `taskkill /T` vs `/PID`. Unix: the process GROUP vs the
+/// pid alone — and that arm is the one that rotted: until 2026-09-20 the Unix executor
+/// discarded `keep` (`let _ = keep;`) and sent every root a group kill, so the live
+/// llama-server — a plain child in the core's group, no `setsid` of its own — took the
+/// SIGTERM at the old core's stop on every reboot, eleven lines before "leaving serving
+/// lane(s) up for adoption" printed over it (M5 20:58:22Z pid 61259 RemovedDead 19 s
+/// later; the IntelMac's adoptee answered `/v1/models` while exiting and failed the
+/// decode probe). Every deploy was a cold prefill for every seated mind (card 59052747).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowsKill {
+enum KillStep {
+    /// This pid alone — its children are visited by the plan, the protected one spared.
     Process(i32),
+    /// This pid and everything under it — no protected lane in this branch.
     Tree(i32),
 }
 
-#[cfg(any(windows, test))]
-impl WindowsKill {
+impl KillStep {
+    #[cfg(any(windows, test))]
     fn command(self) -> std::process::Command {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.arg("/F");
@@ -3649,16 +3658,40 @@ impl WindowsKill {
         cmd.args(["/PID", &pid.to_string()]);
         cmd
     }
+
+    #[cfg(unix)]
+    fn execute(self) {
+        match self {
+            Self::Tree(pid) => kill_pid_tree(pid),
+            Self::Process(pid) => kill_pid_alone(pid),
+        }
+    }
+}
+
+/// Unix: TERM this pid ONLY — never its group — with the same 3 s deadline then KILL as
+/// [`kill_pid_tree`]. The step a plan takes on an ancestor of a protected lane.
+#[cfg(unix)]
+fn kill_pid_alone(pid: i32) {
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if libc::kill(pid, 0) != 0 {
+                return;
+            }
+        }
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 /// Split only the branches containing a verified live lane. All other branches
 /// remain tree kills, so new eye/browser children are still owned by the reap.
-#[cfg(any(windows, test))]
-fn windows_kill_plan(
+/// PURE over a parent map, so both platforms execute the SAME plan.
+fn kill_plan(
     roots: &[i32],
     parents: &std::collections::HashMap<i32, i32>,
     keep: &[i32],
-) -> Vec<WindowsKill> {
+) -> Vec<KillStep> {
     let mut plan = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut pending = Vec::new();
@@ -3681,12 +3714,12 @@ fn windows_kill_plan(
                 .iter()
                 .any(|lane| descends_from(parents, *lane, &[pid]))
             {
-                plan.push(WindowsKill::Tree(pid));
+                plan.push(KillStep::Tree(pid));
                 continue;
             }
             // Stop the ancestor spawning more workers, then reap its unprotected
             // children. Killing its whole tree would cross the keep set.
-            plan.push(WindowsKill::Process(pid));
+            plan.push(KillStep::Process(pid));
             pending.extend(
                 parents
                     .iter()
@@ -3708,26 +3741,21 @@ fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32>
 }
 
 fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
-    #[cfg(windows)]
-    {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        let parents = process_parents(&sys);
-        for kill in windows_kill_plan(roots, &parents, keep) {
-            let _ = kill.command().output();
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let parents = process_parents(&sys);
+    for step in kill_plan(roots, &parents, keep) {
+        #[cfg(windows)]
+        {
+            let _ = step.command().output();
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = keep;
-        for &pid in roots {
-            kill_pid_tree(pid);
-        }
+        #[cfg(unix)]
+        step.execute();
     }
 }
 
@@ -6062,7 +6090,7 @@ mod tests {
             (501, 500),
             (900, 1), // unrelated process: never a teardown root
         ]);
-        let command_args = |plan: Vec<WindowsKill>| {
+        let command_args = |plan: Vec<KillStep>| {
             let mut args: Vec<Vec<String>> = plan
                 .into_iter()
                 .map(|kill| {
@@ -6078,10 +6106,10 @@ mod tests {
         };
         // Duplicate/descendant roots must not produce overlapping tree kills.
         let roots = [300, 200, 100, 100, 301, 500];
-        let plan = windows_kill_plan(&roots, &parents, &[8600]);
+        let plan = kill_plan(&roots, &parents, &[8600]);
         assert_eq!(
             plan.first(),
-            Some(&WindowsKill::Process(100)),
+            Some(&KillStep::Process(100)),
             "stop the spawning core first"
         );
         assert_eq!(
@@ -6097,7 +6125,7 @@ mod tests {
         // A surviving launcher ancestor in the owned-orphan pass must ALSO be
         // killed alone, never with /T across the now-adoptable lane beneath it.
         assert_eq!(
-            command_args(windows_kill_plan(
+            command_args(kill_plan(
                 &[200, 300, 301, 400, 500, 501, 8600, 8610],
                 &parents,
                 &[8600],
@@ -6112,18 +6140,18 @@ mod tests {
         // Full stop — or no identity-verified lane record — still kills the
         // entire core tree, including the otherwise-preserved gateway.
         assert_eq!(
-            command_args(windows_kill_plan(&roots, &parents, &[])),
+            command_args(kill_plan(&roots, &parents, &[])),
             vec![vec!["/F", "/T", "/PID", "100"]]
         );
         // An old fixed 64-hop ancestry limit must not turn a deeper protected
         // branch into an apparently unprotected /T target.
         let deep: std::collections::HashMap<i32, i32> =
             (1..=80).map(|pid| (pid, pid - 1)).collect();
-        let plan = windows_kill_plan(&[1], &deep, &[80]);
+        let plan = kill_plan(&[1], &deep, &[80]);
         assert_eq!(plan.len(), 79);
         assert!(plan
             .iter()
-            .all(|kill| matches!(kill, WindowsKill::Process(_))));
+            .all(|kill| matches!(kill, KillStep::Process(_))));
     }
 
     /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran
@@ -6131,6 +6159,65 @@ mod tests {
     /// resolved a chat model through that port got an EMBEDDING model. Its
     /// parent is absent from the table entirely (dead), which must read as
     /// "orphan", not as "unknown, leave it alone".
+    /// what this catches (card 59052747, 2026-09-20): the Unix executor of the kill plan
+    /// — until now `let _ = keep;` and a group kill per root, so the plan's `Process(core)`
+    /// never existed on macOS/Linux and the live lane died with the core on every reboot.
+    /// Real processes, one group: a leader and its child; a plan that protects the child
+    /// must leave it alive after the leader is gone, and the same plan with nothing
+    /// protected must take the whole group (the plain `stop`).
+    #[cfg(unix)]
+    #[test]
+    fn a_protected_child_survives_its_leaders_kill_on_unix() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        fn alive(pid: i32) -> bool {
+            unsafe { libc::kill(pid, 0) == 0 }
+        }
+        fn group(protect: bool) -> (i32, i32) {
+            // A leader that execs nothing but waits on one child in ITS group.
+            let mut leader = Command::new("sh")
+                .args(["-c", "sleep 30 & wait"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("sh spawns"); // test: the shell exists on every unix CI box
+            let leader_pid = leader.id() as i32;
+            // Find the child (the sleep) under the leader.
+            let child = (0..50)
+                .find_map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let mut sys = System::new();
+                    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+                    process_parents(&sys)
+                        .into_iter()
+                        .find(|(_, parent)| *parent == leader_pid)
+                        .map(|(child, _)| child)
+                })
+                .expect("the leader's child appears"); // test: `sleep` forks within 2.5 s
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+            let parents = process_parents(&sys);
+            let keep: Vec<i32> = if protect { vec![child] } else { vec![] };
+            let plan = kill_plan(&[leader_pid], &parents, &keep);
+            assert_eq!(plan, vec![if protect { KillStep::Process(leader_pid) } else { KillStep::Tree(leader_pid) }]);
+            for step in plan {
+                step.execute();
+            }
+            let _ = leader.wait();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            (leader_pid, child)
+        }
+        let (leader, child) = group(true);
+        assert!(!alive(leader), "the leader is gone");
+        assert!(alive(child), "the protected child in the leader's group survives its kill");
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let (leader, child) = group(false);
+        assert!(!alive(leader));
+        assert!(!alive(child), "nothing protected: the group goes with the leader (plain stop)");
+    }
+
     #[test]
     fn a_process_whose_parent_is_gone_is_an_orphan() {
         let parents = ptable(&[(37148, 37856)]); // 37856 itself not present = dead
