@@ -60,6 +60,42 @@ pub struct Mind {
     /// Index into `GridInputs::roles`.
     pub role: usize,
     pub home: Option<Uuid>,
+    /// The human (or org) this mind belongs to. On one operator's grid every mind and
+    /// node share one owner; a peer another human brings is the case below.
+    pub owner: Uuid,
+}
+
+/// The TERMS a node is offered on — the outcome of the negotiation between owners,
+/// declared as data (Joel, 2026-09-20: "peers which are different humans and therefore
+/// their own persona … all works the same, just a matter of negotiation amongst a
+/// different kind of peer"). Between one owner's own nodes the terms are open and never
+/// consulted. A foreign owner's node lends at most `seats_lent` seats, for `roles` only
+/// (`None` = any); its own minds are never bounded by its own terms.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OfferTerms {
+    /// Seats lent to minds of OTHER owners; `None` = unbounded, `Some(0)` = none.
+    pub seats_lent: Option<u32>,
+    /// Roles the owner will host for others; `None` = any.
+    pub roles: Option<Vec<usize>>,
+}
+
+/// A node with NO declared terms lends nothing to other owners (Cormac's note on #4263:
+/// an unlimited loan is never the default). Between one owner's own nodes terms are not
+/// consulted, so this default only ever binds a foreign node that declared none.
+impl Default for OfferTerms {
+    fn default() -> Self {
+        Self { seats_lent: Some(0), roles: None }
+    }
+}
+
+impl OfferTerms {
+    /// Everything lent — what one owner's own nodes read as, whether or not consulted.
+    pub fn open() -> Self {
+        Self { seats_lent: None, roles: None }
+    }
+    pub fn admits_role(&self, role: usize) -> bool {
+        self.roles.as_ref().is_none_or(|r| r.contains(&role))
+    }
 }
 
 /// One thing a node can run: the shape its own planner computed for one candidate model.
@@ -108,7 +144,73 @@ impl LanePlan {
 #[derive(Clone, Debug)]
 pub struct NodeOffer {
     pub node: Uuid,
+    /// Who brings this node. Its own minds seat freely; others within `terms`.
+    pub owner: Uuid,
+    pub terms: OfferTerms,
     pub plans: Vec<LanePlan>,
+}
+
+/// The offers this node has heard, by node: a node joins when its first beacon lands, is
+/// LIVE while a beacon is fresher than `silent_after_ms`, and drops out when it goes
+/// silent — the same three events `fold_liveness` names for the fleet, folded here into
+/// the allocator's inputs. Held by the daemon; `live` is what `allocate` sees. PURE.
+#[derive(Clone, Debug, Default)]
+pub struct OfferBook {
+    heard: std::collections::BTreeMap<Uuid, (u64, NodeOffer)>,
+}
+
+impl OfferBook {
+    pub fn hear(&mut self, offer: NodeOffer, now_ms: u64) {
+        self.heard.insert(offer.node, (now_ms, offer));
+    }
+    /// The offers fresher than `silent_after_ms`, ordered by node id so two nodes
+    /// computing the same allocation agree (Cormac's note on #4259).
+    pub fn live(&self, now_ms: u64, silent_after_ms: u64) -> Vec<NodeOffer> {
+        self.heard
+            .values()
+            .filter(|(heard_at, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
+            .map(|(_, o)| o.clone())
+            .collect()
+    }
+    /// Drop the offers that have gone silent; returns the nodes that left.
+    pub fn forget_silent(&mut self, now_ms: u64, silent_after_ms: u64) -> Vec<Uuid> {
+        let gone: Vec<Uuid> = self
+            .heard
+            .iter()
+            .filter(|(_, (heard_at, _))| now_ms.saturating_sub(*heard_at) > silent_after_ms)
+            .map(|(n, _)| *n)
+            .collect();
+        for n in &gone {
+            self.heard.remove(n);
+        }
+        gone
+    }
+}
+
+/// A fingerprint of the allocator's inputs: the daemon recomputes only when it changes
+/// (a beacon repeating the same offer is silence, not work — Joel: "find something once").
+/// IN-PROCESS ONLY: `DefaultHasher` is not stable across builds; never persist or compare
+/// this across nodes.
+pub fn inputs_key(inputs: &GridInputs) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    inputs.minds_per_lane.hash(&mut h);
+    for r in &inputs.roles {
+        r.name.hash(&mut h);
+        r.requirement.window.hash(&mut h);
+        r.requirement.min_capability.hash(&mut h);
+        r.requirement.decode_floor_tps.map(f32::to_bits).hash(&mut h);
+    }
+    for m in &inputs.minds {
+        (m.id, m.role, m.home, m.owner).hash(&mut h);
+    }
+    for n in &inputs.nodes {
+        (n.node, n.owner, n.terms.seats_lent, &n.terms.roles).hash(&mut h);
+        for p in &n.plans {
+            (&p.model_id, p.capability_rank, p.window, p.lanes, p.decode_tps_per_lane.map(f32::to_bits)).hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 /// The three declared inputs plus the one society-wide ratio (minds a warm lane serves,
@@ -158,6 +260,10 @@ pub struct Seat {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenSeats {
     pub node: Uuid,
+    /// Whose seats these are: a spawner mints only into its OWN owner's open seats — a
+    /// lender's spare seats are theirs to fill (Cormac's condition on #4263: without this
+    /// our spawner minted two coders for a loan already spent).
+    pub owner: Uuid,
     pub role: usize,
     pub count: u32,
 }
@@ -232,8 +338,16 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
         .iter()
         .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane))
         .collect();
-    // Free seats per node, drawn down as minds are seated.
+    // Free seats per node, drawn down as minds are seated; and the seats each node has
+    // LENT to other owners' minds, bounded by its terms.
     let mut free: Vec<u32> = nodes.iter().map(|n| n.seats).collect();
+    let mut lent: Vec<u32> = vec![0; nodes.len()];
+    // May this mind sit on node i? Her owner's own node: yes. Another owner's: within terms.
+    let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
+        let offer = &inputs.nodes[i];
+        offer.owner == m.owner
+            || (offer.terms.admits_role(m.role) && offer.terms.seats_lent.is_none_or(|cap| lent_now < cap))
+    };
     let mut seated = Vec::new();
     let mut dormant = Vec::new();
     for role in 0..inputs.roles.len() {
@@ -249,10 +363,15 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
         let mut unseated: Vec<&Mind> = Vec::new();
         // Pass 1: home has a seat for her role — she stays where her memory is.
         for m in &minds {
-            let at_home = m.home.and_then(|h| hosts.iter().copied().find(|&i| nodes[i].node == h && free[i] > 0));
+            let at_home = m
+                .home
+                .and_then(|h| hosts.iter().copied().find(|&i| nodes[i].node == h && free[i] > 0 && admits(i, m, lent[i])));
             match at_home {
                 Some(i) => {
                     free[i] -= 1;
+                    if inputs.nodes[i].owner != m.owner {
+                        lent[i] += 1;
+                    }
                     seated.push(Seat { mind: m.id, node: nodes[i].node, role });
                 }
                 None => unseated.push(m),
@@ -261,14 +380,18 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
         // Pass 2: any node on the grid with a free seat for her role — residents exist
         // between the grid. The node with the most free seats first, so load spreads.
         for m in unseated {
+            // Her owner's own nodes first (no terms spent), then a lender's within its terms.
             let target = hosts
                 .iter()
                 .copied()
-                .filter(|&i| free[i] > 0)
-                .max_by_key(|&i| free[i]);
+                .filter(|&i| free[i] > 0 && admits(i, m, lent[i]))
+                .max_by_key(|&i| (inputs.nodes[i].owner == m.owner, free[i]));
             match target {
                 Some(i) => {
                     free[i] -= 1;
+                    if inputs.nodes[i].owner != m.owner {
+                        lent[i] += 1;
+                    }
                     seated.push(Seat { mind: m.id, node: nodes[i].node, role });
                 }
                 None => dormant.push(m.id),
@@ -280,8 +403,9 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let open = nodes
         .iter()
         .zip(free.iter())
-        .filter_map(|(n, &f)| match n.verdict {
-            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, role, count: f }),
+        .zip(inputs.nodes.iter())
+        .filter_map(|((n, &f), offer)| match n.verdict {
+            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, owner: offer.owner, role, count: f }),
             _ => None,
         })
         .collect();
@@ -308,27 +432,31 @@ mod tests {
     fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
         LanePlan { model_id: model.into(), capability_rank: cap, window, lanes, decode_tps_per_lane: tps }
     }
+    const US: Uuid = Uuid::from_u128(0xA11);
     fn minds(role: usize, home: Option<Uuid>, n: usize) -> Vec<Mind> {
-        (0..n).map(|_| Mind { id: Uuid::new_v4(), role, home }).collect()
+        (0..n).map(|_| Mind { id: Uuid::new_v4(), role, home, owner: US }).collect()
+    }
+    fn offer(node: Uuid, plans: Vec<LanePlan>) -> NodeOffer {
+        NodeOffer { node, owner: US, terms: OfferTerms::open(), plans }
     }
     /// A 64 GB unified-memory box: the 27B at 2 lanes or 1 wide lane; a 7B at 4 lanes.
     fn big_box(node: Uuid) -> NodeOffer {
-        NodeOffer {
+        offer(
             node,
-            plans: vec![
+            vec![
                 plan("27b", 9, 67_072, 2, Some(14.0)),
                 plan("27b", 9, 131_072, 1, Some(14.3)),
                 plan("7b", 5, 131_072, 4, Some(40.0)),
             ],
-        }
+        )
     }
     /// A 32 GB discrete-GPU box: the 27B at 3 lanes × 128k.
     fn gpu_box(node: Uuid) -> NodeOffer {
-        NodeOffer { node, plans: vec![plan("27b", 9, 131_072, 3, Some(30.0))] }
+        offer(node, vec![plan("27b", 9, 131_072, 3, Some(30.0))])
     }
     /// A 16 GB laptop: a 7B or a 1.5B, never the 27B.
     fn small_box(node: Uuid) -> NodeOffer {
-        NodeOffer { node, plans: vec![plan("7b", 5, 32_768, 1, Some(12.0)), plan("1.5b", 2, 32_768, 3, Some(60.0))] }
+        offer(node, vec![plan("7b", 5, 32_768, 1, Some(12.0)), plan("1.5b", 2, 32_768, 3, Some(60.0))])
     }
     fn inputs(nodes: Vec<NodeOffer>, minds: Vec<Mind>) -> GridInputs {
         GridInputs { roles: vec![coder(), orchestrator()], minds, nodes, minds_per_lane: 2 }
@@ -339,9 +467,9 @@ mod tests {
     #[test]
     fn a_box_that_can_only_serve_two_k_seats_nobody_and_says_how_far_off_it_is() {
         let n = Uuid::new_v4();
-        let offer = NodeOffer { node: n, plans: vec![plan("27b", 9, 2_048, 1, None), plan("27b", 9, 2_048, 2, None)] };
+        let two_k = offer(n, vec![plan("27b", 9, 2_048, 1, None), plan("27b", 9, 2_048, 2, None)]);
         let m = minds(0, Some(n), 6);
-        let a = allocate(&inputs(vec![offer], m.clone()));
+        let a = allocate(&inputs(vec![two_k], m.clone()));
         assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: 9 });
         assert!(a.seated.is_empty());
         assert_eq!(a.dormant.len(), 6, "every mind dormant, identity kept — none seated on a useless lane");
@@ -383,7 +511,7 @@ mod tests {
         for d in &alone.dormant {
             assert_eq!(joined.seat_of(*d), Some(gpu), "a dormant mind wakes where the seat opened");
         }
-        assert_eq!(joined.open, vec![OpenSeats { node: gpu, role: 0, count: 4 }]);
+        assert_eq!(joined.open, vec![OpenSeats { node: gpu, owner: US, role: 0, count: 4 }]);
     }
 
     // what this catches: the grid shrinking — the GPU box drops; its minds reseat on the
@@ -440,8 +568,8 @@ mod tests {
         assert!(!plan("7b", 6, 131_072, 4, Some(40.0)).holds(&req), "capability is a requirement, not a preference");
         assert!(!plan("27b", 9, 131_072, 0, None).holds(&req), "zero lanes seat nobody");
         let n = Uuid::new_v4();
-        let offer = NodeOffer { node: n, plans: vec![plan("27b", 9, 67_072, 2, Some(6.3)), plan("27b", 9, 131_072, 1, Some(14.3))] };
-        let a = allocate(&inputs(vec![offer], minds(0, Some(n), 3)));
+        let knee = offer(n, vec![plan("27b", 9, 67_072, 2, Some(6.3)), plan("27b", 9, 131_072, 1, Some(14.3))]);
+        let a = allocate(&inputs(vec![knee], minds(0, Some(n), 3)));
         assert_eq!(a.node(n).unwrap().plan.as_ref().unwrap().lanes, 1, "the knee sheds the second lane; the one lane that decodes is the seat");
         assert_eq!(a.seated.len(), 2);
         assert_eq!(a.dormant.len(), 1);
@@ -454,14 +582,14 @@ mod tests {
         let n = Uuid::new_v4();
         let few = allocate(&inputs(vec![big_box(n)], minds(0, None, 1)));
         assert_eq!(few.seated.len(), 1);
-        assert_eq!(few.open, vec![OpenSeats { node: n, role: 0, count: 3 }]);
+        assert_eq!(few.open, vec![OpenSeats { node: n, owner: US, role: 0, count: 3 }]);
         let many = allocate(&inputs(vec![big_box(n)], minds(0, None, 25)));
         assert_eq!(many.seated.len(), 4);
         assert_eq!(many.dormant.len(), 21);
         assert_eq!(many.open_total(), 0);
         let none = allocate(&inputs(vec![], minds(0, None, 3)));
         assert_eq!(none.dormant.len(), 3, "no grid, no seats, every mind dormant");
-        let empty = allocate(&inputs(vec![NodeOffer { node: n, plans: vec![] }], vec![]));
+        let empty = allocate(&inputs(vec![offer(n, vec![])], vec![]));
         assert_eq!(empty.node(n).unwrap().verdict, NodeVerdict::NothingRunnable);
     }
 
@@ -502,6 +630,79 @@ mod tests {
         assert_eq!(a.seat_of(a.seated[0].mind), Some(gpu), "six free seats there, four here");
     }
 
+    // what this catches (Joel: "prove that last case too"): a node ANOTHER HUMAN brings
+    // is one more offer, with terms. Their coder box lends 2 seats for coders only. Our
+    // dormant coders take exactly those two — never a third, never an orchestrator —
+    // their own minds seat on it freely, and when they withdraw the lend, ours come home
+    // or go dormant. The negotiation's outcome is the terms; the machinery is unchanged.
+    #[test]
+    fn a_peer_owned_node_lends_seats_within_its_terms_and_never_beyond() {
+        let them = Uuid::from_u128(0xB0B);
+        let ours = Uuid::new_v4();
+        let theirs = Uuid::new_v4();
+        let mut m = minds(0, Some(ours), 7); // 7 coders, our box seats 4
+        m.push(Mind { id: Uuid::new_v4(), role: 1, home: Some(ours), owner: US }); // an orchestrator of ours
+        let their_minds: Vec<Mind> = (0..2).map(|_| Mind { id: Uuid::new_v4(), role: 0, home: Some(theirs), owner: them }).collect();
+        m.extend(their_minds.iter().cloned());
+        let lending = NodeOffer {
+            node: theirs,
+            owner: them,
+            terms: OfferTerms { seats_lent: Some(2), roles: Some(vec![0]) },
+            plans: vec![plan("27b", 9, 131_072, 3, Some(30.0))], // 6 seats
+        };
+        let a = allocate(&inputs(vec![big_box(ours), lending.clone()], m.clone()));
+        let on_theirs = |a: &GridAllocation, owner: Uuid| a.seated.iter().filter(|s| s.node == theirs && m.iter().any(|x| x.id == s.mind && x.owner == owner)).count();
+        assert_eq!(on_theirs(&a, them), 2, "their own minds seat on their box, no terms spent");
+        assert_eq!(on_theirs(&a, US), 2, "we take exactly the two seats lent");
+        assert_eq!(a.seated.iter().filter(|s| s.node == ours).count(), 4, "our box full: 4 coders (the orchestrator waits — coders first)");
+        assert_eq!(a.dormant.len(), 2, "one coder and the orchestrator: two lent seats, coders only, and our box is full");
+        assert_eq!(a.open, vec![OpenSeats { node: theirs, owner: them, role: 0, count: 2 }], "their two spare seats are THEIRS to fill — our spawner mints nothing for a loan already spent");
+        assert!(a.open.iter().all(|o| o.owner != US), "no open seat of ours anywhere");
+        // A foreign node that declared no terms lends nothing.
+        let silent_terms = NodeOffer { terms: OfferTerms::default(), ..lending.clone() };
+        let a = allocate(&inputs(vec![big_box(ours), silent_terms], m.clone()));
+        assert_eq!(on_theirs(&a, US), 0, "no declared terms = no loan");
+        assert_eq!(on_theirs(&a, them), 2);
+        // They withdraw the lend: ours come off their box.
+        let withdrawn = NodeOffer { terms: OfferTerms { seats_lent: Some(0), roles: None }, ..lending.clone() };
+        let a = allocate(&inputs(vec![big_box(ours), withdrawn], m.clone()));
+        assert_eq!(on_theirs(&a, US), 0);
+        assert_eq!(on_theirs(&a, them), 2);
+        assert_eq!(a.dormant.len(), 4);
+        // Open terms between our OWN nodes are never consulted: the earlier scenarios.
+        assert!(OfferTerms::open().admits_role(7));
+    }
+
+    // what this catches: the offer book folds beacons into the allocator's inputs — a node
+    // JOINS on its first beacon, stays while fresh, LEAVES when silent, RETURNS on the next
+    // beacon — and the inputs key changes exactly when the allocation could.
+    #[test]
+    fn the_offer_book_names_join_silence_and_return_and_the_key_moves_only_with_them() {
+        let silent = 6 * 60 * 60 * 1000;
+        let big = Uuid::new_v4();
+        let gpu = Uuid::new_v4();
+        let m = minds(0, Some(big), 6);
+        let mut book = OfferBook::default();
+        book.hear(big_box(big), 1_000);
+        let k1 = inputs_key(&inputs(book.live(1_000, silent), m.clone()));
+        assert_eq!(inputs_key(&inputs(book.live(2_000, silent), m.clone())), k1, "a repeated beacon is not a change");
+        book.hear(gpu_box(gpu), 3_000);
+        let joined = book.live(3_000, silent);
+        assert_eq!(joined.len(), 2, "join");
+        assert_eq!(joined[0].node.min(joined[1].node), joined[0].node, "ordered by node id");
+        let k2 = inputs_key(&inputs(joined.clone(), m.clone()));
+        assert_ne!(k2, k1);
+        assert_eq!(allocate(&inputs(joined, m.clone())).dormant.len(), 0, "six seated across both");
+        let later = 3_000 + silent + 1;
+        let alone = book.live(later, silent);
+        assert_eq!(alone.len(), 0, "both silent: nobody live");
+        book.hear(big_box(big), later);
+        assert_eq!(book.live(later, silent).len(), 1, "the big box returned; the GPU box is still silent");
+        assert_eq!(inputs_key(&inputs(book.live(later, silent), m.clone())), k1, "the same grid as at the start keys the same");
+        assert_eq!(book.forget_silent(later, silent), vec![gpu], "the silent one is forgotten, named");
+        assert_eq!(allocate(&inputs(book.live(later, silent), m.clone())).dormant.len(), 2, "…and the allocation is the lone-box one again");
+    }
+
     // what this catches: the outlier validation — the REAL per-node planner's plan reads
     // as an offer with no translation layer, so the daemon feeds `allocate` what it
     // already publishes. A cold 64 GB-class budget planning a 27B-class footprint.
@@ -525,7 +726,7 @@ mod tests {
         assert_eq!(lane.lanes, plan.lanes);
         assert!(lane.lanes >= 1);
         let n = Uuid::new_v4();
-        let i = inputs(vec![NodeOffer { node: n, plans: vec![lane.clone()] }], minds(0, Some(n), 2));
+        let i = inputs(vec![offer(n, vec![lane.clone()])], minds(0, Some(n), 2));
         let a = allocate(&i);
         // The node hosts the first role its real plan holds — a 25 GB budget planning a
         // 27B for two lanes lands under the coder window here (2 × ~44k) and hosts
