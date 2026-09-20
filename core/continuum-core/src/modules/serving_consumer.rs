@@ -113,7 +113,7 @@ use crate::resources::{
 /// one footprint authority, not two). The window/lanes come from the
 /// [`ServingSnapshot`] (llama.cpp's own `/props` truth), never a recomputed plan
 /// value. Injectable so the consumer is testable without a populated registry.
-pub type FootprintFn = Arc<dyn Fn(&str, u32, u32) -> u64 + Send + Sync>;
+pub type FootprintFn = Arc<dyn Fn(&str, u32, u32, u32) -> u64 + Send + Sync>;
 
 /// The `consumer_id` serving's leases carry. Matches the id the acquire-on-load
 /// half will mint leases under, so the authority's asks route back here.
@@ -222,12 +222,12 @@ impl ServingConsumer {
     /// holds no reclaimable VRAM yet. The window + lane count are the process's
     /// own truth (from the snapshot's `/props` read), so the KV term is charged
     /// against what is actually resident, never a recomputed plan value.
-    fn active_ready(&self) -> Option<(String, u32, u32)> {
+    fn active_ready(&self) -> Option<(String, u32, u32, u32)> {
         let snap = self.serving.borrow();
         if snap.ready {
             snap.active_model
                 .clone()
-                .map(|id| (id, snap.served_context_window, snap.lanes))
+                .map(|id| (id, snap.served_context_window, snap.lanes, snap.host_prompt_cache_mib))
         } else {
             None
         }
@@ -270,8 +270,8 @@ impl ResourceConsumer for ServingConsumer {
         // WHAT THE PLAN SAYS is served right now. Zero while a lane is loading or
         // relaunching, because `active_ready` gates on `ready`.
         let planned = match self.active_ready() {
-            Some((id, window, lanes)) => Some((
-                (self.footprint_of)(&id, window, lanes),
+            Some((id, window, lanes, grant_mib)) => Some((
+                (self.footprint_of)(&id, window, lanes, grant_mib),
                 format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
             )),
             None => None,
@@ -284,7 +284,7 @@ impl ResourceConsumer for ServingConsumer {
         let planned = planned.or_else(|| {
             let snap = self.serving.borrow();
             snap.loading_model.clone().map(|id| {
-                let bytes = (self.footprint_of)(&id, MIN_SERVE_CTX, 1);
+                let bytes = (self.footprint_of)(&id, MIN_SERVE_CTX, 1, 0);
                 (
                     bytes,
                     format!("{id} loading — weights resident, KV not yet allocated"),
@@ -308,7 +308,9 @@ impl ResourceConsumer for ServingConsumer {
         // day was spent removing.
         let planned = planned.or_else(|| {
             let rec = (self.inherited_lane)()?;
-            inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l))
+            // The custody record carries the shape, not the grant: a past form's cache
+            // is under-attributed by its grant until the record learns it (named gap).
+            inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l, 0))
         });
         let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
 
@@ -390,7 +392,7 @@ impl ResourceConsumer for ServingConsumer {
             let mut pending = self.pending.lock();
             if !pending.is_empty() {
                 let active = self.active_ready();
-                let active_id = active.as_ref().map(|(id, _, _)| id.as_str());
+                let active_id = active.as_ref().map(|(id, _, _, _)| id.as_str());
                 let landed: Vec<String> = pending
                     .keys()
                     .filter(|id| active_id != Some(id.as_str()))
@@ -431,11 +433,11 @@ impl ResourceConsumer for ServingConsumer {
 
         // Nothing pending → decide the lever. We need the active model + its live
         // shape to size what we hold.
-        let Some((active, window, lanes)) = self.active_ready() else {
+        let Some((active, window, lanes, grant_mib)) = self.active_ready() else {
             // We hold nothing reclaimable — already free, honestly zero.
             return ReclaimOutcome::released(0);
         };
-        let current = (self.footprint_of)(&active, window, lanes);
+        let current = (self.footprint_of)(&active, window, lanes, grant_mib);
 
         // Under Pressure another peer needs room NOW but serving need not go dark:
         // offer the tier-down policy the chance to re-home to a smaller base and
@@ -524,6 +526,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -534,7 +537,7 @@ mod tests {
         // Flat resident estimate — the shape (window, lanes) is ignored here so the
         // reclaim handshake tests assert against a stable footprint. The test that
         // the window/lanes actually REACH this fn lives separately below.
-        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _window: u32, _lanes: u32| bytes);
+        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _window: u32, _lanes: u32, _grant: u32| bytes);
         let consumer = ServingConsumer::new(
             serving_rx,
             suppress_tx,
@@ -591,6 +594,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 22_528,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -599,7 +603,7 @@ mod tests {
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, _prx) = watch::channel(None);
         let footprint_of: FootprintFn =
-            Arc::new(move |_id: &str, _w: u32, lanes: u32| bytes_per_lane * lanes as u64);
+            Arc::new(move |_id: &str, _w: u32, lanes: u32, _grant: u32| bytes_per_lane * lanes as u64);
         let consumer = ServingConsumer::new(
             serving_rx,
             suppress_tx,
@@ -748,12 +752,13 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 3,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
         });
-        let footprint_of: FootprintFn = Arc::new(move |id: &str, window: u32, lanes: u32| {
+        let footprint_of: FootprintFn = Arc::new(move |id: &str, window: u32, lanes: u32, _grant: u32| {
             *seen_w.lock() = Some((id.to_string(), window, lanes));
             // weights(1000) + lanes × kv_per_token(10) × window
             1000 + lanes as u64 * 10 * window as u64
@@ -851,6 +856,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -858,7 +864,7 @@ mod tests {
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
-        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
+        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32, _grant: u32| current);
         let consumer = ServingConsumer::new(
             serving_rx,
             suppress_tx,

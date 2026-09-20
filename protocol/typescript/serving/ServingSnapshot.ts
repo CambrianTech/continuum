@@ -75,6 +75,26 @@ served_context_window: number,
  */
 lanes: number, 
 /**
+ * The host prompt cache (`--cache-ram`, MiB) the running engine was LAUNCHED
+ * with — a fact about the process, recorded at spawn, never the plan's latest
+ * derivation. The footprint measurement subtracts it before attributing bytes
+ * per token and the board credits it to serving; both must charge what the
+ * ENGINE holds. Measured 2026-09-20 07:52Z on the M5: the daemon re-derived a
+ * 1-lane target (256 MiB) while the engine still ran 2 lanes on a 14,396 MiB
+ * grant; the subtraction used the new number, the per-token reading went
+ * 33k → 262k, the prefill "spike" 2.8 → 16.6 GB, the plan to 1 × 2,048, and
+ * the record on disk kept it for the next boot. For a lane this core did not
+ * spawn (ADOPTED across a deploy — the common case) the daemon recovers it off
+ * the engine's own argv (`--cache-ram N`). `0` = unknown (no spawn fact, no flag
+ * on the line, an older snapshot): the footprint measurement is WITHHELD and the
+ * board credits nothing. Two zeros, not one: a literal `--cache-ram 0` launch (no
+ * host cache — a value) also lands here as unknown and stays unmeasured; harmless
+ * while our launches floor the grant at `CACHE_RAM_HARD_FLOOR_MIB`, named so the
+ * two are never mistaken for each other. `serde(default)` keeps older persisted
+ * snapshots readable.
+ */
+host_prompt_cache_mib: number, 
+/**
  * WHY nothing is serving, when the last reconcile ended Degraded — the
  * spawn/probe failure reason, verbatim (e.g. a missing llama-server binary
  * names its path here). `None` on healthy and never-attempted snapshots.
