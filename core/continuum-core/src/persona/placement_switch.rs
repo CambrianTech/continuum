@@ -1019,10 +1019,10 @@ mod tests {
     }
 
     fn offer(peer: u128, free: u32, wait_p50_ms: u64, wait_samples: u32) -> PeerOffer {
-        PeerOffer { peer: Uuid::from_u128(peer), served_model: Some("qwen-27b".into()), lanes: 4, residents: 4, beacon_age_ms: 5_000, free_slots_live: free, lane_wait_p50_ms: wait_p50_ms, lane_wait_samples: wait_samples }
+        PeerOffer { peer: Uuid::from_u128(peer), served_model: Some("qwen-27b".into()), lanes: 4, residents: 4, beacon_age_ms: 5_000, free_slots_live: free, lane_wait_p50_ms: wait_p50_ms, lane_wait_samples: wait_samples, served_context_window: None }
     }
     fn local(resident: u32, lanes: u32, home_wait: Option<u64>) -> LocalShape {
-        LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait }
+        LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait, requirement: None }
     }
     fn rank27(m: &str) -> Option<u8> { (m == "qwen-27b").then_some(42) }
     fn minds(n: u128) -> Vec<(Uuid, u64)> { (1..=n).map(|i| (Uuid::from_u128(0x100 + i), i as u64)).collect() }
