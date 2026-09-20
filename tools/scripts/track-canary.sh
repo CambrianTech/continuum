@@ -50,18 +50,31 @@ tip_sha() {
   git -C "$REPO_DIR" rev-parse "origin/$BRANCH"
 }
 
-# The tip's check verdict: green | red | pending | unknown. Required contexts are
-# whatever the branch protection names; absent protection, every check counts.
+# The tip's check verdict: green | red | pending | unknown — judged over the checks the
+# tip's OWN push ran. A check-run that some other event attached to the same sha is not the
+# tip's verdict: 2026-09-20 00:06Z a weekly SCHEDULED audit (Node-era paths, fails every
+# Sunday) landed a failure on the canary tip and this read "red", refusing every deploy on
+# the fleet until a new tip appeared. So: the workflow runs for the sha are read first
+# (they carry the triggering event), and only check-runs from suites started by a push,
+# pull_request or workflow_dispatch count. No such suites yet = unknown, never green.
 tip_checks() {
-  local repo="$1" sha="$2" json
+  local repo="$1" sha="$2" json runs
   json="$(gh api "repos/$repo/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || { echo unknown; return; }
-  python3 - "$json" <<'PY'
+  runs="$(gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null)" || runs='{}'
+  python3 - "$json" "$runs" <<'PY'
 import json, sys
-d = json.loads(sys.argv[1]); runs = d.get("check_runs", [])
-if not runs: print("unknown"); sys.exit()
-concl = [r.get("conclusion") for r in runs]
+d = json.loads(sys.argv[1]); checks = d.get("check_runs", [])
+w = json.loads(sys.argv[2]).get("workflow_runs")
+if w is not None:
+    # The runs API answered: only the tip's own suites count. None of them yet = unknown
+    # (the push's workflows have not registered), never "green by absence".
+    own = {r.get("check_suite_id") for r in w if r.get("event") in ("push", "pull_request", "workflow_dispatch")}
+    checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
+# The runs API did not answer: every check counts, as before — a degraded read, not a lie.
+if not checks: print("unknown"); sys.exit()
+concl = [c.get("conclusion") for c in checks]
 if any(c in ("failure", "timed_out", "cancelled", "action_required") for c in concl): print("red")
-elif any(r.get("status") != "completed" for r in runs): print("pending")
+elif any(c.get("status") != "completed" for c in checks): print("pending")
 else: print("green")
 PY
 }
