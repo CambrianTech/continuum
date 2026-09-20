@@ -171,13 +171,24 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// of which are recomputed every turn. Salience still decides WHAT is selected; it no
 /// longer decides WHERE the survivors sit, which it never needed to.
 ///
+/// THE CACHEABLE PREFIX TAKES [`PromptChurn::Standing`] ONLY. Board and Turn churn
+/// render AFTER the conversation, however a source was registered — enforced once, at
+/// the registration seam (`rag_source_faculty::RagSourceFaculty::new`), not left to a
+/// builder call someone can forget. `room-wall` was the case that proved it necessary:
+/// declared standing, sitting in the system message ahead of the conversation, with
+/// bytes that change whenever ANY teammate writes a card ledger. The M5's 2026-09-20
+/// log convicted it from both sides — the turns where the wall changed reused exactly
+/// 2,046 tokens (6%: the tools + identity head), and the turns where it did not reused
+/// 65-78% WITH THE SAME CONVERSATION BEHIND IT, which is only possible if the
+/// conversation is the more stable of the two.
+///
 /// The whole-prompt order this comparator is one key of, most stable first:
-/// tools (substrate) → identity + turn contract (persona) → standing ground → the board
-/// (system message ends) → the conversation → standing grounding again for the blocks
-/// whose bytes mutate → the append-only results ring → the working-memory trail →
-/// perception facts → the clock + presence framing → the ask → this turn's room
-/// updates → the pinned result. The clock (`[now …]`) is in the volatile tail, never the
-/// system message (`volatile_blocks`).
+/// tools (substrate) → identity + turn contract (persona) → standing ground: doctrine,
+/// roster (system message ends) → the conversation → the standing grounding whose bytes
+/// mutate, in churn order: workspace-map → active-work → room-kanban → room-wall → the
+/// append-only results ring → the working-memory trail → perception facts → the clock +
+/// presence framing → the ask → this turn's room updates → the pinned result. The clock
+/// (`[now …]`) is in the volatile tail, never the system message (`volatile_blocks`).
 pub(super) fn stable_prefix_order(a: &str, b: &str) -> std::cmp::Ordering {
     churn_of(a).cmp(&churn_of(b)).then_with(|| a.cmp(b))
 }

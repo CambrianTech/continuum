@@ -189,18 +189,35 @@ impl RagSourceFaculty {
     /// derived from `source.source_id()` so the faculty and the source can never
     /// disagree about their identity.
     pub fn new(persona_id: Uuid, source: Arc<dyn RagSource>, policy: SaliencePolicy) -> Self {
-        let faculty_id = FacultyId::Custom(source.source_id().to_string());
+        let source_id = source.source_id().to_string();
+        // THE CACHEABLE PREFIX TAKES STANDING CHURN ONLY (card c119ace7, Cormac's
+        // condition on #4280). A declaration is not a measurement: `room-wall` was
+        // registered as plain framing — no `volatile_content` — and so rode the SYSTEM
+        // prefix ahead of the conversation, while its bytes change whenever ANY teammate
+        // writes a card ledger. The M5's 2026-09-20 log holds both halves of the proof:
+        // the turns where the wall changed reused exactly 2,046 tokens (6%, the tools +
+        // identity head), and the turns where it did not reused 65-78% WITH THE SAME
+        // CONVERSATION BEHIND IT — which is only possible if the conversation is the more
+        // stable of the two. So placement is not left to whoever registers a source:
+        // Board- and Turn-churn grounding renders after the conversation, always.
+        let stable = matches!(policy, SaliencePolicy::StandingFraming)
+            && matches!(
+                super::deliberation_prompt::churn_of(&source_id),
+                super::deliberation_prompt::PromptChurn::Standing
+            );
+        let faculty_id = FacultyId::Custom(source_id);
         Self {
             persona_id,
             source,
             faculty_id,
             salience: policy.salience(),
             // Standing framing is session-stable by default; retrieved grounding
-            // is volatile. `with_volatile_content` overrides for framing whose
-            // BYTES mutate per turn (active-work, room-wall — convicted by
-            // debug/prompt-reuse 2026-08-22): importance keeps the floor,
-            // placement follows content stability.
-            stable: matches!(policy, SaliencePolicy::StandingFraming),
+            // is volatile, and a Board/Turn-churn source is never stable however it
+            // was registered (above). `with_volatile_content` narrows further, for
+            // Standing-churn framing whose BYTES still mutate per turn (workspace-map
+            // — her own writes change it): importance keeps the floor, placement
+            // follows content stability.
+            stable,
             standing_grounding: matches!(policy, SaliencePolicy::StandingFraming),
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
@@ -852,6 +869,44 @@ mod tests {
         assert!(
             !c.standing_grounding,
             "retrieval remains optional enrichment"
+        );
+    }
+
+    // what this catches (card c119ace7, Cormac's condition on #4280): a BOARD-churn
+    // source registered as plain framing — no `volatile_content` — must NOT reach the
+    // cacheable system prefix. `room-wall` was exactly that: declared standing, riding
+    // the system message ahead of the conversation, with bytes that change whenever any
+    // teammate writes a card ledger. The M5's 2026-09-20 log convicted it from both
+    // sides — the turns where the wall changed reused 2,046 tokens (6%: the tools +
+    // identity head), and the turns where it did not reused 65-78% with the SAME
+    // conversation behind it. Placement now follows the CHURN TABLE
+    // (`deliberation_prompt::churn_of`), so no future registration can put a mutating
+    // block back in front of the conversation by forgetting one builder call.
+    #[tokio::test]
+    async fn a_board_churn_source_never_reaches_the_cacheable_prefix_however_it_is_registered() {
+        let wall = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("room-wall", &["card 1234: a ledger line"])),
+            // Registered EXACTLY as the live supervisor registers it: framing, no
+            // `with_volatile_content`. This is the registration that shipped the defect.
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1_000));
+        let c = wall
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty source bids");
+        assert!(
+            !c.stable,
+            "the wall is BOARD churn — it may never sit in the cacheable system prefix"
+        );
+        assert!(
+            c.trailing,
+            "board grounding renders AFTER the conversation, beside map/active-work/kanban"
+        );
+        assert!(
+            c.standing_grounding,
+            "moving KV placement must not erase importance — the wall is still standing ground"
         );
     }
 

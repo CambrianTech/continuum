@@ -259,15 +259,30 @@ captures (`~/.continuum/fixtures/prompt-captures/*.jsonl`, schema 4):
 A 0% turn is 27–34k tokens at 77–92 tok/s: **5.5–6 minutes of prefill before the first
 output token.** The captures explain the two failing shapes:
 
-- **The system prompt is already stable across a mind's turns** (66k chars, byte-identical
-  cycle to cycle) and carries no clock: tools (5,986 chars, shared by every persona with the
-  same hands) → identity + turn contract (to char 8,135 ≈ 2,046 tokens) → the room's
-  ground: doctrine, roster, then `[room-wall]` with every card's ledger (≈57k chars). When
-  ANY teammate writes a ledger the wall mutates in place and the reuse falls to exactly
-  that 2,046-token head — the 6% rows. The wall stays where it is on purpose: everything
-  behind it (the conversation, her held card, the board, the ring) changes at least as
-  often, so no other position costs less; the remaining cost is the wall's SIZE, which is
-  the wall source's economy, not the order's.
+- **The system prompt is byte-identical across a mind's turns and carries no clock** —
+  until a teammate touches the board. Layout as it shipped: tools (5,986 chars, shared by
+  every persona with the same hands) → identity + turn contract (to char 8,135 ≈ 2,046
+  tokens) → the room's ground: doctrine, roster, then `[room-wall]` with every card's
+  ledger (≈57k chars). When ANY teammate writes a ledger the wall mutates in place and
+  reuse falls to exactly that 2,046-token head — **the 6% rows ARE the wall changing.**
+
+  The first draft of this section argued the wall should stay where it was, on the
+  grounds that everything behind it changes at least as often. **The measurement in the
+  table above refutes that, and it is the same table:** the warm rows reused 65-78% with
+  the SAME conversation sitting behind the SAME wall. If the conversation changed as
+  often as the wall, those rows could not exist. A block is only entitled to the
+  cacheable prefix if it is more stable than what follows it, and the wall is not —
+  it is the busiest shared object in the room (Cormac, reviewing #4280, from these
+  numbers).
+
+  So the stable tier now carries **Standing churn only** (tools, identity, turn contract,
+  doctrine, roster); the wall is Board churn and renders after the conversation beside
+  map / active-work / kanban, under the same `stable_prefix_order`. Enforced at the
+  registration seam (`rag_source_faculty::RagSourceFaculty::new` consults
+  `deliberation_prompt::churn_of`), not by a builder call a future registration can
+  forget — which is exactly how the wall got there: `with_volatile_content` existed,
+  named `room-wall` in its own doc comment as the case it was for, and was never applied
+  to it. The wall's remaining cost is its SIZE, which is the wall source's economy.
 - **The message side was volatile-first in one place:** the standing grounding that rides
   the conversation tail (`[workspace-map]`, `[active-work]`, `[room-kanban]`) rendered in
   BROADCAST order — the arbiter's per-turn salience — and the captures hold both
@@ -277,6 +292,12 @@ output token.** The captures explain the two failing shapes:
   `deliberation_prompt::stable_prefix_order` (churn class — standing → board → turn — then
   name), orders the system's stable tier, the trailing standing grounding and the trailing
   proprioception turns alike.
+- Two further economies stay on card c119ace7 as the next slices, deliberately not in
+  this change: **(A) budget-invariant membership** — which blocks are present must not
+  depend on the budget, or a window change silently re-cuts the prefix — and **(B) earned
+  stability**: a block keeps its place in front of the conversation only while it is
+  measurably the more stable of the two, re-derived from the reuse rows rather than
+  declared.
 - Within a warm turn the 22–35% that still re-prefills is the `[working-memory]` trail
   (18.6k chars rewriting itself every act — a sliding ring, common prefix 127 chars),
   which already sits after the append-only results ring, plus the facts / clock / ask /

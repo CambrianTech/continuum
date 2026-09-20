@@ -7898,11 +7898,12 @@ mod tests {
                     LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
                         .with_context_window(16_384);
                 let room_uuid = Uuid::new_v4();
-                let view_for = |order: [usize; 3], sal: [f32; 3]| {
+                let view_for = |order: [usize; 4], sal: [f32; 4]| {
                     let bodies = [
                         ("workspace-map", "MAP: src/ tests/ docs/"),
                         ("active-work", "HELD: card 1234 [InProgress] \"fix the thing\""),
                         ("room-kanban", "BOARD: you hold 1 card here; 3 claimable"),
+                        ("room-wall", "WALL: card 1234 ledger — known: the repro is in tests/"),
                     ];
                     let room = crate::identity::ActivityRoom::from_uuid(room_uuid).unwrap();
                     let turns = vec![
@@ -7937,9 +7938,9 @@ mod tests {
                     faculty.prompt_view(&ws)
                 };
 
-                let a = view_for([0, 1, 2], [0.9, 0.5, 0.3]);
+                let a = view_for([0, 1, 2, 3], [0.9, 0.5, 0.3, 0.7]);
                 // Re-ranked AND re-ordered arrival: the bytes must not move.
-                let b = view_for([2, 0, 1], [0.3, 0.9, 0.5]);
+                let b = view_for([3, 2, 0, 1], [0.3, 0.9, 0.7, 0.5]);
                 assert_eq!(a.system, b.system, "the system prefix is a function of the persona + ground");
                 assert_eq!(
                     bodies(&a),
@@ -7949,8 +7950,8 @@ mod tests {
 
                 // The order, most stable first: the conversation (dated history) leads;
                 // then the standing grounding in churn order (STANDING map, then the
-                // BOARD's held card and kanban, by name); then the per-turn facts; then
-                // the clock + presence framing; then the ask, last.
+                // BOARD's held card, kanban and wall, by name); then the per-turn facts;
+                // then the clock + presence framing; then the ask, last.
                 assert!(
                     a.messages[0].content_text().starts_with("[occurred "),
                     "the conversation leads the message list — nothing volatile ahead of it:\n{:#?}",
@@ -7960,19 +7961,35 @@ mod tests {
                 let map = at(&a, "[workspace-map]");
                 let held = at(&a, "[active-work]");
                 let board = at(&a, "[room-kanban]");
+                let wall = at(&a, "[room-wall]");
                 let facts = at(&a, "[context]");
                 let clock = at(&a, "[now ");
                 let ask = at(&a, "[occurred 2023-11-14T22:15:20.000Z] Operator: what's next");
                 assert!(
-                    history_last < map && map < held && held < board && board < facts && facts < clock && clock < ask,
-                    "order must be history < map < active-work < kanban < facts < clock < ask, got \
-                     {history_last} {map} {held} {board} {facts} {clock} {ask}:\n{:#?}",
+                    history_last < map
+                        && map < held
+                        && held < board
+                        && board < wall
+                        && wall < facts
+                        && facts < clock
+                        && clock < ask,
+                    "order must be history < map < active-work < kanban < wall < facts < clock \
+                     < ask, got {history_last} {map} {held} {board} {wall} {facts} {clock} \
+                     {ask}:\n{:#?}",
                     bodies(&a)
                 );
 
-                // No timestamp and no counter ahead of the conversation: the clock is in the
-                // volatile tail, the system message carries neither a date nor the turn count.
-                for needle in ["[now ", "2023-11", "input turns were available"] {
+                // No timestamp, no counter and no BOARD-churn block ahead of the
+                // conversation: the clock is in the volatile tail, the wall and the board
+                // ride behind the history, and the system message carries neither a date
+                // nor the turn count.
+                for needle in [
+                    "[now ",
+                    "2023-11",
+                    "input turns were available",
+                    "[room-wall]",
+                    "[room-kanban]",
+                ] {
                     assert!(
                         !a.system.contains(needle),
                         "`{needle}` must not sit in the cacheable system message:\n{}",
