@@ -3565,6 +3565,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // `apply_kv_quantization`), which reads the same resolved divisor this launch
         // flags with: if these two ever disagreed, the box would over- or under-commit
         // its whole budget by 2×.
+        let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
         let planned_kv_per_token = crate::modules::serving_daemon::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
@@ -3574,7 +3575,7 @@ impl LlamaServerControl for LlamaServerProcess {
             cache_type = %kv_plan.cache_type,
             source = kv_plan.source.as_str(),
             backend = kv_plan.backend.label(),
-            engine_advertised = ?crate::cognition::kv_cache_plan::engine_quantized_kv_support(),
+            engine_advertised = ?engine_advertised,
             flash_attn = flash_attn,
             divisor = kv_plan.bytes_per_token_divisor,
             kv_bytes_per_token = planned_kv_per_token,

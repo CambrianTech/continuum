@@ -397,18 +397,21 @@ fn host_backend(placement_cfg: Option<&str>) -> ServingBackend {
 /// no more I/O than the single `config_env::read` it replaced.
 pub fn resolve() -> KvCachePlan {
     let cfg = crate::config_env::read_all();
-    let pick = |key: &str| {
-        cfg.iter()
-            .rev()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    };
     resolve_from(
-        host_backend(pick("CONTINUUM_SERVING_PLACEMENT")),
+        host_backend(pick(&cfg, "CONTINUUM_SERVING_PLACEMENT")),
         engine_quantized_kv_support(),
-        pick("SERVING_KV_CACHE_TYPE"),
-        pick("SERVING_FLASH_ATTN"),
+        pick(&cfg, "SERVING_KV_CACHE_TYPE"),
+        pick(&cfg, "SERVING_FLASH_ATTN"),
     )
+}
+
+/// One key out of an already-parsed `config.env`, last assignment winning — the same
+/// shell `source` semantics [`crate::config_env::read`] gives a single-key read.
+fn pick<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    cfg.iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 #[cfg(test)]
