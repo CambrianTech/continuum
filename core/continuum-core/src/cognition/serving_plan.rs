@@ -135,6 +135,22 @@ pub const MIN_SERVE_CTX: u32 = 2048;
 /// floor (`MIN_SERVE_CTX × 8 = 16384`) rather than a second bare magic number.
 pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 
+/// PURE: a plan's per-slot window is a persona seat only if it holds what the residents
+/// REQUIRE. The requirement is not a number in this file: today it is the residents'
+/// typical prompt with headroom (`ServingDemand::typical_prompt_floor`, the same measured
+/// demand the plan targets, sealed against a starved window by #4256); when a role
+/// declares its requirement (card 2eec3977, the allocator) it is that declaration. Joel,
+/// 2026-09-20, reading the 5090 at 2 × 2,048 refusing 2,932 prompts (p50 56k): "2k context
+/// is a complete waste of a lane" — and, on a fixed floor: "you're making rigid laws that
+/// concern me". So the seam holds a comparison, never a constant: `None` requirement (no
+/// prompt ever measured or declared) imposes nothing beyond the engine's runnable floor.
+pub fn persona_lane_holds(served_context_window: u32, requirement: Option<u32>) -> bool {
+    match requirement {
+        Some(r) => served_context_window >= r,
+        None => served_context_window >= MIN_SERVE_CTX,
+    }
+}
+
 /// What the minds on this host are asking the serving lane for.
 ///
 /// Both axes of demand in ONE value, because they are one question — "how much
@@ -2062,6 +2078,25 @@ mod tests {
             "names the smallest as the only option"
         );
         assert_eq!(plan.lanes, 1);
+    }
+
+    // what this catches: a persona seat holds what the residents REQUIRE — a comparison
+    // against the measured-or-declared requirement, never a constant. The 5090's 2 × 2,048
+    // against residents sending 56k (× 1.25 headroom = 70k) is not a seat; a 67k window
+    // against a 30k typical is; with nothing measured or declared, only the engine's
+    // runnable floor applies.
+    #[test]
+    fn a_persona_lane_holds_what_the_residents_require() {
+        let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057));
+        let requirement = demand.typical_prompt_floor();
+        assert_eq!(requirement, Some(70_071));
+        assert!(!persona_lane_holds(2_048, requirement));
+        assert!(!persona_lane_holds(67_072, requirement), "67k does not hold a 56k typical with headroom");
+        assert!(persona_lane_holds(70_071, requirement));
+        let thirty = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(30_000)).typical_prompt_floor();
+        assert!(persona_lane_holds(67_072, thirty));
+        assert!(persona_lane_holds(MIN_SERVE_CTX, None), "nothing measured or declared → only the runnable floor");
+        assert!(!persona_lane_holds(MIN_SERVE_CTX - 1, None));
     }
 
     // what this catches: no candidates → no plan (caller must supply a registry).

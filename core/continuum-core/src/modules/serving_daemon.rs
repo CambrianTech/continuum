@@ -3681,6 +3681,36 @@ impl ServingDaemonModule {
             plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
         };
         match stable {
+            // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
+            // "2k context is a complete waste of a lane"). A plan whose per-slot window is
+            // below the residents' requirement (measured today, declared per role once the
+            // allocator lands — never a constant here) is NOT published: the previously published plan
+            // stands (the running lane, if any, keeps serving), and the per-token footprint
+            // record that shrank the window is RETIRED so the next tick plans from the
+            // estimate — a starved plan is evidence of a trapped record (the 5090 sat at
+            // 2 × 2,048 for an afternoon on a ~244k B/token record taken at that window).
+            // Emitted once per (model, window, lanes), not per tick.
+            Some(plan) if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, demand.typical_prompt_floor()) => {
+                let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
+                static LAST_STARVED: parking_lot::Mutex<Option<(String, u32, u32)>> = parking_lot::Mutex::new(None);
+                let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
+                let mut last = LAST_STARVED.lock();
+                if last.as_ref() != Some(&key) || retired {
+                    crate::probe!(
+                        class = "serving.plan.below_persona_floor",
+                        model = plan.base_model.model_id.as_str(),
+                        lanes = plan.lanes as u64,
+                        window = plan.served_context_window as u64,
+                        requirement = demand.typical_prompt_floor().unwrap_or(0) as u64, // unwrap_or: probe label; this arm only fires with a requirement present
+                        usable_gb = (budget.usable_bytes / 1_000_000_000),
+                        record_retired = retired,
+                        "the plan's window is below what the residents require — NOT published (a starved \
+                         lane is not a persona seat); the previous plan stands and the footprint record is retired"
+                    );
+                    *last = Some(key);
+                }
+                return;
+            }
             Some(plan) => {
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained
@@ -7211,14 +7241,19 @@ mod tests {
         );
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
+        // A measured demand, as every live node has (the seat's leased-in sample ring is
+        // process-global across tests; a requirement it carries needs a ceiling above it).
+        daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
 
         let budget = HostBudget {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
+        // The candidates carry real trained windows (2eec3977: a persona seat holds what the
+        // residents require; an 8k-window model cannot).
         let candidates = vec![
             footprint_from_parts("small", GB, 4096, false, None).unwrap(),
-            footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap(),
+            footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap(),
         ];
         daemon.publish_plan(budget, &candidates, &candidates);
         let plan = rx.borrow().clone().expect("plan published");
@@ -7231,6 +7266,43 @@ mod tests {
         // No candidates → None published (no silent serve).
         daemon.publish_plan(budget, &[], &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
+    }
+
+    // what this catches: a plan whose window is below the residents' REQUIREMENT is never PUBLISHED —
+    // the previous plan stands. Regression for the 5090 (2026-09-20, 2 × 2,048 all
+    // afternoon, 2,932 prompts refused) and the M5's 1 × 2,048 boot: a starved geometry
+    // must not become the served target, whatever the planner's arithmetic says.
+    #[tokio::test]
+    async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog(), test_pin_store());
+        let rx = daemon.subscribe();
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
+        // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
+        // No residents are live in this harness, so the seat's leased-in samples carry it —
+        // the same ring #4256 votes refused prompts into.
+        for _ in 0..8 {
+            crate::cognition::resource_admission::note_leased_in_sent(56_057);
+        }
+        // …and a measured demand ceiling above it (the assembled context a turn wanted),
+        // as every live node has — without it the demand cap is the bootstrap prior and no
+        // plan can hold a 56k requirement, which is a harness artifact, not a law.
+        daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+        // A roomy budget: a real window is published.
+        daemon.publish_plan(HostBudget { usable_bytes: 45 * GB, perf_cores: 6 }, &candidates, &candidates);
+        let good = rx.borrow().clone().expect("a real plan is published");
+        assert!(
+            good.served_context_window >= 70_071,
+            "the roomy plan holds the residents' requirement (56k × 1.25): {}",
+            good.served_context_window
+        );
+        // A squeezed budget: the planner's arithmetic yields a window below one coding
+        // turn — the daemon refuses to publish it and the good plan stands.
+        daemon.publish_plan(HostBudget { usable_bytes: 9 * GB + 200 * 1_000_000, perf_cores: 6 }, &candidates, &candidates);
+        let after = rx.borrow().clone().expect("the previous plan still stands");
+        assert_eq!(after.served_context_window, good.served_context_window, "a 2k plan never replaces a real one");
+        assert_eq!(after.lanes, good.lanes);
     }
 
     // what this catches: the `serving/*` surface (plan · status · load · unload) is
