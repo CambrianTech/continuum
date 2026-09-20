@@ -85,31 +85,11 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists())
 }
 
-/// Stage `title`'s work into the workspace of `claimer` under `home`.
-/// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
-/// any other card of a repo this node has a checkout of gets airc's per-card
-/// worktree (`airc_lib::work_worktree`, #1377 — the same one the CLI gives an
-/// agent), so a citizen with no cwd can pull a continuum card and root her hands
-/// there. A repo this node never checked out stages as Ordinary, said in a probe.
-pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
-    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
-        return stage_for_claimer(home, claimer, &card.title).await;
-    }
-    let repo = card.repo.to_string();
-    // Already staged: the same lookup a held-card turn uses, so claim time and turn
-    // time can never disagree about where her work lives.
-    if let Some(existing) = checkout_path_for(&claimer, card) {
-        return Staging::Ready { path: existing };
-    }
-    let Some(clone) = crate::modules::repo_registry::path_for(&repo) else {
-        crate::probe!(
-            class = "work.claim.repo_unstaged",
-            claimer = %claimer,
-            repo = %repo,
-            "repo card claimed but this node has no recorded checkout of the repo — hands stay home"
-        );
-        return Staging::Ordinary;
-    };
+/// PURE: the branch a repo card's work lives on — `<card short id>/<title slug>`. The
+/// same expression on every node, which is what lets a node the card moves to fetch
+/// the branch the last node pushed (`workspace_transfer::arrive`) rather than cut a
+/// fresh one from its own clone's HEAD.
+pub fn card_branch(card: &airc_lib::WorkCard) -> String {
     let short = airc_lib::work_worktree::short_id(card.card_id);
     let slug: String = card
         .title
@@ -122,7 +102,40 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         .take(6)
         .collect::<Vec<_>>()
         .join("-");
-    let branch = format!("{short}/{slug}");
+    format!("{short}/{slug}")
+}
+
+/// Stage `title`'s work into the workspace of `claimer` under `home`.
+/// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
+/// any other card of a repo this node has a checkout of gets airc's per-card
+/// worktree (`airc_lib::work_worktree`, #1377 — the same one the CLI gives an
+/// agent), so a citizen with no cwd can pull a continuum card and root her hands
+/// there. A repo this node never checked out stages as Ordinary, said in a probe.
+pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
+    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+        return stage_for_claimer(home, claimer, &card.title).await;
+    }
+    let repo = card.repo.to_string();
+    let branch = card_branch(card);
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn
+    // time can never disagree about where her work lives.
+    if let Some(existing) = checkout_path_for(&claimer, card) {
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
+        // exists here may be BEHIND what another node pushed on this branch (the card
+        // changed hands), or DIVERGED from it. Fetch and stand at origin's tip before
+        // her first turn; what this node had is stranded under a ref, never discarded.
+        crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
+        return Staging::Ready { path: existing };
+    }
+    let Some(clone) = crate::modules::repo_registry::path_for(&repo) else {
+        crate::probe!(
+            class = "work.claim.repo_unstaged",
+            claimer = %claimer,
+            repo = %repo,
+            "repo card claimed but this node has no recorded checkout of the repo — hands stay home"
+        );
+        return Staging::Ordinary;
+    };
     let started = std::time::Instant::now();
     let spec_card = card.card_id;
     let clone_for_spawn = clone.clone();
@@ -163,7 +176,13 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             )
             .await;
             match init {
-                Ok(Ok(Ok(()))) => Staging::Ready { path },
+                Ok(Ok(Ok(()))) => {
+                    // A branch cut here from the clone's HEAD: if another node already
+                    // pushed this card's branch, her work is there — fetch it and stand
+                    // at its tip before her first turn (card 73eefbbb).
+                    crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+                    Staging::Ready { path }
+                }
                 Ok(Ok(Err(error))) => Staging::Failed { stage: "submodules", error },
                 Ok(Err(join)) => Staging::Failed { stage: "submodules", error: format!("init task panicked: {join}") },
                 Err(_) => Staging::Failed {
@@ -482,6 +501,18 @@ mod tests {
              — it must resolve by CARD ID through airc's per-card worktree"
         );
 
+    }
+
+    // what this catches (card 73eefbbb): the branch name is a pure function of the card,
+    // identical on every node — the transfer's whole addressing scheme. A title's
+    // punctuation, case and length must not change it, and the short id leads.
+    #[test]
+    fn a_cards_branch_is_the_same_on_every_node() {
+        let card = generic_card("Fix: the Login  redirect (again) — v2, for real this time");
+        let short = airc_lib::work_worktree::short_id(card.card_id);
+        assert_eq!(card_branch(&card), format!("{short}/fix-the-login-redirect-again-v2"));
+        let same = airc_lib::WorkCard { title: "FIX THE LOGIN REDIRECT AGAIN V2".into(), ..card.clone() };
+        assert_eq!(card_branch(&same), card_branch(&card), "case and punctuation do not re-address the work");
     }
 
     // what this catches: a re-dispatched, already-settled instance staged onto the

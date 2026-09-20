@@ -115,6 +115,7 @@ pub mod instance_env_fact;
 pub mod work_focus;
 pub mod work_pull;
 pub mod staged_workspace;
+pub mod workspace_transfer;
 pub mod service_module;
 pub mod spawner;
 pub mod spawner_module;

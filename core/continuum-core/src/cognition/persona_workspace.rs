@@ -1053,6 +1053,16 @@ pub(crate) async fn root_acting_workspace(
 pub(crate) async fn restore_acting_workspace(
     hands: &ActingHands,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
+    // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): this is the one restore every
+    // acting path goes through, and the last moment both facts still stand — WHERE her
+    // hands acted and WHICH card rooted them. Before her hands leave the checkout, the
+    // act's work is WIP-committed on the card's branch and pushed to origin, so a node she
+    // is next staged on fetches it (`workspace_transfer::arrive`) and a seat change waits
+    // on it (`move_blocker`). Bounded, probed, never the turn's failure. A root with no
+    // card (an eval sandbox rooted directly) carries nothing: nothing to push.
+    if let (Some(root), Some(card)) = (acting_root_of(hands.persona_id), acting_card_of(hands.persona_id)) {
+        crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card).await;
+    }
     // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
     // (PathSecurity canonicalizes), and a persona who has never written anything has no
     // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
