@@ -1929,6 +1929,24 @@ impl ServingDaemonModule {
             ),
         };
         let outcome = match beyond_weights {
+            // An UNKNOWN grant withholds the reading (Cormac's condition, 2026-09-20): with 0
+            // subtracted the whole prompt cache would read as per-token bytes and be saved
+            // as the record — the corrupt 262k reading this measurement produced on the
+            // re-home path, reproduced on the deploy path. An absence stays an absence:
+            // no `observe`, no record written, the previous record stands.
+            Some(_) if live.host_prompt_cache_mib == 0 => {
+                crate::probe!(
+                    class = "serving.footprint.unmeasured",
+                    model = %active,
+                    pid = pid as u64,
+                    source,
+                    lanes = live.lanes as u64,
+                    "the engine's cache grant is unknown (an adopted lane whose argv names no \
+                     --cache-ram, and no spawn fact) — the per-token reading is WITHHELD rather \
+                     than taken with the whole prompt cache attributed as per-token bytes"
+                );
+                "unmeasured"
+            }
             Some(anon) => {
                 let predicted = fp
                     .kv_at(live.served_context_window)
@@ -1969,7 +1987,7 @@ impl ServingDaemonModule {
             }
             None => "could_not_look",
         };
-        if outcome != "read" {
+        if outcome == "could_not_look" {
             crate::probe!(
                 class = "serving.footprint.measured",
                 model = %active,
@@ -3026,8 +3044,14 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
-            // The grant the engine was LAUNCHED with, off the control (0 = adopted, unknown).
-            let launched_cache_mib = server.launched_prompt_cache_mib().unwrap_or(0);
+            // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
+            // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for
+            // the next core, so this is the common case, not the rare one) — read off the
+            // engine's own argv. 0 only when neither can say (the measurement then withholds).
+            let launched_cache_mib = server
+                .launched_prompt_cache_mib()
+                .or_else(adopted_prompt_cache_mib)
+                .unwrap_or(0);
             // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
             // vision endpoint. First the MAIN lane — the row's declared Vision, the
             // resolved mmproj, and the server's own `/props modalities` must all
@@ -5602,6 +5626,32 @@ fn wedge_heal_floor(
 /// persona from ever binding a broken prompt budget: it would rather see the gap
 /// (and the next tick re-reads `/props` via `AlreadyServing` → self-heals) than
 /// budget against a zero window.
+/// The grant of a lane THIS core did not spawn — a past form of ourself, adopted across a
+/// deploy, whose handle records no spawn fact. Read off the ENGINE'S OWN ARGV
+/// (`--cache-ram N` on the canonical pid), the way its window and slots are read off
+/// `/props`: the process's truth, never a re-derivation (Cormac's condition on the fix,
+/// 2026-09-20: before it, the adopted case — every deploy — read the grant as 0 and the
+/// measurement attributed the whole prompt cache as per-token bytes, the same corrupt
+/// record the fix exists to stop, now on the deploy path). An argv never changes for the
+/// life of a pid, so the read is cached by pid — one single-pid `sysinfo` refresh per
+/// adopted engine, not one per tick. `None` = no live pid, or no flag on its line —
+/// unknown stays unknown.
+fn adopted_prompt_cache_mib() -> Option<u32> {
+    static BY_PID: parking_lot::Mutex<Option<(u32, Option<u32>)>> = parking_lot::Mutex::new(None);
+    let pid = crate::inference::lane_pidfile::read()?;
+    let mut cached = BY_PID.lock();
+    if let Some((p, mib)) = *cached {
+        if p == pid {
+            return mib;
+        }
+    }
+    let mib = crate::inference::lane_process::command_args(pid)
+        .as_deref()
+        .and_then(crate::inference::lane_process::cache_ram_mib_in);
+    *cached = Some((pid, mib));
+    mib
+}
+
 /// PURE: the lane count a ready snapshot publishes — the engine's `/props total_slots`
 /// when it names one, else what was asked of it. An engine adopted with MORE slots than
 /// the plan wants (a down-plan is the daemon's sticky choice; only growth relaunches)

@@ -262,6 +262,47 @@ pub fn kill_lane(pid: u32) {
     }
 }
 
+/// The command line of `pid` (argv, one string per element) — the process's own truth
+/// about what it was launched with, cross-platform via `sysinfo` (a SINGLE-pid refresh:
+/// one `KERN_PROCARGS2` / `/proc/<pid>/cmdline` read, never the whole table). `None` if
+/// the pid is gone or its argv is unreadable — an absence, never an empty launch.
+pub fn command_args(pid: u32) -> Option<Vec<String>> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let wanted = [Pid::from_u32(pid)];
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&wanted),
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let argv: Vec<String> = sys
+        .process(wanted[0])?
+        .cmd()
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    (!argv.is_empty()).then_some(argv)
+}
+
+/// PURE: the `--cache-ram <MiB>` a llama-server was launched with, read off its argv
+/// (`--cache-ram 14396` or `--cache-ram=14396`). This is how a core recovers the grant of
+/// a lane it did not spawn — a past form of ourself left up across a deploy and ADOPTED
+/// — the same way it reads that lane's window and slots off `/props`: the process's
+/// truth, never a re-derivation. `None` when the flag is absent or malformed — unknown,
+/// never 0 (0 is a real llama-server value: no host cache).
+pub fn cache_ram_mib_in(argv: &[String]) -> Option<u32> {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if a == "--cache-ram" {
+            return it.next()?.parse().ok();
+        }
+        if let Some(v) = a.strip_prefix("--cache-ram=") {
+            return v.parse().ok();
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +376,23 @@ mod tests {
             !is_llama_server(std::process::id()),
             "the test runner is not a llama-server; reaping it would be a blind kill"
         );
+    }
+
+    // what this catches: the grant recovered for an ADOPTED engine (every deploy leaves the
+    // lane up for the next core) is read off its own argv — both spellings, absent = None,
+    // malformed = None, and 0 stays 0 (a real "no host cache" launch, not an unknown).
+    #[test]
+    fn cache_ram_is_read_off_the_engines_own_argv() {
+        let argv = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            cache_ram_mib_in(&argv("llama-server -m x.gguf -c 133930 --parallel 2 --cache-ram 14396 --port 8080")),
+            Some(14_396)
+        );
+        assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram=8704")), Some(8_704));
+        assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram 0")), Some(0), "0 is a value");
+        assert_eq!(cache_ram_mib_in(&argv("llama-server -c 4096")), None, "absent = unknown");
+        assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram")), None, "malformed = unknown");
+        assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram lots")), None);
     }
 
     // what this catches: a definitely-dead pid is neither alive nor a llama-server,

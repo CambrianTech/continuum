@@ -1236,9 +1236,11 @@ pub struct ServingSnapshot {
     /// 1-lane target (256 MiB) while the engine still ran 2 lanes on a 14,396 MiB
     /// grant; the subtraction used the new number, the per-token reading went
     /// 33k → 262k, the prefill "spike" 2.8 → 16.6 GB, the plan to 1 × 2,048, and
-    /// the record on disk kept it for the next boot. `0` = unknown (an adopted
-    /// endpoint, an older snapshot) — nothing is subtracted or credited.
-    /// `serde(default)` keeps older persisted snapshots readable.
+    /// the record on disk kept it for the next boot. For a lane this core did not
+    /// spawn (ADOPTED across a deploy — the common case) the daemon recovers it off
+    /// the engine's own argv (`--cache-ram N`). `0` = unknown (no spawn fact, no flag
+    /// on the line, an older snapshot): the footprint measurement is WITHHELD and the
+    /// board credits nothing. `serde(default)` keeps older persisted snapshots readable.
     #[serde(default)]
     pub host_prompt_cache_mib: u32,
     /// WHY nothing is serving, when the last reconcile ended Degraded — the
