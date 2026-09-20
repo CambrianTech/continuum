@@ -27,10 +27,26 @@
 //!    tree) is saved whole under `refs/continuum/stranded/<branch>-<ts>` and the remote
 //!    wins — receipted on `workspace.transfer`, never silently discarded.
 //!
-//! What is deliberately NOT here: a detached checkout (a SWE-bench instance at its base
-//! commit, cloned `--shared` from a local mirror) is `not_pushable` — it is graded on the
-//! node that staged it and has no branch to carry; and a checkout with no `origin` has
-//! nowhere to go. Both are said, neither is guessed.
+//! ## A push is a TRANSFER only when the other node can read its target
+//!
+//! Cormac's condition on #4278, and the defect it names: a staged SWE-bench copy's
+//! `origin` is THIS NODE'S OWN LOCAL MIRROR (`swe_bench::clone_at` clones `--shared`
+//! from `<cache>/swe/mirrors/<repo>`). A push there would report `ok` into a repository
+//! no other node has ever heard of — the blocker would clear, she would move, and the
+//! arriving node's fetch would read `no_remote_branch`: her acts stranded, under a
+//! receipt that says carried. A receipt must never say carried when nothing crossed.
+//!
+//! So every carry is classified FIRST ([`is_transfer_target`], pure): an `https`/`ssh`/
+//! scp-style origin is a remote both nodes read; a filesystem path — which is what every
+//! `--shared`/`--mirror` clone of a local cache has — is not, and neither is `file://`
+//! or a Windows drive. A checkout that cannot carry is never pushed and never committed
+//! into: it reports `not_pushable`, and [`has_unpushed_work`] stays TRUE while real work
+//! sits there, so the move DEFERS honestly (she is pinned) instead of stranding her.
+//!
+//! Nor is the benchmark upstream an answer: a SWE copy's mirror comes from
+//! `github.com/<the task's repo>`, which we do not own and must never push to. Such work
+//! is graded on the node that staged it (`staged_workspace::owners_of`) and has no
+//! branch to carry — it is `detached HEAD`, and pins nobody.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -51,6 +67,72 @@ pub const SYNC_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 pub const BLOCKER_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 /// Bound on an arrival's fetch + checkout inside a claim's staging.
 pub const ARRIVE_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Why a checkout carries nothing anywhere. `NOT_A_REPO`/`DETACHED` pin nobody — there
+/// is no branch of hers to lose; `LOCAL_ORIGIN`/`NO_ORIGIN` DO, because real work can sit
+/// there and no push can move it.
+pub const NOT_A_REPO_REASON: &str = "not a git checkout";
+pub const DETACHED_REASON: &str =
+    "detached HEAD: no branch to carry (a benchmark copy is graded where it was staged)";
+pub const LOCAL_ORIGIN_REASON: &str =
+    "origin is a local path: a --shared/--mirror clone of this node's own cache is not a transfer target";
+pub const NO_ORIGIN_REASON: &str = "no origin remote";
+
+/// PURE: can a push to this origin URL be READ by another node?
+///
+/// The question the whole transfer rests on. `https://`, `ssh://`, `git://` and the
+/// scp-style `git@host:owner/name` are remotes a second machine resolves the same way.
+/// Everything else is this machine's own filesystem — an absolute or relative path, a
+/// `~` path, `file://`, a Windows drive (`C:\repo`, whose single-letter "host" is what
+/// separates it from `git@host:path`) — and a push there crosses nothing.
+pub fn is_transfer_target(origin: &str) -> bool {
+    let url = origin.trim();
+    if url.is_empty() {
+        return false;
+    }
+    if let Some((scheme, rest)) = url.split_once("://") {
+        return !scheme.eq_ignore_ascii_case("file") && !rest.trim().is_empty();
+    }
+    if url.starts_with('/') || url.starts_with('.') || url.starts_with('~') || url.starts_with('\\') {
+        return false;
+    }
+    // scp-style `user@host:path`. A Windows drive letter is one char before the colon;
+    // a bare relative path has no colon at all.
+    match url.split_once(':') {
+        Some((host, path)) => host.len() > 1 && !path.trim().is_empty(),
+        None => false,
+    }
+}
+
+/// How work in a checkout can leave this node — asked before anything is committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Carry {
+    /// `origin` is a remote another node reads: a push carries her work there.
+    Via(String),
+    /// A git checkout on a branch whose `origin` is a local path: work here is real and
+    /// CANNOT be carried by a push. She is pinned while it sits there.
+    LocalOrigin,
+    /// A git checkout on a branch with no `origin` at all: same pin, different absence.
+    NoOrigin,
+    /// Nothing here can hold a branch's work: not a repo, or a detached HEAD.
+    Nothing(&'static str),
+}
+
+/// Classify what `root` can do with work — the one place the four shapes are told apart,
+/// so the push seam and the "may she move" seam can never disagree about a checkout.
+pub fn carry_of(root: &Path) -> Carry {
+    if !root.join(".git").exists() {
+        return Carry::Nothing(NOT_A_REPO_REASON);
+    }
+    if current_branch(root).is_none() {
+        return Carry::Nothing(DETACHED_REASON);
+    }
+    match run_git(root, &["remote", "get-url", "origin"]) {
+        Ok(url) if is_transfer_target(&url) => Carry::Via(url.trim().to_string()),
+        Ok(_) => Carry::LocalOrigin,
+        Err(_) => Carry::NoOrigin,
+    }
+}
 
 /// What the act-end sync did with her checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +167,19 @@ impl PushOutcome {
         matches!(self, PushOutcome::Ok { .. })
     }
 
+    /// Does this outcome leave work on THIS node that a seat change would strand? Every
+    /// failure does, and so does a checkout that cannot carry but can hold work (a local
+    /// origin, no origin). A clean `Ok` and a checkout with no branch of hers pin nobody.
+    pub fn pins_the_mind(&self) -> bool {
+        match self {
+            PushOutcome::Ok { .. } => false,
+            PushOutcome::NotPushable { reason } => {
+                *reason == LOCAL_ORIGIN_REASON || *reason == NO_ORIGIN_REASON
+            }
+            _ => true,
+        }
+    }
+
     fn error(&self) -> &str {
         match self {
             PushOutcome::Unreachable { error, .. }
@@ -111,6 +206,9 @@ pub enum ArrivalOutcome {
     /// A git step failed after the fetch; `stage` names it. The checkout is whatever
     /// that step left — the caller's probe carries it.
     Failed { branch: String, stage: &'static str, error: String },
+    /// This checkout's `origin` is not a remote another node writes to (a `--shared`
+    /// clone of a local mirror), so no fetch here can deliver another node's work.
+    NotTransferable { branch: String, reason: &'static str },
 }
 
 impl ArrivalOutcome {
@@ -121,6 +219,7 @@ impl ArrivalOutcome {
             ArrivalOutcome::Current { .. } => "current",
             ArrivalOutcome::Transferred { .. } => "transferred",
             ArrivalOutcome::Failed { .. } => "failed",
+            ArrivalOutcome::NotTransferable { .. } => "not_transferable",
         }
     }
 }
@@ -154,20 +253,24 @@ fn unpushed_commit_count(root: &Path) -> Result<u64, String> {
     out.trim().parse::<u64>().map_err(|e| format!("rev-list count unreadable ({e}): {out:?}"))
 }
 
-/// Is there work in this checkout that `origin` does not hold — a dirty tree, or
-/// commits on a named branch no remote ref reaches? A detached checkout or one with no
-/// `origin` carries nothing anywhere and answers `false` (it cannot be pushed, so a move
-/// cannot wait on it); a checkout git cannot read answers `true` (fail closed).
+/// Is there work here that `origin` does not hold — so a move would strand it?
+///
+/// A carryable checkout ([`Carry::Via`]) answers on the push's own terms: a dirty tree,
+/// or commits no `origin/*` ref reaches. A checkout that CANNOT carry but can hold work
+/// (a local-path origin — every `--shared` clone of this node's cache — or no origin)
+/// answers on what sits there, and a yes PINS her: moving would leave it behind with
+/// nothing able to fetch it. Only a checkout with no branch of hers at all answers `false`
+/// outright. A checkout git cannot read answers `true` (fail closed).
 pub fn has_unpushed_work(root: &Path) -> bool {
-    if !root.join(".git").exists() {
-        return false;
-    }
-    if current_branch(root).is_none() || run_git(root, &["remote", "get-url", "origin"]).is_err() {
-        return false;
-    }
-    match (is_dirty(root), unpushed_commit_count(root)) {
-        (Ok(dirty), Ok(ahead)) => dirty || ahead > 0,
-        _ => true,
+    match carry_of(root) {
+        Carry::Nothing(_) => false,
+        // No origin refs exist to count commits against, so the dirty tree IS the work:
+        // nothing ever commits into a checkout that cannot carry (see `sync_after_act`).
+        Carry::NoOrigin => is_dirty(root).unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
+        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root), unpushed_commit_count(root)) {
+            (Ok(dirty), Ok(ahead)) => dirty || ahead > 0,
+            _ => true,
+        },
     }
 }
 
@@ -254,15 +357,29 @@ fn is_missing_remote_ref(err: &str) -> bool {
 /// turn path calls is [`sync_after_act_for`]. `node` is stamped into the WIP commit's
 /// subject so the receiving node can say where the work came from.
 pub fn sync_after_act(root: &Path, card: Uuid, node: &str) -> PushOutcome {
-    if !root.join(".git").exists() {
-        return PushOutcome::NotPushable { reason: "not a git checkout" };
+    sync_after_act_over(root, card, node, carry_of(root))
+}
+
+/// [`sync_after_act`] with the carry decision supplied — the POLICY (can this checkout
+/// reach another node at all) separated from the MECHANISM (commit, then push). Split
+/// because the two need different proofs: the policy is a pure function over origin URLs,
+/// tested against the real shapes including `clone_at`'s mirror path; the mechanism needs
+/// two real clones and a real remote, and an offline test's remote is necessarily a local
+/// path — the very thing the policy refuses. Injecting the decision lets each be tested as
+/// what it is, instead of a fixture quietly proving neither.
+fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry) -> PushOutcome {
+    // Asked BEFORE anything is written: a checkout that cannot carry is left exactly as
+    // her act left it. No WIP commit either — a commit whose push can never happen only
+    // makes the work harder to see (and a benchmark copy's commits are its grade).
+    match carry {
+        Carry::Via(_) => {}
+        Carry::Nothing(reason) => return PushOutcome::NotPushable { reason },
+        Carry::LocalOrigin => return PushOutcome::NotPushable { reason: LOCAL_ORIGIN_REASON },
+        Carry::NoOrigin => return PushOutcome::NotPushable { reason: NO_ORIGIN_REASON },
     }
     let Some(branch) = current_branch(root) else {
-        return PushOutcome::NotPushable { reason: "detached HEAD" };
+        return PushOutcome::NotPushable { reason: DETACHED_REASON };
     };
-    if run_git(root, &["remote", "get-url", "origin"]).is_err() {
-        return PushOutcome::NotPushable { reason: "no origin remote" };
-    }
     let mut committed = false;
     match is_dirty(root) {
         Ok(true) => {
@@ -355,7 +472,10 @@ pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf
         Ok(Err(join)) => PushOutcome::CommitFailed { branch: String::new(), error: format!("sync task panicked: {join}") },
         Err(_) => PushOutcome::TimedOut,
     };
-    if !matches!(outcome, PushOutcome::NotPushable { .. }) {
+    // Recorded whenever this checkout could hold work a move would strand — INCLUDING a
+    // local-path origin, which is exactly the case that must pin her. Only a checkout
+    // with no branch of hers is forgotten.
+    if outcome.is_ok() || outcome.pins_the_mind() {
         note_acted_root(persona, root.clone());
     }
     let (branch, sha, committed, pushed) = match &outcome {
@@ -400,9 +520,22 @@ pub async fn move_blocker_bounded(persona: Uuid) -> Option<String> {
 /// hooks) and kept under [`STRANDED_REF_PREFIX`]`<branch>-<now_ms>`; the remote wins the
 /// branch and the tree. Synchronous git; [`arrive_for`] is the bounded, probed form.
 pub fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
+    // The mirror of the push guard (and the same policy/mechanism split): fetching from a
+    // target no other node can push to cannot deliver another node's work, so say so
+    // rather than report a transfer that only ever re-read this machine's own cache.
+    if let Ok(url) = run_git(root, &["remote", "get-url", "origin"]) {
+        if !is_transfer_target(&url) {
+            return ArrivalOutcome::NotTransferable { branch: branch.to_string(), reason: LOCAL_ORIGIN_REASON };
+        }
+    }
+    arrive_over(root, branch, now_ms)
+}
+
+/// [`arrive`] past the transfer-target policy — the fetch / checkout / strand mechanism.
+fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     let branch_s = branch.to_string();
     if !root.join(".git").exists() {
-        return ArrivalOutcome::Failed { branch: branch_s, stage: "checkout", error: "not a git checkout".into() };
+        return ArrivalOutcome::Failed { branch: branch_s, stage: "checkout", error: NOT_A_REPO_REASON.into() };
     }
     if let Err(error) = run_git(root, &["fetch", "--no-tags", "origin", branch]) {
         return if is_missing_remote_ref(&error) {
@@ -488,6 +621,7 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
         }
         ArrivalOutcome::Current { sha, .. } => (sha.as_str(), String::new(), String::new(), String::new()),
         ArrivalOutcome::Unreachable { error, .. } | ArrivalOutcome::Failed { error, .. } => ("", String::new(), String::new(), error.clone()),
+        ArrivalOutcome::NotTransferable { reason, .. } => ("", String::new(), String::new(), (*reason).to_string()),
         ArrivalOutcome::NoRemoteBranch { .. } => ("", String::new(), String::new(), String::new()),
     };
     let to_node = crate::capacity::gossip::this_process_origin().to_string();
@@ -521,6 +655,14 @@ mod tests {
     fn identity(dir: &Path) {
         git(dir, &["config", "user.email", "t@t"]);
         git(dir, &["config", "user.name", "t"]);
+    }
+
+    /// The act-end sync's MECHANISM, with the carry decision granted. An offline fixture's
+    /// remote is a local bare repo — exactly what the POLICY refuses — so the two are
+    /// tested apart: the policy in
+    /// `a_push_only_transfers_when_the_other_node_can_read_its_target`, the mechanism here.
+    fn sync(root: &Path, card: Uuid, node: &str) -> PushOutcome {
+        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()))
     }
 
     /// A bare `origin` and two clones — machine A and machine B — sharing one `main`
@@ -565,7 +707,7 @@ mod tests {
         let card = Uuid::new_v4();
         std::fs::write(m.a.join("src.txt"), "edit from A\n").unwrap();
         assert!(has_unpushed_work(&m.a), "a dirty tree is unpushed work");
-        let out = sync_after_act(&m.a, card, "node-a");
+        let out = sync(&m.a, card, "node-a");
         let sha = match &out {
             PushOutcome::Ok { sha, committed: true, pushed: true, branch } => {
                 assert_eq!(*branch, m.branch);
@@ -576,12 +718,12 @@ mod tests {
         assert!(!has_unpushed_work(&m.a), "pushed = nothing unpushed");
         assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), sha, "origin holds the branch at her sha");
         assert!(
-            matches!(sync_after_act(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: false, .. }),
+            matches!(sync(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: false, .. }),
             "nothing new = nothing committed, nothing pushed"
         );
 
         git(&m.b, &["checkout", "-q", "-b", &m.branch]);
-        let arrived = arrive(&m.b, &m.branch, 7);
+        let arrived = arrive_over(&m.b, &m.branch, 7);
         match &arrived {
             ArrivalOutcome::Transferred { sha: s, stranded: None, from_node: Some(n), .. } => {
                 assert_eq!(*s, sha);
@@ -592,7 +734,7 @@ mod tests {
         assert_eq!(head(&m.b), sha);
         assert_eq!(std::fs::read_to_string(m.b.join("src.txt")).unwrap(), "edit from A\n", "B's tree is A's");
         assert_eq!(git(&m.b, &["status", "--porcelain"]).trim(), "");
-        assert!(matches!(arrive(&m.b, &m.branch, 8), ArrivalOutcome::Current { .. }), "a second arrival moves nothing");
+        assert!(matches!(arrive_over(&m.b, &m.branch, 8), ArrivalOutcome::Current { .. }), "a second arrival moves nothing");
         assert!(!has_unpushed_work(&m.b), "at origin's tip: nothing to carry");
     }
 
@@ -606,7 +748,7 @@ mod tests {
         std::fs::write(m.a.join("x.txt"), "x\n").unwrap();
         let gone = m.tmp.path().join("origin.gone");
         std::fs::rename(&m.origin, &gone).unwrap();
-        let out = sync_after_act(&m.a, card, "node-a");
+        let out = sync(&m.a, card, "node-a");
         assert!(matches!(out, PushOutcome::Unreachable { .. }), "{out:?}");
         assert_eq!(out.label(), "unreachable");
         assert_eq!(git(&m.a, &["status", "--porcelain"]).trim(), "", "the WIP commit landed locally");
@@ -620,7 +762,7 @@ mod tests {
             "a turn in flight blocks before the git question is even asked"
         );
         std::fs::rename(&gone, &m.origin).unwrap();
-        let out = sync_after_act(&m.a, card, "node-a");
+        let out = sync(&m.a, card, "node-a");
         assert!(matches!(out, PushOutcome::Ok { committed: false, pushed: true, .. }), "{out:?}");
         assert!(move_blocker_over(persona, None).is_none(), "the push landed: free to move");
         // A vanished root is pruned, not a permanent blocker.
@@ -637,7 +779,7 @@ mod tests {
         let m = two_machines();
         let card = Uuid::new_v4();
         std::fs::write(m.a.join("src.txt"), "from A\n").unwrap();
-        let PushOutcome::Ok { sha: sha_a, .. } = sync_after_act(&m.a, card, "node-a") else { panic!("push") };
+        let PushOutcome::Ok { sha: sha_a, .. } = sync(&m.a, card, "node-a") else { panic!("push") };
         // B: the same branch cut from main, its own commit Y, and an uncommitted edit.
         git(&m.b, &["checkout", "-q", "-b", &m.branch]);
         std::fs::write(m.b.join("y.txt"), "B's commit\n").unwrap();
@@ -645,7 +787,7 @@ mod tests {
         git(&m.b, &["commit", "-q", "-m", "B's own"]);
         let y = head(&m.b);
         std::fs::write(m.b.join("z.txt"), "B's dirty edit\n").unwrap();
-        let arrived = arrive(&m.b, &m.branch, 42);
+        let arrived = arrive_over(&m.b, &m.branch, 42);
         let ArrivalOutcome::Transferred { sha, stranded: Some(reference), .. } = &arrived else {
             panic!("expected a transfer with a stranded ref, got {arrived:?}");
         };
@@ -660,19 +802,19 @@ mod tests {
         assert_eq!(git(&m.b, &["status", "--porcelain"]).trim(), "");
         // A clean checkout that is merely BEHIND strands nothing.
         std::fs::write(m.a.join("src.txt"), "from A again\n").unwrap();
-        let PushOutcome::Ok { sha: sha_a2, .. } = sync_after_act(&m.a, card, "node-a") else { panic!("push") };
-        match arrive(&m.b, &m.branch, 43) {
+        let PushOutcome::Ok { sha: sha_a2, .. } = sync(&m.a, card, "node-a") else { panic!("push") };
+        match arrive_over(&m.b, &m.branch, 43) {
             ArrivalOutcome::Transferred { sha, stranded: None, .. } => assert_eq!(sha, sha_a2),
             other => panic!("behind, clean: a plain fast-forward, got {other:?}"),
         }
         // Rejected: B commits on the tip, A pushes first, B's push is a non-fast-forward.
         std::fs::write(m.a.join("src.txt"), "A wins the race\n").unwrap();
-        assert!(sync_after_act(&m.a, card, "node-a").is_ok());
+        assert!(sync(&m.a, card, "node-a").is_ok());
         std::fs::write(m.b.join("late.txt"), "late\n").unwrap();
-        let out = sync_after_act(&m.b, card, "node-b");
+        let out = sync(&m.b, card, "node-b");
         assert!(matches!(out, PushOutcome::Rejected { .. }), "{out:?}");
         // The next arrival on B strands the rejected commit and takes A's tip.
-        assert!(matches!(arrive(&m.b, &m.branch, 44), ArrivalOutcome::Transferred { stranded: Some(_), .. }));
+        assert!(matches!(arrive_over(&m.b, &m.branch, 44), ArrivalOutcome::Transferred { stranded: Some(_), .. }));
     }
 
     // what this catches: the two pure readers. The push-error classifier must not call a
@@ -692,8 +834,95 @@ mod tests {
         // Not pushable is said, not guessed.
         let m = two_machines();
         git(&m.a, &["checkout", "-q", "--detach"]);
-        assert_eq!(sync_after_act(&m.a, card, "n"), PushOutcome::NotPushable { reason: "detached HEAD" });
-        assert!(!has_unpushed_work(&m.a), "a detached tree cannot be carried, so it never defers");
-        assert!(matches!(arrive(&m.b, "no/such-branch", 1), ArrivalOutcome::NoRemoteBranch { .. }));
+        assert_eq!(sync(&m.a, card, "n"), PushOutcome::NotPushable { reason: DETACHED_REASON });
+        assert!(!has_unpushed_work(&m.a), "a detached tree has no branch of hers, so it never defers");
+        assert!(matches!(arrive_over(&m.b, "no/such-branch", 1), ArrivalOutcome::NoRemoteBranch { .. }));
+    }
+
+    // what this catches (Cormac's condition on #4278 — the defect that would have stranded
+    // her acts under a receipt saying "carried"): a staged SWE-bench copy's `origin` is
+    // THIS NODE'S OWN local mirror (`clone_at`: `git clone --shared <cache>/swe/mirrors/…`).
+    // A push there reports success into a repository no other node has ever heard of — the
+    // blocker clears, she moves, and the arriving node's fetch finds nothing. So a
+    // local-path origin is NOT a transfer target: never pushed, never committed into, and
+    // the work still sitting there keeps `has_unpushed_work` TRUE so the move defers and
+    // she is pinned. The https/ssh case (a continuum card's worktree) must stay pushable,
+    // or this test would also pass with the transfer simply switched off.
+    #[test]
+    fn a_push_only_transfers_when_the_other_node_can_read_its_target() {
+        for shared in [
+            "https://github.com/CambrianTech/continuum.git",
+            "http://gitlab.example.com/acme/widget",
+            "ssh://git@github.com/CambrianTech/continuum.git",
+            "git@github.com:CambrianTech/continuum.git",
+            "git://example.com/repo.git",
+        ] {
+            assert!(is_transfer_target(shared), "{shared} is readable from another node");
+        }
+        for local in [
+            "/Users/joel/.continuum/cache/swe/mirrors/django__django", // what clone_at clones from
+            "/srv/repos/continuum.git",
+            "../sibling-clone",
+            "./mirror.git",
+            "~/.continuum/cache/swe/mirrors/astropy__astropy",
+            "file:///Users/joel/.continuum/cache/swe/mirrors/sympy__sympy",
+            "C:\\repos\\continuum",
+            "C:/repos/continuum",
+            "mirrors/psf__requests",
+            "",
+            "   ",
+        ] {
+            assert!(!is_transfer_target(local), "{local:?} never leaves this machine");
+        }
+
+        // The live shape, built the way `swe_bench::clone_at` builds it: a bare local
+        // mirror, then a `--shared` clone of it. Her act leaves an edit there.
+        let m = two_machines();
+        let mirror = m.tmp.path().join("mirror.git");
+        let staged = m.tmp.path().join("staged-copy");
+        git(m.tmp.path(), &["clone", "-q", "--bare", &m.a.to_string_lossy(), &mirror.to_string_lossy()]);
+        git(m.tmp.path(), &["clone", "-q", "--shared", &mirror.to_string_lossy(), &staged.to_string_lossy()]);
+        identity(&staged);
+        git(&staged, &["checkout", "-q", "-b", &m.branch]);
+        assert_eq!(carry_of(&staged), Carry::LocalOrigin, "a --shared clone of a local mirror carries nothing");
+        std::fs::write(staged.join("work.txt"), "her act\n").unwrap();
+
+        let (card, persona) = (Uuid::new_v4(), Uuid::new_v4());
+        let out = sync_after_act(&staged, card, "node-a");
+        assert_eq!(out, PushOutcome::NotPushable { reason: LOCAL_ORIGIN_REASON }, "never a push into this node's own cache");
+        assert_eq!(out.label(), "not_pushable");
+        assert!(out.pins_the_mind(), "work that cannot be carried must pin her");
+        assert_eq!(git(&staged, &["status", "--porcelain"]).trim(), "?? work.txt", "left exactly as her act left it");
+        assert!(has_unpushed_work(&staged), "the work is real and no push can move it");
+        note_acted_root(persona, staged.clone());
+        let why = move_blocker_over(persona, None).expect("a move would strand her work");
+        assert!(why.contains(&staged.display().to_string()), "{why}");
+        // …and a fetch there cannot deliver another node's work either.
+        assert!(matches!(arrive(&staged, &m.branch, 1), ArrivalOutcome::NotTransferable { .. }));
+
+        // The positive control on the POLICY: a checkout whose origin is the grid-owned
+        // remote (a continuum card's worktree — Cormac: "right as written") carries. Without
+        // this the test would also pass with the transfer simply switched off.
+        let card_worktree = m.tmp.path().join("card-worktree");
+        git(m.tmp.path(), &["init", "-q", "-b", "main", &card_worktree.to_string_lossy()]);
+        git(&card_worktree, &["remote", "add", "origin", "https://github.com/CambrianTech/continuum.git"]);
+        assert_eq!(
+            carry_of(&card_worktree),
+            Carry::Via("https://github.com/CambrianTech/continuum.git".into()),
+            "the continuum-card case must stay pushable"
+        );
+        // …and the MECHANISM, granted that carry, pushes and stops pinning her.
+        std::fs::write(m.a.join("work.txt"), "her act\n").unwrap();
+        let out = sync(&m.a, card, "node-a");
+        assert!(out.is_ok() && !out.pins_the_mind(), "{out:?}");
+        assert!(!has_unpushed_work(&m.a), "nothing left here to strand");
+        // A checkout with no origin at all pins her the same way, for the other reason.
+        let orphan = m.tmp.path().join("orphan");
+        git(m.tmp.path(), &["init", "-q", "-b", "main", &orphan.to_string_lossy()]);
+        identity(&orphan);
+        std::fs::write(orphan.join("a.txt"), "x\n").unwrap();
+        assert_eq!(carry_of(&orphan), Carry::NoOrigin);
+        assert_eq!(sync_after_act(&orphan, card, "n"), PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
+        assert!(has_unpushed_work(&orphan), "dirty work with nowhere to go pins her");
     }
 }

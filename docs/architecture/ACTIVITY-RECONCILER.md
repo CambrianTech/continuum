@@ -89,8 +89,16 @@ was inconsistent, and nobody owned repairing it.
     checked out at origin's tip before her first turn; a diverged local checkout is kept
     whole under `refs/continuum/stranded/<branch>-<ts>`, the remote wins, and the receipt
     says so. Probes: `workspace.push`, `placement.move.deferred_unpushed`,
-    `workspace.transfer`. Not carried: a detached SWE-bench checkout (graded where it was
-    staged) and a checkout with no `origin`.
+    `workspace.transfer`.
+    **A push is a transfer only when the other node can read its target** (Cormac's
+    condition on #4278): a staged SWE-bench copy's `origin` is this node's OWN local
+    mirror, so a push there would report `ok` into a repository no other node has heard of
+    — blocker cleared, mind moved, work stranded under a receipt saying carried. Every
+    origin is classified first (`is_transfer_target`, pure): a filesystem path, `file://`
+    or a Windows drive is never a transfer target, is never pushed or committed into, and
+    keeps `has_unpushed_work` TRUE so the move defers and she is pinned. Not carried at
+    all (and pinning nobody): a detached checkout — a benchmark copy is graded on the node
+    that staged it.
     *Shipped:* `persona/workspace_transfer.rs` (card 73eefbbb).
 
 ## Concurrency the reconciler enforces
