@@ -2359,15 +2359,21 @@ fn record_repo_checkout() {
 // 5090 ran whatever a hand last typed — every merged fix sat unfelt on the one seat
 // that mattered (2026-09-18: five hand deploys in a day, Fable's count).
 //
-// This verb IS that consumer, in Rust, run by its own scheduled task
-// (`ContinuumDeploy`, the supervisor's sibling): read the request → nothing owed if
-// the running build already is the tip → refuse a dirty checkout (the same law the
-// tracker's RefuseDirty applies; a consumer that stashes an operator's work is a
-// consumer that loses it) → check the tip out detached → `reboot --service`, whose
-// warm build is RAM-gated (`warm_build_allowed`, Fable's build-path rule) and whose
-// handoff goes to the ContinuumCore supervisor, never a child of this process. The
-// deploy claim it takes is what the tracker's #4187 reconcile reads; `deploy.settled`
-// on this node with no human in the loop is the receipt.
+// This verb IS that consumer, in Rust, on EVERY platform: read the request → nothing
+// owed if the running build already is the tip → refuse a dirty checkout (the same law
+// the tracker's RefuseDirty applies; a consumer that stashes an operator's work is a
+// consumer that loses it) → check the tip out detached → `reboot` (`--service` on
+// Windows, where the handoff goes to the ContinuumCore supervisor, never a child of
+// this process; on macOS a bare reboot hands the launch to a registered launchd job on
+// its own; Linux has no service arm yet), whose warm build is RAM-gated
+// (`warm_build_allowed`, Fable's build-path rule). The deploy claim it takes is what the
+// tracker's #4187 reconcile reads; `deploy.settled` on this node with no human in the
+// loop is the receipt.
+//
+// WHO RUNS IT (2026-09-20): the core's own `DeployActuator` launches it, detached, the
+// moment the tracker records a request — on Windows by firing the `ContinuumDeploy`
+// task (the supervisor's sibling, still on its ten-minute schedule as the fallback), on
+// Unix as a new process group — unless the bash tracker's agent still owns the node.
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DeployConsumeOptions {}
@@ -3037,13 +3043,14 @@ fn deploy_note(line: &str) {
     }
 }
 
+/// Whether the consumer's reboot goes through `--service`: only Windows needs the flag
+/// (the supervisor handoff); macOS promotes a bare reboot to its launchd job itself, and
+/// `reboot` refuses `--service` everywhere else. Pure over the OS name.
+fn consumer_uses_service(os: &str) -> bool {
+    os == "windows"
+}
+
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
-    if !cfg!(windows) {
-        return Err(
-            "deploy-consume is the Windows consumer; the Macs' launchd tracker owns this there"
-                .to_string(),
-        );
-    }
     let DeployConsumeOptions {} = options;
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
@@ -3103,14 +3110,19 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // then finds no source"). The consumer knows the repo; it stands in it.
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
-                deploy_note(&format!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display()));
-                reboot(RebootOptions { service: true, ..Default::default() }).await
+                let service = consumer_uses_service(std::env::consts::OS);
+                deploy_note(&format!(
+                    "▶ deploy-consume: {} at {tip} — reboot{}",
+                    repo.display(),
+                    if service { " --service" } else { "" }
+                ));
+                reboot(RebootOptions { service, ..Default::default() }).await
             }
             .await;
             match &attempt {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&attempts_path);
-                    deploy_note(&format!("✓ deploy-consume: {tip} handed to the supervisor"));
+                    deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
                 }
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
@@ -5013,6 +5025,12 @@ mod tests {
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
+        // The consumer runs on every platform now (the core's actuator launches it); only
+        // Windows needs `--service` — macOS promotes a bare reboot to launchd itself, and
+        // `reboot` refuses the flag on Linux.
+        assert!(super::consumer_uses_service("windows"));
+        assert!(!super::consumer_uses_service("macos"));
+        assert!(!super::consumer_uses_service("linux"));
     }
 
     // Regression for #3929: a first upgrade must leave the legacy core available

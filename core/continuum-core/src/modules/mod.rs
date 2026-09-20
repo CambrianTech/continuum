@@ -30,6 +30,7 @@ pub mod avatar;
 pub mod benchmark_grade;
 pub mod citizen_health;
 pub mod benchmark_standing;
+pub(crate) mod deploy_actuator;
 pub mod deploy_tracker;
 pub mod floor_fetch;
 pub mod benchmark_resume;

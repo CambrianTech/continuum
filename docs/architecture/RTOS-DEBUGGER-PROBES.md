@@ -80,6 +80,20 @@ A stable set of `class` values so probes from different files compose into a coh
 - `cognition.analyze.parse` — parsed angles: per-specialty present/empty
 - `cognition.analyze.error` — typed AnalysisError variant
 
+**Deploy** (`modules/deploy_tracker.rs`, `modules/deploy_actuator.rs` — the fleet follows the tip in Rust on every platform):
+- `deploy.track.request_written` — the tip is green and not running: a `DeployRequest` recorded, ONCE per tip (kept standing on later ticks, never re-stamped)
+- `deploy.track.decision` — the guard that refused this tick: verdict, running, reason/stale for a hold
+- `deploy.tip.checks` — the tip's verdict judged over its own push's suites: checks, total, excluded, filtered
+- `deploy.settled` — the requested tip is the running build: tip, running, waited_ms (the measured cost of a deploy on this tier)
+- `deploy.stranded` — a request with nothing building past the grace: tip, running, elapsed_ms (once per tip)
+- `deploy.actuate.deferred_to_external_owner` — a deploy is wanted and another owner acts on this node (the bash tracker's launchd agent / systemd timer, or `CONTINUUM_DEPLOY_ACTUATOR=off`): tip, owner (once per tip)
+- `deploy.actuate.spawned` — the consumer launched detached from the core: tip, pid (0 = a scheduler task run), mode, attempt, cli, log
+- `deploy.actuate.spawn_failed` — the consumer could not be launched: tip, attempt, cli, error
+- `deploy.actuate.decision` — a stranded request not re-actuated yet: verdict=awaiting_bound, attempt, elapsed_ms, bound_ms
+- `deploy.actuate.gave_up` — three actuations did not land the tip here: tip, attempts (once per tip)
+- `deploy.actuate.consumer_exited` — the consumer this core launched exited: tip, pid, status
+- `deploy.actuate.outcome` — at boot, the last actuation graded against the running build: outcome = landed | stale | unknown, running, tip, mode, spawned_ms, attempt
+
 **Workspace transfer** (`persona/workspace_transfer.rs`, card 73eefbbb — the workspace moves with the mind, by git):
 - `workspace.push` — act over, her card branch carried to origin: persona, card, root, branch, sha, committed, pushed, `outcome` = `ok` / `unreachable` / `rejected` / `commit_failed` / `not_pushable` (its reason names which: a detached HEAD, no origin, or an origin only this node can read — a `--shared`/`--mirror` clone of the local cache, which is never pushed into and PINS her instead) / `timed_out`, error, ms. Fired from `persona_workspace::restore_acting_workspace` on every turn her hands were rooted at a card.
 - `placement.move.deferred_unpushed` — a fall-home / return / spill held back this tick: persona, peer, move_kind, `why` (a turn in flight with her hands at a checkout, or unpushed work at a named root). Fired from `placement_switch::follow_the_fleet` before any reservation ask.

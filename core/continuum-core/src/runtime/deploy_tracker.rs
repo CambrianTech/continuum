@@ -19,11 +19,11 @@
 //! ACTION wire onto this in later slices, so the decision is proven in tests first.
 //!
 //! THE SEAM (Joel's split, 2026-09-17): this module OWNS THE DECISION and, on a deploy,
-//! records a [`DeployRequest`] — it never spawns a process or reboots. A SUPERVISOR
-//! (BigMama's lane, card 82af11f5 — supervised core via launchd / systemd / a Windows
-//! service) consumes the request and performs the cross-platform build + swap + re-exec.
-//! Decoupling the portable decision from the OS-integration action is what makes the
-//! whole thing work on Windows.
+//! records a [`DeployRequest`] — it never spawns a process or reboots. The ACTION is
+//! `crate::modules::deploy_actuator` (2026-09-20): the core launches the consumer verb
+//! detached from itself the moment the request is recorded, on every platform, and keeps
+//! the receipt — unless another owner is installed on the node. Decoupling the portable
+//! decision from the OS-integration action is what makes the whole thing work on Windows.
 //!
 //! The [`Hold`] carries an EXPIRY — the fix for the unbounded-hold class (a 3-day-stale
 //! `deploy-hold` file paused the whole fleet, card ee76c0df; `ServingSteadyHold` held a

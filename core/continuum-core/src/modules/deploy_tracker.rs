@@ -3,9 +3,17 @@
 //!
 //! Joel, 2026-09-17: "It's supposed to be rust for infrastructure not shell jacks." The
 //! decision that `tools/scripts/track-canary.sh` (bash + launchd, Unix-only) makes now
-//! runs here as a `ServiceModule` — one binary, every platform. It NEVER reboots: on a
-//! deploy verdict it records a [`DeployRequest`] (the seam), and the supervisor (card
-//! 82af11f5, BigMama's lane) performs the cross-platform build + swap + re-exec.
+//! runs here as a `ServiceModule` — one binary, every platform. It never reboots IN
+//! PROCESS: on a deploy verdict it records a [`DeployRequest`] (the seam) and hands it to
+//! the [`DeployActuator`], which launches the consumer verb detached from this core and
+//! keeps the receipt — unless another owner (the bash tracker's agent, the operator
+//! switch) is installed on this node, in which case the request is left for it.
+//!
+//! The request is IDEMPOTENT BY TIP: written once when the tip first differs, left
+//! standing on every later tick (its `requested_ms` is when the deploy was first asked).
+//! Until 2026-09-20 it was re-stamped every 300 s tick, so `elapsed_ms` never passed the
+//! stranded grace and `deploy.stranded` could not fire — a dead request looked exactly
+//! like a fresh one, forever (the 5090: 214 `request_written` rows, nothing consumed).
 //!
 //! Shape (canonical `ServiceModule`): its own tick, git/gh gathered OFF the tick via
 //! `bounded_command::probe` (a launch-path probe gets a bound + a named outcome, the 9/5
@@ -16,14 +24,16 @@
 
 use std::any::Any;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
 use crate::runtime::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome,
-    TickInputs,
+    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
+    RequestOutcome, TickInputs,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
@@ -286,17 +296,22 @@ pub struct DeployTrackerModule {
     /// The tip last reported as stranded, so a durable condition is said ONCE rather than
     /// every tick — the chatty-floor failure that buries the line it exists to surface.
     stranded_reported: parking_lot::Mutex<Option<String>>,
+    /// The ACTION half: launches the consumer on a request and keeps the receipt. `Arc`
+    /// so the spawn runs off the tick (`spawn_blocking`).
+    actuator: Arc<DeployActuator>,
 }
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
         let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
+        let actuator = Arc::new(DeployActuator::new(root.clone()));
         Self {
             source: Box::new(GitGhDeploySource::from_env()),
             root,
             state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
+            actuator,
         }
     }
 
@@ -346,6 +361,9 @@ impl ServiceModule for DeployTrackerModule {
     }
 
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        // The last actuation, graded against the build now running: landed / stale /
+        // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
+        self.actuator.report_boot_outcome(running_sha(), Self::now_ms());
         Ok(())
     }
 
@@ -376,6 +394,9 @@ impl ServiceModule for DeployTrackerModule {
         // re-deriving by hand a comparison available from two values already in hand).
         // Both facts are right here in `inputs`; this just compares them.
         let state_dir = &self.state_dir;
+        // Whether the standing request is stranded — the only condition under which the
+        // actuator may launch the consumer a second time for one request.
+        let mut stranded = false;
         match crate::runtime::deploy_tracker::reconcile_request(
             read_deploy_request(state_dir).as_ref(),
             running_sha(),
@@ -384,6 +405,8 @@ impl ServiceModule for DeployTrackerModule {
         ) {
             RequestOutcome::Settled { tip_sha, waited_ms } => {
                 clear_deploy_request(state_dir);
+                // The measured cost of this deploy lands on the actuation that produced it.
+                self.actuator.record_settled(&tip_sha, waited_ms);
                 crate::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
@@ -393,6 +416,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
             }
             RequestOutcome::Stranded { tip_sha, elapsed_ms } => {
+                stranded = true;
                 // Once per stranded tip, not every tick: the condition is durable and the
                 // request file on disk is the standing evidence. A per-tick repeat is the
                 // chatty-floor failure that buries the line it exists to surface.
@@ -424,18 +448,86 @@ impl ServiceModule for DeployTrackerModule {
                 // owed — re-stamping it every tick pinned `elapsed_ms` at the tick period and
                 // made every age-based decision downstream meaningless (card c48fc453). The
                 // probe follows the write, so a standing request stops repeating itself too.
-                if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(
-                    read_deploy_request(state_dir).as_ref(),
+                let standing = read_deploy_request(state_dir);
+                let persisted = crate::runtime::deploy_tracker::request_to_persist(
+                    standing.as_ref(),
                     tip_sha,
                     now,
-                ) {
-                    write_deploy_request(state_dir, &req);
+                );
+                if let Some(req) = persisted.as_ref() {
+                    write_deploy_request(state_dir, req);
                     crate::probe!(
                         class = "deploy.track.request_written",
                         tip = tip_sha.as_str(),
                         running = running_sha(),
-                        "deploy wanted — recorded a DeployRequest for the supervisor"
+                        "deploy wanted — recorded a DeployRequest; the actuator acts on it unless another owner is installed"
                     );
+                }
+                // The actuator acts on the request that STANDS for this tip, freshly written
+                // or owed since an earlier tick — it bounds its own attempts, so a standing
+                // request is exactly what a retry must be judged against.
+                let req = persisted
+                    .or(standing)
+                    .unwrap_or_else(|| crate::runtime::deploy_tracker::DeployRequest::new(tip_sha, now));
+                // THE ACTION, off the tick: the actuator defers to an installed owner,
+                // launches the consumer once per request, and keeps the receipt.
+                let actuator = self.actuator.clone();
+                let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
+                    .await
+                    .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
+                // One row says what the ACTION did this tick, so a deploy that was
+                // wanted but not taken is never silent: who owns the node instead, which
+                // attempt was launched and how, or which guard skipped it.
+                match outcome {
+                    ActuateOutcome::Deferred(owner) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "deferred",
+                        tip = tip_sha.as_str(),
+                        owner = owner.name(),
+                        "a deploy is wanted and another owner acts on this node — the core stands down"
+                    ),
+                    ActuateOutcome::SpawnFailed { attempt, error } => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "spawn_failed",
+                        tip = tip_sha.as_str(),
+                        attempt = attempt as u64,
+                        error = error.as_str(),
+                        "the consumer could not be launched — see logs/deploy-actuate.log"
+                    ),
+                    ActuateOutcome::Skipped(decision) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "skipped",
+                        tip = tip_sha.as_str(),
+                        decision = ?decision,
+                        "this request was not actuated again this tick — its own bound or attempt cap decided"
+                    ),
+                    ActuateOutcome::Spawned { attempt, pid, mode, child } => {
+                        crate::probe!(
+                            class = "deploy.actuate.decision",
+                            verdict = "spawned",
+                            tip = tip_sha.as_str(),
+                            attempt = attempt as u64,
+                            pid = pid.unwrap_or(0), // unwrap_or: 0 reads as "a scheduler task ran it", which returns no pid
+                            mode = mode.as_str(),
+                            "the consumer was launched detached — this core has handed off its own replacement"
+                        );
+                        if let Some(mut child) = child {
+                            // Reap the consumer off the tick and say how it exited — a consumer
+                            // that exits before its reboot stops this core is a receipt worth having
+                            // (NothingOwed, RefuseDirty, a failed build: its log names which).
+                            let tip = tip_sha.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let status = child.wait();
+                                crate::probe!(
+                                    class = "deploy.actuate.consumer_exited",
+                                    tip = tip.as_str(),
+                                    pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
+                                    status = ?status,
+                                    "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                                );
+                            });
+                        }
+                    }
                 }
             }
             DeployVerdict::UpToDate => {}
