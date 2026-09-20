@@ -74,26 +74,39 @@ impl BootReceipt {
     }
 }
 
-/// Adopt-or-reap every llama-server this install owns: identity-verified
-/// health check per pid — a HEALTHY lane is adopted (left running, warm
-/// weights kept for the serving daemon's reclaim); an unhealthy one is
-/// reaped. Deterministic: the same census yields the same fates, and every
-/// fate is a receipt line. (The bash `adopt_or_reap_llama_lanes` row is
-/// superseded by this step — strangler rule: delete the bash when this
-/// lands on the boot path.)
+/// Adopt-or-reap every llama-server this install owns, by the ONE verdict
+/// ([`crate::inference::lane_process::lane_verdict`]): healthy → adopted (warm weights,
+/// live KV kept for the serving daemon's reclaim); BUSY (every probe missed but the
+/// process is working — a slow answer under load) → adopted too, the core's readiness
+/// check proves decode before a citizen is seated; only DEAD (missed and frozen) is
+/// reaped. Deterministic over the same evidence, and every fate is a receipt: the
+/// boot line and a `boot.lane_verdict` probe carry the pid and the evidence, so a reap
+/// can be audited after the fact. The bash `adopt_or_reap_llama_lanes` row this
+/// superseded is deleted (it reaped the M5's lane mid-generation twice on 2026-09-20
+/// on a single 3 s probe; card b57b19fd) — there is no second criterion.
 fn step_adopt_lanes() -> Outcome {
     let mut adopted = 0u32;
     let mut reaped = 0u32;
+    let mut lines = Vec::new();
     for pid in crate::inference::lane_process::owned_llama_pids() {
-        let healthy = crate::inference::lane_process::lane_health_by_pid(pid);
-        if healthy {
+        let verdict = crate::inference::lane_process::lane_verdict(pid);
+        let evidence = verdict.evidence();
+        crate::probe!(
+            class = "boot.lane_verdict",
+            pid = pid as u64,
+            adopt = verdict.adopt(),
+            evidence = evidence.as_str(),
+            "the boot path's verdict on a lane it did not spawn — two signals, one receipt"
+        );
+        if verdict.adopt() {
             adopted += 1;
         } else {
             crate::inference::lane_process::kill_lane(pid);
             reaped += 1;
         }
+        lines.push(format!("pid {pid}: {evidence}"));
     }
-    Outcome::Ok(format!("{adopted} adopted, {reaped} reaped"))
+    Outcome::Ok(format!("{adopted} adopted, {reaped} reaped [{}]", lines.join("; ")))
 }
 
 /// The airc transport daemon — the one service whose absence makes the whole
