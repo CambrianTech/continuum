@@ -62,6 +62,9 @@ pub const MIN_KNEE_LANES: u32 = 2;
 /// is a curve.
 pub const MIN_SAMPLES: u32 = 4;
 const EMA_ALPHA: f64 = 0.2;
+/// The step the first sample after a gap takes: the box may have changed since, so the
+/// old rate counts for half — not nothing.
+const GAP_ALPHA: f64 = 0.5;
 /// A point older than this is not evidence about the box as it is now: a collapse
 /// measured under last hour's build must not hold the roster down all day.
 pub const FRESH_MS: u64 = 60 * 60 * 1000;
@@ -78,11 +81,20 @@ pub struct CurvePoint {
     /// Unix ms of the newest sample; a record without one (pre-freshness) is stale.
     #[serde(default)]
     pub last_ms: u64,
+    /// Samples since the last GAP longer than [`FRESH_MS`] — what fresh trust is built
+    /// from. `samples` is the point's lifetime evidence and is never thrown away: on
+    /// 2026-09-20 the M5's 27B 2-lane point (35 samples) had its last sample at 10:32Z,
+    /// the afternoon's builds skipped every decode as a deploy transient, and the first
+    /// sample after the gap — 3.3 t/s during a swap-heavy 8-lane hour — RESTARTED the
+    /// point at 1 sample: untrusted, no knee, the roster's 17 minds unclamped, 12 drawn.
+    /// A gap resets trust, never the evidence. A record from before this field loads 0.
+    #[serde(default)]
+    pub fresh_samples: u32,
 }
 
 impl CurvePoint {
     fn trusted_at(&self, now_ms: u64) -> bool {
-        self.samples >= MIN_SAMPLES && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
+        self.fresh_samples >= MIN_SAMPLES && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
     }
 }
 
@@ -98,16 +110,23 @@ impl DecodeCurve {
             return;
         }
         let p = self.points.entry(inflight).or_default();
-        // A stale point restarts: last hour's curve is not this hour's evidence.
-        if now_ms.saturating_sub(p.last_ms) > FRESH_MS {
-            p.samples = 0;
+        // A gap longer than the fresh window resets TRUST, never the evidence: the point
+        // must earn MIN_SAMPLES fresh samples again before it is trusted, and the first
+        // sample after a gap moves the EMA harder (the box may have changed) — but the
+        // lifetime samples and the rate they measured stand as stale evidence meanwhile.
+        let gap = now_ms.saturating_sub(p.last_ms) > FRESH_MS;
+        if gap {
+            p.fresh_samples = 0;
         }
         p.tps_ema = if p.samples == 0 {
             tps
+        } else if gap {
+            p.tps_ema + GAP_ALPHA * (tps - p.tps_ema)
         } else {
             p.tps_ema + EMA_ALPHA * (tps - p.tps_ema)
         };
         p.samples = p.samples.saturating_add(1);
+        p.fresh_samples = p.fresh_samples.saturating_add(1);
         p.last_ms = now_ms;
     }
 
@@ -407,7 +426,8 @@ mod tests {
     // seventeen minds on two lanes. The knee EXPLORES one lane above the largest fresh
     // holding point when the constant-aggregate prediction says it holds, a fresh
     // collapsed point above blocks the climb, and a stale one (older than an hour) no
-    // longer does. A stale point also restarts its EMA instead of averaging last hour in.
+    // longer does. A stale point re-earns TRUST from fresh samples; its evidence stands
+    // (the gap law: fix/a-gap-resets-trust-never-the-evidence).
     #[test]
     fn the_knee_climbs_back_when_the_collapse_above_it_goes_stale() {
         let mut c = DecodeCurve::default();
@@ -423,7 +443,8 @@ mod tests {
         assert_eq!(c.knee(F, later), Some(3), "the stale collapse no longer holds it down");
         c.observe(3, 18.0, later);
         let p = &c.points[&3];
-        assert_eq!((p.samples, p.tps_ema), (1, 18.0), "a stale point restarts, it does not average last hour in");
+        assert_eq!((p.samples, p.fresh_samples), (MIN_SAMPLES + 1, 1), "a stale point keeps its evidence and restarts its TRUST");
+        assert!((p.tps_ema - 13.0).abs() < 1e-9, "the first post-gap sample moves the rate by half: {}", p.tps_ema);
         // At the floor the prediction says the next lane will NOT hold: no exploring.
         let mut edge = DecodeCurve::default();
         measured(&mut edge, 4, 11.0); // 11 × 4/5 = 8.8 < floor
@@ -503,6 +524,33 @@ mod tests {
         let (m, k) = conservative(&curves, 6_000).expect("two curves");
         assert_eq!((m.as_str(), k), ("the-27b", MIN_KNEE_LANES), "the lowest knee answers, named, though the 1.5B is newer");
         assert!(conservative(&BTreeMap::new(), 0).is_none(), "nothing measured = nothing to answer");
+    }
+
+
+    // what this catches (2026-09-20, the M5): a point with an hour's gap losing its 35
+    // samples to ONE sample taken in a transient — untrusted, no knee, 17 lanes unclamped.
+    // A gap resets fresh trust; the lifetime evidence stands as the stale answer until
+    // MIN_SAMPLES fresh samples rebuild trust, and the first post-gap sample moves the
+    // rate by half, not all the way.
+    #[test]
+    fn a_gap_resets_trust_never_the_evidence() {
+        let mut c = DecodeCurve::default();
+        for i in 0..35 { c.observe(2, 6.25, 1_000 + i); }
+        let t_gap = 1_000 + 35 + 2 * FRESH_MS; // two hours later
+        assert_eq!(c.knee(DECODE_FLOOR_TPS, t_gap), Some(MIN_KNEE_LANES), "stale evidence still answers");
+        c.observe(2, 3.3, t_gap);
+        let p = &c.points[&2];
+        assert_eq!(p.samples, 36, "lifetime evidence kept");
+        assert_eq!(p.fresh_samples, 1, "trust restarts");
+        assert!(!p.trusted_at(t_gap), "one post-gap sample is not trust");
+        assert!((p.tps_ema - 4.775).abs() < 0.01, "half-way between the old rate and the new sample: {}", p.tps_ema);
+        assert_eq!(c.knee(DECODE_FLOOR_TPS, t_gap), Some(MIN_KNEE_LANES), "…and the knee still answers from the stale branch, never None");
+        for i in 1..MIN_SAMPLES { c.observe(2, 6.0, t_gap + i as u64); }
+        assert!(c.points[&2].trusted_at(t_gap + 10), "MIN_SAMPLES fresh samples rebuild trust");
+        // A record from before the field: fresh_samples loads 0 and earns trust like a gap.
+        let old: CurvePoint = serde_json::from_str(r#"{"samples":35,"tps_ema":6.25,"last_ms":5}"#).unwrap();
+        assert_eq!(old.fresh_samples, 0);
+        assert!(!old.trusted_at(6), "pre-field record: stale evidence, not fresh trust");
     }
 
 }
