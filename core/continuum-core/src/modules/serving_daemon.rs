@@ -2506,6 +2506,9 @@ impl ServingDaemonModule {
                 if settles_this_tick(cooling, live.ready, live.lanes) {
                     if let Some(model) = live.active_model.as_deref() {
                         crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                        // A settled geometry is lanes the hour served: fold it into the
+                        // health window's maximum (the lane-bound rest stands on that).
+                        crate::modules::citizen_health::note_lanes(live.lanes as u64);
                         crate::probe!(
                             class = "serving.geometry.settled",
                             model,
