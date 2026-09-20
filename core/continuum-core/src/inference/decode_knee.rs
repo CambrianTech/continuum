@@ -426,7 +426,8 @@ mod tests {
     // seventeen minds on two lanes. The knee EXPLORES one lane above the largest fresh
     // holding point when the constant-aggregate prediction says it holds, a fresh
     // collapsed point above blocks the climb, and a stale one (older than an hour) no
-    // longer does. A stale point also restarts its EMA instead of averaging last hour in.
+    // longer does. A stale point re-earns TRUST from fresh samples; its evidence stands
+    // (the gap law: fix/a-gap-resets-trust-never-the-evidence).
     #[test]
     fn the_knee_climbs_back_when_the_collapse_above_it_goes_stale() {
         let mut c = DecodeCurve::default();
@@ -442,7 +443,8 @@ mod tests {
         assert_eq!(c.knee(F, later), Some(3), "the stale collapse no longer holds it down");
         c.observe(3, 18.0, later);
         let p = &c.points[&3];
-        assert_eq!((p.samples, p.tps_ema), (1, 18.0), "a stale point restarts, it does not average last hour in");
+        assert_eq!((p.samples, p.fresh_samples), (MIN_SAMPLES + 1, 1), "a stale point keeps its evidence and restarts its TRUST");
+        assert!((p.tps_ema - 13.0).abs() < 1e-9, "the first post-gap sample moves the rate by half: {}", p.tps_ema);
         // At the floor the prediction says the next lane will NOT hold: no exploring.
         let mut edge = DecodeCurve::default();
         measured(&mut edge, 4, 11.0); // 11 × 4/5 = 8.8 < floor
