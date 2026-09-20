@@ -347,7 +347,7 @@ pub fn resolve_from(
         KvPlanSource::Override
     };
     KvCachePlan {
-        bytes_per_token_divisor: kv_divisor_for(Some(&cache_type)),
+        bytes_per_token_divisor: kv_divisor_for(Some(cache_type.as_str())),
         cache_type,
         flash_attn,
         source,
