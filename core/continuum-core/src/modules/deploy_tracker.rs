@@ -38,34 +38,89 @@ fn running_sha() -> &'static str {
     env!("CONTINUUM_BUILD_GIT_SHA")
 }
 
-/// Map GitHub's check-runs JSON to a [`Checks`] verdict — the exact rule track-canary
-/// applied: any hard-failed run is red, any not-completed run is pending, all-completed
-/// is green, and NO runs is unknown (never green — a tip with no CI yet must wait, not
-/// deploy). Pure over the JSON body so it is assertable without gh.
-pub fn parse_check_runs(body: &str) -> Checks {
-    let Ok(v) = serde_json::from_str::<Value>(body) else {
-        return Checks::Unknown;
+/// The events whose check-suites ARE the tip's own verdict. A suite some other event
+/// attached to the same sha (a `schedule`, a `workflow_run` chained off another branch)
+/// judged something else and merely landed here.
+const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"];
+
+/// The tip's verdict plus what the read excluded — the numbers a probe wants when a
+/// verdict surprises someone reading the tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TipChecks {
+    pub checks: Checks,
+    /// Check-runs on the sha in total.
+    pub total: usize,
+    /// Check-runs excluded as not the tip's own (some other event's suite). Zero when the
+    /// workflow-runs read did not answer and every check counted.
+    pub excluded: usize,
+    /// The workflow-runs read answered, so the own-suite filter applied.
+    pub filtered: bool,
+}
+
+/// Map GitHub's check-runs JSON (+ the sha's workflow-runs JSON) to a [`Checks`] verdict —
+/// the ONE rule for the tip, the same one `track-canary.sh::tip_checks` applies: any
+/// hard-failed run is red, any not-completed run is pending, all-completed is green, and
+/// NO runs is unknown (never green — a tip with no CI yet must wait, not deploy).
+///
+/// Judged over the checks the tip's OWN push ran. 2026-09-20 00:06Z a weekly SCHEDULED
+/// audit (Node-era paths, fails every Sunday) landed a failure on the canary tip and the
+/// all-checks read said "red", refusing every deploy on the fleet until a new tip appeared
+/// (#4243 fixed the shell copy of this rule; this is the Rust copy, the only one the
+/// Windows `deploy-consume` reads). So: the workflow runs for the sha carry the triggering
+/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count. The runs
+/// API answered with no such suite = unknown, never "green by absence". The runs API did
+/// not answer (`None` or not JSON) = every check counts, as before — a degraded read, not
+/// a lie. Pure over the JSON bodies so it is assertable without gh.
+pub fn parse_tip_checks(check_runs_body: &str, workflow_runs_body: Option<&str>) -> TipChecks {
+    let unknown = |total, excluded, filtered| TipChecks { checks: Checks::Unknown, total, excluded, filtered };
+    let Ok(v) = serde_json::from_str::<Value>(check_runs_body) else {
+        return unknown(0, 0, false);
     };
-    let runs = match v.get("check_runs").and_then(|r| r.as_array()) {
-        Some(r) if !r.is_empty() => r,
-        _ => return Checks::Unknown,
+    let all: Vec<&Value> = v
+        .get("check_runs")
+        .and_then(|r| r.as_array())
+        .map(|r| r.iter().collect())
+        .unwrap_or_default(); // unwrap_or_default: no check_runs array = zero checks = Unknown below
+    let own_suites: Option<std::collections::HashSet<u64>> = workflow_runs_body
+        .and_then(|b| serde_json::from_str::<Value>(b).ok())
+        .and_then(|w| w.get("workflow_runs")?.as_array().cloned())
+        .map(|runs| {
+            runs.iter()
+                .filter(|r| r.get("event").and_then(|e| e.as_str()).is_some_and(|e| OWN_SUITE_EVENTS.contains(&e)))
+                .filter_map(|r| r.get("check_suite_id").and_then(|id| id.as_u64()))
+                .collect()
+        });
+    let filtered = own_suites.is_some();
+    let runs: Vec<&Value> = match &own_suites {
+        Some(own) => all
+            .iter()
+            .copied()
+            .filter(|c| c.get("check_suite").and_then(|s| s.get("id")).and_then(|id| id.as_u64()).is_some_and(|id| own.contains(&id)))
+            .collect(),
+        None => all.clone(),
     };
+    let total = all.len();
+    let excluded = total - runs.len();
+    if runs.is_empty() {
+        return unknown(total, excluded, filtered);
+    }
     let hard_fail = ["failure", "timed_out", "cancelled", "action_required"];
-    if runs.iter().any(|r| {
+    let checks = if runs.iter().any(|r| {
         r.get("conclusion")
             .and_then(|c| c.as_str())
             .map(|c| hard_fail.contains(&c))
             .unwrap_or(false) // unwrap_or: a run with no conclusion is not a hard-fail
     }) {
-        return Checks::Red;
-    }
-    if runs
+        Checks::Red
+    } else if runs
         .iter()
         .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
     {
-        return Checks::Pending;
-    }
-    Checks::Green
+        Checks::Pending
+    } else {
+        Checks::Green
+    };
+    TipChecks { checks, total, excluded, filtered }
 }
 
 /// The git+gh source of the deployable tip. Reads the tracked branch's tip SHA (after a
@@ -135,8 +190,28 @@ impl DeploySource for GitGhDeploySource {
             // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
             let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
             let gh_out = probe("gh", &["api", &path], GH_TIMEOUT);
-            let checks = gh_out.stdout_if_ok().map(parse_check_runs).unwrap_or(Checks::Unknown); // unwrap_or: gh unreachable = Unknown = wait, never a deploy on a guess
-            Ok(Some((tip, checks)))
+            let Some(check_runs) = gh_out.stdout_if_ok() else {
+                return Ok(Some((tip, Checks::Unknown))); // gh unreachable = Unknown = wait, never a deploy on a guess
+            };
+            // The sha's workflow runs carry the triggering EVENT the check-runs body lacks;
+            // without them a scheduled audit's failure reads as the tip's own (#4243). A
+            // failed read here degrades to the all-checks rule inside `parse_tip_checks`.
+            let runs_path = format!("repos/{repo}/actions/runs?head_sha={tip}&per_page=100");
+            let runs_out = probe("gh", &["api", &runs_path], GH_TIMEOUT);
+            let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
+            if read.excluded > 0 || !read.filtered {
+                crate::probe!(
+                    class = "deploy.tip.checks",
+                    tip = tip.as_str(),
+                    checks = ?read.checks,
+                    total = read.total,
+                    excluded = read.excluded,
+                    filtered = read.filtered,
+                    runs_read = runs_out.outcome(),
+                    "the tip's verdict is judged over its own push's suites; excluded = another event's check-runs on the same sha, filtered=false = the runs read failed and every check counted"
+                );
+            }
+            Ok(Some((tip, read.checks)))
         })
         .await
         .map_err(|e| format!("deploy-source task join error: {e}"))?
@@ -374,16 +449,54 @@ impl ServiceModule for DeployTrackerModule {
 mod tests {
     use super::*;
 
+    fn verdict(check_runs: &str, workflow_runs: Option<&str>) -> Checks {
+        parse_tip_checks(check_runs, workflow_runs).checks
+    }
+
     // what this catches: GitHub's check-runs body maps to the same verdict track-canary
     // used — a hard-failed run is red, a not-completed run is pending, all-completed is
-    // green, and NO runs is unknown (a tip with no CI must WAIT, never deploy).
+    // green, and NO runs is unknown (a tip with no CI must WAIT, never deploy). With no
+    // workflow-runs read the rule is the all-checks rule it always was.
     #[test]
     fn check_runs_map_to_the_same_verdict_as_the_shell_owner() {
-        assert_eq!(parse_check_runs(r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#), Checks::Green);
-        assert_eq!(parse_check_runs(r#"{"check_runs":[{"status":"completed","conclusion":"success"},{"status":"in_progress"}]}"#), Checks::Pending);
-        assert_eq!(parse_check_runs(r#"{"check_runs":[{"status":"completed","conclusion":"failure"}]}"#), Checks::Red);
-        assert_eq!(parse_check_runs(r#"{"check_runs":[{"status":"completed","conclusion":"cancelled"}]}"#), Checks::Red);
-        assert_eq!(parse_check_runs(r#"{"check_runs":[]}"#), Checks::Unknown, "no CI yet = wait, never green");
-        assert_eq!(parse_check_runs("not json"), Checks::Unknown);
+        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#, None), Checks::Green);
+        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"success"},{"status":"in_progress"}]}"#, None), Checks::Pending);
+        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"failure"}]}"#, None), Checks::Red);
+        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"cancelled"}]}"#, None), Checks::Red);
+        assert_eq!(verdict(r#"{"check_runs":[]}"#, None), Checks::Unknown, "no CI yet = wait, never green");
+        assert_eq!(verdict("not json", None), Checks::Unknown);
+    }
+
+    // what this catches (card 2d333f25; the canary tip 6d342745b, 2026-09-20 00:06Z): a
+    // weekly SCHEDULED audit failed and landed its check-run on the tip alongside the
+    // push's three green suites. The all-checks rule read RED and every deploy on the
+    // fleet refused. The tip's verdict is its OWN push's suites: the schedule's suite is
+    // excluded, the tip is green. The same body with the runs read absent still reads red
+    // (degraded, not a lie); a runs read that answers with NO own suite is unknown, never
+    // green by absence; and a failure in an OWN suite is still red. The shape is the live
+    // API's on that sha (7 check-runs, 4 workflow runs), abbreviated.
+    #[test]
+    fn a_scheduled_audits_failure_is_not_the_tips_verdict() {
+        let checks = r#"{"check_runs":[
+            {"name":"audit","status":"completed","conclusion":"failure","check_suite":{"id":96070172760}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":96068500514}},
+            {"name":"drift guard","status":"completed","conclusion":"success","check_suite":{"id":96068500520}},
+            {"name":"install smoke","status":"completed","conclusion":"success","check_suite":{"id":96068500507}}
+        ]}"#;
+        let runs = r#"{"workflow_runs":[
+            {"id":35477870572,"event":"schedule","check_suite_id":96070172760},
+            {"id":35477208032,"event":"push","check_suite_id":96068500520},
+            {"id":35477208024,"event":"push","check_suite_id":96068500507},
+            {"id":35477208029,"event":"push","check_suite_id":96068500514}
+        ]}"#;
+        let read = parse_tip_checks(checks, Some(runs));
+        assert_eq!(read, TipChecks { checks: Checks::Green, total: 4, excluded: 1, filtered: true }, "the schedule's failure is excluded: green");
+        assert_eq!(parse_tip_checks(checks, None), TipChecks { checks: Checks::Red, total: 4, excluded: 0, filtered: false }, "no runs read = every check counts, as before");
+        assert_eq!(parse_tip_checks(checks, Some("not json")), TipChecks { checks: Checks::Red, total: 4, excluded: 0, filtered: false }, "an unparseable runs read = degraded, not green");
+        assert_eq!(verdict(checks, Some(r#"{"workflow_runs":[{"id":1,"event":"schedule","check_suite_id":96070172760}]}"#)), Checks::Unknown, "only a schedule suite = no own suite yet = wait, never green by absence");
+        let own_failure = r#"{"check_runs":[{"status":"completed","conclusion":"failure","check_suite":{"id":96068500514}}]}"#;
+        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "a failure in the tip's own suite is the tip's verdict");
+        let pending = r#"{"check_runs":[{"status":"in_progress","check_suite":{"id":96068500514}},{"status":"completed","conclusion":"failure","check_suite":{"id":96070172760}}]}"#;
+        assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
     }
 }
