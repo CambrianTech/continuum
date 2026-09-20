@@ -340,8 +340,24 @@ impl PersonaSpawnerModule {
     /// restore that came back cold — fixed at the server: checkpoints ride with the
     /// slot state.)
     pub fn seats(&self) -> usize {
-        seats_under(self.population, crate::persona::roster_hold::active().as_ref())
-            .saturating_sub(crate::persona::resting_seat::resting().len())
+        let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
+            .saturating_sub(crate::persona::resting_seat::resting().len());
+        let lanes = warm_lanes_known();
+        let seats = bounded_by_warm_slots(unbounded, lanes);
+        // One row when the bound CHANGES what is drawn, not one per reconcile pass.
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let shape = ((unbounded as u64) << 32) | seats as u64;
+        if seats < unbounded && LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
+            crate::probe!(
+                class = "persona.roster.bounded",
+                population = unbounded as u64,
+                lanes = lanes.unwrap_or(0) as u64, // unwrap_or: 0 = no lane known (then nothing is bounded; unreachable here)
+                seats = seats as u64,
+                minds_per_lane = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE,
+                "the draw is bounded by the warm slots — the rest of the roster stays dormant until the lanes grow"
+            );
+        }
+        seats
     }
 }
 
@@ -603,6 +619,36 @@ pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold:
         Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
         _ => seats,
     }
+}
+
+/// THE DRAW IS BOUNDED BY THE WARM SLOTS (card 7c38ff6f; Joel, 2026-09-20: "23 minds … the
+/// nursery is over-saturated" — the active roster is the warm slots × ~2, the rest dormant).
+/// Measured the boot of 23d33019d on the M5, 01:12Z: the old lane was dead at boot, sixteen
+/// minds loaded, their residency left the 27B a 20 GB Eco budget, the plan launched ONE
+/// lane at 2,048 tokens, and the hourly rest was fifty minutes away. The bound belongs at
+/// the draw: `seats` never exceeds `lanes × MINDS_PER_LANE_STARVED_ABOVE` (never below the
+/// resident floor), so the memory the roster would have taken is the plan's for lanes. No
+/// lane known (`None`, a node that has never served) bounds nothing — an absence is not a
+/// number. The mirror is free: the reconciler re-reads `seats()` every pass, so lanes that
+/// grow draw more; lanes that shrink are the hourly rest's (`citizen_health`). Pure.
+pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
+    match lanes {
+        Some(l) if l > 0 => {
+            let edge = (l as usize).saturating_mul(crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize);
+            seats.min(edge.max(crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize))
+        }
+        _ => seats,
+    }
+}
+
+/// The warm slots this node is known to serve: the live lane when one is ready, else the
+/// last SETTLED geometry (a cold boot's first truth, `served_window_store`), else none.
+fn warm_lanes_known() -> Option<u32> {
+    let live = crate::inference::llama_server::current_serving();
+    if live.ready && live.lanes > 0 {
+        return Some(live.lanes);
+    }
+    crate::modules::served_window_store::load_geometry().map(|g| g.lanes).filter(|l| *l > 0)
 }
 
 pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
@@ -1064,6 +1110,22 @@ mod tests {
         assert_eq!(seats_under(12, Some(&derived)), 12, "a team hold never bounds the seats");
         let operator = crate::persona::roster_hold::RosterHold { only: vec!["Alpha".into()], until_ms: u64::MAX, reason: "op".into(), exclusive: true };
         assert_eq!(seats_under(12, Some(&operator)), 1, "an operator hold does");
+    }
+
+    // what this catches (card 7c38ff6f; the M5 boot of 23d33019d, 01:12Z 9/20): sixteen minds
+    // drawn onto a node whose lanes could seat four, their residency starving the plan to a
+    // 2,048-token lane. The draw is bounded by the warm slots: lanes × the per-lane edge,
+    // never below the resident floor, and an unknown lane count bounds nothing.
+    #[test]
+    fn the_draw_is_bounded_by_the_warm_slots_and_an_unknown_lane_count_bounds_nothing() {
+        use crate::modules::citizen_health::{MINDLESS_RESIDENT_FLOOR, MINDS_PER_LANE_STARVED_ABOVE};
+        let per = MINDS_PER_LANE_STARVED_ABOVE as usize;
+        assert_eq!(bounded_by_warm_slots(16, Some(2)), 2 * per, "two lanes seat two lanes' worth");
+        assert_eq!(bounded_by_warm_slots(16, Some(1)), per.max(MINDLESS_RESIDENT_FLOOR as usize), "one lane: the edge, never below the floor");
+        assert_eq!(bounded_by_warm_slots(16, Some(8)), 16, "lanes past the population change nothing");
+        assert_eq!(bounded_by_warm_slots(16, None), 16, "no lane known bounds nothing — an absence is not a number");
+        assert_eq!(bounded_by_warm_slots(16, Some(0)), 16, "a zero lane count is unknown, not a bound of zero");
+        assert_eq!(bounded_by_warm_slots(0, Some(2)), 0, "an empty population stays empty (the one-roster rule)");
     }
 
 }
