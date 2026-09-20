@@ -1120,12 +1120,13 @@ impl ServingDaemonModule {
         let model_for_knee = knee_model(active_model, || {
             crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
         });
-        // A remembered model with no curve answers with THIS box's last measured curve
-        // (2026-09-20: the record read "coder-14b", a harness fixture a local test run had
-        // written; knee None; 8 lanes on a knee-2 box). Said once per fallback model.
+        // A remembered model with no curve answers with the most CONSERVATIVE knee this box
+        // holds (2026-09-20: the record read "coder-14b", a harness fixture a local test run
+        // had written; knee None; 8 lanes on a knee-2 box). Never the newest: a small model's
+        // exam an hour ago must not unclamp the 27B (Cormac, #4266). Said once per fallback.
         let knee = match model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for) {
             Some(k) => Some(k),
-            None => crate::inference::decode_knee::last_measured_knee().map(|(measured, k)| {
+            None => crate::inference::decode_knee::conservative_knee().map(|(measured, k)| {
                 static SAID: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
                 let mut said = SAID.lock();
                 if said.as_deref() != Some(measured.as_str()) {
@@ -1134,7 +1135,7 @@ impl ServingDaemonModule {
                         remembered = model_for_knee.as_deref().unwrap_or("<none>"), // unwrap_or: nothing remembered is a name too
                         measured = measured.as_str(),
                         knee = k as u64,
-                        "no knee for the model the box remembers — the last measured curve bounds the lanes until a lane reports"
+                        "no knee for the model the box remembers — the lowest knee it holds bounds the lanes until a lane reports"
                     );
                     *said = Some(measured);
                 }

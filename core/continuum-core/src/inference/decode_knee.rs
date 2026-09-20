@@ -274,23 +274,29 @@ pub fn knee_for(model: &str) -> Option<u32> {
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
 }
 
-/// The knee of the model this box measured most recently, with its name — for a boot that
-/// remembers a model with no curve (2026-09-20: a record poisoned with "coder-14b" asked
-/// for a knee nobody measured, read None, and planned 8 lanes on a box whose 27B knee is
-/// 2). The last measured curve IS this box's decode ceiling until a lane says otherwise.
-pub fn last_measured_knee() -> Option<(String, u32)> {
+/// The most CONSERVATIVE knee this box holds, with the model that measured it — for a boot
+/// that remembers a model with no curve (2026-09-20: a record poisoned with "coder-14b"
+/// asked for a knee nobody measured, read None, and planned 8 lanes on a box whose 27B
+/// knee is 2). A knee is a (box, model) fact; the newest curve may be a 1.5B exam's with a
+/// knee of 8 (Cormac's condition on #4266), so the evidence this box has about a model it
+/// never measured is its LOWEST knee — the biggest model's, in practice. Ties: the newest.
+pub fn conservative_knee() -> Option<(String, u32)> {
     let now = now_ms();
     let curves = CURVES.lock();
-    last_measured(&curves).and_then(|(m, c)| c.knee(DECODE_FLOOR_TPS, now).map(|k| (m.clone(), k)))
+    conservative(&curves, now).map(|(m, k)| (m.clone(), k))
 }
 
-/// PURE: the curve whose newest point is newest.
-pub fn last_measured(curves: &BTreeMap<String, DecodeCurve>) -> Option<(&String, &DecodeCurve)> {
+/// PURE: the lowest knee across measured curves, newest measurement breaking ties.
+pub fn conservative(curves: &BTreeMap<String, DecodeCurve>, now_ms: u64) -> Option<(&String, u32)> {
     curves
         .iter()
-        .filter_map(|(m, c)| c.points.values().map(|p| p.last_ms).max().map(|t| (t, m, c)))
-        .max_by_key(|(t, _, _)| *t)
-        .map(|(_, m, c)| (m, c))
+        .filter_map(|(m, c)| {
+            let knee = c.knee(DECODE_FLOOR_TPS, now_ms)?;
+            let newest = c.points.values().map(|p| p.last_ms).max().unwrap_or(0); // unwrap_or: a curve with a knee has a point
+            Some((knee, newest, m))
+        })
+        .min_by_key(|(knee, newest, _)| (*knee, u64::MAX - *newest))
+        .map(|(knee, _, m)| (m, knee))
 }
 /// The decode rate this box measured for `model` at its lightest trusted concurrency —
 /// what one turn's decode costs per token here. `None` = unmeasured.
@@ -479,21 +485,22 @@ mod tests {
     }
 
 
-    // what this catches (2026-09-20): a boot remembering a model with no curve — the last
-    // measured curve answers, named, so the plan is clamped by THIS box's evidence.
+    // what this catches (2026-09-20, Cormac's condition on #4266): a boot remembering a
+    // model with no curve takes the box's most CONSERVATIVE knee, never the newest — a
+    // 1.5B exam measured an hour ago (knee 8) must not unclamp a remembered 27B (knee 2).
     #[test]
-    fn the_last_measured_curve_answers_when_the_remembered_model_has_none() {
+    fn a_remembered_model_with_no_curve_takes_the_lowest_knee_the_box_holds() {
         let mut curves: BTreeMap<String, DecodeCurve> = BTreeMap::new();
-        let mut old = DecodeCurve::default();
-        for _ in 0..MIN_SAMPLES { old.observe(1, 30.0, 1_000); }
-        let mut newer = DecodeCurve::default();
-        for _ in 0..MIN_SAMPLES { newer.observe(2, 6.0, 5_000); }
-        curves.insert("old-model".into(), old);
-        curves.insert("the-27b".into(), newer);
-        let (m, c) = last_measured(&curves).expect("two curves, one newest");
-        assert_eq!(m, "the-27b");
-        assert_eq!(c.knee(DECODE_FLOOR_TPS, 6_000), Some(MIN_KNEE_LANES), "2 lanes at 6 t/s: the knee holds at the floor's minimum");
-        assert!(last_measured(&BTreeMap::new()).is_none(), "nothing measured = nothing to answer");
+        let mut big = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { big.observe(2, 6.0, 1_000); } // 2 lanes at 6 t/s: knee 2
+        let mut small = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { small.observe(8, 40.0, 5_000); } // 8 lanes at 40 t/s: knee 8, newer
+        curves.insert("the-27b".into(), big);
+        curves.insert("the-1.5b".into(), small);
+        assert_eq!(curves["the-1.5b"].knee(DECODE_FLOOR_TPS, 6_000), Some(8), "the small model's own knee is 8");
+        let (m, k) = conservative(&curves, 6_000).expect("two curves");
+        assert_eq!((m.as_str(), k), ("the-27b", MIN_KNEE_LANES), "the lowest knee answers, named, though the 1.5B is newer");
+        assert!(conservative(&BTreeMap::new(), 0).is_none(), "nothing measured = nothing to answer");
     }
 
 }
