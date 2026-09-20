@@ -220,38 +220,161 @@ pub fn owned_llama_pids() -> Vec<u32> {
         .collect()
 }
 
-/// Is the lane at `pid` HEALTHY — identity-verified AND answering /health on
-/// the port its own cmdline names? The boot plan's adopt-or-reap predicate:
-/// deterministic (same census → same fates), no guessing (an unreadable port
-/// or a non-2xx answer is unhealthy, full stop).
-pub fn lane_health_by_pid(pid: u32) -> bool {
-    if !is_llama_server(pid) {
-        return false;
+/// How many times the boot path asks a lane's `/health` before judging it, and how long
+/// each ask may take. Sized for a LOADED box, not an idle one: on 2026-09-20 the M5's
+/// deploy ran this check against a 32 GB lane 6,460 tokens into a turn while the box sat
+/// at 0 GB free and 4.9 GB swap — the lane's HTTP thread answered late, a single 3 s
+/// probe read that as dead, and the lane was killed mid-generation twice in one morning
+/// (card b57b19fd; Joel: "timeouts are where AIs ruin a project"). Three asks over up to
+/// fifteen seconds is the price of never killing a working lane for being slow.
+pub const LANE_PROBE_ATTEMPTS: u32 = 3;
+pub const LANE_PROBE_BOUND_S: u64 = 5;
+/// The CPU share above which a lane that missed every probe is BUSY, not dead: a decoding
+/// llama-server burns a core sampling and tokenizing; a wedged one is frozen at zero.
+pub const LANE_BUSY_CPU_PCT: f32 = 1.0;
+
+/// What the boot path decided about a lane it did not spawn, with the evidence it
+/// decided on — every fate is a receipt, never a bare bool.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaneVerdict {
+    /// `/health` answered 2xx within the bound (attempt number carried).
+    Healthy { attempt: u32 },
+    /// Every probe missed, but the process is working (CPU advancing) — a slow answer
+    /// under load, not a wedge. ADOPTED: the core's own readiness check proves decode
+    /// before any citizen is seated, and relaunches it if that fails.
+    Busy { cpu_pct: f32, last_error: String },
+    /// Every probe missed AND the process is frozen (or is not a lane at all). Reaped.
+    Dead { reason: String },
+}
+
+impl LaneVerdict {
+    /// A lane the boot keeps (warm weights, live KV) rather than reaps.
+    pub fn adopt(&self) -> bool {
+        !matches!(self, LaneVerdict::Dead { .. })
     }
-    let Ok(out) = std::process::Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
-        .output()
-    else {
-        return false;
-    };
-    let cmd = String::from_utf8_lossy(&out.stdout);
-    let port = cmd
-        .split_whitespace()
-        .skip_while(|w| *w != "--port")
-        .nth(1)
-        .and_then(|p| p.parse::<u16>().ok());
-    let Some(port) = port else { return false };
-    // Blocking 3s health probe — boot-path only, never on a serving path.
-    std::process::Command::new("curl")
+    /// One line for the boot receipt / the probe stream.
+    pub fn evidence(&self) -> String {
+        match self {
+            LaneVerdict::Healthy { attempt } => format!("healthy (answered on attempt {attempt})"),
+            LaneVerdict::Busy { cpu_pct, last_error } => format!(
+                "busy (every probe missed within {LANE_PROBE_ATTEMPTS} × {LANE_PROBE_BOUND_S} s: \
+                 {last_error}; cpu {cpu_pct:.0}% — decoding, adopted)"
+            ),
+            LaneVerdict::Dead { reason } => format!("dead ({reason})"),
+        }
+    }
+}
+
+/// PURE: the verdict from the evidence. Two signals, never one: the probe AND the
+/// process's own activity. A miss with activity is a slow answer under load (BUSY); a
+/// miss without activity is a wedge (DEAD); `None` activity (the process could not be
+/// sampled) counts as frozen — an absence never exonerates a lane, and this is the
+/// deterministic direction the old single-probe check already took.
+pub fn verdict_from(answered_on: Option<u32>, cpu_pct: Option<f32>, last_error: &str) -> LaneVerdict {
+    if let Some(attempt) = answered_on {
+        return LaneVerdict::Healthy { attempt };
+    }
+    match cpu_pct {
+        Some(pct) if pct >= LANE_BUSY_CPU_PCT => LaneVerdict::Busy {
+            cpu_pct: pct,
+            last_error: last_error.to_string(),
+        },
+        Some(pct) => LaneVerdict::Dead {
+            reason: format!("every probe missed ({last_error}) and the process is frozen (cpu {pct:.1}%)"),
+        },
+        None => LaneVerdict::Dead {
+            reason: format!("every probe missed ({last_error}) and the process could not be sampled"),
+        },
+    }
+}
+
+/// One bounded `/health` ask on `port`: `Ok(())` on 2xx, else the reason.
+fn probe_health_once(port: u16, bound_s: u64) -> Result<(), String> {
+    let out = std::process::Command::new("curl")
         .args([
             "-sf",
             "--max-time",
-            "3",
+            &bound_s.to_string(),
             &format!("http://127.0.0.1:{port}/health"),
         ])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false) // safe: unreachable probe = unhealthy = reap, the deterministic direction
+        .map_err(|e| format!("curl unavailable: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(match out.status.code() {
+            Some(28) => format!("no answer within {bound_s} s"),
+            Some(22) => "non-2xx".to_string(),
+            Some(7) => "connection refused".to_string(),
+            Some(c) => format!("curl exit {c}"),
+            None => "curl killed".to_string(),
+        })
+    }
+}
+
+/// Ask `/health` up to `attempts` times, `bound_s` each. Returns the attempt that answered,
+/// else the last reason. Pure over the port so a test can stand a slow listener behind it.
+pub fn probe_health_bounded(port: u16, attempts: u32, bound_s: u64) -> Result<u32, String> {
+    let mut last = String::from("no attempt");
+    for attempt in 1..=attempts {
+        match probe_health_once(port, bound_s) {
+            Ok(()) => return Ok(attempt),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// The process's CPU share over a short window (sysinfo, single-pid refresh twice across
+/// its minimum interval). `None` if the pid is gone or unsampled.
+pub fn cpu_pct_of(pid: u32) -> Option<f32> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let wanted = [Pid::from_u32(pid)];
+    let mut sys = System::new();
+    let kind = ProcessRefreshKind::nothing().with_cpu();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&wanted), true, kind);
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(std::time::Duration::from_millis(500)));
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&wanted), true, kind);
+    sys.process(wanted[0]).map(|p| p.cpu_usage())
+}
+
+/// The boot path's ONE verdict on a lane it did not spawn — identity-verified, then the
+/// two signals: a bounded, retried `/health` and the process's own activity. Boot-path
+/// only (blocking, up to `LANE_PROBE_ATTEMPTS × LANE_PROBE_BOUND_S` seconds), never on a
+/// serving path. Every path that may kill a lane at boot calls THIS; there is no second
+/// criterion in a shell script any more (the bash loop this superseded reaped the M5's
+/// lane twice on 2026-09-20).
+pub fn lane_verdict(pid: u32) -> LaneVerdict {
+    if !is_llama_server(pid) {
+        return LaneVerdict::Dead {
+            reason: "not a llama-server (dead pid, or a reused one)".to_string(),
+        };
+    }
+    let Some(argv) = command_args(pid) else {
+        return LaneVerdict::Dead { reason: "argv unreadable".to_string() };
+    };
+    let port = {
+        let mut it = argv.iter();
+        let mut found = None;
+        while let Some(a) = it.next() {
+            if a == "--port" {
+                found = it.next().and_then(|p| p.parse::<u16>().ok());
+                break;
+            }
+            if let Some(v) = a.strip_prefix("--port=") {
+                found = v.parse::<u16>().ok();
+                break;
+            }
+        }
+        found
+    };
+    let Some(port) = port else {
+        return LaneVerdict::Dead { reason: "no --port on its command line".to_string() };
+    };
+    match probe_health_bounded(port, LANE_PROBE_ATTEMPTS, LANE_PROBE_BOUND_S) {
+        Ok(attempt) => verdict_from(Some(attempt), None, ""),
+        Err(last) => verdict_from(None, cpu_pct_of(pid), &last),
+    }
 }
 
 /// Reap one lane the boot plan judged unhealthy — identity re-verified at the
@@ -393,6 +516,50 @@ mod tests {
         assert_eq!(cache_ram_mib_in(&argv("llama-server -c 4096")), None, "absent = unknown");
         assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram")), None, "malformed = unknown");
         assert_eq!(cache_ram_mib_in(&argv("llama-server --cache-ram lots")), None);
+    }
+
+    // what this catches: busy is not dead. The verdict needs the probe AND the process's
+    // activity: a miss with CPU advancing is a slow answer under load (adopted), a miss
+    // with a frozen process is a wedge (reaped), an unsampled process never exonerates.
+    // Regression for the M5 2026-09-20 (card b57b19fd): a 32 GB lane mid-generation was
+    // killed on one 3 s probe under swap, twice in one morning.
+    #[test]
+    fn busy_is_not_dead_the_verdict_needs_two_signals() {
+        assert_eq!(verdict_from(Some(2), None, ""), LaneVerdict::Healthy { attempt: 2 });
+        let busy = verdict_from(None, Some(140.0), "no answer within 5 s");
+        assert!(busy.adopt(), "a working lane that answers late is adopted: {busy:?}");
+        assert!(matches!(busy, LaneVerdict::Busy { cpu_pct, .. } if cpu_pct == 140.0));
+        let frozen = verdict_from(None, Some(0.0), "no answer within 5 s");
+        assert!(!frozen.adopt(), "a frozen lane that never answers is dead: {frozen:?}");
+        let unsampled = verdict_from(None, None, "connection refused");
+        assert!(!unsampled.adopt(), "an absence never exonerates");
+        assert!(busy.evidence().contains("adopted") && frozen.evidence().starts_with("dead"));
+    }
+
+    // what this catches: the probe is retried within a bound sized for a loaded box — a
+    // listener that answers 4 s late (the M5 under swap) is HEALTHY on the first attempt
+    // with a 5 s bound, where the old single 3 s shot read it as dead; and a port nobody
+    // listens on misses every attempt with the reason carried.
+    #[test]
+    fn a_slow_answer_within_the_bound_is_healthy() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                let _ = sock.read(&mut buf);
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            }
+        });
+        assert_eq!(probe_health_bounded(port, 1, 5), Ok(1), "4 s late is inside a 5 s bound");
+        let dead_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        let miss = probe_health_bounded(dead_port, 2, 1);
+        assert!(miss.is_err(), "nobody listening → every attempt misses: {miss:?}");
     }
 
     // what this catches: a definitely-dead pid is neither alive nor a llama-server,

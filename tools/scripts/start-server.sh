@@ -320,59 +320,13 @@ if pgrep -f 'studio run' >/dev/null 2>&1; then
   pkill -f 'studio run' 2>/dev/null || true
 fi
 
-# ── ROW: llama lanes — ADOPT the healthy one ─────────────────────────
-# This used to be `pkill -f llama-server`, unconditionally, on every boot. That
-# was the #452 violation with the highest cost, and it made real code dead:
-# `inference::lane_registry::sweep_in` already encodes the adopt rule — the
-# `(LaneRole::Live, SweepMode::Boot) => false` arm deliberately LEAVES a live lane
-# alone at boot and reaps it only at shutdown. The shell killed that lane seconds
-# before the core could adopt it, so the Rust arm never once fired in production.
-#
-# What it cost: a cold model load on every single reboot. During that load the
-# serving lane cannot prove it can decode, so hosting correctly parks (#363) and
-# every citizen is REGISTERED BUT NOT RESIDENT — measured at ~15 minutes on
-# 2026-08-18, which is the window a benchmark round was then staged into and
-# produced zero turns (#455). Adopting a warm lane removes the window rather than
-# teaching every caller to wait for it.
-#
-# Health is /health 200 on the lane's own port, which is a LIVENESS check, not a
-# decode check — a wedged server can pass it (#363, exactly why the core verifies
-# generation before attaching citizens). That is the correct division: the shell
-# adopts a lane that is plausibly alive, and the core's `await_ready_serving`
-# remains the authority that refuses to seat citizens on one that cannot decode,
-# relaunching it if so. Adopting here can only cost a relaunch the core already
-# knows how to do; reaping unconditionally costs a cold load every time.
-adopt_or_reap_llama_lanes() {
-  local pids adopted=0 reaped=0
-  pids="$(pgrep -f 'llama-server' 2>/dev/null || true)"
-  [ -z "$pids" ] && return 0
-  local pid port
-  for pid in $pids; do
-    # The lane's port comes from its own cmdline — the only place it is recorded
-    # for a process the shell did not spawn.
-    # `|| true`: `ps` fails when the pid died between listing and probing, which
-    # is the ordinary race this adoption loop exists to tolerate. Under `set -e`
-    # + pipefail that failure would abort the whole deploy instead of skipping
-    # one dead lane — and the `[ -n "$port" ]` on the next line was already
-    # written for the empty case (card aad30dee, measured 2026-09-05).
-    port="$(ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--port[ =]\([0-9]\{1,\}\).*/\1/p' || true)"
-    if [ -n "$port" ] && bounded_run 3 curl -sf "http://127.0.0.1:${port}/health"; then
-      echo "  ✓ adopting healthy llama lane (pid $pid, port $port) — warm weights kept" >&2
-      adopted=$((adopted + 1))
-    else
-      echo "  ✗ reaping unhealthy llama lane (pid $pid, port ${port:-unknown})" >&2
-      kill -TERM "$pid" 2>/dev/null || true
-      reaped=$((reaped + 1))
-    fi
-  done
-  if [ "$reaped" -gt 0 ]; then
-    # Give the OS a moment to release the listening socket before the core binds.
-    sleep 1
-    pkill -9 -f 'llama-server' 2>/dev/null || true
-  fi
-  echo "  llama lanes: $adopted adopted, $reaped reaped" >&2
-}
-adopt_or_reap_llama_lanes
+# ── ROW: llama lanes — adopt-or-reap is the CORE'S step, not this script's ──
+# `continuum start` runs `boot_plan::step_adopt_lanes` before this script: one verdict
+# (`lane_process::lane_verdict` — a bounded, retried /health AND the process's own
+# activity; busy is not dead) with a receipt per pid. The bash loop that used to live
+# here was a SECOND criterion — a single 3 s curl — and on 2026-09-20 it reaped the M5's
+# 32 GB lane mid-generation twice in one morning while the box swapped (card b57b19fd).
+# Two owners of one kill decision is the defect; the shell no longer decides.
 
 # ── ROW: airc daemon — BOOT STARTS IT ────────────────────────────────
 # This row did not exist. Boot printed "⚠ airc daemon not running. Start it with:
