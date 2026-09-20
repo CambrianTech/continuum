@@ -124,6 +124,8 @@ pub fn carry_of(root: &Path) -> Carry {
     if !root.join(".git").exists() {
         return Carry::Nothing(NOT_A_REPO_REASON);
     }
+    // Also the UNBORN branch of a just-`git init`ed workspace: `rev-parse --abbrev-ref
+    // HEAD` fails there, and with no commit there is nothing to carry yet either.
     if current_branch(root).is_none() {
         return Carry::Nothing(DETACHED_REASON);
     }
@@ -722,7 +724,7 @@ mod tests {
             "nothing new = nothing committed, nothing pushed"
         );
 
-        git(&m.b, &["checkout", "-q", "-b", &m.branch]);
+        git(&m.b, &["checkout", "-q", "-B", &m.branch]);
         let arrived = arrive_over(&m.b, &m.branch, 7);
         match &arrived {
             ArrivalOutcome::Transferred { sha: s, stranded: None, from_node: Some(n), .. } => {
@@ -781,7 +783,7 @@ mod tests {
         std::fs::write(m.a.join("src.txt"), "from A\n").unwrap();
         let PushOutcome::Ok { sha: sha_a, .. } = sync(&m.a, card, "node-a") else { panic!("push") };
         // B: the same branch cut from main, its own commit Y, and an uncommitted edit.
-        git(&m.b, &["checkout", "-q", "-b", &m.branch]);
+        git(&m.b, &["checkout", "-q", "-B", &m.branch]);
         std::fs::write(m.b.join("y.txt"), "B's commit\n").unwrap();
         git(&m.b, &["add", "y.txt"]);
         git(&m.b, &["commit", "-q", "-m", "B's own"]);
@@ -883,7 +885,9 @@ mod tests {
         git(m.tmp.path(), &["clone", "-q", "--bare", &m.a.to_string_lossy(), &mirror.to_string_lossy()]);
         git(m.tmp.path(), &["clone", "-q", "--shared", &mirror.to_string_lossy(), &staged.to_string_lossy()]);
         identity(&staged);
-        git(&staged, &["checkout", "-q", "-b", &m.branch]);
+        // `-B`, not `-b`: `clone --bare` copies the source's HEAD symref, so a `--shared`
+        // clone of the mirror already SITS on the card branch and `-b` would fail here.
+        git(&staged, &["checkout", "-q", "-B", &m.branch]);
         assert_eq!(carry_of(&staged), Carry::LocalOrigin, "a --shared clone of a local mirror carries nothing");
         std::fs::write(staged.join("work.txt"), "her act\n").unwrap();
 
@@ -920,6 +924,12 @@ mod tests {
         let orphan = m.tmp.path().join("orphan");
         git(m.tmp.path(), &["init", "-q", "-b", "main", &orphan.to_string_lossy()]);
         identity(&orphan);
+        // A root commit first: `git_init_if_needed` gives every citizen workspace one, and
+        // an UNBORN branch has no branch at all (`rev-parse --abbrev-ref HEAD` fails), which
+        // is the `Nothing` shape, not this one.
+        std::fs::write(orphan.join("seed.txt"), "seed\n").unwrap();
+        git(&orphan, &["add", "seed.txt"]);
+        git(&orphan, &["commit", "-q", "-m", "workspace: initial state"]);
         std::fs::write(orphan.join("a.txt"), "x\n").unwrap();
         assert_eq!(carry_of(&orphan), Carry::NoOrigin);
         assert_eq!(sync_after_act(&orphan, card, "n"), PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
