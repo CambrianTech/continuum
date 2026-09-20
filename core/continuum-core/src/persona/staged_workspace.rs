@@ -204,6 +204,23 @@ fn copy_facts(peer: uuid::Uuid, path: PathBuf) -> StagedCopy {
     StagedCopy { peer, path, has_work: work_mtime_ms.is_some(), work_mtime_ms }
 }
 
+/// Which citizen's copy of `instance` should be GRADED — the inverse of the per-peer
+/// question above, and the one the grade path needs.
+///
+/// # Why this exists (2026-08-18, and it nearly produced a false zero for a real pass)
+///
+/// The SAME instance is legitimately staged into more than one citizen's workspace:
+/// dispatch round-robins over the roster, so `astropy__astropy-14995` sat in BOTH Atlas's
+/// tree (dirty — a real fix, `M astropy/nddata/mixins/ndarithmetic.py`) and Asha's tree
+/// (clean — staged, never worked). Nothing at grade time said which copy was authoritative.
+/// Grading the clean one returned `patchBytes: 0, resolved: false` — a confident zero for
+/// work sitting ten directories away.
+///
+/// Deletion was never the risk; AMBIGUITY was. So the rule mirrors `resolve_for_titles`:
+/// exactly one WORKED copy resolves, and anything else refuses rather than guessing —
+/// because picking either of two worked copies scores one citizen's diff against the
+/// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
+/// outcome, and the caller names the candidates).
 pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
         return Vec::new();
