@@ -354,6 +354,57 @@ impl GridAllocation {
     }
 }
 
+/// The roles and floors an experience DECLARES, in the allocator's terms — `GridInputs`'
+/// roles and floors from data, never from a constant. Roles are ordered by first
+/// appearance (authoring order is priority); a role's floor is how many citizens the
+/// recipe lists for it; a citizen with no declared requirement takes the MEASURED
+/// typical prompt (`measured_floor`, the serving demand's `typical_prompt_floor`) as its
+/// window, any model, decode unjudged — and with nothing measured yet, the serve floor.
+pub fn roles_from(
+    citizens: &[crate::experience::recipe::CitizenRecipe],
+    measured_floor: Option<u32>,
+) -> (Vec<Role>, Vec<RoleFloor>) {
+    let mut roles: Vec<Role> = Vec::new();
+    let mut floors: Vec<RoleFloor> = Vec::new();
+    for c in citizens {
+        let name = c.role.as_str();
+        let requirement = match &c.requirement {
+            Some(r) => Requirement {
+                window: r.window_tokens,
+                min_capability: r.min_capability,
+                decode_floor_tps: r.decode_floor_tps,
+            },
+            None => Requirement {
+                window: measured_floor.unwrap_or(super::serving_plan::MIN_SERVE_CTX), // unwrap_or: nothing measured = the serve floor, the same prior the planner starts from
+                min_capability: 0,
+                decode_floor_tps: None,
+            },
+        };
+        match roles.iter().position(|r| r.name == name) {
+            Some(i) => {
+                // A second citizen of a role adds a seat to its floor; a declared
+                // requirement on any of them is the role's (the strictest window wins).
+                floors[i].min_seats += 1;
+                if requirement.window > roles[i].requirement.window {
+                    roles[i].requirement.window = requirement.window;
+                }
+                roles[i].requirement.min_capability = roles[i].requirement.min_capability.max(requirement.min_capability);
+                // The strictest on EVERY axis (Cormac, #4271): a later, laxer decode floor
+                // never loosens the role's.
+                roles[i].requirement.decode_floor_tps = match (roles[i].requirement.decode_floor_tps, requirement.decode_floor_tps) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => {
+                roles.push(Role { name: name.to_string(), requirement });
+                floors.push(RoleFloor { role: roles.len() - 1, min_seats: 1 });
+            }
+        }
+    }
+    (roles, floors)
+}
+
 /// The best plan on a node for a requirement: the most capable holding plan, then the
 /// most lanes, then the widest window. `None` when no plan holds.
 pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
@@ -913,6 +964,33 @@ mod tests {
         assert_eq!(inputs_key(&inputs(book.live(later, silent), m.clone())), k1, "the same grid as at the start keys the same");
         assert_eq!(book.forget_silent(later, silent), vec![gpu], "the silent one is forgotten, named");
         assert_eq!(allocate(&inputs(book.live(later, silent), m.clone())).dormant.len(), 2, "…and the allocation is the lone-box one again");
+    }
+
+    // what this catches (card 10bba591): a recipe's citizens become the allocator's roles
+    // and floors from DATA — declared requirements taken as written, undeclared ones at
+    // the measured typical prompt (never a constant), authoring order as priority, a
+    // repeated role adding a seat to its floor with the strictest requirement kept.
+    #[test]
+    fn a_recipes_citizens_are_the_allocators_roles_and_floors() {
+        use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
+        use crate::persona::role_template::RoleId;
+        let coder = |window: u32| CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: window, min_capability: 7, decode_floor_tps: Some(10.0) }),
+        };
+        let helper = CitizenRecipe { role: RoleId::Helper, requirement: None };
+        let lax = CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 8_192, min_capability: 3, decode_floor_tps: Some(5.0) }),
+        };
+        let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
+        assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
+        assert_eq!(roles[0].requirement, Requirement { window: 131_072, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
+        assert_eq!(roles[1].requirement, Requirement { window: 70_071, min_capability: 0, decode_floor_tps: None }, "undeclared = the measured typical prompt");
+        assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
+        let (roles, _) = roles_from(&[helper], None);
+        assert_eq!(roles[0].requirement.window, super::super::serving_plan::MIN_SERVE_CTX, "nothing measured yet = the serve floor");
+        assert!(roles_from(&[], Some(1)).0.is_empty());
     }
 
     // what this catches: the outlier validation — the REAL per-node planner's plan reads
