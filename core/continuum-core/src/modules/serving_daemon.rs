@@ -525,7 +525,7 @@ pub struct ServingDaemonModule {
     /// The prompt-cache MiB the CURRENT serve derived and passed to its lane —
     /// stashed so the governor-tick host-cache lease accounts the SAME number
     /// (one derivation, two consumers; the compression contract of 1.b).
-    served_prompt_cache_mib: std::sync::Mutex<u32>,
+    served_prompt_cache_mib: Arc<std::sync::Mutex<u32>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -825,9 +825,9 @@ impl ServingDaemonModule {
             moe_trace_tail: std::sync::Mutex::new(None),
             division: std::sync::Mutex::new(None),
             served_resident: std::sync::Mutex::new(None),
-            served_prompt_cache_mib: std::sync::Mutex::new(
+            served_prompt_cache_mib: Arc::new(std::sync::Mutex::new(
                 crate::inference::lane_args::CACHE_RAM_MIB,
-            ),
+            )),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -1307,7 +1307,7 @@ impl ServingDaemonModule {
             self.subscribe_serving(),
             self.suppress_sender(),
             self.pin_sender(),
-            serving_footprint_fn(self.catalog.clone()),
+            serving_footprint_fn(self.catalog.clone(), self.served_prompt_cache_mib.clone()),
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own
@@ -4609,15 +4609,36 @@ pub fn perf_cores() -> u32 {
 /// reserve (G5) stops the board over-reporting free VRAM by the prefill buffer,
 /// which is the bytes a SECOND consumer (the eval lane, a train job) would grab
 /// out from under serving's next prefill → the concurrent-OOM.
-fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+///
+/// …PLUS THE PROMPT CACHE THIS DAEMON GRANTED THE ENGINE (2026-09-20 02:4xZ, the M5).
+/// The board attributed 22.8 GB to serving (weights + KV + compute for 1 × 64,512) while
+/// the lane's process held 27.5 GB: its anonymous footprint was 8.27 GB against an 8.7 GB
+/// `--cache-ram` grant (`serving.footprint.measured host_cache_bytes`). The grant is RAM
+/// this daemon handed the engine and it fills over the serve's life, so every byte of it
+/// read as EXTERNAL — another holder's — and `budget_for_replacing` (available + our own
+/// measured bytes) lost it. Under the 12 GiB Eco reserve that was the second lane: the
+/// plan read 18 GB usable and one lane at 2,048 tokens on a box serving two at 64k. The
+/// same shape as the KV term (#79) and the compute reserve (G5): a cost we own, filed as
+/// someone else's. `attribute_serving` is the pure sum; nothing resident charges nothing.
+fn serving_footprint_fn(catalog: Arc<ModelCatalog>, granted_cache_mib: Arc<std::sync::Mutex<u32>>) -> FootprintFn {
     Arc::new(move |id: &str, served_window: u32, lanes: u32| {
+        let grant_mib = granted_cache_mib.lock().map(|g| *g).unwrap_or(0); // unwrap_or: a poisoned grant charges no cache — the board under-attributes, never over
         catalog
             .snapshot()
             .get(id)
             .and_then(|live| footprint_for(&live.model))
-            .map(|fp| fp.peak_resident_bytes(served_window, lanes))
+            .map(|fp| attribute_serving(fp.peak_resident_bytes(served_window, lanes), lanes, grant_mib))
             .unwrap_or(0)
     })
+}
+
+/// PURE: what serving holds — the plan's peak resident bytes plus the host prompt cache
+/// granted to the running lanes. No lanes (or nothing resident) = no cache to charge.
+pub fn attribute_serving(peak_resident_bytes: u64, lanes: u32, granted_cache_mib: u32) -> u64 {
+    if peak_resident_bytes == 0 || lanes == 0 {
+        return peak_resident_bytes;
+    }
+    peak_resident_bytes.saturating_add((granted_cache_mib as u64).saturating_mul(1024 * 1024))
 }
 
 /// Conservative host floor for the OS + every process we don't own: an eighth of
@@ -8577,6 +8598,20 @@ mod tests {
         assert!(snap.ready, "emitted snapshot reflects the live model");
     }
 
+    // what this catches (the M5, 2026-09-20 02:4xZ): the board attributing 22.8 GB to a
+    // lane whose process held 27.5 GB — the 8.7 GB `--cache-ram` the daemon itself granted
+    // read as another holder's bytes, and the plan lost the second lane to it. The
+    // attribution is the plan's peak plus the granted cache; nothing resident, or no
+    // lanes, charges no cache.
+    #[test]
+    fn the_serving_attribution_includes_the_prompt_cache_it_granted() {
+        let mib = 1024 * 1024;
+        assert_eq!(attribute_serving(22_802_000_000, 1, 8_343), 22_802_000_000 + 8_343 * mib);
+        assert_eq!(attribute_serving(22_802_000_000, 2, 0), 22_802_000_000, "no grant, no charge");
+        assert_eq!(attribute_serving(0, 2, 8_343), 0, "nothing resident: the grant is not yet held");
+        assert_eq!(attribute_serving(19_000_000_000, 0, 8_343), 19_000_000_000, "no lanes: weights only");
+    }
+
     // what this catches: the footprint resolver serving hands the authority reads
     // the SAME live catalog + estimator the serving plan uses (one footprint
     // authority) — a Ready model resolves to its real on-disk weights, and an id
@@ -8598,7 +8633,7 @@ mod tests {
                 verified: None,
             },
         );
-        let resolve = serving_footprint_fn(catalog.clone());
+        let resolve = serving_footprint_fn(catalog.clone(), Arc::new(std::sync::Mutex::new(0)));
 
         // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
         // are the live serving shape; with no weights they resolve to 0 anyway.
