@@ -165,6 +165,9 @@ mod tests {
         rest_at(&p, aris).expect("rest");
         let under_new_build: Vec<String> = resting_at(&p, "bbbb").into_iter().map(|s| s.agent_name).collect();
         assert_eq!(under_new_build, ["Aris"], "the lane-bound seat stays rested across a deploy; the recital does not");
+        // …and the operator's word (or the lane-bound wake) is still its return.
+        assert!(wake_at(&p, "aris"), "a lane-bound seat wakes on the word under any build");
+        assert!(resting_at(&p, "bbbb").is_empty());
         assert!(!wake_at(&p, "Nobody"));
         // waking reads under the CURRENT build; write the record under it to test the word
         let cur = current_build();
