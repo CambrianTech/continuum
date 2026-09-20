@@ -1536,11 +1536,15 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             Some(room),
         )
         .await?;
-        Ok(board
-            .cards
-            .iter()
-            .filter(|c| crate::persona::card_holder::in_flight_now(c, now_ms))
-            .count())
+        // OUR holders: every resident's own peer id (each persona speaks on her own airc
+        // handle), plus me. A round's board is grid-wide; the lanes this gate guards are
+        // this node's (card_holder::in_flight_by).
+        let mut holders: std::collections::HashSet<airc_core::PeerId> =
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .map(|r| r.iter().map(|rt| rt.airc().peer_id()).collect())
+                .unwrap_or_default(); // unwrap_or: no registry yet = only me holds here
+        holders.insert(self.airc.peer_id());
+        Ok(crate::persona::card_holder::in_flight_by(&board.cards, &holders, now_ms))
     }
 }
 
