@@ -185,6 +185,10 @@ pub struct PersonaSpawnerModule {
     /// that defers heterogeneous multi-role plans (#133 slice 14) cannot
     /// mis-pair identical roles. Two-solver cooperation needs ≥2.
     population: usize,
+    /// The lane count of the last SETTLED geometry this host served, handed in at boot
+    /// (`served_window_store`) — the warm-slot bound's source until the first fitting
+    /// live plan sets `serving_lanes`. `None` = this host has never served: no bound.
+    remembered_lanes: Option<u32>,
     /// The RECIPE-DECLARED resident roles (#430) — production injects the
     /// default experience's `citizens` via [`Self::with_citizens`]; the
     /// constructor default (single Helper, matching the embedded chat
@@ -218,6 +222,7 @@ impl PersonaSpawnerModule {
             tier_category,
             serving_base_model: None,
             serving_lanes: 1,
+            remembered_lanes: None,
             serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             population: 1,
             citizens: vec![RoleId::Helper],
@@ -241,6 +246,22 @@ impl PersonaSpawnerModule {
     pub fn with_population(mut self, population: usize) -> Self {
         self.population = population;
         self
+    }
+    /// The last settled lane count this host served (see `remembered_lanes`), for the
+    /// boot draw's bound before any live plan is known.
+    pub fn with_remembered_lanes(mut self, lanes: Option<u32>) -> Self {
+        self.remembered_lanes = lanes.filter(|l| *l > 0);
+        self
+    }
+    /// The warm slots this node is known to serve, from what it was TOLD (never a global
+    /// read on the draw path): the live fitting plan's lanes, else the remembered settled
+    /// geometry, else none.
+    fn warm_lanes(&self) -> Option<u32> {
+        if self.serving_base_model.is_some() && self.serving_lanes > 0 {
+            Some(self.serving_lanes)
+        } else {
+            self.remembered_lanes
+        }
     }
 
     /// Mutating sibling of [`Self::with_population`], for the boot task that
@@ -331,18 +352,23 @@ impl PersonaSpawnerModule {
         roster
     }
 
-    /// How many citizens this node seats: the configured population, ≥1. The served
-    /// lane count is NOT a cap (Joel, 2026-09-13: "it's for no reason … this is
-    /// temporary disk space"): N minds over M slots is the design — a citizen whose
-    /// slot is taken pages her KV to disk and restores it on return, registers-style.
-    /// The reasonable limit is the KV page store's disk budget, owned by the page
-    /// sweeper, never the slot count. (#3798's lane cap was a compensation for a
-    /// restore that came back cold — fixed at the server: checkpoints ride with the
-    /// slot state.)
+    /// How many citizens this node seats: the configured population under any hold,
+    /// minus resting seats, BOUNDED by the warm slots (`bounded_by_warm_slots`).
+    ///
+    /// THE REVERSAL (Joel, 2026-09-20, card 7c38ff6f). On 2026-09-13 the rule was "the
+    /// lane count is NOT a cap: N minds over M slots is the design, KV pages to disk and
+    /// restores on return". Measured a week later on the M5: sixteen resident minds cost
+    /// the plan its second lane (their residency is memory the 27B needed), every
+    /// unslotted mind re-prefilled cold, and the 22:22Z hour read acts 5, writes 0, 2,174
+    /// of 2,177 pulls lane-deferred; the boot of 23d33019d drew sixteen onto a 20 GB
+    /// budget and served ONE lane at 2,048 tokens. "The nursery is over-saturated": the
+    /// active roster is the warm slots × ~2, the rest dormant with identity and memory
+    /// intact, waking as the lanes grow. The KV page store stays the restore path for the
+    /// minds that ARE seated.
     pub fn seats(&self) -> usize {
         let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
             .saturating_sub(crate::persona::resting_seat::resting().len());
-        let lanes = warm_lanes_known();
+        let lanes = self.warm_lanes();
         let seats = bounded_by_warm_slots(unbounded, lanes);
         // One row when the bound CHANGES what is drawn, not one per reconcile pass.
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -641,16 +667,6 @@ pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
     }
 }
 
-/// The warm slots this node is known to serve: the live lane when one is ready, else the
-/// last SETTLED geometry (a cold boot's first truth, `served_window_store`), else none.
-fn warm_lanes_known() -> Option<u32> {
-    let live = crate::inference::llama_server::current_serving();
-    if live.ready && live.lanes > 0 {
-        return Some(live.lanes);
-    }
-    crate::modules::served_window_store::load_geometry().map(|g| g.lanes).filter(|l| *l > 0)
-}
-
 pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
     let mut plan = module.plan();
     let missing = plan.len().saturating_sub(already_hosted);
@@ -822,32 +838,42 @@ mod tests {
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
 
-    // what this catches (2026-09-06, re-pinned 2026-09-13): the missing plan is the seats
-    // not yet filled — and the seats are the POPULATION, never the lanes (minds page over
-    // slots). Twelve seats with three hosted draws nine; a full roster draws none; more
-    // hosted than seats draws none (the shrink is the reconciler's, not a draw).
+    // what this catches (2026-09-06, re-pinned 2026-09-13, REVERSED 2026-09-20, card
+    // 7c38ff6f): the missing plan is the seats not yet filled — and the seats are the
+    // population BOUNDED by the warm slots (lanes × the per-lane edge). Twelve minds on
+    // five lanes seat min(12, 5 × edge); three hosted draws the rest; a full roster draws
+    // none; more hosted than seats draws none (the shrink is the hourly rest's, not a draw).
     #[test]
     fn the_missing_plan_is_the_seats_not_yet_filled() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 5;
+        let seats = 12.min(5 * per);
+        assert_eq!(spawner.seats(), seats, "five lanes bound twelve minds to 5 × {per}");
         let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
-        assert_eq!(missing_plan(&spawner, 3).len(), 9 * per_seat, "lanes (5) do not cap the seats (12)");
-        assert_eq!(missing_plan(&spawner, 12).len(), 0);
+        assert_eq!(missing_plan(&spawner, 3).len(), (seats - 3) * per_seat, "three hosted: the rest of the bounded seats are drawn");
+        assert_eq!(missing_plan(&spawner, seats).len(), 0);
         assert_eq!(missing_plan(&spawner, 14).len(), 0);
-        assert_eq!(missing_plan(&spawner, 0).len(), 12 * per_seat);
+        assert_eq!(missing_plan(&spawner, 0).len(), seats * per_seat);
     }
 
     #[test]
-    fn the_roster_is_the_population_and_lanes_are_never_a_cap() {
+    fn the_roster_is_the_population_bounded_by_the_warm_slots() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(12);
-        assert_eq!(spawner.seats(), 12, "no plan yet: the configured population stands");
+        assert_eq!(spawner.seats(), 12, "no plan and no remembered lanes: nothing is known, the population stands");
+        // A cold boot with a remembered geometry is bounded by it before any live plan.
+        let remembered = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
+            .with_population(12)
+            .with_remembered_lanes(Some(2));
+        assert_eq!(remembered.seats(), 12.min(2 * per), "the boot draw is bounded by the last settled lanes");
         spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
         spawner.serving_lanes = 4;
-        assert_eq!(spawner.seats(), 12, "a real plan does not cap the roster: minds page over slots");
-        assert_eq!(spawner.plan().len(), 12 * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
+        assert_eq!(spawner.seats(), 12.min(4 * per), "a live plan's lanes bound the draw: the rest stay dormant");
+        assert_eq!(spawner.plan().len(), spawner.seats() * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
         spawner.set_population(0);
         assert_eq!(spawner.seats(), 0, "zero is deliberate: the provider will yield none while a team is seated elsewhere on the grid");
     }
@@ -857,13 +883,14 @@ mod tests {
     // move together, so a non-fitting live plan seats the configured population.
     #[test]
     fn a_plan_that_stops_fitting_the_gpu_releases_the_stale_lane_cap() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
         let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
         spawner.set_population(6);
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
-        assert_eq!(spawner.seats(), 6, "lanes never cap the roster");
+        assert_eq!(spawner.seats(), 6.min(2 * per), "two live lanes bound the draw");
         spawner.set_serving(None);
-        assert_eq!(spawner.seats(), 6, "no fitting plan: the population stands");
+        assert_eq!(spawner.seats(), 6, "no fitting plan and nothing remembered: no lane is known, the population stands");
         assert!(spawner.serving_base_model.is_none());
     }
 
