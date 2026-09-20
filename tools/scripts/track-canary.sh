@@ -68,7 +68,12 @@ w = json.loads(sys.argv[2]).get("workflow_runs")
 if w is not None:
     # The runs API answered: only the tip's own suites count. None of them yet = unknown
     # (the push's workflows have not registered), never "green by absence".
-    own = {r.get("check_suite_id") for r in w if r.get("event") in ("push", "pull_request", "workflow_dispatch")}
+    # promote-main (card 7c0990b0) runs on this branch by schedule AND by hand; it moves
+    # main to canary's tip and judges nothing about the tip's code — excluded by PATH,
+    # whatever its event (the Rust owner's NON_DEPLOY_WORKFLOW_PATHS is the same list).
+    own = {r.get("check_suite_id") for r in w
+           if r.get("event") in ("push", "pull_request", "workflow_dispatch")
+           and r.get("path") not in (".github/workflows/promote-main.yml",)}
     checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
 # The runs API did not answer: every check counts, as before — a degraded read, not a lie.
 if not checks: print("unknown"); sys.exit()
