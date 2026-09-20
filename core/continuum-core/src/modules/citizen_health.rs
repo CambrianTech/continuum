@@ -323,20 +323,23 @@ pub struct CitizenHealth {
     pub standing_enabled: bool,
     /// The hour's prompt tokens served from the KV cache / prefilled (card c119ace7).
     /// Both 0 = no lane reported timings this hour, and the line says nothing rather
-    /// than inventing a 0% reuse. See [`CitizenHealth::prefix_reuse_pct`].
+    /// than inventing a 0% reuse. See [`prefix_reuse_pct`].
     pub prompt_cached_tokens: u64,
     pub prompt_prefill_tokens: u64,
 }
 
-impl CitizenHealth {
-    /// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
-    /// derived from the totals on every read, never stored and never averaged across
-    /// turns. `None` until at least one generation reported timings: an unmeasured hour
-    /// is not a 0% hour.
-    pub fn prefix_reuse_pct(&self) -> Option<u64> {
-        let total = self.prompt_cached_tokens.saturating_add(self.prompt_prefill_tokens);
-        (total > 0).then(|| self.prompt_cached_tokens.saturating_mul(100) / total)
-    }
+/// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
+/// derived from the totals on every read, never stored and never averaged across turns
+/// (averaging rates lies — `TurnMetrics::accumulate`'s rule). `None` until at least one
+/// generation reported timings: an unmeasured hour is not a 0% hour.
+///
+/// A free function beside [`verdict`] and [`line`], not an inherent method: this module
+/// reads the health struct through free functions, and giving `CitizenHealth` its first
+/// `impl` block would make it read as unwired machinery to the production-reachability
+/// guard (which is right — one more `impl` on a type nothing outside constructs).
+pub fn prefix_reuse_pct(h: &CitizenHealth) -> Option<u64> {
+    let total = h.prompt_cached_tokens.saturating_add(h.prompt_prefill_tokens);
+    (total > 0).then(|| h.prompt_cached_tokens.saturating_mul(100) / total)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,7 +488,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     };
     // The prompt cache's receipt, when any lane reported one: the fraction of every
     // prompt the engine did NOT re-read this hour (card c119ace7).
-    let reuse = match h.prefix_reuse_pct() {
+    let reuse = match prefix_reuse_pct(h) {
         Some(pct) => format!(
             " · prefix reuse {pct}% ({}k cached / {}k prefilled)",
             h.prompt_cached_tokens / 1000,
@@ -818,7 +821,7 @@ impl ServiceModule for CitizenHealthModule {
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "prompt_cached_tokens": h.prompt_cached_tokens, "prompt_prefill_tokens": h.prompt_prefill_tokens,
-                    "prefix_reuse_pct": h.prefix_reuse_pct(),
+                    "prefix_reuse_pct": prefix_reuse_pct(&h),
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -961,7 +964,7 @@ mod tests {
         // a measured one says the fraction of every prompt the lanes did not re-read.
         assert!(!l.contains("prefix reuse"), "no lane reported timings: the line does not invent a 0% reuse");
         let warm = CitizenHealth { prompt_cached_tokens: 228_000, prompt_prefill_tokens: 92_000, ..x.clone() };
-        assert_eq!(warm.prefix_reuse_pct(), Some(71));
+        assert_eq!(prefix_reuse_pct(&warm), Some(71));
         let l = line(&warm, &verdict(&warm));
         assert!(l.contains("prefix reuse 71% (228k cached / 92k prefilled)"), "{l}");
     }
