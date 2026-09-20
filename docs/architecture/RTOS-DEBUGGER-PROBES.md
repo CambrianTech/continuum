@@ -103,6 +103,15 @@ A stable set of `class` values so probes from different files compose into a coh
 - `serving.kv.reuse` — the same generation folded into the persona's LIFETIME totals at `Workspace::note_generation` (`turn_rate`, `lifetime_rate`); the one writer that also feeds the hour's `prefix reuse NN%` on the `citizen.health.hour` line.
 - `delib.context.render` / `delib.turn.demand` — how big the prompt WAS (segments, demand vs window); read beside the two above to tell "big prompt" from "re-read prompt".
 
+**Grid allocator daemon** (`modules/grid_allocator.rs`, card 10bba591):
+- `grid.allocation.published` — the allocation CHANGED (inputs key moved) and was published: key, nodes, seats_per_node (`node8:seats,…`), seated, open_seats, dormant, minds, roles. An unchanged grid emits nothing (the key gate).
+- `grid.dormant.oldest_turn_age_ms` — the dormant order beside it: dormant count, oldest_turn_age_ms, slack_seats (open seats × idle fraction), clip_interval_ms (typical turn × dormant / slack; 0 = not derivable).
+- `grid.allocation.pass_panicked` / `grid.allocation.quarantined` — the task's catch_unwind counter and its self-quarantine after three in a row.
+
+**Placement — the opportunity move** (`persona/placement_switch.rs::follow_the_allocation`):
+- `placement.move.opportunity` — the allocation seated her on a strictly better seat and the switch moved her between turns: persona, from, to (`home` or the peer), reason (`requirement` / `capability` / `lanes` / `window`), model, lanes, window, cooldown_ms (her measured cadence).
+- `placement.move.opportunity_refused` — the better seat refused or did not answer the slot ask: persona, to, reason, seat_free.
+
 **Timing** (any seam):
 - `timing` — emitted by `time_sync!` and `time_probe!` spans. Field `seam` = the seam identifier (the macro's first argument). Field `duration_ms` = wall-clock duration from span creation to span close.
 
