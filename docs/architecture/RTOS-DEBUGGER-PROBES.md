@@ -62,6 +62,10 @@ A stable set of `class` values so probes from different files compose into a coh
   - `inference.render_chat` — synchronous chat-template rendering (sub-ms typically, but cumulative)
   - `inference.forward.text` — pure-text LLM forward pass through the scheduler (the dominant cost on LCD tier — 95%+)
   - `inference.forward.multimodal` — mtmd single-flight path (text+image / text+audio)
+- `inference.bound.tripped` — a wait bound tripped and the turn reads as dead from here (`inference/turn_bound.rs`, card ba82d0a0): `at` = the seam (`pre_stream_headers` | `stream_queue` | `remote_deadline`), `name` = lane / model@peer, `bound_secs`, `source` = `floor` | `turn_bound`, `turn_bound_secs` + `expected_secs` (0 = the request carried none). A row whose lane was busy, not dead, says the bound was undersized — that is the number to fix, never the floor.
+
+**Cognition: deliberation** (`cognition/llm_deliberation_faculty.rs`):
+- `delib.turn.bound` — the turn's wire bound was set: `persona`, `expected_secs` (her measured occupancy: uncached prompt at the box's prefill rate + last output at its decode rate), `turn_bound_secs` (× `TURN_BOUND_HEADROOM`). Absent when she has no measured turn behind her — the floors govern alone.
 
 **Cognition: shared analysis** (`cognition/shared_analysis/mod.rs`):
 - `cognition.analyze.enter` — input fingerprint, known_specialties count

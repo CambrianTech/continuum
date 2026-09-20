@@ -262,6 +262,24 @@ impl WorkingSetRegistry {
             })
     }
 
+    /// The prompt size a turn contributes to the seat's typical-prompt pool: what it
+    /// sent — UNLESS the served window trimmed it, in which case what it NEEDED.
+    ///
+    /// A post-fit "sent" is bounded by the window by construction. Fed back as the
+    /// window's floor it can only ever confirm the window: on the 5090 (2026-09-20,
+    /// build e1c9e41a2) a boot at 2 × 2048 fitted every 56k-token turn down to ~828,
+    /// the median read 828, the plan floored from it at 2048, the store remembered
+    /// 2048 as steady, and 2,932 prompts (p50 56k, p90 136k) were refused while the
+    /// seat reported its typical prompt as 828 — the window measuring itself. A turn
+    /// the window starved is not a measurement of the turn; its untrimmed demand is.
+    pub fn sent_sample_for_plan(demand_tokens: u32, sent_tokens: u32, served_window: u32) -> u32 {
+        if served_window > 0 && demand_tokens > served_window {
+            demand_tokens
+        } else {
+            sent_tokens
+        }
+    }
+
     /// Record what a turn actually SENT (post-fit). Persisted with the demand.
     pub fn record_sent(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) {
         if sent_tokens == 0 {
@@ -648,6 +666,14 @@ mod tests {
         let reg = WorkingSetRegistry::new();
         let local = Uuid::new_v4();
         reg.record_sent(local, 64_000, 1);
+        // what this catches (the 5090, 2026-09-20): a sample taken at a window that
+        // trimmed the turn is the window echoed back, never demand — the seat's typical
+        // prompt read 828 under a 2048 window while every real prompt was 56k, and the
+        // window sealed itself. At a starved window the untrimmed demand is the sample;
+        // at a window that held the turn, what was sent is.
+        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2048), 56_057, "starved: the demand votes");
+        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(30_000, 25_000, 64_000), 25_000, "held: what was sent votes");
+        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(30_000, 25_000, 0), 25_000, "no window known: the sent figure stands");
         assert_eq!(reg.sent_median_of(&[local]), Some(64_000), "one resident: her prompt is the median");
         // twelve leased-in coders at ~30k pull the typical prompt to theirs
         let leased: Vec<u32> = (0..12).map(|i| 30_000 + i * 100).collect();

@@ -227,6 +227,20 @@ pub fn in_flight_now(card: &WorkCard, now_ms: u64) -> bool {
     ) && hold_of(card, now_ms) == Hold::Held
 }
 
+/// The cards in flight in THIS NODE'S holders' columns — the count the WIP = lanes gate
+/// compares to this node's lanes. A round's board is grid-wide: the M5, 2026-09-20
+/// 13:xxZ–14:xxZ, read the 5090's and the IntelMac's live holds against its own two
+/// lanes, deferred 116 of 119 pulls with its residents holding nothing (`persona.work.gate
+/// decision=no_held_work`), and made zero acts on two 67k lanes. A card decoding on
+/// another node's lane is not one of ours. Pure.
+pub fn in_flight_by(cards: &[WorkCard], holders: &std::collections::HashSet<airc_core::PeerId>, now_ms: u64) -> usize {
+    cards
+        .iter()
+        .filter(|c| c.owner.is_some_and(|o| holders.contains(&o)))
+        .filter(|c| in_flight_now(c, now_ms))
+        .count()
+}
+
 /// The 8-char short id every surface in the system uses to name a uuid.
 pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
@@ -391,6 +405,27 @@ mod tests {
         assert!(!in_flight_now(&review, now), "a review never counts against the lanes");
         let open = card(None, false, None);
         assert!(!in_flight_now(&open, now));
+    }
+
+    // what this catches (2026-09-20): the WIP gate counting the GRID's live holds against
+    // this node's lanes — two foreign holds on a two-lane node deferred every pull while its
+    // own residents held nothing. Only our holders' columns count.
+    #[test]
+    fn in_flight_counts_only_this_nodes_holders() {
+        let ours = PeerId::new();
+        let theirs = PeerId::new();
+        let now = 1_000_000;
+        let cards = vec![
+            card(Some(ours), true, Some(now + 60_000)),
+            card(Some(theirs), true, Some(now + 60_000)),
+            card(Some(theirs), true, Some(now + 60_000)),
+            card(Some(ours), true, Some(now - 1)), // lapsed: not in flight even for us
+            card(None, false, None),
+        ];
+        let holders: std::collections::HashSet<PeerId> = [ours].into_iter().collect();
+        assert_eq!(in_flight_by(&cards, &holders, now), 1);
+        assert_eq!(cards.iter().filter(|c| in_flight_now(c, now)).count(), 3, "the grid-wide count this replaces");
+        assert_eq!(in_flight_by(&cards, &std::collections::HashSet::new(), now), 0);
     }
 
     // what this catches (2026-09-13): a peer taking a RESIDENT owner's lapsed hold at a

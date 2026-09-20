@@ -191,6 +191,15 @@ pub fn note_leased_in_sent(input_tokens: u32) {
         ring.pop_front();
     }
 }
+/// A prompt this seat REFUSED at its served window (`serving_guard`, #175) is demand the
+/// seat was asked for and could not hold — it joins the typical-prompt pool exactly as a
+/// served leased-in prompt does. Without this the pool saw only what fit: the 5090
+/// (2026-09-20) refused 2,932 prompts at 2 × 2048 (p50 56k) while its median read 828,
+/// because a refusal never reached the sample site and the window sealed itself.
+pub fn note_refused_prompt(prompt_tokens: u32) {
+    note_leased_in_sent(prompt_tokens);
+}
+
 /// The remembered leased-in prompt sizes, oldest first — the plan's extra median inputs.
 pub fn leased_in_sent_samples() -> Vec<u32> {
     LEASED_IN_SENT
@@ -1341,6 +1350,11 @@ mod tests {
         let before = leased_in_sent_samples().len();
         note_leased_in_sent(0);
         assert_eq!(leased_in_sent_samples().len(), before, "an empty completion is not a prompt size");
+        // what this catches (the 5090, 2026-09-20): a refusal at the served window is a
+        // sample of the demand the seat could not hold — it must reach the pool, or the
+        // pool only ever sees what fit and the window measures itself.
+        note_refused_prompt(56_057);
+        assert_eq!(leased_in_sent_samples().last().copied(), Some(56_057), "a refused prompt votes at its real size");
         for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
             note_leased_in_sent(30_000 + i);
         }

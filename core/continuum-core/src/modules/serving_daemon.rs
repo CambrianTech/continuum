@@ -335,6 +335,7 @@ fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>)
 /// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+type LeasedInSentSource = Arc<dyn Fn() -> Vec<u32> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -427,6 +428,11 @@ pub struct ServingDaemonModule {
     /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
     /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
     decode_age: DecodeAgeSource,
+    /// The prompt sizes of the generates this seat served for OTHER nodes — the
+    /// leased-in sample ring. Production reads `resource_admission`'s process-global ring;
+    /// tests own it ([`Self::set_leased_in_sent_source`]): a ring shared by every test in
+    /// the binary made one test's 56k samples another test's requirement (CI, 2026-09-20).
+    leased_in_sent: LeasedInSentSource,
     /// The `/slots` activity fingerprint observed at the LAST missed smoke probe (L11).
     /// A changed fingerprint at the next miss proves the serve loop advanced between the
     /// two looks — work the adapter stamps can't see (ghost turns from a dead core's
@@ -794,6 +800,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
+            leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
@@ -1113,7 +1120,28 @@ impl ServingDaemonModule {
         let model_for_knee = knee_model(active_model, || {
             crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
         });
-        let knee = model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for);
+        // A remembered model with no curve answers with the most CONSERVATIVE knee this box
+        // holds (2026-09-20: the record read "coder-14b", a harness fixture a local test run
+        // had written; knee None; 8 lanes on a knee-2 box). Never the newest: a small model's
+        // exam an hour ago must not unclamp the 27B (Cormac, #4266). Said once per fallback.
+        let knee = match model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for) {
+            Some(k) => Some(k),
+            None => crate::inference::decode_knee::conservative_knee().map(|(measured, k)| {
+                static SAID: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+                let mut said = SAID.lock();
+                if said.as_deref() != Some(measured.as_str()) {
+                    crate::probe!(
+                        class = "serving.decode_knee.fallback",
+                        remembered = model_for_knee.as_deref().unwrap_or("<none>"), // unwrap_or: nothing remembered is a name too
+                        measured = measured.as_str(),
+                        knee = k as u64,
+                        "no knee for the model the box remembers — the lowest knee it holds bounds the lanes until a lane reports"
+                    );
+                    *said = Some(measured);
+                }
+                k
+            }),
+        };
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -1155,12 +1183,17 @@ impl ServingDaemonModule {
         // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
         // size them to the prompts those minds send, not to one local resident's. A seat
         // with no residents of its own but leased-in minds still gets a floor from them.
-        let leased_sent = crate::cognition::resource_admission::leased_in_sent_samples();
+        let leased_sent = (self.leased_in_sent)();
         let (demand, sent, median) = if live.is_empty() {
+            // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
+            // from their last boot) are the demand pool — not only the leased-in ring. A
+            // node reboots with the same minds; their last prompts are the best floor it
+            // has, and a harness with no registry seeds the pool the same way.
+            let remembered: Vec<uuid::Uuid> = self.working_set.all().into_iter().map(|(id, _)| id).collect();
             (
                 self.working_set.ceiling(),
                 None,
-                self.working_set.sent_median_with(&[], &leased_sent),
+                self.working_set.sent_median_with(&remembered, &leased_sent),
             )
         } else {
             (
@@ -1228,6 +1261,13 @@ impl ServingDaemonModule {
     /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
     /// the process-global happens to hold. See [`DecodeAgeSource`] for why this exists.
     #[cfg(test)]
+    /// Tests: the leased-in prompt samples the demand pool folds in, in place of the
+    /// process-global ring.
+    #[cfg(test)]
+    fn set_leased_in_sent_source(&mut self, source: LeasedInSentSource) {
+        self.leased_in_sent = source;
+    }
+
     fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
         self.decode_age = source;
     }
@@ -2989,6 +3029,14 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         let sidecar_slot = self.vision_sidecar.clone();
         let system = self.system.clone();
+        // What the sidecar must respect, read once here and moved into the task: the
+        // operator's OFF pins (a pinned-off model is never the vision provider either) and
+        // the residents' per-lane requirement (a sidecar never holds memory the main lane
+        // needs for one real turn). The M5, 2026-09-20 17:49Z: with the 27B pinned off at
+        // boot the sidecar admitted a 35B against a 2,048-token main lane's headroom, and
+        // when the 27B came back it got what was left — one lane at 2,048.
+        let pinned_off: Vec<String> = self.suppressed.borrow().iter().cloned().collect();
+        let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
         let rehome_cooldown = self.rehome_cooldown.clone();
@@ -3118,6 +3166,7 @@ impl ServingDaemonModule {
                     let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
                         &sidecar_rows,
                         Some(desired.as_str()),
+                        &pinned_off,
                     );
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
@@ -3172,6 +3221,19 @@ impl ServingDaemonModule {
                             base_url: serving_v1_url(),
                             model_id: desired.clone(),
                         })
+                    } else if persona_floor.is_some_and(|f| served_window > 0 && served_window < f) {
+                        // THE MAIN LANE IS BELOW WHAT ITS RESIDENTS NEED: the sidecar's
+                        // memory is exactly the window they are missing. Drop it (RAII kills
+                        // the child, RAM freed, the next plan grows the lane); it respawns on
+                        // the first plan whose headroom is measured against a lane that holds.
+                        crate::probe!(
+                            class = "serving.vision.sidecar_yields_to_persona_floor",
+                            served_window = served_window as u64,
+                            persona_floor = persona_floor.unwrap_or(0) as u64, // unwrap_or: guarded by is_some_and
+                            "main lane below the residents' requirement — vision sidecar yields its budget to the lane"
+                        );
+                        *sidecar_slot.lock().await = None;
+                        None
                     } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
                         // SOLVE REGIME: the eyes yield (2026-08-29, "take every
                         // architectural advantage"). While a pinned solve floor
@@ -3216,9 +3278,13 @@ impl ServingDaemonModule {
                                 // window × lanes, the compute reserve and the OS floor.
                                 let live_free = system.snapshot().memory.available_bytes;
                                 let physical = system.memory().total_bytes;
+                                // Headroom AFTER the main lane at the width its residents
+                                // NEED, never at a transient starved width: a 2,048-token lane
+                                // reads as 39 GB of headroom on a 64 GB box, and a sidecar
+                                // admitted on that number is the reason the lane stays 2,048.
                                 let planned_headroom = sidecar_planned_headroom_bytes(
                                     &target,
-                                    served_window,
+                                    sidecar_window_for_headroom(served_window, persona_floor),
                                     physical,
                                 );
                                 let free = sidecar_admissible_bytes(live_free, planned_headroom, physical);
@@ -3697,6 +3763,46 @@ impl ServingDaemonModule {
         };
         match stable {
             Some(plan) => {
+                // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
+                // "2k context is a complete waste of a lane"). A plan whose per-slot window is
+                // below the residents' requirement (measured today, declared per role once the
+                // allocator lands — never a constant here) does not REPLACE a published plan:
+                // the previous one stands (the running lane keeps serving) and the per-token
+                // footprint record that shrank the window is RETIRED so the next tick plans
+                // from the estimate — a starved plan is evidence of a trapped record (the 5090
+                // sat at 2 × 2,048 for an afternoon on a ~244k B/token record taken there).
+                // With NO plan published (a cold boot) the best runnable plan is published and
+                // SAID (Cormac's condition on #4257): on the floor tier no candidate may hold
+                // the requirement at all — IntelMac's 1.5B is 32k trained against a 58k typical
+                // — and a dark node is worse than a starved seat; placement routes her turns to
+                // a seat that holds them. Emitted once per (model, window, lanes).
+                let requirement = demand.typical_prompt_floor();
+                if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, requirement) {
+                    let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
+                    let previous_stands = self.plan_tx.borrow().is_some();
+                    static LAST_STARVED: parking_lot::Mutex<Option<(String, u32, u32)>> = parking_lot::Mutex::new(None);
+                    let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
+                    let mut last = LAST_STARVED.lock();
+                    if last.as_ref() != Some(&key) || retired {
+                        crate::probe!(
+                            class = "serving.plan.below_persona_floor",
+                            model = plan.base_model.model_id.as_str(),
+                            lanes = plan.lanes as u64,
+                            window = plan.served_context_window as u64,
+                            requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                            record_retired = retired,
+                            published = !previous_stands,
+                            "the plan's window is below what the residents require — a published plan stands \
+                             instead when one exists (and the footprint record is retired); with none, the best \
+                             runnable plan is published and named a starved seat (a dark node is worse)"
+                        );
+                        *last = Some(key);
+                    }
+                    if previous_stands {
+                        return;
+                    }
+                }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained
                 // squeeze; it does not say what a host may SINK TO. Measured today: an unload
@@ -5069,6 +5175,12 @@ fn prompt_cache_decision(
 /// `physical − weights − KV(served window) × lanes − compute reserve − OS floor`.
 /// Saturating: an over-full box yields ZERO headroom, never a wrap. Pure over the
 /// target and the served window, so a relaunch window cannot lie to it.
+/// The main-lane width a sidecar's headroom is planned against: the served width or the
+/// residents' requirement, whichever is larger. PURE.
+pub fn sidecar_window_for_headroom(served_window: u32, persona_floor: Option<u32>) -> u32 {
+    served_window.max(persona_floor.unwrap_or(0)) // unwrap_or: no requirement measured = the served width stands
+}
+
 fn sidecar_planned_headroom_bytes(
     target: &ServingTarget,
     served_window: u32,
@@ -7217,23 +7329,30 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(
+        let mut daemon = ServingDaemonModule::new(
             gpu,
             system,
             test_resource_daemon(),
             test_catalog(),
             test_pin_store(),
         );
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
+        // A measured demand, as every live node has (the seat's leased-in sample ring is
+        // process-global across tests; a requirement it carries needs a ceiling above it).
+        daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
 
         let budget = HostBudget {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
+        // The candidates carry real trained windows (2eec3977: a persona seat holds what the
+        // residents require; an 8k-window model cannot).
         let candidates = vec![
             footprint_from_parts("small", GB, 4096, false, None).unwrap(),
-            footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap(),
+            footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap(),
         ];
         daemon.publish_plan(budget, &candidates, &candidates);
         let plan = rx.borrow().clone().expect("plan published");
@@ -7246,6 +7365,73 @@ mod tests {
         // No candidates → None published (no silent serve).
         daemon.publish_plan(budget, &[], &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
+    }
+
+    // what this catches: a plan whose window is below the residents' REQUIREMENT is never PUBLISHED —
+    // the previous plan stands. Regression for the 5090 (2026-09-20, 2 × 2,048 all
+    // afternoon, 2,932 prompts refused) and the M5's 1 × 2,048 boot: a starved geometry
+    // must not become the served target, whatever the planner's arithmetic says.
+    #[tokio::test]
+    async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let mut daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog(), test_pin_store());
+        // This test OWNS its demand pool: a private working set and an empty leased-in ring.
+        // Both are process globals in production, shared by every test in the binary.
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
+        let rx = daemon.subscribe();
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
+        // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
+        // No residents are live in this harness, so the seat's leased-in samples carry it —
+        // the same ring #4256 votes refused prompts into.
+        // …in the daemon's OWN working set, never the process-global leased-in ring: that
+        // ring is shared by every test in the binary, and eight 56k samples there re-homed
+        // a 65k lane in `a_jittering_gain_never_accumulates_into_a_re_home` (CI, 2026-09-20).
+        let resident = uuid::Uuid::new_v4();
+        for i in 0..8 {
+            daemon.working_set.record_sent(resident, 56_057, 1 + i);
+        }
+        // …and a measured demand ceiling above it (the assembled context a turn wanted),
+        // as every live node has — without it the demand cap is the bootstrap prior and no
+        // plan can hold a 56k requirement, which is a harness artifact, not a law.
+        daemon.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+        // A roomy budget: a real window is published.
+        daemon.publish_plan(HostBudget { usable_bytes: 45 * GB, perf_cores: 6 }, &candidates, &candidates);
+        let good = rx.borrow().clone().expect("a real plan is published");
+        assert!(
+            good.served_context_window >= 70_071,
+            "the roomy plan holds the residents' requirement (56k × 1.25): {}",
+            good.served_context_window
+        );
+        // A squeezed budget: the planner's arithmetic yields a window below one coding
+        // turn — the daemon refuses to publish it and the good plan stands.
+        daemon.publish_plan(HostBudget { usable_bytes: 9 * GB + 200 * 1_000_000, perf_cores: 6 }, &candidates, &candidates);
+        let after = rx.borrow().clone().expect("the previous plan still stands");
+        assert_eq!(after.served_context_window, good.served_context_window, "a 2k plan never replaces a real one");
+        assert_eq!(after.lanes, good.lanes);
+        // With NO plan published (a cold boot) and a requirement the box cannot hold, the
+        // best runnable plan is still published — a dark node is worse than a starved seat
+        // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
+        let mut cold = ServingDaemonModule::new(
+            Arc::new(GpuMemoryManager::simulated("Intel", 16 * GB)),
+            Arc::new(SystemResourceMonitor::new()),
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
+        cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        cold.set_leased_in_sent_source(Arc::new(Vec::new));
+        cold.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+        let rx_cold = cold.subscribe();
+        let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
+        cold.publish_plan(HostBudget { usable_bytes: 12 * GB, perf_cores: 4 }, &small, &small);
+        let starved = rx_cold.borrow().clone().expect("a cold boot publishes the best runnable plan, starved or not");
+        assert!(starved.served_context_window <= 32_768);
+        assert!(
+            !crate::cognition::serving_plan::persona_lane_holds(starved.served_context_window, Some(70_071)),
+            "it IS below the requirement — published and said, never dark"
+        );
     }
 
     // what this catches: the `serving/*` surface (plan · status · load · unload) is
@@ -7534,6 +7720,12 @@ mod tests {
             test_catalog(),
             test_pin_store(),
         );
+        // Every harness daemon OWNS its demand pool: a private working set and an empty
+        // leased-in ring. Both are process globals in production and shared by every test
+        // in the binary — one test's samples became another test's requirement (CI,
+        // 2026-09-20, three runs).
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
