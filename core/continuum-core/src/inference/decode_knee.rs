@@ -273,6 +273,31 @@ pub fn knee_for(model: &str) -> Option<u32> {
     let now = now_ms();
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
 }
+
+/// The most CONSERVATIVE knee this box holds, with the model that measured it — for a boot
+/// that remembers a model with no curve (2026-09-20: a record poisoned with "coder-14b"
+/// asked for a knee nobody measured, read None, and planned 8 lanes on a box whose 27B
+/// knee is 2). A knee is a (box, model) fact; the newest curve may be a 1.5B exam's with a
+/// knee of 8 (Cormac's condition on #4266), so the evidence this box has about a model it
+/// never measured is its LOWEST knee — the biggest model's, in practice. Ties: the newest.
+pub fn conservative_knee() -> Option<(String, u32)> {
+    let now = now_ms();
+    let curves = CURVES.lock();
+    conservative(&curves, now).map(|(m, k)| (m.clone(), k))
+}
+
+/// PURE: the lowest knee across measured curves, newest measurement breaking ties.
+pub fn conservative(curves: &BTreeMap<String, DecodeCurve>, now_ms: u64) -> Option<(&String, u32)> {
+    curves
+        .iter()
+        .filter_map(|(m, c)| {
+            let knee = c.knee(DECODE_FLOOR_TPS, now_ms)?;
+            let newest = c.points.values().map(|p| p.last_ms).max().unwrap_or(0); // unwrap_or: a curve with a knee has a point
+            Some((knee, newest, m))
+        })
+        .min_by_key(|(knee, newest, _)| (*knee, u64::MAX - *newest))
+        .map(|(knee, _, m)| (m, knee))
+}
 /// The decode rate this box measured for `model` at its lightest trusted concurrency —
 /// what one turn's decode costs per token here. `None` = unmeasured.
 pub fn tps_for(model: &str) -> Option<f64> {
@@ -457,6 +482,27 @@ mod tests {
         for _ in 0..MIN_SAMPLES { c.observe(1, 15.0, now); }
         assert_eq!(c.lightest_trusted_tps(now), Some(15.0), "trusted at 1: the single-turn rate");
         assert_eq!(c.lightest_trusted_tps(now + FRESH_MS + 1), None, "stale points are not a number");
+    }
+
+
+    // what this catches (2026-09-20, Cormac's condition on #4266): a boot remembering a
+    // model with no curve takes the box's most CONSERVATIVE knee, never the newest — a
+    // 1.5B exam measured an hour ago (knee 8) must not unclamp a remembered 27B (knee 2).
+    #[test]
+    fn a_remembered_model_with_no_curve_takes_the_lowest_knee_the_box_holds() {
+        let mut curves: BTreeMap<String, DecodeCurve> = BTreeMap::new();
+        let mut big = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { big.observe(2, 6.0, 1_000); } // 2 lanes at 6 t/s: knee 2
+        let mut small = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { small.observe(8, 40.0, 5_000); } // 8 lanes at 40 t/s: knee 8, newer
+        curves.insert("the-27b".into(), big);
+        curves.insert("the-1.5b".into(), small);
+        // Fresh at the top of its curve, the small model EXPLORES one lane above (9); the
+        // number that matters is that it is far above the 27B's 2.
+        assert!(curves["the-1.5b"].knee(DECODE_FLOOR_TPS, 6_000).is_some_and(|k| k >= 8), "the small model's own knee is 8 or its exploration above");
+        let (m, k) = conservative(&curves, 6_000).expect("two curves");
+        assert_eq!((m.as_str(), k), ("the-27b", MIN_KNEE_LANES), "the lowest knee answers, named, though the 1.5B is newer");
+        assert!(conservative(&BTreeMap::new(), 0).is_none(), "nothing measured = nothing to answer");
     }
 
 }

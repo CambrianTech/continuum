@@ -3900,6 +3900,21 @@ mod swe_grade_tests {
             "patch size is reported even when the tree is void"
         );
     }
+
+    // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
+    // harness lane's settle wrote a fixture model into the M5's served-window record and
+    // the next boot planned 8 lanes on it. Under test the home is a per-process temp dir.
+    #[test]
+    fn a_test_binary_never_resolves_the_operators_home() {
+        if std::env::var_os("CONTINUUM_HOME").is_some() {
+            return; // an explicitly declared home is the test's own choice
+        }
+        let home = super::continuum_home().expect("a test home always resolves");
+        assert!(home.starts_with(std::env::temp_dir()), "{}", home.display());
+        assert!(home.to_string_lossy().contains("continuum-test-home-"), "{}", home.display());
+        assert_ne!(Some(home.clone()), dirs::home_dir().map(|h| h.join(".continuum")));
+        assert_eq!(super::continuum_home().unwrap(), home, "one home per process");
+    }
 }
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
@@ -3910,8 +3925,31 @@ pub(crate) fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
     std::env::var("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .ok()
+        .or_else(test_home)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| CommandError::Internal("no home dir".into()))
+}
+
+/// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
+/// `cargo test` run of the serving daemon settled its harness lane and `save`d the
+/// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
+/// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
+/// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
+/// function, so under `cfg(test)` — when no `$CONTINUUM_HOME` is declared — the home is a
+/// per-process directory under the system temp dir. Not configurable, not a fixture to
+/// remember: a test cannot reach the operator's state by forgetting.
+#[cfg(test)]
+fn test_home() -> Option<std::path::PathBuf> {
+    static HOME: std::sync::LazyLock<std::path::PathBuf> = std::sync::LazyLock::new(|| {
+        let dir = std::env::temp_dir().join(format!("continuum-test-home-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    });
+    Some(HOME.clone())
+}
+#[cfg(not(test))]
+fn test_home() -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Resolve a solver to the ONE matching `citizens/peers/<uuid>/` directory. Accepts a
