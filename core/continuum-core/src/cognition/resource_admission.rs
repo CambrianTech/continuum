@@ -926,46 +926,65 @@ impl LaneAdmission {
         // acquire below can never let non-directed work starve a directed caller —
         // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
         // while nothing directed is pending: it may be LENT the reserved lane, because the
-        // guarantee is the wait, not the lane (`reserve_lendable`). The loan ends when the
-        // permit drops; a directed line pending at the next acquire re-arms the reserve.
-        let nondirected = match priority {
-            LanePriority::Directed => None,
+        // guarantee is the wait, not the lane (`reserve_lendable`). THE LOAN NEVER PARKS
+        // (Cormac's condition on #4250): it is a try-acquire on a physical lane that is
+        // free RIGHT NOW — a lent call that had to wait on the FIFO physical semaphore
+        // would put a later directed arrival behind its whole occupancy (2× the budget
+        // with one parked, 3× with two). No free lane = no loan; she takes the ordinary
+        // Work path and waits for the non-directed budget like before. The loan ends
+        // when the permit drops; a directed line pending at the next acquire re-arms.
+        let (nondirected, lent_lane) = match priority {
+            LanePriority::Directed => (None, None),
             LanePriority::Work => {
                 let sem = self.nondirected_lanes().clone();
                 match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
-                    Some(p) => Some(p),
+                    Some(p) => (Some(p), None),
                     None => {
                         let reserve_exists = self.nondirected_budget() < self.lane_count();
                         let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
-                        if reserve_exists
+                        let lendable = reserve_exists
                             && reserve_lendable(
                                 expected_occupancy,
                                 crate::cognition::directed_pending::any_pending(),
                                 budget,
-                            )
-                        {
-                            crate::probe!(
-                                class = "admission.lane.reserve_lent_to_work",
-                                expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
-                                budget_ms = budget.as_millis() as u64,
-                                "the reserved lane is lent to a bounded work call — a directed arrival waits at most the call's occupancy"
                             );
-                            None
+                        let lent = if lendable {
+                            self.try_acquire_resized(
+                                self.serving_lanes(),
+                                &self.serving_installed,
+                                LaneBudget::Physical,
+                            )
                         } else {
-                            Some(self.acquire_nondirected_as_work().await)
+                            None
+                        };
+                        match lent {
+                            Some(lane) => {
+                                crate::probe!(
+                                    class = "admission.lane.reserve_lent_to_work",
+                                    expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
+                                    budget_ms = budget.as_millis() as u64,
+                                    "a free reserved lane is lent to a bounded work call, never parked for — a directed arrival waits at most the call's occupancy"
+                                );
+                                (None, Some(lane))
+                            }
+                            None => (Some(self.acquire_nondirected_as_work().await), None),
                         }
                     }
                 }
             }
-            LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
+            LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
         };
-        let lane = self
-            .acquire_resized(
-                self.serving_lanes(),
-                &self.serving_installed,
-                LaneBudget::Physical,
-            )
-            .await;
+        let lane = match lent_lane {
+            Some(lane) => lane,
+            None => {
+                self.acquire_resized(
+                    self.serving_lanes(),
+                    &self.serving_installed,
+                    LaneBudget::Physical,
+                )
+                .await
+            }
+        };
         crate::probe!(
             class = "admission.lane.granted",
             directed,
@@ -1929,6 +1948,9 @@ mod tests {
     // guarantee in seconds. A work call is lent the reserved lane only when its occupancy
     // is known and fits the directed budget and nothing directed is pending; an unknown
     // occupancy, a pending directed line, or an occupancy past the budget lends nothing.
+    // (The loan itself is a try-acquire on a FREE physical lane — never a park; that lives
+    // in `acquire_serving_lane`, where a parked loan would put a directed arrival behind
+    // the whole occupancy.)
     #[test]
     fn the_reserved_lane_is_lent_only_to_bounded_work_while_nothing_directed_is_pending() {
         use std::time::Duration;
