@@ -158,9 +158,9 @@ pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(u
 /// mindless rule uses; the same evidence floor.
 pub const LANE_BOUND_DEFERRED_SHARE: f64 = MINDLESS_GATE_SHARE;
 pub const LANE_BOUND_MIN_PULLS: u64 = MINDLESS_MIN_VERDICTS;
-/// The reason every lane-bound rest carries — a routing defect that pages a roster must
-/// say THIS, never "mindless", so the record explains the empty seats.
-pub const LANE_BOUND_REASON: &str = "lane_bound";
+/// The reason every lane-bound rest carries — lives beside the record it marks, since
+/// the record's own rule (a lane-bound rest outlives a deploy) reads it.
+pub use crate::persona::resting_seat::LANE_BOUND_REASON;
 pub fn is_lane_bound(h: &CitizenHealth, v: &Verdict) -> bool {
     matches!(v, Verdict::Starved { .. } | Verdict::AtKnee { .. })
         && h.pulls >= LANE_BOUND_MIN_PULLS
@@ -169,8 +169,14 @@ pub fn is_lane_bound(h: &CitizenHealth, v: &Verdict) -> bool {
 /// The pure choice: which seats REST this tick so the roster comes down to the healthy
 /// edge (`lanes × MINDS_PER_LANE_STARVED_ABOVE` — the one number the STARVED verdict
 /// already turns on). Least served first (no writes, then fewest lane grants), never
-/// below the resident floor, never more than the per-tick cap, and NOTHING on an hour
-/// whose pulls found no rounds — that is a round-supply defect, not a seat one.
+/// below the resident floor, and NOTHING on an hour whose pulls found no rounds — that
+/// is a round-supply defect, not a seat one.
+///
+/// TO THE EDGE IN ONE TICK (Joel, 2026-09-20: the roster is BOUNDED by the warm slots,
+/// not eased toward them). The per-tick cap was the mindless rule's — a page-out for
+/// cause is a considered act, three at a time. A lane-bound rest is arithmetic: 16
+/// minds on 3 lanes rested 3 an hour and the 22:22Z hour on the M5 still read 2,174 of
+/// 2,177 pulls deferred, acts 5, writes 0. The floor still holds.
 pub fn lane_bound_seats(h: &CitizenHealth, v: &Verdict, minds: &[(uuid::Uuid, MindHour)]) -> Vec<(uuid::Uuid, MindHour)> {
     if !is_lane_bound(h, v) {
         return Vec::new();
@@ -179,17 +185,18 @@ pub fn lane_bound_seats(h: &CitizenHealth, v: &Verdict, minds: &[(uuid::Uuid, Mi
     let over = h.resident.saturating_sub(keep) as usize;
     let mut out: Vec<(uuid::Uuid, MindHour)> = minds.to_vec();
     out.sort_by_key(|(_, m)| (m.writes, m.lane_grants));
-    out.truncate(over.min(MINDLESS_MAX_PER_TICK));
+    out.truncate(over);
     out
 }
 /// THE MIRROR (Cormac's condition on S3): a lane-bound rest has a lane-bound WAKE. A
 /// mindless seat returns on a CHANGE in her; a lane-bound seat was fine — the LANES were
 /// short — so she returns when the lanes come back: while `lanes × MINDS_PER_LANE_STARVED_ABOVE`
 /// has room above the residents, the most recently rested lane-bound seat (the most served
-/// of those rested, since the least served rested first) wakes, same cap per tick. Without
-/// this every transient lane dip would permanently shrink the roster — the one-direction
-/// shape (the peak ratchet, the claim expiry, the metronome) in a fourth coat. Mindless
-/// rests are untouched. Pure.
+/// of those rested, since the least served rested first) wakes, as many as the room holds.
+/// Without this every transient lane dip would permanently shrink the roster — the
+/// one-direction shape (the peak ratchet, the claim expiry, the metronome) in a fourth
+/// coat — and since a lane-bound rest now outlives a deploy, this wake and the operator's
+/// word are the ONLY returns. Mindless rests are untouched. Pure.
 pub const LANES_RETURNED_REASON: &str = "lanes returned";
 pub fn lane_bound_wakes(h: &CitizenHealth, resting: &[crate::persona::resting_seat::RestingSeat]) -> Vec<crate::persona::resting_seat::RestingSeat> {
     let edge = h.lanes.saturating_mul(MINDS_PER_LANE_STARVED_ABOVE);
@@ -203,7 +210,7 @@ pub fn lane_bound_wakes(h: &CitizenHealth, resting: &[crate::persona::resting_se
         .cloned()
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.since_ms));
-    out.truncate(room.min(MINDLESS_MAX_PER_TICK));
+    out.truncate(room);
     out
 }
 fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
@@ -301,9 +308,14 @@ impl Verdict {
     }
 }
 
-/// A roster is starved when it exceeds this many minds per served lane: at ~4-minute
-/// turns, three minds per lane is a lane every ~12 minutes each — the edge of useful.
-pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 3;
+/// A roster is starved when it exceeds this many minds per served lane — and the ACTIVE
+/// roster is bounded to it (Joel, 2026-09-20, on 23 minds over 3 warm slots: "the nursery
+/// is over-saturated", the bound "is the way to go"): about two minds per slot, one
+/// turning and one prefilled and waiting. At ~4-minute turns that is a lane every ~8
+/// minutes each; three was a lane every ~12, and the hour it produced (16 on 3, acts 5,
+/// 2,174 of 2,177 pulls deferred) was not useful. Minds past the edge rest — dormant, not
+/// resident, not polling — and return when the lanes do or a card names them.
+pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
 
 /// A roster is SLOW below one write per this many residents in an hour: 16 minds that
 /// write twice in an hour (00:01Z 2026-09-15, the first receipt the core posted) are not
@@ -764,15 +776,19 @@ mod tests {
     #[test]
     fn the_verdict_names_the_afternoons_shapes() {
         assert_eq!(verdict(&h(16, 3, 39, 4)), Verdict::Starved { resident: 16, lanes: 3 });
-        assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Reading { acts: 39 });
+        // 16 on 6 was "enough lanes" at three per lane; at two per lane it is STARVED and
+        // 16 on 8 is the edge — the shapes below stand on 8 lanes.
+        assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Starved { resident: 16, lanes: 6 });
+        assert_eq!(verdict(&h(16, 8, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(
-            verdict(&h(16, 6, 0, 0)),
+            verdict(&h(16, 8, 0, 0)),
             Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true, lane_bound: false }
         );
-        assert_eq!(verdict(&h(16, 6, 39, 4)), Verdict::Healthy);
+        assert_eq!(verdict(&h(16, 8, 39, 4)), Verdict::Healthy);
         // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
-        // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW.
-        assert_eq!(verdict(&h(16, 6, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
+        // 6 lanes, 37 acts, 2 writes — it said "healthy". It is SLOW (on 8 lanes; on 6 it
+        // is starved first).
+        assert_eq!(verdict(&h(16, 8, 37, 2)), Verdict::Slow { writes: 2, resident: 16 });
         assert_eq!(verdict(&h(4, 2, 10, 1)), Verdict::Healthy, "one write per four minds is the floor, inclusive");
         // 2026-09-16 06:5xZ, the first hour under the decode knee: "STARVED: 16 minds on
         // 5 lanes — the planner owes lanes" while the planner was holding lanes AT the
@@ -837,14 +853,18 @@ mod tests {
         assert!(is_lane_bound(&m5, &v));
         let rested = lane_bound_seats(&m5, &v, &roster);
         let names: Vec<&str> = rested.iter().map(|(_, m)| m.agent_name.as_str()).collect();
-        assert_eq!(names, ["least", "less", "some"], "least served first, capped at {MINDLESS_MAX_PER_TICK}; a mind that wrote rests last");
-        // Toward the edge, never past it: 7 minds on 2 lanes is one over the edge of 6.
+        assert_eq!(
+            names,
+            ["least", "less", "some", "busy", "wrote"],
+            "least served first, to the edge in ONE tick (16 on 2 is 12 over the edge of 4); a mind that wrote rests last"
+        );
+        // Toward the edge, never past it: 7 minds on 2 lanes is three over the edge of 4.
         let seven = CitizenHealth { resident: 7, ..m5.clone() };
-        assert_eq!(lane_bound_seats(&seven, &verdict(&seven), &roster).len(), 1);
+        assert_eq!(lane_bound_seats(&seven, &verdict(&seven), &roster).len(), 3);
         // Starved below the knee pays the same debt.
         let starved = CitizenHealth { knee: Some(8), ..m5.clone() };
         assert_eq!(verdict(&starved), Verdict::Starved { resident: 16, lanes: 2 });
-        assert_eq!(lane_bound_seats(&starved, &verdict(&starved), &roster).len(), MINDLESS_MAX_PER_TICK);
+        assert_eq!(lane_bound_seats(&starved, &verdict(&starved), &roster).len(), roster.len());
         // The IntelMac hour: 8 minds, 278 pulls, none deferred — NOTHING rests.
         let intel = CitizenHealth { pulls: 278, pulls_deferred: 0, ..h(8, 1, 12, 0) };
         assert!(matches!(verdict(&intel), Verdict::Starved { .. }), "starved by the numbers");
@@ -856,9 +876,12 @@ mod tests {
         let fine = CitizenHealth { pulls: 100, pulls_deferred: 100, ..h(4, 2, 20, 4) };
         assert_eq!(verdict(&fine), Verdict::Healthy);
         assert!(lane_bound_seats(&fine, &verdict(&fine), &roster).is_empty(), "a healthy roster is never paged");
-        // The edge on one lane is 3: 3 minds on 1 lane is AT the edge, nobody rests.
-        let one_lane = CitizenHealth { resident: 3, lanes: 1, pulls: 50, pulls_deferred: 50, ..m5.clone() };
-        assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "3 on 1 is the edge, nobody rests");
+        // The edge on one lane is 2 (the resident floor): 2 minds on 1 lane is AT the edge,
+        // nobody rests; 3 on 1 rests one.
+        let one_lane = CitizenHealth { resident: 2, lanes: 1, pulls: 50, pulls_deferred: 50, ..m5.clone() };
+        assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "2 on 1 is the edge, nobody rests");
+        let three_on_one = CitizenHealth { resident: 3, ..one_lane.clone() };
+        assert_eq!(lane_bound_seats(&three_on_one, &verdict(&three_on_one), &roster).len(), 1, "3 on 1 is one over");
         assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
     }
 
@@ -878,15 +901,15 @@ mod tests {
             seat("less", &format!("{LANE_BOUND_REASON}: 5 minds on 1 lanes"), 200),
             seat("recital", "18 of 21 speak verdicts this hour were the gate refusing a recital", 300),
         ];
-        // Still 1 lane, 3 resident: the edge is 3, no room — nobody wakes.
-        let one = CitizenHealth { pulls: 50, pulls_deferred: 50, ..h(3, 1, 10, 0) };
+        // Still 1 lane, 2 resident: the edge is 2, no room — nobody wakes.
+        let one = CitizenHealth { pulls: 50, pulls_deferred: 50, ..h(2, 1, 10, 0) };
         assert!(lane_bound_wakes(&one, &resting).is_empty(), "lanes did not return");
-        // 2 lanes: the edge is 6, room for 3 — both lane-bound seats wake, most served first.
-        let two = CitizenHealth { ..h(3, 2, 10, 0) };
+        // 2 lanes: the edge is 4, room for 3 — both lane-bound seats wake, most served first.
+        let two = CitizenHealth { ..h(1, 2, 10, 0) };
         let woken: Vec<String> = lane_bound_wakes(&two, &resting).into_iter().map(|s| s.agent_name).collect();
         assert_eq!(woken, ["less", "least"], "the last to rest is the first back; the recital stays rested");
         // Room for exactly one: only the most served returns.
-        let tight = CitizenHealth { ..h(5, 2, 10, 0) };
+        let tight = CitizenHealth { ..h(3, 2, 10, 0) };
         let woken: Vec<String> = lane_bound_wakes(&tight, &resting).into_iter().map(|s| s.agent_name).collect();
         assert_eq!(woken, ["less"]);
         // Rest and wake never both fire: over the edge there is no room; under it, nothing rests.
