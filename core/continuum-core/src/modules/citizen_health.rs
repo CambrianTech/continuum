@@ -902,10 +902,14 @@ mod tests {
         note_settle();
         note_credit_staged();
         note_pull(true);
-        let (a, w, l, s, c, _, p, pd) = snapshot_and_reset();
+        note_think_only();
+        let (a, w, l, s, c, _, p, pd, t) = snapshot_and_reset();
         assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1 && p >= 1 && pd >= 1);
-        let (a2, _, _, _, _, _, p2, _) = snapshot_and_reset();
-        assert_eq!((a2, p2), (0, 0));
+        // what this catches (the M5, 2026-09-20): a turn that ends inside the reasoning
+        // channel is counted for the hour line, and resets with the rest of the window.
+        assert!(t >= 1, "a think-only turn is on the hour's ledger");
+        let (a2, _, _, _, _, _, p2, _, t2) = snapshot_and_reset();
+        assert_eq!((a2, p2, t2), (0, 0, 0));
     }
 
     // what this catches (card c84d885a, S3 — the receipt's actor): the M5's 2026-09-18
