@@ -27,14 +27,15 @@
 //!
 //! # The decision
 //!
-//! **Ask the engine first.** The serving binary's own `--help` names the values its
-//! build accepts for `--cache-type-k` ([`parse_engine_kv_support`]); when it answers,
-//! THAT is the capability — a table in our source can only ever be a stale guess about
-//! someone else's build. The launcher probes it once per process, bounded, with a
-//! named outcome, and records it here.
+//! **Ask the engine what it ACCEPTS.** The serving binary's own `--help` names the
+//! values its build takes for `--cache-type-k` ([`parse_engine_kv_support`]). That is a
+//! VETO and never a promotion: a build with no `--cache-type-k` parser refuses the spawn
+//! if handed the flag (the 2026-08-20 `--flash-attn` outage's shape), so it forces f16;
+//! but a build that lists `q8_0` has only told us it is *capable*, which is a different
+//! question from whether q8_0 is a good trade on this hardware. The launcher probes it
+//! once per process, bounded, with a named outcome, and records it here.
 //!
-//! **The table is the fallback** for an engine that does not advertise (an older help
-//! text, a probe that did not answer):
+//! **The table answers the hardware question** — what we have measured, per backend:
 //!
 //! | backend | cache type | flash attention | divisor |
 //! |---|---|---|---|
@@ -57,11 +58,11 @@
 //! independent reads: choosing `q8_0` without `--flash-attn on` is a misconfiguration,
 //! not a half-fix.
 //!
-//! rocm / vulkan / directml stay conservative until someone MEASURES them there
-//! (`[[verify-real-device-numbers-not-a-clamp-premise]]`) — and an engine that
-//! advertises q8_0 lifts them without a source change. f16 on such a box is a DECISION
-//! and it is probed as one (`serving.kv_cache.decided`, `backend=vulkan`,
-//! `engine_support=unknown`), never a silence.
+//! rocm / vulkan / directml stay conservative for the same reason: nobody has MEASURED
+//! them there (`[[verify-real-device-numbers-not-a-clamp-premise]]`). f16 on any of
+//! these is a DECISION and it is probed as one (`serving.kv_cache.decided`,
+//! `backend=cpu`, `source=decided`), never a silence — and the override is how the
+//! measurement that could flip an arm gets taken.
 //!
 //! # One resolved value, two consumers
 //!
@@ -295,11 +296,21 @@ pub fn engine_quantized_kv_support() -> Option<bool> {
 /// THE DECISION — pure. Given the backend and whatever the engine advertised, what does
 /// the substrate choose?
 ///
-/// The engine's own answer OUTRANKS the backend table: a table in our source can only
-/// be a stale guess about someone else's build, whereas `--help` is that build speaking.
-/// `engine_support: None` = it did not say, so the table decides.
+/// **The engine's answer is a VETO, never a promotion.** The two inputs answer
+/// different questions and must not be conflated:
+///
+/// * `--help` answers *can this BUILD accept `--cache-type-k q8_0`* — a build-level
+///   fact. `Some(false)` means the flag does not exist, and passing it would refuse the
+///   spawn, so it overrides the table down to f16 unconditionally.
+/// * The backend table answers *is q8_0 a good trade on this HARDWARE* — a measured,
+///   throughput-shaped question. `Some(true)` from the engine says nothing about that.
+///
+/// Reading a `Some(true)` as a promotion is precisely how the CPU arm would defeat
+/// itself: the IntelMac's llama-server DOES list `q8_0` in its help, so an advertisement
+/// that promoted would hand that box quantized KV on the unmeasured dequant cost the
+/// f16 arm exists to avoid. Capability is necessary; it is not sufficient.
 pub fn decide_with_engine(backend: ServingBackend, engine_support: Option<bool>) -> KvCachePlan {
-    let quantized = engine_support.unwrap_or_else(|| backend.supports_quantized_kv()); // unwrap_or_else: None = the engine did not say, and the backend table is the DECIDED answer for that case, not a stand-in for a missing reading
+    let quantized = backend.supports_quantized_kv() && engine_support != Some(false);
     let cache_type = if quantized { Q8_0 } else { F16 };
     KvCachePlan {
         cache_type: cache_type.to_string(),
@@ -524,22 +535,31 @@ mod tests {
         }
     }
 
-    // what this catches: the engine's own answer must OUTRANK the source table, in both
-    // directions — a vulkan build that advertises q8_0 gets it without a source change,
-    // and a cuda build whose `--help` has no --cache-type-k flag at all is NOT handed a
-    // flag it will refuse to start with.
+    // what this catches: conflating the engine's answer with the hardware's. `--help`
+    // says what the BUILD accepts; the table says what is a good trade on the HARDWARE.
+    // A `Some(true)` must NOT promote — the IntelMac's own llama-server lists q8_0, so
+    // a promoting advertisement would hand that CPU box quantized KV on exactly the
+    // unmeasured dequant cost its f16 arm exists to avoid, defeating the condition in
+    // source. A `Some(false)` MUST veto: passing a flag a build has no parser for makes
+    // the spawn refuse, which is the 2026-08-20 --flash-attn outage's shape.
     #[test]
-    fn the_engines_own_advertisement_outranks_the_backend_table() {
+    fn the_engines_advertisement_is_a_veto_never_a_promotion() {
         let advertised = parse_engine_kv_support(REAL_HELP);
         assert_eq!(advertised, Some(true), "the real help text advertises q8_0");
 
-        let lifted = resolve_from(ServingBackend::Vulkan, Some(true), None, None);
-        assert_eq!(lifted.cache_type, Q8_0);
-        assert!(lifted.flash_attn);
-        assert_eq!(lifted.bytes_per_token_divisor, 2);
+        // Capability is necessary, not sufficient: an advertising build on unmeasured
+        // hardware stays f16.
+        for backend in [ServingBackend::Cpu, ServingBackend::Vulkan] {
+            let plan = resolve_from(backend, Some(true), None, None);
+            assert_eq!(plan.cache_type, F16, "{backend:?}: advertised != measured");
+            assert!(!plan.flash_attn, "{backend:?}");
+            assert_eq!(plan.bytes_per_token_divisor, 1, "{backend:?}");
+        }
+        // ...and on measured hardware the advertisement simply agrees.
+        assert_eq!(resolve_from(ServingBackend::Cuda, Some(true), None, None).cache_type, Q8_0);
 
         let held_back = resolve_from(ServingBackend::Cuda, Some(false), None, None);
-        assert_eq!(held_back.cache_type, F16);
+        assert_eq!(held_back.cache_type, F16, "a build with no --cache-type-k gets no flag");
         assert!(!held_back.flash_attn);
         assert_eq!(held_back.launcher_cache_type(), None);
 
@@ -588,7 +608,9 @@ mod tests {
             (ServingBackend::Metal, None, None, None),
             (ServingBackend::Cpu, None, None, None),
             (ServingBackend::Vulkan, Some(true), None, None),
+            (ServingBackend::Cpu, Some(true), None, None),
             (ServingBackend::Cuda, Some(false), None, None),
+            (ServingBackend::Metal, Some(false), None, None),
             (ServingBackend::Cuda, None, Some("f16"), None),
             (ServingBackend::Unknown, None, Some("q8_0"), None),
             (ServingBackend::Cuda, None, Some("q4_0"), None),
