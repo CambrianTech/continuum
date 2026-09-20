@@ -1214,17 +1214,7 @@ impl ServingDaemonModule {
         // what a window let her send), with headroom, floored at one real turn. Built
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
-        let requirements: Vec<crate::cognition::window_allocator::LaneRequirement> = live
-            .iter()
-            .map(|p| {
-                let need = self.working_set.demand_of(*p).map(|d| crate::cognition::working_set::requirement_tokens(&d)).unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
-                crate::cognition::window_allocator::LaneRequirement::from_demand(
-                    *p,
-                    need,
-                    crate::cognition::serving_plan::SENT_HEADROOM,
-                )
-            })
-            .collect();
+        let requirements = crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
         ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)

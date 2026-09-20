@@ -106,7 +106,7 @@ pub fn note_think_only() {
 }
 /// A placement move landed (the `placement.move.opportunity` seam and the switch's
 /// fall-home / return / spill seams). `opportunity` = a better seat, not a failed one.
-pub fn note_move(opportunity: bool) {
+pub(crate) fn note_move(opportunity: bool) {
     if opportunity {
         LEDGER.moves_opportunity.fetch_add(1, Ordering::Relaxed);
     } else {

@@ -91,6 +91,33 @@ impl LaneRequirement {
     }
 }
 
+/// Each mind's requirement, from the untrimmed demand her turns assemble with the
+/// standard headroom — the ONE derivation, shared by the serving daemon (sizing this
+/// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
+/// no turn yet is `Unknown`, never a number.
+pub fn requirements_for(
+    personas: &[Uuid],
+    working_set: &crate::cognition::working_set::WorkingSetRegistry,
+) -> Vec<LaneRequirement> {
+    personas
+        .iter()
+        .map(|p| {
+            let need = working_set
+                .demand_of(*p)
+                .map(|d| crate::cognition::working_set::requirement_tokens(&d))
+                .unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
+            LaneRequirement::from_demand(*p, need, super::serving_plan::SENT_HEADROOM)
+        })
+        .collect()
+}
+
+/// The largest requirement this seat KNOWS — what an `Unknown` resolves to before the
+/// model's own trained window, and the window an undeclared grid role stands at. `None`
+/// = nothing measured anywhere on the seat.
+pub fn largest_known(requirements: &[LaneRequirement]) -> Option<u32> {
+    requirements.iter().filter_map(|r| r.window).max()
+}
+
 /// The allocator's answer: one engine geometry and who it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Allocation {
@@ -165,7 +192,7 @@ pub fn allocate(
     }
     // Unknowns resolve to the largest known requirement on the seat (they sort after
     // it); with nothing known they resolve per candidate to its trained window.
-    let largest_known = requirements.iter().filter_map(|r| r.window).max();
+    let largest_known = largest_known(requirements);
     let mut sorted: Vec<&LaneRequirement> = requirements.iter().collect();
     sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
     let lane_cap = (requirements.len() as u32).min(budget.perf_cores.max(1)).min(MAX_LANES).max(1);

@@ -9,7 +9,9 @@
 //! exists — this node's serving plan (`LanePlan::of` the published `ServingPlan` + the
 //! measured decode), every peer's offer from the capacity gossip the grid module already
 //! consumes (`capacity::gossip::global_ledger`, the same rows, no second listener), the
-//! live roster with the recipe's roles (`roles_from_ids`) and the operator's hold —
+//! live roster with the recipe's citizens (`roles_from`, #4271 — role + declared
+//! requirement, the undeclared window being the largest `LaneRequirement` this seat
+//! knows: ONE requirement notion in the crate) and the operator's hold —
 //! folds them into a [`GridInputs`], and publishes the [`GridAllocation`] through a
 //! `watch::Sender` for the placement switch (the opportunity move), the spawner (this
 //! node's open seats) and the health line to read.
@@ -26,11 +28,12 @@
 //! one more offer; a bigger box is a better plan in its offer.
 
 use crate::cognition::grid_allocation::{
-    allocate, inputs_key, roles_from_ids, GridAllocation, GridInputs, GridRoster, Hold, LanePlan,
+    allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan,
     Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats,
 };
 use crate::cognition::serving_plan::ServingPlan;
-use crate::persona::role_template::RoleId;
+use crate::cognition::window_allocator::{largest_known, requirements_for};
+use crate::experience::recipe::CitizenRecipe;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use futures::FutureExt;
 use std::any::Any;
@@ -56,7 +59,7 @@ const ONE_OWNER: Uuid = Uuid::nil();
 
 /// A mind with no seat, and how long since her last turn began (since boot when none).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DormantMind {
+pub(crate) struct DormantMind {
     pub mind: Uuid,
     pub last_turn_age_ms: u64,
 }
@@ -64,7 +67,7 @@ pub struct DormantMind {
 /// What the daemon publishes: the allocation, the key it was computed from, and the
 /// dormant order the slack owes a clip to.
 #[derive(Clone, Debug)]
-pub struct Published {
+pub(crate) struct Published {
     pub allocation: GridAllocation,
     pub key: u64,
     pub at_ms: u64,
@@ -79,15 +82,15 @@ pub struct Published {
 }
 
 impl Published {
-    pub fn oldest_dormant_turn_age_ms(&self) -> Option<u64> {
+    pub(crate) fn oldest_dormant_turn_age_ms(&self) -> Option<u64> {
         self.dormant_by_age.first().map(|d| d.last_turn_age_ms)
     }
     /// This node's roster as the allocation reads it — the spawner's seat count once
     /// published (`None` = this node made no offer; the spawner keeps its own prior).
-    pub fn roster_here(&self) -> Option<GridRoster> {
+    pub(crate) fn roster_here(&self) -> Option<GridRoster> {
         self.allocation.roster_on(self.this_node, self.owner)
     }
-    pub fn is_this_node(&self, node: Uuid) -> bool {
+    pub(crate) fn is_this_node(&self, node: Uuid) -> bool {
         node == self.this_node || crate::persona::self_peer::is_this_node(node)
     }
 }
@@ -98,18 +101,18 @@ fn channel() -> &'static watch::Sender<Option<Arc<Published>>> {
 }
 
 /// The latest published allocation, borrowed lock-free; `None` before the first publish.
-pub fn current() -> Option<Arc<Published>> {
+pub(crate) fn current() -> Option<Arc<Published>> {
     channel().borrow().clone()
 }
 
 /// Subscribe to publishes — the reconciler parks on this beside the serving plan.
-pub fn subscribe() -> watch::Receiver<Option<Arc<Published>>> {
+pub(crate) fn subscribe() -> watch::Receiver<Option<Arc<Published>>> {
     channel().subscribe()
 }
 
 /// One peer's offer as the tick read it off the ledger.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PeerFacts {
+pub(crate) struct PeerFacts {
     pub node: Uuid,
     /// `None` = the beacon named no served model or no width (an older core): nothing
     /// placeable, the node is heard but offers no plan.
@@ -123,7 +126,7 @@ pub struct PeerFacts {
 /// What one pass GATHERS, once, then hands to the pure builder — so the decision is
 /// testable with no globals.
 #[derive(Clone, Debug)]
-pub struct GridFacts {
+pub(crate) struct GridFacts {
     pub now_ms: u64,
     pub this_node: Uuid,
     pub local_plan: Option<LanePlan>,
@@ -132,8 +135,14 @@ pub struct GridFacts {
     pub peers: Vec<PeerFacts>,
     /// The live minds on this node (their home is this node).
     pub minds: Vec<Uuid>,
-    pub citizens: Vec<RoleId>,
-    pub measured_floor: Option<u32>,
+    /// The recipe's resident citizens — role + what each DECLARES of a lane
+    /// (`CitizenRequirement`). The allocator's roles and floors are `roles_from` over
+    /// exactly these (#4271), never a second fold.
+    pub citizens: Vec<CitizenRecipe>,
+    /// The window an UNDECLARED role stands at: the largest requirement this seat knows
+    /// (`window_allocator::largest_known` over `requirements_for` — the same derivation
+    /// the serving daemon sizes its lanes from), `None` while nothing is measured.
+    pub undeclared_window: Option<u32>,
     /// The operator's roster hold resolved to ids, and whether it is exclusive.
     pub hold: Option<(Vec<Uuid>, bool)>,
 }
@@ -142,7 +151,7 @@ pub struct GridFacts {
 /// arguments. Peers' RESIDENTS are seated as anonymous minds homed there (ids derived
 /// from the node), so a peer's own roster fills its seats before ours spill onto them —
 /// without this a 4-resident, 2-lane peer read as four open seats.
-pub fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
+pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if let Some(plan) = &f.local_plan {
         book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: vec![plan.clone()] }, f.now_ms);
     }
@@ -159,7 +168,7 @@ pub fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if f.local_plan.is_none() {
         nodes.retain(|n| n.node != f.this_node);
     }
-    let (roles, floors) = roles_from_ids(&f.citizens, f.measured_floor);
+    let (roles, floors) = roles_from(&f.citizens, f.undeclared_window);
     let mut minds: Vec<Mind> = Vec::new();
     if !roles.is_empty() {
         // Every resident hosts the recipe's first role today (the spawner seats one
@@ -196,7 +205,7 @@ pub fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
 
 /// The dormant minds ordered by last-turn age, oldest first — the slow clip's queue.
 /// `last_turn_ms` = when her last turn began, `None` = none since boot (aged from boot).
-pub fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms: impl Fn(Uuid) -> Option<u64>) -> Vec<DormantMind> {
+pub(crate) fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms: impl Fn(Uuid) -> Option<u64>) -> Vec<DormantMind> {
     let mut out: Vec<DormantMind> = dormant
         .iter()
         .map(|&mind| DormantMind { mind, last_turn_age_ms: now_ms.saturating_sub(last_turn_ms(mind).unwrap_or(boot_ms)) }) // unwrap_or: no turn yet is aged from boot
@@ -208,14 +217,14 @@ pub fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms:
 /// The grid's SLACK in seats: every open seat weighted by its node's idle fraction
 /// (`free_slots_live / lanes` — the seat's own admission truth, so a lane a leased-in
 /// generate is using counts less than an empty one).
-pub fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
+pub(crate) fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
     open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node).clamp(0.0, 1.0)).sum()
 }
 
 /// How often the slack can give each dormant mind a turn: the typical turn, times the
 /// dormant population, over the slack — derived, never a constant. `None` when there is
 /// no slack, nobody dormant, or no turn measured yet.
-pub fn clip_interval_ms(dormant: usize, slack: f64, typical_turn_ms: Option<u64>) -> Option<u64> {
+pub(crate) fn clip_interval_ms(dormant: usize, slack: f64, typical_turn_ms: Option<u64>) -> Option<u64> {
     if dormant == 0 || slack <= 0.0 {
         return None;
     }
@@ -224,7 +233,7 @@ pub fn clip_interval_ms(dormant: usize, slack: f64, typical_turn_ms: Option<u64>
 
 struct Inner {
     plan_rx: watch::Receiver<Option<ServingPlan>>,
-    citizens: Vec<RoleId>,
+    citizens: Vec<CitizenRecipe>,
     book: Mutex<OfferBook>,
     /// The gate: the inputs key of the last publish; `u64::MAX` = never published.
     last_key: AtomicU64,
@@ -232,14 +241,14 @@ struct Inner {
     skipped: AtomicU64,
 }
 
-pub struct GridAllocatorModule {
+pub(crate) struct GridAllocatorModule {
     inner: Arc<Inner>,
 }
 
 impl GridAllocatorModule {
     /// `plan_rx` = the serving daemon's published plan (`ServingDaemonModule::subscribe`);
     /// `citizens` = the recipe's resident roles (the same list the spawner hosts).
-    pub fn new(plan_rx: watch::Receiver<Option<ServingPlan>>, citizens: Vec<RoleId>) -> Self {
+    pub(crate) fn new(plan_rx: watch::Receiver<Option<ServingPlan>>, citizens: Vec<CitizenRecipe>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 plan_rx,
@@ -299,9 +308,11 @@ impl Inner {
             .collect();
         let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
         let minds: Vec<Uuid> = registry.as_ref().map(|r| r.live_personas()).unwrap_or_default(); // unwrap_or_default: no registry = no residents yet
-        let measured_floor = crate::cognition::working_set::global()
-            .sent_median_of(&minds)
-            .map(crate::cognition::serving_plan::prompt_floor_of);
+        // ONE requirement notion in the crate (card 10bba591, Cormac on #4281): what a
+        // mind needs of a lane is `window_allocator::LaneRequirement` — the untrimmed
+        // demand with headroom, Unknown until she has turned — and an undeclared ROLE
+        // stands at the largest of those this seat knows. Never a second median here.
+        let undeclared_window = largest_known(&requirements_for(&minds, &crate::cognition::working_set::global()));
         let hold = crate::persona::roster_hold::active().map(|h| {
             let ids: Vec<Uuid> = registry
                 .as_ref()
@@ -318,7 +329,7 @@ impl Inner {
             peers,
             minds,
             citizens: self.citizens.clone(),
-            measured_floor,
+            undeclared_window,
             hold,
         }
     }
@@ -510,8 +521,8 @@ mod tests {
             local_free_slots: 1,
             peers,
             minds,
-            citizens: vec![RoleId::Coder],
-            measured_floor: Some(70_000),
+            citizens: vec![CitizenRecipe { role: crate::persona::role_template::RoleId::Coder, requirement: None }],
+            undeclared_window: Some(70_000),
             hold: None,
         }
     }

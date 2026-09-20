@@ -85,7 +85,7 @@ pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 /// lanes, window) — the switch moves her there BETWEEN turns, never mid-turn, and never
 /// inside her own cooldown. Equal seats are never a reason to move.
 #[derive(Debug, Clone, Copy)]
-pub struct OpportunityInputs<'a> {
+pub(crate) struct OpportunityInputs<'a> {
     /// The plan of the seat she is on now, as the allocation reads that node; `None` =
     /// her node offers no plan the allocation counts.
     pub current: Option<&'a crate::cognition::grid_allocation::LanePlan>,
@@ -100,7 +100,7 @@ pub struct OpportunityInputs<'a> {
 }
 
 /// The rule. Pure.
-pub fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cognition::grid_allocation::BetterBy> {
+pub(crate) fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cognition::grid_allocation::BetterBy> {
     if i.target_is_current || i.turn_in_flight || i.since_last_move_ms < i.cooldown_ms {
         return None;
     }
@@ -115,7 +115,7 @@ pub fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cognition:
 /// gap between her turn starts), never under her turn duration — so she completes at
 /// least one turn on the new seat before she may be moved again. Nothing measured yet =
 /// the failure rule's cooldown, the one number that already bounds a move. Pure.
-pub fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_admission::TurnShape>) -> u64 {
+pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_admission::TurnShape>) -> u64 {
     match shape {
         Some(s) if s.cadence_ms.max(s.turn_ms) > 0 => s.cadence_ms.max(s.turn_ms),
         _ => MOVE_COOLDOWN_MS,
@@ -432,7 +432,7 @@ impl PlacementSwitch {
     /// Come home FOR GOOD (an opportunity move to this node): the seat, the remote lane
     /// and the peer go, and the durable override that named the seat is retired, so the
     /// next boot bears her home — unlike a fall-home, which keeps the seat to return to.
-    pub fn come_home_for_good(&self, now_ms: u64) {
+    pub(crate) fn come_home_for_good(&self, now_ms: u64) {
         self.set_seat(Seat::Home, now_ms);
         *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
@@ -1020,7 +1020,7 @@ pub async fn follow_the_fleet(
 /// move her there between turns — a remote seat asks for its slot like a spill does; a
 /// home seat retires her override. Returns the org-room lines. No allocation published
 /// = nothing to follow.
-pub async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
+pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
     use crate::cognition::resource_admission::{turn_in_flight, turn_shape_of};
     let mut lines = Vec::new();
     let Some(p) = crate::modules::grid_allocator::current() else {
@@ -1053,6 +1053,21 @@ pub async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             continue;
         };
         let from = current_node.map(|n| n.to_string()).unwrap_or_else(|| "nowhere".to_string()); // unwrap_or_else: a switch with no seat named reads "nowhere" in the receipt
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): an opportunity move is a
+        // seat change between machines like a fall-home, a return or a spill — the same
+        // gate, asked BEFORE the reservation so a deferral never burns a grant. A better
+        // seat is still there next tick; her unpushed work is not recoverable.
+        if let Some(blocked) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
+            crate::probe!(
+                class = "placement.move.deferred_unpushed",
+                persona = %sw.persona_name(),
+                peer = %seat.node,
+                move_kind = "opportunity",
+                why = %blocked,
+                "her workspace is not on origin yet (or a turn is in flight) — the better seat waits for the next tick"
+            );
+            continue;
+        }
         if target_here {
             // Home is the better seat: she comes home for good — if this node can build
             // her a lane (a node that cannot never claims her back).

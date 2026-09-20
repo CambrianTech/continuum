@@ -2770,12 +2770,14 @@ pub fn start_server(
         // refuses loudly and the shipped floor still stands (same #432 arm as
         // the positron projection); the author's actionable error surfaces at
         // `activity/spawn`, which validates the same directory.
-        let resident_roles = {
+        // The recipe's citizens, ONCE: the allocator daemon takes them whole (role +
+        // declared requirement, #4271); the spawner takes their roles.
+        let resident_citizens = {
             use crate::experience::source::RecipeExperienceSource;
             let overlay_dir = RecipeExperienceSource::overlay_dir(
                 &crate::modules::persona_instance_manager::resolve_continuum_root(),
             );
-            match RecipeExperienceSource::resident_roles(&overlay_dir) {
+            match RecipeExperienceSource::resident_citizens(&overlay_dir) {
                 Ok(roles) => roles,
                 Err(e) => {
                     tracing::error!(
@@ -2786,7 +2788,7 @@ pub fn start_server(
                          citizens until the named file is fixed or removed \
                          (#430)"
                     );
-                    RecipeExperienceSource::resident_roles_embedded()
+                    RecipeExperienceSource::resident_citizens_embedded()
                 }
             }
         };
@@ -2798,8 +2800,10 @@ pub fn start_server(
         // recipe roles the spawner hosts; the plan watch the reconciler parks on.
         runtime.register(Arc::new(crate::modules::grid_allocator::GridAllocatorModule::new(
             serving_daemon.subscribe(),
-            resident_roles.clone(),
+            resident_citizens.clone(),
         )));
+        let resident_roles: Vec<crate::persona::role_template::RoleId> =
+            resident_citizens.into_iter().map(|c| c.role).collect();
         stretch_mark("resident_roles_and_overlay", "supervisor_construct");
         stretch_mark("supervisor_construct", "resume_task_spawn_and_rest_of_block");
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(

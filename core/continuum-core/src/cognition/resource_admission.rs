@@ -569,12 +569,12 @@ pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
 /// When `persona` last started a turn this boot; `None` = no turn since boot. The
 /// dormant order (card 10bba591) reads this: the mind whose last turn is oldest is the
 /// first the grid's slack owes a clip.
-pub fn last_turn_ms(persona: uuid::Uuid) -> Option<u64> {
+pub(crate) fn last_turn_ms(persona: uuid::Uuid) -> Option<u64> {
     LAST_TURN_MS.lock().get(&persona).copied()
 }
 
 /// The instant this core booted, ms — the age a mind with no turn yet is measured from.
-pub fn boot_ms() -> u64 {
+pub(crate) fn boot_ms() -> u64 {
     *BOOT_MS
 }
 
@@ -583,7 +583,7 @@ pub fn boot_ms() -> u64 {
 /// switch (a move between turns only; a cooldown in her own units) and the dormant
 /// clip (the population's typical turn). PURE arithmetic in [`TurnShape::observe`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TurnShape {
+pub(crate) struct TurnShape {
     /// EMA of her turn duration, ms (start → end of the service-loop turn).
     pub turn_ms: u64,
     /// EMA of the gap between two of her turn starts, ms — her cadence.
@@ -595,7 +595,7 @@ impl TurnShape {
     /// Fold one finished turn in: its duration, and the gap since the previous start
     /// (`None` for her first). An EMA with a 1/4 step — a few turns to settle, one
     /// slow turn never the whole story; the first sample of either is taken whole.
-    pub fn observe(self, turn_ms: u64, gap_ms: Option<u64>) -> Self {
+    pub(crate) fn observe(self, turn_ms: u64, gap_ms: Option<u64>) -> Self {
         let ema = |old: u64, new: u64| if old == 0 { new } else { old - old / 4 + new / 4 };
         Self {
             turn_ms: if self.turns == 0 { turn_ms } else { ema(self.turn_ms, turn_ms) },
@@ -618,13 +618,13 @@ static IN_FLIGHT: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashS
 /// her IN FLIGHT until dropped — so every exit of the service-loop turn, including a
 /// `continue`, ends the turn and records its shape. The placement switch moves a mind
 /// only when this is not held (a move mid-turn is a torn turn).
-pub struct TurnInFlight {
+pub(crate) struct TurnInFlight {
     persona: uuid::Uuid,
     started: std::time::Instant,
     previous_start_ms: Option<u64>,
 }
 
-pub fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
+pub(crate) fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
     let previous_start_ms = LAST_TURN_MS.lock().insert(persona, now_ms);
     IN_FLIGHT.lock().insert(persona);
     TurnInFlight { persona, started: std::time::Instant::now(), previous_start_ms }
@@ -644,18 +644,18 @@ impl Drop for TurnInFlight {
 }
 
 /// Is a turn of `persona`'s in flight right now?
-pub fn turn_in_flight(persona: uuid::Uuid) -> bool {
+pub(crate) fn turn_in_flight(persona: uuid::Uuid) -> bool {
     IN_FLIGHT.lock().contains(&persona)
 }
 
 /// Her measured turn shape; `None` until a turn has finished this boot.
-pub fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
+pub(crate) fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
     TURN_SHAPES.lock().get(&persona).copied().filter(|s| s.turns > 0)
 }
 
 /// The TYPICAL turn among `personas`: the median of their measured turn durations.
 /// `None` when nobody has finished a turn — an absence, never a number.
-pub fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
+pub(crate) fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
     let shapes = TURN_SHAPES.lock();
     let mut turns: Vec<u64> = personas
         .iter()

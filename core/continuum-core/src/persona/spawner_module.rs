@@ -241,7 +241,7 @@ impl PersonaSpawnerModule {
 
     /// The grid allocation's roster for this node, as the reconciler last read it
     /// (see the `grid_roster` field). `None` = nothing published: the warm-slot prior.
-    pub fn set_grid_roster(&mut self, roster: Option<crate::cognition::grid_allocation::GridRoster>) {
+    pub(crate) fn set_grid_roster(&mut self, roster: Option<crate::cognition::grid_allocation::GridRoster>) {
         self.grid_roster = roster;
     }
 
