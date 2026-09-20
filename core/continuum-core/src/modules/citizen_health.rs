@@ -47,6 +47,10 @@ struct Ledger {
     pulls: AtomicU64,
     /// Of those, the pulls deferred because the roster already held a card per lane.
     pulls_deferred: AtomicU64,
+    /// Turns that ended INSIDE the reasoning channel — no answer, no act (the
+    /// `persona.act.think_only` seam). Two in an hour on the M5 (2026-09-20) were the
+    /// whole story of #4194's allowance floor; on the hour line a regression is one number.
+    think_only: AtomicU64,
     /// THE HOUR'S LANES, not the tick's (Cormac's condition on #4244): the most lanes the
     /// node served at any fold point this window. The lane-bound rest is destructive and
     /// now rests the whole overage in one tick, so it must not stand on a point sample —
@@ -66,8 +70,14 @@ static LEDGER: Ledger = Ledger {
     credits_settled: AtomicU64::new(0),
     pulls: AtomicU64::new(0),
     pulls_deferred: AtomicU64::new(0),
+    think_only: AtomicU64::new(0),
     lanes_max: AtomicU64::new(0),
 };
+/// A turn ended inside the reasoning channel with no answer and no act (the
+/// `persona.act.think_only` seam) — the allowance did not hold her think.
+pub fn note_think_only() {
+    LEDGER.think_only.fetch_add(1, Ordering::Relaxed);
+}
 /// The node served `lanes` lanes just now — fold into the hour's maximum (see
 /// `Ledger::lanes_max`). Called at the serving daemon's geometry settle and at every
 /// lane grant, so the hour's lanes are the lanes the hour actually served.
@@ -275,6 +285,8 @@ pub struct CitizenHealth {
     /// Card pulls the roster attempted this hour, and how many the full lanes deferred.
     pub pulls: u64,
     pub pulls_deferred: u64,
+    /// Turns this hour that ended inside the reasoning channel — no answer, no act.
+    pub think_only: u64,
     /// The measured decode knee for the served model (`inference::decode_knee`), when
     /// one is known: the lane count the planner will not exceed because every further
     /// stream would decode below the tax floor. Above it, lanes are not what is owed.
@@ -434,13 +446,14 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         String::new()
     };
     format!(
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · think-only {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
         h.served_window / 1000,
         h.acts,
         h.writes,
+        h.think_only,
         h.lanes_granted,
         h.pulls,
         h.pulls_deferred,
@@ -452,7 +465,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     )
 }
 
-fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -462,6 +475,7 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
         LEDGER.credits_settled.swap(0, Ordering::Relaxed),
         LEDGER.pulls.swap(0, Ordering::Relaxed),
         LEDGER.pulls_deferred.swap(0, Ordering::Relaxed),
+        LEDGER.think_only.swap(0, Ordering::Relaxed),
     )
 }
 
@@ -558,7 +572,7 @@ impl CitizenHealthModule {
         Self
     }
     fn read(&self) -> CitizenHealth {
-        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, pulls, pulls_deferred) = snapshot_and_reset();
+        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, pulls, pulls_deferred, think_only) = snapshot_and_reset();
         let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
@@ -587,6 +601,7 @@ impl CitizenHealthModule {
             credits_settled,
             pulls,
             pulls_deferred,
+            think_only,
             knee: knee_of(serving.active_model.as_deref()),
             rounds_working,
             standing_enabled,
@@ -678,6 +693,7 @@ impl ServiceModule for CitizenHealthModule {
             lane_grants = h.lanes_granted,
             pulls = h.pulls,
             pulls_deferred = h.pulls_deferred,
+            think_only = h.think_only,
             settles = h.settles,
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
@@ -724,6 +740,7 @@ impl ServiceModule for CitizenHealthModule {
                     credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
                     pulls: LEDGER.pulls.load(Ordering::Relaxed),
                     pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
+                    think_only: LEDGER.think_only.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                     rounds_working,
                     standing_enabled,
@@ -733,7 +750,7 @@ impl ServiceModule for CitizenHealthModule {
                     "resident": h.resident, "lanes": h.lanes, "served_window": h.served_window,
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
-                    "pulls": h.pulls, "pulls_deferred": h.pulls_deferred,
+                    "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
@@ -790,7 +807,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, knee: None, rounds_working: 1, standing_enabled: true }
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
@@ -865,7 +882,7 @@ mod tests {
     fn the_line_carries_the_numbers_and_ends_with_the_verdict() {
         let x = h(16, 3, 39, 4);
         let l = line(&x, &verdict(&x));
-        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "STARVED"] {
+        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "think-only 0", "STARVED"] {
             assert!(l.contains(needle), "{needle} missing from {l}");
         }
         assert!(!l.contains("directed wait"), "no directed call waited: the line does not invent a zero wait");
