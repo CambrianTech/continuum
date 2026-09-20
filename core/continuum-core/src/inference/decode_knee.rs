@@ -118,6 +118,11 @@ impl DecodeCurve {
     /// collapsed, one below the smallest collapsed one, never below [`MIN_KNEE_LANES`] —
     /// shrink and re-measure. `None` = nothing fresh and trusted (no clamp; the roster
     /// rules).
+    /// The trusted point with the fewest streams in flight — a single turn's decode rate on
+    /// this box. `None` = no trusted point (an absence is not a number).
+    pub fn lightest_trusted_tps(&self, now_ms: u64) -> Option<f64> {
+        self.points.iter().filter(|(_, p)| p.trusted_at(now_ms)).map(|(_, p)| p.tps_ema).next()
+    }
     pub fn knee(&self, floor_tps: f64, now_ms: u64) -> Option<u32> {
         // FRESH points first: a fresh measurement is trusted enough to EXPLORE one lane
         // above the largest holding point when the constant-aggregate prediction says so.
@@ -267,6 +272,12 @@ pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
 pub fn knee_for(model: &str) -> Option<u32> {
     let now = now_ms();
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
+}
+/// The decode rate this box measured for `model` at its lightest trusted concurrency —
+/// what one turn's decode costs per token here. `None` = unmeasured.
+pub fn tps_for(model: &str) -> Option<f64> {
+    let now = now_ms();
+    CURVES.lock().get(model).and_then(|c| c.lightest_trusted_tps(now))
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -433,4 +444,19 @@ mod tests {
         let old = load_from(&p);
         assert_eq!(old["m"].knee(F, T), None, "a pre-freshness record is stale evidence");
     }
+    // what this catches: the occupancy bound reads a single turn's decode rate — the
+    // trusted point with the FEWEST streams — never an untrusted or heavier one.
+    #[test]
+    fn the_lightest_trusted_point_is_one_turns_decode_rate() {
+        let mut c = DecodeCurve::default();
+        let now = 10_000_000;
+        for _ in 0..MIN_SAMPLES { c.observe(2, 9.0, now); }
+        assert_eq!(c.lightest_trusted_tps(now), Some(9.0), "two in flight is the lightest trusted point");
+        c.observe(1, 15.0, now);
+        assert_eq!(c.lightest_trusted_tps(now), Some(9.0), "one sample at 1 is not trusted yet");
+        for _ in 0..MIN_SAMPLES { c.observe(1, 15.0, now); }
+        assert_eq!(c.lightest_trusted_tps(now), Some(15.0), "trusted at 1: the single-turn rate");
+        assert_eq!(c.lightest_trusted_tps(now + FRESH_MS + 1), None, "stale points are not a number");
+    }
+
 }

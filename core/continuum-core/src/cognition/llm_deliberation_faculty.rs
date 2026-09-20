@@ -1109,6 +1109,7 @@ impl LlmDeliberationFaculty {
             let _lane = if ws.attention.requires_priority() {
                 crate::cognition::resource_admission::acquire_serving_lane(
                     crate::cognition::resource_admission::LanePriority::Directed,
+                    None,
                 )
                 .await
             } else {
@@ -1122,8 +1123,14 @@ impl LlmDeliberationFaculty {
                 } else {
                     crate::cognition::resource_admission::LanePriority::Ambient
                 };
+                // A work call states its own bound on the lane (`expected_occupancy`), so the
+                // reserved lane may be lent to it inside the directed wait budget.
+                let expected = match priority {
+                    crate::cognition::resource_admission::LanePriority::Work => self.expected_occupancy(),
+                    _ => None,
+                };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority) => lane,
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority, expected) => lane,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
                             class = "delib.gate.yielded_to_directed",
@@ -1139,6 +1146,12 @@ impl LlmDeliberationFaculty {
             crate::cognition::resource_admission::note_local_lane_wait_ms(
                 lane_wait_started.elapsed().as_millis() as u64,
             );
+            // The reserve's guarantee, measured in its own unit: what a DIRECTED call waited.
+            if ws.attention.requires_priority() {
+                crate::cognition::resource_admission::note_directed_lane_wait_ms(
+                    lane_wait_started.elapsed().as_millis() as u64,
+                );
+            }
             // HER task-positive system is engaged from here: the per-citizen boredom gate
             // (dreams) reads this stamp, never a room wake.
             crate::cognition::activity_gate::persona_engaged(self.persona_id);
@@ -1980,6 +1993,25 @@ impl LlmDeliberationFaculty {
     /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
     /// gate's key for `LanePriority::Work` — wider than `holds_live_work`, which keys
     /// the working-presence contract on InProgress only.
+    /// This mind's next call's bound on the lane: prefill of the prompt she did not have
+    /// cached last turn at this box's measured prefill rate, plus her last output at its
+    /// measured decode rate. Read from her LAST turn's shape (`LAST_TURN_SHAPE`) — the
+    /// prompt is rendered after the gate, so the previous turn is the honest predictor.
+    /// `None` when any term is unmeasured: an absence is not a number, and the reserve is
+    /// then not lent (`resource_admission::reserve_lendable`).
+    fn expected_occupancy(&self) -> Option<std::time::Duration> {
+        let shape = LAST_TURN_SHAPE.get(&self.persona_id).map(|s| *s)?;
+        let model = crate::inference::llama_server::current_serving().active_model?;
+        let prefill_tps = crate::inference::prefill_rate::rate_for(&model)?;
+        let decode_tps = crate::inference::decode_knee::tps_for(&model)?;
+        if prefill_tps <= 0.0 || decode_tps <= 0.0 {
+            return None;
+        }
+        let uncached = shape.input.saturating_sub(shape.cached) as f64;
+        let secs = uncached / prefill_tps + shape.output as f64 / decode_tps;
+        Some(std::time::Duration::from_secs_f64(secs))
+    }
+
     fn holds_work_card(ws: &Workspace) -> bool {
         ws.broadcast
             .iter()
@@ -3891,6 +3923,11 @@ impl LlmDeliberationFaculty {
         // delib.generate.cache: a fabricated attribution is a lying receipt).
         if let Some(t) = resp.timing.as_ref() {
             let cached = t.cached_tokens as u32;
+            // Her last turn's shape — what the next work call's occupancy bound is read from.
+            LAST_TURN_SHAPE.insert(
+                self.persona_id,
+                TurnShape { input: resp.usage.input_tokens, cached, output: resp.usage.output_tokens },
+            );
             let frontier = view
                 .segments
                 .iter()
@@ -4255,6 +4292,16 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
 /// the same path as the decision, and the settle loop folds it into the per-task
 /// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
 /// `latency_ms` is always present (the adapter times every request).
+/// A mind's last generation, as the next work call's occupancy bound reads it.
+#[derive(Debug, Clone, Copy)]
+struct TurnShape {
+    input: u32,
+    cached: u32,
+    output: u32,
+}
+static LAST_TURN_SHAPE: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, TurnShape>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
 fn metrics_from(
     persona: &str,
     resp: &TextGenerationResponse,

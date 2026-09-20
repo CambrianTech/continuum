@@ -434,6 +434,7 @@ impl SemanticDistiller {
         .await;
         let _lane = crate::cognition::resource_admission::acquire_serving_lane(
             crate::cognition::resource_admission::LanePriority::Ambient,
+            None,
         )
         .await;
         let response = self
