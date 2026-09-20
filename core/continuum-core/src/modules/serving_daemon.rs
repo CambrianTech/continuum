@@ -1120,7 +1120,27 @@ impl ServingDaemonModule {
         let model_for_knee = knee_model(active_model, || {
             crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
         });
-        let knee = model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for);
+        // A remembered model with no curve answers with THIS box's last measured curve
+        // (2026-09-20: the record read "coder-14b", a harness fixture a local test run had
+        // written; knee None; 8 lanes on a knee-2 box). Said once per fallback model.
+        let knee = match model_for_knee.as_deref().and_then(crate::inference::decode_knee::knee_for) {
+            Some(k) => Some(k),
+            None => crate::inference::decode_knee::last_measured_knee().map(|(measured, k)| {
+                static SAID: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+                let mut said = SAID.lock();
+                if said.as_deref() != Some(measured.as_str()) {
+                    crate::probe!(
+                        class = "serving.decode_knee.fallback",
+                        remembered = model_for_knee.as_deref().unwrap_or("<none>"), // unwrap_or: nothing remembered is a name too
+                        measured = measured.as_str(),
+                        knee = k as u64,
+                        "no knee for the model the box remembers — the last measured curve bounds the lanes until a lane reports"
+                    );
+                    *said = Some(measured);
+                }
+                k
+            }),
+        };
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident

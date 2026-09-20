@@ -273,6 +273,25 @@ pub fn knee_for(model: &str) -> Option<u32> {
     let now = now_ms();
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
 }
+
+/// The knee of the model this box measured most recently, with its name — for a boot that
+/// remembers a model with no curve (2026-09-20: a record poisoned with "coder-14b" asked
+/// for a knee nobody measured, read None, and planned 8 lanes on a box whose 27B knee is
+/// 2). The last measured curve IS this box's decode ceiling until a lane says otherwise.
+pub fn last_measured_knee() -> Option<(String, u32)> {
+    let now = now_ms();
+    let curves = CURVES.lock();
+    last_measured(&curves).and_then(|(m, c)| c.knee(DECODE_FLOOR_TPS, now).map(|k| (m.clone(), k)))
+}
+
+/// PURE: the curve whose newest point is newest.
+pub fn last_measured(curves: &BTreeMap<String, DecodeCurve>) -> Option<(&String, &DecodeCurve)> {
+    curves
+        .iter()
+        .filter_map(|(m, c)| c.points.values().map(|p| p.last_ms).max().map(|t| (t, m, c)))
+        .max_by_key(|(t, _, _)| *t)
+        .map(|(_, m, c)| (m, c))
+}
 /// The decode rate this box measured for `model` at its lightest trusted concurrency —
 /// what one turn's decode costs per token here. `None` = unmeasured.
 pub fn tps_for(model: &str) -> Option<f64> {
@@ -457,6 +476,24 @@ mod tests {
         for _ in 0..MIN_SAMPLES { c.observe(1, 15.0, now); }
         assert_eq!(c.lightest_trusted_tps(now), Some(15.0), "trusted at 1: the single-turn rate");
         assert_eq!(c.lightest_trusted_tps(now + FRESH_MS + 1), None, "stale points are not a number");
+    }
+
+
+    // what this catches (2026-09-20): a boot remembering a model with no curve — the last
+    // measured curve answers, named, so the plan is clamped by THIS box's evidence.
+    #[test]
+    fn the_last_measured_curve_answers_when_the_remembered_model_has_none() {
+        let mut curves: BTreeMap<String, DecodeCurve> = BTreeMap::new();
+        let mut old = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { old.observe(1, 30.0, 1_000); }
+        let mut newer = DecodeCurve::default();
+        for _ in 0..MIN_SAMPLES { newer.observe(2, 6.0, 5_000); }
+        curves.insert("old-model".into(), old);
+        curves.insert("the-27b".into(), newer);
+        let (m, c) = last_measured(&curves).expect("two curves, one newest");
+        assert_eq!(m, "the-27b");
+        assert_eq!(c.knee(DECODE_FLOOR_TPS, 6_000), Some(MIN_KNEE_LANES), "2 lanes at 6 t/s: the knee holds at the floor's minimum");
+        assert!(last_measured(&BTreeMap::new()).is_none(), "nothing measured = nothing to answer");
     }
 
 }
