@@ -3,9 +3,17 @@
 //!
 //! Joel, 2026-09-17: "It's supposed to be rust for infrastructure not shell jacks." The
 //! decision that `tools/scripts/track-canary.sh` (bash + launchd, Unix-only) makes now
-//! runs here as a `ServiceModule` — one binary, every platform. It NEVER reboots: on a
-//! deploy verdict it records a [`DeployRequest`] (the seam), and the supervisor (card
-//! 82af11f5, BigMama's lane) performs the cross-platform build + swap + re-exec.
+//! runs here as a `ServiceModule` — one binary, every platform. It never reboots IN
+//! PROCESS: on a deploy verdict it records a [`DeployRequest`] (the seam) and hands it to
+//! the [`DeployActuator`], which launches the consumer verb detached from this core and
+//! keeps the receipt — unless another owner (the bash tracker's agent, the operator
+//! switch) is installed on this node, in which case the request is left for it.
+//!
+//! The request is IDEMPOTENT BY TIP: written once when the tip first differs, left
+//! standing on every later tick (its `requested_ms` is when the deploy was first asked).
+//! Until 2026-09-20 it was re-stamped every 300 s tick, so `elapsed_ms` never passed the
+//! stranded grace and `deploy.stranded` could not fire — a dead request looked exactly
+//! like a fresh one, forever (the 5090: 214 `request_written` rows, nothing consumed).
 //!
 //! Shape (canonical `ServiceModule`): its own tick, git/gh gathered OFF the tick via
 //! `bounded_command::probe` (a launch-path probe gets a bound + a named outcome, the 9/5
@@ -16,14 +24,16 @@
 
 use std::any::Any;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
 use crate::runtime::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome,
-    TickInputs,
+    decide, same_commit, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
+    RequestOutcome, TickInputs,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
@@ -258,6 +268,17 @@ fn clear_deploy_request(state_dir: &std::path::Path) {
     let _ = std::fs::remove_file(state_dir.join("deploy-request.json"));
 }
 
+/// The request this tick stands behind: the one already on record when it names the
+/// same tip (its `requested_ms` stays — that is when the deploy was first asked, the
+/// number the stranded grace and the actuator's bound are measured from), else a new
+/// one stamped now. Pure; the bool says whether it must be written.
+pub fn request_for_tip(standing: Option<DeployRequest>, tip_sha: &str, now_ms: u64) -> (DeployRequest, bool) {
+    match standing.filter(|r| same_commit(&r.tip_sha, tip_sha)) {
+        Some(r) => (r, false),
+        None => (DeployRequest::new(tip_sha, now_ms), true),
+    }
+}
+
 fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
     let _ = std::fs::create_dir_all(state_dir);
     if let Ok(bytes) = serde_json::to_vec_pretty(req) {
@@ -277,17 +298,22 @@ pub struct DeployTrackerModule {
     /// The tip last reported as stranded, so a durable condition is said ONCE rather than
     /// every tick — the chatty-floor failure that buries the line it exists to surface.
     stranded_reported: parking_lot::Mutex<Option<String>>,
+    /// The ACTION half: launches the consumer on a request and keeps the receipt. `Arc`
+    /// so the spawn runs off the tick (`spawn_blocking`).
+    actuator: Arc<DeployActuator>,
 }
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
         let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
+        let actuator = Arc::new(DeployActuator::new(root.clone()));
         Self {
             source: Box::new(GitGhDeploySource::from_env()),
             root,
             state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
+            actuator,
         }
     }
 
@@ -337,6 +363,9 @@ impl ServiceModule for DeployTrackerModule {
     }
 
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        // The last actuation, graded against the build now running: landed / stale /
+        // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
+        self.actuator.report_boot_outcome(running_sha(), Self::now_ms());
         Ok(())
     }
 
@@ -367,6 +396,9 @@ impl ServiceModule for DeployTrackerModule {
         // re-deriving by hand a comparison available from two values already in hand).
         // Both facts are right here in `inputs`; this just compares them.
         let state_dir = &self.state_dir;
+        // Whether the standing request is stranded — the only condition under which the
+        // actuator may launch the consumer a second time for one request.
+        let mut stranded = false;
         match crate::runtime::deploy_tracker::reconcile_request(
             read_deploy_request(state_dir).as_ref(),
             running_sha(),
@@ -375,6 +407,8 @@ impl ServiceModule for DeployTrackerModule {
         ) {
             RequestOutcome::Settled { tip_sha, waited_ms } => {
                 clear_deploy_request(state_dir);
+                // The measured cost of this deploy lands on the actuation that produced it.
+                self.actuator.record_settled(&tip_sha, waited_ms);
                 crate::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
@@ -384,6 +418,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
             }
             RequestOutcome::Stranded { tip_sha, elapsed_ms } => {
+                stranded = true;
                 // Once per stranded tip, not every tick: the condition is durable and the
                 // request file on disk is the standing evidence. A per-tick repeat is the
                 // chatty-floor failure that buries the line it exists to surface.
@@ -410,13 +445,38 @@ impl ServiceModule for DeployTrackerModule {
         let verdict = decide(&inputs);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
-                write_deploy_request(state_dir, &DeployRequest::new(tip_sha.clone(), now));
-                crate::probe!(
-                    class = "deploy.track.request_written",
-                    tip = tip_sha.as_str(),
-                    running = running_sha(),
-                    "deploy wanted — recorded a DeployRequest for the supervisor"
-                );
+                let (req, fresh) = request_for_tip(read_deploy_request(state_dir), tip_sha, now);
+                if fresh {
+                    write_deploy_request(state_dir, &req);
+                    crate::probe!(
+                        class = "deploy.track.request_written",
+                        tip = tip_sha.as_str(),
+                        running = running_sha(),
+                        "deploy wanted — recorded a DeployRequest; the actuator acts on it unless another owner is installed"
+                    );
+                }
+                // THE ACTION, off the tick: the actuator defers to an installed owner,
+                // launches the consumer once per request, and keeps the receipt.
+                let actuator = self.actuator.clone();
+                let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
+                    .await
+                    .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
+                if let ActuateOutcome::Spawned { child: Some(mut child), pid, .. } = outcome {
+                    // Reap the consumer off the tick and say how it exited — a consumer
+                    // that exits before its reboot stops this core is a receipt worth having
+                    // (NothingOwed, RefuseDirty, a failed build: its log names which).
+                    let tip = tip_sha.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let status = child.wait();
+                        crate::probe!(
+                            class = "deploy.actuate.consumer_exited",
+                            tip = tip.as_str(),
+                            pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
+                            status = ?status,
+                            "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                        );
+                    });
+                }
             }
             DeployVerdict::UpToDate => {}
             DeployVerdict::Held { reason, stale } => {
@@ -502,5 +562,21 @@ mod tests {
         assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "a failure in the tip's own suite is the tip's verdict");
         let pending = r#"{"check_runs":[{"status":"in_progress","check_suite":{"id":96068500514}},{"status":"completed","conclusion":"failure","check_suite":{"id":96070172760}}]}"#;
         assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
+    }
+
+    // what this catches (the 5090, 2026-09-20: 214 request_written rows, nothing
+    // consumed, deploy.stranded never fired): the request was re-stamped every tick, so
+    // its age never reached the stranded grace and the actuator would have re-launched
+    // the consumer every 300 s. A standing request for the same tip is kept with its
+    // original requested_ms; a different tip (or none) is a fresh request stamped now.
+    #[test]
+    fn a_standing_request_for_the_same_tip_is_kept_not_restamped() {
+        let first = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", 1_000);
+        let (same, fresh) = request_for_tip(Some(first.clone()), "c2344d758", 301_000);
+        assert_eq!((same, fresh), (first.clone(), false), "same tip (either spelling) = the standing request, its first-asked time intact");
+        let (next, fresh) = request_for_tip(Some(first), "38be2e1a9deadbeef", 301_000);
+        assert_eq!((next.tip_sha.as_str(), next.requested_ms, fresh), ("38be2e1a9deadbeef", 301_000, true));
+        let (none, fresh) = request_for_tip(None, "38be2e1a9deadbeef", 5);
+        assert_eq!((none.requested_ms, fresh), (5, true));
     }
 }
