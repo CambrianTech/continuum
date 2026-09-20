@@ -576,6 +576,55 @@ pub fn main_lane_placement() -> LanePlacement {
     placement_from_config(crate::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
 }
 
+/// Ask the serving binary, ONCE per process, which KV cache types its build accepts,
+/// and record the answer for [`crate::cognition::kv_cache_plan`].
+///
+/// The engine's own `--help` outranks any table in our source — a table can only be a
+/// stale guess about someone else's build. Bounded at 10 s like the `--version` and
+/// `--list-devices` probes beside it, and every outcome is NAMED: `answered`,
+/// `did_not_enumerate` (the flag exists but the build lists no allowed values — we do
+/// NOT guess; the backend table decides), `probe_failed`, `probe_timeout`.
+///
+/// One ask per process even when the answer is "it did not say", so a box whose engine
+/// is silent does not pay a 10 s help probe on every relaunch.
+async fn ensure_engine_kv_support_recorded(bin: &str) {
+    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let probe = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(bin).arg("--help").output(),
+    )
+    .await;
+    let (outcome, support, error) = match probe {
+        Ok(Ok(out)) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+                Some(v) => ("answered", Some(v), String::new()),
+                None => ("did_not_enumerate", None, String::new()),
+            }
+        }
+        Ok(Err(e)) => ("probe_failed", None, e.to_string()),
+        Err(_) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+    };
+    if let Some(v) = support {
+        crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
+    }
+    crate::probe!(
+        class = "serving.kv_cache.engine_support",
+        bin = bin,
+        outcome = outcome,
+        answered = support.is_some(),
+        quantized_kv = support.unwrap_or(false), // probe field: read it WITH `answered`
+        error = %error,
+        "what the serving binary says its build accepts for --cache-type-k; unanswered \
+         falls through to the backend table, never to a guess"
+    );
+}
+
 pub fn placement_from_config(value: Option<&str>) -> LanePlacement {
     match value.map(|v| v.trim().to_ascii_lowercase()) {
         Some(v) if v == "cpu" => LanePlacement::Cpu,
@@ -3487,17 +3536,55 @@ impl LlamaServerControl for LlamaServerProcess {
         // `lane_args` decides only what a resolved value MEANS on a command line. That is
         // the split that keeps the flag surface pure and assertable — gather inputs, then
         // compute a plan, exactly as `TierPolicy` does.
-        let kv_cache_type = crate::config_env::read("SERVING_KV_CACHE_TYPE")
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty() && s != "f16");
-        let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
-            .map(|s| {
-                matches!(
-                    s.trim().to_ascii_lowercase().as_str(),
-                    "1" | "on" | "true" | "yes"
-                )
-            })
-            .unwrap_or(false);
+        // Ask the ENGINE what KV cache types its build accepts, before deciding. Once
+        // per process, bounded, with a named outcome — every probe on a launch path
+        // gets both ([[every-probe-on-a-boot-or-launch-path-gets-a-bound-and-a-named-outcome]]).
+        ensure_engine_kv_support_recorded(&self.bin).await;
+        // THE KV CACHE TYPE IS A DECISION, NOT A VARIABLE A HUMAN ONCE EXPORTED
+        // (2026-09-20). This used to be two raw `config_env` reads: unset →
+        // no `--cache-type-k/v` flag at all (the engine's f16 default, 65,536 B/token
+        // for the 27B coder row) and `--flash-attn` off. The plan's resident-KV divisor
+        // in serving_daemon read the SAME key, so the arithmetic was self-consistent —
+        // it simply planned HALF the capacity, and nothing ever disagreed. The M5 had
+        // the key set by hand; the 5090 never did (Joel measured a 26,880-token lane
+        // there) and neither did the CPU-serving IntelMac (a 1.5B at -c 32768 on ~15 GB
+        // usable, Cormac). Two of three boxes at half their KV budget, invisibly.
+        //
+        // Now: one resolved [`KvCachePlan`] — the engine's own advertised
+        // `--cache-type-k` values where it gives them, the backend table otherwise —
+        // and the plan's divisor comes off the SAME struct, so the flag and the fit
+        // math cannot disagree. The env keys are an operator OVERRIDE, honored and
+        // named in the receipt.
+        let kv_plan = crate::cognition::kv_cache_plan::resolve();
+        let kv_cache_type = kv_plan.launcher_cache_type().map(|s| s.to_string());
+        let flash_attn = kv_plan.flash_attn;
+        // THE RECEIPT. The chosen type, WHERE it came from, the backend it was decided
+        // against, what a token of KV therefore costs, and the window the plan derived
+        // from that cost — one line, so a half-size lane can never again be invisible.
+        // `kv_per_token` comes through the plan's OWN transform (`footprint_for` →
+        // `apply_kv_quantization`), which reads the same resolved divisor this launch
+        // flags with: if these two ever disagreed, the box would over- or under-commit
+        // its whole budget by 2×.
+        let planned_kv_per_token = crate::modules::serving_daemon::footprint_for(&target.model)
+            .map(|fp| fp.kv_per_token)
+            .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
+        crate::probe!(
+            class = "serving.kv_cache.decided",
+            model = %target.model.id,
+            cache_type = %kv_plan.cache_type,
+            source = kv_plan.source.as_str(),
+            backend = kv_plan.backend.label(),
+            engine_advertised = ?crate::cognition::kv_cache_plan::engine_quantized_kv_support(),
+            flash_attn = flash_attn,
+            divisor = kv_plan.bytes_per_token_divisor,
+            kv_bytes_per_token = planned_kv_per_token,
+            kv_rate_answered = planned_kv_per_token > 0,
+            window = total_ctx as u64 / lanes.max(1) as u64,
+            lanes = lanes as u64,
+            total_ctx = total_ctx as u64,
+            "the KV cache type this lane serves — decided from the backend (or an \
+             operator override), and the window the plan sized from the same value"
+        );
         // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
         // (2026-08-24, the cache_reuse confession). llama-server hard-disables
         // `--cache-reuse` the moment an mmproj loads ("cache_reuse is not supported

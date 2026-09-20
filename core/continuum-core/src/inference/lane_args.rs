@@ -363,8 +363,13 @@ pub const ALL_GPU_LAYERS: &str = "999";
 pub struct LaneOptions<'a> {
     /// KV cache quantization (#232) — `Some("q8_0")` etc. `None` (or `f16` upstream)
     /// leaves llama.cpp's f16 default, byte-identical to passing nothing.
+    /// RESOLVED UPSTREAM by [`crate::cognition::kv_cache_plan`], never re-read here:
+    /// the same struct supplies the serving plan's resident-KV divisor, so the flag and
+    /// the fit math cannot disagree.
     pub kv_cache_type: Option<&'a str>,
-    /// Flash attention (#232), operator opt-in.
+    /// Flash attention (#232). Arrives from the SAME [`crate::cognition::kv_cache_plan`]
+    /// decision as `kv_cache_type`, because quantized KV rides the fused-attention path
+    /// — q8_0 with this off is a misconfiguration, not a half-fix.
     pub flash_attn: bool,
     /// Multimodal projector (#106) — the model actually SEES when present.
     pub mmproj: Option<&'a Path>,
@@ -414,24 +419,31 @@ impl LaneInvocation {
     /// Fold the conditional surface onto a base invocation.
     pub fn with_options(mut self, opts: &LaneOptions<'_>) -> Self {
         let mut push = |s: String| self.args.push(s);
-        // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
+        // KV CACHE QUANTIZATION (#232, field-proven technique). f16 KV is llama.cpp's
         // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
-        // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
-        // warm lanes. OFF by default: not every backend/build ships Metal KV-quant
-        // kernels, so this is an operator opt-in, never a blind assumption
-        // ([[verify-real-device-numbers-not-a-clamp-premise]]). NOTE: to have the plan
-        // actually GROW the window on the freed memory (not just leave it as extra
-        // headroom), the fit math must also scale kv_per_token — that footprint coupling
-        // is the follow-up; this is the safe enablement.
+        // freeing memory the elastic window (#234) spends on a BIGGER context or MORE
+        // warm lanes.
+        //
+        // This was an operator OPT-IN until 2026-09-20 — and an opt-in that only two
+        // people ever opted into meant the 5090 (26,880-token lane, Joel) and the
+        // CPU-serving IntelMac (1 × 32k on ~15 GB usable, Cormac) both PLANNED and
+        // SERVED at half their KV budget for their whole lives, self-consistently and
+        // invisibly. It is now a DECISION the substrate makes from the engine's own
+        // advertised `--cache-type-k` values (backend table as the fallback), with the
+        // env key demoted to an override: [`crate::cognition::kv_cache_plan`]. The
+        // window-GROWTH coupling that comment called a follow-up shipped as
+        // `apply_kv_quantization` — and it now rides the same resolved struct as this
+        // flag, so the two can no longer name different numbers.
         if let Some(kv) = opts.kv_cache_type {
             push("--cache-type-k".into());
             push(kv.to_string());
             push("--cache-type-v".into());
             push(kv.to_string());
         }
-        // FLASH ATTENTION (#232, opt-in). Fused attention is faster on BOTH prefill and
+        // FLASH ATTENTION (#232). Fused attention is faster on BOTH prefill and
         // decode and lowers peak memory — directly attacking prefill-bound turn latency
-        // (#139). OFF by default: Metal/backend support + quality vary by build.
+        // (#139) — AND it is the path llama.cpp's quantized-KV kernels ride, so it is
+        // decided TOGETHER with the cache type above, never independently.
         //
         // MUST carry an explicit VALUE. Upstream changed this from a bare boolean switch
         // to `-fa, --flash-attn [on|off|auto]`. A bare `--flash-attn` now EATS THE NEXT
