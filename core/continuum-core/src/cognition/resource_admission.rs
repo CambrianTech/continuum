@@ -1598,7 +1598,7 @@ mod tests {
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(gate.acquire_serving_lane(LanePriority::Ambient).await);
+            nondirected.push(gate.acquire_serving_lane(LanePriority::Ambient, None).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
@@ -1606,7 +1606,7 @@ mod tests {
         if gate.lane_count() > 1 {
             let directed = tokio::time::timeout(
                 Duration::from_millis(250),
-                gate.acquire_serving_lane(LanePriority::Directed),
+                gate.acquire_serving_lane(LanePriority::Directed, None),
             )
             .await;
             assert!(
@@ -1618,7 +1618,7 @@ mod tests {
             // times out rather than stealing the lane the directed turn is using.
             let extra_nondirected = tokio::time::timeout(
                 Duration::from_millis(150),
-                gate.acquire_serving_lane(LanePriority::Ambient),
+                gate.acquire_serving_lane(LanePriority::Ambient, None),
             )
             .await;
             assert!(
@@ -1834,8 +1834,8 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient).await;
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work).await });
+        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
         // Deterministic (Cormac's note on #4083): wait until the task is COUNTED, under a
         // bound, instead of a fixed sleep a loaded runner can outlast.
         let counted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1855,7 +1855,7 @@ mod tests {
         drop(held);
         let ambient = tokio::time::timeout(
             Duration::from_millis(1500),
-            gate.acquire_serving_lane(LanePriority::Ambient),
+            gate.acquire_serving_lane(LanePriority::Ambient, None),
         )
         .await;
         assert!(
@@ -1875,9 +1875,9 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient).await;
+        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
 
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work).await });
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             gate.work_waiting(),
@@ -1885,7 +1885,7 @@ mod tests {
             "the work caller is counted while it waits"
         );
         let ambient =
-            tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient).await });
+            tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!ambient.is_finished(), "ambient parks while work waits");
 
