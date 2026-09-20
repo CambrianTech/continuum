@@ -7,14 +7,16 @@ name: Dependency Check
 # tracker read as a red tip and refused to deploy fleet-wide. A weekly audit must never
 # be able to do that; the tracker now judges only the tip's own push checks, and this
 # workflow points at the files that exist.
+# Not on canary pushes (Cormac, #4243): a push-triggered audit IS a tip check the tracker
+# counts, so a third-party advisory would turn a canary tip red. main only, plus the schedule.
 on:
   push:
-    branches: [ main, canary ]
+    branches: [ main ]
     paths:
       - 'package.json'
       - 'package-lock.json'
   pull_request:
-    branches: [ main, canary ]
+    branches: [ main ]
     paths:
       - 'package.json'
       - 'package-lock.json'
