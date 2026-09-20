@@ -43,6 +43,13 @@ fn running_sha() -> &'static str {
 /// judged something else and merely landed here.
 const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"];
 
+/// Workflows whose check-runs are NEVER the tip's verdict, by path, whatever event started
+/// them. `promote-main` (card 7c0990b0) runs on the default branch on a schedule AND by
+/// hand (`workflow_dispatch`, an own-suite event); it moves main to canary's tip and its
+/// failure says nothing about the tip's code — a red run there must not read as a red
+/// tip and refuse every deploy on the fleet (the #4243 shape, by a different door).
+const NON_DEPLOY_WORKFLOW_PATHS: [&str; 1] = [".github/workflows/promote-main.yml"];
+
 /// The tip's verdict plus what the read excluded — the numbers a probe wants when a
 /// verdict surprises someone reading the tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +74,8 @@ pub struct TipChecks {
 /// all-checks read said "red", refusing every deploy on the fleet until a new tip appeared
 /// (#4243 fixed the shell copy of this rule; this is the Rust copy, the only one the
 /// Windows `deploy-consume` reads). So: the workflow runs for the sha carry the triggering
-/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count. The runs
+/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count — minus
+/// the suites of [`NON_DEPLOY_WORKFLOW_PATHS`], which judge nothing about the tip. The runs
 /// API answered with no such suite = unknown, never "green by absence". The runs API did
 /// not answer (`None` or not JSON) = every check counts, as before — a degraded read, not
 /// a lie. Pure over the JSON bodies so it is assertable without gh.
@@ -87,6 +95,7 @@ pub fn parse_tip_checks(check_runs_body: &str, workflow_runs_body: Option<&str>)
         .map(|runs| {
             runs.iter()
                 .filter(|r| r.get("event").and_then(|e| e.as_str()).is_some_and(|e| OWN_SUITE_EVENTS.contains(&e)))
+                .filter(|r| !r.get("path").and_then(|p| p.as_str()).is_some_and(|p| NON_DEPLOY_WORKFLOW_PATHS.contains(&p)))
                 .filter_map(|r| r.get("check_suite_id").and_then(|id| id.as_u64()))
                 .collect()
         });
@@ -513,5 +522,32 @@ mod tests {
         assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "a failure in the tip's own suite is the tip's verdict");
         let pending = r#"{"check_runs":[{"status":"in_progress","check_suite":{"id":96068500514}},{"status":"completed","conclusion":"failure","check_suite":{"id":96070172760}}]}"#;
         assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
+    }
+
+    // what this catches (card 7c0990b0): the promote-main workflow runs on the default
+    // branch and can be started by hand — `workflow_dispatch`, an OWN-suite event — so the
+    // event filter alone would let its failure read as the tip's. A run of that workflow
+    // is excluded by PATH whatever its event; the push's own suites still decide, and a
+    // sha whose only own suite is promote-main's is unknown, never green by absence.
+    #[test]
+    fn a_promote_main_run_is_never_the_tips_verdict_whatever_its_event() {
+        let checks = r#"{"check_runs":[
+            {"name":"promote-main","status":"completed","conclusion":"failure","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        let runs = r#"{"workflow_runs":[
+            {"id":1,"event":"workflow_dispatch","path":".github/workflows/promote-main.yml","check_suite_id":11},
+            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
+        ]}"#;
+        assert_eq!(parse_tip_checks(checks, Some(runs)), TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true }, "a dispatched promote-main failure is excluded by path: green");
+        let in_flight = r#"{"check_runs":[
+            {"name":"promote-main","status":"in_progress","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(in_flight, Some(runs)), Checks::Green, "a promote-main run in flight is not a pending tip");
+        let only_promote = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/promote-main.yml","check_suite_id":11}]}"#;
+        assert_eq!(verdict(checks, Some(only_promote)), Checks::Unknown, "promote-main as the only suite = no own suite = wait, never green by absence");
+        let own_failure = r#"{"check_runs":[{"name":"cargo test","status":"completed","conclusion":"failure","check_suite":{"id":22}}]}"#;
+        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "the push's own failure is still the tip's verdict");
     }
 }
