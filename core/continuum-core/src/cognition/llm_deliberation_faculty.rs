@@ -1304,6 +1304,9 @@ impl LlmDeliberationFaculty {
                 .to_string(),
             ),
             persona_id: Some(self.persona_id.to_string()),
+            // The turn's bound on the wire: her measured expectation with headroom
+            // (card ba82d0a0). Every waiting seam takes max(its floor, this).
+            turn_bound: self.turn_bound(),
         }
     }
 
@@ -2004,12 +2007,29 @@ impl LlmDeliberationFaculty {
         let model = crate::inference::llama_server::current_serving().active_model?;
         let prefill_tps = crate::inference::prefill_rate::rate_for(&model)?;
         let decode_tps = crate::inference::decode_knee::tps_for(&model)?;
-        if prefill_tps <= 0.0 || decode_tps <= 0.0 {
-            return None;
+        occupancy_of(shape, prefill_tps, decode_tps)
+    }
+
+    /// The bound this turn carries on the wire (`TextGenerationRequest::turn_bound`):
+    /// her expected occupancy with headroom (`inference::turn_bound`). Every waiting
+    /// seam — the header wait, the stream's queue budget, the remote deadline — takes
+    /// `max(its floor, this)`, so a 30k prompt on a 25 tok/s box (~1200 s to the first
+    /// byte) is waited out, never read as dead (card ba82d0a0). `None` until her first
+    /// measured turn on a measured box: the floors govern alone, an absence is not a
+    /// number.
+    fn turn_bound(&self) -> Option<std::time::Duration> {
+        let expected = self.expected_occupancy();
+        let bound = crate::inference::turn_bound::from_expectation(expected);
+        if let (Some(expected), Some(bound)) = (expected, bound) {
+            crate::probe!(
+                class = "delib.turn.bound",
+                persona = %self.persona_name,
+                expected_secs = expected.as_secs(),
+                turn_bound_secs = bound.as_secs(),
+                "the turn's wire bound — her measured expectation with headroom"
+            );
         }
-        let uncached = shape.input.saturating_sub(shape.cached) as f64;
-        let secs = uncached / prefill_tps + shape.output as f64 / decode_tps;
-        Some(std::time::Duration::from_secs_f64(secs))
+        bound
     }
 
     fn holds_work_card(ws: &Workspace) -> bool {
@@ -4309,6 +4329,18 @@ struct TurnShape {
 }
 static LAST_TURN_SHAPE: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, TurnShape>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// PURE: the wall time one turn of `shape` is expected to occupy the lane at this box's
+/// measured rates — the UNCACHED prompt at `prefill_tps` plus the output at `decode_tps`.
+/// `None` unless both rates are positive numbers: an absence (or a NaN) is not a number.
+fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<std::time::Duration> {
+    if !(prefill_tps > 0.0 && decode_tps > 0.0) {
+        return None;
+    }
+    let uncached = shape.input.saturating_sub(shape.cached) as f64;
+    let secs = uncached / prefill_tps + shape.output as f64 / decode_tps;
+    Some(std::time::Duration::from_secs_f64(secs))
+}
 
 fn metrics_from(
     persona: &str,
@@ -9485,4 +9517,51 @@ mod tests {
             assert_eq!(c.decision, Some(Decision::pass()));
         }
     } // mod verdicts
+
+    mod turn_bound {
+        use super::*;
+
+        // what this catches (card ba82d0a0): a turn's bound is its MEASURED occupancy —
+        // the uncached prompt at the box's prefill rate plus the output at its decode
+        // rate — with headroom, and on a slow box it outgrows BOTH fixed floors (300 s
+        // pre-stream, 600 s remote) that used to kill the turn and read it as dead.
+        // The IntelMac's shape: 30k cold at ~25 tok/s. A warm cache pays only the
+        // uncached prefix. An unmeasured or NaN rate is an absence, never a number.
+        #[test]
+        fn a_turns_bound_is_its_measured_occupancy_with_headroom_and_outgrows_every_floor() {
+            let cold = TurnShape { input: 30_000, cached: 0, output: 800 };
+            let expected = occupancy_of(cold, 25.0, 10.0).expect("both rates measured");
+            assert_eq!(expected.as_secs(), 1_280, "1200 s of prefill + 80 s of decode");
+            let bound = crate::inference::turn_bound::from_expectation(Some(expected))
+                .expect("an expectation yields a bound");
+            assert_eq!(bound.as_secs(), 2_560);
+            assert!(bound > std::time::Duration::from_secs(crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS));
+            assert!(bound > crate::inference::airc_remote::transport::REMOTE_INFERENCE_DEADLINE);
+            let warm = TurnShape { input: 30_000, cached: 29_000, output: 800 };
+            assert_eq!(occupancy_of(warm, 25.0, 10.0).map(|d| d.as_secs()), Some(120));
+            assert_eq!(occupancy_of(cold, 0.0, 10.0), None, "an unmeasured prefill rate is not a number");
+            assert_eq!(occupancy_of(cold, 25.0, f64::NAN), None, "a NaN decode rate is not a number");
+        }
+
+        // what this catches: the faculty's wire bound IS `from_expectation` of her
+        // expected occupancy — never a constant, never fabricated. A fresh mind has no
+        // measured turn behind her, so the request carries no bound and the floors
+        // govern alone; the Some path is the pure test above (her expectation reads
+        // this box's serving snapshot and rate ledgers, which a test must not seed).
+        #[test]
+        fn a_fresh_mind_carries_no_bound_and_the_floors_govern() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+            assert_eq!(faculty.expected_occupancy(), None, "no last turn = no expectation");
+            assert_eq!(faculty.turn_bound(), None, "no expectation = no bound (an absence is not a number)");
+            assert_eq!(
+                crate::inference::turn_bound::effective_bound(
+                    std::time::Duration::from_secs(crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS),
+                    faculty.turn_bound(),
+                ),
+                std::time::Duration::from_secs(crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS),
+                "…so the floor governs"
+            );
+        }
+    }
 }

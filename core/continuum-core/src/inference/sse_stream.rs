@@ -292,7 +292,15 @@ pub(crate) async fn consume_sse_stream(
     // ones. Once the slot IS working (a prefill-progress frame or a token),
     // the tight liveness budget applies: from then on, silence really is the
     // backend dying, which is what #385 was always about.
-    let queue_budget = std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS);
+    //
+    // The queue bound is the header wait's FLOOR or the turn's own measured bound
+    // above it (`TextGenerationRequest::turn_bound`, card ba82d0a0): a request queued
+    // behind a co-tenant's 30k prefill on a 25 tok/s box hears nothing for ~1200 s,
+    // and a constant 300 s read every such turn as dead.
+    let (queue_budget, queue_source) = crate::inference::turn_bound::effective_bound_with_source(
+        std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
+        request.turn_bound,
+    );
     let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
     // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
     // death on the local lane is wedge evidence the smoke probe cannot see (an
@@ -365,6 +373,18 @@ pub(crate) async fn consume_sse_stream(
             .await
             .map_err(|_| {
                 let started = phase.has_started();
+                if idle == queue_budget {
+                    // The bulk bound tripped (queued or prefilling with no progress
+                    // frame for the whole budget) — the receipt names the bound and
+                    // who sized it, so a busy-not-dead row points at the number.
+                    crate::inference::turn_bound::probe_tripped(
+                        "stream_queue",
+                        &cfg.name,
+                        queue_budget,
+                        queue_source,
+                        request.turn_bound,
+                    );
+                }
                 if local_lane {
                     if started {
                         // Started-then-stopped is per-slot evidence about OUR
@@ -435,6 +455,15 @@ pub(crate) async fn consume_sse_stream(
                 )
             })?;
         if last_progress.elapsed() >= idle {
+            if idle == queue_budget {
+                crate::inference::turn_bound::probe_tripped(
+                    "stream_queue",
+                    &cfg.name,
+                    queue_budget,
+                    queue_source,
+                    request.turn_bound,
+                );
+            }
             if local_lane {
                 crate::probe!(
                     class = "inference.decode.failed",
@@ -552,6 +581,15 @@ pub(crate) async fn consume_sse_stream(
                     // implicitly guessing at and the one a derived budget should
                     // come from per model+device (#441); `queued_ms` is the
                     // admission/oversubscription signal (#234 QoS).
+                    // `would_have_died` shadows the bound IN FORCE for this turn
+                    // (`queue_budget`: the floor, or the turn's measured bound above
+                    // it): 1 = this prefill outlived the bound that any seam waiting
+                    // on it flat — a request queued behind it, the remote requester —
+                    // would have killed it at. Until 2026-09-20 it shadowed the 90 s
+                    // decode watchdog, a bound nothing was waiting on any more; the
+                    // M5 read 1 at 331–389 s of ingest, and the number that had
+                    // actually killed the turn's queued sibling was the 300 s floor.
+                    // A 1 here with a healthy lane means the bound is undersized.
                     if matches!(was, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
                         && matches!(phase, crate::inference::stream_liveness::StreamPhase::Decoding)
                     {
@@ -569,7 +607,9 @@ pub(crate) async fn consume_sse_stream(
                             queued_ms = queued_ms,
                             ingest_ms = ingest_ms,
                             ingest_tok_per_s = (fresh as f64 * 1000.0 / ingest_ms as f64) as u64,
-                            would_have_died = u8::from(elapsed > live_budget) as u64,
+                            bound_secs = queue_budget.as_secs(),
+                            bound_source = queue_source.as_str(),
+                            would_have_died = u8::from(elapsed > queue_budget) as u64,
                             "prefill complete — queue wait vs real ingest, and the \
                              cache's actual contribution, per stream",
                         );

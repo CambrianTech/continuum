@@ -777,6 +777,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             room_id: None,
             purpose: Some("warmup".to_string()),
             persona_id: None,
+            turn_bound: None,
         };
         match self.generate_text(warmup_request).await {
             Ok(_) => Ok(()),
@@ -1521,6 +1522,7 @@ mod tests {
             room_id: None,
             purpose: None,
             persona_id: None,
+            turn_bound: None,
         }
     }
 
@@ -1750,6 +1752,7 @@ mod tests {
             room_id: None,
             purpose: None,
             persona_id: Some(uuid::Uuid::nil().to_string()),
+            turn_bound: None,
         };
 
         // context_length MUST be set explicitly — the scheduler refuses the

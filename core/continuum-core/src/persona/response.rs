@@ -704,6 +704,7 @@ async fn run_render(
         // route the seq slot's KV into the FootprintRegistry under this
         // id; adapters that don't (DMR, cloud) ignore it.
         persona_id: Some(input.persona.persona_id.to_string()),
+        turn_bound: None,
     };
 
     // #108 STEP 2 (cross-grid sprint, LaneDecision contract stamped 2026-07-24):
