@@ -75,7 +75,13 @@ impl ServiceModule for BenchmarkGradeModule {
         // Finished work is graded on the tick, not at the next boot: the verdict
         // sweep starts here when something is pending and none is in flight
         // (one sweep at a time; it scans directories, then grades serially).
-        if crate::cognition::swe_verdict_sweep::sweep_if_due() {
+        // The scan spawns a `git status` per staged checkout — minutes of blocking work on
+        // a big box — so it runs on the blocking pool, never on the runtime the minds
+        // share (2026-09-20 00:05Z: it had been running on a worker thread, continuously).
+        let started = tokio::task::spawn_blocking(crate::cognition::swe_verdict_sweep::sweep_if_due)
+            .await
+            .unwrap_or(false); // JUSTIFIED unwrap_or: a panicked scan started no sweep; the next tick scans again
+        if started {
             crate::probe!(
                 class = "benchmark.verdict.sweep_started_by_tick",
                 "pending citizen work found on the tick — grading now, not at the next boot"
