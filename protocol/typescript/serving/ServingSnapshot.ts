@@ -87,7 +87,11 @@ lanes: number,
  * spawn (ADOPTED across a deploy — the common case) the daemon recovers it off
  * the engine's own argv (`--cache-ram N`). `0` = unknown (no spawn fact, no flag
  * on the line, an older snapshot): the footprint measurement is WITHHELD and the
- * board credits nothing. `serde(default)` keeps older persisted snapshots readable.
+ * board credits nothing. Two zeros, not one: a literal `--cache-ram 0` launch (no
+ * host cache — a value) also lands here as unknown and stays unmeasured; harmless
+ * while our launches floor the grant at `CACHE_RAM_HARD_FLOOR_MIB`, named so the
+ * two are never mistaken for each other. `serde(default)` keeps older persisted
+ * snapshots readable.
  */
 host_prompt_cache_mib: number, 
 /**

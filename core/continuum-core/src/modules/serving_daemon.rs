@@ -7673,6 +7673,30 @@ mod tests {
         assert_eq!(windowless.served_context_window, 0);
         assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
         assert_eq!(windowless.host_prompt_cache_mib, 0, "nothing live → no grant to charge");
+        let degraded = snapshot_from_outcome(
+            &EnsureOutcome::Degraded { reason: "x".into() },
+            "coder-14b",
+            &genes,
+            11008,
+            4,
+            8_704,
+            None,
+        );
+        assert_eq!(degraded.active_model, None, "degraded → nothing live");
+        assert!(!degraded.ready);
+        assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
+        // regression for the 2026-07-24 Windows repro: the spawn-failure reason
+        // must SURVIVE into the published snapshot — serving/status saying only
+        // null/false while spawn fails every tick is the silent-failure lie.
+        assert_eq!(
+            degraded.degraded_reason.as_deref(),
+            Some("x"),
+            "degraded reason must reach the snapshot"
+        );
+        assert_eq!(
+            windowless.degraded_reason, None,
+            "a windowless-ready snapshot is not degraded — no reason claimed"
+        );
     }
 
     // what this catches: the snapshot describes the ENGINE, not the plan. Regression for
@@ -7703,30 +7727,6 @@ mod tests {
             attribute_serving(20 * GB, snap.lanes, snap.host_prompt_cache_mib),
             20 * GB + 14_396 * 1024 * 1024,
             "the board credits the grant the engine holds"
-        );
-
-        let degraded = snapshot_from_outcome(
-            &EnsureOutcome::Degraded { reason: "x".into() },
-            "coder-14b",
-            &genes,
-            11008,
-            4,
-            None,
-        );
-        assert_eq!(degraded.active_model, None, "degraded → nothing live");
-        assert!(!degraded.ready);
-        assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
-        // regression for the 2026-07-24 Windows repro: the spawn-failure reason
-        // must SURVIVE into the published snapshot — serving/status saying only
-        // null/false while spawn fails every tick is the silent-failure lie.
-        assert_eq!(
-            degraded.degraded_reason.as_deref(),
-            Some("x"),
-            "degraded reason must reach the snapshot"
-        );
-        assert_eq!(
-            windowless.degraded_reason, None,
-            "a windowless-ready snapshot is not degraded — no reason claimed"
         );
     }
 
@@ -8771,17 +8771,17 @@ mod tests {
                 verified: None,
             },
         );
-        let resolve = serving_footprint_fn(catalog.clone(), Arc::new(std::sync::Mutex::new(0)));
+        let resolve = serving_footprint_fn(catalog.clone());
 
         // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
         // are the live serving shape; with no weights they resolve to 0 anyway.
         assert_eq!(
-            resolve(id, 8192, 2),
+            resolve(id, 8192, 2, 0),
             0,
             "no weights on disk → nothing to attribute"
         );
         // An id the catalog has never heard of → 0, never a phantom.
-        assert_eq!(resolve("never-registered", 8192, 2), 0);
+        assert_eq!(resolve("never-registered", 8192, 2, 0), 0);
 
         // Land the artifact: real bytes on disk, flips Ready.
         let mut gguf = tempfile::Builder::new()
@@ -8811,21 +8811,34 @@ mod tests {
         let kv_per_token = fp.kv_per_token; // 20_000 raw, ÷ live quant divisor
         let expect = 4096 + 2 * kv_per_token * 8192 + fp.prefill_compute_reserve(8192, 2);
         assert_eq!(
-            resolve(id, 8192, 2),
+            resolve(id, 8192, 2, 0),
             expect,
             "resolves real weights + per-lane KV + prefill compute reserve (peak), no reboot"
         );
         assert_eq!(
-            resolve(id, 8192, 2),
+            resolve(id, 8192, 2, 0),
             fp.peak_resident_bytes(8192, 2),
             "resolver reports peak_resident_bytes — the plan's chosen_cost, not resident-only"
         );
         // A no-window snapshot (nothing served yet) still charges weights + every lane's
         // compute-buffer FLOOR (the reserve exists even before a window is chosen).
         assert_eq!(
-            resolve(id, 0, 2),
+            resolve(id, 0, 2, 0),
             4096 + fp.prefill_compute_reserve(0, 2),
             "no served window → weights + per-lane compute floor",
+        );
+        // The grant the ENGINE was launched with (off the snapshot, beside window and
+        // lanes) is credited on top of the peak — the 2026-09-20 attribution — and only
+        // while lanes are resident (no lanes → nothing to charge a cache to).
+        assert_eq!(
+            resolve(id, 8192, 2, 1_024),
+            fp.peak_resident_bytes(8192, 2) + 1_024 * 1024 * 1024,
+            "the running engine's --cache-ram grant is serving's, not external"
+        );
+        assert_eq!(
+            resolve(id, 8192, 0, 1_024),
+            fp.peak_resident_bytes(8192, 0),
+            "no lanes → no cache charged"
         );
     }
 
