@@ -47,6 +47,14 @@ struct Ledger {
     pulls: AtomicU64,
     /// Of those, the pulls deferred because the roster already held a card per lane.
     pulls_deferred: AtomicU64,
+    /// THE HOUR'S LANES, not the tick's (Cormac's condition on #4244): the most lanes the
+    /// node served at any fold point this window. The lane-bound rest is destructive and
+    /// now rests the whole overage in one tick, so it must not stand on a point sample —
+    /// a launch between lanes at the tick reads 1 and would rest fourteen of sixteen. Max
+    /// is the right fold for a destructive act: a lane truly lost rests one hour later; a
+    /// lane momentarily absent rests nobody. Folded at the geometry settle and at every
+    /// lane grant, read and reset by the tick.
+    lanes_max: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -58,7 +66,14 @@ static LEDGER: Ledger = Ledger {
     credits_settled: AtomicU64::new(0),
     pulls: AtomicU64::new(0),
     pulls_deferred: AtomicU64::new(0),
+    lanes_max: AtomicU64::new(0),
 };
+/// The node served `lanes` lanes just now — fold into the hour's maximum (see
+/// `Ledger::lanes_max`). Called at the serving daemon's geometry settle and at every
+/// lane grant, so the hour's lanes are the lanes the hour actually served.
+pub fn note_lanes(lanes: u64) {
+    LEDGER.lanes_max.fetch_max(lanes, Ordering::Relaxed);
+}
 /// A card pull was decided (the `bench.round.pull_*` seams). `deferred` = the lanes
 /// were full, so she watched the board instead — the lane-bound signal.
 pub fn note_pull(deferred: bool) {
@@ -78,6 +93,7 @@ pub fn note_act(wrote: bool) {
 /// A lane was granted to a mind (the `delib.gate.lane_acquired` seam).
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
+    note_lanes(crate::inference::llama_server::current_serving().lanes as u64);
 }
 /// Per-mind lane grants this hour — the placement chooser's and the lane-bound
 /// page-out's "least served" order. One per-mind ledger ([`MindHour`]), not two.
@@ -237,7 +253,12 @@ pub fn note_credit_settled() {
 pub struct CitizenHealth {
     pub window_secs: u64,
     pub resident: u64,
+    /// The HOUR's lanes: the most the node served at any fold point this window (never
+    /// less than the tick's own sample). The rest and the verdict stand on this.
     pub lanes: u64,
+    /// The tick's own sample, for the line — `lanes 3 (max this hour; 1 now)` tells a
+    /// reader the launch was between lanes at the tick.
+    pub lanes_now: u64,
     pub served_window: u64,
     pub acts: u64,
     pub writes: u64,
@@ -390,11 +411,16 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             "SLOW: {writes} writes for {resident} residents — below one write per {RESIDENTS_PER_WRITE_HOUR} minds an hour"
         ),
     };
+    let lanes = if h.lanes_now < h.lanes {
+        format!("{} (max this hour; {} now)", h.lanes, h.lanes_now)
+    } else {
+        h.lanes.to_string()
+    };
     format!(
         "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled — {}",
         h.window_secs / 60,
         h.resident,
-        h.lanes,
+        lanes,
         h.served_window / 1000,
         h.acts,
         h.writes,
@@ -519,11 +545,16 @@ impl CitizenHealthModule {
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
         let serving = crate::inference::llama_server::current_serving();
+        let lanes_now = serving.lanes as u64;
+        // The hour's lanes: the window's max folded with this tick's sample, then the
+        // window starts again from what is served now.
+        let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
         let (rounds_working, standing_enabled) = round_supply();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
-            lanes: serving.lanes as u64,
+            lanes,
+            lanes_now,
             served_window: serving.served_context_window as u64,
             acts,
             writes,
@@ -656,7 +687,8 @@ impl ServiceModule for CitizenHealthModule {
                     resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                         .map(|r| r.live_personas().len() as u64)
                         .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents
-                    lanes: crate::inference::llama_server::current_serving().lanes as u64,
+                    lanes: LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64),
+                    lanes_now: crate::inference::llama_server::current_serving().lanes as u64,
                     served_window: crate::inference::llama_server::current_serving().served_context_window as u64,
                     acts: LEDGER.acts.load(Ordering::Relaxed),
                     writes: LEDGER.writes.load(Ordering::Relaxed),
@@ -732,7 +764,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
@@ -882,6 +914,12 @@ mod tests {
         assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "2 on 1 is the edge, nobody rests");
         let three_on_one = CitizenHealth { resident: 3, ..one_lane.clone() };
         assert_eq!(lane_bound_seats(&three_on_one, &verdict(&three_on_one), &roster).len(), 1, "3 on 1 is one over");
+        // THE HOUR'S LANES, NOT THE TICK'S (Cormac's condition): a tick that samples the
+        // launch between lanes reads 1; the hour served 3. The rest stands on 3 — 8 minds
+        // rest to the edge of 6 (two), not to the floor of 2 (six) — and the line says so.
+        let between = CitizenHealth { resident: 8, lanes: 3, lanes_now: 1, knee: Some(3), ..m5.clone() };
+        assert_eq!(lane_bound_seats(&between, &verdict(&between), &roster).len(), 2, "the edge of the hour's 3 lanes, not the tick's 1");
+        assert!(line(&between, &verdict(&between)).contains("lanes 3 (max this hour; 1 now)"));
         assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
     }
 
