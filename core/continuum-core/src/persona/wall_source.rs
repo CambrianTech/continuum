@@ -76,7 +76,7 @@ use crate::persona::rag_budget::{
 /// resolving to a different source. Retiring an id and minting a fresh one has
 /// no such window: `room-board` now names nothing, and nothing that reads it
 /// gets a wrong answer instead of no answer.
-const SOURCE_ID: &str = "room-wall";
+pub(crate) const SOURCE_ID: &str = "room-wall";
 
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay

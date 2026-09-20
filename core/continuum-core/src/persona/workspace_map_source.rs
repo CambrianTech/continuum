@@ -56,7 +56,7 @@ use crate::persona::rag_budget::{
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[workspace-map]` grounding block (header is the source id verbatim, same as
 /// `room-roster` / `room-doctrine` in the brain path).
-const SOURCE_ID: &str = "workspace-map";
+pub(crate) const SOURCE_ID: &str = "workspace-map";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private

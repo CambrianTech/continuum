@@ -43,7 +43,7 @@ use crate::persona::rag_budget::{
 use crate::runtime::ready_buffer::ReadyBuffer;
 
 /// Source identifier — used by budget presets, telemetry, cursor scope checks.
-const SOURCE_ID: &str = "airc";
+pub(crate) const SOURCE_ID: &str = "airc";
 
 /// Default newest-events fetch cap when building a digest on demand (mirrors the
 /// region's). The recipe-defined grounding window slices within this.

@@ -25,7 +25,7 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 use crate::media::{Percept, PerceptionBuffer};
 use crate::runtime::SharedCompute;
 
-const SOURCE_ID: &str = "media-perception";
+pub(crate) const SOURCE_ID: &str = "media-perception";
 
 /// A persona's live-call visual perception, delivered as budgeted RAG grounding.
 pub struct MediaPerceptionSource {
