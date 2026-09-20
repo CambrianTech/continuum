@@ -3554,7 +3554,9 @@ impl LlamaServerControl for LlamaServerProcess {
         // `--cache-type-k` values where it gives them, the backend table otherwise —
         // and the plan's divisor comes off the SAME struct, so the flag and the fit
         // math cannot disagree. The env keys are an operator OVERRIDE, honored and
-        // named in the receipt.
+        // named in the receipt. (The CPU arm decides f16 pending a MEASUREMENT of the
+        // dequant cost against that box's ~25 tok/s prefill — see the module header;
+        // the override is how that number gets made.)
         let kv_plan = crate::cognition::kv_cache_plan::resolve();
         let kv_cache_type = kv_plan.launcher_cache_type().map(|s| s.to_string());
         let flash_attn = kv_plan.flash_attn;

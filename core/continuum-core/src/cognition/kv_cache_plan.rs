@@ -38,15 +38,19 @@
 //!
 //! | backend | cache type | flash attention | divisor |
 //! |---|---|---|---|
-//! | metal, cuda, **cpu** | `q8_0` | on | 2 |
-//! | rocm, vulkan, directml, unknown | `f16` | off | 1 |
+//! | metal, cuda | `q8_0` | on | 2 |
+//! | cpu, rocm, vulkan, directml, unknown | `f16` | off | 1 |
 //!
-//! CPU is in the quantized column deliberately. llama.cpp's quantized-KV path is not
-//! GPU-only, and the third box in this fleet — Cormac's IntelMac, which serves on the
-//! CPU by plan (#3729, `--n-gpu-layers 0`) — was ALSO running the f16 default with no
-//! key in its `config.env`: a 1.5B at `-c 32768 --parallel 1` on ~15 GB usable, i.e.
-//! half of the 1 × 64k (or 2 × 32k) it affords. Leaving the weakest box in the fleet
-//! at half capacity is the exact opposite of this module's point.
+//! **The CPU arm is f16 pending a MEASUREMENT, not because the CPU backend is
+//! incapable.** llama.cpp's quantized-KV path is not GPU-only and the capacity case is
+//! real — Cormac's IntelMac, which serves on the CPU by plan (#3729,
+//! `--n-gpu-layers 0`), had no key in its `config.env` either and would go 1 × 32k →
+//! 1 × 64k on ~15 GB usable. But capacity is not the only axis. Quantized KV costs
+//! dequantization work on every read, and that box's bottleneck is ALREADY prefill
+//! throughput at ~25 tok/s — so a bigger window at a lower speed can be a net LOSS
+//! there, and nobody has measured it (Cormac's review of #4285). The override is how
+//! that number gets produced: he runs q8_0 on the hour, and the measurement — not a
+//! preference — is what may later flip this arm.
 //!
 //! Quantized KV **requires** fused attention — llama.cpp's quantized-KV kernels ride
 //! the flash-attention path. So the two are ONE choice ([`KvCachePlan`]), never two
@@ -135,18 +139,25 @@ impl ServingBackend {
     /// THE FALLBACK TABLE — used only when the engine did not advertise its own
     /// `--cache-type-k` values (see [`parse_engine_kv_support`]).
     ///
-    /// Metal, CUDA and **CPU** ship llama.cpp's quantized-KV kernels and the fused
-    /// attention path they ride on. CPU is in this list on purpose: the IntelMac serves
-    /// on the CPU by plan and was running the f16 default at half its KV budget
-    /// (2026-09-20, Cormac) — a fallback table that excluded it would have left the
-    /// weakest box in the fleet exactly where the defect found it.
+    /// Metal and CUDA ship llama.cpp's quantized-KV kernels and the fused attention
+    /// path they ride on, and both are MEASURED here (the M5 has run q8_0 + flash-attn
+    /// in production; the 5090 is the same kernel family).
+    ///
+    /// **CPU is deliberately NOT in this list — and not because it cannot.** The CPU
+    /// backend does quantized KV. The reason is the OTHER axis: dequantization costs
+    /// work on every KV read, and the one CPU-serving box in this fleet (the IntelMac,
+    /// #3729) is already bottlenecked on prefill at ~25 tok/s. A doubled window bought
+    /// at a lower token rate can be a net loss there, and NOBODY HAS MEASURED IT
+    /// (Cormac's condition on #4285). So the default stays f16 and the operator
+    /// override stays the way the measurement gets made — run q8_0 on that box for an
+    /// hour, get the number, and THEN flip this arm on evidence. Do not "fix" this
+    /// back without the number ([[verify-real-device-numbers-not-a-clamp-premise]]).
     ///
     /// rocm / vulkan / directml builds vary in whether they ship those kernels at all,
-    /// so they stay f16 until the engine says otherwise or someone measures them
-    /// (`[[verify-real-device-numbers-not-a-clamp-premise]]`). `Unknown` means no
-    /// backend fact ever reached this process: that is not a licence to guess.
+    /// so they stay f16 until the engine says otherwise or someone measures them.
+    /// `Unknown` means no backend fact ever reached this process: not a licence to guess.
     pub fn supports_quantized_kv(self) -> bool {
-        matches!(self, Self::Metal | Self::Cuda | Self::Cpu)
+        matches!(self, Self::Metal | Self::Cuda)
     }
 }
 
@@ -288,7 +299,7 @@ pub fn engine_quantized_kv_support() -> Option<bool> {
 /// be a stale guess about someone else's build, whereas `--help` is that build speaking.
 /// `engine_support: None` = it did not say, so the table decides.
 pub fn decide_with_engine(backend: ServingBackend, engine_support: Option<bool>) -> KvCachePlan {
-    let quantized = engine_support.unwrap_or_else(|| backend.supports_quantized_kv());
+    let quantized = engine_support.unwrap_or_else(|| backend.supports_quantized_kv()); // unwrap_or_else: None = the engine did not say, and the backend table is the DECIDED answer for that case, not a stand-in for a missing reading
     let cache_type = if quantized { Q8_0 } else { F16 };
     KvCachePlan {
         cache_type: cache_type.to_string(),
@@ -339,8 +350,8 @@ pub fn resolve_from(
         .filter(|s| !s.is_empty())
         .map(|s| flash_flag(&s));
 
-    let cache_type = ct_override.unwrap_or_else(|| decided.cache_type.clone());
-    let flash_attn = fa_override.unwrap_or_else(|| is_quantized(&cache_type));
+    let cache_type = ct_override.unwrap_or_else(|| decided.cache_type.clone()); // unwrap_or_else: no operator key = the substrate's decision applies — that IS the rule, not a default for an unknown
+    let flash_attn = fa_override.unwrap_or_else(|| is_quantized(&cache_type)); // unwrap_or_else: no flash key = the resolved cache type decides, because quantized KV REQUIRES the fused path
     let source = if cache_type == decided.cache_type && flash_attn == decided.flash_attn {
         KvPlanSource::Decided
     } else {
@@ -386,7 +397,7 @@ fn host_backend(placement_cfg: Option<&str>) -> ServingBackend {
     {
         return ServingBackend::Cpu;
     }
-    HOST_BACKEND.get().copied().unwrap_or(ServingBackend::Unknown)
+    HOST_BACKEND.get().copied().unwrap_or(ServingBackend::Unknown) // unwrap_or: unrecorded is its OWN named state (Unknown → f16, the pre-existing default), never a guessed backend
 }
 
 /// THE ONE RESOLVED VALUE both consumers read — the launcher's flags and the plan's
@@ -464,20 +475,30 @@ mod tests {
         assert_eq!(with_keys, decided);
     }
 
-    // what this catches: the THIRD box. Cormac's IntelMac serves on the CPU by plan
-    // (`--n-gpu-layers 0`, a 1.5B at -c 32768 --parallel 1 on ~15 GB usable) and had no
-    // key in its config.env either — so it too planned and served at half its KV budget
-    // (2026-09-20). A CPU backend is quantized-capable in llama.cpp; excluding it from
-    // the table would have left the weakest box in the fleet exactly where the defect
-    // found it.
+    // what this catches: someone "fixing" the CPU arm to q8_0 on the capacity argument
+    // alone, without the number. The capacity case is real (Cormac's IntelMac serves on
+    // the CPU by plan, `--n-gpu-layers 0`, a 1.5B at -c 32768 --parallel 1 on ~15 GB
+    // usable, and would go 1 x 32k -> 1 x 64k) — but quantized KV costs dequantization
+    // work on EVERY read and that box is already bottlenecked on prefill at ~25 tok/s,
+    // so a bigger window at a lower token rate can be a net loss. Unmeasured. The
+    // default stays f16 until someone runs the override there and produces the number;
+    // this test is the guard on that, not a claim the CPU backend is incapable.
     #[test]
-    fn a_cpu_by_plan_host_gets_the_same_doubling_as_the_gpu_boxes() {
+    fn the_cpu_arm_stays_f16_until_the_dequant_cost_is_measured() {
         let plan = resolve_from(ServingBackend::Cpu, None, None, None);
-        assert_eq!(plan.cache_type, Q8_0);
-        assert!(plan.flash_attn);
-        assert_eq!(plan.bytes_per_token_divisor, 2);
+        assert_eq!(plan.cache_type, F16, "unmeasured dequant cost vs ~25 tok/s prefill");
+        assert!(!plan.flash_attn);
+        assert_eq!(plan.bytes_per_token_divisor, 1);
+        assert_eq!(plan.launcher_cache_type(), None, "byte-identical to a pre-decision CPU launch");
         assert_eq!(plan.source, KvPlanSource::Decided);
-        assert_eq!(plan.launcher_cache_type(), Some("q8_0"));
+
+        // And the override is the path to the measurement: an operator running q8_0 on
+        // that box for an hour gets it, fused path included, named as an override.
+        let measuring = resolve_from(ServingBackend::Cpu, None, Some("q8_0"), None);
+        assert_eq!(measuring.cache_type, Q8_0);
+        assert!(measuring.flash_attn);
+        assert_eq!(measuring.bytes_per_token_divisor, 2);
+        assert_eq!(measuring.source, KvPlanSource::Override);
     }
 
     // what this catches: a backend whose build may not ship quantized-KV kernels must
@@ -489,6 +510,7 @@ mod tests {
     fn unmeasured_backends_stay_on_f16_and_pass_no_flag() {
         for backend in [
             ServingBackend::Unknown,
+            ServingBackend::Cpu,
             ServingBackend::Vulkan,
             ServingBackend::Rocm,
             ServingBackend::DirectMl,
