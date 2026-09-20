@@ -4876,8 +4876,10 @@ struct PromptCacheDecision {
 /// the unclamped `peak_tokens` only when nothing was ever sent), and never more than the
 /// served window — a cached state cannot exceed the slot it was prefilled in. The largest
 /// states are kept (the worst case must fit); the rest are dormant minds whose states the
-/// cache does not carry. `active == 0` (no lanes known yet) keeps the whole population —
-/// an unknown bound never shrinks the cache to nothing.
+/// cache does not carry. `active == 0` (no bound known) keeps the FLOOR — the smallest
+/// roster that can serve (`MINDLESS_RESIDENT_FLOOR` states) — never the whole population:
+/// an absence is not a number in either direction, and "everything" is exactly the
+/// astronomical want this law exists to delete (Cormac's condition on #4253).
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()
@@ -4888,9 +4890,12 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
         .filter(|t| *t > 0)
         .collect();
     states.sort_unstable_by(|a, b| b.cmp(a));
-    if active > 0 {
-        states.truncate(active);
-    }
+    let keep = if active > 0 {
+        active
+    } else {
+        crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+    };
+    states.truncate(keep);
     states
 }
 
@@ -6024,8 +6029,12 @@ mod tests {
         assert_eq!(states[1], 38_500, "then the largest sent prompts");
         let want: u64 = states.iter().map(|t| 32_888u64 * *t as u64).sum();
         assert!(want < 8 * 1024 * 1024 * 1024, "four states at 32.9 KB/token stay under 8 GiB: {want}");
-        // No lanes known yet (a first launch before the plan settles) keeps the population.
-        assert_eq!(active_cache_states(&population, 67_072, 0).len(), 23);
+        // No bound known (a derivation before any plan) keeps the FLOOR, never everything:
+        // unknown is not "all 23 at their peaks" — that is the want this law deletes.
+        assert_eq!(
+            active_cache_states(&population, 67_072, 0).len(),
+            crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+        );
         // Through the decision: the same population on a 2-lane serve asks for a
         // demand-sized cache, not the whole afford.
         let fp = crate::cognition::serving_plan::ModelFootprint {
