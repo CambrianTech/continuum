@@ -1228,6 +1228,19 @@ pub struct ServingSnapshot {
     /// persisted snapshots (lane-less) readable.
     #[serde(default)]
     pub lanes: u32,
+    /// The host prompt cache (`--cache-ram`, MiB) the running engine was LAUNCHED
+    /// with — a fact about the process, recorded at spawn, never the plan's latest
+    /// derivation. The footprint measurement subtracts it before attributing bytes
+    /// per token and the board credits it to serving; both must charge what the
+    /// ENGINE holds. Measured 2026-09-20 07:52Z on the M5: the daemon re-derived a
+    /// 1-lane target (256 MiB) while the engine still ran 2 lanes on a 14,396 MiB
+    /// grant; the subtraction used the new number, the per-token reading went
+    /// 33k → 262k, the prefill "spike" 2.8 → 16.6 GB, the plan to 1 × 2,048, and
+    /// the record on disk kept it for the next boot. `0` = unknown (an adopted
+    /// endpoint, an older snapshot) — nothing is subtracted or credited.
+    /// `serde(default)` keeps older persisted snapshots readable.
+    #[serde(default)]
+    pub host_prompt_cache_mib: u32,
     /// WHY nothing is serving, when the last reconcile ended Degraded — the
     /// spawn/probe failure reason, verbatim (e.g. a missing llama-server binary
     /// names its path here). `None` on healthy and never-attempted snapshots.
@@ -1316,6 +1329,8 @@ impl ServingSnapshot {
             // Nothing served → no lanes. A `ready` snapshot always carries the
             // real `--parallel` count; 0 is the "no lanes" sentinel.
             lanes: 0,
+            // Nothing served → no grant to charge.
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             // Nothing served → nothing can see.
             vision_ready: false,
@@ -1870,6 +1885,8 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
         served_context_window,
         // One shared lane. A future refinement can read `/props.total_slots`.
         lanes: 1,
+        // An adopted endpoint's cache grant is not ours to know.
+        host_prompt_cache_mib: 0,
         degraded_reason: None,
         // NOT `Some(now)`. This path ADOPTS an endpoint the operator pinned; we
         // have confirmed it answers, not that it has ever delivered a token to
@@ -2050,6 +2067,15 @@ pub trait LlamaServerControl: Send + Sync {
     /// earlier core, not yet spawned by this one, or a fake/remote control that has
     /// no spawn — the default, so fakes stay honest by construction.
     fn mmproj_on_lane(&self) -> Option<bool> {
+        None
+    }
+
+    /// The `--cache-ram` grant (MiB) THIS control's own spawn passed. A FACT about
+    /// the running process, carried on the serving snapshot so the footprint
+    /// measurement and the board charge what the engine holds. `None` = unknown:
+    /// adopted from an earlier core, not yet spawned by this one, or a fake/remote
+    /// control — the default, so fakes stay honest by construction.
+    fn launched_prompt_cache_mib(&self) -> Option<u32> {
         None
     }
 
@@ -2524,6 +2550,11 @@ pub struct LlamaServerProcess {
     /// yet spawned by this core), 1 = no, 2 = yes. A fact about the running process,
     /// read by the serving daemon's sight check — never re-derived from policy.
     mmproj_on_lane: std::sync::atomic::AtomicU8,
+    /// The `--cache-ram` grant (MiB) THIS handle's spawn passed: 0 = unknown (adopted,
+    /// or not yet spawned by this core). The same kind of fact as `mmproj_on_lane`:
+    /// what the running process was given, read by the serving daemon into the
+    /// snapshot — never the plan's latest derivation of what it would give.
+    launched_prompt_cache_mib: std::sync::atomic::AtomicU32,
 }
 
 impl LlamaServerProcess {
@@ -2573,6 +2604,15 @@ impl LlamaServerProcess {
         }
     }
 
+    /// The `--cache-ram` grant THIS handle's spawn passed (MiB); `None` until this
+    /// core has spawned the child (an adopted lane's grant is unknown).
+    pub fn launched_prompt_cache_mib(&self) -> Option<u32> {
+        match self.launched_prompt_cache_mib.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_client(reqwest::Client::new())
     }
@@ -2593,6 +2633,7 @@ impl LlamaServerProcess {
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
             mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
+            launched_prompt_cache_mib: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -2623,6 +2664,7 @@ impl LlamaServerProcess {
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
             mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
+            launched_prompt_cache_mib: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -3061,6 +3103,10 @@ impl LlamaServerControl for LlamaServerProcess {
         LlamaServerProcess::mmproj_on_lane(self)
     }
 
+    fn launched_prompt_cache_mib(&self) -> Option<u32> {
+        LlamaServerProcess::launched_prompt_cache_mib(self)
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         // `/v1/models` reports the id we launched with via `--alias`, so the
         // comparison in `ensure_model_serving` is exact. A connection error
@@ -3491,6 +3537,13 @@ impl LlamaServerControl for LlamaServerProcess {
         // today's decision wants, and the grow-check above relaunches it for that.
         self.mmproj_on_lane
             .store(if mmproj.is_some() { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+        // The same kind of FACT for the host prompt cache: what THIS spawn hands the
+        // engine as `--cache-ram`. The snapshot carries it so the footprint measurement
+        // and the board charge the grant the engine holds — the plan re-derives a target
+        // every tick it changes, and that number moved under a running engine (the M5,
+        // 2026-09-20 07:52Z: 14,396 → 256 MiB with `--parallel 2` still serving).
+        self.launched_prompt_cache_mib
+            .store(target.host_prompt_cache_mib, std::sync::atomic::Ordering::Relaxed);
         match decision {
             MainLaneMmproj::Withhold => crate::probe!(
                 class = "serving.vision.mmproj_withheld",
@@ -5391,6 +5444,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -5408,6 +5462,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -5425,6 +5480,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,

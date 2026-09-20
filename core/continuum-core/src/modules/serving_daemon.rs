@@ -522,10 +522,6 @@ pub struct ServingDaemonModule {
     /// for which tier the RUNNING serve actually loaded. Division rewards credit this
     /// tier, never the bandit's latest (unlaunched) choice — two-speed honesty.
     served_resident: std::sync::Mutex<Option<std::path::PathBuf>>,
-    /// The prompt-cache MiB the CURRENT serve derived and passed to its lane —
-    /// stashed so the governor-tick host-cache lease accounts the SAME number
-    /// (one derivation, two consumers; the compression contract of 1.b).
-    served_prompt_cache_mib: Arc<std::sync::Mutex<u32>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -825,9 +821,6 @@ impl ServingDaemonModule {
             moe_trace_tail: std::sync::Mutex::new(None),
             division: std::sync::Mutex::new(None),
             served_resident: std::sync::Mutex::new(None),
-            served_prompt_cache_mib: Arc::new(std::sync::Mutex::new(
-                crate::inference::lane_args::CACHE_RAM_MIB,
-            )),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -1307,7 +1300,7 @@ impl ServingDaemonModule {
             self.subscribe_serving(),
             self.suppress_sender(),
             self.pin_sender(),
-            serving_footprint_fn(self.catalog.clone(), self.served_prompt_cache_mib.clone()),
+            serving_footprint_fn(self.catalog.clone()),
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own
@@ -1941,14 +1934,14 @@ impl ServingDaemonModule {
                     .kv_at(live.served_context_window)
                     .saturating_mul(live.lanes as u64)
                     .saturating_add(fp.prefill_compute_reserve(live.served_context_window, live.lanes));
-                // The host prompt cache the daemon granted THIS serve (`--cache-ram`):
-                // it fills the same anonymous footprint over the serve's life and is
-                // not per-token cost — subtracted before anything is attributed.
-                let host_cache_bytes = self
-                    .served_prompt_cache_mib
-                    .lock()
-                    .map(|g| (*g as u64) * 1024 * 1024)
-                    .unwrap_or(0); // unwrap_or: a poisoned grant reads as no cache — the reading stays a lower bound only in the other direction, and the probe carries 0 so the poisoning is visible
+                // The host prompt cache the ENGINE was launched with (`--cache-ram`, on
+                // the snapshot as a fact about the process): it fills the same anonymous
+                // footprint over the serve's life and is not per-token cost — subtracted
+                // before anything is attributed. It used to be read from a cell the
+                // target derivation rewrote every tick the plan changed; on 2026-09-20
+                // 07:52Z that cell went 14,396 → 256 MiB under a running 2-lane engine
+                // and the reading here went 33k → 262k B/token, saved to disk.
+                let host_cache_bytes = (live.host_prompt_cache_mib as u64) * 1024 * 1024;
                 let measured = crate::inference::lane_footprint::observe(
                     &active,
                     live.lanes,
@@ -2037,10 +2030,13 @@ impl ServingDaemonModule {
             live.lanes,
             physical,
             system_commit_charge_bytes(),
-            self.served_prompt_cache_mib
-                .lock()
-                .map(|g| *g)
-                .unwrap_or(crate::inference::lane_args::CACHE_RAM_MIB),
+            // The running engine's grant; an adopted lane (unknown, 0) accounts the
+            // declared prior, as the cold-start derivation does.
+            if live.host_prompt_cache_mib > 0 {
+                live.host_prompt_cache_mib
+            } else {
+                crate::inference::lane_args::CACHE_RAM_MIB
+            },
         ) else {
             return;
         };
@@ -2898,9 +2894,6 @@ impl ServingDaemonModule {
             self.system.memory().available_bytes,
             self.system.gpu_memory_mode(),
         );
-        if let Ok(mut g) = self.served_prompt_cache_mib.lock() {
-            *g = host_prompt_cache_mib;
-        }
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
@@ -3004,6 +2997,37 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
+            // THE LANE COUNT IS THE ENGINE'S TOO. The ensure path asks `/props` for
+            // `total_slots` (2026-08-19: "ask the lane, not our memory of it") and
+            // adopts a running server whose slots meet or EXCEED the target — but the
+            // snapshot then published the TARGET's count. Measured on the M5 2026-09-20
+            // 07:52Z: the plan fell to 1 lane, the 2-slot engine was adopted, and the
+            // snapshot said `lanes: 1` — the footprint measurement halved its divisor
+            // (per-token 162k → 262k), the ambient budget (lanes − 1) went to zero, the
+            // health line said "1 now", the roster bound read one warm slot. Same
+            // policy as the window above: the process's own truth, the target's count
+            // only when the engine names none.
+            let served_lanes = match &outcome {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    match server.served_lanes().await {
+                        Ok(n) => published_lanes(Some(n), target.lanes),
+                        Err(e) => {
+                            crate::probe!(
+                                class = "serving.reconcile",
+                                desired = desired.as_str(),
+                                error = %e,
+                                target_lanes = target.lanes as u64,
+                                "server ready but /props total_slots unreadable — publishing \
+                                 the target's lane count until the next tick reads the engine's",
+                            );
+                            published_lanes(None, target.lanes)
+                        }
+                    }
+                }
+                EnsureOutcome::Degraded { .. } => 0,
+            };
+            // The grant the engine was LAUNCHED with, off the control (0 = adopted, unknown).
+            let launched_cache_mib = server.launched_prompt_cache_mib().unwrap_or(0);
             // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
             // vision endpoint. First the MAIN lane — the row's declared Vision, the
             // resolved mmproj, and the server's own `/props modalities` must all
@@ -3194,7 +3218,8 @@ impl ServingDaemonModule {
                 &desired,
                 &desired_adapter_paths,
                 served_window,
-                target.lanes,
+                served_lanes,
+                launched_cache_mib,
                 vision,
             );
             crate::probe!(
@@ -4620,9 +4645,13 @@ pub fn perf_cores() -> u32 {
 /// plan read 18 GB usable and one lane at 2,048 tokens on a box serving two at 64k. The
 /// same shape as the KV term (#79) and the compute reserve (G5): a cost we own, filed as
 /// someone else's. `attribute_serving` is the pure sum; nothing resident charges nothing.
-fn serving_footprint_fn(catalog: Arc<ModelCatalog>, granted_cache_mib: Arc<std::sync::Mutex<u32>>) -> FootprintFn {
-    Arc::new(move |id: &str, served_window: u32, lanes: u32| {
-        let grant_mib = granted_cache_mib.lock().map(|g| *g).unwrap_or(0); // unwrap_or: a poisoned grant charges no cache — the board under-attributes, never over
+///
+/// The grant is the one on the SNAPSHOT — what the engine was launched with — handed in
+/// by the consumer beside the window and lanes it reads from the same snapshot. The first
+/// cut read a daemon cell the target derivation rewrote; that cell moved under a running
+/// engine (2026-09-20 07:52Z) and the board credited a grant no process held.
+fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+    Arc::new(move |id: &str, served_window: u32, lanes: u32, grant_mib: u32| {
         catalog
             .snapshot()
             .get(id)
@@ -5573,12 +5602,25 @@ fn wedge_heal_floor(
 /// persona from ever binding a broken prompt budget: it would rather see the gap
 /// (and the next tick re-reads `/props` via `AlreadyServing` → self-heals) than
 /// budget against a zero window.
+/// PURE: the lane count a ready snapshot publishes — the engine's `/props total_slots`
+/// when it names one, else what was asked of it. An engine adopted with MORE slots than
+/// the plan wants (a down-plan is the daemon's sticky choice; only growth relaunches)
+/// still serves every slot it has: that is the residency the board charges and the
+/// ambient budget the citizens get.
+pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
+    served.filter(|n| *n > 0).unwrap_or(target_lanes)
+}
+
 fn snapshot_from_outcome(
     outcome: &EnsureOutcome,
     desired: &str,
     adapters: &[String],
     served_context_window: u32,
     lanes: u32,
+    // The `--cache-ram` the running engine was launched with (a fact off the control;
+    // 0 = unknown). Rides the snapshot so the measurement and the board charge the
+    // engine's grant, never the plan's latest derivation.
+    host_prompt_cache_mib: u32,
     // The VERIFIED vision endpoint on this node, if any (#106): the main lane
     // itself when its model sees, or the sidecar lane. `Some` ⇒ its `/props`
     // confirmed sight; the snapshot's `vision_ready`/`vision_base_url`/
@@ -5623,6 +5665,7 @@ fn snapshot_from_outcome(
                 // authority's footprint(), a grid allocator) charge total resident
                 // KV as `lanes × kv_at(served_context_window)` (#79).
                 lanes,
+                host_prompt_cache_mib,
                 degraded_reason: None,
                 // The reconcile's verified multimodal verdict (#106): the ONE
                 // `vision` value projects all three fields, so readiness and
@@ -7501,6 +7544,7 @@ mod tests {
             &genes,
             11008,
             4,
+            8_704,
             Some(crate::inference::vision_sidecar::SidecarLane {
                 base_url: "http://127.0.0.1:58091/v1".to_string(),
                 model_id: "vl-7b".to_string(),
@@ -7521,6 +7565,10 @@ mod tests {
             up.lanes, 4,
             "ready snapshot carries the --parallel lane count for total-KV accounting"
         );
+        assert_eq!(
+            up.host_prompt_cache_mib, 8_704,
+            "ready snapshot carries the grant the engine was launched with"
+        );
         assert!(
             up.vision_ready,
             "the reconcile's verified multimodal verdict must survive into the snapshot \
@@ -7540,6 +7588,7 @@ mod tests {
             &genes,
             11008,
             4,
+            0,
             None,
         );
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
@@ -7563,6 +7612,7 @@ mod tests {
             &genes,
             0,
             4,
+            8_704,
             None,
         );
         assert_eq!(
@@ -7572,6 +7622,38 @@ mod tests {
         assert!(!windowless.ready);
         assert_eq!(windowless.served_context_window, 0);
         assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
+        assert_eq!(windowless.host_prompt_cache_mib, 0, "nothing live → no grant to charge");
+    }
+
+    // what this catches: the snapshot describes the ENGINE, not the plan. Regression for
+    // the M5 at 2026-09-20 07:52Z — the plan fell to 1 lane, the 2-slot engine was adopted
+    // (slots ≥ target never relaunch), and the snapshot published the target's count while
+    // the footprint measurement, the ambient budget and the roster bound all read it as the
+    // engine's. A 2-slot engine under a 1-lane target publishes 2; an engine that names no
+    // slot count falls back to the target's; and the grant rides the snapshot from the
+    // launch, so a target re-derived under a running engine cannot move the number the
+    // measurement subtracts.
+    #[test]
+    fn the_snapshot_reports_the_engines_lanes_and_grant_not_the_plans() {
+        assert_eq!(published_lanes(Some(2), 1), 2, "the engine's slots, not the plan's");
+        assert_eq!(published_lanes(Some(0), 1), 1, "no slot count named → the target's");
+        assert_eq!(published_lanes(None, 3), 3, "unreadable → the target's");
+        let snap = snapshot_from_outcome(
+            &EnsureOutcome::AlreadyServing,
+            "qwen-27b",
+            &[],
+            67_072,
+            published_lanes(Some(2), 1),
+            14_396,
+            None,
+        );
+        assert_eq!(snap.lanes, 2);
+        assert_eq!(snap.host_prompt_cache_mib, 14_396);
+        assert_eq!(
+            attribute_serving(20 * GB, snap.lanes, snap.host_prompt_cache_mib),
+            20 * GB + 14_396 * 1024 * 1024,
+            "the board credits the grant the engine holds"
+        );
 
         let degraded = snapshot_from_outcome(
             &EnsureOutcome::Degraded { reason: "x".into() },
@@ -7816,6 +7898,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -8071,6 +8154,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -8515,6 +8599,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
