@@ -35,23 +35,23 @@ use serde::{Deserialize, Serialize};
 use crate::runtime::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
-pub const ACTUATION_FILE: &str = "deploy-actuation.json";
+pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
 /// The actuator's stdout/stderr for the spawned consumer: `<root>/logs/<this>`.
-pub const ACTUATION_LOG: &str = "deploy-actuate.log";
+pub(crate) const ACTUATION_LOG: &str = "deploy-actuate.log";
 /// The operator switch. `off` (also `0` / `false`) = never act on this node. Read as a
 /// switch only — there is no other value and no tuning here.
-pub const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
+pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
-pub const CONSUMER_VERB: &str = "deploy-consume";
+pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
 /// Actuations per request before the actuator stops and lets `deploy.stranded` speak.
 /// Mirrors the consumer's own per-tip bound: one for a transient, one to confirm, no
 /// third of a rebuild loop.
-pub const ACTUATE_MAX_ATTEMPTS: u32 = 3;
+pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
 /// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
 /// minutes). Firing it on demand is how the core actuates without becoming the parent of
 /// a process that will stop the core.
 #[cfg(windows)]
-pub const DEPLOY_TASK: &str = "ContinuumDeploy";
+pub(crate) const DEPLOY_TASK: &str = "ContinuumDeploy";
 #[cfg(windows)]
 const TASK_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -59,7 +59,7 @@ const TASK_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20)
 /// action so the next tick can refuse to act twice on one request and the next boot can
 /// grade the action against the build it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActuationReceipt {
+pub(crate) struct ActuationReceipt {
     /// The tip the request asked for.
     pub tip_sha: String,
     /// Unix ms the consumer was launched.
@@ -88,7 +88,7 @@ pub struct ActuationReceipt {
 
 /// Who else owns deploy on this node. When one is present the actuator does not act.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExternalOwner {
+pub(crate) enum ExternalOwner {
     /// macOS: `~/Library/LaunchAgents/com.continuum.track-canary.plist` — the bash tracker.
     LaunchdTracker(PathBuf),
     /// Linux: `~/.config/systemd/user/continuum-track-canary.timer` — the same tracker.
@@ -98,7 +98,7 @@ pub enum ExternalOwner {
 }
 
 impl ExternalOwner {
-    pub fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &'static str {
         match self {
             ExternalOwner::LaunchdTracker(_) => "launchd track-canary agent",
             ExternalOwner::SystemdTimer(_) => "systemd track-canary timer",
@@ -107,17 +107,17 @@ impl ExternalOwner {
     }
 }
 
-pub fn launchd_tracker_plist(user_home: &Path) -> PathBuf {
+pub(crate) fn launchd_tracker_plist(user_home: &Path) -> PathBuf {
     user_home.join("Library").join("LaunchAgents").join("com.continuum.track-canary.plist")
 }
 
-pub fn systemd_tracker_timer(user_home: &Path) -> PathBuf {
+pub(crate) fn systemd_tracker_timer(user_home: &Path) -> PathBuf {
     user_home.join(".config").join("systemd").join("user").join("continuum-track-canary.timer")
 }
 
 /// The ownership rule, over paths and the switch value — pure enough to assert with a
 /// temp dir. The switch outranks everything; then whichever tracker install is present.
-pub fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<ExternalOwner> {
+pub(crate) fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<ExternalOwner> {
     if switch.is_some_and(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false")) {
         return Some(ExternalOwner::OperatorSwitch);
     }
@@ -134,7 +134,7 @@ pub fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<External
 
 /// What this tick does about a wanted deploy, given the last receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActuateDecision {
+pub(crate) enum ActuateDecision {
     /// Launch the consumer; this is actuation number `attempt` for the request.
     Act { attempt: u32 },
     /// Already launched for this request and the tracker has not called it stranded —
@@ -152,7 +152,7 @@ pub enum ActuateDecision {
 /// grace at least, and 1.5× the last measured request-to-settle time on this tier when
 /// one exists (the Intel Mac deploys in ~70 min; a 20-min bound there would re-launch a
 /// build into a build).
-pub fn reactuation_bound_ms(last_deploy_ms: Option<u64>) -> u64 {
+pub(crate) fn reactuation_bound_ms(last_deploy_ms: Option<u64>) -> u64 {
     last_deploy_ms
         .map(|d| d.saturating_mul(3) / 2)
         .unwrap_or(0) // unwrap_or: no measurement yet = the tracker's grace alone bounds it
@@ -164,7 +164,7 @@ pub fn reactuation_bound_ms(last_deploy_ms: Option<u64>) -> u64 {
 /// request only if it names the same tip AND was spawned no earlier than the request was
 /// written — a request re-recorded after a settle (an operator rolled the box back by
 /// hand) is a NEW request, whatever the last cycle's receipt says.
-pub fn decide_actuation(
+pub(crate) fn decide_actuation(
     prev: Option<&ActuationReceipt>,
     req: &DeployRequest,
     stranded: bool,
@@ -192,7 +192,7 @@ pub fn decide_actuation(
 
 /// What the last actuation produced, judged at boot against the build now running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootOutcome {
+pub(crate) enum BootOutcome {
     /// The running build is the tip the actuation asked for.
     Landed,
     /// A receipt stands and the running build is not its tip — the action did not take,
@@ -203,7 +203,7 @@ pub enum BootOutcome {
 }
 
 impl BootOutcome {
-    pub fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             BootOutcome::Landed => "landed",
             BootOutcome::Stale => "stale",
@@ -213,7 +213,7 @@ impl BootOutcome {
 }
 
 /// Pure: receipt × running sha → outcome.
-pub fn classify_boot(receipt: Option<&ActuationReceipt>, running_sha: &str) -> BootOutcome {
+pub(crate) fn classify_boot(receipt: Option<&ActuationReceipt>, running_sha: &str) -> BootOutcome {
     match receipt {
         None => BootOutcome::Unknown,
         Some(r) if same_commit(&r.tip_sha, running_sha) => BootOutcome::Landed,
@@ -224,7 +224,7 @@ pub fn classify_boot(receipt: Option<&ActuationReceipt>, running_sha: &str) -> B
 /// Everything a spawn needs, resolved before the spawner is asked — so a test can assert
 /// the exact launch without a process.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpawnPlan {
+pub(crate) struct SpawnPlan {
     pub cli: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
@@ -233,7 +233,7 @@ pub struct SpawnPlan {
 
 /// The spawner's answer. `child` is held only for a process THIS core spawned, so the
 /// caller can reap it off the tick (a task run has none).
-pub struct Spawned {
+pub(crate) struct Spawned {
     pub pid: Option<u32>,
     pub mode: String,
     pub child: Option<std::process::Child>,
@@ -241,14 +241,14 @@ pub struct Spawned {
 
 /// The seam between the actuator's bookkeeping and the OS. One real implementation
 /// ([`CliSpawner`]); the recording one is a test fixture.
-pub trait DeploySpawner: Send + Sync {
+pub(crate) trait DeploySpawner: Send + Sync {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String>;
 }
 
 /// The installed CLI, as the core can find it: beside its own executable (a build dir,
 /// a slot that carries both), else the user's `~/.local/bin` copy that every deploy
 /// refreshes and `continuum install` converges, else the name on PATH.
-pub fn locate_cli(user_home: &Path) -> PathBuf {
+pub(crate) fn locate_cli(user_home: &Path) -> PathBuf {
     let name = if cfg!(windows) { "continuum.exe" } else { "continuum" };
     if let Some(sibling) = std::env::current_exe()
         .ok()
@@ -278,7 +278,7 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// The real spawner.
-pub struct CliSpawner;
+pub(crate) struct CliSpawner;
 
 #[cfg(unix)]
 impl DeploySpawner for CliSpawner {
@@ -360,7 +360,7 @@ impl DeploySpawner for CliSpawner {
 
 /// A spawner that records every plan and spawns nothing. The ONE fixture for this seam.
 #[cfg(any(test, feature = "test-fixtures"))]
-pub struct RecordingSpawner {
+pub(crate) struct RecordingSpawner {
     pub plans: parking_lot::Mutex<Vec<SpawnPlan>>,
     /// `Some(pid)` = report a launch with this pid; `None` = fail every spawn.
     pub pid: Option<u32>,
@@ -368,7 +368,7 @@ pub struct RecordingSpawner {
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RecordingSpawner {
-    pub fn new(pid: Option<u32>) -> Self {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
         Self { plans: parking_lot::Mutex::new(Vec::new()), pid }
     }
 }
@@ -385,14 +385,14 @@ impl DeploySpawner for RecordingSpawner {
 }
 
 /// What one call to [`DeployActuator::on_deploy_wanted`] did.
-pub enum ActuateOutcome {
+pub(crate) enum ActuateOutcome {
     Deferred(ExternalOwner),
     Spawned { attempt: u32, pid: Option<u32>, mode: String, child: Option<std::process::Child> },
     SpawnFailed { attempt: u32, error: String },
     Skipped(ActuateDecision),
 }
 
-pub struct DeployActuator {
+pub(crate) struct DeployActuator {
     spawner: Box<dyn DeploySpawner>,
     /// The user's home — where a tracker install lives and where `~/.local/bin` is.
     user_home: PathBuf,
@@ -409,7 +409,7 @@ impl DeployActuator {
     /// The production actuator over `root` (the continuum home). The switch is read from
     /// the process environment (which the core seeds from `config.env` at boot) or from
     /// `config.env` directly.
-    pub fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         let user_home = dirs::home_dir()
             .or_else(|| root.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| root.clone()); // unwrap_or_else: no home at all = look beside the root; no tracker can be installed there, so the actuator acts
@@ -419,7 +419,7 @@ impl DeployActuator {
         Self::with_spawner(user_home, root, switch, Box::new(CliSpawner))
     }
 
-    pub fn with_spawner(
+    pub(crate) fn with_spawner(
         user_home: PathBuf,
         root: PathBuf,
         switch: Option<String>,
@@ -443,7 +443,7 @@ impl DeployActuator {
 
     /// The standing receipt, if any. A malformed file reads as none: the next actuation
     /// overwrites it, and the attempt ladder starts over rather than wedging.
-    pub fn receipt(&self) -> Option<ActuationReceipt> {
+    pub(crate) fn receipt(&self) -> Option<ActuationReceipt> {
         let text = std::fs::read_to_string(self.receipt_path()).ok()?;
         serde_json::from_str(&text).ok()
     }
@@ -462,7 +462,7 @@ impl DeployActuator {
     /// The tracker wants `req` deployed this tick (`stranded` = its reconcile called the
     /// standing request stranded). Defer to an external owner, or decide and act. Sync;
     /// the tracker runs it off its tick.
-    pub fn on_deploy_wanted(&self, req: &DeployRequest, stranded: bool, now_ms: u64) -> ActuateOutcome {
+    pub(crate) fn on_deploy_wanted(&self, req: &DeployRequest, stranded: bool, now_ms: u64) -> ActuateOutcome {
         if let Some(owner) = external_owner(&self.user_home, self.switch.as_deref()) {
             let mut said = self.said_deferred.lock();
             if said.as_deref() != Some(req.tip_sha.as_str()) {
@@ -572,7 +572,7 @@ impl DeployActuator {
 
     /// At boot: did the last actuation produce the build now running? Said once per
     /// boot, recorded on the receipt.
-    pub fn report_boot_outcome(&self, running_sha: &str, now_ms: u64) -> BootOutcome {
+    pub(crate) fn report_boot_outcome(&self, running_sha: &str, now_ms: u64) -> BootOutcome {
         let receipt = self.receipt();
         let outcome = classify_boot(receipt.as_ref(), running_sha);
         crate::probe!(
@@ -595,7 +595,7 @@ impl DeployActuator {
 
     /// The tracker saw the requested tip running: record the measured cost on the receipt
     /// that produced it, so the next cycle's bound is derived from this tier's number.
-    pub fn record_settled(&self, tip_sha: &str, waited_ms: u64) {
+    pub(crate) fn record_settled(&self, tip_sha: &str, waited_ms: u64) {
         if let Some(mut r) = self.receipt() {
             if same_commit(&r.tip_sha, tip_sha) {
                 r.landed_waited_ms = Some(waited_ms);
