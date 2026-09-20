@@ -2442,21 +2442,17 @@ fn read_deploy_request_tip(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The checkout the tracker decides over: `CONTINUUM_TRACK_REPO_DIR`, else the source
-/// root this binary was built from — the same resolution the tracker uses.
+/// The checkout the tracker decides over — THE resolver the tracker itself uses
+/// (`runtime::tracked_checkout`, card 790c6bcb): the recorded `CONTINUUM_TRACK_REPO_DIR`
+/// else the build-time source root, resolved to the DURABLE main checkout of its repo, so
+/// a binary built in a lease worktree deploys from the clone the lease came from.
 fn tracked_repo_dir() -> Result<PathBuf, String> {
-    continuum_core::config_env::read("CONTINUUM_TRACK_REPO_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .map(|p| p.to_path_buf())
-        })
-        .filter(|p| p.join(".git").exists())
-        .ok_or_else(|| {
-            "deploy-consume: no checkout to deploy from (set CONTINUUM_TRACK_REPO_DIR)".to_string()
-        })
+    use continuum_core::runtime::tracked_checkout::{tracked_checkout, TRACK_REPO_DIR_KEY};
+    match tracked_checkout() {
+        Ok(Some(dir)) => Ok(dir),
+        Ok(None) => Err(format!("deploy-consume: no checkout to deploy from (set {TRACK_REPO_DIR_KEY})")),
+        Err(e) => Err(format!("deploy-consume: {e}")),
+    }
 }
 
 fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
@@ -2640,6 +2636,16 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     let repo = tracked_repo_dir().map_err(|e| format!("{e} — `uu install` converges the tracked checkout, from any directory"))?;
     let head = git_in(&repo, &["rev-parse", "--short", "HEAD"])?;
     println!("  core: checkout {} at {head}", repo.display());
+    // RECORD the checkout as the fact every owner reads (card 790c6bcb): the running core
+    // built from this install must track this clone, not the dir it was compiled in. Read
+    // mode records nothing; a converged write records the same value it already reads.
+    if !check {
+        let recorded = continuum_core::config_env::read(continuum_core::runtime::tracked_checkout::TRACK_REPO_DIR_KEY);
+        if recorded.as_deref() != Some(&*repo.to_string_lossy()) {
+            continuum_core::runtime::tracked_checkout::record(&repo)?;
+            println!("  core: recorded {} as the tracked checkout (config.env)", repo.display());
+        }
+    }
     // The handoff path (`reboot --service`) locates its script and registers the
     // checkout from the working directory, as the consumer does before it.
     std::env::set_current_dir(&repo).map_err(|e| format!("install: cannot enter {}: {e}", repo.display()))?;
