@@ -14,8 +14,10 @@
 //!
 //! **Inputs** — what each mind REQUIRES (`LaneRequirement`, a governed size like
 //! memory: declared on the mind, or until that is wired, the untrimmed demand she
-//! assembles, never below [`PERSONA_LANE_MIN_CTX`]), the candidate models'
-//! footprints, and the budget the governor hands serving.
+//! assembles; a mind with no turn yet is `Unknown` and resolves to the largest
+//! requirement on the seat, else the model's own trained window — there is no
+//! constant here, and there must not be: a floor is the next 2048), the candidate
+//! models' footprints, and the budget the governor hands serving.
 //!
 //! **Objective**, in order — (1) every served mind holds her requirement; (2) as
 //! many minds served warmly as fit; (3) the most capable model that satisfies (1)
@@ -39,12 +41,6 @@
 use super::serving_plan::{HostBudget, ModelFootprint, MAX_LANES};
 use uuid::Uuid;
 
-/// The smallest window a persona lane may be allocated — one real coding turn.
-/// 64k: holds the 5090's and the M5's measured median turn (56k) with headroom, a
-/// power of two the KV page geometry keys cleanly. Below this a lane refuses every
-/// turn it is given; it is not a lane.
-pub const PERSONA_LANE_MIN_CTX: u32 = 65_536;
-
 /// Where a requirement came from — carried so a receipt can say whether the mind
 /// declared it, the substrate measured it, or nothing was known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -55,8 +51,9 @@ pub enum RequirementSource {
     /// The untrimmed demand her turns assemble — what she NEEDS, never what a window
     /// let her send.
     MeasuredDemand,
-    /// Nothing known yet: the persona floor.
-    Default,
+    /// No turn measured yet: resolved by the allocator to the largest requirement on
+    /// the seat, else the model's trained window (what fits at one lane).
+    Unknown,
 }
 
 /// What one mind requires of a lane.
@@ -64,21 +61,31 @@ pub enum RequirementSource {
 pub struct LaneRequirement {
     pub persona: Uuid,
     /// Tokens the lane must hold for one of her turns: prompt + completion reserve.
-    pub window: u32,
+    /// `None` = not yet measured (`RequirementSource::Unknown`).
+    pub window: Option<u32>,
     pub source: RequirementSource,
 }
 
 impl LaneRequirement {
-    /// A requirement from the untrimmed demand a mind assembles, with headroom,
-    /// never below the persona floor. The interim source until the declared field
-    /// is wired; the allocator does not distinguish.
+    /// A requirement from the untrimmed demand a mind assembles, with headroom. Zero
+    /// (no turn yet) is `Unknown`, never a number. The interim source until the
+    /// declared field is wired; the allocator does not distinguish.
     pub fn from_demand(persona: Uuid, demand_tokens: u32, headroom: f64) -> Self {
-        let window = ((demand_tokens as f64 * headroom) as u32).max(PERSONA_LANE_MIN_CTX);
-        Self { persona, window, source: if demand_tokens > 0 { RequirementSource::MeasuredDemand } else { RequirementSource::Default } }
+        if demand_tokens == 0 {
+            return Self { persona, window: None, source: RequirementSource::Unknown };
+        }
+        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand }
     }
 
     pub fn declared(persona: Uuid, window: u32) -> Self {
-        Self { persona, window: window.max(PERSONA_LANE_MIN_CTX), source: RequirementSource::Declared }
+        Self { persona, window: Some(window), source: RequirementSource::Declared }
+    }
+
+    /// The window this requirement resolves to: its own, else the largest known on
+    /// the seat, else the most `fp` can hold at `lanes` within `budget` (its trained
+    /// window bounded by the fit) — the honest cold start, not a number.
+    fn resolve(&self, largest_known: Option<u32>, fp: &ModelFootprint, budget: u64, lanes: u32) -> u32 {
+        self.window.or(largest_known).unwrap_or_else(|| fp.window_within(budget, lanes))
     }
 }
 
@@ -117,15 +124,16 @@ fn device_bytes(fp: &ModelFootprint, window: u32, lanes: u32) -> u64 {
 /// requirements smallest-first, and keep adding a mind while the geometry
 /// (lanes = count, window = her requirement, the largest so far) still fits.
 /// Returns (served count, window) or None when not even one fits.
-fn pack(fp: &ModelFootprint, sorted: &[&LaneRequirement], budget: u64, lane_cap: u32) -> Option<(u32, u32)> {
+fn pack(fp: &ModelFootprint, sorted: &[&LaneRequirement], largest_known: Option<u32>, budget: u64, lane_cap: u32) -> Option<(u32, u32)> {
     let mut best: Option<(u32, u32)> = None;
     for (i, req) in sorted.iter().enumerate() {
         let lanes = (i as u32) + 1;
         if lanes > lane_cap {
             break;
         }
-        let window = req.window.min(fp.context_window);
-        if window < req.window {
+        let need = req.resolve(largest_known, fp, budget, lanes);
+        let window = need.min(fp.context_window);
+        if window < need {
             // The model cannot hold this mind's turn at all; nobody after her can be
             // served by it either (sorted ascending).
             break;
@@ -155,13 +163,16 @@ pub fn allocate(
     if requirements.is_empty() {
         return Err(Unallocatable::NoRequirements);
     }
+    // Unknowns resolve to the largest known requirement on the seat (they sort after
+    // it); with nothing known they resolve per candidate to its trained window.
+    let largest_known = requirements.iter().filter_map(|r| r.window).max();
     let mut sorted: Vec<&LaneRequirement> = requirements.iter().collect();
-    sorted.sort_by_key(|r| (r.window, r.persona));
+    sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
     let lane_cap = (requirements.len() as u32).min(budget.perf_cores.max(1)).min(MAX_LANES).max(1);
 
     let mut best: Option<(&ModelFootprint, u32, u32)> = None;
     for fp in candidates {
-        let Some((lanes, window)) = pack(fp, &sorted, budget.usable_bytes, lane_cap) else { continue };
+        let Some((lanes, window)) = pack(fp, &sorted, largest_known, budget.usable_bytes, lane_cap) else { continue };
         let better = match best {
             None => true,
             Some((b, bl, _)) => lanes > bl || (lanes == bl && fp.capability_rank > b.capability_rank),
@@ -173,7 +184,7 @@ pub fn allocate(
     let Some((fp, lanes, window)) = best else {
         return Err(Unallocatable::NothingFitsOneLane {
             budget_bytes: budget.usable_bytes,
-            smallest_requirement: sorted[0].window,
+            smallest_requirement: largest_known.unwrap_or(0), // unwrap_or: nothing measured = 0 in the receipt, "unknown" spelled as the number it is
         });
     };
     let served: Vec<Uuid> = sorted.iter().take(lanes as usize).map(|r| r.persona).collect();
@@ -238,7 +249,6 @@ mod tests {
         assert_eq!((a.lanes, a.window), (2, 70_000));
         assert_eq!(a.served.len(), 2);
         assert!(a.unserved.is_empty());
-        assert!(a.window >= PERSONA_LANE_MIN_CTX);
         assert!(a.device_bytes <= 30 * GB, "{} GB", a.device_bytes / GB);
     }
 
@@ -268,15 +278,25 @@ mod tests {
         assert_eq!((roomy.lanes, roomy.window), (3, 256_000), "with room, all three at the largest requirement");
     }
 
-    // what this catches: a requirement floors at one real coding turn whatever was
-    // measured — a demand of 828 tokens (the 5090's sealed sample) is not a 2k lane.
+    // what this catches: there is NO constant floor (Joel: "you're hard coding
+    // constants again"). A mind with no turn yet is Unknown — it resolves to the
+    // largest requirement on the seat, and with nothing known on the seat to the
+    // model's own trained window, which the budget then bounds at one lane. A
+    // measured demand is the requirement, with headroom, whatever its size.
     #[test]
-    fn a_requirement_never_reads_below_one_real_turn() {
-        let r = LaneRequirement::from_demand(Uuid::new_v4(), 828, 1.25);
-        assert_eq!(r.window, PERSONA_LANE_MIN_CTX);
-        let r = LaneRequirement::from_demand(Uuid::new_v4(), 56_057, 1.25);
-        assert_eq!(r.window, 70_071);
-        assert_eq!(r.source, RequirementSource::MeasuredDemand);
+    fn an_unmeasured_mind_resolves_to_the_seat_or_the_model_never_a_constant() {
+        let unknown = LaneRequirement::from_demand(Uuid::new_v4(), 0, 1.25);
+        assert_eq!((unknown.window, unknown.source), (None, RequirementSource::Unknown));
+        let measured = LaneRequirement::from_demand(Uuid::new_v4(), 56_057, 1.25);
+        assert_eq!(measured.window, Some(70_071));
+        // Beside a measured 70k coder, the unknown takes 70k: two lanes at 70k.
+        let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30)).expect("fits");
+        assert_eq!((a.lanes, a.window), (2, 70_071));
+        // Alone, the unknown takes the model's trained window bounded by one lane's fit:
+        // the 27B in 30 GB holds ~ (30-19) GB / per-token cost — far above any floor.
+        let alone = allocate(&[unknown], &[qwen27b()], &budget(30)).expect("fits");
+        assert_eq!(alone.lanes, 1);
+        assert!(alone.window > 200_000, "the trained window, not a constant: {}", alone.window);
     }
 
     // what this catches: the model is shed before the roster is — a box that cannot
