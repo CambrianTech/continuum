@@ -7966,6 +7966,7 @@ mod tests {
             // dimension of re-home evidence; the lanes dimension has its own test
             // (rehome_evidence_counts_lanes_not_just_per_slot_window).
             lanes: plan_lanes,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -8536,6 +8537,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: plan_window / 4,
             lanes: plan_lanes,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -8568,6 +8570,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: plan_window / 2 + 256,
             lanes: plan_lanes,
+            host_prompt_cache_mib: 0,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
