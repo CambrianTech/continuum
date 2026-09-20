@@ -1282,6 +1282,13 @@ pub fn start_server(
                 // live GPU stats next to cpu+mem — one probe, reused, never a
                 // second `gpu::monitor::detect()`.
                 system_monitor.attach_gpu_monitor(monitor.clone());
+                // The SAME one probe also fixes the host's serving backend for the KV
+                // cache decision (cognition/kv_cache_plan.rs). Recorded here because
+                // this is the only place the substrate asks the device what it is —
+                // and because both consumers of that decision (the launcher's
+                // `--cache-type-k/v` flags and the serving plan's resident-KV divisor)
+                // must read ONE answer, not re-derive it independently.
+                crate::cognition::kv_cache_plan::record_host_backend(monitor.platform());
                 unified_gpu_hint = match monitor.memory_mode() {
                     // UMA (Apple Silicon): VRAM and RAM are ONE physical pool. Registering
                     // a GPU source here would create the second independent ledger that
