@@ -125,31 +125,34 @@ pub fn parse_tip_checks(check_runs_body: &str, workflow_runs_body: Option<&str>)
 
 /// The git+gh source of the deployable tip. Reads the tracked branch's tip SHA (after a
 /// bounded fetch) and its check-state, all through `bounded_command::probe`.
+///
+/// The CHECKOUT is not held here: it is resolved on every read through
+/// [`crate::runtime::tracked_checkout`] (card 790c6bcb — the IntelMac tracked a pruned
+/// lease worktree for 4.5 hours because the dir was resolved once at construction and its
+/// disappearance read as "git fetch absent"). A checkout that is gone is named by path.
 struct GitGhDeploySource {
-    repo_dir: PathBuf,
-    repo: String,
     branch: String,
 }
 
 impl GitGhDeploySource {
-    /// Resolve from config/env: `CONTINUUM_TRACK_REPO_DIR` (the checkout) + the origin
-    /// remote's `owner/name` + `CONTINUUM_TRACK_BRANCH` (default `canary`). `None` when no
-    /// checkout is configured — the module then simply never has a source (degraded, safe).
-    fn from_env() -> Option<Self> {
-        let repo_dir = crate::config_env::read("CONTINUUM_TRACK_REPO_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                // Build-time source root (this node built here): core/continuum-core → repo.
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .ancestors()
-                    .nth(2)
-                    .map(|p| p.to_path_buf())
-            })
-            .filter(|p| p.join(".git").exists())?;
+    /// `CONTINUUM_TRACK_BRANCH` (default `canary`). The checkout and the origin repo are
+    /// read per tick, not here.
+    fn from_env() -> Self {
         let branch = crate::config_env::read("CONTINUUM_TRACK_BRANCH")
             .unwrap_or_else(|| "canary".to_string()); // unwrap_or_else: no branch configured = the canary default
-        let repo = origin_repo(&repo_dir)?;
-        Some(Self { repo_dir, repo, branch })
+        Self { branch }
+    }
+}
+
+/// The checkout to track, resolved NOW, as the tick's source error when there is none.
+fn checkout_now() -> Result<PathBuf, String> {
+    match crate::runtime::tracked_checkout::tracked_checkout() {
+        Ok(Some(dir)) => Ok(dir),
+        Ok(None) => Err(format!(
+            "no checkout configured ({})",
+            crate::runtime::tracked_checkout::TRACK_REPO_DIR_KEY
+        )),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -173,11 +176,14 @@ fn origin_repo(repo_dir: &std::path::Path) -> Option<String> {
 #[async_trait]
 impl DeploySource for GitGhDeploySource {
     async fn tip(&self) -> Result<Option<(String, Checks)>, String> {
-        let dir = self.repo_dir.to_string_lossy().into_owned();
         let branch = self.branch.clone();
-        let repo = self.repo.clone();
         tokio::task::spawn_blocking(move || {
             use crate::system_resources::bounded_command::probe;
+            // The checkout, resolved for THIS tick: gone or not a repo is said by path.
+            let repo_dir = checkout_now()?;
+            let repo = origin_repo(&repo_dir)
+                .ok_or_else(|| format!("checkout {} has no github origin", repo_dir.display()))?;
+            let dir = repo_dir.to_string_lossy().into_owned();
             // Fetch (bounded); a fetch failure is a source outage, not a deploy trigger.
             let fetched = probe("git", &["-C", &dir, "fetch", "-q", "origin", &branch], GIT_TIMEOUT);
             if fetched.stdout_if_ok().is_none() && fetched.outcome() != "ok" {
@@ -264,9 +270,8 @@ fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
 }
 
 pub struct DeployTrackerModule {
-    source: Option<Box<dyn DeploySource>>,
+    source: Box<dyn DeploySource>,
     root: PathBuf,
-    repo_dir: Option<PathBuf>,
     /// The tip last reported as stranded, so a durable condition is said ONCE rather than
     /// every tick — the chatty-floor failure that buries the line it exists to surface.
     stranded_reported: parking_lot::Mutex<Option<String>>,
@@ -274,13 +279,10 @@ pub struct DeployTrackerModule {
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
-        let source = GitGhDeploySource::from_env();
-        let repo_dir = source.as_ref().map(|s| s.repo_dir.clone());
         let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         Self {
-            source: source.map(|s| Box::new(s) as Box<dyn DeploySource>),
+            source: Box::new(GitGhDeploySource::from_env()),
             root,
-            repo_dir,
             stranded_reported: parking_lot::Mutex::new(None),
         }
     }
@@ -293,7 +295,8 @@ impl DeployTrackerModule {
     }
 
     fn tree_dirty(&self) -> bool {
-        let Some(dir) = self.repo_dir.as_ref().map(|p| p.to_string_lossy().into_owned()) else {
+        // The same per-tick resolution the source uses; no checkout = nothing to be dirty.
+        let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
             return false;
         };
         let out = crate::system_resources::bounded_command::probe(
@@ -335,13 +338,10 @@ impl ServiceModule for DeployTrackerModule {
 
     async fn tick(&self) -> Result<(), String> {
         let now = Self::now_ms();
-        let (tip_sha, source_error, checks) = match &self.source {
-            Some(src) => match src.tip().await {
-                Ok(Some((sha, checks))) => (Some(sha), None, checks),
-                Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),
-                Err(e) => (None, Some(e), Checks::Unknown),
-            },
-            None => (None, Some("no checkout configured (CONTINUUM_TRACK_REPO_DIR)".to_string()), Checks::Unknown),
+        let (tip_sha, source_error, checks) = match self.source.tip().await {
+            Ok(Some((sha, checks))) => (Some(sha), None, checks),
+            Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),
+            Err(e) => (None, Some(e), Checks::Unknown),
         };
         let build_in_flight =
             crate::runtime::deploy_claim::in_flight(&self.root, now).blocks();
