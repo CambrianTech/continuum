@@ -4759,12 +4759,28 @@ fn derived_prompt_cache_mib(
     );
     let resident: std::collections::HashSet<uuid::Uuid> =
         live.iter().copied().chain(planned.iter().copied()).collect();
-    let demands: Vec<u32> = crate::cognition::working_set::global()
+    // THE CACHE HOLDS THE ACTIVE ROSTER'S STATES, at most one served window each — not
+    // every seed on disk at its unclamped peak. Measured 2026-09-20 on the M5: 23 seeded
+    // minds × `peak_tokens` of 225k–505k (the whole assembled context, not what a turn
+    // sends) made `want` astronomically large, so every guard below only carved the
+    // afford and the grant was ALWAYS "everything the box can spare": 14,396 MiB at
+    // 2 lanes, 26,806 MiB for a 1 × 2,048 lane at boot, 26,985 MiB on the fresh engine.
+    // The cache filled to it, the box went into swap, the plan shed a lane, and every
+    // deploy went dark with no room for a warm build (cards 7b01ed65, b57b19fd). The
+    // roster bound (#4244/#4245) already says who can take a turn: `lanes × 2`; a mind
+    // beyond it is dormant and re-prefills when a slot wakes it. Sizing the want by that
+    // law makes the grant demand-driven again; the affordability guards stay the net.
+    let population: Vec<(u32, u32)> = crate::cognition::working_set::global()
         .all()
         .into_iter()
         .filter(|(id, _)| resident.contains(id))
-        .map(|(_, d)| d.peak_tokens)
+        .map(|(_, d)| (d.sent_peak, d.peak_tokens))
         .collect();
+    let active = crate::persona::spawner_module::bounded_by_warm_slots(
+        resident.len(),
+        (lanes > 0).then_some(lanes),
+    );
+    let demands = active_cache_states(&population, served_ctx, active);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
         fp,
@@ -4811,6 +4827,8 @@ fn derived_prompt_cache_mib(
             served_ctx = served_ctx as u64,
             lanes = lanes as u64,
             citizens = demands.len() as u64,
+            population = population.len() as u64,
+            active_bound = active as u64,
             physical_bytes = physical_bytes,
             kv_per_token = ?decision.kv_per_token,
             estimated_kv_bytes = ?decision.estimated_kv_bytes,
@@ -4850,6 +4868,35 @@ struct PromptCacheDecision {
     /// floor there; it is the right clamp only where commit ≈ resident, the MoE
     /// mmap'd-expert case the host-cache lease was written for.
     available_bytes: u64,
+}
+
+/// PURE: the prompt STATES the host cache is sized to hold — the law behind the grant.
+/// One state per ACTIVE mind (the roster bound: `lanes × MINDS_PER_LANE_STARVED_ABOVE`,
+/// handed in as `active`), each the largest prompt that mind actually SENT (`sent_peak`;
+/// the unclamped `peak_tokens` only when nothing was ever sent), and never more than the
+/// served window — a cached state cannot exceed the slot it was prefilled in. The largest
+/// states are kept (the worst case must fit); the rest are dormant minds whose states the
+/// cache does not carry. `active == 0` (no bound known) keeps the FLOOR — the smallest
+/// roster that can serve (`MINDLESS_RESIDENT_FLOOR` states) — never the whole population:
+/// an absence is not a number in either direction, and "everything" is exactly the
+/// astronomical want this law exists to delete (Cormac's condition on #4253).
+pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
+    let mut states: Vec<u32> = population
+        .iter()
+        .map(|&(sent_peak, peak_tokens)| {
+            let tokens = if sent_peak > 0 { sent_peak } else { peak_tokens };
+            if served_ctx > 0 { tokens.min(served_ctx) } else { tokens }
+        })
+        .filter(|t| *t > 0)
+        .collect();
+    states.sort_unstable_by(|a, b| b.cmp(a));
+    let keep = if active > 0 {
+        active
+    } else {
+        crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+    };
+    states.truncate(keep);
+    states
 }
 
 /// `planned` is how many personas have a seed on disk — the resume set — independent
@@ -5959,6 +6006,54 @@ mod tests {
         assert!(!ready_edge(1_000, Some(1_000)), "the same stamp is the same launch");
         assert!(ready_edge(1_000, Some(2_000)), "a new stamp is a new launch: settle again");
         assert!(!ready_edge(1_000, None), "not ready: nothing to settle on");
+    }
+
+    // what this catches: the cache is sized to the ACTIVE roster's states at the served
+    // window, never to every seed on disk at its unclamped peak. Regression for the M5
+    // 2026-09-20 (card 7b01ed65): 23 seeded minds × 225k–505k peaks made the want
+    // astronomical, so the grant was always "everything affordable" (26,985 MiB on a
+    // fresh 2 × 67k engine), the cache filled the box into swap, the plan shed a lane and
+    // every deploy went dark. Two lanes → four states of at most the window; the largest
+    // are kept; a mind that never sent falls back to its peak; an unknown bound keeps all.
+    #[test]
+    fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
+        // 23 minds: sent ~30k, unclamped peaks 225k–505k, one that never sent.
+        let mut population: Vec<(u32, u32)> = (0..22).map(|i| (28_000 + i * 500, 225_000 + i * 12_000)).collect();
+        population.push((0, 505_000));
+        let active = crate::persona::spawner_module::bounded_by_warm_slots(population.len(), Some(2));
+        assert_eq!(active, 4, "two lanes seat four active minds");
+        let states = active_cache_states(&population, 67_072, active);
+        assert_eq!(states.len(), 4, "one state per active mind, not one per seed");
+        assert!(states.iter().all(|t| *t <= 67_072), "a state never exceeds the served window: {states:?}");
+        assert_eq!(states[0], 67_072, "the never-sent mind's peak, clamped to the window, is the largest kept");
+        assert_eq!(states[1], 38_500, "then the largest sent prompts");
+        let want: u64 = states.iter().map(|t| 32_888u64 * *t as u64).sum();
+        assert!(want < 8 * 1024 * 1024 * 1024, "four states at 32.9 KB/token stay under 8 GiB: {want}");
+        // No bound known (a derivation before any plan) keeps the FLOOR, never everything:
+        // unknown is not "all 23 at their peaks" — that is the want this law deletes.
+        assert_eq!(
+            active_cache_states(&population, 67_072, 0).len(),
+            crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize
+        );
+        // Through the decision: the same population on a 2-lane serve asks for a
+        // demand-sized cache, not the whole afford.
+        let fp = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "cache-fixture".into(),
+            weights_bytes: 19 * 1024 * 1024 * 1024,
+            kv_per_token: 32_888,
+            context_window: 262_144,
+            capability_rank: 1,
+            fixed_per_lane_bytes: 0,
+        };
+        let physical = 64u64 << 30;
+        let decision = prompt_cache_decision(Some(&fp), &states, 23, 67_072, 2, physical, fp.peak_resident_bytes(67_072, 2), 40u64 << 30);
+        assert_eq!(decision.reason, "resident_demand_kv_estimate");
+        let afford_mib = decision.affordable_bytes.expect("afford") / (1024 * 1024);
+        assert!(
+            (decision.desired_mib as u64) < afford_mib && decision.desired_mib < 9_000,
+            "demand-sized ({} MiB), not the afford ({afford_mib} MiB)",
+            decision.desired_mib
+        );
     }
 
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
