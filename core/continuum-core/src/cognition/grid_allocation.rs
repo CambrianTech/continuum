@@ -137,8 +137,14 @@ pub enum NodeVerdict {
 pub struct NodeAllocation {
     pub node: Uuid,
     pub plan: Option<LanePlan>,
+    /// The highest-priority role the chosen plan holds (the plan was chosen for it).
     pub verdict: NodeVerdict,
-    /// lanes × minds_per_lane when hosting, else 0.
+    /// EVERY role the chosen plan holds, in priority order — one engine at one window
+    /// seats every role whose requirement is at or below it (Cormac's condition on
+    /// #4259: a 27B at 2 × 70k holds coders AND orchestrators; seating coders only left
+    /// its seats open for coders that did not exist while orchestrators went dormant).
+    pub holds: Vec<usize>,
+    /// lanes × minds_per_lane when hosting, else 0. Shared by every role in `holds`.
     pub seats: u32,
 }
 
@@ -173,12 +179,10 @@ impl GridAllocation {
     pub fn seat_of(&self, mind: Uuid) -> Option<Uuid> {
         self.seated.iter().find(|s| s.mind == mind).map(|s| s.node)
     }
+    /// Seats a role can sit in: every node whose plan holds it (shared with the other
+    /// roles that node holds).
     pub fn seats_for(&self, role: usize) -> u32 {
-        self.nodes
-            .iter()
-            .filter(|n| n.verdict == NodeVerdict::Hosts { role })
-            .map(|n| n.seats)
-            .sum()
+        self.nodes.iter().filter(|n| n.holds.contains(&role)).map(|n| n.seats).sum()
     }
     pub fn open_total(&self) -> u32 {
         self.open.iter().map(|o| o.count).sum()
@@ -191,15 +195,23 @@ pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a
     plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.rank())
 }
 
-/// What each node serves: the highest-priority role it can hold, on its best plan for it.
+/// What each node serves: its best plan for the highest-priority role it can hold (so
+/// coders stay on the capability), and every role that plan holds fills its seats.
 fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAllocation {
     for (role, r) in roles.iter().enumerate() {
         if let Some(plan) = best_plan_for(&offer.plans, &r.requirement) {
+            let holds = roles
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| plan.holds(&r.requirement))
+                .map(|(i, _)| i)
+                .collect();
             return NodeAllocation {
                 node: offer.node,
                 seats: plan.lanes.saturating_mul(minds_per_lane),
                 plan: Some(plan.clone()),
                 verdict: NodeVerdict::Hosts { role },
+                holds,
             };
         }
     }
@@ -210,7 +222,7 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAl
         },
         None => NodeVerdict::NothingRunnable,
     };
-    NodeAllocation { node: offer.node, plan: None, verdict, seats: 0 }
+    NodeAllocation { node: offer.node, plan: None, verdict, holds: Vec::new(), seats: 0 }
 }
 
 /// The allocation. Deterministic: nodes in offer order, minds in their given order.
@@ -225,10 +237,12 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let mut seated = Vec::new();
     let mut dormant = Vec::new();
     for role in 0..inputs.roles.len() {
+        // Every node whose chosen plan holds this role — not only the one it was chosen
+        // for: seats are the node's, and roles fill them in priority order.
         let hosts: Vec<usize> = nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.verdict == NodeVerdict::Hosts { role })
+            .filter(|(_, n)| n.holds.contains(&role))
             .map(|(i, _)| i)
             .collect();
         let minds: Vec<&Mind> = inputs.minds.iter().filter(|m| m.role == role).collect();
@@ -261,6 +275,8 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             }
         }
     }
+    // A seat no existing mind of ANY held role fills is open for the highest-priority
+    // role the node holds — the spawner mints what the node is best at.
     let open = nodes
         .iter()
         .zip(free.iter())
@@ -447,6 +463,33 @@ mod tests {
         assert_eq!(none.dormant.len(), 3, "no grid, no seats, every mind dormant");
         let empty = allocate(&inputs(vec![NodeOffer { node: n, plans: vec![] }], vec![]));
         assert_eq!(empty.node(n).unwrap().verdict, NodeVerdict::NothingRunnable);
+    }
+
+    // what this catches (Cormac's condition on #4259): one engine at one window holds every
+    // role at or below it — a 4-seat coder box with 2 coders and 3 orchestrators seats
+    // 2 + 2, leaves 1 orchestrator dormant and NO seat open. Before, it seated the coders,
+    // held 2 seats open for coders that did not exist, and sent 3 orchestrators dormant.
+    #[test]
+    fn a_node_seats_every_role_its_plan_holds_in_priority_order() {
+        let n = Uuid::new_v4();
+        let mut m = minds(0, Some(n), 2);
+        m.extend(minds(1, Some(n), 3));
+        let a = allocate(&inputs(vec![big_box(n)], m));
+        let node = a.node(n).unwrap();
+        assert_eq!(node.verdict, NodeVerdict::Hosts { role: 0 }, "chosen for the coders — capability first");
+        assert_eq!(node.holds, vec![0, 1], "…and it holds orchestrators too");
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 2);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 2);
+        assert_eq!(a.dormant.len(), 1);
+        assert_eq!(a.open_total(), 0, "no seat is open while a mind of a held role waits");
+        // Priority holds under pressure: 5 coders and 3 orchestrators on the same 4 seats
+        // seat 4 coders; every orchestrator waits.
+        let mut m = minds(0, Some(n), 5);
+        m.extend(minds(1, Some(n), 3));
+        let a = allocate(&inputs(vec![big_box(n)], m));
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 4);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 0);
+        assert_eq!(a.dormant.len(), 4);
     }
 
     // what this catches: a homeless mind (fresh identity, home unknown) seats wherever the
