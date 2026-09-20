@@ -862,12 +862,12 @@ mod tests {
             assert!(is_transfer_target(shared), "{shared} is readable from another node");
         }
         for local in [
-            "/Users/joel/.continuum/cache/swe/mirrors/django__django", // what clone_at clones from
+            "/Users/someone/.continuum/cache/swe/mirrors/django__django", // what clone_at clones from
             "/srv/repos/continuum.git",
             "../sibling-clone",
             "./mirror.git",
             "~/.continuum/cache/swe/mirrors/astropy__astropy",
-            "file:///Users/joel/.continuum/cache/swe/mirrors/sympy__sympy",
+            "file:///Users/someone/.continuum/cache/swe/mirrors/sympy__sympy",
             "C:\\repos\\continuum",
             "C:/repos/continuum",
             "mirrors/psf__requests",
