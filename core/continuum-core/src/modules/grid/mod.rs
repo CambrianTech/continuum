@@ -543,22 +543,61 @@ const FLEET_SILENT_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
 /// subscribes at boot), as the operator. No operator online or no org room = the
 /// probe alone carries the transition; never a panic, never a retry loop.
 pub(crate) async fn say_in_org_room(line: &str) {
-    let Some(airc) = crate::persona::operator_peer::operator_airc() else { return };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| crate::modules::persona_instance_manager::resolve_continuum_root()); // JUSTIFIED unwrap_or_else: no cwd = the home, same fallback the operator peer takes
-    let Some(org) = airc_lib::JoinContext::from_cwd(&cwd)
-        .channels
-        .into_iter()
-        .find(|c| c.as_str() != airc_lib::GENERAL_CHANNEL)
-    else {
+    // EVERY leg that can lose the line names itself (card 11b66313): this used to
+    // return silently three ways, and the org room was derived from the core process's
+    // cwd — a supervised core (launchd: ~/.continuum; the Windows S4U task) has no
+    // checkout there, so two nodes judged their hour for weeks and never said it. The
+    // org room is now the tracked checkout's fact (`persona::org_room`), one resolver
+    // shared with the operator peer's project-tree subscription.
+    let Some(airc) = crate::persona::operator_peer::operator_airc() else {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            leg = "no_operator_airc",
+            "the line could not be said in the org room — no operator airc runtime yet"
+        );
         return;
     };
-    let Ok(set) = airc.subscription_set().await else { return };
-    let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.name == org.as_str()) else { return };
+    let org = match crate::persona::org_room::org_channel() {
+        Ok(org) => org,
+        Err(absence) => {
+            crate::probe!(
+                class = "fleet.node.line_not_posted",
+                leg = "no_org_room",
+                why = %absence,
+                "the line could not be said in the org room — no org room names this node"
+            );
+            return;
+        }
+    };
+    let set = match airc.subscription_set().await {
+        Ok(set) => set,
+        Err(e) => {
+            crate::probe!(
+                class = "fleet.node.line_not_posted",
+                leg = "subscriptions_unreadable",
+                org = %org.as_str(),
+                error = %e.to_string(),
+                "the line could not be said in the org room — the subscription set is unreadable"
+            );
+            return;
+        }
+    };
+    let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.name == org.as_str()) else {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            leg = "not_subscribed",
+            org = %org.as_str(),
+            "the line could not be said in the org room — the operator peer is not subscribed to it"
+        );
+        return;
+    };
     if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room.channel.as_uuid(), line).await {
         crate::probe!(
             class = "fleet.node.line_not_posted",
+            leg = "publish",
+            org = %org.as_str(),
             error = %e.to_string(),
-            "the fleet transition could not be said in the org room — the probe stands"
+            "the line could not be said in the org room — the publish failed; the probe stands"
         );
     }
 }

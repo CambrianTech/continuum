@@ -20,6 +20,7 @@ pub mod airc_persona_conversation;
 pub mod airc_runtime;
 pub mod operator_avatar_seed;
 pub mod operator_peer;
+pub mod org_room;
 pub mod command_inbound_pump;
 // `scripted_*` are SYSTEM-level test/replay primitives per
 // [[test-fixtures-are-system-primitives]] — ubiquitous across every
