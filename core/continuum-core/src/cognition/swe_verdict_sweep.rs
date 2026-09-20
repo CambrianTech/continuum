@@ -354,11 +354,52 @@ pub fn should_start_sweep(pending: usize, in_flight: bool) -> bool {
 /// One sweep at a time across ticks and boots.
 pub static SWEEP_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// THE SCAN'S COST PACES THE SCAN (2026-09-20 00:05Z, the M5): `pending()` runs
+/// `owners_of` — a `git status` + `git diff` fan-out — over EVERY staged instance on the
+/// box (335 checkouts under 755 peer workspaces), and the grade module ticks it every
+/// 180 s. Measured: a git child per second, continuously, `lsof` on `citizens/peers` in
+/// 21 of 30 snapshots between the disk scanner's walks — the scan outlasted its own
+/// tick, so it never stopped. Same rule as the scanner (#4239,
+/// [`crate::runtime::daemon::paced_delay`]): a scan that cost T is not repeated sooner
+/// than 20 × T, floored at the tick. Milliseconds on the sweep's own monotonic clock
+/// before which the tick does not scan again; 0 = scan now.
+static SCAN_NEXT_DUE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCAN_CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// The grade module's tick — the floor between two scans.
+pub const SCAN_TICK: std::time::Duration = std::time::Duration::from_secs(180);
+
+fn scan_clock_ms() -> u64 {
+    SCAN_CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// PURE: is a scan due at `now_ms` on the sweep's clock, given the last one set
+/// `next_due_ms`? Always true before any scan.
+pub fn scan_due(now_ms: u64, next_due_ms: u64) -> bool {
+    now_ms >= next_due_ms
+}
+
 /// The tick's entry: start a sweep in its own task when one is due. Returns
-/// whether one was started.
+/// whether one was started. The scan itself (`pending()`) is skipped while its last
+/// cost says it is not due yet — the cost is measured here and sets the next due time.
 pub fn sweep_if_due() -> bool {
     use std::sync::atomic::Ordering;
-    let due = should_start_sweep(pending().len(), SWEEP_IN_FLIGHT.load(Ordering::Relaxed));
+    if !scan_due(scan_clock_ms(), SCAN_NEXT_DUE_MS.load(Ordering::Relaxed)) {
+        return false;
+    }
+    let began = std::time::Instant::now();
+    let (work, skipped_refused) = pending_with_skipped();
+    let took = began.elapsed();
+    let next_in = crate::runtime::daemon::paced_delay(SCAN_TICK, took);
+    SCAN_NEXT_DUE_MS.store(scan_clock_ms().saturating_add(next_in.as_millis() as u64), Ordering::Relaxed);
+    crate::probe!(
+        class = "benchmark.verdict.scan",
+        pending = work.len() as u64,
+        skipped_refused = skipped_refused as u64,
+        scan_ms = took.as_millis() as u64,
+        next_scan_in_s = next_in.as_secs(),
+        "the staged-instance scan ran — its cost sets when it runs again"
+    );
+    let due = should_start_sweep(work.len(), SWEEP_IN_FLIGHT.load(Ordering::Relaxed));
     if !due {
         return false;
     }
@@ -590,4 +631,21 @@ mod tests {
         assert!(refusal_stands_at(None, Some(5), t, t + 1));
         assert!(!refusal_stands_at(Some(5), None, t, t + REFUSAL_TTL_MS + 1));
     }
+    // what this catches (the M5, 2026-09-20 00:05Z): a scan whose cost exceeds its own
+    // tick runs continuously — 335 `git status` fan-outs every 180 s were a git child per
+    // second, forever. The scan is due before any run; after a run that cost T it is not
+    // due again for max(tick, 20 × T); a cheap scan keeps the tick.
+    #[test]
+    fn the_scans_cost_paces_the_next_scan() {
+        use crate::runtime::daemon::paced_delay;
+        assert!(scan_due(0, 0), "never scanned: due");
+        let cheap = paced_delay(SCAN_TICK, std::time::Duration::from_secs(2));
+        assert_eq!(cheap, SCAN_TICK, "a 2 s scan keeps the 180 s tick");
+        let dear = paced_delay(SCAN_TICK, std::time::Duration::from_secs(240));
+        assert_eq!(dear, std::time::Duration::from_secs(4_800), "a 4-minute scan waits 80 minutes");
+        let next = 1_000 + dear.as_millis() as u64;
+        assert!(!scan_due(1_000 + 180_000, next), "one tick later: not due");
+        assert!(scan_due(next, next), "due once its wait has passed");
+    }
+
 }

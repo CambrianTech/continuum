@@ -84,6 +84,21 @@ use crate::clog_warn;
 /// not env.
 pub const DEFAULT_QUARANTINE_LIMIT: u32 = 3;
 
+/// A RECURRING MEASUREMENT'S CADENCE IS BOUNDED BY ITS OWN COST. A periodic walk, scan or
+/// fan-out that costs T is repeated no sooner than `DUTY_DIVISOR` × T later — at most
+/// 1/20 of one core on average — and never sooner than the daemon's own floor. The
+/// measurement stays exact; only its cadence follows its price. Written for the disk
+/// scanner (#4239: a 2.4 M-entry tree walked in 90 s every 300 s) and the verdict sweep
+/// (a `git status` fan-out over 335 checkouts every 180 s, running continuously); one
+/// rule, one place.
+pub const DUTY_DIVISOR: u32 = 20;
+
+/// PURE: how long after work that took `last` the same work runs again — the duty-cycle
+/// bound above, floored at `floor` (the daemon's tick).
+pub fn paced_delay(floor: Duration, last: Duration) -> Duration {
+    floor.max(last.saturating_mul(DUTY_DIVISOR))
+}
+
 /// A long-lived monitor concern. The implementor owns its own state (behind
 /// interior mutability) and a [`DaemonChannel`], and declares: how often to tick,
 /// which channel it publishes on, and how to produce the next snapshot. The

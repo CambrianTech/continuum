@@ -392,17 +392,16 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(300);
 /// forever, growing with every checkout (Joel: "never look up again … eats
 /// CPU like mad"). The 9/4 fix (card 7c956bb4) only moved that walk off the
 /// boot path; nothing bounded it. The bound: a tree is re-walked no sooner
-/// than `SCAN_DUTY_DIVISOR` × the time its last walk took — a walk may cost at
-/// most 1/20 of one core on average — and never sooner than [`SCAN_INTERVAL`].
-/// The measurement stays exact (no sampling, no partial trees); only its
-/// cadence follows its price. A 2 s cargo-target walk keeps the 5 min; the
+/// than [`crate::runtime::daemon::DUTY_DIVISOR`] × the time its last walk took —
+/// a walk may cost at most 1/20 of one core on average — and never sooner than
+/// [`SCAN_INTERVAL`]. The measurement stays exact (no sampling, no partial trees);
+/// only its cadence follows its price. A 2 s cargo-target walk keeps the 5 min; the
 /// 90 s citizens walk moves to 30 min, and the report says so.
-pub const SCAN_DUTY_DIVISOR: u32 = 20;
-
+///
 /// PURE: how long after a walk that took `last_walk` the same tree is walked
-/// again — the duty-cycle bound above, floored at [`SCAN_INTERVAL`].
+/// again — [`crate::runtime::daemon::paced_delay`] floored at [`SCAN_INTERVAL`].
 pub fn next_scan_delay(last_walk: Duration) -> Duration {
-    SCAN_INTERVAL.max(last_walk.saturating_mul(SCAN_DUTY_DIVISOR))
+    crate::runtime::daemon::paced_delay(SCAN_INTERVAL, last_walk)
 }
 
 /// Refreshes every [`TrackedDir`]'s cached size on its own tick, off the
