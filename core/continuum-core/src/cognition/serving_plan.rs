@@ -144,6 +144,13 @@ pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 /// is a complete waste of a lane" — and, on a fixed floor: "you're making rigid laws that
 /// concern me". So the seam holds a comparison, never a constant: `None` requirement (no
 /// prompt ever measured or declared) imposes nothing beyond the engine's runnable floor.
+/// The per-lane floor a typical sent prompt implies: the prompt with headroom, never
+/// under the serve floor. PURE; the one arithmetic behind `typical_prompt_floor` and the
+/// placement rule's requirement.
+pub fn prompt_floor_of(sent_median: u32) -> u32 {
+    ((sent_median as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX)
+}
+
 pub fn persona_lane_holds(served_context_window: u32, requirement: Option<u32>) -> bool {
     match requirement {
         Some(r) => served_context_window >= r,
@@ -289,8 +296,7 @@ impl ServingDemand {
     /// The per-lane floor the residents actually need: their typical sent prompt with
     /// headroom. `None` until a turn has been sent — the bootstrap prior stands then.
     pub fn typical_prompt_floor(&self) -> Option<u32> {
-        self.sent_median
-            .map(|m| ((m as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX))
+        self.sent_median.map(prompt_floor_of)
     }
 
     /// The largest SENT prompt among residents (see `sent_tokens`).
@@ -2087,6 +2093,8 @@ mod tests {
     // runnable floor applies.
     #[test]
     fn a_persona_lane_holds_what_the_residents_require() {
+        assert_eq!(prompt_floor_of(56_057), 70_071, "the one arithmetic behind typical_prompt_floor and the placement rule");
+        assert_eq!(prompt_floor_of(1), MIN_SERVE_CTX, "never under the serve floor");
         let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057));
         let requirement = demand.typical_prompt_floor();
         assert_eq!(requirement, Some(70_071));

@@ -79,7 +79,8 @@ pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 /// The bound "remote" seat is one of THIS node's own ids (card 2500d2f1): she was never
 /// off-box, so she comes home at once — no cooldown, no beacon read — and the durable
 /// record that named the seat is retired so the next boot does not repeat it.
-pub const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
+pub const SEAT_STARVES_REASON: &str = "seat window below her turn: a lane that cannot serve is no seat";
+const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -115,6 +116,10 @@ pub struct PlacementInputs {
     /// every tick (the M5, 2026-09-19 22:3xZ: 15 minds × 60 s into "no free slot: 0
     /// free", 30 wire messages a minute for nothing).
     pub seat_offers_slot: bool,
+    /// The bound seat's per-slot window from its beacon; `None` = unknown.
+    pub seat_window: Option<u32>,
+    /// What HER turn needs of a lane; `None` = unmeasured, the serve floor stands.
+    pub requirement: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +140,18 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
         return match i.seat {
             Seat::Remote if i.local_available => PlacementMove::FallHome { reason: SELF_SEAT_REASON },
             Seat::Remote => PlacementMove::Park { reason: SELF_SEAT_REASON },
+            Seat::Home => PlacementMove::Stay,
+        };
+    }
+    // A SEAT WHOSE WINDOW CANNOT HOLD HER TURN IS NO SEAT: every prompt on it is refused
+    // before the model runs (2026-09-20: `delib.prompt.capacity` 172× an hour on a 2,048-
+    // token seat). She comes home now — no cooldown, this is not a flap between machines,
+    // it is a lane that cannot serve — and she is never returned to it. Unknown width
+    // (an older core's beacon) is not a refusal: an absence is not a number.
+    if i.seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, i.requirement)) {
+        return match i.seat {
+            Seat::Remote if i.local_available => PlacementMove::FallHome { reason: SEAT_STARVES_REASON },
+            Seat::Remote => PlacementMove::Park { reason: SEAT_STARVES_REASON },
             Seat::Home => PlacementMove::Stay,
         };
     }
@@ -579,6 +596,8 @@ pub struct PeerOffer {
     /// with its sample count — unmeasured (0 samples) is never a fast seat.
     pub lane_wait_p50_ms: u64,
     pub lane_wait_samples: u32,
+    /// The seat's per-slot window from its beacon; `None` = unknown (older core).
+    pub served_context_window: Option<u32>,
 }
 
 /// This node's own shape for the chooser.
@@ -591,6 +610,9 @@ pub struct LocalShape {
     pub lanes: u32,
     /// Measured capability of the local served model, or the planner's unmeasured proxy cap.
     pub rank: u8,
+    /// What one of this node's turns needs of a lane (the residents' typical prompt with
+    /// headroom); `None` = no turn measured yet, the serve floor stands.
+    pub requirement: Option<u32>,
 }
 
 /// The pure chooser: which minds move to which peer. `candidates` = minds at Home with
@@ -631,6 +653,10 @@ pub fn choose_offloads(
         if seat_queued(p.lane_wait_p50_ms, p.lane_wait_samples, local.lane_wait_p50_ms) {
             continue;
         }
+        // A seat that cannot hold one of our turns is not capacity, whatever it offers.
+        if p.served_context_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, local.requirement)) {
+            continue;
+        }
         // THE SEAT'S live grant-able count (lanes − in flight − already granted), not
         // `lanes − residents` roster arithmetic every node once evaluated on its own. The
         // grant itself is acquired by the caller before she moves.
@@ -663,6 +689,10 @@ pub async fn follow_the_fleet(
     };
     let mut lines = Vec::new();
     let mut at_home: Vec<(Uuid, u64)> = Vec::new();
+    // What a turn needs of a lane, read once per pass: hers when she has sent one, the
+    // node's typical otherwise (Joel: "find something once and pass it along").
+    let working_set = crate::cognition::working_set::global();
+    let node_median = working_set.sent_median_of(&switches().iter().map(|s| s.persona_id()).collect::<Vec<_>>());
     // Home-bound minds whose seat is fresh and serving but offers no slot this tick —
     // one line per seat per tick, not one refused ask per mind per tick.
     let mut withheld: std::collections::HashMap<Uuid, u32> = std::collections::HashMap::new();
@@ -698,6 +728,11 @@ pub async fn follow_the_fleet(
             home_wait_p50_ms,
             seat_is_self,
             seat_offers_slot: offers.get(&peer).is_some_and(|o| o.free_slots_live > 0),
+            seat_window: offers.get(&peer).and_then(|o| o.served_context_window),
+            requirement: working_set
+                .sent_median_of(&[sw.persona_id()])
+                .or(node_median)
+                .map(crate::cognition::serving_plan::prompt_floor_of),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
         // the same rule with the offer granted, so a cooldown or a queued seat is never
@@ -874,7 +909,7 @@ mod tests {
         // peer_served_ok defaults TRUE here: these cases predate the return-gate service
         // term and assume a serving peer; `a_fresh_but_never_serving_seat_is_not_returned`
         // exercises the false case.
-        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None, seat_is_self: false, seat_offers_slot: true }
+        PlacementInputs { seat, beacon_age_ms: age, lane_cold: cold, local_available: local, since_last_move_ms: since, peer_served_ok: true, seat_wait_p50_ms: None, home_wait_p50_ms: None, seat_is_self: false, seat_offers_slot: true, seat_window: None, requirement: None }
     }
 
     // what this catches (card 2500d2f1, the M5 2026-09-19): a "remote" seat that is one
@@ -956,18 +991,18 @@ mod tests {
         let gpu = Uuid::from_u128(0x5090);
         let rank = |m: &str| -> Option<u8> { match m { "qwen-27b" => Some(42), "tiny" => Some(10), _ => None } };
         let peers = vec![
-            PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000, free_slots_live: 2, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
-            PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000, free_slots_live: 4, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
-            PeerOffer { peer: Uuid::from_u128(2), served_model: Some("qwen-27b".into()), lanes: 2, residents: 2, beacon_age_ms: 5_000, free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
-            PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1, free_slots_live: 8, lane_wait_p50_ms: 0, lane_wait_samples: 0 },
+            PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000, free_slots_live: 2, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
+            PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000, free_slots_live: 4, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
+            PeerOffer { peer: Uuid::from_u128(2), served_model: Some("qwen-27b".into()), lanes: 2, residents: 2, beacon_age_ms: 5_000, free_slots_live: 0, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
+            PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1, free_slots_live: 8, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
         ];
         let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
-        let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds);
+        let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds);
         assert_eq!(moves.len(), 2, "two free lanes on the only eligible peer: {moves:?}");
         assert!(moves.iter().all(|(_, p, m)| *p == gpu && m == "qwen-27b"));
         let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
         assert_eq!(moves[0].0, least, "the least-served mind goes first");
-        assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds).is_empty());
+        assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds).is_empty());
     }
 
     // what this catches: a flapping tower cannot move her twice inside the cooldown, and
@@ -1009,6 +1044,39 @@ mod tests {
     // this node's own is not capacity, whatever its rank — and an unmeasured seat is not
     // read as fast, but is not refused on its history either (its live free count and
     // the grant bound it). Every number is relative to the one bound, not a grid value.
+    // what this catches (2026-09-20 13-14Z, the M5; card beea5a7a): a seat whose beacon
+    // offers free slots at a window that cannot hold her turn — Demetri on the 5090's
+    // 2,048-token seat, 172 refused prompts an hour, two 67k lanes idle at home. A known
+    // narrow seat sends her home NOW (no cooldown: it is not a flap, it cannot serve),
+    // is never returned to, and is never chosen for a spill; an unknown width (an older
+    // core's beacon) changes nothing; a wide seat is capacity as before.
+    #[test]
+    fn a_seat_whose_window_cannot_hold_her_turn_is_no_seat() {
+        let starves = |i: PlacementInputs| PlacementInputs { seat_window: Some(2_048), requirement: Some(70_071), ..i };
+        let wide = |i: PlacementInputs| PlacementInputs { seat_window: Some(131_072), requirement: Some(70_071), ..i };
+        // Remote, fresh, warm, inside cooldown: home now.
+        assert_eq!(decide(starves(inputs(Seat::Remote, Some(1_000), false, true, 0))), PlacementMove::FallHome { reason: SEAT_STARVES_REASON });
+        assert_eq!(decide(starves(inputs(Seat::Remote, Some(1_000), false, false, 0))), PlacementMove::Park { reason: SEAT_STARVES_REASON });
+        assert_eq!(decide(wide(inputs(Seat::Remote, Some(1_000), false, true, 0))), PlacementMove::Stay);
+        assert_eq!(decide(inputs(Seat::Remote, Some(1_000), false, true, 0)), PlacementMove::Stay, "unknown width: not a refusal");
+        // Home, seat fresh + served + offering a slot, cooled: never returned to a narrow seat.
+        assert_eq!(decide(starves(inputs(Seat::Home, Some(1_000), false, true, MOVE_COOLDOWN_MS))), PlacementMove::Stay);
+        assert_eq!(decide(wide(inputs(Seat::Home, Some(1_000), false, true, MOVE_COOLDOWN_MS))), PlacementMove::ReturnRemote);
+        // No requirement measured yet: the serve floor is the bar, and 2k is under it.
+        assert_eq!(decide(PlacementInputs { seat_window: Some(2_048), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }), PlacementMove::FallHome { reason: SEAT_STARVES_REASON });
+        // The chooser: a narrow seat with free slots is passed over for a wide one.
+        let narrow = PeerOffer { served_context_window: Some(2_048), ..offer(1, 2, 0, 0) };
+        let wide_seat = PeerOffer { served_context_window: Some(131_072), ..offer(2, 2, 0, 0) };
+        let unknown = offer(3, 2, 0, 0);
+        let go = |peers: &[PeerOffer]| -> Vec<Uuid> {
+            let shape = LocalShape { requirement: Some(70_071), ..local(8, 2, None) };
+            choose_offloads(shape, peers, &rank27, &minds(1)).into_iter().map(|(_, p, _)| p).collect()
+        };
+        assert!(go(&[narrow.clone()]).is_empty(), "a 2k seat is not capacity for a 70k turn");
+        assert_eq!(go(&[narrow, wide_seat.clone()]), vec![wide_seat.peer]);
+        assert_eq!(go(&[unknown.clone()]), vec![unknown.peer], "unknown width is not a refusal");
+    }
+
     #[test]
     fn a_queued_seat_is_not_capacity_whatever_its_rank() {
         let b = SEAT_QUEUE_BOUND_MS;
