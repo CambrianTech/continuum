@@ -32,7 +32,7 @@ use serde_json::Value;
 
 use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
 use crate::runtime::deploy_tracker::{
-    decide, same_commit, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
+    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
     RequestOutcome, TickInputs,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
@@ -475,21 +475,59 @@ impl ServiceModule for DeployTrackerModule {
                 let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
                     .await
                     .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
-                if let ActuateOutcome::Spawned { child: Some(mut child), pid, .. } = outcome {
-                    // Reap the consumer off the tick and say how it exited — a consumer
-                    // that exits before its reboot stops this core is a receipt worth having
-                    // (NothingOwed, RefuseDirty, a failed build: its log names which).
-                    let tip = tip_sha.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let status = child.wait();
+                // One row says what the ACTION did this tick, so a deploy that was
+                // wanted but not taken is never silent: who owns the node instead, which
+                // attempt was launched and how, or which guard skipped it.
+                match outcome {
+                    ActuateOutcome::Deferred(owner) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "deferred",
+                        tip = tip_sha.as_str(),
+                        owner = owner.name(),
+                        "a deploy is wanted and another owner acts on this node — the core stands down"
+                    ),
+                    ActuateOutcome::SpawnFailed { attempt, error } => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "spawn_failed",
+                        tip = tip_sha.as_str(),
+                        attempt = attempt as u64,
+                        error = error.as_str(),
+                        "the consumer could not be launched — see logs/deploy-actuate.log"
+                    ),
+                    ActuateOutcome::Skipped(decision) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "skipped",
+                        tip = tip_sha.as_str(),
+                        decision = ?decision,
+                        "this request was not actuated again this tick — its own bound or attempt cap decided"
+                    ),
+                    ActuateOutcome::Spawned { attempt, pid, mode, child } => {
                         crate::probe!(
-                            class = "deploy.actuate.consumer_exited",
-                            tip = tip.as_str(),
-                            pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
-                            status = ?status,
-                            "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                            class = "deploy.actuate.decision",
+                            verdict = "spawned",
+                            tip = tip_sha.as_str(),
+                            attempt = attempt as u64,
+                            pid = pid.unwrap_or(0), // unwrap_or: 0 reads as "a scheduler task ran it", which returns no pid
+                            mode = mode.as_str(),
+                            "the consumer was launched detached — this core has handed off its own replacement"
                         );
-                    });
+                        if let Some(mut child) = child {
+                            // Reap the consumer off the tick and say how it exited — a consumer
+                            // that exits before its reboot stops this core is a receipt worth having
+                            // (NothingOwed, RefuseDirty, a failed build: its log names which).
+                            let tip = tip_sha.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let status = child.wait();
+                                crate::probe!(
+                                    class = "deploy.actuate.consumer_exited",
+                                    tip = tip.as_str(),
+                                    pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
+                                    status = ?status,
+                                    "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                                );
+                            });
+                        }
+                    }
                 }
             }
             DeployVerdict::UpToDate => {}
