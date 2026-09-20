@@ -389,9 +389,12 @@ pub fn roles_from(
                     roles[i].requirement.window = requirement.window;
                 }
                 roles[i].requirement.min_capability = roles[i].requirement.min_capability.max(requirement.min_capability);
-                if requirement.decode_floor_tps.is_some() {
-                    roles[i].requirement.decode_floor_tps = requirement.decode_floor_tps;
-                }
+                // The strictest on EVERY axis (Cormac, #4271): a later, laxer decode floor
+                // never loosens the role's.
+                roles[i].requirement.decode_floor_tps = match (roles[i].requirement.decode_floor_tps, requirement.decode_floor_tps) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
             }
             None => {
                 roles.push(Role { name: name.to_string(), requirement });
@@ -976,11 +979,15 @@ mod tests {
             requirement: Some(CitizenRequirement { window_tokens: window, min_capability: 7, decode_floor_tps: Some(10.0) }),
         };
         let helper = CitizenRecipe { role: RoleId::Helper, requirement: None };
-        let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072)], Some(70_071));
+        let lax = CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 8_192, min_capability: 3, decode_floor_tps: Some(5.0) }),
+        };
+        let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
         assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
-        assert_eq!(roles[0].requirement, Requirement { window: 131_072, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared window wins");
+        assert_eq!(roles[0].requirement, Requirement { window: 131_072, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
         assert_eq!(roles[1].requirement, Requirement { window: 70_071, min_capability: 0, decode_floor_tps: None }, "undeclared = the measured typical prompt");
-        assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 2 }, RoleFloor { role: 1, min_seats: 1 }]);
+        assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
         let (roles, _) = roles_from(&[helper], None);
         assert_eq!(roles[0].requirement.window, super::super::serving_plan::MIN_SERVE_CTX, "nothing measured yet = the serve floor");
         assert!(roles_from(&[], Some(1)).0.is_empty());
