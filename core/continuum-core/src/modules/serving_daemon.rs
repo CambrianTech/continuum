@@ -7652,6 +7652,12 @@ mod tests {
             test_catalog(),
             test_pin_store(),
         );
+        // Every harness daemon OWNS its demand pool: a private working set and an empty
+        // leased-in ring. Both are process globals in production and shared by every test
+        // in the binary — one test's samples became another test's requirement (CI,
+        // 2026-09-20, three runs).
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
