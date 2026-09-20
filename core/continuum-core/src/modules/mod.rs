@@ -57,6 +57,7 @@ pub mod gpu;
 pub mod grant_issuance;
 pub mod grid;
 pub mod grid_capacity;
+pub mod grid_allocator;
 pub mod health;
 pub mod hippocampus;
 pub mod inference_coordinator_module;

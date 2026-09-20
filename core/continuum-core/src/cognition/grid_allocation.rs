@@ -140,8 +140,45 @@ impl LanePlan {
     }
 
     /// Objective 2–4: capability, then lanes, then window.
-    fn rank(&self) -> (u8, u32, u32) {
+    pub fn rank(&self) -> (u8, u32, u32) {
         (self.capability_rank, self.lanes, self.window)
+    }
+
+    /// Is this plan STRICTLY better than `other`, and on which axis first — the
+    /// allocator's own order (capability, then lanes, then window). The opportunity
+    /// move's one comparison (card 10bba591): a mind moves for a better seat only when
+    /// this says so; equal plans are never a reason to move.
+    pub fn better_than(&self, other: &LanePlan) -> Option<BetterBy> {
+        if self.capability_rank != other.capability_rank {
+            return (self.capability_rank > other.capability_rank).then_some(BetterBy::Capability);
+        }
+        if self.lanes != other.lanes {
+            return (self.lanes > other.lanes).then_some(BetterBy::Lanes);
+        }
+        (self.window > other.window).then_some(BetterBy::Window)
+    }
+}
+
+/// Why one seat beats another — the first axis, in the allocator's order, on which
+/// the better plan wins. `Requirement` is objective 1 (a plan that holds her role's
+/// requirement beats a node that has none): the placement switch's reason when her
+/// current node seats nobody of her role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BetterBy {
+    Requirement,
+    Capability,
+    Lanes,
+    Window,
+}
+
+impl BetterBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BetterBy::Requirement => "requirement",
+            BetterBy::Capability => "capability",
+            BetterBy::Lanes => "lanes",
+            BetterBy::Window => "window",
+        }
     }
 }
 
@@ -337,9 +374,37 @@ pub struct GridAllocation {
     pub open: Vec<OpenSeats>,
 }
 
+/// One node's roster as the allocation reads it: the minds seated there and the seats
+/// nobody fills — what the spawner on that node may draw (`seated + open`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridRoster {
+    pub seated: u32,
+    pub open: u32,
+}
+
+impl GridRoster {
+    pub fn seats(self) -> u32 {
+        self.seated.saturating_add(self.open)
+    }
+}
+
 impl GridAllocation {
     pub fn node(&self, id: Uuid) -> Option<&NodeAllocation> {
         self.nodes.iter().find(|n| n.node == id)
+    }
+    /// The roster on `node` for `owner`'s spawner: how many are seated there and how many
+    /// seats stand open for that owner to mint. `None` when the allocation never saw the
+    /// node (it made no offer) — an absence, so the caller keeps its own prior.
+    pub fn roster_on(&self, node: Uuid, owner: Uuid) -> Option<GridRoster> {
+        self.node(node)?;
+        Some(GridRoster {
+            seated: self.seated.iter().filter(|s| s.node == node).count() as u32,
+            open: self.open.iter().filter(|o| o.node == node && o.owner == owner).map(|o| o.count).sum(),
+        })
+    }
+    /// The plan the node a mind is seated on serves — what her seat IS, for a comparison.
+    pub fn plan_of_seat(&self, mind: Uuid) -> Option<&LanePlan> {
+        self.node(self.seat_of(mind)?)?.plan.as_ref()
     }
     pub fn seat_of(&self, mind: Uuid) -> Option<Uuid> {
         self.seated.iter().find(|s| s.mind == mind).map(|s| s.node)
@@ -991,6 +1056,37 @@ mod tests {
         let (roles, _) = roles_from(&[helper], None);
         assert_eq!(roles[0].requirement.window, super::super::serving_plan::MIN_SERVE_CTX, "nothing measured yet = the serve floor");
         assert!(roles_from(&[], Some(1)).0.is_empty());
+    }
+
+    // what this catches (card 10bba591): the "better seat" order IS the allocator's —
+    // capability first, then lanes, then window — strict on every axis, so equal plans
+    // are never a reason to move and a wider window never outranks a stronger model.
+    #[test]
+    fn a_better_seat_is_judged_in_the_allocators_own_order_and_never_on_equality() {
+        let base = plan("27b", 9, 67_072, 2, None);
+        assert_eq!(base.better_than(&base), None, "equal plans: no move");
+        assert_eq!(plan("27b", 9, 67_072, 2, Some(14.0)).better_than(&base), None, "decode is not an axis of the order");
+        assert_eq!(plan("30b", 10, 2_048, 1, None).better_than(&base), Some(BetterBy::Capability), "capability beats everything below it");
+        assert_eq!(base.better_than(&plan("30b", 10, 2_048, 1, None)), None);
+        assert_eq!(plan("27b", 9, 32_768, 3, None).better_than(&base), Some(BetterBy::Lanes), "same rank: lanes before window");
+        assert_eq!(plan("27b", 9, 131_072, 1, None).better_than(&base), None, "fewer lanes: no move, however wide");
+        assert_eq!(plan("27b", 9, 131_072, 2, None).better_than(&base), Some(BetterBy::Window), "same rank and lanes: the wider window");
+        assert_eq!(BetterBy::Window.as_str(), "window");
+    }
+
+    // what this catches (card 10bba591): the node roster the spawner draws from is what
+    // the allocation seated there PLUS what stands open for that owner — a lender's open
+    // seats are not ours, and a node that made no offer is an absence (the spawner then
+    // keeps its own prior), never a zero.
+    #[test]
+    fn a_nodes_roster_is_what_is_seated_there_plus_what_is_open_for_that_owner() {
+        let n = Uuid::new_v4();
+        let a = allocate(&inputs(vec![big_box(n)], minds(0, Some(n), 1)));
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 1, open: 3 }));
+        assert_eq!(a.roster_on(n, US).map(GridRoster::seats), Some(4), "one seated, three to mint: four seats");
+        assert_eq!(a.roster_on(n, Uuid::from_u128(0xB0B)), Some(GridRoster { seated: 1, open: 0 }), "the open seats are the owner's, not a stranger's");
+        assert_eq!(a.roster_on(Uuid::new_v4(), US), None, "a node that made no offer is an absence");
+        assert_eq!(a.plan_of_seat(a.seated[0].mind).map(|p| p.lanes), Some(2));
     }
 
     // what this catches: the outlier validation — the REAL per-node planner's plan reads

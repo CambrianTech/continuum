@@ -2790,6 +2790,16 @@ pub fn start_server(
                 }
             }
         };
+        // THE GRID ALLOCATOR DAEMON (card 10bba591): the one live caller of the pure
+        // allocator. Reads this node's published plan and the gossip ledger's offers,
+        // seats the roster across the grid, publishes on change — the placement
+        // switch moves minds to strictly better seats between turns, the reconciler
+        // draws this node's open seats, the health line reports the moves. Same
+        // recipe roles the spawner hosts; the plan watch the reconciler parks on.
+        runtime.register(Arc::new(crate::modules::grid_allocator::GridAllocatorModule::new(
+            serving_daemon.subscribe(),
+            resident_roles.clone(),
+        )));
         stretch_mark("resident_roles_and_overlay", "supervisor_construct");
         stretch_mark("supervisor_construct", "resume_task_spawn_and_rest_of_block");
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
@@ -3021,6 +3031,11 @@ pub fn start_server(
             const RECONCILER_HEARTBEAT_PASSES: u32 = 60;
             let mut last_pass_row: Option<(bool, bool, bool, bool, u32)> = None;
             let mut last_ready_row: Option<(bool, bool, u32)> = None;
+            // The grid allocation's publishes wake the reconciler too (card 10bba591):
+            // a node joining or a plan changing re-seats the grid, and this node's open
+            // seats are drawn on that edge, not on the next plan edge.
+            let mut alloc_rx = crate::modules::grid_allocator::subscribe();
+            let mut alloc_closed = false;
             loop {
                 pass += 1;
                 let plan_ready = serving_plan_rx
@@ -3039,6 +3054,10 @@ pub fn start_server(
                 // must never leave more minds than warm lanes — 2026-09-06).
                 let live_plan = serving_plan_rx.borrow().clone();
                 supervisor.refresh_serving(live_plan.as_ref());
+                // This node's seats as the grid allocation counts them (seated + open),
+                // once the daemon has published; `None` keeps the warm-slot prior.
+                let roster_here = alloc_rx.borrow().as_ref().and_then(|p| p.roster_here());
+                supervisor.refresh_grid_roster(roster_here);
                 let snapshot_live = crate::inference::llama_server::current_serving().is_live();
                 let pass_state = (plan_ready, external_lane, booted, snapshot_live);
                 let pass_row_due = match last_pass_row {
@@ -3185,9 +3204,19 @@ pub fn start_server(
                     }
                 }
                 // Park until the serving daemon republishes (every tick, or
-                // sooner on a pressure edge). `changed()` errs only if the
-                // daemon is gone — then there is nothing left to react to.
-                if serving_plan_rx.changed().await.is_err() {
+                // sooner on a pressure edge) — or the grid allocation does. The plan
+                // watch's `changed()` errs only if the daemon is gone — then there is
+                // nothing left to react to.
+                let plan_edge = tokio::select! {
+                    changed = serving_plan_rx.changed() => Some(changed),
+                    changed = alloc_rx.changed(), if !alloc_closed => {
+                        if changed.is_err() {
+                            alloc_closed = true; // never in practice: the channel is process-global
+                        }
+                        None
+                    }
+                };
+                if matches!(plan_edge, Some(Err(_))) {
                     if booted {
                         tracing::warn!(
                             "serving-daemon watch closed — hosting reconciler exiting; \

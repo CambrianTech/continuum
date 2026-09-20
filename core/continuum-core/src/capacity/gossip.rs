@@ -194,15 +194,30 @@ pub fn global_ledger() -> &'static GridCapacityLedger {
     LEDGER.get_or_init(GridCapacityLedger::default)
 }
 
+/// Fires once per offer heard (own echo included) — the "on change" edge the grid
+/// allocator daemon (`modules::grid_allocator`) selects on beside its interval, so a
+/// node joining is folded into the allocation within the beat it lands, not a tick
+/// later. `notify_one` keeps a permit, so a beat between two waits still wakes the
+/// next wait.
+pub fn heard_notify() -> &'static tokio::sync::Notify {
+    static NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    NOTIFY.get_or_init(tokio::sync::Notify::new)
+}
+
 impl GridCapacityLedger {
     /// Fold one heard offer in (latest per peer wins — capacity is a live reading).
     /// `from_peer` is the transcript event's transport identity, never payload-declared.
     /// Returns `true` when this peer is NEW to the ledger (first offer heard) — the
     /// probe-on-join surface; steady re-offers stay silent.
     pub fn hear(&self, from_peer: Uuid, offer: CapacityOffer, heard_at_ms: u64) -> bool {
-        self.heard
+        let is_new = self
+            .heard
             .insert(from_peer, HeardOffer { offer, heard_at_ms })
-            .is_none()
+            .is_none();
+        // Wake whoever waits on the grid changing (the allocator daemon): a stored
+        // permit, so a beat heard between two waits is not lost.
+        heard_notify().notify_one();
+        is_new
     }
 
     /// Project the ledger onto the sim-proven [`GridSnapshot`]: the caller's LIVE local

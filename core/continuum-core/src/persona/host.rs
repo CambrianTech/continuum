@@ -255,6 +255,13 @@ impl PersonaSpawnSupervisor {
         self.spawner.set_serving(plan);
     }
 
+    /// Follow the GRID ALLOCATION's roster for this node (card 10bba591), told each
+    /// reconciler pass like the plan: the seats the allocation counts here bound the
+    /// draw once the allocator has published; `None` keeps the warm-slot prior.
+    pub fn refresh_grid_roster(&mut self, roster: Option<crate::cognition::grid_allocation::GridRoster>) {
+        self.spawner.set_grid_roster(roster);
+    }
+
     /// Run the full boot pipeline:
     ///
     /// 1. `bootstrap_planned`: provider intents → airc-bootstrapped

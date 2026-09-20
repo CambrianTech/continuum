@@ -870,7 +870,11 @@ async fn serve_persona_loop_inner(
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
-        crate::cognition::resource_admission::note_turn_started(
+        // Held for the turn's lifetime: every exit below (`continue` on silence or
+        // error, the spoke tail) drops it, which ends the turn on the admission ledger
+        // — the in-flight mark the placement switch honours (a move lands between
+        // turns only) and the measured turn shape it derives her cooldown from.
+        let _turn_in_flight = crate::cognition::resource_admission::begin_turn(
             ctx.identity.peer_id.as_uuid(),
             crate::persona::trace::now_ms(),
         );
