@@ -909,6 +909,13 @@ mod tests {
         // this the test would also pass with the transfer simply switched off.
         let card_worktree = m.tmp.path().join("card-worktree");
         git(m.tmp.path(), &["init", "-q", "-b", "main", &card_worktree.to_string_lossy()]);
+        identity(&card_worktree);
+        // A root commit, for the same reason the orphan below needs one: an unborn branch
+        // is no branch, and `carry_of` would answer `Nothing`, not `Via` — which would
+        // make this positive control assert the wrong thing for the wrong reason.
+        std::fs::write(card_worktree.join("seed.txt"), "seed\n").unwrap();
+        git(&card_worktree, &["add", "seed.txt"]);
+        git(&card_worktree, &["commit", "-q", "-m", "workspace: initial state"]);
         git(&card_worktree, &["remote", "add", "origin", "https://github.com/CambrianTech/continuum.git"]);
         assert_eq!(
             carry_of(&card_worktree),
