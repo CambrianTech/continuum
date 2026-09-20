@@ -1215,12 +1215,42 @@ impl LlmDeliberationFaculty {
             crate::cognition::activity_gate::note_directed();
         }
         let gen_result = {
+            // THE WAIT'S OWN BOUND, NAMED AND SIZED BY THE QUEUE (card cff534ba, S3).
+            // Until now this park was UNBOUNDED, so the thing that ended it was the
+            // per-act `TICK_DEADLINE` — which is why the M5 carried a pace row reading
+            // `residue_ms = 1,500,001`: 1500 s to the millisecond is a 25-minute act
+            // deadline expiring, not work. A bound sized for an ACT is not a bound for
+            // a QUEUE. Hers is derived from what the serving daemon already measures:
+            // the depth of held-work callers ahead of her, the lanes serving, and the
+            // lanes' own measured turn time — `lane_wait_bound`. Unmeasured (a fresh
+            // boot) falls back to the named `LANE_WAIT_CEILING`, never to a short
+            // guess: busy is not dead.
+            let lane_queue_ahead = crate::cognition::resource_admission::work_waiting_now();
+            let lanes_serving = crate::cognition::resource_admission::served_lane_count();
+            let (lane_hold_p50_ms, lane_hold_samples) =
+                crate::cognition::resource_admission::lane_hold_p50_ms();
+            let lane_bound = crate::cognition::resource_admission::lane_wait_bound(
+                lane_queue_ahead,
+                lanes_serving,
+                lane_hold_p50_ms,
+                lane_hold_samples,
+            );
+            let lane_bound_derived = lane_bound.is_some();
+            let lane_bound = lane_bound
+                .unwrap_or(crate::cognition::resource_admission::LANE_WAIT_CEILING); // unwrap_or: UNMEASURED lanes get the named ceiling, never a short guess
             crate::probe!(
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
                 directed = ws.directed_at_self(),
                 attention = ?ws.attention,
                 lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                // The bound she is about to wait under, and what it was derived FROM.
+                bound_secs = lane_bound.as_secs(),
+                bound_derived = lane_bound_derived,
+                queue_ahead = lane_queue_ahead as u64,
+                lanes_serving = lanes_serving as u64,
+                lane_hold_p50_ms = lane_hold_p50_ms,
+                lane_hold_samples = lane_hold_samples as u64,
                 "at the serving-lane admission gate"
             );
             // A NON-directed wait yields to a directed line pending in her inbox:
@@ -1230,12 +1260,16 @@ impl LlmDeliberationFaculty {
             // A held card outranks a musing turn for the non-directed budget
             // (`LanePriority::Work`): the lane goes to the mind that will write.
             let lane_wait_started = std::time::Instant::now();
-            let _lane = if ws.attention.requires_priority() {
-                crate::cognition::resource_admission::acquire_serving_lane(
-                    crate::cognition::resource_admission::LanePriority::Directed,
-                    None,
-                )
-                .await
+            // `None` from either arm below = the bound tripped, reported once at the
+            // single seam after it.
+            let lane_or_starved = if ws.attention.requires_priority() {
+                tokio::select! {
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(
+                        crate::cognition::resource_admission::LanePriority::Directed,
+                        None,
+                    ) => Some(lane),
+                    _ = tokio::time::sleep(lane_bound) => None,
+                }
             } else {
                 // The faculty's own work-turn key (`is_work_turn`: the workspace is
                 // deliverable and her hands are offered — the same key that caps act
@@ -1254,7 +1288,8 @@ impl LlmDeliberationFaculty {
                     _ => None,
                 };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority, expected) => lane,
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority, expected) => Some(lane),
+                    _ = tokio::time::sleep(lane_bound) => None,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
                             class = "delib.gate.yielded_to_directed",
@@ -1264,6 +1299,27 @@ impl LlmDeliberationFaculty {
                         return None;
                     }
                 }
+            };
+            // THE BOUND TRIPPED, SAID BY NAME — the mind, what she waited, what was
+            // free while she waited, and the queue the bound was derived from. The
+            // settle loop classifies the iteration that follows (`classify_act`): no
+            // generation was dispatched, so it is a WAIT, not an act, and her act
+            // budget survives it intact.
+            let Some(_lane) = lane_or_starved else {
+                crate::probe!(
+                    class = "persona.act.lane_starved",
+                    persona = %self.persona_name,
+                    directed = ws.directed_at_self(),
+                    waited_secs = lane_wait_started.elapsed().as_secs(),
+                    bound_secs = lane_bound.as_secs(),
+                    bound_derived = lane_bound_derived,
+                    queue_ahead = lane_queue_ahead as u64,
+                    lanes_serving = lanes_serving as u64,
+                    lane_hold_p50_ms = lane_hold_p50_ms,
+                    lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                    "the lane wait hit its bound (LANE_WAIT_CEILING when unmeasured, else lane_wait_bound over the measured queue) — deferring without reaching the model; she keeps her act budget and tries again next tick"
+                );
+                return None;
             };
             // The node's own queue, measured where SHE waits for it (card c84d885a, S1b):
             // the comparator every spill is judged against.

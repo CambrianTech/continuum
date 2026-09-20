@@ -254,6 +254,73 @@ pub fn note_directed_lane_wait_ms(ms: u64) {
 pub fn directed_lane_wait_ms() -> (u64, u64, u32) {
     DIRECTED_LANE_WAIT_MS.p50_p90()
 }
+/// HOW LONG A LANE IS HELD HERE — each `ServingLanePermit`'s own lifetime (queue
+/// admission → release), in ms. Already probed per release as `admission.lane.released
+/// held_ms`; a probe is not a number the substrate can compute with, and this is the
+/// one the lane wait's bound is derived FROM: the lanes' measured turn time.
+static LANE_HOLD_MS: WaitRing = WaitRing::new();
+/// Record one serving-lane permit's held time. Called from the permit's `Drop`.
+fn note_lane_held_ms(ms: u64) {
+    LANE_HOLD_MS.note(ms);
+}
+/// The lanes' measured turn time as (p50 ms, samples); `samples == 0` = UNMEASURED,
+/// and the p50 is then 0 and must never be read as an instant lane.
+pub fn lane_hold_p50_ms() -> (u64, u32) {
+    LANE_HOLD_MS.p50()
+}
+/// Held-work callers queued for the non-directed budget RIGHT NOW — the depth of the
+/// queue ahead of a mind about to park at the gate.
+pub fn work_waiting_now() -> usize {
+    LANES.work_waiting()
+}
+
+/// A lane wait longer than this is not a queue, it is a starve. The CEILING on the
+/// derived bound below, and the bound used outright when the queue is UNMEASURED
+/// (a fresh boot): busy is not dead, so it is generous — but it sits well under the
+/// per-act `TICK_DEADLINE` (25 min) so a starved mind defers at HER OWN named bound
+/// with her act budget intact, instead of the act's deadline expiring on her
+/// (`residue_ms = 1,500,001` on the M5, 2026-09-20).
+pub const LANE_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// The FLOOR on the derived bound: no mind is told a lane is hopeless before this,
+/// however fast the lanes look. A measured p50 is a median, not a promise.
+pub const LANE_WAIT_FLOOR: std::time::Duration = std::time::Duration::from_secs(60);
+/// How many times the queue's own clearing estimate a mind will wait before she
+/// defers. The estimate is a MEDIAN — half the turns run longer — so the bound is a
+/// multiple of it, never the estimate itself.
+pub const LANE_WAIT_SLACK: u32 = 2;
+
+/// PURE: how long a mind should wait for a serving lane, derived from the QUEUE she
+/// is joining rather than from a constant.
+///
+/// `queue_ahead` is the held-work callers already parked ([`work_waiting_now`]);
+/// `lanes` the lanes serving; `hold_p50_ms` / `hold_samples` the lanes' own measured
+/// turn time ([`lane_hold_p50_ms`]). Her place in line is `queue_ahead + 1`, so the
+/// rounds of lane turnover ahead of her is `ceil((queue_ahead + 1) / lanes)` and the
+/// honest wait is that many measured turns, times [`LANE_WAIT_SLACK`], clamped into
+/// [[`LANE_WAIT_FLOOR`], [`LANE_WAIT_CEILING`]].
+///
+/// `hold_samples == 0` is UNMEASURED and returns `None`: the caller then uses
+/// [`LANE_WAIT_CEILING`], because a node that has never timed a lane may not guess a
+/// short one ([[unknown-is-not-a-quantity]]).
+pub fn lane_wait_bound(
+    queue_ahead: usize,
+    lanes: usize,
+    hold_p50_ms: u64,
+    hold_samples: u32,
+) -> Option<std::time::Duration> {
+    if hold_samples == 0 || hold_p50_ms == 0 {
+        return None;
+    }
+    let lanes = lanes.max(1);
+    let rounds = (queue_ahead + 1).div_ceil(lanes) as u64;
+    let ms = rounds
+        .saturating_mul(hold_p50_ms)
+        .saturating_mul(LANE_WAIT_SLACK as u64);
+    Some(
+        std::time::Duration::from_millis(ms)
+            .clamp(LANE_WAIT_FLOOR, LANE_WAIT_CEILING),
+    )
+}
 /// PURE: may a WORK call be lent the lane reserved for directed calls? Only while no
 /// directed line is pending for any citizen here, and only when the call's expected
 /// occupancy — prefill of its uncached prompt at the measured prefill rate plus its
@@ -717,11 +784,15 @@ pub struct ServingLanePermit {
 
 impl Drop for ServingLanePermit {
     fn drop(&mut self) {
+        let held_ms = self.granted_at.elapsed().as_millis() as u64;
+        // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
+        // One ring push per release, on a path that already probes.
+        note_lane_held_ms(held_ms);
         crate::probe!(
             class = "admission.lane.released",
             directed = self.directed,
             priority = ?self.priority,
-            held_ms = self.granted_at.elapsed().as_millis() as u64,
+            held_ms = held_ms,
             "serving-lane permit released"
         );
         // Permits drop AFTER this body (field order), so wake on the next poll: the
@@ -1958,6 +2029,48 @@ mod tests {
         }
         assert_eq!(ring.p50(), (1, WAIT_RING_SAMPLES as u32), "bounded: the window forgets");
     }
+    // what this catches (card cff534ba, S3): the lane wait being bounded by a CONSTANT
+    // instead of by the queue it is a wait on. M5, 2026-09-20 ~21:55Z (4 residents on 2
+    // lanes at 67,072): a `persona.act.pace` row read `residue_ms = 1,500,001` with
+    // `model_ms = 0` — 1500 s to the millisecond is the 25-minute per-act TICK_DEADLINE
+    // expiring at the serving gate, not work. A bound sized for an ACT is not a bound
+    // for a QUEUE. This one is `ceil((queue_ahead + 1) / lanes)` measured lane turns,
+    // times the slack, clamped — and UNMEASURED lanes get `None` so the caller uses the
+    // named ceiling rather than a short guess (busy is not dead).
+    #[test]
+    fn the_lane_wait_bound_is_derived_from_the_measured_queue_not_a_constant() {
+        use std::time::Duration;
+        // Never measured a lane: no number to derive from, so no derived bound.
+        assert_eq!(lane_wait_bound(3, 2, 0, 0), None, "unmeasured is not a fast queue");
+        assert_eq!(lane_wait_bound(3, 2, 180_000, 0), None, "zero samples is unmeasured");
+        // The M5 shape: 3 minds ahead of her on 2 lanes, lanes turning at a 120 s median.
+        // Her place in line is 4th → ceil(4/2) = 2 turns ahead → 2 × 120 s × slack.
+        assert_eq!(
+            lane_wait_bound(3, 2, 120_000, 12),
+            Some(Duration::from_secs(2 * 120 * LANE_WAIT_SLACK as u64)),
+            "two rounds of measured lane turnover, with slack"
+        );
+        // Double the queue and she waits proportionally longer — the bound MOVES with
+        // the measurement, which is the whole point of deriving it.
+        assert_eq!(
+            lane_wait_bound(7, 2, 60_000, 12),
+            Some(Duration::from_secs(4 * 60 * LANE_WAIT_SLACK as u64)),
+            "four rounds ahead of her"
+        );
+        // An empty queue on a fast node still waits the floor — a median is not a promise.
+        assert_eq!(lane_wait_bound(0, 4, 1_000, 30), Some(LANE_WAIT_FLOOR));
+        // A long queue on slow lanes is clamped: past this it is a starve, not a queue,
+        // and she defers with her act budget intact instead of burning the act deadline.
+        assert_eq!(lane_wait_bound(40, 1, 600_000, 30), Some(LANE_WAIT_CEILING));
+        assert!(
+            LANE_WAIT_CEILING < Duration::from_secs(25 * 60),
+            "the wait's own bound must trip BEFORE the per-act TICK_DEADLINE, or the act \
+             deadline is still what ends the wait (residue_ms = 1,500,001)"
+        );
+        // Zero lanes cannot divide by zero: the floor of one lane is the honest read.
+        assert!(lane_wait_bound(1, 0, 120_000, 5).is_some());
+    }
+
     // what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
     // guarantee in seconds. A work call is lent the reserved lane only when its occupancy
     // is known and fits the directed budget and nothing directed is pending; an unknown
