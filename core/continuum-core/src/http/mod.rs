@@ -235,6 +235,7 @@ async fn messages_handler(
         purpose: Some("local-coding-agent".to_string()),
         // External coding-agent caller (not a persona-owned conversation).
         persona_id: None,
+        turn_bound: None,
     };
 
     let response = adapter.generate_text(gen_request).await.map_err(|e| {

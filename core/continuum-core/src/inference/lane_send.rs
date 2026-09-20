@@ -8,11 +8,17 @@ use std::time::Instant;
 use crate::ai::inference_error::InferenceError;
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
-/// Bound on the wait for response HEADERS after POSTing a generation — the
+/// FLOOR on the wait for response HEADERS after POSTing a generation — the
 /// pre-stream twin of [`STREAM_IDLE_TIMEOUT_SECS`]. Covers the hung-prefill /
 /// poisoned-backend case where the server accepts and never answers; sized for
 /// a worst-case full-window prefill queued behind co-tenants (minutes), because
 /// its job is releasing ETERNAL holds, not policing slow ones.
+///
+/// A floor, not the bound (card ba82d0a0): a request that carries its own
+/// `turn_bound` — the mind's measured expectation with headroom
+/// (`inference::turn_bound`) — waits `max(this, turn_bound)`. Measured 2026-09-20 on
+/// the M5: 331–389 s to the first byte for a 27–30k cold prompt; the IntelMac at
+/// ~25 tok/s needs ~1200 s. A constant here can only ever be wrong for one box.
 pub(crate) const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 
 /// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
@@ -34,11 +40,20 @@ const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
 /// typed turn-facing failure, already probed. `body` owns one prepared encoding;
 /// transport retries share its allocation rather than serializing again.
+/// `turn_bound` is the request's own bound (`TextGenerationRequest::turn_bound`); the
+/// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`.
 pub(crate) async fn send_with_lane_retry(
     cfg: &OpenAICompatibleConfig,
     request_builder: reqwest::RequestBuilder,
     body: Vec<u8>,
+    turn_bound: Option<std::time::Duration>,
 ) -> Result<reqwest::Response, InferenceError> {
+    // The header wait in force for THIS turn: the floor, or the request's measured bound
+    // above it. Computed once — the relaunch retries below re-arm the same wait.
+    let (header_bound, header_source) = crate::inference::turn_bound::effective_bound_with_source(
+        std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
+        turn_bound,
+    );
     // reqwest moves this Vec into its shared byte body. Cloning the prepared
     // builder below shares that allocation, including across transport retries.
     let request_builder = request_builder.body(body);
@@ -64,18 +79,28 @@ pub(crate) async fn send_with_lane_retry(
         // eternal `nondirected_waiting` park). The stream idle-watchdog only
         // arms AFTER headers; this is its pre-stream twin. Generous (prefill
         // of a full window on a busy co-tenant lane is minutes, not seconds)
-        // but FINITE — RTOS rule: every hold is bounded.
-        let sent = tokio::time::timeout(
-            std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
-            attempt_builder.send(),
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "{}: no response headers for {}s after POST — lane accepted the                      request and went silent (hung prefill / poisoned backend);                      releasing the lane instead of holding it forever",
-                cfg.name, PRE_STREAM_HEADER_TIMEOUT_SECS
-            )
-        })?;
+        // but FINITE — RTOS rule: every hold is bounded — and sized from the
+        // turn's MEASURED expectation when it carries one, never a constant
+        // shorter than this box's prefill (card ba82d0a0).
+        let sent = tokio::time::timeout(header_bound, attempt_builder.send())
+            .await
+            .map_err(|_| {
+                crate::inference::turn_bound::probe_tripped(
+                    "pre_stream_headers",
+                    &cfg.name,
+                    header_bound,
+                    header_source,
+                    turn_bound,
+                );
+                format!(
+                    "{}: no response headers for {}s after POST ({} bound) — lane accepted the \
+                     request and went silent (hung prefill / poisoned backend); \
+                     releasing the lane instead of holding it forever",
+                    cfg.name,
+                    header_bound.as_secs(),
+                    header_source.as_str()
+                )
+            })?;
         match sent {
             // A relaunching lane refuses the connection only while nothing is
             // LISTENING. Once the new process binds, it accepts and answers
