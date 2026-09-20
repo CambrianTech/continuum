@@ -159,7 +159,16 @@ pub(crate) fn git_state_key(root: &std::path::Path) -> Option<u128> {
         let ms = m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
         key = key.wrapping_mul(1_000_003).wrapping_add(ms);
     }
-    Some(key)
+    // The staged base is a commit fact too (`clone_at` writes it; a restage rewrites it),
+    // and writing it touches none of the three above — CI 2026-09-20: a rewritten base
+    // read the diff against the old one. Absent for a checkout older than the record.
+    let base_ms = std::fs::metadata(root.join(".git/continuum-base"))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0); // unwrap_or: no record = 0, a state of its own
+    Some(key.wrapping_mul(1_000_003).wrapping_add(base_ms))
 }
 
 /// The commit-derived facts of one copy: from the held record when its git state is
@@ -524,6 +533,10 @@ mod tests {
         let t = std::time::SystemTime::now();
         std::fs::File::options().write(true).open(root.join(".git/HEAD")).unwrap().set_modified(t).unwrap();
         assert_ne!(super::git_state_key(&root), Some(k1), "a git write re-keys the copy");
+        let k2 = super::git_state_key(&root).expect("statable");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/continuum-base"), b"abc").unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k2), "a rewritten staged base re-keys the copy (it is a commit fact)");
         let bare = tmp.path().join("bare");
         std::fs::create_dir_all(&bare).unwrap();
         assert_eq!(super::git_state_key(&bare), None, "no git state → not held, always derived");
