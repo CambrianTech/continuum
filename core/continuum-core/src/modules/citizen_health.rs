@@ -51,6 +51,13 @@ struct Ledger {
     /// `persona.act.think_only` seam). Two in an hour on the M5 (2026-09-20) were the
     /// whole story of #4194's allowance floor; on the hour line a regression is one number.
     think_only: AtomicU64,
+    /// Turn iterations that NEVER REACHED THE MODEL — she waited at the serving gate and
+    /// produced nothing (the `persona.act.lane_starved` seam, card cff534ba). The sibling
+    /// of `think_only` and NOT the same failure: a think-only turn GOT a lane and ended
+    /// inside the reasoning channel; a lane-starved turn never got one. On the M5
+    /// 2026-09-20 ~21:55Z two of the hour's turns were `model_ms=0` waits of 6 and 25
+    /// minutes at `lanes_available=0`, and the line called them acts.
+    lane_starved: AtomicU64,
     /// THE HOUR'S LANES, not the tick's (Cormac's condition on #4244): the most lanes the
     /// node served at any fold point this window. The lane-bound rest is destructive and
     /// now rests the whole overage in one tick, so it must not stand on a point sample —
@@ -79,6 +86,7 @@ static LEDGER: Ledger = Ledger {
     pulls: AtomicU64::new(0),
     pulls_deferred: AtomicU64::new(0),
     think_only: AtomicU64::new(0),
+    lane_starved: AtomicU64::new(0),
     lanes_max: AtomicU64::new(0),
     prompt_cached: AtomicU64::new(0),
     prompt_prefilled: AtomicU64::new(0),
@@ -101,6 +109,14 @@ pub fn note_pull(deferred: bool) {
     if deferred {
         LEDGER.pulls_deferred.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// A turn iteration ended WITHOUT reaching the model (the `persona.act.lane_starved`
+/// seam in the settle loop): she waited for a serving lane and never got one. Counted
+/// apart from [`note_act`] — this is the hour's WAITING, and folding it into the acts is
+/// what made a starved hour read as a working one.
+pub fn note_lane_starved() {
+    LEDGER.lane_starved.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A generation reported its prefill split (the `serving.kv.reuse` seam, fed by
@@ -309,6 +325,9 @@ pub struct CitizenHealth {
     pub pulls_deferred: u64,
     /// Turns this hour that ended inside the reasoning channel — no answer, no act.
     pub think_only: u64,
+    /// Turn iterations this hour that never reached the model — a wait, not an act, and
+    /// not a think-only turn either. Its own term on the line (card cff534ba).
+    pub lane_starved: u64,
     /// The measured decode knee for the served model (`inference::decode_knee`), when
     /// one is known: the lane count the planner will not exceed because every further
     /// stream would decode below the tax floor. Above it, lanes are not what is owed.
@@ -497,14 +516,21 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         None => String::new(),
     };
     format!(
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · think-only {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} — {}",
+        // THE WAYS AN HOUR CAN GO, SIDE BY SIDE AND NEVER SUMMED. `acts` is work that
+        // reached the model and came back with hands; `lane-starved` never reached it at
+        // all (card cff534ba — 6 and 25 minutes of waiting read as two of "8 acts" on the
+        // M5, 2026-09-20); `think-only` reached it and ended inside the reasoning channel
+        // (#4283); `prefix reuse` is how much of each prompt the engine did not re-read
+        // (card c119ace7). Four different problems with four different owners.
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
         h.served_window / 1000,
         h.acts,
-        h.writes,
+        h.lane_starved,
         h.think_only,
+        h.writes,
         h.lanes_granted,
         h.pulls,
         h.pulls_deferred,
@@ -515,6 +541,15 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         reuse,
         tail
     )
+}
+
+/// The hour's lane-starved waits, read and reset by the tick. Its own reader for the
+/// reason `snapshot_prompt_and_reset` is (card c119ace7, #4280): the main tuple is
+/// already nine positional `u64`s, and on 2026-09-20 two PRs each widening it by one
+/// landed a TENTH value behind a nine-wide signature — the arity was the only thing
+/// that noticed. A separable counter cannot be mis-positioned by a merge.
+fn snapshot_lane_starved_and_reset() -> u64 {
+    LEDGER.lane_starved.swap(0, Ordering::Relaxed)
 }
 
 /// The hour's prompt-cache totals (cached, prefilled), read and reset by the tick.
@@ -648,6 +683,7 @@ impl CitizenHealthModule {
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
             crate::cognition::resource_admission::directed_lane_wait_ms();
         let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
+        let lane_starved = snapshot_lane_starved_and_reset();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
@@ -671,6 +707,7 @@ impl CitizenHealthModule {
             standing_enabled,
             prompt_cached_tokens,
             prompt_prefill_tokens,
+            lane_starved,
         }
     }
 }
@@ -760,6 +797,7 @@ impl ServiceModule for CitizenHealthModule {
             pulls = h.pulls,
             pulls_deferred = h.pulls_deferred,
             think_only = h.think_only,
+            lane_starved = h.lane_starved,
             settles = h.settles,
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
@@ -807,6 +845,7 @@ impl ServiceModule for CitizenHealthModule {
                     pulls: LEDGER.pulls.load(Ordering::Relaxed),
                     pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     think_only: LEDGER.think_only.load(Ordering::Relaxed),
+                    lane_starved: LEDGER.lane_starved.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                     rounds_working,
                     standing_enabled,
@@ -819,6 +858,7 @@ impl ServiceModule for CitizenHealthModule {
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
+                    "lane_starved": h.lane_starved,
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "prompt_cached_tokens": h.prompt_cached_tokens, "prompt_prefill_tokens": h.prompt_prefill_tokens,
                     "prefix_reuse_pct": prefix_reuse_pct(&h),
@@ -832,7 +872,7 @@ impl ServiceModule for CitizenHealthModule {
     fn command_schemas(&self) -> Vec<CommandSchema> {
         vec![CommandSchema {
             name: "citizen/health",
-            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, writes, lane grants, settles, and the verdict (healthy / starved / reading / idle)",
+            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, writes, lane grants, settles, prefix reuse, and the verdict (healthy / starved / reading / idle)",
             params: vec![],
         }]
     }
@@ -877,7 +917,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0 }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0 }
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
@@ -952,7 +992,7 @@ mod tests {
     fn the_line_carries_the_numbers_and_ends_with_the_verdict() {
         let x = h(16, 3, 39, 4);
         let l = line(&x, &verdict(&x));
-        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "think-only 0", "STARVED"] {
+        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "think-only 0", "lane-starved 0", "STARVED"] {
             assert!(l.contains(needle), "{needle} missing from {l}");
         }
         assert!(!l.contains("directed wait"), "no directed call waited: the line does not invent a zero wait");
@@ -967,6 +1007,33 @@ mod tests {
         assert_eq!(prefix_reuse_pct(&warm), Some(71));
         let l = line(&warm, &verdict(&warm));
         assert!(l.contains("prefix reuse 71% (228k cached / 92k prefilled)"), "{l}");
+    }
+
+    // what this catches: the hour line folding waiting into working, and a merge
+    // collapsing the ways an hour fails into one number. M5, 2026-09-20 ~21:55Z (build
+    // 0047d521b, 4 residents on 2 lanes at 67,072): the line read "8 acts, 0 writes"
+    // while two of those turns were `persona.act.pace` rows with `model_ms=0` and
+    // `residue_ms` equal to the whole act — 365,000 and 1,500,001 — i.e. a mind who
+    // waited 6 minutes and one who waited 25, both at `lanes_available=0`. A turn that
+    // never got a lane (lane-starved), a turn that got one and ended inside the
+    // reasoning channel (think-only, #4283), and the acts are THREE different failures
+    // with three different owners. Separate terms, in order, never summed.
+    #[test]
+    fn the_line_says_acts_lane_starved_and_think_only_as_separate_terms() {
+        let m5 = CitizenHealth { acts: 6, lane_starved: 2, think_only: 1, ..h(4, 2, 6, 0) };
+        let l = line(&m5, &verdict(&m5));
+        for needle in ["acts 6", "lane-starved 2", "think-only 1", "writes 0"] {
+            assert!(l.contains(needle), "{needle} missing from {l}");
+        }
+        // Read left to right: work, then the two ways a turn produced none.
+        let at = |n: &str| l.find(n).unwrap_or_else(|| panic!("{n} missing from {l}"));
+        assert!(
+            at("acts 6") < at("lane-starved 2") && at("lane-starved 2") < at("think-only 1"),
+            "the three terms keep their order: {l}"
+        );
+        // Never one number standing for several.
+        assert!(!l.contains("acts 8"), "the waits are not folded into the acts: {l}");
+        assert!(!l.contains("acts 9"), "nor the think-only turns: {l}");
     }
 
     // what this catches: the ledger is a window — a tick reads AND resets, so the next
@@ -991,6 +1058,10 @@ mod tests {
         // generation (no timings: 0/0) leaves them untouched.
         note_generation(0, 0);
         note_generation(22_800, 9_300);
+        // The lane-starved counter is its own separable window (card cff534ba).
+        note_lane_starved();
+        assert!(snapshot_lane_starved_and_reset() >= 1, "a lane-starved wait is on the hour's ledger");
+        assert_eq!(snapshot_lane_starved_and_reset(), 0, "the tick reset its window");
         let (cached, prefilled) = snapshot_prompt_and_reset();
         assert!(cached >= 22_800 && prefilled >= 9_300, "cached {cached} prefilled {prefilled}");
         // A window, not a lifetime: the read reset it. (`<`, not `== 0`: the ledger is a
