@@ -163,7 +163,15 @@ source "$SCRIPT_DIR/lib/windows-build-env.sh"
 case "$(uname -sm)" in
   "Darwin x86_64")
     CONTINUUM_FEATURES="--no-default-features --features livekit-webrtc,llama/mac-cpu-only"
-    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
+    # ONE library compile per deploy — the arm64 rule below, which this arm never got
+    # (card 7d1b3660). With the CLI lacking `livekit-webrtc`, cargo's per-invocation
+    # feature unification recompiled the WHOLE continuum-core lib for the CLI and then
+    # again for the next bin: measured on the IntelMac deploy of fd1960e52 (2026-09-20),
+    # the post-stop pass spent 18 + 18 min on two lib rebuilds after the warm pass had
+    # already built every bin — the core was DOWN 41 minutes. The GPU-free reason for a
+    # smaller CLI set (a box without a CUDA runtime) does not apply to a Mac; the CLI is
+    # still CPU-only through `llama/mac-cpu-only`, the same as the core here.
+    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
     ;;
   "Darwin arm64")
     CONTINUUM_FEATURES="--features metal,accelerate"
