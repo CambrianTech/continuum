@@ -1242,7 +1242,30 @@ async fn serve_persona_loop_inner(
                 // speaking without a mention. Ambient turns defer to a later beat with free
                 // capacity (a self-tick re-perceives the room); high_water is pre-advanced
                 // so it can't re-trigger, and the durable transcript loses nothing.
-                let _ambient_permit = if attention.requires_priority() {
+                // A CARD-HOLDER IS NOT A STAMPEDE RESPONSE (2026-09-20, the M5's first
+                // bounded hour: 4 minds on 2 lanes, ambient budget 1, 11 lane grants,
+                // writes 0). The #171 permit bounds the fan-out of minds deciding "not for
+                // me"; a mind holding a card is not deciding that — she is the mind the
+                // lane exists for. She goes straight to the lane gate, where the Work class
+                // (`LanePriority::Work`) still bounds her and ambient turns yield to her.
+                // Read off the board she already keeps; an unreadable board = no proof of
+                // held work = the ambient rule, as before.
+                let holds_work = match conversation.stream_citizen() {
+                    Some(citizen) => citizen
+                        .active_claims()
+                        .await
+                        .map(|cards| cards.iter().any(crate::persona::act_question::card_is_held))
+                        .unwrap_or(false), // unwrap_or: an unreadable board proves nothing — the ambient rule stands
+                    None => false,
+                };
+                if holds_work && !attention.requires_priority() {
+                    crate::probe!(
+                        class = "persona.turn.work_holder_bypasses_ambient_permit",
+                        persona = %ctx.identity.agent_name,
+                        "a mind holding a card goes straight to the lane gate — the ambient anti-stampede permit is for minds deciding whether a room line is theirs"
+                    );
+                }
+                let _ambient_permit = if attention.requires_priority() || holds_work {
                     None
                 } else {
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {

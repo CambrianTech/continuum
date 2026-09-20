@@ -259,6 +259,12 @@ pub struct CitizenHealth {
     /// The tick's own sample, for the line — `lanes 3 (max this hour; 1 now)` tells a
     /// reader the launch was between lanes at the tick.
     pub lanes_now: u64,
+    /// What a DIRECTED call waited for its lane this window, p50 / p90 ms, and how many
+    /// waited — the reserved lane's guarantee in its own unit (Cormac, 2026-09-20). 0 waits
+    /// = nothing directed arrived, which is not a zero wait.
+    pub directed_wait_p50_ms: u64,
+    pub directed_wait_p90_ms: u64,
+    pub directed_waits: u64,
     pub served_window: u64,
     pub acts: u64,
     pub writes: u64,
@@ -416,8 +422,19 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     } else {
         h.lanes.to_string()
     };
+    // The reserve's guarantee in its own unit: what a directed call waited, when any did.
+    let directed = if h.directed_waits > 0 {
+        format!(
+            " · directed wait p50 {}s / p90 {}s ({} calls)",
+            h.directed_wait_p50_ms / 1000,
+            h.directed_wait_p90_ms / 1000,
+            h.directed_waits
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -430,6 +447,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.settles,
         h.credits_staged,
         h.credits_settled,
+        directed,
         tail
     )
 }
@@ -550,11 +568,16 @@ impl CitizenHealthModule {
         // window starts again from what is served now.
         let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
         let (rounds_working, standing_enabled) = round_supply();
+        let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
+            crate::cognition::resource_admission::directed_lane_wait_ms();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
             lanes,
             lanes_now,
+            directed_wait_p50_ms,
+            directed_wait_p90_ms,
+            directed_waits: directed_waits as u64,
             served_window: serving.served_context_window as u64,
             acts,
             writes,
@@ -689,6 +712,9 @@ impl ServiceModule for CitizenHealthModule {
                         .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents
                     lanes: LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64),
                     lanes_now: crate::inference::llama_server::current_serving().lanes as u64,
+                    directed_wait_p50_ms: crate::cognition::resource_admission::directed_lane_wait_ms().0,
+                    directed_wait_p90_ms: crate::cognition::resource_admission::directed_lane_wait_ms().1,
+                    directed_waits: crate::cognition::resource_admission::directed_lane_wait_ms().2 as u64,
                     served_window: crate::inference::llama_server::current_serving().served_context_window as u64,
                     acts: LEDGER.acts.load(Ordering::Relaxed),
                     writes: LEDGER.writes.load(Ordering::Relaxed),
@@ -764,7 +790,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, knee: None, rounds_working: 1, standing_enabled: true }
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
@@ -842,6 +868,11 @@ mod tests {
         for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "STARVED"] {
             assert!(l.contains(needle), "{needle} missing from {l}");
         }
+        assert!(!l.contains("directed wait"), "no directed call waited: the line does not invent a zero wait");
+        // The reserve's guarantee in its own unit, when a directed call did wait.
+        let waited = CitizenHealth { directed_wait_p50_ms: 4_200, directed_wait_p90_ms: 61_000, directed_waits: 3, ..x.clone() };
+        let l = line(&waited, &verdict(&waited));
+        assert!(l.contains("directed wait p50 4s / p90 61s (3 calls)"), "{l}");
     }
 
     // what this catches: the ledger is a window — a tick reads AND resets, so the next

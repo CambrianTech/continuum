@@ -51,6 +51,13 @@ pub fn clear(persona: Uuid) {
 pub fn is_pending(persona: Uuid) -> bool {
     cell(persona).flag.load(Ordering::SeqCst)
 }
+/// Is a directed line pending for ANY citizen on this node (no wait)? The reserved
+/// lane's re-arm signal (`resource_admission::reserve_lendable`): while this is true the
+/// reserve is never lent to work, so a directed call finds its lane.
+pub fn any_pending() -> bool {
+    let map = PENDING.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    map.values().any(|c| c.flag.load(Ordering::SeqCst))
+}
 
 /// Resolve when a directed line is pending — immediately if one already is.
 pub async fn wait(persona: Uuid) {

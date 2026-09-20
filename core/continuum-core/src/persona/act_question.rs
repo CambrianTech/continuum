@@ -51,6 +51,14 @@ const WORK_GATE_PAGE_ROWS: usize = 400;
 /// so a caller (the self-tick) can skip a redundant musing cycle when the
 /// heartbeat already advanced her claimed card. `false` when there was no cycle,
 /// no citizen, or no held work.
+/// A card is in her hands when it is Claimed or InProgress — the ONE predicate the work
+/// gate, and the service loop's ambient-permit bypass, both key on (a card she has
+/// claimed but not yet started is held: beginning must not be the precondition for
+/// beginning).
+pub fn card_is_held(c: &airc_lib::WorkCard) -> bool {
+    matches!(c.state, airc_work::CardState::InProgress | airc_work::CardState::Claimed)
+}
+
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
@@ -122,15 +130,7 @@ pub(crate) async fn ask_the_act_question(
             let claims_result = citizen.active_claims().await;
             let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
             let claims = claims_result.unwrap_or_default();
-            let held: Vec<&airc_lib::WorkCard> = claims
-                .iter()
-                .filter(|c| {
-                    matches!(
-                        c.state,
-                        airc_work::CardState::InProgress | airc_work::CardState::Claimed
-                    )
-                })
-                .collect();
+            let held: Vec<&airc_lib::WorkCard> = claims.iter().filter(|c| card_is_held(c)).collect();
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act

@@ -232,6 +232,36 @@ pub fn note_local_lane_wait_ms(ms: u64) {
 pub fn local_lane_wait_p50_ms() -> (u64, u32) {
     LOCAL_LANE_WAIT_MS.p50()
 }
+/// What a DIRECTED call waited for its lane here — the unit the reserved lane's guarantee
+/// is stated in (Cormac, 2026-09-20: "the reserve is a WAIT guarantee for a directed call,
+/// not a lane count"). Fed at the faculty's lane gate for priority turns; read by the
+/// hourly health line as p50 / p90 so a reader sees what a human waited, not how many
+/// lanes stood idle.
+static DIRECTED_LANE_WAIT_MS: WaitRing = WaitRing::new();
+pub fn note_directed_lane_wait_ms(ms: u64) {
+    DIRECTED_LANE_WAIT_MS.note(ms);
+}
+/// (p50 ms, p90 ms, samples); `samples == 0` = no directed call waited this window.
+pub fn directed_lane_wait_ms() -> (u64, u64, u32) {
+    DIRECTED_LANE_WAIT_MS.p50_p90()
+}
+/// PURE: may a WORK call be lent the lane reserved for directed calls? Only while no
+/// directed line is pending for any citizen here, and only when the call's expected
+/// occupancy — prefill of its uncached prompt at the measured prefill rate plus its
+/// decode at the measured decode rate — fits inside the directed wait budget, so the
+/// most a directed arrival can wait is that bound. Unknown occupancy lends nothing.
+///
+/// Measured 2026-09-20 on the M5 (2 lanes): the reserve of lanes−1 left ONE non-directed
+/// lane for four minds at 3–6 min a turn — 11 grants an hour with a lane idle for a
+/// mention that came once all night. The reserve stays a guarantee; it is now stated in
+/// the seconds a directed call may wait, not in lanes.
+pub fn reserve_lendable(
+    expected: Option<std::time::Duration>,
+    directed_pending: bool,
+    budget: std::time::Duration,
+) -> bool {
+    !directed_pending && expected.is_some_and(|e| e <= budget)
+}
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
 struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
@@ -252,6 +282,22 @@ impl WaitRing {
         let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
         p50_of(ring.iter().copied())
     }
+    fn p50_p90(&self) -> (u64, u64, u32) {
+        let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
+        percentiles_of(ring.iter().copied())
+    }
+}
+/// PURE: (p50, p90, count) of a sample stream; (0, 0, 0) for none. p90 is the value at
+/// the 90th-percentile rank (nearest-rank), so a single sample is its own p90.
+pub fn percentiles_of(samples: impl Iterator<Item = u64>) -> (u64, u64, u32) {
+    let mut v: Vec<u64> = samples.collect();
+    if v.is_empty() {
+        return (0, 0, 0);
+    }
+    v.sort_unstable();
+    let n = v.len();
+    let p90 = v[((n * 9).div_ceil(10)).saturating_sub(1).min(n - 1)];
+    (v[n / 2], p90, n.min(u32::MAX as usize) as u32)
 }
 /// PURE: the median of a sample stream with its count; (0, 0) for none.
 pub fn p50_of(samples: impl Iterator<Item = u64>) -> (u64, u32) {
@@ -870,13 +916,47 @@ impl LaneAdmission {
 
     /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
     /// test instance can never drift into two different policies.
-    pub async fn acquire_serving_lane(&'static self, priority: LanePriority) -> ServingLanePermit {
+    pub async fn acquire_serving_lane(
+        &'static self,
+        priority: LanePriority,
+        expected_occupancy: Option<std::time::Duration>,
+    ) -> ServingLanePermit {
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
-        // acquire below can never let non-directed work starve a directed caller.
+        // acquire below can never let non-directed work starve a directed caller —
+        // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
+        // while nothing directed is pending: it may be LENT the reserved lane, because the
+        // guarantee is the wait, not the lane (`reserve_lendable`). The loan ends when the
+        // permit drops; a directed line pending at the next acquire re-arms the reserve.
         let nondirected = match priority {
             LanePriority::Directed => None,
-            LanePriority::Work => Some(self.acquire_nondirected_as_work().await),
+            LanePriority::Work => {
+                let sem = self.nondirected_lanes().clone();
+                match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
+                    Some(p) => Some(p),
+                    None => {
+                        let reserve_exists = self.nondirected_budget() < self.lane_count();
+                        let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
+                        if reserve_exists
+                            && reserve_lendable(
+                                expected_occupancy,
+                                crate::cognition::directed_pending::any_pending(),
+                                budget,
+                            )
+                        {
+                            crate::probe!(
+                                class = "admission.lane.reserve_lent_to_work",
+                                expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
+                                budget_ms = budget.as_millis() as u64,
+                                "the reserved lane is lent to a bounded work call — a directed arrival waits at most the call's occupancy"
+                            );
+                            None
+                        } else {
+                            Some(self.acquire_nondirected_as_work().await)
+                        }
+                    }
+                }
+            }
             LanePriority::Ambient => Some(self.acquire_nondirected_as_ambient().await),
         };
         let lane = self
@@ -1001,8 +1081,15 @@ pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
 }
 
-pub async fn acquire_serving_lane(priority: LanePriority) -> ServingLanePermit {
-    LANES.acquire_serving_lane(priority).await
+/// `expected_occupancy`: the call's own bound on how long it will hold the lane (prefill
+/// of the uncached prompt + decode, at this box's measured rates), or `None` = unknown. Only
+/// a WORK call uses it — the reserved lane may be lent to it inside the directed wait
+/// budget (`reserve_lendable`). Directed and ambient callers pass `None`.
+pub async fn acquire_serving_lane(
+    priority: LanePriority,
+    expected_occupancy: Option<std::time::Duration>,
+) -> ServingLanePermit {
+    LANES.acquire_serving_lane(priority, expected_occupancy).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -1838,4 +1925,30 @@ mod tests {
         }
         assert_eq!(ring.p50(), (1, WAIT_RING_SAMPLES as u32), "bounded: the window forgets");
     }
+    // what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
+    // guarantee in seconds. A work call is lent the reserved lane only when its occupancy
+    // is known and fits the directed budget and nothing directed is pending; an unknown
+    // occupancy, a pending directed line, or an occupancy past the budget lends nothing.
+    #[test]
+    fn the_reserved_lane_is_lent_only_to_bounded_work_while_nothing_directed_is_pending() {
+        use std::time::Duration;
+        let budget = Duration::from_secs(60);
+        assert!(reserve_lendable(Some(Duration::from_secs(40)), false, budget));
+        assert!(!reserve_lendable(Some(Duration::from_secs(40)), true, budget), "a pending directed line re-arms the reserve");
+        assert!(!reserve_lendable(Some(Duration::from_secs(154)), false, budget), "a 154 s turn (the M5 tonight) may not take the reserve");
+        assert!(!reserve_lendable(None, false, budget), "unknown occupancy is not a number");
+        assert!(reserve_lendable(Some(budget), false, budget), "exactly the budget fits");
+    }
+
+    // what this catches: the health line's directed-wait numbers are nearest-rank
+    // percentiles over the ring — one sample is its own p90, ten samples put p90 at the
+    // ninth, and an empty ring is (0, 0, 0), never a fabricated zero wait.
+    #[test]
+    fn directed_wait_percentiles_are_nearest_rank() {
+        assert_eq!(percentiles_of(std::iter::empty()), (0, 0, 0));
+        assert_eq!(percentiles_of([7].into_iter()), (7, 7, 1));
+        assert_eq!(percentiles_of((1..=10).map(|x| x * 100)), (600, 900, 10));
+        assert_eq!(percentiles_of([5, 1, 9, 3].into_iter()), (5, 9, 4));
+    }
+
 }
