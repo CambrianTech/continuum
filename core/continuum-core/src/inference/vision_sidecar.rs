@@ -140,10 +140,18 @@ pub fn mark_candidate_failed(model_id: &str) {
 pub fn find_candidate(
     rows: &[Model],
     active_model: Option<&str>,
+    pinned_off: &[String],
 ) -> Result<SidecarCandidate, Vec<String>> {
     let mut skipped = Vec::new();
     for m in rows {
         if !m.has(Capability::Vision) {
+            continue;
+        }
+        // The operator's OFF pin (serving/unload) binds the sidecar too: the M5,
+        // 2026-09-20 17:49Z, unloaded a 35B and the sidecar re-admitted it as the vision
+        // provider forty seconds later, 20 GB the main lane then could not have.
+        if pinned_off.iter().any(|p| p == &m.id) {
+            skipped.push(format!("{}: pinned off by the operator (serving/unload)", m.id));
             continue;
         }
         if failed_this_process().contains(&m.id) {
@@ -312,6 +320,17 @@ mod tests {
         }
     }
 
+    // what this catches (2026-09-20, the M5): a model the operator pinned OFF coming back
+    // as the vision sidecar and taking the budget the main lane needed for one real turn.
+    #[test]
+    fn a_pinned_off_row_is_never_a_sidecar() {
+        let rows = vec![vision_row("vl-model-a"), vision_row("vl-model-b")];
+        let out = find_candidate(&rows, None, &["vl-model-b".to_string()]);
+        let skipped = out.expect_err("no artifacts on disk in tests");
+        assert!(skipped.iter().any(|s| s.starts_with("vl-model-b: pinned off")), "{skipped:?}");
+        assert!(skipped.iter().any(|s| s.starts_with("vl-model-a: no local GGUF")), "the unpinned row is judged on its artifacts");
+    }
+
     // what this catches: the sidecar must never duplicate the main lane's model
     // (a second copy of the same weights) and must skip rows with no on-disk
     // artifacts WITH a named reason — the difference between diagnosable
@@ -319,7 +338,7 @@ mod tests {
     #[test]
     fn candidate_skips_active_model_and_names_artifact_gaps() {
         let rows = vec![vision_row("vl-model-a"), vision_row("vl-model-b")];
-        let out = find_candidate(&rows, Some("vl-model-a"));
+        let out = find_candidate(&rows, Some("vl-model-a"), &[]);
         // Neither resolves artifacts in a test env; the ACTIVE one is skipped
         // for being active, the other for missing artifacts.
         let skipped = out.expect_err("no artifacts on disk in tests");

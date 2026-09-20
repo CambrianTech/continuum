@@ -1453,7 +1453,9 @@ fn main_lane_mmproj_decision_for(
         let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
             .map(|r| r.models().cloned().collect())
             .unwrap_or_default();
-        Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id)).is_ok())
+        // Availability only (does ANY sidecar row exist), not admission: the pin is judged
+        // where the sidecar is launched, by the daemon that holds the operator's pins.
+        Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id), &[]).is_ok())
     };
     main_lane_mmproj_decision(
         model.serving.mmproj_on_main_lane,

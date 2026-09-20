@@ -3014,6 +3014,14 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         let sidecar_slot = self.vision_sidecar.clone();
         let system = self.system.clone();
+        // What the sidecar must respect, read once here and moved into the task: the
+        // operator's OFF pins (a pinned-off model is never the vision provider either) and
+        // the residents' per-lane requirement (a sidecar never holds memory the main lane
+        // needs for one real turn). The M5, 2026-09-20 17:49Z: with the 27B pinned off at
+        // boot the sidecar admitted a 35B against a 2,048-token main lane's headroom, and
+        // when the 27B came back it got what was left — one lane at 2,048.
+        let pinned_off: Vec<String> = self.suppressed.borrow().iter().cloned().collect();
+        let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
         let rehome_cooldown = self.rehome_cooldown.clone();
@@ -3143,6 +3151,7 @@ impl ServingDaemonModule {
                     let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
                         &sidecar_rows,
                         Some(desired.as_str()),
+                        &pinned_off,
                     );
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
@@ -3197,6 +3206,19 @@ impl ServingDaemonModule {
                             base_url: serving_v1_url(),
                             model_id: desired.clone(),
                         })
+                    } else if persona_floor.is_some_and(|f| served_window > 0 && served_window < f) {
+                        // THE MAIN LANE IS BELOW WHAT ITS RESIDENTS NEED: the sidecar's
+                        // memory is exactly the window they are missing. Drop it (RAII kills
+                        // the child, RAM freed, the next plan grows the lane); it respawns on
+                        // the first plan whose headroom is measured against a lane that holds.
+                        crate::probe!(
+                            class = "serving.vision.sidecar_yields_to_persona_floor",
+                            served_window = served_window as u64,
+                            persona_floor = persona_floor.unwrap_or(0) as u64, // unwrap_or: guarded by is_some_and
+                            "main lane below the residents' requirement — vision sidecar yields its budget to the lane"
+                        );
+                        *sidecar_slot.lock().await = None;
+                        None
                     } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
                         // SOLVE REGIME: the eyes yield (2026-08-29, "take every
                         // architectural advantage"). While a pinned solve floor
@@ -3241,9 +3263,13 @@ impl ServingDaemonModule {
                                 // window × lanes, the compute reserve and the OS floor.
                                 let live_free = system.snapshot().memory.available_bytes;
                                 let physical = system.memory().total_bytes;
+                                // Headroom AFTER the main lane at the width its residents
+                                // NEED, never at a transient starved width: a 2,048-token lane
+                                // reads as 39 GB of headroom on a 64 GB box, and a sidecar
+                                // admitted on that number is the reason the lane stays 2,048.
                                 let planned_headroom = sidecar_planned_headroom_bytes(
                                     &target,
-                                    served_window,
+                                    sidecar_window_for_headroom(served_window, persona_floor),
                                     physical,
                                 );
                                 let free = sidecar_admissible_bytes(live_free, planned_headroom, physical);
@@ -5134,6 +5160,12 @@ fn prompt_cache_decision(
 /// `physical − weights − KV(served window) × lanes − compute reserve − OS floor`.
 /// Saturating: an over-full box yields ZERO headroom, never a wrap. Pure over the
 /// target and the served window, so a relaunch window cannot lie to it.
+/// The main-lane width a sidecar's headroom is planned against: the served width or the
+/// residents' requirement, whichever is larger. PURE.
+pub fn sidecar_window_for_headroom(served_window: u32, persona_floor: Option<u32>) -> u32 {
+    served_window.max(persona_floor.unwrap_or(0)) // unwrap_or: no requirement measured = the served width stands
+}
+
 fn sidecar_planned_headroom_bytes(
     target: &ServingTarget,
     served_window: u32,
