@@ -1937,13 +1937,43 @@ impl ServingDaemonModule {
             Some(_) if live.host_prompt_cache_mib == 0 => {
                 crate::probe!(
                     class = "serving.footprint.unmeasured",
+                    leg = "unknown_grant",
                     model = %active,
                     pid = pid as u64,
                     source,
                     lanes = live.lanes as u64,
+                    window = live.served_context_window as u64,
                     "the engine's cache grant is unknown (an adopted lane whose argv names no \
                      --cache-ram, and no spawn fact) — the per-token reading is WITHHELD rather \
                      than taken with the whole prompt cache attributed as per-token bytes"
+                );
+                "unmeasured"
+            }
+            // A STARVED window withholds the reading too: at 2,048 tokens the bytes beyond
+            // weights are the engine's fixed buffers, and dividing them by 2,048 reads as
+            // hundreds of KB per token — saved, that record fits no window at all and pins
+            // the next plan at the floor it fell to (the trap a collapsed node cannot climb
+            // out of). Below one full turn's window the measurement is not a measurement.
+            // …and RETIRES the model's record (Cormac's condition on #4255): a node already
+            // in the trap holds a ~244k B/token record that corrects the plan UP to the
+            // floor; left standing behind a withheld reading it rules forever. Retired, the
+            // plan falls back to the estimate, plans a real window, and the next honest
+            // reading replaces the estimate — the node climbs out without a hand on a file.
+            Some(_) if !crate::inference::lane_footprint::window_measurable(live.served_context_window) => {
+                let retired = crate::inference::lane_footprint::retire(&active);
+                crate::probe!(
+                    class = "serving.footprint.unmeasured",
+                    leg = "starved_window",
+                    model = %active,
+                    pid = pid as u64,
+                    source,
+                    lanes = live.lanes as u64,
+                    window = live.served_context_window as u64,
+                    floor = crate::inference::lane_footprint::MEASURABLE_WINDOW_MIN as u64,
+                    record_retired = retired,
+                    "the served window is below one full turn — the per-token reading is WITHHELD \
+                     (the excess over weights is fixed buffers, not tokens) and the model's record \
+                     is RETIRED so a trap record cannot keep the plan at the floor"
                 );
                 "unmeasured"
             }
@@ -3579,9 +3609,13 @@ impl ServingDaemonModule {
         // geometries per boot, every first turn killed. The store now carries lanes with
         // the window; with no incumbent, the remembered geometry is the plan's first choice
         // when its model is still a candidate.
+        // …and only a STEADY one: a record whose window is below the typical prompt it
+        // remembers is the collapse the last plan shed to, not a geometry that served
+        // anyone (`StoredServedWindow::steady_geometry`, 2026-09-20).
         let boot = if incumbent.is_none() {
-            crate::modules::served_window_store::load_geometry()
-                .filter(|g| g.lanes > 0 && candidates.iter().any(|c| c.model_id == g.model_id))
+            crate::modules::served_window_store::load_geometry().filter(|g| {
+                g.steady_geometry().is_some() && candidates.iter().any(|c| c.model_id == g.model_id)
+            })
         } else {
             None
         };

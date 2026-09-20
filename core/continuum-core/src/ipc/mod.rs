@@ -2792,7 +2792,11 @@ pub fn start_server(
                 .with_population(persona_floor)
                 // The boot draw's bound before any live plan: the last SETTLED lanes
                 // this host served (card 7c38ff6f) — handed in once, never re-read.
-                .with_remembered_lanes(crate::modules::served_window_store::load_geometry().map(|g| g.lanes)),
+                .with_remembered_lanes(
+                    // One record, one law (#4255): a collapsed geometry seeds the roster bound no
+                    // more than it seeds the boot plan.
+                    crate::modules::served_window_store::load_geometry().and_then(|g| g.steady_geometry().map(|(_, l)| l)),
+                ),
             instance_manager.clone(),
             // Persona reasoning binds to whatever the serving daemon has live,
             // read off its published ServingSnapshot (not a probe of our own).

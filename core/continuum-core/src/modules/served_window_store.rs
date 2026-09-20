@@ -34,6 +34,27 @@ pub struct StoredServedWindow {
     pub set_at_ms: u64,
 }
 
+impl StoredServedWindow {
+    /// The geometry a cold boot may plan FIRST — or `None` when the record is a COLLAPSE,
+    /// not a steady state. A window below the typical prompt the same record remembers
+    /// cannot have served a turn: it is what the plan shed to under pressure (the M5 at
+    /// 2026-09-20 07:52Z: 1 × 2,048 with residents sending ~30k; the 5090 the same
+    /// afternoon, refusing every 17–31k prompt against a 2,048 slot). Remembering it as
+    /// "the last steady geometry" seeds the NEXT boot with the collapse — its lane count
+    /// caps the boot's choice at one lane and its window joins the floor — so a node that
+    /// fell over once boots into the fall. An unknown typical (0, an older record) never
+    /// disqualifies: the window carries over as before. Zero lanes is no geometry.
+    pub fn steady_geometry(&self) -> Option<(u32, u32)> {
+        if self.lanes == 0 {
+            return None;
+        }
+        if self.typical_prompt_tokens > 0 && self.per_slot_window < self.typical_prompt_tokens {
+            return None;
+        }
+        Some((self.per_slot_window, self.lanes))
+    }
+}
+
 fn path_under(home: &Path) -> PathBuf {
     home.join("state").join(FILE)
 }
@@ -138,6 +159,26 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a collapsed geometry must not seed the next boot as the steady one.
+    // Regression for the M5 (2026-09-20 08:43Z booted 1 × 2,048 from the record its 07:52Z
+    // collapse wrote) and the 5090 (serving 1 × 2,048 all afternoon, refusing 17–31k prompts):
+    // a window below the typical prompt the same record remembers is a fall, not a state.
+    #[test]
+    fn a_window_below_the_typical_prompt_is_a_collapse_not_a_steady_geometry() {
+        let rec = |window: u32, lanes: u32, typical: u32| StoredServedWindow {
+            model_id: "m".into(),
+            per_slot_window: window,
+            lanes,
+            typical_prompt_tokens: typical,
+            set_at_ms: 1,
+        };
+        assert_eq!(rec(2_048, 1, 30_000).steady_geometry(), None, "the collapse seeds nothing");
+        assert_eq!(rec(67_072, 2, 30_000).steady_geometry(), Some((67_072, 2)), "a window that served the residents' prompts is steady");
+        assert_eq!(rec(2_048, 1, 0).steady_geometry(), Some((2_048, 1)), "an unknown typical never disqualifies");
+        assert_eq!(rec(67_072, 0, 30_000).steady_geometry(), None, "zero lanes is no geometry");
+        assert_eq!(rec(30_000, 1, 30_000).steady_geometry(), Some((30_000, 1)), "a window equal to the typical served it");
+    }
 
     // what this catches: the store answering for a different model (a foreign
     // window would key the page dir wrong), and a corrupt file surviving a read.

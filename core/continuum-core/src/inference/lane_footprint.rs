@@ -67,6 +67,21 @@ impl MeasuredCost {
 /// process still ran two. Subtracting the whole grant makes the reading a LOWER bound
 /// on the KV-attributable bytes, which is the only direction a footprint may correct
 /// an estimate ([`corrects`]).
+/// The smallest served window a per-token reading may be taken at: one full turn
+/// (`BOOTSTRAP_WORKING_SET`, 16,384 tokens). Below it the bytes beyond weights are the
+/// engine's fixed per-lane buffers, not KV, and dividing them by the window reads as
+/// hundreds of KB per token (2,048 tokens: ~500 MB of buffers → ~244k B/token against a
+/// 32k estimate). Saved as the record, that number fits no window and pins the next plan
+/// at the floor the node fell to — the trap the 5090 sat in on 2026-09-20 (1 × 2,048,
+/// refusing every 17–31k prompt). A starved window is a fact for the plan to escape,
+/// never a measurement to remember.
+pub const MEASURABLE_WINDOW_MIN: u32 = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET;
+
+/// PURE: whether a per-token reading taken at `window` is a measurement at all.
+pub fn window_measurable(window: u32) -> bool {
+    window >= MEASURABLE_WINDOW_MIN
+}
+
 pub fn per_token_from(
     anon_bytes: u64,
     lanes: u32,
@@ -151,6 +166,23 @@ fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample:
         }
         None => costs.remove(model).is_some(),
     }
+}
+
+/// RETIRE the model's record: a record that cannot be re-confirmed at a measurable window
+/// must not keep ruling the plan from disk (Cormac's condition on #4255). A node already in
+/// the trap — a ~244k B/token record taken at 2,048 — would otherwise loop: the record
+/// corrects the plan up to 1 × 2,048, the starved window withholds the reading, the record
+/// stands, the plan stays. Retiring it drops the plan back to the estimate (~33k), which
+/// plans a real window, which the next honest reading replaces. Returns whether a record
+/// was there to retire; the save is immediate so a boot never reads it again.
+pub fn retire(model: &str) -> bool {
+    let mut costs = COSTS.lock();
+    let gone = apply_sample(&mut costs, model, None);
+    if gone {
+        save_all(&costs);
+        LAST_SAVE_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+    gone
 }
 
 /// The fresh measured record for `model`, if any — per-token AND the geometry it was
@@ -266,6 +298,32 @@ pub fn save_to(path: &Path, costs: &BTreeMap<String, MeasuredCost>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: no per-token reading at a starved window. At 2,048 tokens the
+    // excess over weights is fixed buffers and reads as ~244k B/token; remembered, it pins
+    // the next plan at the floor (the 5090, 2026-09-20). One full turn is the floor.
+    #[test]
+    fn a_starved_window_is_not_a_measurement() {
+        assert!(!window_measurable(2_048));
+        assert!(!window_measurable(MEASURABLE_WINDOW_MIN - 1));
+        assert!(window_measurable(MEASURABLE_WINDOW_MIN));
+        assert!(window_measurable(67_072));
+        // The arithmetic the floor guards against: 500 MB of fixed buffers over 2,048 tokens.
+        let per_token = per_token_from(500_000_000, 1, 2_048, 0, 0).expect("reads");
+        assert!(per_token > 200_000, "a starved window reads fixed buffers as tokens: {per_token} B/token");
+        // A node ALREADY in the trap climbs out: the record taken at the starved window is
+        // RETIRED, not merely left standing (Cormac's condition on #4255) — otherwise
+        // record → 1 × 2,048 → withhold → record is a loop nothing opens.
+        let model = "trapped-fixture";
+        COSTS.lock().insert(
+            model.to_string(),
+            MeasuredCost { per_token_bytes: per_token, lanes: 1, window: 2_048, anon_bytes: 500_000_000, last_ms: now_ms() },
+        );
+        assert!(measured_record(model).is_some(), "the trap record rules before retirement");
+        assert!(retire(model), "a record was there to retire");
+        assert!(measured_record(model).is_none(), "retired: the plan falls back to the estimate and plans a real window");
+        assert!(!retire(model), "nothing left to retire");
+    }
 
     // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): the plan's per-token
     // cost is derived from the process it launched with the plan's own decomposition, and
