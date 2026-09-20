@@ -387,13 +387,24 @@ impl ServiceModule for GridModule {
                     free_slots_live: offer.free_slots_live,
                     lane_wait_p50_ms: offer.lane_wait_p50_ms,
                     lane_wait_samples: offer.lane_wait_samples,
+                    // 0 = an older core's beacon: unknown width, not a refusal.
+                    served_context_window: (offer.served_context_window > 0).then_some(offer.served_context_window),
                 })
                 .collect();
             let serving = crate::inference::llama_server::current_serving();
             let rank_of = |id: &str| -> Option<u8> {
                 crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
             };
+            // What one of this node's turns needs of a lane: the residents' typical prompt
+            // with headroom, read once per pass; None until a turn has been sent.
+            let residents: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .map(|r| r.live_personas())
+                .unwrap_or_default(); // unwrap_or_default: no registry = no residents = no requirement yet
+            let requirement = crate::cognition::working_set::global()
+                .sent_median_of(&residents)
+                .map(crate::cognition::serving_plan::prompt_floor_of);
             let local = crate::persona::placement_switch::LocalShape {
+                requirement,
                 lane_wait_p50_ms: {
                     let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
                     (samples > 0).then_some(p50)
