@@ -3681,37 +3681,47 @@ impl ServingDaemonModule {
             plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
         };
         match stable {
-            // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
-            // "2k context is a complete waste of a lane"). A plan whose per-slot window is
-            // below the residents' requirement (measured today, declared per role once the
-            // allocator lands — never a constant here) is NOT published: the previously published plan
-            // stands (the running lane, if any, keeps serving), and the per-token footprint
-            // record that shrank the window is RETIRED so the next tick plans from the
-            // estimate — a starved plan is evidence of a trapped record (the 5090 sat at
-            // 2 × 2,048 for an afternoon on a ~244k B/token record taken at that window).
-            // Emitted once per (model, window, lanes), not per tick.
-            Some(plan) if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, demand.typical_prompt_floor()) => {
-                let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
-                static LAST_STARVED: parking_lot::Mutex<Option<(String, u32, u32)>> = parking_lot::Mutex::new(None);
-                let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
-                let mut last = LAST_STARVED.lock();
-                if last.as_ref() != Some(&key) || retired {
-                    crate::probe!(
-                        class = "serving.plan.below_persona_floor",
-                        model = plan.base_model.model_id.as_str(),
-                        lanes = plan.lanes as u64,
-                        window = plan.served_context_window as u64,
-                        requirement = demand.typical_prompt_floor().unwrap_or(0) as u64, // unwrap_or: probe label; this arm only fires with a requirement present
-                        usable_gb = (budget.usable_bytes / 1_000_000_000),
-                        record_retired = retired,
-                        "the plan's window is below what the residents require — NOT published (a starved \
-                         lane is not a persona seat); the previous plan stands and the footprint record is retired"
-                    );
-                    *last = Some(key);
-                }
-                return;
-            }
             Some(plan) => {
+                // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
+                // "2k context is a complete waste of a lane"). A plan whose per-slot window is
+                // below the residents' requirement (measured today, declared per role once the
+                // allocator lands — never a constant here) does not REPLACE a published plan:
+                // the previous one stands (the running lane keeps serving) and the per-token
+                // footprint record that shrank the window is RETIRED so the next tick plans
+                // from the estimate — a starved plan is evidence of a trapped record (the 5090
+                // sat at 2 × 2,048 for an afternoon on a ~244k B/token record taken there).
+                // With NO plan published (a cold boot) the best runnable plan is published and
+                // SAID (Cormac's condition on #4257): on the floor tier no candidate may hold
+                // the requirement at all — IntelMac's 1.5B is 32k trained against a 58k typical
+                // — and a dark node is worse than a starved seat; placement routes her turns to
+                // a seat that holds them. Emitted once per (model, window, lanes).
+                let requirement = demand.typical_prompt_floor();
+                if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, requirement) {
+                    let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
+                    let previous_stands = self.plan_tx.borrow().is_some();
+                    static LAST_STARVED: parking_lot::Mutex<Option<(String, u32, u32)>> = parking_lot::Mutex::new(None);
+                    let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
+                    let mut last = LAST_STARVED.lock();
+                    if last.as_ref() != Some(&key) || retired {
+                        crate::probe!(
+                            class = "serving.plan.below_persona_floor",
+                            model = plan.base_model.model_id.as_str(),
+                            lanes = plan.lanes as u64,
+                            window = plan.served_context_window as u64,
+                            requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                            record_retired = retired,
+                            published = !previous_stands,
+                            "the plan's window is below what the residents require — a published plan stands \
+                             instead when one exists (and the footprint record is retired); with none, the best \
+                             runnable plan is published and named a starved seat (a dark node is worse)"
+                        );
+                        *last = Some(key);
+                    }
+                    if previous_stands {
+                        return;
+                    }
+                }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained
                 // squeeze; it does not say what a host may SINK TO. Measured today: an unload
@@ -7303,6 +7313,26 @@ mod tests {
         let after = rx.borrow().clone().expect("the previous plan still stands");
         assert_eq!(after.served_context_window, good.served_context_window, "a 2k plan never replaces a real one");
         assert_eq!(after.lanes, good.lanes);
+        // With NO plan published (a cold boot) and a requirement the box cannot hold, the
+        // best runnable plan is still published — a dark node is worse than a starved seat
+        // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
+        let cold = ServingDaemonModule::new(
+            Arc::new(GpuMemoryManager::simulated("Intel", 16 * GB)),
+            Arc::new(SystemResourceMonitor::new()),
+            test_resource_daemon(),
+            test_catalog(),
+            test_pin_store(),
+        );
+        cold.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
+        let rx_cold = cold.subscribe();
+        let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
+        cold.publish_plan(HostBudget { usable_bytes: 12 * GB, perf_cores: 4 }, &small, &small);
+        let starved = rx_cold.borrow().clone().expect("a cold boot publishes the best runnable plan, starved or not");
+        assert!(starved.served_context_window <= 32_768);
+        assert!(
+            !crate::cognition::serving_plan::persona_lane_holds(starved.served_context_window, Some(70_071)),
+            "it IS below the requirement — published and said, never dark"
+        );
     }
 
     // what this catches: the `serving/*` surface (plan · status · load · unload) is
