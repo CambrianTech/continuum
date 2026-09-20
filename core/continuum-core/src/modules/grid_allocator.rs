@@ -277,10 +277,14 @@ impl Inner {
         let rank_of = |id: &str| -> Option<u8> {
             crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
         };
-        // This node's plan, read as an offer: the published plan's shape with the
-        // measured decode the knee record holds for its model.
+        // This node's plan, read as an offer: the published plan's shape with the decode
+        // this box measured for its model — `tps_for`, the rate at the LIGHTEST trusted
+        // concurrency. The plan's own lane count already respects the measured knee
+        // (`plan_serving` applies `knee_lanes`), which is the statement "every lane here
+        // decodes at or above the floor"; this number says how fast that is. `None` =
+        // never measured, which the allocator reads as an absence, never as a refusal.
         let local_plan = self.plan_rx.borrow().as_ref().filter(|p| p.fits_on_gpu).map(|p| {
-            LanePlan::of(p, crate::inference::decode_knee::measured_tps_for(&p.base_model.model_id).map(|t| t as f32))
+            LanePlan::of(p, crate::inference::decode_knee::tps_for(&p.base_model.model_id).map(|t| t as f32))
         });
         let peers = crate::capacity::gossip::global_ledger()
             .foreign_offers_with_age()
