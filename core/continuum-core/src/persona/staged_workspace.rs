@@ -145,6 +145,51 @@ pub struct StagedCopy {
 /// because picking either of two worked copies scores one citizen's diff against the
 /// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
 /// outcome, and the caller names the candidates).
+/// The git-derived facts of one staged copy, held keyed by the copy's own git state. A
+/// copy's base, changed paths and newest commit change only when git writes `.git/HEAD`,
+/// `.git/index` or `.git/logs/HEAD` — so three stats name whether the three git
+/// subprocesses below have anything new to say. Before this every persona turn holding a
+/// review card ran `read_dir` + up to three blocking `git` commands PER COPY (measured
+/// 2026-09-20, the worst re-derivation on the persona path; Joel: "find something once
+/// and pass it along"). `None` key = a copy whose git dir cannot be stated: recomputed.
+static COPY_FACTS: std::sync::LazyLock<dashmap::DashMap<PathBuf, (u128, StagedCopy)>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// PURE over the filesystem: the freshness key of a copy's git state (three mtimes), or
+/// `None` when it cannot be stated.
+pub(crate) fn git_state_key(root: &std::path::Path) -> Option<u128> {
+    let mut key: u128 = 0;
+    for rel in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+        let m = std::fs::metadata(root.join(rel)).ok()?.modified().ok()?;
+        let ms = m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+        key = key.wrapping_mul(1_000_003).wrapping_add(ms);
+    }
+    Some(key)
+}
+
+/// The facts of one copy: from the held record when its git state is unchanged, else
+/// derived (the three git commands) and held.
+fn copy_facts(peer: uuid::Uuid, path: PathBuf) -> StagedCopy {
+    let key = git_state_key(&path);
+    if let Some(k) = key {
+        if let Some(held) = COPY_FACTS.get(&path) {
+            if held.0 == k {
+                return held.1.clone();
+            }
+        }
+    }
+    let changed = candidate_paths_changed(&path);
+    let work_mtime_ms = newest_evidence_ms(
+        newest_work_mtime_ms(&path, &changed),
+        newest_commit_above_base_ms(&path),
+    );
+    let copy = StagedCopy { peer, path: path.clone(), has_work: work_mtime_ms.is_some(), work_mtime_ms };
+    if let Some(k) = key {
+        COPY_FACTS.insert(path, (k, copy.clone()));
+    }
+    copy
+}
+
 pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
         return Vec::new();
@@ -176,18 +221,7 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
         // same question, so "worked" here means exactly "gradeable" there. The PROTECTIVE
         // reading — "does she carry anything a restage must not destroy" — is
         // `work_mtime_of` and still counts every file; the two questions differ on purpose.
-        let changed = candidate_paths_changed(&path);
-        let work_mtime_ms = newest_evidence_ms(
-            newest_work_mtime_ms(&path, &changed),
-            newest_commit_above_base_ms(&path),
-        );
-        let has_work = work_mtime_ms.is_some();
-        out.push(StagedCopy {
-            peer,
-            path,
-            has_work,
-            work_mtime_ms,
-        });
+        out.push(copy_facts(peer, path));
     }
     out.sort_by(|a, b| a.peer.cmp(&b.peer));
     out
@@ -406,7 +440,40 @@ fn select(staged: &[String], titles: &[&str]) -> Selection {
 /// Ambiguity probes here rather than at [`resolve_for_titles`] because this is the caller
 /// that would silently score a false zero: it roots hands and a diff is taken afterwards.
 /// A dispatcher matching on the enum reports ambiguity in its own vocabulary instead.
+/// The workspace a citizen's held cards root her hands in, HELD keyed by (peer, the held
+/// titles, the staging root's mtime): the answer changes only when a card is claimed or
+/// released (the titles) or an instance is staged or swept (the root's mtime) — one stat
+/// per turn instead of a directory scan with a `.git` stat per entry.
+static HELD_WORKSPACE: std::sync::LazyLock<dashmap::DashMap<(uuid::Uuid, Vec<String>, u128), Option<PathBuf>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn staging_root_mtime_ms(peer: &uuid::Uuid) -> u128 {
+    staging_root(peer)
+        .and_then(|r| std::fs::metadata(r).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0) // unwrap_or: no staging root yet = key 0; the resolver answers None and that is held until a root appears (its mtime is then non-zero)
+}
+
 pub fn workspace_for_held_cards<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut titles: Vec<String> = card_titles.into_iter().map(str::to_string).collect();
+    titles.sort();
+    let key = (*peer, titles, staging_root_mtime_ms(peer));
+    if let Some(held) = HELD_WORKSPACE.get(&key) {
+        return held.clone();
+    }
+    let answer = workspace_for_titles_now(peer, key.1.iter().map(String::as_str));
+    // One entry per (peer, held set): a changed set or root replaces the old key.
+    HELD_WORKSPACE.retain(|k, _| k.0 != *peer);
+    HELD_WORKSPACE.insert(key, answer.clone());
+    answer
+}
+
+fn workspace_for_titles_now<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
 where
     I: IntoIterator<Item = &'a str>,
 {
@@ -429,6 +496,30 @@ where
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a copy's git-derived facts are found ONCE and held keyed by its
+    // git state — the same three stats every turn, the three git subprocesses only when
+    // git wrote something. Regression for the per-turn `read_dir` + 3 × git on every
+    // persona turn (2026-09-20).
+    #[test]
+    fn a_copys_facts_are_held_until_its_git_state_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("copy");
+        std::fs::create_dir_all(root.join(".git").join("logs")).unwrap();
+        for f in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+            std::fs::write(root.join(f), b"x").unwrap();
+        }
+        let k1 = super::git_state_key(&root).expect("statable");
+        assert_eq!(super::git_state_key(&root), Some(k1), "the same state keys the same");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/HEAD"), b"ref: refs/heads/other").unwrap();
+        let t = std::time::SystemTime::now();
+        std::fs::File::options().write(true).open(root.join(".git/HEAD")).unwrap().set_modified(t).unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k1), "a git write re-keys the copy");
+        let bare = tmp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(super::git_state_key(&bare), None, "no git state → not held, always derived");
+    }
+
     // what this catches (2026-09-12): a committed fix on a clean tree reading as "no work" —
     // the staging re-cloned over it and the sweep reopened the card as "left no artifact".
     #[test]

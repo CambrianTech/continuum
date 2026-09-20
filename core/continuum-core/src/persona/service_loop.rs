@@ -2558,7 +2558,14 @@ async fn run_self_cycle(
     // room every tick (code/shell, code/read) while a seed-4 card sat open for 40
     // minutes; not one pull attempt. Held work keeps its order (a holder's tick is
     // her work turn; she pulls review cards after it, below).
-    if focus_room.is_none() {
+    // The deck is asked ONCE per cycle. An idle citizen asks it here, before the act
+    // question; if nothing was taken, the same answer stands after the question (the
+    // deck does not change in the seconds between) — the second pull below is for the
+    // citizen who had a focus room and never asked. Before this an idle cycle pulled
+    // twice: two room subscriptions, two live_rounds clones, two board reads per cycle
+    // per idle mind (2026-09-20).
+    let asked_deck_first = focus_room.is_none();
+    if asked_deck_first {
         match try_pull_next_card(ctx, conversation).await {
             PullOutcome::Pulled => {
                 crate::probe!(
@@ -2603,6 +2610,9 @@ async fn run_self_cycle(
     // not an LLM claim tool), WIP-limited to one by construction: once she holds
     // the pulled card the held-work branch above works it and this branch won't
     // fire again until it settles. Pulling IS engagement → hold the fast beat.
+    if asked_deck_first {
+        return false;
+    }
     match try_pull_next_card(ctx, conversation).await {
         PullOutcome::Pulled => {
             return true;
