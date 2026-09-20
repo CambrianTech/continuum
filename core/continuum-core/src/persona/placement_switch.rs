@@ -1062,8 +1062,10 @@ mod tests {
         // Home, seat fresh + served + offering a slot, cooled: never returned to a narrow seat.
         assert_eq!(decide(starves(inputs(Seat::Home, Some(1_000), false, true, MOVE_COOLDOWN_MS))), PlacementMove::Stay);
         assert_eq!(decide(wide(inputs(Seat::Home, Some(1_000), false, true, MOVE_COOLDOWN_MS))), PlacementMove::ReturnRemote);
-        // No requirement measured yet: the serve floor is the bar, and 2k is under it.
-        assert_eq!(decide(PlacementInputs { seat_window: Some(2_048), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }), PlacementMove::FallHome { reason: SEAT_STARVES_REASON });
+        // No requirement measured yet: the serve floor is the bar — a seat exactly at it
+        // holds (nothing measured refuses nothing), one token under it does not.
+        assert_eq!(decide(PlacementInputs { seat_window: Some(2_048), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }), PlacementMove::Stay);
+        assert_eq!(decide(PlacementInputs { seat_window: Some(2_047), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }), PlacementMove::FallHome { reason: SEAT_STARVES_REASON });
         // The chooser: a narrow seat with free slots is passed over for a wide one.
         let narrow = PeerOffer { served_context_window: Some(2_048), ..offer(1, 2, 0, 0) };
         let wide_seat = PeerOffer { served_context_window: Some(131_072), ..offer(2, 2, 0, 0) };
