@@ -105,6 +105,7 @@ pub mod response_orchestrator;
 pub mod response_validator;
 pub mod self_repeat;
 pub mod serving_plan;
+pub mod window_allocator;
 pub mod shared_analysis;
 pub mod should_respond;
 pub mod should_respond_module;

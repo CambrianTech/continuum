@@ -140,7 +140,9 @@ pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 /// Both axes of demand in ONE value, because they are one question — "how much
 /// serving does the work on this box actually need" — and passing them as two loose
 /// `u32`s next to each other is how a caller silently swaps them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Passed by REFERENCE everywhere (`&ServingDemand`): built once per tick by the
+/// daemon and handed to the plan, never copied per call (Joel, 2026-09-20).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServingDemand {
     /// How many minds want a concurrent lane.
     pub lanes: u32,
@@ -209,6 +211,10 @@ pub struct ServingDemand {
     /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
     /// still shapes the window target when it fits.
     pub sent_median: Option<u32>,
+    /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
+    /// median/bootstrap derivation below, kept for callers that have not migrated
+    /// (card 2eec3977: to be deleted with them).
+    pub requirements: Vec<crate::cognition::window_allocator::LaneRequirement>,
 }
 
 /// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
@@ -252,6 +258,7 @@ impl ServingDemand {
             boot_geometry: None,
             sent_tokens: None,
             sent_median: None,
+            requirements: Vec::new(),
             leased_in: 0,
             knee: None,
         }
@@ -268,6 +275,13 @@ impl ServingDemand {
     }
     pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
         self.sent_median = median.filter(|m| *m > 0);
+        self
+    }
+    /// What each mind on this seat REQUIRES of a lane (`window_allocator`). When
+    /// present, lanes × window come from the allocator over these — the governed
+    /// size — and the sent-median / bootstrap path below is not consulted.
+    pub fn with_requirements(mut self, requirements: Vec<crate::cognition::window_allocator::LaneRequirement>) -> Self {
+        self.requirements = requirements;
         self
     }
     /// The per-lane floor the residents actually need: their typical sent prompt with
@@ -601,9 +615,9 @@ pub struct ServingPlan {
 /// The decision is pure classification on memory arithmetic — no model is
 /// loaded, no inference is run.
 pub fn plan_serving(
-    host: HostBudget,
+    host: &HostBudget,
     candidates: &[ModelFootprint],
-    demand: ServingDemand,
+    demand: &ServingDemand,
 ) -> Option<ServingPlan> {
     // The slot count is sized to every mind this seat SERVES: its residents plus the
     // minds leased in from other nodes. Counting only residents is how one seat carried
@@ -797,10 +811,50 @@ pub fn plan_serving(
         // A cold boot's remembered window is the last MEASURED demand: it floors the lane
         // choice so the boot never trades the window it will need for lanes it cannot keep.
         .max(demand.boot_geometry.map(|(w, _)| w).unwrap_or(0)); // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
-    let lanes = (1..=lane_cap)
-        .rev()
-        .find(|&l| window_for(l as u64) >= per_lane_floor)
-        .unwrap_or(1);
+    // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
+    // required governed size"): when the roster's requirements are known, lanes × window
+    // are the allocator's — every served mind at her requirement, minds shed before the
+    // window, never a lane below one real turn. The median/bootstrap arithmetic below
+    // is the legacy path for demands without requirements.
+    // The allocator chooses over ALL candidates: the most minds at their requirement,
+    // then the most capable — a warm slot for the roster outranks capability the
+    // roster cannot use, so it may pick a smaller model than `most_capable_where` did.
+    let (model, allocation) = if demand.requirements.is_empty() {
+        (model, None)
+    } else {
+        match crate::cognition::window_allocator::allocate(&demand.requirements, candidates, host) {
+            Ok(a) => {
+                let chosen = candidates
+                    .iter()
+                    .find(|c| c.model_id == a.model_id)
+                    .unwrap_or(model); // JUSTIFIED unwrap_or: the allocator returns one of `candidates` by construction; `model` only if that invariant ever broke
+                (chosen, Some(a))
+            }
+            Err(why) => {
+                // This model cannot hold ONE lane at the smallest requirement: it is not a
+                // serving option here — the same honest degrade as "does not fit", never
+                // a starved lane. The rationale carries the numbers.
+                return Some(ServingPlan {
+                    base_model: model.clone(),
+                    served_context_window: 0,
+                    lanes: 0,
+                    grid_overflow_lanes: demand.lanes,
+                    resident_models: 1,
+                    fits_on_gpu: false,
+                    rationale: format!(
+                        "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
+                    ),
+                });
+            }
+        }
+    };
+    let lanes = match &allocation {
+        Some(a) => a.lanes,
+        None => (1..=lane_cap)
+            .rev()
+            .find(|&l| window_for(l as u64) >= per_lane_floor)
+            .unwrap_or(1),
+    };
     // And its lane count CAPS a cold boot's plan — never raises it: the boot budget is the
     // transient minimum of everything else resident, and the loaded seat keeps fewer lanes.
     let lanes = demand.boot_geometry.map_or(lanes, |(_, l)| lanes.min(l.max(1)));
@@ -844,8 +898,15 @@ pub fn plan_serving(
     // boot re-keyed the KV page geometry and swept the previous pages. The window
     // now holds still: last serve's window while it still fits and still covers the
     // demand, else the demand. See `choose_served_window`.
-    let served_context_window =
-        choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window);
+    let served_context_window = match &allocation {
+        // The allocator's window IS the requirement it serves; the sticky window may
+        // only stand in when it still covers that requirement and fits.
+        Some(a) => match demand.sticky_window {
+            Some(s) if s >= a.window && s <= window_for(lanes as u64) => s,
+            _ => a.window,
+        },
+        None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
+    };
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -922,10 +983,10 @@ pub fn plan_serving(
 /// [`plan_serving`]. Use this for the ONGOING serving loop; boot uses
 /// `plan_serving` directly (no incumbent yet).
 pub fn plan_serving_stable(
-    host: HostBudget,
+    host: &HostBudget,
     candidates: &[ModelFootprint],
     incumbent: Option<&str>,
-    demand: ServingDemand,
+    demand: &ServingDemand,
 ) -> Option<ServingPlan> {
     // The credit is applied HERE, for a caller holding the LIVE budget (the
     // incumbent's weights read as "used"). A caller whose budget is already at rest
@@ -940,19 +1001,19 @@ pub fn plan_serving_stable(
             usable_bytes: host.usable_bytes.saturating_add(inc.weights_bytes),
             perf_cores: host.perf_cores,
         },
-        None => host,
+        None => *host,
     };
-    plan_serving_at_rest(at_rest, candidates, incumbent, demand)
+    plan_serving_at_rest(&at_rest, candidates, incumbent, demand)
 }
 
 /// [`plan_serving_stable`] for a budget that is ALREADY at rest — the incumbent's own
 /// residency already credited back by the caller (the ledger's replace-myself
 /// budget). Same hysteresis, no second credit.
 pub fn plan_serving_at_rest(
-    at_rest: HostBudget,
+    at_rest: &HostBudget,
     candidates: &[ModelFootprint],
     incumbent: Option<&str>,
-    demand: ServingDemand,
+    demand: &ServingDemand,
 ) -> Option<ServingPlan> {
     let host = at_rest;
     // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
@@ -961,7 +1022,7 @@ pub fn plan_serving_at_rest(
     // down to "nothing" is the exact harm we're guarding against, so `fresh` is
     // an Option we fall back to only when the incumbent genuinely can't hold.
     let Some(inc_id) = incumbent else {
-        return plan_serving(host, candidates, demand);
+        return plan_serving(&host, candidates, &demand);
     };
     // NOTE (2026-08-04): there used to be an early return here — "fresh already chose the
     // incumbent → nothing to stabilize" — and it was the lane-flap bug. `fresh` is computed
@@ -983,7 +1044,7 @@ pub fn plan_serving_at_rest(
     // Incumbent dropped off disk entirely → honour whatever `fresh` chose
     // (possibly None = nothing servable).
     let Some(inc) = candidates.iter().find(|m| m.model_id == inc_id) else {
-        return plan_serving(host, candidates, demand);
+        return plan_serving(&host, candidates, &demand);
     };
     // The incumbent is ALREADY resident: its own weights read as "used" in live
     // free memory, which is exactly what depresses `usable_bytes` while it loads.
@@ -1021,7 +1082,7 @@ pub fn plan_serving_at_rest(
     // budget bump cannot flap it. An EXTERNAL squeeze is still not credited back — only the
     // incumbent's own committed weights are — so a real over-commit still forces the
     // down-switch. [[never-thrash-sticky-hysteresis-on-every-lane]]
-    let fresh = plan_serving(at_rest, candidates, demand);
+    let fresh = plan_serving(&at_rest, candidates, &demand);
     // Even crediting its own residency, can the incumbent still hold a lane? If
     // not, a real squeeze has genuinely evicted it → take `fresh`.
     if inc.weights_bytes.saturating_add(inc.kv_at(MIN_SERVE_CTX)) > at_rest.usable_bytes {
@@ -1048,7 +1109,7 @@ pub fn plan_serving_at_rest(
     // than the roster needs leaves minds cold that were warm — not an upgrade,
     // whatever it scores. (BigMama, card a374c014: this compares FOOTPRINTS, so a
     // stale weights_bytes on a long-running core lies to it — fix the input there.)
-    let inc_lanes = plan_serving(at_rest, std::slice::from_ref(inc), demand)
+    let inc_lanes = plan_serving(&at_rest, std::slice::from_ref(inc), &demand)
         .map(|p| p.lanes as u32)
         .unwrap_or(0); // unwrap_or: an incumbent that cannot plan at all has no lanes to protect
     let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
@@ -1070,7 +1131,7 @@ pub fn plan_serving_at_rest(
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
         m.capability_rank = u8::MAX;
     }
-    plan_serving(at_rest, &promoted, demand)
+    plan_serving(&at_rest, &promoted, &demand)
 }
 
 fn bytes_gb(bytes: u64) -> f64 {
@@ -1080,6 +1141,57 @@ fn bytes_gb(bytes: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 2eec3977, the 5090 at 2 × 2048 on 2026-09-20): with the
+    // roster's REQUIREMENTS on the demand, the plan's lanes × window are the
+    // allocator's — two coders at 70k on a 30 GB budget serve at 2 × 70k, never a
+    // starved window and never the sent-median path; a squeeze sheds a mind (grid
+    // overflow), not the window; a sticky window stands in only while it covers the
+    // requirement; and when no candidate holds one lane at the smallest requirement
+    // the plan says so with fits_on_gpu=false instead of planning a 2k lane.
+    #[test]
+    fn with_requirements_the_plan_is_the_allocators_never_a_starved_lane() {
+        use crate::cognition::window_allocator::LaneRequirement;
+        const GB: u64 = 1 << 30;
+        let qwen = ModelFootprint {
+            model_id: "qwen-27b".into(),
+            weights_bytes: 19 * GB,
+            kv_per_token: 33_000,
+            context_window: 262_144,
+            capability_rank: 9,
+            fixed_per_lane_bytes: 0,
+        };
+        let host = HostBudget { usable_bytes: 30 * GB, perf_cores: 8 };
+        let two = vec![
+            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+        ];
+        // The poisoned inputs the 5090 had: a sent median of 828 and a sticky 2048.
+        let demand = ServingDemand::new(2, Some(56_057))
+            .with_sent_median(Some(828))
+            .with_sticky_window(Some(2048))
+            .with_requirements(two.clone());
+        let plan = plan_serving(&host, std::slice::from_ref(&qwen), &demand).expect("plan");
+        assert_eq!((plan.lanes, plan.served_context_window), (2, 70_000), "{}", plan.rationale);
+        assert!(plan.fits_on_gpu);
+
+        let five: Vec<_> = (0..5).map(|_| LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)).collect();
+        let squeezed = plan_serving(&host, std::slice::from_ref(&qwen), &ServingDemand::new(5, Some(56_057)).with_requirements(five)).expect("plan");
+        assert_eq!((squeezed.lanes, squeezed.served_context_window), (2, 70_000), "minds shed, window kept");
+        assert_eq!(squeezed.grid_overflow_lanes, 3);
+
+        let covering = plan_serving(&host, std::slice::from_ref(&qwen), &demand.clone().with_sticky_window(Some(72_000))).expect("plan");
+        assert_eq!(covering.served_context_window, 72_000, "a sticky window that covers the requirement and fits stands");
+
+        // 21 GB: the weights fit and a 2048 lane would "fit" — the legacy path served
+        // exactly that; the governed path refuses to plan a lane below the requirement.
+        let tiny = HostBudget { usable_bytes: 21 * GB, perf_cores: 8 };
+        assert!(qwen.window_within(tiny.usable_bytes, 1) >= MIN_SERVE_CTX, "precondition: a starved lane was plannable here");
+        let none = plan_serving(&tiny, std::slice::from_ref(&qwen), &demand).expect("a plan that says why");
+        assert!(!none.fits_on_gpu);
+        assert_eq!(none.lanes, 0);
+        assert!(none.rationale.contains("smallest requirement"), "{}", none.rationale);
+    }
 
     const GB: u64 = 1_000_000_000;
 
@@ -1162,8 +1274,8 @@ mod tests {
         let typical = ServingDemand::new(17, Some(120_000))
             .with_sent_tokens(Some(96_000))
             .with_sent_median(Some(40_000));
-        let a = plan_serving(host, &c, outlier_only).expect("plan");
-        let b = plan_serving(host, &c, typical).expect("plan");
+        let a = plan_serving(&host, &c, &outlier_only).expect("plan");
+        let b = plan_serving(&host, &c, &typical).expect("plan");
         assert!(b.lanes >= 5, "the roster gets its lanes at the typical prompt: {}", b.lanes);
         assert!(
             b.served_context_window >= 50_000,
@@ -1190,7 +1302,7 @@ mod tests {
         let team = fp("team-brain", 20, 60_000, 262_144, 3);
         let c = vec![giant.clone(), team.clone()];
 
-        let plan = plan_serving(host, &c, ServingDemand::new(4, None)).expect("plan");
+        let plan = plan_serving(&host, &c, &ServingDemand::new(4, None)).expect("plan");
         assert_eq!(
             plan.base_model.model_id, "team-brain",
             "fleet demand 4: the model serving the fleet wins over the one-lane giant"
@@ -1198,7 +1310,7 @@ mod tests {
         assert!(plan.lanes >= 2, "the chosen plan actually multiplies lanes: {}", plan.lanes);
 
         // Demand 1: old capability order stands — the giant is honestly best.
-        let solo = plan_serving(host, &c, ServingDemand::new(1, None)).expect("plan");
+        let solo = plan_serving(&host, &c, &ServingDemand::new(1, None)).expect("plan");
         assert_eq!(
             solo.base_model.model_id, "giant-flash",
             "solo demand: capability preference unchanged (degrade honesty)"
@@ -1262,10 +1374,9 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let plan = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         let chosen_cost = devstral.weights_bytes
             + devstral.kv_at(plan.served_context_window) * plan.lanes as u64
@@ -1303,10 +1414,9 @@ mod tests {
         // 30GB: big fits ONLY at the survival floor (28 + 0.5 ≤ 30, but 28 + 4.3 > 30).
         // Pre-fix this crowned `big` and served 2048. It must now pick `small`.
         let plan = plan_serving(
-            HostBudget { usable_bytes: 30 * GB, perf_cores: 10 },
+            &HostBudget { usable_bytes: 30 * GB, perf_cores: 10 },
             &candidates,
-            demand,
-        )
+            &demand)
         .expect("a model fits");
         assert_eq!(
             plan.base_model.model_id, "small-14b",
@@ -1323,10 +1433,9 @@ mod tests {
         // it. On a roomy host the 27B clears a full turn and must still win, otherwise
         // this fix would have silently downgraded every capable box.
         let roomy = plan_serving(
-            HostBudget { usable_bytes: 64 * GB, perf_cores: 10 },
+            &HostBudget { usable_bytes: 64 * GB, perf_cores: 10 },
             &candidates,
-            demand,
-        )
+            &demand)
         .expect("a model fits");
         assert_eq!(
             roomy.base_model.model_id, "big-27b",
@@ -1337,10 +1446,9 @@ mod tests {
         // survival bar so a genuinely tiny host serves something rather than nothing.
         // Honest starvation is then real, not an artifact of the selection rule.
         let tiny = plan_serving(
-            HostBudget { usable_bytes: 11 * GB, perf_cores: 4 },
+            &HostBudget { usable_bytes: 11 * GB, perf_cores: 4 },
             &candidates,
-            demand,
-        )
+            &demand)
         .expect("the survival fallback still yields a model");
         assert_eq!(tiny.base_model.model_id, "small-14b");
         assert!(tiny.fits_on_gpu, "the fallback still serves on GPU, just narrowly");
@@ -1365,10 +1473,9 @@ mod tests {
                                                                        // derived to fit whatever lane count is served, and the fit invariant below holds at
                                                                        // any count.
         let plan = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
         assert_eq!(
@@ -1417,10 +1524,9 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let over = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert_eq!(
             over.lanes, 2,
@@ -1433,10 +1539,9 @@ mod tests {
         );
         // Demand within local capacity → zero overflow (nothing to place off-box).
         let fits = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None),
-        )
+            &ServingDemand::new(1, None))
         .unwrap();
         assert_eq!(
             fits.lanes, 1,
@@ -1467,10 +1572,9 @@ mod tests {
             perf_cores: 10,
         };
         let warm = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert_eq!(
             warm.lanes, 4,
@@ -1492,10 +1596,9 @@ mod tests {
             perf_cores: 10,
         };
         let capped = plan_serving(
-            tight,
+            &tight,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert_eq!(
             capped.lanes, 2,
@@ -1530,10 +1633,9 @@ mod tests {
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
 
         let cold = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None),
-        )
+            &ServingDemand::new(1, None))
         .expect("servable");
         assert_eq!(
             cold.served_context_window, BOOTSTRAP_WORKING_SET,
@@ -1542,10 +1644,9 @@ mod tests {
 
         // One mind measured wanting 48k — well past the prior, well under the ceiling.
         let measured = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, Some(48_000)),
-        )
+            &ServingDemand::new(1, Some(48_000)))
         .expect("servable");
         assert!(
             measured.served_context_window > cold.served_context_window,
@@ -1576,24 +1677,21 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let unclamped = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None).with_leased_in(3),
-        )
+            &ServingDemand::new(1, None).with_leased_in(3))
         .expect("servable");
         assert_eq!(unclamped.lanes, 4, "no knee: four minds served, four slots");
         let kneed = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(2)),
-        )
+            &ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(2)))
         .expect("servable");
         assert_eq!(kneed.lanes, 2, "a knee of 2 bounds the served total, leased-in included");
         let roomy_knee = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(8)),
-        )
+            &ServingDemand::new(1, None).with_leased_in(3).with_knee(Some(8)))
         .expect("servable");
         assert_eq!(roomy_knee.lanes, 4, "a knee above the demand changes nothing");
     }
@@ -1612,18 +1710,16 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let hosts_only = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None),
-        )
+            &ServingDemand::new(1, None))
         .expect("servable");
         assert_eq!(hosts_only.lanes, 1, "one resident, nothing leased in: one slot");
 
         let serves = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None).with_leased_in(3),
-        )
+            &ServingDemand::new(1, None).with_leased_in(3))
         .expect("servable");
         assert_eq!(
             serves.lanes, 4,
@@ -1634,10 +1730,9 @@ mod tests {
         // the same seat, read as if a solve lease had overridden resident demand to 1
         // (the 5090's shape): the leased-in three are still served here and still count
         let overridden_but_leased = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, Some(40_000)).with_leased_in(3),
-        )
+            &ServingDemand::new(1, Some(40_000)).with_leased_in(3))
         .expect("servable");
         assert_eq!(overridden_but_leased.lanes, 4);
 
@@ -1649,10 +1744,9 @@ mod tests {
             perf_cores: 10,
         };
         let capped = plan_serving(
-            tight,
+            &tight,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(1, None).with_leased_in(3),
-        )
+            &ServingDemand::new(1, None).with_leased_in(3))
         .expect("servable");
         assert_eq!(capped.lanes, 2, "the floor caps warm slots at 2 on 26 GB");
         assert_eq!(
@@ -1673,10 +1767,9 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let greedy = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, Some(10_000_000)),
-        )
+            &ServingDemand::new(4, Some(10_000_000)))
         .expect("servable");
         assert!(
             greedy.served_context_window <= devstral.context_window,
@@ -1684,10 +1777,9 @@ mod tests {
             greedy.served_context_window
         );
         let unbounded_fit = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, Some(u32::MAX)),
-        )
+            &ServingDemand::new(4, Some(u32::MAX)))
         .expect("servable");
         assert_eq!(
             greedy.served_context_window, unbounded_fit.served_context_window,
@@ -1716,10 +1808,9 @@ mod tests {
             "precondition: model ceiling must exceed the demand cap, else the ceiling (not the cap) could explain the result"
         );
         let plan = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert!(
             plan.served_context_window <= BOOTSTRAP_WORKING_SET,
@@ -1733,10 +1824,9 @@ mod tests {
         // own ceiling (`.min` only ever caps DOWN).
         let tiny = fp("tiny-4k", 3, 30_000, 4_096, 2);
         let plan_tiny = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&tiny),
-            ServingDemand::new(1, None),
-        )
+            &ServingDemand::new(1, None))
         .unwrap();
         assert!(
             plan_tiny.served_context_window <= 4_096,
@@ -1759,10 +1849,9 @@ mod tests {
         };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let plan = plan_serving(
-            host,
+            &host,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(4, None),
-        )
+            &ServingDemand::new(4, None))
         .unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
         assert!(
@@ -1795,7 +1884,7 @@ mod tests {
             usable_bytes: 5 * GB + 500 * 1_000_000,
             perf_cores: 4,
         };
-        let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
         assert!(
             plan.fits_on_gpu,
             "must fit a real model on GPU: {}",
@@ -1824,13 +1913,12 @@ mod tests {
             perf_cores: 6,
         };
         let greedy = plan_serving(
-            host,
+            &host,
             &candidates(),
-            ServingDemand::new(MAX_LANES, Some(u32::MAX)),
-        )
+            &ServingDemand::new(MAX_LANES, Some(u32::MAX)))
         .unwrap();
         let demand2 =
-            plan_serving(host, &candidates(), ServingDemand::new(2, Some(u32::MAX))).unwrap();
+            plan_serving(&host, &candidates(), &ServingDemand::new(2, Some(u32::MAX))).unwrap();
         assert_eq!(
             demand2.lanes, 2,
             "2 minds → 2 lanes, never the MAX_LANES ceiling"
@@ -1846,11 +1934,11 @@ mod tests {
             );
         }
         // Demand can never exceed the physical caps (kv/perf/MAX_LANES)…
-        let demand99 = plan_serving(host, &candidates(), ServingDemand::new(99, None)).unwrap();
+        let demand99 = plan_serving(&host, &candidates(), &ServingDemand::new(99, None)).unwrap();
         assert!(demand99.lanes <= MAX_LANES);
         // …and a zero demand is defensively floored at one lane.
         assert_eq!(
-            plan_serving(host, &candidates(), ServingDemand::new(0, None))
+            plan_serving(&host, &candidates(), &ServingDemand::new(0, None))
                 .unwrap()
                 .lanes,
             1
@@ -1874,10 +1962,9 @@ mod tests {
             perf_cores: 6,
         };
         let plan = plan_serving(
-            squeezed,
+            &squeezed,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(2, None),
-        )
+            &ServingDemand::new(2, None))
         .unwrap();
         assert_eq!(
             plan.lanes, 1,
@@ -1897,10 +1984,9 @@ mod tests {
             perf_cores: 6,
         };
         let plan2 = plan_serving(
-            roomy,
+            &roomy,
             std::slice::from_ref(&devstral),
-            ServingDemand::new(2, None),
-        )
+            &ServingDemand::new(2, None))
         .unwrap();
         assert_eq!(plan2.lanes, 2, "roomy host serves both minds concurrently");
         assert!(
@@ -1928,7 +2014,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
         assert_eq!(
             plan.base_model.model_id, "coder-sentinel-14b",
             "most capable, fits easily"
@@ -1962,7 +2048,7 @@ mod tests {
             usable_bytes: 500 * GB,
             perf_cores: 64,
         };
-        let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
         assert_eq!(plan.lanes, MAX_LANES);
     }
 
@@ -1982,16 +2068,14 @@ mod tests {
             perf_cores: 8,
         };
         let lean = plan_serving(
-            host,
+            &host,
             &[fp("lean", 2, 150_000, 32_768, 5)],
-            ServingDemand::new(MAX_LANES, None),
-        )
+            &ServingDemand::new(MAX_LANES, None))
         .unwrap();
         let fat = plan_serving(
-            host,
+            &host,
             &[fp("fat", 2, 450_000, 32_768, 5)],
-            ServingDemand::new(MAX_LANES, None),
-        )
+            &ServingDemand::new(MAX_LANES, None))
         .unwrap();
         assert!(
             lean.lanes > fat.lanes,
@@ -2022,7 +2106,7 @@ mod tests {
         // budget — the window floor (below MAX_LANES=8) is the binding cap. The other 2 minds
         // surface as grid_overflow rather than thrashing 4 minds across 2 clobbering slots.
         let plan =
-            plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, None)).unwrap();
+            plan_serving(&host, std::slice::from_ref(&m), &ServingDemand::new(4, None)).unwrap();
         assert_eq!(
             plan.lanes, 2,
             "the full-turn window floor (not the MAX_LANES backstop) caps warm slots here: {}",
@@ -2052,7 +2136,7 @@ mod tests {
             usable_bytes: 300 * 1_000_000,
             perf_cores: 2,
         }; // 0.3GB
-        let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
         assert!(
             !plan.fits_on_gpu,
             "must report the GPU budget can't hold any candidate"
@@ -2071,7 +2155,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        assert!(plan_serving(host, &[], ServingDemand::new(MAX_LANES, None)).is_none());
+        assert!(plan_serving(&host, &[], &ServingDemand::new(MAX_LANES, None)).is_none());
     }
 
     // ── hysteresis (plan_serving_stable) ──────────────────────────────────
@@ -2093,8 +2177,8 @@ mod tests {
             perf_cores: 6,
         };
         assert_eq!(
-            plan_serving_stable(host, &pair(), None, ServingDemand::new(MAX_LANES, None)),
-            plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
+            plan_serving_stable(&host, &pair(), None, &ServingDemand::new(MAX_LANES, None)),
+            plan_serving(&host, &pair(), &ServingDemand::new(MAX_LANES, None))
         );
     }
 
@@ -2151,7 +2235,7 @@ mod tests {
         // under test — an upgrade lacking headroom must not be adopted — is
         // demand-independent; solo demand is where both premises coexist.
         assert_eq!(
-            plan_serving(at_rest_for_setup, &models, ServingDemand::new(1, None))
+            plan_serving(&at_rest_for_setup, &models, &ServingDemand::new(1, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -2159,11 +2243,10 @@ mod tests {
             "fresh would pick big at the post-eviction budget — so the refusal below is real"
         );
         let stable = plan_serving_stable(
-            host,
+            &host,
             &models,
             Some("small"),
-            ServingDemand::new(1, None),
-        )
+            &ServingDemand::new(1, None))
         .unwrap();
         assert_eq!(
             stable.base_model.model_id, "small",
@@ -2199,14 +2282,14 @@ mod tests {
             usable_bytes: 18 * GB,
             perf_cores: 6,
         };
-        let boot = plan_serving(at_rest, &models, ServingDemand::new(MAX_LANES, None))
+        let boot = plan_serving(&at_rest, &models, &ServingDemand::new(MAX_LANES, None))
             .expect("servable at rest");
 
         let live = HostBudget {
             usable_bytes: at_rest.usable_bytes - models[0].weights_bytes,
             perf_cores: 6,
         };
-        let fresh = plan_serving(live, &models, ServingDemand::new(MAX_LANES, None))
+        let fresh = plan_serving(&live, &models, &ServingDemand::new(MAX_LANES, None))
             .expect("still servable");
         // Guard the guard: if this ever stops being a flap, the test below proves nothing.
         assert!(
@@ -2217,11 +2300,10 @@ mod tests {
         );
 
         let stable = plan_serving_stable(
-            live,
+            &live,
             &models,
             Some("big"),
-            ServingDemand::new(MAX_LANES, None),
-        )
+            &ServingDemand::new(MAX_LANES, None))
         .expect("incumbent still servable");
         assert_eq!(stable.base_model.model_id, "big");
         assert_eq!(
@@ -2248,7 +2330,7 @@ mod tests {
         // Demand 1: the roster fits either model, so this test isolates the HEADROOM
         // rule. (With MAX_LANES the bigger model would leave minds cold that were warm
         // on the small one, and the switch-up guard refuses — its own test below.)
-        let stable = plan_serving_stable(host, &pair(), Some("small"), ServingDemand::new(1, None))
+        let stable = plan_serving_stable(&host, &pair(), Some("small"), &ServingDemand::new(1, None))
             .unwrap();
         assert_eq!(
             stable.base_model.model_id, "big",
@@ -2281,10 +2363,10 @@ mod tests {
         let dense = fp("dense", 19, 400_000, 131_072, 42);
         let both = vec![moe.clone(), dense.clone()];
 
-        let inc_only = plan_serving(host, std::slice::from_ref(&moe), ServingDemand::new(12, None))
+        let inc_only = plan_serving(&host, std::slice::from_ref(&moe), &ServingDemand::new(12, None))
             .expect("the incumbent plans");
         let dense_only =
-            plan_serving(host, std::slice::from_ref(&dense), ServingDemand::new(12, None))
+            plan_serving(&host, std::slice::from_ref(&dense), &ServingDemand::new(12, None))
                 .expect("the candidate plans");
         assert!(
             dense_only.lanes < inc_only.lanes && (dense_only.lanes as u32) < 12,
@@ -2294,7 +2376,7 @@ mod tests {
         );
 
         let oversubscribed =
-            plan_serving_stable(host, &both, Some("moe"), ServingDemand::new(12, None))
+            plan_serving_stable(&host, &both, Some("moe"), &ServingDemand::new(12, None))
                 .expect("a plan");
         assert_eq!(
             oversubscribed.base_model.model_id, "moe",
@@ -2302,7 +2384,7 @@ mod tests {
              — not an upgrade"
         );
 
-        let roster_fits = plan_serving_stable(host, &both, Some("moe"), ServingDemand::new(1, None))
+        let roster_fits = plan_serving_stable(&host, &both, Some("moe"), &ServingDemand::new(1, None))
             .expect("a plan");
         assert_eq!(
             roster_fits.base_model.model_id, "dense",
@@ -2318,11 +2400,10 @@ mod tests {
         };
         let only_small = vec![fp("small", 1, 4_000, 32_768, 1)]; // "big" no longer on disk
         let stable = plan_serving_stable(
-            host,
+            &host,
             &only_small,
             Some("big"),
-            ServingDemand::new(MAX_LANES, None),
-        )
+            &ServingDemand::new(MAX_LANES, None))
         .unwrap();
         assert_eq!(
             stable.base_model.model_id, "small",
@@ -2348,7 +2429,7 @@ mod tests {
         // Plain plan at the depressed budget WOULD flap: big (9GB) no longer "fits"
         // 8GB, so fresh prefers the smaller model.
         assert_eq!(
-            plan_serving(dipped, &pair(), ServingDemand::new(MAX_LANES, None))
+            plan_serving(&dipped, &pair(), &ServingDemand::new(MAX_LANES, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -2357,11 +2438,10 @@ mod tests {
         );
         // With the incumbent credited its own weights back, the resident big stays.
         let stable = plan_serving_stable(
-            dipped,
+            &dipped,
             &pair(),
             Some("big"),
-            ServingDemand::new(MAX_LANES, None),
-        )
+            &ServingDemand::new(MAX_LANES, None))
         .unwrap();
         assert_eq!(
             stable.base_model.model_id, "big",
@@ -2394,7 +2474,7 @@ mod tests {
 
         // The un-credited question — "fits BESIDE the incumbent?" — answers the wrong thing.
         assert_eq!(
-            plan_serving(live, &models, ServingDemand::new(2, None))
+            plan_serving(&live, &models, &ServingDemand::new(2, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -2404,11 +2484,10 @@ mod tests {
 
         // The stabilizer credits the eviction and takes the upgrade.
         let plan = plan_serving_stable(
-            live,
+            &live,
             &models,
             Some("devstral-24b"),
-            ServingDemand::new(2, None),
-        )
+            &ServingDemand::new(2, None))
         .expect("a plan exists");
         assert_eq!(
             plan.base_model.model_id, "qwen3.8-27b",
@@ -2435,7 +2514,7 @@ mod tests {
             fp("sibling-24b", 14, 100_000, 131_072, 5),
         ];
         assert_eq!(
-            plan_serving_stable(live, &equal, Some("devstral-24b"), ServingDemand::new(2, None))
+            plan_serving_stable(&live, &equal, Some("devstral-24b"), &ServingDemand::new(2, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -2452,11 +2531,10 @@ mod tests {
         ];
         assert_eq!(
             plan_serving_stable(
-                live,
+                &live,
                 &marginal,
                 Some("devstral-24b"),
-                ServingDemand::new(2, None)
-            )
+                &ServingDemand::new(2, None))
             .unwrap()
             .base_model
             .model_id,
@@ -2477,8 +2555,8 @@ mod tests {
         assert_eq!(choose_served_window(138_240, 100, None), MIN_SERVE_CTX, "never below the runnable floor");
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let m = fp("m", 14, 112 * 1024, 131_072, 3);
-        let first = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(40_000))).unwrap();
-        let again = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, Some(33_000)).with_sticky_window(Some(first.served_context_window))).unwrap();
+        let first = plan_serving(&host, std::slice::from_ref(&m), &ServingDemand::new(4, Some(40_000))).unwrap();
+        let again = plan_serving(&host, std::slice::from_ref(&m), &ServingDemand::new(4, Some(33_000)).with_sticky_window(Some(first.served_context_window))).unwrap();
         assert_eq!(again.served_context_window, first.served_context_window, "the next boot, with demand drifted DOWN, serves the SAME window — the pages carry over");
     }
 
@@ -2511,22 +2589,20 @@ mod tests {
         };
         let demand = ServingDemand::new(2, Some(120_000));
         let plan = plan_serving_at_rest(
-            at_rest,
+            &at_rest,
             std::slice::from_ref(&m),
             Some("qwen3.8-27b"),
-            demand,
-        )
+            &demand)
         .expect("plan");
         let fit = m.window_within(at_rest.usable_bytes, plan.lanes);
         assert_eq!(plan.served_context_window, fit, "at rest, the plan's window is the fit");
         // The live-budget path still credits: handed the same number as a LIVE reading it
         // plans a bigger window — which is exactly why the daemon must not use it.
         let credited = plan_serving_stable(
-            at_rest,
+            &at_rest,
             std::slice::from_ref(&m),
             Some("qwen3.8-27b"),
-            demand,
-        )
+            &demand)
         .expect("plan");
         assert!(credited.served_context_window > plan.served_context_window);
     }
@@ -2548,7 +2624,7 @@ mod tests {
         let fits = m.window_within(physical.usable_bytes, 1);
         assert!(fits > MIN_SERVE_CTX && fits < 144_640, "fits={fits}");
         // The plan's own choice at that budget IS window_within (the closure delegates).
-        let plan = plan_serving(physical, std::slice::from_ref(&m), ServingDemand::new(1, Some(200_000)))
+        let plan = plan_serving(&physical, std::slice::from_ref(&m), &ServingDemand::new(1, Some(200_000)))
             .expect("plan");
         assert_eq!(plan.served_context_window, fits);
         assert_eq!(m.window_within(physical.usable_bytes, 0), 0);
@@ -2569,7 +2645,7 @@ mod tests {
         assert_eq!(choose_served_window(137_222, 37_500, Some(47_280)), 47_280, "the remembered 47k window covers a 37.5k target: served verbatim — pages carry over");
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let m = fp("m", 14, 112 * 1024, 131_072, 3);
-        let plan = plan_serving(host, std::slice::from_ref(&m), d).unwrap();
+        let plan = plan_serving(&host, std::slice::from_ref(&m), &d).unwrap();
         assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
     }
 
@@ -2584,25 +2660,23 @@ mod tests {
     fn a_cold_boot_plans_the_remembered_geometry_not_the_transient_budget() {
         let boot_budget = HostBudget { usable_bytes: 44 * GB, perf_cores: 10 };
         let m27 = fp("qwen-27b", 17, 76 * 1024, 262_144, 42);
-        let fresh = plan_serving(boot_budget, std::slice::from_ref(&m27), ServingDemand::new(17, None)).expect("servable");
+        let fresh = plan_serving(&boot_budget, std::slice::from_ref(&m27), &ServingDemand::new(17, None)).expect("servable");
         assert!(
             fresh.lanes >= 4 && fresh.served_context_window < 67_340,
             "the defect as measured: many lanes at a small window ({} × {})",
             fresh.lanes, fresh.served_context_window
         );
         let remembered = plan_serving(
-            boot_budget,
+            &boot_budget,
             std::slice::from_ref(&m27),
-            ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))),
-        )
+            &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
         .expect("servable");
         assert_eq!((remembered.lanes, remembered.served_context_window), (2, 67_340), "the last steady geometry, first");
         let tight = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
         let one = plan_serving(
-            tight,
+            &tight,
             std::slice::from_ref(&m27),
-            ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))),
-        )
+            &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
         .expect("servable");
         assert_eq!(one.lanes, 1, "remembered lanes cap, never raise: this box fits one at that window");
         // No geometry = no effect; a nonsense geometry (zero lanes, a window under the floor) is ignored.

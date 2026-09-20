@@ -1177,7 +1177,23 @@ impl ServingDaemonModule {
         // gauge; never invented.
         let leased_in =
             note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
+        // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
+        // what a window let her send), with headroom, floored at one real turn. Built
+        // once here and carried on the demand by value into the one plan — the
+        // allocator's input, the governed size (card 2eec3977).
+        let requirements: Vec<crate::cognition::window_allocator::LaneRequirement> = live
+            .iter()
+            .map(|p| {
+                let need = self.working_set.demand_of(*p).map(|d| d.peak_tokens).unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet requires the floor, which from_demand applies
+                crate::cognition::window_allocator::LaneRequirement::from_demand(
+                    *p,
+                    need,
+                    crate::cognition::serving_plan::SENT_HEADROOM,
+                )
+            })
+            .collect();
         ServingDemand::new(lanes, demand)
+            .with_requirements(requirements)
             .with_sent_tokens(sent)
             .with_sent_median(median)
             .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
@@ -1642,10 +1658,9 @@ impl ServingDaemonModule {
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
         plan_serving(
-            self.host_budget(),
+            &self.host_budget(),
             &self.live_candidates(),
-            self.serving_demand(),
-        )
+            &self.serving_demand())
     }
 
     /// The detected hardware tier for this host, for the persona spawner's
@@ -3676,9 +3691,9 @@ impl ServingDaemonModule {
             a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
         let stable = if ledger_credited {
-            plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
+            plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
-            plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
+            plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
         };
         match stable {
             Some(plan) => {
@@ -3692,7 +3707,7 @@ impl ServingDaemonModule {
                 // everything servable on disk, ignoring suppression and pin (intent to move
                 // is never licence to sink). A plan below it is refused, loudly, every time
                 // it is asked for; the previous plan stands.
-                let floor = host_floor_of(self.physical_budget(), on_disk, demand);
+                let floor = host_floor_of(self.physical_budget(), on_disk, &demand);
                 // The floor guards against a host SINKING below its capability — which needs an
                 // incumbent to sink FROM. With no incumbent (a COLD BOOT) there is nothing to
                 // preserve, and refusing serves NOTHING: the node boots dark (card 48f5438a,
@@ -3999,9 +4014,9 @@ enum DownshiftVerdict {
 fn host_floor_of(
     physical: HostBudget,
     on_disk: &[ModelFootprint],
-    demand: ServingDemand,
+    demand: &ServingDemand,
 ) -> Option<ModelFootprint> {
-    plan_serving(physical, on_disk, demand)
+    plan_serving(&physical, on_disk, &demand)
         .filter(|p| p.fits_on_gpu)
         .map(|p| p.base_model)
 }
@@ -4231,7 +4246,7 @@ fn pin_fit_decision(
     // footprint Some but over budget → plan_serving degrades with fits_on_gpu=false,
     // which `serving/pin` reads to refuse loud.
     let plan = candidate
-        .and_then(|f| plan_serving(base, std::slice::from_ref(&f), ServingDemand::new(1, None)));
+        .and_then(|f| plan_serving(&base, std::slice::from_ref(&f), &ServingDemand::new(1, None)));
     PinFit {
         plan,
         weights_bytes,
@@ -9044,7 +9059,7 @@ mod tests {
             usable_bytes: (32.0 * GB as f64 * 0.80) as u64,
             perf_cores: 8,
         };
-        let floor = host_floor_of(card_5090, &on_disk, demand).expect("something on disk");
+        let floor = host_floor_of(card_5090, &on_disk, &demand).expect("something on disk");
         assert_eq!(floor.model_id, "qwen3.8-27b");
         assert_eq!(
             floor_gate(&plan_for(&tiny), Some(&floor)),
@@ -9061,7 +9076,7 @@ mod tests {
             usable_bytes: (16.0 * GB as f64 * 0.80) as u64,
             perf_cores: 4,
         };
-        let floor = host_floor_of(small_card, &on_disk, demand).expect("something on disk");
+        let floor = host_floor_of(small_card, &on_disk, &demand).expect("something on disk");
         assert_eq!(floor.model_id, "qwen-0.5b");
         assert_eq!(floor_gate(&plan_for(&tiny), Some(&floor)), FloorVerdict::AtOrAbove);
         // THE PIN IS THE FLOOR'S CEILING (Fable, #4146 review): the M5 pins a lower-ranked
@@ -9070,7 +9085,7 @@ mod tests {
         let ornith = footprint("ornith-35b-a3b", 20, 5);
         let pinned_universe = vec![ornith.clone()]; // what servable_candidates yields under the pin
         let floor =
-            host_floor_of(card_5090, &pinned_universe, demand).expect("pinned model on disk");
+            host_floor_of(card_5090, &pinned_universe, &demand).expect("pinned model on disk");
         assert_eq!(floor.model_id, "ornith-35b-a3b");
         assert_eq!(
             floor_gate(&plan_for(&ornith), Some(&floor)),
