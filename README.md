@@ -904,53 +904,46 @@ But this is a software repository, not a concept deck. The fastest way to unders
 
 > **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back *(coming soon)*.
 
-Run forged Qwen3.5 personas on your machine. **Local. GPU-accelerated. Zero API keys.**
+Continuum is a **headless Rust core** that serves a local model and hosts your citizens on the hardware you already own. No API keys. Nothing leaves your machine. The web desktop, mobile, and the CLI are clients of that core.
 
-| Hardware | Throughput |
-|---|---|
-| MacBook M3-M5 (Metal via DMR) | ~50 tok/s solo, ~128 tok/s batched |
-| Nvidia RTX 30/40/50 (CUDA via DMR) | ~80–237 tok/s warm |
+**Mac / Linux** (Rust 1.95 and cmake are installed for you by `setup:rust`):
 
-**One command per platform** (after [Docker Desktop 4.69+](https://docker.com/products/docker-desktop) is installed):
-
-**Mac / Linux / WSL2:**
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum
-./setup.sh
+npm install               # the setup scripts below and the web client's deps
+npm run setup:rust        # pinned Rust toolchain + cmake + vendored engines
+continuum start           # build + run the core, wait until it answers
+continuum ping            # the version trio: build number, sha, built-at
+bash tools/scripts/install-service.sh install   # keep it alive across crashes and reboots
 ```
 
+The first build takes 5–15 minutes; after that it is incremental. `continuum reboot` rebuilds, relaunches, and verifies the running build's sha.
+
 **Windows (PowerShell):**
+
 ```powershell
 irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
 ```
 
-The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. It runs with Windows PowerShell 5.1; administrative steps share one elevation session. Native source compilation takes longer than installing a prebuilt release.
+The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. From an existing checkout, the same installer updates: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update` (fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`). If preparation succeeded but registration failed, `-ResumePrepared` deploys the already prepared release; `-PrepareOnly` prepares now and defers elevation.
 
-From your existing Windows checkout, use the same installer for updates:
+**What a healthy node reports** (the core says this itself, every hour, in the org room — the numbers below are from 2026-09-20):
 
-```powershell
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update
-```
-
-This fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`. Tracked edits or divergent history stop the update without discarding your work. Add `-Grid` to provision grid access. The registered service restarts after crashes and at your next login; it does not run through logout.
-
-Core updates preserve warm inference lanes. The staged inference engine is used when a lane next starts; an already running engine is retained rather than interrupted merely to refresh its executable.
-
-If compilation and preparation succeeded but startup registration or handoff failed, retry the prepared release from a local installer checkout:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -ResumePrepared
-```
-
-This explicitly deploys the already prepared release, without provisioning or compiling the current checkout. It verifies the saved artifact hashes and Windows account, prints the selected core's actual build SHA, repairs registration, and uses the same guarded handoff. It cannot be combined with `-Update`. Future preparations save `%USERPROFILE%\.continuum\install-prepared.json` before requesting registration elevation. For older preparations without that receipt, resume selects the existing `ContinuumCore` task descriptor and validates its installed files; no historical artifact or build-configuration receipt is claimed. Invalid receipts or changed files are refused rather than silently selecting another release.
-
-To prepare the current checkout now and defer elevation and handoff, run `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -PrepareOnly`. This requires an already provisioned toolchain: it skips provisioning, builds the core/CLI and engine into inactive installed slots, validates them, and saves the same prepared-release receipt. The registered release and running core stay in place. Later, `-ResumePrepared` selects that receipt. Preparation cannot be combined with `-Grid`, `-Update`, or `-ResumePrepared`; update your checkout before preparing it.
-
-`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See the **[per-OS walkthrough](docs/SETUP.md)** with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
+| Node | Model | Lanes × window | An hour |
+|---|---|---|---|
+| RTX 5090 (32 GB) | Qwen3.8-27B Q4_K_M | 1 × 70k | 46 acts · 9 writes · 52 lane grants |
+| MacBook M5 Pro (64 GB) | Qwen3.8-27B Q4_K_M | 2 × 67k | 11 acts · 1 write · 17 lane grants |
 
 <details>
-<summary>Development (from source)</summary>
+<summary>Optional: the web desktop stack via Docker (<code>setup.sh</code>)</summary>
+
+`setup.sh` is the Docker path: it checks for Docker Desktop 4.69+, pulls a forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. It is the presentation stack and a small model, not the grid; run the Rust core above for citizens on the 27B.
+
+</details>
+
+<details>
+<summary>Developing the core (from source)</summary>
 
 The system is a **headless Rust core**. `setup:rust` provisions the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Node is needed only to build the **web** client, which is one client among several (mobile, SDK, TUI, MCP); the core itself boots and serves with no Node in the path. Same Docker Desktop AI toggles apply — the difference from the published image is that `continuum-core` runs natively from `cargo`.
 
