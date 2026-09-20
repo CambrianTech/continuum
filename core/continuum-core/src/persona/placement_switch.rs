@@ -201,6 +201,14 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
     }
 }
 
+/// PURE: is this a move BETWEEN MACHINES — the kind her workspace must be carried across
+/// first (card 73eefbbb)? A fall-home or a return is; Stay and Park move nothing; and a
+/// "remote" seat that is this very node (card 2500d2f1) is a loopback lane, not another
+/// machine — her workspace is already here, so it never waits on a push.
+pub fn moves_between_machines(mv: &PlacementMove, seat_is_self: bool) -> bool {
+    !seat_is_self && matches!(mv, PlacementMove::FallHome { .. } | PlacementMove::ReturnRemote)
+}
+
 /// The adapter a remote-bound persona runs on: her remote lane, her home adapter (built
 /// on first fall-home), and the seat she is on.
 pub struct PlacementSwitch {
@@ -307,6 +315,13 @@ impl PlacementSwitch {
     }
     pub fn lane_cold(&self) -> bool {
         self.remote_adapter().map(|r| r.is_cold()).unwrap_or(false) // JUSTIFIED unwrap_or: no remote lane = nothing to be cold
+    }
+
+    /// Does a checkout her hands acted in hold work `origin` does not (card 73eefbbb)?
+    /// The workspace side of a seat change: a move between machines waits on her last
+    /// push landing, so the node she lands on can fetch what she was doing.
+    pub fn has_unpushed_work(&self) -> bool {
+        crate::persona::workspace_transfer::persona_has_unpushed_work(self.persona_id)
     }
 
     /// Bind a remote lane on `peer` serving `model` and move there (stage B). Persists
@@ -743,6 +758,23 @@ pub async fn follow_the_fleet(
             *withheld.entry(peer).or_default() += 1;
         }
         let mut mv = decide(inputs);
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a seat change happens only
+        // between turns and only after her last push landed — asked BEFORE the return's
+        // reservation below, so a deferred move never burns a grant. Deferred, not
+        // refused: the next tick asks again, and the act-end sync retries the push.
+        if moves_between_machines(&mv, seat_is_self) {
+            if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(sw.persona_id()).await {
+                crate::probe!(
+                    class = "placement.move.deferred_unpushed",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    move_kind = ?mv,
+                    why = %why,
+                    "her workspace is not on origin yet (or a turn is in flight) — the move waits for the next tick"
+                );
+                mv = PlacementMove::Stay;
+            }
+        }
         // A RETURN ASKS FOR ITS SLOT LIKE A SPILL DOES (2026-09-19 00:3xZ): the 5090's beacon
         // first carried its measured wait, read QUEUED, and the IntelMac brought all seven
         // bound minds home in one tick — correct. The moment that seat's wait dips under
@@ -826,6 +858,19 @@ pub async fn follow_the_fleet(
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();
         for (mind, peer, model) in moves {
             let Some(sw) = by_id.get(&mind) else { continue };
+            // A spill is a move between machines too (card 73eefbbb): same gate, before
+            // the seat is asked for a grant that a deferral would waste.
+            if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
+                crate::probe!(
+                    class = "placement.move.deferred_unpushed",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    move_kind = "spill",
+                    why = %why,
+                    "her workspace is not on origin yet (or a turn is in flight) — the spill waits for the next tick"
+                );
+                continue;
+            }
             // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves — on HER wire, in
             // her room, where the seat's core listens. Refused or unanswered = she stays
             // home this tick, receipted (S1b).
@@ -1003,6 +1048,20 @@ mod tests {
         let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
         assert_eq!(moves[0].0, least, "the least-served mind goes first");
         assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds).is_empty());
+    }
+
+    // what this catches (card 73eefbbb): which decided moves the workspace must be
+    // carried across first — a fall-home or a return between machines; never Stay,
+    // never Park, and never a "remote" seat that is this very node (a loopback lane:
+    // her workspace is already here, a push would gate nothing).
+    #[test]
+    fn only_a_move_between_machines_waits_on_the_workspace() {
+        assert!(moves_between_machines(&PlacementMove::ReturnRemote, false));
+        assert!(moves_between_machines(&PlacementMove::FallHome { reason: "seat silent: no capacity beacon" }, false));
+        assert!(!moves_between_machines(&PlacementMove::FallHome { reason: SELF_SEAT_REASON }, true));
+        assert!(!moves_between_machines(&PlacementMove::ReturnRemote, true));
+        assert!(!moves_between_machines(&PlacementMove::Stay, false));
+        assert!(!moves_between_machines(&PlacementMove::Park { reason: "seat silent: no capacity beacon" }, false));
     }
 
     // what this catches: a flapping tower cannot move her twice inside the cooldown, and

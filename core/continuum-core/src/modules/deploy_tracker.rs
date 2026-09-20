@@ -53,6 +53,13 @@ fn running_sha() -> &'static str {
 /// judged something else and merely landed here.
 const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"];
 
+/// Workflows whose check-runs are NEVER the tip's verdict, by path, whatever event started
+/// them. `promote-main` (card 7c0990b0) runs on the default branch on a schedule AND by
+/// hand (`workflow_dispatch`, an own-suite event); it moves main to canary's tip and its
+/// failure says nothing about the tip's code — a red run there must not read as a red
+/// tip and refuse every deploy on the fleet (the #4243 shape, by a different door).
+const NON_DEPLOY_WORKFLOW_PATHS: [&str; 1] = [".github/workflows/promote-main.yml"];
+
 /// The tip's verdict plus what the read excluded — the numbers a probe wants when a
 /// verdict surprises someone reading the tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +84,8 @@ pub struct TipChecks {
 /// all-checks read said "red", refusing every deploy on the fleet until a new tip appeared
 /// (#4243 fixed the shell copy of this rule; this is the Rust copy, the only one the
 /// Windows `deploy-consume` reads). So: the workflow runs for the sha carry the triggering
-/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count. The runs
+/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count — minus
+/// the suites of [`NON_DEPLOY_WORKFLOW_PATHS`], which judge nothing about the tip. The runs
 /// API answered with no such suite = unknown, never "green by absence". The runs API did
 /// not answer (`None` or not JSON) = every check counts, as before — a degraded read, not
 /// a lie. Pure over the JSON bodies so it is assertable without gh.
@@ -97,6 +105,7 @@ pub fn parse_tip_checks(check_runs_body: &str, workflow_runs_body: Option<&str>)
         .map(|runs| {
             runs.iter()
                 .filter(|r| r.get("event").and_then(|e| e.as_str()).is_some_and(|e| OWN_SUITE_EVENTS.contains(&e)))
+                .filter(|r| !r.get("path").and_then(|p| p.as_str()).is_some_and(|p| NON_DEPLOY_WORKFLOW_PATHS.contains(&p)))
                 .filter_map(|r| r.get("check_suite_id").and_then(|id| id.as_u64()))
                 .collect()
         });
@@ -268,17 +277,6 @@ fn clear_deploy_request(state_dir: &std::path::Path) {
     let _ = std::fs::remove_file(state_dir.join("deploy-request.json"));
 }
 
-/// The request this tick stands behind: the one already on record when it names the
-/// same tip (its `requested_ms` stays — that is when the deploy was first asked, the
-/// number the stranded grace and the actuator's bound are measured from), else a new
-/// one stamped now. Pure; the bool says whether it must be written.
-pub fn request_for_tip(standing: Option<DeployRequest>, tip_sha: &str, now_ms: u64) -> (DeployRequest, bool) {
-    match standing.filter(|r| same_commit(&r.tip_sha, tip_sha)) {
-        Some(r) => (r, false),
-        None => (DeployRequest::new(tip_sha, now_ms), true),
-    }
-}
-
 fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
     let _ = std::fs::create_dir_all(state_dir);
     if let Ok(bytes) = serde_json::to_vec_pretty(req) {
@@ -445,9 +443,19 @@ impl ServiceModule for DeployTrackerModule {
         let verdict = decide(&inputs);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
-                let (req, fresh) = request_for_tip(read_deploy_request(state_dir), tip_sha, now);
-                if fresh {
-                    write_deploy_request(state_dir, &req);
+                // Write ONLY when the tip changed. An unchanged tip keeps its original
+                // `requested_ms`, which is the only record of how long this deploy has been
+                // owed — re-stamping it every tick pinned `elapsed_ms` at the tick period and
+                // made every age-based decision downstream meaningless (card c48fc453). The
+                // probe follows the write, so a standing request stops repeating itself too.
+                let standing = read_deploy_request(state_dir);
+                let persisted = crate::runtime::deploy_tracker::request_to_persist(
+                    standing.as_ref(),
+                    tip_sha,
+                    now,
+                );
+                if let Some(req) = persisted.as_ref() {
+                    write_deploy_request(state_dir, req);
                     crate::probe!(
                         class = "deploy.track.request_written",
                         tip = tip_sha.as_str(),
@@ -455,6 +463,12 @@ impl ServiceModule for DeployTrackerModule {
                         "deploy wanted — recorded a DeployRequest; the actuator acts on it unless another owner is installed"
                     );
                 }
+                // The actuator acts on the request that STANDS for this tip, freshly written
+                // or owed since an earlier tick — it bounds its own attempts, so a standing
+                // request is exactly what a retry must be judged against.
+                let req = persisted
+                    .or(standing)
+                    .unwrap_or_else(|| crate::runtime::deploy_tracker::DeployRequest::new(tip_sha, now));
                 // THE ACTION, off the tick: the actuator defers to an installed owner,
                 // launches the consumer once per request, and keeps the receipt.
                 let actuator = self.actuator.clone();
@@ -564,19 +578,30 @@ mod tests {
         assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
     }
 
-    // what this catches (the 5090, 2026-09-20: 214 request_written rows, nothing
-    // consumed, deploy.stranded never fired): the request was re-stamped every tick, so
-    // its age never reached the stranded grace and the actuator would have re-launched
-    // the consumer every 300 s. A standing request for the same tip is kept with its
-    // original requested_ms; a different tip (or none) is a fresh request stamped now.
+    // what this catches (card 7c0990b0): the promote-main workflow runs on the default
+    // branch and can be started by hand — `workflow_dispatch`, an OWN-suite event — so the
+    // event filter alone would let its failure read as the tip's. A run of that workflow
+    // is excluded by PATH whatever its event; the push's own suites still decide, and a
+    // sha whose only own suite is promote-main's is unknown, never green by absence.
     #[test]
-    fn a_standing_request_for_the_same_tip_is_kept_not_restamped() {
-        let first = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", 1_000);
-        let (same, fresh) = request_for_tip(Some(first.clone()), "c2344d758", 301_000);
-        assert_eq!((same, fresh), (first.clone(), false), "same tip (either spelling) = the standing request, its first-asked time intact");
-        let (next, fresh) = request_for_tip(Some(first), "38be2e1a9deadbeef", 301_000);
-        assert_eq!((next.tip_sha.as_str(), next.requested_ms, fresh), ("38be2e1a9deadbeef", 301_000, true));
-        let (none, fresh) = request_for_tip(None, "38be2e1a9deadbeef", 5);
-        assert_eq!((none.requested_ms, fresh), (5, true));
+    fn a_promote_main_run_is_never_the_tips_verdict_whatever_its_event() {
+        let checks = r#"{"check_runs":[
+            {"name":"promote-main","status":"completed","conclusion":"failure","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        let runs = r#"{"workflow_runs":[
+            {"id":1,"event":"workflow_dispatch","path":".github/workflows/promote-main.yml","check_suite_id":11},
+            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
+        ]}"#;
+        assert_eq!(parse_tip_checks(checks, Some(runs)), TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true }, "a dispatched promote-main failure is excluded by path: green");
+        let in_flight = r#"{"check_runs":[
+            {"name":"promote-main","status":"in_progress","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(in_flight, Some(runs)), Checks::Green, "a promote-main run in flight is not a pending tip");
+        let only_promote = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/promote-main.yml","check_suite_id":11}]}"#;
+        assert_eq!(verdict(checks, Some(only_promote)), Checks::Unknown, "promote-main as the only suite = no own suite = wait, never green by absence");
+        let own_failure = r#"{"check_runs":[{"name":"cargo test","status":"completed","conclusion":"failure","check_suite":{"id":22}}]}"#;
+        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "the push's own failure is still the tip's verdict");
     }
 }

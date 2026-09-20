@@ -1210,7 +1210,23 @@ impl ServingDaemonModule {
         // gauge; never invented.
         let leased_in =
             note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
+        // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
+        // what a window let her send), with headroom, floored at one real turn. Built
+        // once here and carried on the demand by value into the one plan — the
+        // allocator's input, the governed size (card 2eec3977).
+        let requirements: Vec<crate::cognition::window_allocator::LaneRequirement> = live
+            .iter()
+            .map(|p| {
+                let need = self.working_set.demand_of(*p).map(|d| crate::cognition::working_set::requirement_tokens(&d)).unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
+                crate::cognition::window_allocator::LaneRequirement::from_demand(
+                    *p,
+                    need,
+                    crate::cognition::serving_plan::SENT_HEADROOM,
+                )
+            })
+            .collect();
         ServingDemand::new(lanes, demand)
+            .with_requirements(requirements)
             .with_sent_tokens(sent)
             .with_sent_median(median)
             .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
@@ -1682,10 +1698,9 @@ impl ServingDaemonModule {
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
         plan_serving(
-            self.host_budget(),
+            &self.host_budget(),
             &self.live_candidates(),
-            self.serving_demand(),
-        )
+            &self.serving_demand())
     }
 
     /// The detected hardware tier for this host, for the persona spawner's
@@ -3742,9 +3757,9 @@ impl ServingDaemonModule {
             a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
         let stable = if ledger_credited {
-            plan_serving_at_rest(budget, candidates, incumbent.as_deref(), demand)
+            plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
-            plan_serving_stable(budget, candidates, incumbent.as_deref(), demand)
+            plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
         };
         match stable {
             Some(plan) => {
@@ -3798,7 +3813,7 @@ impl ServingDaemonModule {
                 // everything servable on disk, ignoring suppression and pin (intent to move
                 // is never licence to sink). A plan below it is refused, loudly, every time
                 // it is asked for; the previous plan stands.
-                let floor = host_floor_of(self.physical_budget(), on_disk, demand);
+                let floor = host_floor_of(self.physical_budget(), on_disk, &demand);
                 // The floor guards against a host SINKING below its capability — which needs an
                 // incumbent to sink FROM. With no incumbent (a COLD BOOT) there is nothing to
                 // preserve, and refusing serves NOTHING: the node boots dark (card 48f5438a,
@@ -4105,9 +4120,9 @@ enum DownshiftVerdict {
 fn host_floor_of(
     physical: HostBudget,
     on_disk: &[ModelFootprint],
-    demand: ServingDemand,
+    demand: &ServingDemand,
 ) -> Option<ModelFootprint> {
-    plan_serving(physical, on_disk, demand)
+    plan_serving(&physical, on_disk, &demand)
         .filter(|p| p.fits_on_gpu)
         .map(|p| p.base_model)
 }
@@ -4337,7 +4352,7 @@ fn pin_fit_decision(
     // footprint Some but over budget → plan_serving degrades with fits_on_gpu=false,
     // which `serving/pin` reads to refuse loud.
     let plan = candidate
-        .and_then(|f| plan_serving(base, std::slice::from_ref(&f), ServingDemand::new(1, None)));
+        .and_then(|f| plan_serving(&base, std::slice::from_ref(&f), &ServingDemand::new(1, None)));
     PinFit {
         plan,
         weights_bytes,
@@ -5507,14 +5522,21 @@ fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
 
 /// KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
 /// fewer bytes/token, so the plan can size a BIGGER window into the same budget —
-/// this is what turns the launcher's opt-in q8_0 flag into an actual window GROWTH.
-/// Divide the f16 rate by the quant factor; default (f16 / unset) → 1 → byte-identical.
-/// Keep the config key in sync with the launcher arg in inference/llama_server.rs —
-/// one SERVING_KV_CACHE_TYPE key, two consumers (launcher flag + this fit-math rate).
+/// this is what turns the q8_0 cache type into an actual window GROWTH.
+/// Divide the f16 rate by the quant factor; f16 → 1 → byte-identical.
+///
+/// THE DIVISOR IS NOT A SECOND READ OF THE CONFIG. It is the SAME
+/// [`crate::cognition::kv_cache_plan::KvCachePlan`] the launcher takes its
+/// `--cache-type-k/v` and `--flash-attn` flags from, so the plan's arithmetic and the
+/// engine's flags cannot disagree. They shared a *key* before, which is how the 5090 —
+/// where nobody ever exported `SERVING_KV_CACHE_TYPE` — planned AND served half-size
+/// lanes self-consistently for its whole life (a 26,880-token lane, measured
+/// 2026-09-20). Sharing the key made the two halves agree about the wrong number;
+/// sharing the DECISION makes them agree about the right one.
 ///
 /// ONE named transform (not inlined in `footprint_for`) so every derivation of the
 /// live footprint — production AND the tests that assert against it — rides the SAME
-/// quant config instead of silently assuming f16. The env-dependent-test incident
+/// resolved plan instead of silently assuming f16. The env-dependent-test incident
 /// this prevents: an operator serving `SERVING_KV_CACHE_TYPE=q8_0` ran the footprint
 /// test locally and it failed on a number CI called green, because the expectation
 /// was built from raw parts while the resolver divided by 2 (2026-08-24).
@@ -5523,22 +5545,10 @@ fn apply_kv_quantization(mut fp: ModelFootprint) -> ModelFootprint {
     fp
 }
 
-/// The resident-KV divisor implied by `SERVING_KV_CACHE_TYPE`, so the plan sizes the
+/// The resident-KV divisor of the resolved KV cache decision, so the plan sizes the
 /// served window against the KV the lane WILL actually hold, not the f16 default. (#232)
 fn kv_cache_quant_divisor() -> u64 {
-    kv_divisor_for(crate::config_env::read("SERVING_KV_CACHE_TYPE").as_deref())
-}
-
-/// Pure KV-rate divisor for a cache-type string (testable without env). CONSERVATIVE by
-/// design: q8_0 ≈ half of f16 → 2; q4_0/q4_1 ≈ a third → 3 (under the ideal ~3.5×, so the
-/// plan never over-grows the window past the real KV and OOMs). Anything else / f16 → 1
-/// (no change). Over-reserve is a smaller window (safe); under-reserve is an OOM (fatal).
-fn kv_divisor_for(cache_type: Option<&str>) -> u64 {
-    match cache_type.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("q8_0") => 2,
-        Some("q4_0") | Some("q4_1") => 3,
-        _ => 1,
-    }
+    crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor
 }
 
 /// Pure footprint estimate from the fields that drive it — split out from the
@@ -7210,35 +7220,17 @@ mod tests {
         );
     }
 
-    // what this catches: footprint estimate is honest about weights (passed
-    // through), tool capability bumps the rank, KV is non-zero, and zero
-    // weights → no footprint (we only offer what we can actually serve).
+    // what this catches: the plan's resident-KV divisor is the SAME resolved decision
+    // the launcher flags with — not a second read of a config key. The two shared a
+    // KEY before, which is how the 5090 (and the CPU-serving IntelMac) planned AND
+    // served half-size lanes self-consistently: a 26,880-token lane, measured
+    // 2026-09-20. The divisor table itself is pinned in cognition/kv_cache_plan.rs.
     #[test]
-    fn kv_divisor_reflects_cache_type_conservatively() {
-        // what this catches: the #232 KV-quant fit-math coupling — the served window grows
-        // only when the lane actually runs quantized KV, and CONSERVATIVELY so the plan
-        // never over-grows past the real KV and OOMs. f16/unset/unknown must never scale.
-        assert_eq!(kv_divisor_for(None), 1, "unset never scales the window");
+    fn the_plans_kv_divisor_is_the_resolved_decisions_divisor() {
         assert_eq!(
-            kv_divisor_for(Some("f16")),
-            1,
-            "explicit f16 is the no-op default"
-        );
-        assert_eq!(kv_divisor_for(Some("q8_0")), 2, "q8_0 ~ half of f16");
-        assert_eq!(
-            kv_divisor_for(Some("  Q8_0 ")),
-            2,
-            "trimmed + case-insensitive"
-        );
-        assert_eq!(
-            kv_divisor_for(Some("q4_0")),
-            3,
-            "q4_0 conservative, under the ideal ~3.5x"
-        );
-        assert_eq!(
-            kv_divisor_for(Some("garbage")),
-            1,
-            "unknown type → no grow, never a bogus OOM"
+            kv_cache_quant_divisor(),
+            crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor,
+            "the fit math and the launcher flag must be two projections of ONE decision"
         );
     }
 
@@ -9122,7 +9114,7 @@ mod tests {
         // free by the prefill buffer (G5). The compute-reserve term comes from the
         // footprint's own method so this expectation can't drift from the plan's sizing.
         // Build the expectation through the SAME quant transform the resolver applies
-        // (`apply_kv_quantization` reads the operator's live SERVING_KV_CACHE_TYPE):
+        // (`apply_kv_quantization` rides the live resolved KV cache decision):
         // with f16/unset this is byte-identical to raw parts; with q8_0 configured the
         // rate halves on BOTH sides. Before this the expectation assumed f16 and the
         // test failed on any box actually serving quantized KV while CI stayed green.
@@ -9236,7 +9228,7 @@ mod tests {
             usable_bytes: (32.0 * GB as f64 * 0.80) as u64,
             perf_cores: 8,
         };
-        let floor = host_floor_of(card_5090, &on_disk, demand).expect("something on disk");
+        let floor = host_floor_of(card_5090, &on_disk, &demand).expect("something on disk");
         assert_eq!(floor.model_id, "qwen3.8-27b");
         assert_eq!(
             floor_gate(&plan_for(&tiny), Some(&floor)),
@@ -9253,7 +9245,7 @@ mod tests {
             usable_bytes: (16.0 * GB as f64 * 0.80) as u64,
             perf_cores: 4,
         };
-        let floor = host_floor_of(small_card, &on_disk, demand).expect("something on disk");
+        let floor = host_floor_of(small_card, &on_disk, &demand).expect("something on disk");
         assert_eq!(floor.model_id, "qwen-0.5b");
         assert_eq!(floor_gate(&plan_for(&tiny), Some(&floor)), FloorVerdict::AtOrAbove);
         // THE PIN IS THE FLOOR'S CEILING (Fable, #4146 review): the M5 pins a lower-ranked
@@ -9262,7 +9254,7 @@ mod tests {
         let ornith = footprint("ornith-35b-a3b", 20, 5);
         let pinned_universe = vec![ornith.clone()]; // what servable_candidates yields under the pin
         let floor =
-            host_floor_of(card_5090, &pinned_universe, demand).expect("pinned model on disk");
+            host_floor_of(card_5090, &pinned_universe, &demand).expect("pinned model on disk");
         assert_eq!(floor.model_id, "ornith-35b-a3b");
         assert_eq!(
             floor_gate(&plan_for(&ornith), Some(&floor)),

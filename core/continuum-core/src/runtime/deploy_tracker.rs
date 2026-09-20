@@ -257,6 +257,41 @@ pub fn same_commit(a: &str, b: &str) -> bool {
 /// than invent a second signal.
 pub const STRANDED_GRACE_MS: u64 = 20 * 60 * 1000;
 
+/// What a `Deploy` verdict should PERSIST, given what is already on record. `None` = leave
+/// the existing request exactly as it is.
+///
+/// This is the idempotence [`DeployRequest`] has always documented — *"keyed by `tip_sha` so
+/// re-recording the same tip is idempotent (the module does not re-emit an identical pending
+/// request every tick)"* — and never had. The write site stamped `requested_ms: now`
+/// unconditionally, every tick, for the same tip.
+///
+/// That is not a tidiness problem, it is what made `elapsed_ms` a lie. In the STRANDED state
+/// every guard in [`decide`] passes (tip readable, core answering, tip != running, no hold, no
+/// build in flight, checks green, tree clean), so the verdict is `Deploy` on EVERY tick — the
+/// request was re-stamped each time, [`reconcile_request`] always read one stamped exactly one
+/// tick ago, and `elapsed_ms` was pinned at the tick period forever. Measured across three
+/// separate deploys, 2026-09-18: `deploy.stranded` reported 300014, 300004 and 299882 ms
+/// against a 300 s tick. Three deploys, one number, and it was the cadence wearing a
+/// duration's name (card c48fc453).
+///
+/// Downstream that made the age unusable for any decision about age — including the
+/// `STRANDED_GRACE_MS` comparison added in #4190, which could never be satisfied, so
+/// `deploy.stranded` became unreachable. Preserving `requested_ms` across ticks of an
+/// unchanged tip is what turns `elapsed_ms` back into an AGE.
+pub fn request_to_persist(
+    existing: Option<&DeployRequest>,
+    tip_sha: &str,
+    now_ms: u64,
+) -> Option<DeployRequest> {
+    match existing {
+        // Same tip already on record: its original timestamp IS the answer to "how long has
+        // this been owed". Re-stamping it destroys the only copy of that fact.
+        Some(req) if req.tip_sha == tip_sha => None,
+        // A different tip (or none): this is a new thing to owe, stamped now.
+        _ => Some(DeployRequest::new(tip_sha, now_ms)),
+    }
+}
+
 /// Close the deploy loop: given the request on record and the build actually running,
 /// say whether what was asked for has arrived. Pure — the module supplies the two facts
 /// it already gathers every tick, so this costs nothing and can be asserted with no
@@ -459,6 +494,50 @@ mod tests {
             reconcile_request(Some(&req), "38be2e1a9", false, NOW + STRANDED_GRACE_MS - 1),
             RequestOutcome::InFlight { .. }
         ));
+    }
+
+    // what this catches: the defect that made elapsed_ms unusable — and, through it, made
+    // #4190's STRANDED_GRACE_MS unreachable. Measured 2026-09-18: three separate deploys
+    // reported deploy.stranded with elapsed_ms 300014, 300004 and 299882 against a 300 s
+    // tick. Three deploys, one number, because in the stranded state decide() returns Deploy
+    // EVERY tick and the write site re-stamped requested_ms each time, so the age could only
+    // ever be one tick. The second assertion below is the one that fails against the old
+    // behaviour: with a re-stamped request, Stranded can never be reached at all.
+    #[test]
+    fn a_standing_request_keeps_its_original_timestamp_so_elapsed_is_an_age() {
+        let first = request_to_persist(None, "aaaaaaaaa111bbbb", NOW)
+            .expect("nothing on record — the first Deploy verdict must persist a request");
+        assert_eq!(first.requested_ms, NOW);
+
+        // Ticks two and three, same tip: nothing to write, so the original stamp survives.
+        const TICK: u64 = 300_000;
+        assert_eq!(
+            request_to_persist(Some(&first), "aaaaaaaaa111bbbb", NOW + TICK),
+            None,
+            "an unchanged tip must not be re-stamped — that stamp is the age"
+        );
+        assert_eq!(
+            request_to_persist(Some(&first), "aaaaaaaaa111bbbb", NOW + TICK * 2),
+            None
+        );
+
+        // THE POINT: after the grace has genuinely elapsed, with the request still standing
+        // and nothing building, the outcome is Stranded. Under the re-stamping behaviour
+        // elapsed_ms was pinned at one TICK, so this could never fire.
+        let late = NOW + STRANDED_GRACE_MS + TICK;
+        assert!(
+            matches!(
+                reconcile_request(Some(&first), "999999999", false, late),
+                RequestOutcome::Stranded { .. }
+            ),
+            "a request standing past the grace with nothing building IS stranded"
+        );
+
+        // A DIFFERENT tip is a new thing owed and starts its own clock.
+        let next = request_to_persist(Some(&first), "ccccccccc333dddd", late)
+            .expect("a changed tip must persist");
+        assert_eq!(next.requested_ms, late);
+        assert_eq!(next.tip_sha, "ccccccccc333dddd");
     }
 
     // what this catches: no request on record must be quiet, not a false Stranded every

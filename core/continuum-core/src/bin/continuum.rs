@@ -579,7 +579,7 @@ fn checkpoint_plan_output(
 async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
     ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
-    let params = params_from_args(&args, &canonical)?;
+    let params = params_from_args(command, &args, &canonical)?;
     let result = connection()
         .commands()
         .execute_value(command, params)
@@ -614,14 +614,22 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
 /// `persona_id`. This is what makes snake_case Rust-native commands invokable by
 /// flag (regression: continuum used to blanket-camelCase every key, turning `--persona_id`
 /// into `personaId`, which the server rejected as `missing field persona_id`).
-/// Flags NOT in the schema — base `CommandParams` like userId, or commands that
-/// expose no schema (`canonical` empty) — fall back to the generic camelCase
-/// normalization, which is correct for the camelCase wire fields and is the
-/// pre-schema behavior, so nothing regresses.
+/// A flag NOT in the schema is REFUSED by name — with the command and the flags it
+/// does accept — but only when the schema is KNOWN (`canonical` non-empty). With no
+/// schema (registry unreachable, or a command that publishes no params) "unknown"
+/// is unprovable, so the historical camelCase guess still stands; refusing there
+/// would make every command the registry cannot describe uncallable. Measured
+/// 2026-09-05: `continuum ping --nonsense-flag` returned a healthy pong, exit 0 —
+/// the typo became a junk param the command ignored, and the caller got a
+/// successful-looking answer to a question nobody asked (#3724).
 ///
 /// Schema-AWARE coercion/validation (knowing each field's exact type) is the next
 /// step on the same `commands/list` schema; this canonicalizes the KEY today.
-fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, String> {
+fn params_from_args(
+    command: &str,
+    args: &[String],
+    canonical: &[String],
+) -> Result<Value, String> {
     if args.is_empty() {
         return Ok(Value::Object(Default::default()));
     }
@@ -645,10 +653,11 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
     // standard, aliases resolve). Only consulted when the raw flag is NOT itself a
     // canonical field; data-driven, so it never overrides a command's real param.
     const SYNONYMS: &[(&str, &str)] = &[("command", "cmd")];
-    let field = |raw: &str| -> String {
+    // `None` = a flag the command's KNOWN schema does not have — see the last arm.
+    let field = |raw: &str| -> Option<String> {
         let norm = normalize_key(raw);
         if let Some(c) = canon_by_norm.get(&norm) {
-            return (*c).to_string();
+            return Some((*c).to_string());
         }
         for (a, b) in SYNONYMS {
             let other = if normalize_key(a) == norm {
@@ -660,11 +669,39 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
             };
             if let Some(o) = other {
                 if let Some(c) = canon_by_norm.get(&normalize_key(o)) {
-                    return (*c).to_string();
+                    return Some((*c).to_string());
                 }
             }
         }
-        to_camel_case(raw)
+        // NOT a schema field, and not a synonym of one.
+        //
+        // When `canonical` is EMPTY we do not know the schema — the registry was
+        // unreachable, or this command publishes no params — so "unknown" is
+        // unprovable and the historical camelCase guess stands. When it is
+        // NON-empty we DO know, and a flag matching nothing is a typo the caller
+        // wants told about, not silently coerced into a junk key the command
+        // ignores. Same unset-vs-unknown ladder as #3717's room probe: refuse only
+        // where the knowledge to refuse actually exists.
+        if canon_by_norm.is_empty() {
+            return Some(to_camel_case(raw));
+        }
+        None
+    };
+    // Name the flag AND what the command actually takes. A refusal that only says
+    // "unknown" sends the caller to `--help`; one that lists the fields IS the
+    // answer they were about to look up.
+    let unknown = |k: &str| -> String {
+        let mut known: Vec<&str> = canon_by_norm.values().copied().collect();
+        known.sort_unstable();
+        format!(
+            "unknown flag `--{k}` for `{command}`.\n  accepted: {}\n  (or pass a single JSON \
+             object; `continuum {command} --help` shows types and which are required)",
+            known
+                .iter()
+                .map(|f| format!("--{f}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
     };
 
     let mut map = serde_json::Map::new();
@@ -680,17 +717,23 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
         // Splitting on the first `=` means `--filter=data/` parses to
         // {filter: "data/"} instead of a junk `{"filter=data/": true}` key.
         if let Some((k, v)) = raw_key.split_once('=') {
-            map.insert(field(k), coerce(v));
+            map.insert(field(k).ok_or_else(|| unknown(k))?, coerce(v));
             i += 1;
             continue;
         }
         // A value follows unless the next arg is another flag (or there is none).
         let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
         if has_value {
-            map.insert(field(raw_key), coerce(&args[i + 1]));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                coerce(&args[i + 1]),
+            );
             i += 2;
         } else {
-            map.insert(field(raw_key), Value::Bool(true));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                Value::Bool(true),
+            );
             i += 1;
         }
     }
@@ -3633,21 +3676,30 @@ fn kill_pid_tree(pid: i32) {
     }
     #[cfg(windows)]
     {
-        let _ = WindowsKill::Tree(pid).command().output();
+        let _ = KillStep::Tree(pid).command().output();
     }
 }
 
-/// The distinction matters before the OS sees a kill: `/T` on a core also
-/// terminates its warm gateway, even if a later orphan sweep excludes that lane.
-#[cfg(any(windows, test))]
+/// One step of a kill plan. The distinction matters before the OS sees a kill: a
+/// TREE kill on a core also terminates its warm gateway, even if a later orphan sweep
+/// excludes that lane. Windows: `taskkill /T` vs `/PID`. Unix: the process GROUP vs the
+/// pid alone — and that arm is the one that rotted: until 2026-09-20 the Unix executor
+/// discarded `keep` (`let _ = keep;`) and sent every root a group kill, so the live
+/// llama-server — a plain child in the core's group, no `setsid` of its own — took the
+/// SIGTERM at the old core's stop on every reboot, eleven lines before "leaving serving
+/// lane(s) up for adoption" printed over it (M5 20:58:22Z pid 61259 RemovedDead 19 s
+/// later; the IntelMac's adoptee answered `/v1/models` while exiting and failed the
+/// decode probe). Every deploy was a cold prefill for every seated mind (card 59052747).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowsKill {
+enum KillStep {
+    /// This pid alone — its children are visited by the plan, the protected one spared.
     Process(i32),
+    /// This pid and everything under it — no protected lane in this branch.
     Tree(i32),
 }
 
-#[cfg(any(windows, test))]
-impl WindowsKill {
+impl KillStep {
+    #[cfg(any(windows, test))]
     fn command(self) -> std::process::Command {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.arg("/F");
@@ -3661,16 +3713,40 @@ impl WindowsKill {
         cmd.args(["/PID", &pid.to_string()]);
         cmd
     }
+
+    #[cfg(unix)]
+    fn execute(self) {
+        match self {
+            Self::Tree(pid) => kill_pid_tree(pid),
+            Self::Process(pid) => kill_pid_alone(pid),
+        }
+    }
+}
+
+/// Unix: TERM this pid ONLY — never its group — with the same 3 s deadline then KILL as
+/// [`kill_pid_tree`]. The step a plan takes on an ancestor of a protected lane.
+#[cfg(unix)]
+fn kill_pid_alone(pid: i32) {
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if libc::kill(pid, 0) != 0 {
+                return;
+            }
+        }
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 /// Split only the branches containing a verified live lane. All other branches
 /// remain tree kills, so new eye/browser children are still owned by the reap.
-#[cfg(any(windows, test))]
-fn windows_kill_plan(
+/// PURE over a parent map, so both platforms execute the SAME plan.
+fn kill_plan(
     roots: &[i32],
     parents: &std::collections::HashMap<i32, i32>,
     keep: &[i32],
-) -> Vec<WindowsKill> {
+) -> Vec<KillStep> {
     let mut plan = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut pending = Vec::new();
@@ -3693,12 +3769,12 @@ fn windows_kill_plan(
                 .iter()
                 .any(|lane| descends_from(parents, *lane, &[pid]))
             {
-                plan.push(WindowsKill::Tree(pid));
+                plan.push(KillStep::Tree(pid));
                 continue;
             }
             // Stop the ancestor spawning more workers, then reap its unprotected
             // children. Killing its whole tree would cross the keep set.
-            plan.push(WindowsKill::Process(pid));
+            plan.push(KillStep::Process(pid));
             pending.extend(
                 parents
                     .iter()
@@ -3720,26 +3796,21 @@ fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32>
 }
 
 fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
-    #[cfg(windows)]
-    {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        let parents = process_parents(&sys);
-        for kill in windows_kill_plan(roots, &parents, keep) {
-            let _ = kill.command().output();
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let parents = process_parents(&sys);
+    for step in kill_plan(roots, &parents, keep) {
+        #[cfg(windows)]
+        {
+            let _ = step.command().output();
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = keep;
-        for &pid in roots {
-            kill_pid_tree(pid);
-        }
+        #[cfg(unix)]
+        step.execute();
     }
 }
 
@@ -6080,7 +6151,7 @@ mod tests {
             (501, 500),
             (900, 1), // unrelated process: never a teardown root
         ]);
-        let command_args = |plan: Vec<WindowsKill>| {
+        let command_args = |plan: Vec<KillStep>| {
             let mut args: Vec<Vec<String>> = plan
                 .into_iter()
                 .map(|kill| {
@@ -6096,10 +6167,10 @@ mod tests {
         };
         // Duplicate/descendant roots must not produce overlapping tree kills.
         let roots = [300, 200, 100, 100, 301, 500];
-        let plan = windows_kill_plan(&roots, &parents, &[8600]);
+        let plan = kill_plan(&roots, &parents, &[8600]);
         assert_eq!(
             plan.first(),
-            Some(&WindowsKill::Process(100)),
+            Some(&KillStep::Process(100)),
             "stop the spawning core first"
         );
         assert_eq!(
@@ -6115,7 +6186,7 @@ mod tests {
         // A surviving launcher ancestor in the owned-orphan pass must ALSO be
         // killed alone, never with /T across the now-adoptable lane beneath it.
         assert_eq!(
-            command_args(windows_kill_plan(
+            command_args(kill_plan(
                 &[200, 300, 301, 400, 500, 501, 8600, 8610],
                 &parents,
                 &[8600],
@@ -6130,18 +6201,18 @@ mod tests {
         // Full stop — or no identity-verified lane record — still kills the
         // entire core tree, including the otherwise-preserved gateway.
         assert_eq!(
-            command_args(windows_kill_plan(&roots, &parents, &[])),
+            command_args(kill_plan(&roots, &parents, &[])),
             vec![vec!["/F", "/T", "/PID", "100"]]
         );
         // An old fixed 64-hop ancestry limit must not turn a deeper protected
         // branch into an apparently unprotected /T target.
         let deep: std::collections::HashMap<i32, i32> =
             (1..=80).map(|pid| (pid, pid - 1)).collect();
-        let plan = windows_kill_plan(&[1], &deep, &[80]);
+        let plan = kill_plan(&[1], &deep, &[80]);
         assert_eq!(plan.len(), 79);
         assert!(plan
             .iter()
-            .all(|kill| matches!(kill, WindowsKill::Process(_))));
+            .all(|kill| matches!(kill, KillStep::Process(_))));
     }
 
     /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran
@@ -6149,6 +6220,65 @@ mod tests {
     /// resolved a chat model through that port got an EMBEDDING model. Its
     /// parent is absent from the table entirely (dead), which must read as
     /// "orphan", not as "unknown, leave it alone".
+    /// what this catches (card 59052747, 2026-09-20): the Unix executor of the kill plan
+    /// — until now `let _ = keep;` and a group kill per root, so the plan's `Process(core)`
+    /// never existed on macOS/Linux and the live lane died with the core on every reboot.
+    /// Real processes, one group: a leader and its child; a plan that protects the child
+    /// must leave it alive after the leader is gone, and the same plan with nothing
+    /// protected must take the whole group (the plain `stop`).
+    #[cfg(unix)]
+    #[test]
+    fn a_protected_child_survives_its_leaders_kill_on_unix() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        fn alive(pid: i32) -> bool {
+            unsafe { libc::kill(pid, 0) == 0 }
+        }
+        fn group(protect: bool) -> (i32, i32) {
+            // A leader that execs nothing but waits on one child in ITS group.
+            let mut leader = Command::new("sh")
+                .args(["-c", "sleep 30 & wait"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("sh spawns"); // test: the shell exists on every unix CI box
+            let leader_pid = leader.id() as i32;
+            // Find the child (the sleep) under the leader.
+            let child = (0..50)
+                .find_map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let mut sys = System::new();
+                    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+                    process_parents(&sys)
+                        .into_iter()
+                        .find(|(_, parent)| *parent == leader_pid)
+                        .map(|(child, _)| child)
+                })
+                .expect("the leader's child appears"); // test: `sleep` forks within 2.5 s
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+            let parents = process_parents(&sys);
+            let keep: Vec<i32> = if protect { vec![child] } else { vec![] };
+            let plan = kill_plan(&[leader_pid], &parents, &keep);
+            assert_eq!(plan, vec![if protect { KillStep::Process(leader_pid) } else { KillStep::Tree(leader_pid) }]);
+            for step in plan {
+                step.execute();
+            }
+            let _ = leader.wait();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            (leader_pid, child)
+        }
+        let (leader, child) = group(true);
+        assert!(!alive(leader), "the leader is gone");
+        assert!(alive(child), "the protected child in the leader's group survives its kill");
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let (leader, child) = group(false);
+        assert!(!alive(leader));
+        assert!(!alive(child), "nothing protected: the group goes with the leader (plain stop)");
+    }
+
     #[test]
     fn a_process_whose_parent_is_gone_is_an_orphan() {
         let parents = ptable(&[(37148, 37856)]); // 37856 itself not present = dead
@@ -6191,17 +6321,18 @@ mod tests {
         let no_schema: &[String] = &[];
 
         // 1. nothing → empty object
-        assert_eq!(params_from_args(&[], no_schema).unwrap(), json!({}));
+        assert_eq!(params_from_args("ping", &[], no_schema).unwrap(), json!({}));
 
         // 2. positional JSON verbatim (the AI / tool-call path)
         assert_eq!(
-            params_from_args(&[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
+            params_from_args("ping", &[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
             json!({ "message": "hi" })
         );
 
         // 3. --key value with coercion: string stays string, number→number,
         //    bool→bool; keys camelCased from kebab/snake.
         let p = params_from_args(
+            "ping",
             &[
                 "--message".into(),
                 "hi".into(),
@@ -6221,24 +6352,24 @@ mod tests {
 
         // bare flag (no value) → true
         assert_eq!(
-            params_from_args(&["--verbose".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--verbose".into()], no_schema).unwrap(),
             json!({ "verbose": true })
         );
 
         // `--key=value` form (muscle memory) — split on first `=`, NOT a junk key.
         assert_eq!(
-            params_from_args(&["--filter=data/".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--filter=data/".into()], no_schema).unwrap(),
             json!({ "filter": "data/" }),
             "--key=value splits correctly (regression: was {{\"filter=data/\": true}})"
         );
         assert_eq!(
-            params_from_args(&["--round-trip-ms=5".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--round-trip-ms=5".into()], no_schema).unwrap(),
             json!({ "roundTripMs": 5 }),
             "--key=value coerces + camelCases"
         );
 
         // a non-flag, non-JSON arg is a clear error (not silently swallowed)
-        assert!(params_from_args(&["oops".into()], no_schema).is_err());
+        assert!(params_from_args("ping", &["oops".into()], no_schema).is_err());
     }
 
     // what this catches: snake_case Rust-native command fields (e.g. cognition/eval's
@@ -6258,25 +6389,61 @@ mod tests {
             "--personaId",
             "--PERSONA_ID",
         ] {
-            let p = params_from_args(&[spelling.into(), "abc".into()], &canonical).unwrap();
+            let p = params_from_args("ping", &[spelling.into(), "abc".into()], &canonical).unwrap();
             assert_eq!(p, json!({ "persona_id": "abc" }), "{spelling} → persona_id");
         }
         // `--key=value` form canonicalizes too
         assert_eq!(
-            params_from_args(&["--eval-set=x.jsonl".into()], &canonical).unwrap(),
+            params_from_args("ping", &["--eval-set=x.jsonl".into()], &canonical).unwrap(),
             json!({ "eval_set": "x.jsonl" })
         );
-        // a flag NOT in the schema falls back to camelCase (base fields — no regression)
-        assert_eq!(
-            params_from_args(&["--room-id".into(), "r1".into()], &canonical).unwrap(),
-            json!({ "roomId": "r1" }),
-            "non-schema flag → legacy camelCase"
+        // a flag NOT in a KNOWN schema is refused, not coerced (see the unknown-flag
+        // test below). Identity fields like userId are injected by the connection —
+        // no command's schema carries them (349/349 on 2026-09-20) — so there is no
+        // base-field carve-out to preserve here.
+        assert!(
+            params_from_args("ping", &["--room-id".into(), "r1".into()], &canonical).is_err(),
+            "non-schema flag against a known schema → refused"
         );
         // with no schema at all, everything is legacy camelCase
         assert_eq!(
-            params_from_args(&["--persona-id".into(), "abc".into()], &[]).unwrap(),
+            params_from_args("ping", &["--persona-id".into(), "abc".into()], &[]).unwrap(),
             json!({ "personaId": "abc" }),
             "no schema → legacy camelCase (pre-schema behavior preserved)"
+        );
+    }
+
+    // what this catches: a typo'd flag being silently coerced into a junk param the
+    // command ignores, so the caller gets a successful-looking answer to a question
+    // they did not ask. Measured 2026-09-05: `continuum ping --nonsense-flag`
+    // returned a healthy pong, exit 0. The ladder is the point: refuse ONLY when the
+    // schema is known; with no schema we cannot prove a flag is unknown, so the
+    // camelCase guess must stand or every schemaless command becomes uncallable.
+    // regression for #3724.
+    #[test]
+    fn an_unknown_flag_is_refused_by_name_only_when_the_schema_is_known() {
+        let schema = &["message".to_string()];
+        let err = params_from_args("ping", &["--nonsense-flag".into()], schema)
+            .expect_err("a flag the schema does not have must be refused, not coerced");
+        assert!(err.contains("--nonsense-flag"), "names the offending flag: {err}");
+        assert!(err.contains("`ping`"), "names the command: {err}");
+        assert!(err.contains("--message"), "lists what IS accepted: {err}");
+        // every arg shape refuses the same way: `--k=v` and `--k v`, not just bare
+        assert!(params_from_args("ping", &["--nonsense=1".into()], schema).is_err());
+        assert!(params_from_args("ping", &["--nonsense".into(), "1".into()], schema).is_err());
+
+        // A real field still parses, and still canonicalizes across separators.
+        assert_eq!(
+            params_from_args("ping", &["--message".into(), "hi".into()], schema).unwrap(),
+            json!({ "message": "hi" })
+        );
+
+        // NO schema → cannot prove unknown → the pre-schema behaviour is preserved.
+        let no_schema: &[String] = &[];
+        assert_eq!(
+            params_from_args("ping", &["--nonsense-flag".into()], no_schema).unwrap(),
+            json!({ "nonsenseFlag": true }),
+            "without a schema an unrecognised flag must NOT be refused"
         );
     }
 

@@ -62,6 +62,15 @@ A stable set of `class` values so probes from different files compose into a coh
   - `inference.render_chat` — synchronous chat-template rendering (sub-ms typically, but cumulative)
   - `inference.forward.text` — pure-text LLM forward pass through the scheduler (the dominant cost on LCD tier — 95%+)
   - `inference.forward.multimodal` — mtmd single-flight path (text+image / text+audio)
+- `inference.bound.tripped` — a wait bound tripped and the turn reads as dead from here (`inference/turn_bound.rs`, card ba82d0a0): `at` = the seam (`pre_stream_headers` | `stream_queue` | `remote_deadline`), `name` = lane / model@peer, `bound_secs`, `source` = `floor` | `turn_bound`, `turn_bound_secs` + `expected_secs` (0 = the request carried none). A row whose lane was busy, not dead, says the bound was undersized — that is the number to fix, never the floor.
+
+**Serving: the KV cache decision** (`cognition/kv_cache_plan.rs`, `inference/llama_server.rs`, `ipc/mod.rs`):
+- `serving.kv_cache.backend` — the host's serving backend, recorded ONCE at the single `gpu::monitor::detect()` site: `platform` (what the monitor said), `backend` (`metal` | `cuda` | `rocm` | `vulkan` | `directml` | `cpu` | `unknown`), `quantized_kv` (the fallback table's answer for it — metal/cuda only; the cpu arm is f16 pending a measurement of the dequant cost, not an incapability).
+- `serving.kv_cache.engine_support` — what the serving binary advertises for `--cache-type-k`, asked once per process with a 10 s bound: `bin`, `outcome` (`answered` | `did_not_enumerate` | `probe_failed` | `probe_timeout`), `answered`, `quantized_kv` (read it WITH `answered` — `false` on an unanswered probe means "did not say", not "no"), `error`.
+- `serving.kv_cache.decided` — **the receipt that makes a half-size lane impossible to miss.** Emitted at every spawn: `model`, `cache_type`, `source` (`decided` | `override`), `backend`, `engine_advertised`, `flash_attn`, `divisor`, `kv_bytes_per_token` (the plan's own post-divisor rate, via `footprint_for`), `kv_rate_answered`, `window` (per-lane, the number the plan derived from that rate), `lanes`, `total_ctx`. The chosen type, where it came from, and the window it bought, on one line — because the defect it exists for was SELF-CONSISTENT: the 5090 and the CPU-serving IntelMac both planned *and* served at half their KV budget (a 26,880-token lane, measured 2026-09-20) and nothing ever disagreed.
+
+**Cognition: deliberation** (`cognition/llm_deliberation_faculty.rs`):
+- `delib.turn.bound` — the turn's wire bound was set: `persona`, `expected_secs` (her measured occupancy: uncached prompt at the box's prefill rate + last output at its decode rate), `turn_bound_secs` (× `TURN_BOUND_HEADROOM`). Absent when she has no measured turn behind her — the floors govern alone.
 
 **Cognition: shared analysis** (`cognition/shared_analysis/mod.rs`):
 - `cognition.analyze.enter` — input fingerprint, known_specialties count
@@ -84,6 +93,11 @@ A stable set of `class` values so probes from different files compose into a coh
 - `deploy.actuate.gave_up` — three actuations did not land the tip here: tip, attempts (once per tip)
 - `deploy.actuate.consumer_exited` — the consumer this core launched exited: tip, pid, status
 - `deploy.actuate.outcome` — at boot, the last actuation graded against the running build: outcome = landed | stale | unknown, running, tip, mode, spawned_ms, attempt
+
+**Workspace transfer** (`persona/workspace_transfer.rs`, card 73eefbbb — the workspace moves with the mind, by git):
+- `workspace.push` — act over, her card branch carried to origin: persona, card, root, branch, sha, committed, pushed, `outcome` = `ok` / `unreachable` / `rejected` / `commit_failed` / `not_pushable` (its reason names which: a detached HEAD, no origin, or an origin only this node can read — a `--shared`/`--mirror` clone of the local cache, which is never pushed into and PINS her instead) / `timed_out`, error, ms. Fired from `persona_workspace::restore_acting_workspace` on every turn her hands were rooted at a card.
+- `placement.move.deferred_unpushed` — a fall-home / return / spill held back this tick: persona, peer, move_kind, `why` (a turn in flight with her hands at a checkout, or unpushed work at a named root). Fired from `placement_switch::follow_the_fleet` before any reservation ask.
+- `workspace.transfer` — the card's branch arrived on a node before her first turn there: card, branch, root, sha, from_node (read off the WIP commit's subject), to_node, `stranded` (the `refs/continuum/stranded/<branch>-<ts>` ref holding a diverged local checkout, empty when none), `outcome` = `transferred` / `current` / `no_remote_branch` / `unreachable` / `not_transferable` (this checkout's origin is a local path — no fetch here can deliver another node's work) / `failed`, error, ms. Fired from `card_staging::stage_for_card`.
 
 **Timing** (any seam):
 - `timing` — emitted by `time_sync!` and `time_probe!` spans. Field `seam` = the seam identifier (the macro's first argument). Field `duration_ms` = wall-clock duration from span creation to span close.

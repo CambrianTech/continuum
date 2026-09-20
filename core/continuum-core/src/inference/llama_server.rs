@@ -576,6 +576,55 @@ pub fn main_lane_placement() -> LanePlacement {
     placement_from_config(crate::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
 }
 
+/// Ask the serving binary, ONCE per process, which KV cache types its build accepts,
+/// and record the answer for [`crate::cognition::kv_cache_plan`].
+///
+/// The engine's own `--help` outranks any table in our source — a table can only be a
+/// stale guess about someone else's build. Bounded at 10 s like the `--version` and
+/// `--list-devices` probes beside it, and every outcome is NAMED: `answered`,
+/// `did_not_enumerate` (the flag exists but the build lists no allowed values — we do
+/// NOT guess; the backend table decides), `probe_failed`, `probe_timeout`.
+///
+/// One ask per process even when the answer is "it did not say", so a box whose engine
+/// is silent does not pay a 10 s help probe on every relaunch.
+async fn ensure_engine_kv_support_recorded(bin: &str) {
+    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let probe = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(bin).arg("--help").output(),
+    )
+    .await;
+    let (outcome, support, error) = match probe {
+        Ok(Ok(out)) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+                Some(v) => ("answered", Some(v), String::new()),
+                None => ("did_not_enumerate", None, String::new()),
+            }
+        }
+        Ok(Err(e)) => ("probe_failed", None, e.to_string()),
+        Err(_) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+    };
+    if let Some(v) = support {
+        crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
+    }
+    crate::probe!(
+        class = "serving.kv_cache.engine_support",
+        bin = bin,
+        outcome = outcome,
+        answered = support.is_some(),
+        quantized_kv = support.unwrap_or(false), // probe field: read it WITH `answered`
+        error = %error,
+        "what the serving binary says its build accepts for --cache-type-k; unanswered \
+         falls through to the backend table, never to a guess"
+    );
+}
+
 pub fn placement_from_config(value: Option<&str>) -> LanePlacement {
     match value.map(|v| v.trim().to_ascii_lowercase()) {
         Some(v) if v == "cpu" => LanePlacement::Cpu,
@@ -2463,7 +2512,33 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 // decode probe — UNLESS `force_probe` is set, in which case the
                 // liveness heartbeat flagged it wedged and we must re-prove decode
                 // before re-adopting (#175). A non-owned orphan is always probed.
-                if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
+                if ctrl.owns_child() && !force_probe {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                // BUSY IS NOT DEAD, at adoption too (card 59052747). The heartbeat already
+                // reads a missed probe against the server's own `/slots` account (L11,
+                // `judge_smoke_miss`); the adopt rail did not, so ONE missed probe reaped
+                // the warm engine — measured 2026-09-20 20:44Z on the IntelMac: the adoptee
+                // answered `/v1/models`, its decode probe missed while the box was on the
+                // deploy's link step, and "compute-wedged" reaped a lane whose slots were
+                // moving. The fingerprint is taken before and after the probe: a lane that
+                // advanced during the probe's own window is alive by its own account and
+                // is adopted; the heartbeat keeps verifying it from there. A FROZEN or
+                // unreadable fingerprint is the wedge signature and is reaped as before.
+                let before = ctrl.slots_activity_fingerprint().await;
+                if ctrl.decode_smoke_ok().await {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                let after = ctrl.slots_activity_fingerprint().await;
+                if judge_smoke_miss(before, after) == SmokeMissVerdict::AliveViaSlotProgress {
+                    crate::probe!(
+                        class = "serving.adopt_busy_alive",
+                        model = target.model_id(),
+                        owned = ctrl.owns_child(),
+                        force_probe,
+                        "lane missed the decode smoke-probe but its slots advanced during it — \
+                         busy, not wedged; adopted, the heartbeat verifies from here",
+                    );
                     return EnsureOutcome::AlreadyServing;
                 }
                 crate::probe!(
@@ -2471,8 +2546,10 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     model = target.model_id(),
                     owned = ctrl.owns_child(),
                     force_probe,
-                    "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
-                     — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
+                    slots_moved = false,
+                    "lane answers /v1/models, fails the decode smoke-probe AND its slots did \
+                     not move during it (compute-wedged — a poisoned Metal backend / OOM, \
+                     #175); reaping + respawning a fresh lane",
                 );
                 // fall through to relaunch.
             }
@@ -3487,17 +3564,58 @@ impl LlamaServerControl for LlamaServerProcess {
         // `lane_args` decides only what a resolved value MEANS on a command line. That is
         // the split that keeps the flag surface pure and assertable — gather inputs, then
         // compute a plan, exactly as `TierPolicy` does.
-        let kv_cache_type = crate::config_env::read("SERVING_KV_CACHE_TYPE")
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty() && s != "f16");
-        let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
-            .map(|s| {
-                matches!(
-                    s.trim().to_ascii_lowercase().as_str(),
-                    "1" | "on" | "true" | "yes"
-                )
-            })
-            .unwrap_or(false);
+        // Ask the ENGINE what KV cache types its build accepts, before deciding. Once
+        // per process, bounded, with a named outcome — every probe on a launch path
+        // gets both ([[every-probe-on-a-boot-or-launch-path-gets-a-bound-and-a-named-outcome]]).
+        ensure_engine_kv_support_recorded(&self.bin).await;
+        // THE KV CACHE TYPE IS A DECISION, NOT A VARIABLE A HUMAN ONCE EXPORTED
+        // (2026-09-20). This used to be two raw `config_env` reads: unset →
+        // no `--cache-type-k/v` flag at all (the engine's f16 default, 65,536 B/token
+        // for the 27B coder row) and `--flash-attn` off. The plan's resident-KV divisor
+        // in serving_daemon read the SAME key, so the arithmetic was self-consistent —
+        // it simply planned HALF the capacity, and nothing ever disagreed. The M5 had
+        // the key set by hand; the 5090 never did (Joel measured a 26,880-token lane
+        // there) and neither did the CPU-serving IntelMac (a 1.5B at -c 32768 on ~15 GB
+        // usable, Cormac). Two of three boxes at half their KV budget, invisibly.
+        //
+        // Now: one resolved [`KvCachePlan`] — the engine's own advertised
+        // `--cache-type-k` values where it gives them, the backend table otherwise —
+        // and the plan's divisor comes off the SAME struct, so the flag and the fit
+        // math cannot disagree. The env keys are an operator OVERRIDE, honored and
+        // named in the receipt. (The CPU arm decides f16 pending a MEASUREMENT of the
+        // dequant cost against that box's ~25 tok/s prefill — see the module header;
+        // the override is how that number gets made.)
+        let kv_plan = crate::cognition::kv_cache_plan::resolve();
+        let kv_cache_type = kv_plan.launcher_cache_type().map(|s| s.to_string());
+        let flash_attn = kv_plan.flash_attn;
+        // THE RECEIPT. The chosen type, WHERE it came from, the backend it was decided
+        // against, what a token of KV therefore costs, and the window the plan derived
+        // from that cost — one line, so a half-size lane can never again be invisible.
+        // `kv_per_token` comes through the plan's OWN transform (`footprint_for` →
+        // `apply_kv_quantization`), which reads the same resolved divisor this launch
+        // flags with: if these two ever disagreed, the box would over- or under-commit
+        // its whole budget by 2×.
+        let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
+        let planned_kv_per_token = crate::modules::serving_daemon::footprint_for(&target.model)
+            .map(|fp| fp.kv_per_token)
+            .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
+        crate::probe!(
+            class = "serving.kv_cache.decided",
+            model = %target.model.id,
+            cache_type = %kv_plan.cache_type,
+            source = kv_plan.source.as_str(),
+            backend = kv_plan.backend.label(),
+            engine_advertised = ?engine_advertised,
+            flash_attn = flash_attn,
+            divisor = kv_plan.bytes_per_token_divisor,
+            kv_bytes_per_token = planned_kv_per_token,
+            kv_rate_answered = planned_kv_per_token > 0,
+            window = total_ctx as u64 / lanes.max(1) as u64,
+            lanes = lanes as u64,
+            total_ctx = total_ctx as u64,
+            "the KV cache type this lane serves — decided from the backend (or an \
+             operator override), and the window the plan sized from the same value"
+        );
         // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
         // (2026-08-24, the cache_reuse confession). llama-server hard-disables
         // `--cache-reuse` the moment an mmproj loads ("cache_reuse is not supported
@@ -3845,6 +3963,15 @@ impl LlamaServerControl for LlamaServerProcess {
             crate::inference::backend_receipt::BackendVerdict::Gpu { .. }
             | crate::inference::backend_receipt::BackendVerdict::CpuByPlan => {}
         }
+        // THE LANE IS ITS OWN PROCESS GROUP (card 59052747). A plain child sat in the
+        // core's group, so every group-addressed signal aimed at the core — the stop
+        // rail's `kill(-core_pid, SIGTERM)`, launchd reaping a job's group on exit —
+        // took the warm engine with it, eleven lines before the reboot path promised to
+        // leave it for adoption. Its fate is decided by NAME (the lane registry, the
+        // ownership sweep, the adopt-or-reap rail), never by which group it happened
+        // to be born into. Windows has no process groups here; ownership does the job.
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -4821,6 +4948,9 @@ mod tests {
         /// Whether the fake's decode smoke-probe succeeds. `true` = a healthy lane
         /// (adoptable); `false` = a compute-wedged orphan (must be rejected).
         decode_ok: bool,
+        /// `Some(_)` = the fake's `/slots` fingerprint ADVANCES on every look (a busy
+        /// lane); `None` = no slots account (the default: no exoneration, as before).
+        slots_busy: Option<AtomicUsize>,
         /// Whether the fake "owns" the running child (we spawned it). `false` =
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
@@ -4845,6 +4975,7 @@ mod tests {
                 serve_ok: true,
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
+                slots_busy: None,
                 owns: false,
                 served_lanes: 0,
                 served_window: 32768,
@@ -4876,6 +5007,12 @@ mod tests {
         /// 500s.
         fn decode_wedged(mut self) -> Self {
             self.decode_ok = false;
+            self
+        }
+        /// Model a lane whose `/slots` account advances on every look — a busy lane
+        /// (mid-prefill for a client this core never knew, or under a build's load).
+        fn slots_busy(mut self) -> Self {
+            self.slots_busy = Some(AtomicUsize::new(0));
             self
         }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
@@ -4919,6 +5056,11 @@ mod tests {
         }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
+        }
+        async fn slots_activity_fingerprint(&self) -> Option<u64> {
+            self.slots_busy
+                .as_ref()
+                .map(|n| n.fetch_add(1, Ordering::SeqCst) as u64)
         }
         fn owns_child(&self) -> bool {
             self.owns
@@ -5172,6 +5314,27 @@ mod tests {
             1,
             "wedged orphan → fresh spawn"
         );
+    }
+
+    // what this catches (card 59052747, 2026-09-20 20:44Z on the IntelMac): an adoptee
+    // that misses the decode smoke-probe because it is BUSY — its `/slots` account
+    // advanced during the probe's own window — was reaped as "compute-wedged", a cold
+    // prefill for every seated mind. Busy is not dead: it is adopted; the frozen one
+    // (the case above) is still reaped.
+    #[tokio::test]
+    async fn a_busy_adoptee_that_misses_the_probe_is_adopted_not_reaped() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .decode_wedged()
+            .slots_busy();
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing, "its slots moved during the probe: alive by its own account");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "nothing respawned over a working lane");
+        // The same shape on an OWNED child the heartbeat flagged (force_probe): still busy, still kept.
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .decode_wedged()
+            .slots_busy();
+        assert_eq!(ensure_model_serving(&ctrl, &target("coder-14b"), true).await, EnsureOutcome::AlreadyServing);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode

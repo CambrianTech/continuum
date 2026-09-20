@@ -77,6 +77,30 @@ was inconsistent, and nobody owned repairing it.
    *Shipped:* `modules/benchmark_grade.rs::sweep_verdict` — one typed decision
    (`Leave | Close | Reopen`) replacing the bool, truth-tabled.
 
+10. **The workspace moves with the mind — by git.** Joel, 2026-09-20: "the workspace
+    somehow has to transfer. Should work: just commit to git and push. That is what git is
+    for." A card's checkout is a git worktree on the card's branch (`<short id>/<slug>`,
+    `card_staging::card_branch`, the same name on every node). At the end of every turn
+    her hands were rooted at a card, the act's work is WIP-committed (plumbing, no hooks)
+    and pushed to `origin`; a push that fails is a named outcome, never the turn's. A seat
+    change between machines is DEFERRED while a turn is in flight or a checkout she acted
+    in holds unpushed work. When the card is staged on a node — a re-claim after it
+    changed hands, a fresh worktree cut from that node's clone — the branch is fetched and
+    checked out at origin's tip before her first turn; a diverged local checkout is kept
+    whole under `refs/continuum/stranded/<branch>-<ts>`, the remote wins, and the receipt
+    says so. Probes: `workspace.push`, `placement.move.deferred_unpushed`,
+    `workspace.transfer`.
+    **A push is a transfer only when the other node can read its target** (Cormac's
+    condition on #4278): a staged SWE-bench copy's `origin` is this node's OWN local
+    mirror, so a push there would report `ok` into a repository no other node has heard of
+    — blocker cleared, mind moved, work stranded under a receipt saying carried. Every
+    origin is classified first (`is_transfer_target`, pure): a filesystem path, `file://`
+    or a Windows drive is never a transfer target, is never pushed or committed into, and
+    keeps `has_unpushed_work` TRUE so the move defers and she is pinned. Not carried at
+    all (and pinning nobody): a detached checkout — a benchmark copy is graded on the node
+    that staged it.
+    *Shipped:* `persona/workspace_transfer.rs` (card 73eefbbb).
+
 ## Concurrency the reconciler enforces
 
 - **WIP = lanes, board-true.** The roster holds no more claimed/in-progress cards than the

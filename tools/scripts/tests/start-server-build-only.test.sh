@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Regression: warm deploy must not reap a live core, engine, or AIRC daemon.
 # Exercise the actual launcher in a scratch repo; no native builds or services.
+#
+# Also (card 9174fc83): A DEPLOY COMPILES THE LIBRARY ONCE. The launcher builds
+# every bin of the crate on ONE cargo command line with ONE feature set. Four
+# per-bin `cargo build` lines cost the IntelMac four "Compiling continuum-core"
+# per deploy (18m16s + 5m41s + 5m14s + 7m46s = 37 min; 25 min on the M5) with the
+# core dark for all of it under the stop-first path. The checks below pin it from
+# both sides: the script text carries exactly one literal invocation, and the
+# trace of a run shows one cargo line naming all four bins.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
@@ -28,16 +36,25 @@ cat > "$fixture_home/.cargo/bin/cargo" <<'SH'
 #!/usr/bin/env bash
 set -eu
 printf 'cargo %s\n' "$*" >> "$FIXTURE_TRACE"
-while [ "$1" != --bin ]; do shift; done
-bin="$2"
-if [ "$bin" = continuum-core-server ] && [ "${FAIL_CORE_BUILD:-0}" = 1 ]; then
-  echo 'fixture: mapped output Access is denied (os error 5)' >&2
-  exit 37
-fi
+# One command line names every bin (`--bin a --bin b …`), like real cargo.
+bins=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = --bin ]; then bins+=("$2"); shift; fi
+  shift
+done
+[ "${#bins[@]}" -gt 0 ] || { echo 'fixture: cargo build without --bin' >&2; exit 2; }
+for bin in "${bins[@]}"; do
+  if [ "$bin" = continuum-core-server ] && [ "${FAIL_CORE_BUILD:-0}" = 1 ]; then
+    echo 'fixture: mapped output Access is denied (os error 5)' >&2
+    exit 37
+  fi
+done
 mkdir -p "$CARGO_TARGET_DIR/release"
-if [ "$bin" = continuum-core-server ] && [ "${FIXTURE_PLATFORM:-}" = MINGW64_NT-10.0 ]; then bin="$bin.exe"; fi
-printf '#!/usr/bin/env bash\necho LAUNCHED >> "$FIXTURE_TRACE"\nexit 99\n' > "$CARGO_TARGET_DIR/release/$bin"
-chmod +x "$CARGO_TARGET_DIR/release/$bin"
+for bin in "${bins[@]}"; do
+  if [ "$bin" = continuum-core-server ] && [ "${FIXTURE_PLATFORM:-}" = MINGW64_NT-10.0 ]; then bin="$bin.exe"; fi
+  printf '#!/usr/bin/env bash\necho LAUNCHED >> "$FIXTURE_TRACE"\nexit 99\n' > "$CARGO_TARGET_DIR/release/$bin"
+  chmod +x "$CARGO_TARGET_DIR/release/$bin"
+done
 SH
 chmod +x "$fixture_home/.cargo/bin/cargo"
 # Even a suppressed command failure must leave evidence. Never call real tools.
@@ -89,6 +106,53 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
       [ ! -s "$CONTINUUM_BUILD_RECEIPT" ]
       if grep -q 'warm build complete' "$scratch/output"; then exit 1; fi
     fi
+    # One library compile: the FIRST cargo line names the core and both sidecars
+    # together (the self-build is skipped here, so the CLI is off it), and no
+    # later line builds the core again on the successful path. The failing path
+    # is allowed exactly one more: the core-alone diagnosis. (A later `--bin
+    # continuum` line is the #296 restore of a swept CLI — the fixture cache
+    # starts empty — not a fourth build.)
+    core_lines="$(grep -c -- '--bin continuum-core-server' "$FIXTURE_TRACE" || true)"
+    head -1 "$FIXTURE_TRACE" | grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --no-default-features$'
+    if [ "$failure" = 0 ]; then [ "$core_lines" = 1 ]; else [ "$core_lines" = 2 ]; fi
     echo "PASS $platform build-only (core build failure=$failure)"
   done
 done
+
+# ── A deploy compiles the library once (card 9174fc83) ───────────────────────
+# Static: the launcher spells `cargo build` against the crate manifest ONCE, inside
+# build_core_bins. A second literal is the defect returning — every path (deploy,
+# #296 restore, #194 forced rebuild, the GPU-free CLI arm) must call the function.
+launcher="$scratch/repo/tools/scripts/start-server.sh"
+literal_builds="$(grep -cE '^[^#]*cargo build --manifest-path "\$CORE_MANIFEST"' "$launcher" || true)"
+if [ "$literal_builds" != 1 ]; then
+  echo "start-server.sh has $literal_builds literal 'cargo build --manifest-path \"\$CORE_MANIFEST\"' lines; the law is ONE (build_core_bins)" >&2
+  exit 1
+fi
+grep -qF 'build_core_bins "$CONTINUUM_FEATURES" $core_build_bins' "$launcher"
+echo "PASS static: one literal cargo build for the crate's bins"
+
+# Behavioural: with the CLI's self-build allowed and a feature set that links no GPU
+# runtime, ALL FOUR bins ride one cargo line with the core's feature set.
+printf '#!/usr/bin/env bash\necho Linux\n' > "$fixture_home/.cargo/bin/uname"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  bash "$launcher" > "$scratch/output" 2>&1
+if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+[ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 1 ]
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+grep -q 'the library compiles once' "$scratch/output"
+echo "PASS one cargo invocation names all four bins with one feature set"
+
+# The one sanctioned exception, pinned to its smallest shape: a set that links a GPU
+# runtime (cuda) gives the socket-client CLI its own GPU-free set — a SECOND line, the
+# only one, carrying `--bin continuum` alone; the other three still share one line.
+printf 'CARGO_GPU_FEATURES="--features cuda,load-dynamic-ort"\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  bash "$launcher" > "$scratch/output" 2>&1
+if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+[ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 2 ]
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --features cuda,load-dynamic-ort$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+echo "PASS a GPU-runtime box separates only the CLI, on exactly one extra line"
