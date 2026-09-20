@@ -64,7 +64,7 @@ use crate::persona::rag_budget::{
 /// Source identifier — used by budget presets, telemetry, and the
 /// service-loop projection that routes this delivery into system-prompt
 /// grounding rather than conversation history.
-const SOURCE_ID: &str = "room-roster";
+pub(crate) const SOURCE_ID: &str = "room-roster";
 
 /// How far back a heartbeat counts as "present". Matches the airc
 /// agent-liveness convention of a short recency window — a peer that

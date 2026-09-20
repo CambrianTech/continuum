@@ -43,7 +43,7 @@ use crate::persona::rag_budget::{
 
 /// Source identifier — the service-loop projection routes this delivery
 /// into system-prompt grounding (a `[Room operating doctrine]` block).
-const SOURCE_ID: &str = "room-doctrine";
+pub(crate) const SOURCE_ID: &str = "room-doctrine";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private

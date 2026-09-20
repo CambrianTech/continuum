@@ -2004,8 +2004,9 @@ impl LlmDeliberationFaculty {
         // as her conversation grows. One observed turn was 20 minutes of apparent
         // silence that was a single 36k re-prefill.
         //
-        // So within the stable tier, order is CANONICAL (by faculty name), not by
-        // salience. Attention ranking is genuinely untouched: salience still decides
+        // So within the stable tier, order is CANONICAL (by churn class, then faculty
+        // name — `deliberation_prompt::stable_prefix_order`, the ONE rule every
+        // grounding renderer lays blocks down by), not by salience. Attention ranking is genuinely untouched: salience still decides
         // WHICH contributions are selected — that happened above, against the budget.
         // It simply stops deciding WHERE the survivors sit, which it never needed to.
         // Same set in, same bytes out, every turn.
@@ -2021,7 +2022,10 @@ impl LlmDeliberationFaculty {
             u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| {
                 match (a.stable, b.stable) {
                     // Stable tier: canonical, so the cacheable prefix is deterministic.
-                    (true, true) => a.faculty.as_str().cmp(b.faculty.as_str()),
+                    (true, true) => deliberation_prompt::stable_prefix_order(
+                        a.faculty.as_str(),
+                        b.faculty.as_str(),
+                    ),
                     // Volatile tier: leave salience order alone (stable sort keeps it).
                     _ => std::cmp::Ordering::Equal,
                 }
@@ -2860,7 +2864,10 @@ impl LlmDeliberationFaculty {
         // in stability, same law as the system-side phases.
         let grounding_at = messages.len();
         let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
-            for c in ws
+            // Canonical wire order (churn class, then name) — the same rule the standing
+            // grounding and the system's stable tier follow, so two trailing sources can
+            // never swap places between acts (`deliberation_prompt::stable_prefix_order`).
+            let mut pieces: Vec<&Contribution> = ws
                 .broadcast
                 .iter()
                 .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
@@ -2868,7 +2875,11 @@ impl LlmDeliberationFaculty {
                     (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
                         == wm_trail
                 })
-            {
+                .collect();
+            pieces.sort_by(|a, b| {
+                deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str())
+            });
+            for c in pieces {
                 if !c.content.trim().is_empty() {
                     // Same `[faculty]` banner the system block gives its sections —
                     // grounding that moved here for KV reuse (volatile-content
@@ -3637,9 +3648,24 @@ impl<'a> GroundingPlan<'a> {
     }
 
     fn trailing_messages(&self) -> Vec<ChatMessage> {
-        self.pieces
-            .iter()
-            .filter(|p| p.contribution.trailing)
+        // STABLE PREFIX FIRST (card c119ace7): these blocks ride the conversation tail
+        // in ONE canonical order — churn class, then name — never the broadcast order
+        // they arrived in. Broadcast order is the arbiter's per-turn salience, and the
+        // citizens' own captures (M5, 2026-09-20) showed `[workspace-map]` and
+        // `[active-work]` trading places turn to turn, re-prefilling every byte behind
+        // the swap with nothing in it changed. The plan's PIECE order is untouched (it
+        // is the shedding + expansion priority, `within_budget` / `expand_within`);
+        // only the wire order is canonical. See `deliberation_prompt::stable_prefix_order`.
+        let mut pieces: Vec<&GroundingPiece<'a>> =
+            self.pieces.iter().filter(|p| p.contribution.trailing).collect();
+        pieces.sort_by(|a, b| {
+            deliberation_prompt::stable_prefix_order(
+                a.contribution.faculty.as_str(),
+                b.contribution.faculty.as_str(),
+            )
+        });
+        pieces
+            .into_iter()
             .map(|piece| {
                 let c = piece.contribution;
                 let mut body = String::with_capacity(piece.tokens * GUARD_CHARS_PER_TOKEN);
@@ -6172,9 +6198,11 @@ mod tests {
                 turn0.find("[room-roster]").expect("roster present"),
             );
             assert!(
-                kanban < roster && roster < map,
-                "stable tier orders canonically by faculty name (room-kanban < room-roster \
-                 < workspace-map is alphabetical; note room-roster sits between)\n{turn0}"
+                roster < map && map < kanban,
+                "stable tier orders canonically by CHURN CLASS then name \
+                 (`deliberation_prompt::stable_prefix_order`): room-roster and \
+                 workspace-map are STANDING ground, room-kanban is the BOARD and comes \
+                 after both\n{turn0}"
             );
 
             // The volatile tier keeps salience order ON PURPOSE (#205: most salient
@@ -7833,6 +7861,133 @@ mod tests {
                 opened.contains("cat0: command_0"),
                 "an expanded category lists its verbs so she can see them: {opened}"
             );
+        }
+        // ─── Stable prefix first (card c119ace7) ───────────────────────────────
+        //
+        // The prompt cache reuses only a common PREFIX. These pin the whole-prompt
+        // order at the live boundary (`prompt_view`): conversation first, then the
+        // standing grounding whose bytes mutate, in ONE canonical order; the clock and
+        // the presence framing in the volatile tail, after the conversation; nothing
+        // dated or counted in the system message.
+        mod stable_prefix_first {
+            use super::*;
+            use crate::cognition::workspace::Burst;
+
+            fn bodies(v: &DeliberationPromptView) -> Vec<String> {
+                v.messages.iter().map(|m| m.content_text()).collect()
+            }
+
+            fn at(v: &DeliberationPromptView, needle: &str) -> usize {
+                v.messages
+                    .iter()
+                    .position(|m| m.content_text().starts_with(needle))
+                    .unwrap_or_else(|| panic!("{needle} missing from:\n{:#?}", bodies(v)))
+            }
+
+            // what this catches (card c119ace7): the standing grounding that rides the
+            // conversation tail rendered in BROADCAST order — the arbiter's per-turn
+            // salience — so `[workspace-map]`, `[active-work]` and `[room-kanban]` traded
+            // places turn to turn (both orders are in the M5's 2026-09-20 captures), and
+            // the prefix cache lost every byte behind the swap although none had changed.
+            // Same set in, same bytes out, whatever attention ranked and whatever order
+            // the faculties bid in; and the order is the churn order, standing → board.
+            #[test]
+            fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() {
+                let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+                let faculty =
+                    LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                        .with_context_window(16_384);
+                let room_uuid = Uuid::new_v4();
+                let view_for = |order: [usize; 3], sal: [f32; 3]| {
+                    let bodies = [
+                        ("workspace-map", "MAP: src/ tests/ docs/"),
+                        ("active-work", "HELD: card 1234 [InProgress] \"fix the thing\""),
+                        ("room-kanban", "BOARD: you hold 1 card here; 3 claimable"),
+                    ];
+                    let room = crate::identity::ActivityRoom::from_uuid(room_uuid).unwrap();
+                    let turns = vec![
+                        BurstTurn::attributed(
+                            false,
+                            "Operator",
+                            "we shipped the fix yesterday",
+                            Some(1_700_000_000_000),
+                        ),
+                        BurstTurn::attributed(true, "Ivar", "I saw it land.", Some(1_700_000_060_000)),
+                        BurstTurn::attributed(
+                            false,
+                            "Operator",
+                            "what's next on the board?",
+                            Some(1_700_000_120_000),
+                        ),
+                    ];
+                    let mut ws = Workspace::new(Burst::from_turns(room, turns));
+                    ws.now_ms = Some(1_700_000_180_000);
+                    for &i in order.iter() {
+                        ws.broadcast.push(
+                            Contribution::context(
+                                FacultyId::Custom(bodies[i].0.to_string()),
+                                bodies[i].1,
+                                sal[i],
+                                "framing",
+                            )
+                            .standing_grounding()
+                            .trailing(),
+                        );
+                    }
+                    faculty.prompt_view(&ws)
+                };
+
+                let a = view_for([0, 1, 2], [0.9, 0.5, 0.3]);
+                // Re-ranked AND re-ordered arrival: the bytes must not move.
+                let b = view_for([2, 0, 1], [0.3, 0.9, 0.5]);
+                assert_eq!(a.system, b.system, "the system prefix is a function of the persona + ground");
+                assert_eq!(
+                    bodies(&a),
+                    bodies(&b),
+                    "a re-ranked, re-ordered standing grounding must emit IDENTICAL messages"
+                );
+
+                // The order, most stable first: the conversation (dated history) leads;
+                // then the standing grounding in churn order (STANDING map, then the
+                // BOARD's held card and kanban, by name); then the per-turn facts; then
+                // the clock + presence framing; then the ask, last.
+                assert!(
+                    a.messages[0].content_text().starts_with("[occurred "),
+                    "the conversation leads the message list — nothing volatile ahead of it:\n{:#?}",
+                    bodies(&a)
+                );
+                let history_last = at(&a, "[occurred 2023-11-14T22:14:20.000Z] I saw it land.");
+                let map = at(&a, "[workspace-map]");
+                let held = at(&a, "[active-work]");
+                let board = at(&a, "[room-kanban]");
+                let facts = at(&a, "[context]");
+                let clock = at(&a, "[now ");
+                let ask = at(&a, "[occurred 2023-11-14T22:15:20.000Z] Operator: what's next");
+                assert!(
+                    history_last < map && map < held && held < board && board < facts && facts < clock && clock < ask,
+                    "order must be history < map < active-work < kanban < facts < clock < ask, got \
+                     {history_last} {map} {held} {board} {facts} {clock} {ask}:\n{:#?}",
+                    bodies(&a)
+                );
+
+                // No timestamp and no counter ahead of the conversation: the clock is in the
+                // volatile tail, the system message carries neither a date nor the turn count.
+                for needle in ["[now ", "2023-11", "input turns were available"] {
+                    assert!(
+                        !a.system.contains(needle),
+                        "`{needle}` must not sit in the cacheable system message:\n{}",
+                        a.system
+                    );
+                }
+                assert!(
+                    a.messages[..=history_last]
+                        .iter()
+                        .all(|m| m.content_text().starts_with("[occurred ")),
+                    "every message up to the end of history IS history — no clock, no fact, no \
+                     grounding ahead of the conversation:\n{:#?}",
+                    bodies(&a)
+                );
+            }
         }
     } // mod prompt_shaping
 

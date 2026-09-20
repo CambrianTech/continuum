@@ -59,6 +59,14 @@ struct Ledger {
     /// lane momentarily absent rests nobody. Folded at the geometry settle and at every
     /// lane grant, read and reset by the tick.
     lanes_max: AtomicU64,
+    /// THE HOUR'S PREFIX REUSE (card c119ace7): prompt tokens the lanes served from the
+    /// KV cache vs. prompt tokens they had to prefill, summed over every generation
+    /// that reported timings. The ratio is the fraction of every prompt the engine did
+    /// NOT re-read — on the M5 at ~90 tok/s prefill, a 30k prompt at 0% reuse is six
+    /// minutes of silence per act, at 75% it is ninety seconds. Separate totals, ratio
+    /// derived on read (averaging rates lies — `TurnMetrics::accumulate`'s rule).
+    prompt_cached: AtomicU64,
+    prompt_prefilled: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -72,6 +80,8 @@ static LEDGER: Ledger = Ledger {
     pulls_deferred: AtomicU64::new(0),
     think_only: AtomicU64::new(0),
     lanes_max: AtomicU64::new(0),
+    prompt_cached: AtomicU64::new(0),
+    prompt_prefilled: AtomicU64::new(0),
 };
 /// A turn ended inside the reasoning channel with no answer and no act (the
 /// `persona.act.think_only` seam) — the allowance did not hold her think.
@@ -91,6 +101,18 @@ pub fn note_pull(deferred: bool) {
     if deferred {
         LEDGER.pulls_deferred.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// A generation reported its prefill split (the `serving.kv.reuse` seam, fed by
+/// `Workspace::note_generation` — the one KV writer). `cached` = prompt tokens the lane
+/// served from its KV cache, `prefilled` = prompt tokens it had to re-read. Both 0 = the
+/// lane reported no timings (cloud / older endpoints): an absence, never a 0% datum.
+pub fn note_generation(cached: u32, prefilled: u32) {
+    if cached == 0 && prefilled == 0 {
+        return;
+    }
+    LEDGER.prompt_cached.fetch_add(u64::from(cached), Ordering::Relaxed);
+    LEDGER.prompt_prefilled.fetch_add(u64::from(prefilled), Ordering::Relaxed);
 }
 
 /// An act was observed (the `persona.act.observed` seam). `wrote` = it changed a file.
@@ -299,6 +321,22 @@ pub struct CitizenHealth {
     /// the switch (`benchmark/standing`) defaults OFF and was silent about it.
     pub rounds_working: u64,
     pub standing_enabled: bool,
+    /// The hour's prompt tokens served from the KV cache / prefilled (card c119ace7).
+    /// Both 0 = no lane reported timings this hour, and the line says nothing rather
+    /// than inventing a 0% reuse. See [`CitizenHealth::prefix_reuse_pct`].
+    pub prompt_cached_tokens: u64,
+    pub prompt_prefill_tokens: u64,
+}
+
+impl CitizenHealth {
+    /// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
+    /// derived from the totals on every read, never stored and never averaged across
+    /// turns. `None` until at least one generation reported timings: an unmeasured hour
+    /// is not a 0% hour.
+    pub fn prefix_reuse_pct(&self) -> Option<u64> {
+        let total = self.prompt_cached_tokens.saturating_add(self.prompt_prefill_tokens);
+        (total > 0).then(|| self.prompt_cached_tokens.saturating_mul(100) / total)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,8 +483,18 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     } else {
         String::new()
     };
+    // The prompt cache's receipt, when any lane reported one: the fraction of every
+    // prompt the engine did NOT re-read this hour (card c119ace7).
+    let reuse = match h.prefix_reuse_pct() {
+        Some(pct) => format!(
+            " · prefix reuse {pct}% ({}k cached / {}k prefilled)",
+            h.prompt_cached_tokens / 1000,
+            h.prompt_prefill_tokens / 1000
+        ),
+        None => String::new(),
+    };
     format!(
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · think-only {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · writes {} · think-only {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -461,7 +509,19 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.credits_staged,
         h.credits_settled,
         directed,
+        reuse,
         tail
+    )
+}
+
+/// The hour's prompt-cache totals (cached, prefilled), read and reset by the tick.
+/// Its own reader, not a tenth slot on [`snapshot_and_reset`]'s tuple: the two are read
+/// at the same tick but they are different ledgers, and a tuple that long stops being
+/// legible at the call site.
+fn snapshot_prompt_and_reset() -> (u64, u64) {
+    (
+        LEDGER.prompt_cached.swap(0, Ordering::Relaxed),
+        LEDGER.prompt_prefilled.swap(0, Ordering::Relaxed),
     )
 }
 
@@ -584,6 +644,7 @@ impl CitizenHealthModule {
         let (rounds_working, standing_enabled) = round_supply();
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
             crate::cognition::resource_admission::directed_lane_wait_ms();
+        let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
@@ -605,6 +666,8 @@ impl CitizenHealthModule {
             knee: knee_of(serving.active_model.as_deref()),
             rounds_working,
             standing_enabled,
+            prompt_cached_tokens,
+            prompt_prefill_tokens,
         }
     }
 }
@@ -744,6 +807,8 @@ impl ServiceModule for CitizenHealthModule {
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                     rounds_working,
                     standing_enabled,
+                    prompt_cached_tokens: LEDGER.prompt_cached.load(Ordering::Relaxed),
+                    prompt_prefill_tokens: LEDGER.prompt_prefilled.load(Ordering::Relaxed),
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
@@ -752,6 +817,8 @@ impl ServiceModule for CitizenHealthModule {
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
+                    "prompt_cached_tokens": h.prompt_cached_tokens, "prompt_prefill_tokens": h.prompt_prefill_tokens,
+                    "prefix_reuse_pct": h.prefix_reuse_pct(),
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -807,7 +874,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, knee: None, rounds_working: 1, standing_enabled: true }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0 }
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
@@ -890,6 +957,13 @@ mod tests {
         let waited = CitizenHealth { directed_wait_p50_ms: 4_200, directed_wait_p90_ms: 61_000, directed_waits: 3, ..x.clone() };
         let l = line(&waited, &verdict(&waited));
         assert!(l.contains("directed wait p50 4s / p90 61s (3 calls)"), "{l}");
+        // The prompt cache's receipt (card c119ace7): an unmeasured hour says nothing,
+        // a measured one says the fraction of every prompt the lanes did not re-read.
+        assert!(!l.contains("prefix reuse"), "no lane reported timings: the line does not invent a 0% reuse");
+        let warm = CitizenHealth { prompt_cached_tokens: 228_000, prompt_prefill_tokens: 92_000, ..x.clone() };
+        assert_eq!(warm.prefix_reuse_pct(), Some(71));
+        let l = line(&warm, &verdict(&warm));
+        assert!(l.contains("prefix reuse 71% (228k cached / 92k prefilled)"), "{l}");
     }
 
     // what this catches: the ledger is a window — a tick reads AND resets, so the next
@@ -910,6 +984,19 @@ mod tests {
         assert!(t >= 1, "a think-only turn is on the hour's ledger");
         let (a2, _, _, _, _, _, p2, _, t2) = snapshot_and_reset();
         assert_eq!((a2, p2, t2), (0, 0, 0));
+        // The prompt-cache totals are a window too (card c119ace7), and an unmeasured
+        // generation (no timings: 0/0) leaves them untouched.
+        note_generation(0, 0);
+        note_generation(22_800, 9_300);
+        let (cached, prefilled) = snapshot_prompt_and_reset();
+        assert!(cached >= 22_800 && prefilled >= 9_300, "cached {cached} prefilled {prefilled}");
+        // A window, not a lifetime: the read reset it. (`<`, not `== 0`: the ledger is a
+        // process global and a parallel test may fold a generation between the two reads.)
+        let (cached2, prefilled2) = snapshot_prompt_and_reset();
+        assert!(
+            cached2 + prefilled2 < cached + prefilled,
+            "the tick must reset the window: {cached2}/{prefilled2} after {cached}/{prefilled}"
+        );
     }
 
     // what this catches (card c84d885a, S3 — the receipt's actor): the M5's 2026-09-18

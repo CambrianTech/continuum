@@ -67,7 +67,7 @@ use crate::persona::rag_budget::{
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
 /// `active-work` (own claims) and `room-wall` (the wall, renamed from the
 /// misleading `room-board` in #3874).
-const SOURCE_ID: &str = "room-kanban";
+pub(crate) const SOURCE_ID: &str = "room-kanban";
 
 /// Most cards this source will render in full, per turn.
 ///

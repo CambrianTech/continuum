@@ -238,6 +238,7 @@ The persona that talks to her host in three months and recalls things from today
 | Audit | `cognition/audit.rs` | Forensic record. |
 | RAG sources | implement `persona::rag_budget::RagSource` | `engram_source`, `airc_source`, future `code_source`, `tool_source`, `identity_source`. Bound on the brain at boot. |
 | Budgeter | `persona/rag_budget.rs::FlexboxRagBudgetAdapter` | The only budgeter. Used by `compose_for_turn`. |
+| Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`, `PromptChurn`) | The ONE rule every grounding renderer lays blocks down by: churn class, then name — never salience, never arrival. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7. |
 
 If a new concept needs a new location, that location goes in this table in the same commit that introduces it. **Do not let the map drift from the territory.**
 

@@ -105,6 +105,83 @@ pub enum PromptScope {
     Turn,
 }
 
+/// HOW OFTEN A GROUNDING BLOCK'S BYTES CHANGE — the second key of the prefix order, for
+/// blocks that share a [`PromptScope`]. Declared per source, once, so every renderer that
+/// lays grounding into the prompt lays it in the same order (`stable_prefix_order`).
+///
+/// Measured on the M5 2026-09-20 (card c119ace7), from the citizens' own prompt captures:
+/// the trailing standing grounding rendered in BROADCAST order — the arbiter's per-turn
+/// salience — so `[workspace-map]` / `[active-work]` / `[room-kanban]` traded places turn
+/// to turn (map-first in one capture, active-work-first in the next), and the bytes after
+/// the swap were re-prefilled although nothing in them had changed. The system side had
+/// the same defect fixed in `40075d7ea` (canonical order in the stable tier); the message
+/// side kept salience order. One comparator now serves both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum PromptChurn {
+    /// The room's standing ground: doctrine, roster, the checkout's layout, a mission,
+    /// what the media plane perceived. Changes when someone joins or the recipe changes
+    /// — hours.
+    Standing,
+    /// The board: the wall's card ledgers, her held card, the kanban. Changes when ANY
+    /// teammate claims, settles or writes a ledger — minutes.
+    Board,
+    /// This turn's material: recall, engrams, the transcript page, working memory.
+    /// Changes every turn or every act.
+    Turn,
+    /// A faculty this table has not met. Sorted after every known class so a new block
+    /// can never displace a known stable one; by name within, so it is still canonical.
+    Unknown,
+}
+
+/// The churn class of a grounding block, by the source id it renders under.
+pub(super) fn churn_of(faculty: &str) -> PromptChurn {
+    use crate::cognition::working_memory::WM_FACULTY_ID;
+    use crate::cognition::workspace::FacultyId;
+    use crate::persona::{
+        active_work_source, airc_source, engram_source, media_perception_source, mission_source,
+        room_board_source, room_doctrine_source, room_roster_source, wall_source,
+        workspace_map_source,
+    };
+    match faculty {
+        room_doctrine_source::SOURCE_ID
+        | room_roster_source::SOURCE_ID
+        | media_perception_source::SOURCE_ID
+        | mission_source::SOURCE_ID
+        | workspace_map_source::SOURCE_ID => PromptChurn::Standing,
+        wall_source::SOURCE_ID | active_work_source::SOURCE_ID | room_board_source::SOURCE_ID => {
+            PromptChurn::Board
+        }
+        engram_source::SOURCE_ID | airc_source::SOURCE_ID | WM_FACULTY_ID => PromptChurn::Turn,
+        _ if faculty == FacultyId::Recall.as_str() => PromptChurn::Turn,
+        _ => PromptChurn::Unknown,
+    }
+}
+
+/// THE LAW — STABLE PREFIX FIRST: the prompt cache reuses only a common PREFIX, so the
+/// prompt is laid out from the bytes that change least often to the bytes that change
+/// most often, and a set of blocks that is the same set on two turns emits the same
+/// bytes in the same order on both. One volatile byte ahead of a stable region forfeits
+/// the whole region behind it; a block that moves forfeits everything after the move.
+///
+/// This is the ONE ordering rule for grounding blocks wherever they are laid down: the
+/// system message's stable tier (`render_assembled_context_within`), the standing
+/// grounding that rides the conversation tail (`GroundingPlan::trailing_messages`) and
+/// the trailing proprioception turns (`messages_unfitted`). Churn class first
+/// ([`PromptChurn`]), then the source name — never salience, never arrival order, both
+/// of which are recomputed every turn. Salience still decides WHAT is selected; it no
+/// longer decides WHERE the survivors sit, which it never needed to.
+///
+/// The whole-prompt order this comparator is one key of, most stable first:
+/// tools (substrate) → identity + turn contract (persona) → standing ground → the board
+/// (system message ends) → the conversation → standing grounding again for the blocks
+/// whose bytes mutate → the append-only results ring → the working-memory trail →
+/// perception facts → the clock + presence framing → the ask → this turn's room
+/// updates → the pinned result. The clock (`[now …]`) is in the volatile tail, never the
+/// system message (`volatile_blocks`).
+pub(super) fn stable_prefix_order(a: &str, b: &str) -> std::cmp::Ordering {
+    churn_of(a).cmp(&churn_of(b)).then_with(|| a.cmp(b))
+}
+
 pub(super) struct ComposedSystemPrompt {
     /// Persona-invariant prefix — safe to place in the cacheable system message.
     pub stable: String,
@@ -775,5 +852,44 @@ mod tests {
             s.contains("embodied in this system"),
             "asserts embodiment, not hosted-chat-model: {s}"
         );
+    }
+    // what this catches (card c119ace7): the prefix order is by CHURN CLASS then NAME —
+    // never arrival, never salience. A standing block (doctrine, roster, map) leads a
+    // board block (held card, kanban, wall), a board block leads a per-turn block
+    // (recall), and a source this table has never met sorts last, by name, so it can
+    // never displace a known stable block. If someone reverts either renderer to
+    // salience order this still passes — its sibling in `llm_deliberation_faculty`
+    // (`standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last`) is
+    // what fails; this one pins the rule itself so the two renderers cannot disagree.
+    #[test]
+    fn the_prefix_order_is_by_churn_then_name_never_by_arrival() {
+        let mut names = vec![
+            "room-kanban",
+            "workspace-map",
+            "zz-new-source",
+            "room-wall",
+            "recall",
+            "room-roster",
+            "active-work",
+            "room-doctrine",
+        ];
+        names.sort_by(|a, b| stable_prefix_order(a, b));
+        assert_eq!(
+            names,
+            [
+                "room-doctrine",
+                "room-roster",
+                "workspace-map",
+                "active-work",
+                "room-kanban",
+                "room-wall",
+                "recall",
+                "zz-new-source",
+            ],
+            "standing < board < turn < unknown, by name within"
+        );
+        assert_eq!(churn_of("working-memory"), PromptChurn::Turn);
+        assert_eq!(churn_of("engrams"), PromptChurn::Turn);
+        assert_eq!(churn_of("media-perception"), PromptChurn::Standing);
     }
 }
