@@ -250,6 +250,18 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Called ONCE at registration time.
     fn config(&self) -> ModuleConfig;
 
+    /// The tick cadence the module wants NOW, when it differs from what
+    /// [`ModuleConfig::tick_interval`] declared at registration. The runtime's tick loop
+    /// reads THIS each iteration — never `config()`: rebuilding the whole `ModuleConfig`
+    /// per tick for every module (a persona at 250 ms; `ChannelModule` behind an
+    /// `RwLock` read + clone) was one of the twenty re-derivations on card 948c30c2
+    /// (Joel: "rederiving = outrageously expensive CPU everywhere"). Default `None` =
+    /// the registered cadence stands. A module whose cadence moves at runtime
+    /// overrides this with the cheapest read it has.
+    fn tick_interval_now(&self) -> Option<Duration> {
+        None
+    }
+
     /// Initialize the module. Called after registration, before any commands.
     /// The ModuleContext provides access to the registry (query other modules),
     /// the message bus (pub/sub), and the shared compute cache.
