@@ -128,23 +128,82 @@ pub struct StagedCopy {
     pub work_mtime_ms: Option<u64>,
 }
 
-/// Which citizen's copy of `instance` should be GRADED — the inverse of the per-peer
-/// question above, and the one the grade path needs.
-///
-/// # Why this exists (2026-08-18, and it nearly produced a false zero for a real pass)
-///
-/// The SAME instance is legitimately staged into more than one citizen's workspace:
-/// dispatch round-robins over the roster, so `astropy__astropy-14995` sat in BOTH Atlas's
-/// tree (dirty — a real fix, `M astropy/nddata/mixins/ndarithmetic.py`) and Asha's tree
-/// (clean — staged, never worked). Nothing at grade time said which copy was authoritative.
-/// Grading the clean one returned `patchBytes: 0, resolved: false` — a confident zero for
-/// work sitting ten directories away.
-///
-/// Deletion was never the risk; AMBIGUITY was. So the rule mirrors `resolve_for_titles`:
-/// exactly one WORKED copy resolves, and anything else refuses rather than guessing —
-/// because picking either of two worked copies scores one citizen's diff against the
-/// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
-/// outcome, and the caller names the candidates).
+/// The COMMIT-DERIVED facts of a copy, held keyed by its git state. A commit can only
+/// arrive by a git write — `.git/HEAD`, `.git/index` or `.git/logs/HEAD` — so three stats
+/// name whether the two git subprocesses that read commits (`staged_base_of`,
+/// `newest_commit_above_base_ms`) have anything new to say. The WORKING-TREE half
+/// (`candidate_paths_changed`, `newest_work_mtime_ms`, `has_work`) is derived every call:
+/// an edit not yet `git add`ed writes none of those three files, and the restage guard and
+/// the sweep read `has_work` (Cormac's condition on #4258). Before this every persona turn
+/// holding a review card ran `read_dir` + up to three blocking `git` commands PER COPY
+/// (measured 2026-09-20, the worst re-derivation on the persona path; Joel: "find
+/// something once and pass it along"). `None` key = a copy whose git dir cannot be
+/// stated: recomputed.
+static COMMIT_FACTS: std::sync::LazyLock<dashmap::DashMap<PathBuf, (u128, CommitFacts)>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// What a copy's commits say: the base the staging checked out and the committer time
+/// of the newest commit above it. Changes only when git writes.
+#[derive(Clone, Debug)]
+struct CommitFacts {
+    base: Option<String>,
+    commit_above_base_ms: Option<u64>,
+}
+
+/// PURE over the filesystem: the freshness key of a copy's git state (three mtimes), or
+/// `None` when it cannot be stated.
+pub(crate) fn git_state_key(root: &std::path::Path) -> Option<u128> {
+    let mut key: u128 = 0;
+    for rel in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+        let m = std::fs::metadata(root.join(rel)).ok()?.modified().ok()?;
+        let ms = m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+        key = key.wrapping_mul(1_000_003).wrapping_add(ms);
+    }
+    // The staged base is a commit fact too (`clone_at` writes it; a restage rewrites it),
+    // and writing it touches none of the three above — CI 2026-09-20: a rewritten base
+    // read the diff against the old one. Absent for a checkout older than the record.
+    let base_ms = std::fs::metadata(root.join(".git/continuum-base"))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0); // unwrap_or: no record = 0, a state of its own
+    Some(key.wrapping_mul(1_000_003).wrapping_add(base_ms))
+}
+
+/// The commit-derived facts of one copy: from the held record when its git state is
+/// unchanged, else derived (two git commands) and held.
+fn commit_facts_of(root: &std::path::Path) -> CommitFacts {
+    let key = git_state_key(root);
+    if let Some(k) = key {
+        if let Some(held) = COMMIT_FACTS.get(root) {
+            if held.0 == k {
+                return held.1.clone();
+            }
+        }
+    }
+    let base = staged_base_of(root);
+    let facts = CommitFacts {
+        commit_above_base_ms: base.as_deref().and_then(|b| newest_commit_above_base_ms(root, b)),
+        base,
+    };
+    if let Some(k) = key {
+        COMMIT_FACTS.insert(root.to_path_buf(), (k, facts.clone()));
+    }
+    facts
+}
+
+/// The facts of one copy: the held commit half plus the working-tree half read now.
+fn copy_facts(peer: uuid::Uuid, path: PathBuf) -> StagedCopy {
+    let commits = commit_facts_of(&path);
+    let changed = candidate_paths_changed_from(&path, commits.base.as_deref());
+    let work_mtime_ms = newest_evidence_ms(
+        newest_work_mtime_ms(&path, &changed),
+        commits.commit_above_base_ms,
+    );
+    StagedCopy { peer, path, has_work: work_mtime_ms.is_some(), work_mtime_ms }
+}
+
 pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
         return Vec::new();
@@ -176,18 +235,7 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
         // same question, so "worked" here means exactly "gradeable" there. The PROTECTIVE
         // reading — "does she carry anything a restage must not destroy" — is
         // `work_mtime_of` and still counts every file; the two questions differ on purpose.
-        let changed = candidate_paths_changed(&path);
-        let work_mtime_ms = newest_evidence_ms(
-            newest_work_mtime_ms(&path, &changed),
-            newest_commit_above_base_ms(&path),
-        );
-        let has_work = work_mtime_ms.is_some();
-        out.push(StagedCopy {
-            peer,
-            path,
-            has_work,
-            work_mtime_ms,
-        });
+        out.push(copy_facts(peer, path));
     }
     out.sort_by(|a, b| a.peer.cmp(&b.peer));
     out
@@ -249,7 +297,7 @@ pub(crate) fn work_mtime_of(root: &std::path::Path) -> Option<u64> {
     let porcelain = String::from_utf8_lossy(&out.stdout);
     newest_evidence_ms(
         newest_work_mtime_ms(root, &porcelain),
-        newest_commit_above_base_ms(root),
+        commit_facts_of(root).commit_above_base_ms,
     )
 }
 
@@ -294,7 +342,12 @@ pub(crate) fn staged_base_of(root: &std::path::Path) -> Option<String> {
 /// drift. No recorded base (a checkout older than `clone_at`'s record) falls back to
 /// HEAD, which IS the base until she commits.
 fn candidate_paths_changed(root: &std::path::Path) -> String {
-    let base = staged_base_of(root).unwrap_or_else(|| "HEAD".to_string()); // unwrap_or: no record = the checkout sits at its base
+    candidate_paths_changed_from(root, commit_facts_of(root).base.as_deref())
+}
+
+/// `candidate_paths_changed` against a base already known (the held commit facts).
+fn candidate_paths_changed_from(root: &std::path::Path, base: Option<&str>) -> String {
+    let base = base.unwrap_or("HEAD").to_string(); // unwrap_or: no record = the checkout sits at its base
     let mut args: Vec<String> = vec![
         "-C".into(),
         root.to_string_lossy().into_owned(),
@@ -336,8 +389,7 @@ fn candidate_paths_changed(root: &std::path::Path) -> String {
     }
 }
 
-fn newest_commit_above_base_ms(root: &std::path::Path) -> Option<u64> {
-    let base = staged_base_of(root)?;
+fn newest_commit_above_base_ms(root: &std::path::Path, base: &str) -> Option<u64> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -406,7 +458,40 @@ fn select(staged: &[String], titles: &[&str]) -> Selection {
 /// Ambiguity probes here rather than at [`resolve_for_titles`] because this is the caller
 /// that would silently score a false zero: it roots hands and a diff is taken afterwards.
 /// A dispatcher matching on the enum reports ambiguity in its own vocabulary instead.
+/// The workspace a citizen's held cards root her hands in, HELD keyed by (peer, the held
+/// titles, the staging root's mtime): the answer changes only when a card is claimed or
+/// released (the titles) or an instance is staged or swept (the root's mtime) — one stat
+/// per turn instead of a directory scan with a `.git` stat per entry.
+static HELD_WORKSPACE: std::sync::LazyLock<dashmap::DashMap<(uuid::Uuid, Vec<String>, u128), Option<PathBuf>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn staging_root_mtime_ms(peer: &uuid::Uuid) -> u128 {
+    staging_root(peer)
+        .and_then(|r| std::fs::metadata(r).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0) // unwrap_or: no staging root yet = key 0; the resolver answers None and that is held until a root appears (its mtime is then non-zero)
+}
+
 pub fn workspace_for_held_cards<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut titles: Vec<String> = card_titles.into_iter().map(str::to_string).collect();
+    titles.sort();
+    let key = (*peer, titles, staging_root_mtime_ms(peer));
+    if let Some(held) = HELD_WORKSPACE.get(&key) {
+        return held.clone();
+    }
+    let answer = workspace_for_titles_now(peer, key.1.iter().map(String::as_str));
+    // One entry per (peer, held set): a changed set or root replaces the old key.
+    HELD_WORKSPACE.retain(|k, _| k.0 != *peer);
+    HELD_WORKSPACE.insert(key, answer.clone());
+    answer
+}
+
+fn workspace_for_titles_now<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
 where
     I: IntoIterator<Item = &'a str>,
 {
@@ -429,6 +514,34 @@ where
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a copy's git-derived facts are found ONCE and held keyed by its
+    // git state — the same three stats every turn, the three git subprocesses only when
+    // git wrote something. Regression for the per-turn `read_dir` + 3 × git on every
+    // persona turn (2026-09-20).
+    #[test]
+    fn a_copys_facts_are_held_until_its_git_state_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("copy");
+        std::fs::create_dir_all(root.join(".git").join("logs")).unwrap();
+        for f in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+            std::fs::write(root.join(f), b"x").unwrap();
+        }
+        let k1 = super::git_state_key(&root).expect("statable");
+        assert_eq!(super::git_state_key(&root), Some(k1), "the same state keys the same");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/HEAD"), b"ref: refs/heads/other").unwrap();
+        let t = std::time::SystemTime::now();
+        std::fs::File::options().write(true).open(root.join(".git/HEAD")).unwrap().set_modified(t).unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k1), "a git write re-keys the copy");
+        let k2 = super::git_state_key(&root).expect("statable");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/continuum-base"), b"abc").unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k2), "a rewritten staged base re-keys the copy (it is a commit fact)");
+        let bare = tmp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(super::git_state_key(&bare), None, "no git state → not held, always derived");
+    }
+
     // what this catches (2026-09-12): a committed fix on a clean tree reading as "no work" —
     // the staging re-cloned over it and the sweep reopened the card as "left no artifact".
     #[test]
@@ -461,8 +574,19 @@ mod tests {
         std::fs::write(root.join("__pycache__").join("x.pyc"), "junk").unwrap();
         assert_eq!(super::candidate_paths_changed(root), "", "untracked scratch is not a candidate");
         assert!(super::work_mtime_of(root).is_some(), "…but it IS something a restage must not destroy");
+        // what this catches (Cormac's condition on #4258): an edit not yet `git add`ed writes
+        // none of .git/HEAD, .git/index, .git/logs/HEAD — the held COMMIT facts stay held
+        // (same key, same record), but the WORKING-TREE half is read every call, so the
+        // restage guard and the sweep see has_work flip without a git write.
+        let peer = uuid::Uuid::new_v4();
+        let key_before = super::git_state_key(root).expect("statable");
+        let held = super::commit_facts_of(root);
+        assert!(!super::copy_facts(peer, root.to_path_buf()).has_work, "no candidate yet");
         std::fs::write(root.join("a.txt"), "edit\n").unwrap();
         assert_eq!(super::candidate_paths_changed(root), " M a.txt", "a tracked edit is the candidate");
+        assert_eq!(super::git_state_key(root), Some(key_before), "an un-added edit is not a git write");
+        assert_eq!(super::commit_facts_of(root).base, held.base, "the commit half is still the held record");
+        assert!(super::copy_facts(peer, root.to_path_buf()).has_work, "…and the working-tree half sees the edit now");
         assert_eq!(super::newest_evidence_ms(Some(5), Some(9)), Some(9));
         assert_eq!(super::newest_evidence_ms(Some(5), None), Some(5));
     }
