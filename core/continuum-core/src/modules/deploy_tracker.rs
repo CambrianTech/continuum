@@ -272,6 +272,8 @@ fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
 pub struct DeployTrackerModule {
     source: Box<dyn DeploySource>,
     root: PathBuf,
+    /// `<root>/state` — joined once here, not twice per tick (card 948c30c2, row 14).
+    state_dir: PathBuf,
     /// The tip last reported as stranded, so a durable condition is said ONCE rather than
     /// every tick — the chatty-floor failure that buries the line it exists to surface.
     stranded_reported: parking_lot::Mutex<Option<String>>,
@@ -280,9 +282,11 @@ pub struct DeployTrackerModule {
 impl DeployTrackerModule {
     pub fn new() -> Self {
         let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
+        let state_dir = root.join("state");
         Self {
             source: Box::new(GitGhDeploySource::from_env()),
             root,
+            state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
         }
     }
@@ -350,7 +354,7 @@ impl ServiceModule for DeployTrackerModule {
             tip_sha,
             source_error,
             checks,
-            hold: read_hold(&self.root.join("state")),
+            hold: read_hold(&self.state_dir),
             build_in_flight,
             tree_dirty: self.tree_dirty(),
             now_ms: now,
@@ -362,15 +366,15 @@ impl ServiceModule for DeployTrackerModule {
         // until the sha changed (measured 2026-09-17: two hours of an operator
         // re-deriving by hand a comparison available from two values already in hand).
         // Both facts are right here in `inputs`; this just compares them.
-        let state_dir = self.root.join("state");
+        let state_dir = &self.state_dir;
         match crate::runtime::deploy_tracker::reconcile_request(
-            read_deploy_request(&state_dir).as_ref(),
+            read_deploy_request(state_dir).as_ref(),
             running_sha(),
             build_in_flight,
             now,
         ) {
             RequestOutcome::Settled { tip_sha, waited_ms } => {
-                clear_deploy_request(&state_dir);
+                clear_deploy_request(state_dir);
                 crate::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
@@ -406,7 +410,7 @@ impl ServiceModule for DeployTrackerModule {
         let verdict = decide(&inputs);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
-                write_deploy_request(&self.root.join("state"), &DeployRequest::new(tip_sha.clone(), now));
+                write_deploy_request(state_dir, &DeployRequest::new(tip_sha.clone(), now));
                 crate::probe!(
                     class = "deploy.track.request_written",
                     tip = tip_sha.as_str(),

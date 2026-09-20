@@ -76,10 +76,36 @@ fn now_ms() -> u64 {
 /// silently and the seats went alphabetical.)
 pub fn active() -> Option<RosterHold> {
     let now = now_ms();
-    if let Some(hold) = hold_path().and_then(|p| active_at(&p, now)) {
+    if let Some(hold) = operator_hold(now) {
         return Some(hold);
     }
     from_team_names(crate::cognition::bench_round::working_round_team_names(), now)
+}
+
+/// The operator's file as this process holds it: read from disk once, then held here
+/// and replaced by [`set`] / [`clear`], the only writers. It was read and parsed on
+/// every `seats()` call (card 948c30c2). `None` inside = read, and no hold stands;
+/// the outer `None` = not read yet (or a write invalidated it).
+static OPERATOR_HELD: parking_lot::RwLock<Option<Option<RosterHold>>> = parking_lot::RwLock::new(None);
+
+fn operator_hold(now: u64) -> Option<RosterHold> {
+    let held = OPERATOR_HELD.read().clone();
+    if let Some(held) = held {
+        match held {
+            // A held hold that has lapsed falls through to the disk read below, which
+            // is the self-cleaning read (it removes the expired file) — the file never
+            // outlives its hold just because a copy was held in memory.
+            Some(h) if h.expired(now) => drop_held(),
+            other => return other,
+        }
+    }
+    let read = hold_path().and_then(|p| active_at(&p, now));
+    *OPERATOR_HELD.write() = Some(read.clone());
+    read
+}
+
+fn drop_held() {
+    *OPERATOR_HELD.write() = None;
 }
 
 /// A hold derived from the working rounds' teams: stands while they do (re-derived on
@@ -144,12 +170,15 @@ pub fn set(only: Vec<String>, minutes: u64, reason: String) -> Result<RosterHold
     std::fs::write(&tmp, serde_json::to_vec_pretty(&hold).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("promote {}: {e}", path.display()))?;
+    drop_held();
     Ok(hold)
 }
 
 /// Remove any standing hold. Returns whether one existed.
 pub fn clear() -> bool {
-    hold_path().is_some_and(|p| std::fs::remove_file(p).is_ok())
+    let removed = hold_path().is_some_and(|p| std::fs::remove_file(p).is_ok());
+    drop_held();
+    removed
 }
 
 #[cfg(test)]

@@ -111,6 +111,10 @@ impl ChannelState {
 pub struct ChannelModule {
     state: Arc<ChannelState>,
     executor: LateBound<crate::runtime::CommandExecutor>,
+    /// The data handle the tick works against — `CONTINUUM_DB_URL` else DataModule's
+    /// `main`. A process-lifetime value, resolved ONCE here: it was read back out of the
+    /// environment on every tick (card 948c30c2, row 16).
+    tick_db_handle: String,
 }
 
 impl ChannelModule {
@@ -118,6 +122,7 @@ impl ChannelModule {
         Self {
             state,
             executor: LateBound::new("channel::executor"),
+            tick_db_handle: Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok()),
         }
     }
 
@@ -134,10 +139,6 @@ impl ChannelModule {
         override_value
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "main".to_string())
-    }
-
-    fn tick_db_handle() -> String {
-        Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok())
     }
 }
 
@@ -159,6 +160,17 @@ impl ServiceModule for ChannelModule {
             max_concurrency: 0,
             tick_interval: Some(Duration::from_millis(tick_ms)),
         }
+    }
+
+    /// The operator-tunable tick (`ChannelTickConfig`) is the one cadence on this
+    /// node that moves at runtime: the runtime's loop reads it here — one `RwLock`
+    /// read — instead of rebuilding the whole `ModuleConfig` per tick.
+    fn tick_interval_now(&self) -> Option<Duration> {
+        self.state
+            .tick_config
+            .read()
+            .ok()
+            .map(|c| Duration::from_millis(c.tick_interval_ms))
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
@@ -201,9 +213,10 @@ impl ServiceModule for ChannelModule {
             .map(|c| c.clone())
             .unwrap_or_default();
 
-        // Use DataModule's main handle by default so fresh installs stay SQLite-first.
-        // CONTINUUM_DB_URL remains an explicit deployment override.
-        let db_path = Self::tick_db_handle();
+        // DataModule's main handle by default so fresh installs stay SQLite-first;
+        // CONTINUUM_DB_URL is the explicit deployment override — resolved once at
+        // construction, held on the module (card 948c30c2).
+        let db_path = self.tick_db_handle.clone();
 
         // Collect persona IDs to avoid holding DashMap ref across await
         let persona_ids: Vec<Uuid> = self

@@ -115,14 +115,23 @@ pub fn is_enabled() -> bool {
 /// only ever said "off" would leave "on again" invisible.
 static SAID_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The config as this process holds it — read from disk ONCE, then held here and
+/// replaced by [`save_config`], the only writer (the file is ORM-shaped state, never
+/// hand-edited). It used to be re-read and re-parsed on every 300 s tick, every
+/// `benchmark/standing` command and every citizen-health hour (card 948c30c2, row 15).
+static CONFIG: parking_lot::RwLock<Option<StandingConfig>> = parking_lot::RwLock::new(None);
+
 fn load_config() -> StandingConfig {
-    let Ok(path) = standing_path() else {
-        return StandingConfig::default();
-    };
-    std::fs::read_to_string(&path)
+    if let Some(cfg) = CONFIG.read().as_ref() {
+        return cfg.clone();
+    }
+    let loaded = standing_path()
         .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default() // safe: absent/corrupt config = the documented OFF default, never a guess at a quantity
+        .unwrap_or_default(); // safe: absent/corrupt config = the documented OFF default, never a guess at a quantity
+    *CONFIG.write() = Some(loaded);
+    CONFIG.read().clone().unwrap_or_default() // unwrap_or_default: just written above; the default is the same OFF the file would give
 }
 
 fn save_config(cfg: &StandingConfig) -> Result<(), String> {
@@ -131,7 +140,10 @@ fn save_config(cfg: &StandingConfig) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("state dir: {e}"))?;
     }
     let body = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))
+    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // The held copy follows the file: one writer, one truth.
+    *CONFIG.write() = Some(cfg.clone());
+    Ok(())
 }
 
 pub struct BenchmarkStandingModule {
