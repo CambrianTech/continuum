@@ -231,6 +231,12 @@ pub const LANE_PROBE_ATTEMPTS: u32 = 3;
 pub const LANE_PROBE_BOUND_S: u64 = 5;
 /// The CPU share above which a lane that missed every probe is BUSY, not dead: a decoding
 /// llama-server burns a core sampling and tokenizing; a wedged one is frozen at zero.
+/// Known blind spot (Cormac, #4252): a lane still LOADING its weights answers `/health`
+/// 503 (`non-2xx`) and can sit near 0% CPU in I/O wait — it reads Dead here exactly as
+/// it did under the single-probe check (no regression), but its evidence line will say
+/// "frozen" for a process that was merely mmap-reading; a boot landing seconds after a
+/// relaunch is the case. If that ever shows in a receipt, the third signal is the
+/// process's RSS / I/O advancing, not CPU — do not chase it as a wedge.
 pub const LANE_BUSY_CPU_PCT: f32 = 1.0;
 
 /// What the boot path decided about a lane it did not spawn, with the evidence it
