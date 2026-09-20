@@ -62,11 +62,27 @@ fn path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("state").join("resting-seats.json"))
 }
 
+/// The resting list as this process holds it — read from disk once, then held here and
+/// dropped by the two writers ([`rest`], [`wake`]) so the next read re-reads. It was
+/// read and parsed on EVERY `seats()` call (nine call sites, every reconcile pass;
+/// card 948c30c2). `None` = not read yet, or invalidated by a write.
+static HELD: parking_lot::RwLock<Option<Vec<RestingSeat>>> = parking_lot::RwLock::new(None);
+
 /// Every seat resting under THIS build. Records from another build are dropped on
 /// read (a deploy wakes everyone); a corrupt file reads as nobody resting (fail
 /// open: an unreadable record must never keep a mind out).
 pub fn resting() -> Vec<RestingSeat> {
-    path().map(|p| resting_at(&p, current_build())).unwrap_or_default() // unwrap_or_default: no home dir = nowhere to rest
+    if let Some(held) = HELD.read().as_ref() {
+        return held.clone();
+    }
+    let read = path().map(|p| resting_at(&p, current_build())).unwrap_or_default(); // unwrap_or_default: no home dir = nowhere to rest
+    *HELD.write() = Some(read.clone());
+    read
+}
+
+/// A write through the default path happened: the held copy is stale.
+fn drop_held() {
+    *HELD.write() = None;
 }
 
 /// The pure read against an explicit file and build.
@@ -95,7 +111,9 @@ pub fn is_resting(agent_name: &str) -> bool {
 /// Record a seat as resting (idempotent by name). Atomic tmp+rename.
 pub fn rest(seat: RestingSeat) -> std::io::Result<()> {
     let p = path().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    rest_at(&p, seat)
+    let out = rest_at(&p, seat);
+    drop_held();
+    out
 }
 
 pub fn rest_at(path: &Path, seat: RestingSeat) -> std::io::Result<()> {
@@ -109,7 +127,9 @@ pub fn rest_at(path: &Path, seat: RestingSeat) -> std::io::Result<()> {
 /// `true` = she was resting.
 pub fn wake(agent_name: &str) -> bool {
     let Some(p) = path() else { return false };
-    wake_at(&p, agent_name)
+    let woke = wake_at(&p, agent_name);
+    drop_held();
+    woke
 }
 
 pub fn wake_at(path: &Path, agent_name: &str) -> bool {

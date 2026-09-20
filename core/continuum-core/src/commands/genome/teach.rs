@@ -481,6 +481,7 @@ async fn teacher_generate(
         room_id: None,
         purpose: Some("genome/teach".to_string()),
         persona_id: None,
+        turn_bound: None,
     };
 
     // Dedicated clean lane: generate directly against its pinned adapter. This is the

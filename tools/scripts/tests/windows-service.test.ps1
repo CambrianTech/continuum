@@ -127,7 +127,10 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
             try {
                 $stdout = $child.StandardOutput.ReadToEndAsync()
                 $stderr = $child.StandardError.ReadToEndAsync()
-                if (-not $child.WaitForExit(10000)) { $child.Kill(); $child.WaitForExit(); throw 'Isolated resume installer fixture timed out' }
+                # A bound sized for a LOADED runner, not an idle one: a child PowerShell's startup plus the
+                # resume script blew a 10 s bound on 2026-09-20 (run 35523394865, a docs-only PR) and read
+                # as a red tip. 120 s is the test's patience; a real hang still fails, named.
+                if (-not $child.WaitForExit(120000)) { $child.Kill(); $child.WaitForExit(); throw 'Isolated resume installer fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
                 if (-not $extra) {
                     if ($child.ExitCode -ne 0 -or $output -notmatch 'fixture register prepared' -or $output -notmatch 'fixture guarded handoff') {
@@ -440,7 +443,7 @@ function Mod-LlamaServer {
             try {
                 $stdout = $process.StandardOutput.ReadToEndAsync()
                 $stderr = $process.StandardError.ReadToEndAsync()
-                if (-not $process.WaitForExit(10000)) { $process.Kill(); $process.WaitForExit(); throw 'Isolated prepare fixture timed out' }
+                if (-not $process.WaitForExit(120000)) { $process.Kill(); $process.WaitForExit(); throw 'Isolated prepare fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
                 if (-not $extra) {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }

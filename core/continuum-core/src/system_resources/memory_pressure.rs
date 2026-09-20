@@ -78,6 +78,26 @@ use crate::{clog_info, clog_warn};
 /// `tokio::time::interval` (not a sleep loop), so cadence cannot drift under
 /// load and a slow tick collapses rather than stacks.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// How often the anomaly scan (a full process-table refresh, and on macOS a `ps` child
+/// on its own thread) may run while pressure stays at High or above. Card 948c30c2
+/// (Joel: "rederiving = outrageously expensive CPU everywhere"): under sustained
+/// pressure this ran on EVERY 2 s poll — the whole table refreshed and a process spawned
+/// thirty times a minute to re-name a fault that had not changed. The first tick of an
+/// episode names it at once; after that the fault is re-read at this cadence, and a
+/// drop below High re-arms the immediate read for the next episode.
+const ANOMALY_SCAN_EVERY: Duration = Duration::from_secs(30);
+
+/// PURE: is the anomaly scan due on this tick? Due on the first tick at High or above
+/// (`last_scan` none), and thereafter once per [`ANOMALY_SCAN_EVERY`]; never below High.
+fn anomaly_scan_due(level: PressureLevel, last_scan: Option<Duration>, since_start: Duration) -> bool {
+    if level.to_u8() < PressureLevel::High.to_u8() {
+        return false;
+    }
+    match last_scan {
+        None => true,
+        Some(at) => since_start.saturating_sub(at) >= ANOMALY_SCAN_EVERY,
+    }
+}
 /// Per-reporter call budget. A reporter exceeding this is treated as a fault.
 const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 /// Consecutive faults before a reporter is quarantined (skipped) to stop a
@@ -564,6 +584,11 @@ struct MemoryTickState {
     prev_level: PressureLevel,
     consecutive_at_level: u32,
     log_counter: u64,
+    /// When the anomaly scan last ran (monotonic, since the monitor started); `None`
+    /// re-arms an immediate scan for the next High episode. See [`anomaly_scan_due`].
+    anomaly_scanned_at: Option<Duration>,
+    /// The monitor's own clock origin for `anomaly_scanned_at`.
+    started: std::time::Instant,
 }
 
 /// Independent memory pressure monitoring system.
@@ -631,6 +656,8 @@ impl MemoryPressureMonitor {
                 prev_level: PressureLevel::Normal,
                 consecutive_at_level: 0,
                 log_counter: 0,
+                anomaly_scanned_at: None,
+                started: std::time::Instant::now(),
             }),
         });
 
@@ -885,7 +912,15 @@ impl MemoryPressureMonitor {
                 // fault, not background; a reader who only sees "swap full" has to go
                 // find it by hand. Only at High/Critical, only once per probe window —
                 // the full process refresh is not free.
-                if level.to_u8() >= PressureLevel::High.to_u8() {
+                // …and only when DUE (card 948c30c2): the first tick of a High episode, then
+                // once per ANOMALY_SCAN_EVERY — not every 2 s poll for as long as the
+                // pressure lasts. Below High the scan is re-armed for the next episode.
+                let since_start = st.started.elapsed();
+                if level.to_u8() < PressureLevel::High.to_u8() {
+                    st.anomaly_scanned_at = None;
+                }
+                if anomaly_scan_due(level, st.anomaly_scanned_at, since_start) {
+                    st.anomaly_scanned_at = Some(since_start);
                     st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
                     let floor = total / 4;
                     let mut named = 0u32;
@@ -1228,6 +1263,24 @@ impl crate::paging::pool::ResourcePool for MemoryPressureMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 948c30c2): the anomaly scan — a full process-table refresh
+    // and, on macOS, a `ps` child on its own thread — ran on EVERY 2 s poll for as long
+    // as pressure stayed High. It is due on the first tick of an episode, then once per
+    // ANOMALY_SCAN_EVERY, never below High, and a drop below High re-arms the immediate
+    // read for the next episode (the caller clears `last_scan`; the rule refuses below High).
+    #[test]
+    fn the_anomaly_scan_runs_once_per_episode_then_on_its_own_cadence() {
+        use std::time::Duration as D;
+        let high = PressureLevel::High;
+        assert!(anomaly_scan_due(high, None, D::from_secs(0)), "first High tick: scan now");
+        assert!(!anomaly_scan_due(high, Some(D::from_secs(0)), D::from_secs(2)), "next 2 s poll: not again");
+        assert!(!anomaly_scan_due(high, Some(D::from_secs(0)), ANOMALY_SCAN_EVERY - D::from_secs(1)));
+        assert!(anomaly_scan_due(high, Some(D::from_secs(0)), ANOMALY_SCAN_EVERY), "the cadence elapsed: scan");
+        assert!(anomaly_scan_due(PressureLevel::Critical, None, D::from_secs(9)), "Critical counts as High or above");
+        assert!(!anomaly_scan_due(PressureLevel::Normal, None, D::from_secs(9)), "below High: never");
+        assert!(!anomaly_scan_due(PressureLevel::Warning, None, D::from_secs(9)), "below High: never");
+    }
 
     #[test]
     fn test_pressure_levels() {

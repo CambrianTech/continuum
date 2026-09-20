@@ -1,0 +1,257 @@
+name: promote-main
+
+# main is the front door: the README and the installer point every newcomer at it. It was
+# six weeks behind canary (airc) / three months behind (continuum) until someone noticed
+# and promoted by hand on 2026-09-20 ("no one thought to promote"). Promotion is a
+# MECHANISM, not a person remembering: every day this workflow moves main to canary's
+# tested tip, and it does nothing when there is nothing to move or the tip is not green.
+#
+# The recipe (the one that worked by hand — main disallows merge commits and its history
+# has diverged from canary's, so a plain canary→main PR conflicts on add/add):
+#
+#   git checkout -B promote/main-<date>-<tip> origin/canary
+#   git merge -s ours origin/main        # records main's history; the TREE stays canary's
+#   push, PR base=main, squash-merge     # main's tree := canary's tree, one commit
+#
+# The squash commit's body carries `Promoted-Canary-Sha: <tip>`, which the next run reads
+# to list exactly the commits promoted since (main's history never contains canary's
+# commits, so `origin/main..origin/canary` is the whole history without that anchor).
+#
+# NOT A RED TIP. This runs on the default branch, and a scheduled workflow's failure lands
+# a check-run on that branch's tip. The deploy verdict (tools/scripts/track-canary.sh
+# `tip_checks` and continuum-core `modules/deploy_tracker.rs::parse_tip_checks`) judges a
+# tip over its own push's suites only (events push / pull_request / workflow_dispatch —
+# #4243), AND excludes this workflow by path (`.github/workflows/promote-main.yml`) so a
+# hand-dispatched run cannot turn the tip red either. Expected non-promotions (nothing to
+# promote, tip not green, merge refused) exit 0 with a notice; only a broken run fails,
+# and it fails visibly in the Actions tab without touching the deploy verdict.
+#
+# TOKEN. GITHUB_TOKEN can push the promote branch, open the PR and merge it (main has no
+# branch protection today; if protection is added, its required checks will never appear
+# on a PR whose branch was pushed with GITHUB_TOKEN, because GITHUB_TOKEN events do not
+# start workflows). The fallback is a fine-grained PAT (contents + pull-requests: write)
+# stored as the repo secret PROMOTE_TOKEN — named here, not created here. When set it is
+# used instead, and CI runs on the promote PR like on any other.
+
+on:
+  schedule:
+    - cron: '17 10 * * *'   # daily, 10:17 UTC — 03:17 Pacific, the fleet's quiet hour
+  workflow_dispatch:
+    inputs:
+      merge:
+        description: 'Merge the promote PR (false = open it and stop)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: promote-main
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: canary
+  TARGET_BRANCH: main
+  # With no branch protection on main, `gh pr merge --auto` is refused by GitHub (auto-merge
+  # needs required checks). The tip was verified green on canary and the promote tree is
+  # canary's byte-for-byte, so the run merges directly instead — the same act the hand
+  # promote performed. Set to "false" to leave the PR open for a person instead.
+  DIRECT_MERGE_WHEN_AUTO_UNAVAILABLE: 'true'
+
+jobs:
+  promote-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.PROMOTE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout (full history, both branches)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PROMOTE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Is canary ahead of main?
+        id: ahead
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$SOURCE_BRANCH" "$TARGET_BRANCH"
+          cmp="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_BRANCH}...${SOURCE_BRANCH}" --jq '{status,ahead_by,behind_by}')"
+          echo "compare ${TARGET_BRANCH}...${SOURCE_BRANCH}: $cmp"
+          ahead="$(printf '%s' "$cmp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ahead_by"])')"
+          tip="$(git rev-parse "origin/${SOURCE_BRANCH}")"
+          main_tree="$(git rev-parse "origin/${TARGET_BRANCH}^{tree}")"
+          tip_tree="$(git rev-parse "origin/${SOURCE_BRANCH}^{tree}")"
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ]; then
+            echo "::notice::nothing to promote: ${SOURCE_BRANCH} is not ahead of ${TARGET_BRANCH}"
+            echo "promote=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # A squash promote leaves main with a commit canary never had, so `ahead_by` is
+          # never 0 again after the first promote. The honest test is the TREE.
+          if [ "$main_tree" = "$tip_tree" ]; then
+            echo "::notice::nothing to promote: ${TARGET_BRANCH} already carries ${SOURCE_BRANCH}'s tree (${tip:0:9})"
+            echo "promote=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "promote=true" >> "$GITHUB_OUTPUT"
+          echo "${SOURCE_BRANCH} ${tip:0:9} is ahead by $ahead commit(s) and its tree differs from ${TARGET_BRANCH}'s"
+
+      - name: Is the tip green? (its own push's suites, this workflow excluded)
+        id: green
+        if: steps.ahead.outputs.promote == 'true'
+        env:
+          TIP: ${{ steps.ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TIP}/check-runs?per_page=100")"
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TIP}&per_page=100" || echo '{}')"
+          verdict="$(python3 - "$checks" "$runs" <<'PY'
+          import json, sys
+          # The ONE rule, the same one track-canary.sh::tip_checks and deploy_tracker.rs
+          # apply: only suites the tip's own event started count; this workflow's own
+          # suite never counts; a hard failure is red, an incomplete run is pending,
+          # all-completed (success / skipped / neutral) is green, no runs is unknown.
+          OWN_EVENTS = ("push", "pull_request", "workflow_dispatch")
+          NON_DEPLOY_PATHS = (".github/workflows/promote-main.yml",)
+          HARD_FAIL = ("failure", "timed_out", "cancelled", "action_required")
+          checks = json.loads(sys.argv[1]).get("check_runs", [])
+          w = json.loads(sys.argv[2]).get("workflow_runs")
+          if w is not None:
+              own = {r.get("check_suite_id") for r in w
+                     if r.get("event") in OWN_EVENTS and r.get("path") not in NON_DEPLOY_PATHS}
+              checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
+          if not checks:
+              print("unknown"); sys.exit()
+          bad = [c["name"] for c in checks if c.get("conclusion") in HARD_FAIL]
+          if bad:
+              print("red " + ", ".join(bad)); sys.exit()
+          if any(c.get("status") != "completed" for c in checks):
+              print("pending"); sys.exit()
+          print("green %d" % len(checks))
+          PY
+          )"
+          echo "tip ${TIP:0:9} checks: $verdict"
+          case "$verdict" in
+            green*) echo "green=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::notice::not promoting: tip ${TIP:0:9} is $verdict — a red or pending tip never promotes"
+               echo "green=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Promote branch (-s ours from canary) and PR
+        id: pr
+        if: steps.ahead.outputs.promote == 'true' && steps.green.outputs.green == 'true'
+        env:
+          TIP: ${{ steps.ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          short="${TIP:0:9}"
+          branch="promote/${TARGET_BRANCH}-$(date -u +%Y%m%d)-${short}"
+          # The anchor: the last promote's `Promoted-Canary-Sha:` trailer, or the hand
+          # promote's `main := canary (<sha>)` subject. Without one, main's history has
+          # none of canary's commits and the list is the first 50 of all of them.
+          last="$(git log "origin/${TARGET_BRANCH}" -n 50 --format=%B \
+                  | sed -nE 's/^Promoted-Canary-Sha: ([0-9a-f]{7,40}).*/\1/p; s/.*main := canary \(([0-9a-f]{7,40})\).*/\1/p' \
+                  | head -1 || true)"
+          if [ -n "$last" ] && git cat-file -e "${last}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$last" "origin/${SOURCE_BRANCH}"; then
+            range="${last}..origin/${SOURCE_BRANCH}"
+          else
+            range="origin/${TARGET_BRANCH}..origin/${SOURCE_BRANCH}"
+          fi
+          count="$(git rev-list --count "$range")"
+          commits="$(git log --oneline "$range" | head -50)"
+          git checkout -q -B "$branch" "origin/${SOURCE_BRANCH}"
+          git merge -q -s ours --no-ff "origin/${TARGET_BRANCH}" \
+            -m "promote: record ${TARGET_BRANCH}'s history — the tree is ${SOURCE_BRANCH}'s (${short})"
+          [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "origin/${SOURCE_BRANCH}^{tree}")" ] \
+            || { echo "::error::the promote tree is not ${SOURCE_BRANCH}'s tree — refusing to push"; exit 1; }
+          git push -q --force origin "HEAD:refs/heads/${branch}"
+          title="promote: ${TARGET_BRANCH} := ${SOURCE_BRANCH} (${short})"
+          {
+            echo "${TARGET_BRANCH} tracks ${SOURCE_BRANCH} on a cadence. This PR moves ${TARGET_BRANCH}'s tree to ${SOURCE_BRANCH}'s tested tip \`${TIP}\` (its own push's checks green)."
+            echo
+            echo "Built by \`git checkout -B ${branch} origin/${SOURCE_BRANCH} && git merge -s ours origin/${TARGET_BRANCH}\` — ${TARGET_BRANCH}'s history is recorded, the tree is ${SOURCE_BRANCH}'s byte for byte. Squash-merge only."
+            echo
+            echo "## Commits promoted (${count}; first 50 of \`${range}\`)"
+            echo
+            echo '```'
+            echo "$commits"
+            echo '```'
+            echo
+            echo "Promoted-Canary-Sha: ${TIP}"
+            echo
+            echo "_Opened by the promote-main workflow (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})._"
+          } > "$RUNNER_TEMP/pr-body.md"
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md" >/dev/null
+            number="$existing"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$TARGET_BRANCH" --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md" >/dev/null
+            number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')"
+          fi
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "promote PR: $url ($count commits)"
+
+      - name: Squash-merge
+        id: merge
+        if: steps.pr.outputs.number != '' && (github.event_name != 'workflow_dispatch' || inputs.merge)
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+          TITLE: ${{ steps.pr.outputs.title }}
+          TIP: ${{ steps.ahead.outputs.tip }}
+        run: |
+          set -uo pipefail
+          body="${TARGET_BRANCH}'s tree := ${SOURCE_BRANCH}'s tested tip, promoted on cadence by the promote-main workflow.
+
+          Promoted-Canary-Sha: ${TIP}"
+          if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --auto --subject "$TITLE" --body "$body" 2>&1)"; then
+            echo "auto-merge armed: $out"; echo "merged=auto" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "gh pr merge --auto: $out"
+          if [ "$DIRECT_MERGE_WHEN_AUTO_UNAVAILABLE" = "true" ]; then
+            if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --subject "$TITLE" --body "$body" 2>&1)"; then
+              echo "merged: $out"; echo "merged=direct" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "gh pr merge --squash: $out"
+          fi
+          echo "::warning::promote PR #${NUMBER} could not be merged by this token — left open. If ${TARGET_BRANCH} is protected, set the PROMOTE_TOKEN repo secret (fine-grained PAT, contents + pull-requests: write) so its checks run and auto-merge can arm."
+          echo "merged=no" >> "$GITHUB_OUTPUT"
+
+      - name: Run summary
+        if: always()
+        env:
+          PROMOTE: ${{ steps.ahead.outputs.promote }}
+          GREEN: ${{ steps.green.outputs.green }}
+          TIP: ${{ steps.ahead.outputs.tip }}
+          URL: ${{ steps.pr.outputs.url }}
+          COUNT: ${{ steps.pr.outputs.count }}
+          MERGED: ${{ steps.merge.outputs.merged }}
+        run: |
+          {
+            echo "## promote-main — ${TARGET_BRANCH} tracks ${SOURCE_BRANCH}"
+            echo
+            echo "- ${SOURCE_BRANCH} tip: \`${TIP:-?}\`"
+            case "${PROMOTE:-}" in
+              false) echo "- outcome: nothing to promote (${TARGET_BRANCH} already carries the tip's tree, or ${SOURCE_BRANCH} is not ahead)" ;;
+              true)
+                if [ "${GREEN:-}" != "true" ]; then echo "- outcome: NOT promoted — the tip's own checks are not green (see the step log)";
+                else
+                  echo "- promote PR: ${URL:-not opened} (${COUNT:-?} commits)"
+                  case "${MERGED:-}" in
+                    auto) echo "- outcome: auto-merge armed (squash); ${TARGET_BRANCH} moves when the PR's checks pass" ;;
+                    direct) echo "- outcome: MERGED (squash) — ${TARGET_BRANCH}'s tree is now the tip's" ;;
+                    no) echo "- outcome: PR left OPEN — this token could not merge it; see the warning and the PROMOTE_TOKEN fallback in the workflow header" ;;
+                    *) echo "- outcome: PR opened, merge not attempted (dispatch with merge=false)" ;;
+                  esac
+                fi ;;
+              *) echo "- outcome: the run did not reach a verdict — read the failed step; this workflow is excluded from the deploy verdict, so a red run here is never a red tip" ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"

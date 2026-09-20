@@ -1805,6 +1805,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             request_builder,
             body_bytes,
+            request.turn_bound,
         )
         .await?;
 
@@ -2629,6 +2630,7 @@ mod tests {
                     .post(format!("http://{address}/v1/chat/completions"))
                     .header("Content-Type", "application/json"),
                 body.clone(),
+                None,
             ),
         )
         .await

@@ -4240,8 +4240,9 @@ pub fn start_server(
         );
         loop {
             interval.tick().await;
-            dump_memory_report();
+            // ONE reading per tick, handed to both consumers (card 948c30c2, row 18).
             let rss = current_rss_mb();
+            dump_memory_report(rss);
             if rss > max_rss_mb {
                 eprintln!(
                     "[MEMLEAK] FATAL: RSS {}MB exceeds {}MB limit (80% of {}MB system RAM) — \

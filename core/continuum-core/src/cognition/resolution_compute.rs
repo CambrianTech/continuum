@@ -180,6 +180,7 @@ fn draft_request(
         room_id: None,
         purpose: Some("resolution-draft".to_string()),
         persona_id,
+        turn_bound: None,
     }
 }
 

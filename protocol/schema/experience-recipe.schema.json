@@ -43,6 +43,18 @@
     "CitizenRecipe": {
       "description": "One resident citizen an experience declares (#430) — a ROLE, not an identity. Identity (peer_id, name) is minted or resumed by the identity provider at hosting time; the MODEL is the serving daemon's per-host decision. A recipe authoring a device-specific model id would make the recipe non-portable across the grid, so the role is all it declares.",
       "properties": {
+        "requirement": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CitizenRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What one of this citizen's turns NEEDS of a lane — the grid allocator's requirement for the role (card 10bba591; Joel: never a constant of our grid, a declared input). Absent = unmeasured: the residents' measured typical prompt stands as the window, any model qualifies, decode is not judged."
+        },
         "role": {
           "allOf": [
             {
@@ -54,6 +66,37 @@
       },
       "required": [
         "role"
+      ],
+      "type": "object"
+    },
+    "CitizenRequirement": {
+      "description": "A role's declared lane requirement — the recipe's word on what a seat must hold before one of its minds sits there ([`crate::cognition::grid_allocation::Requirement`]).",
+      "properties": {
+        "decodeFloorTps": {
+          "default": null,
+          "description": "Per-stream decode below this is not a seat; absent = not judged.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minCapability": {
+          "default": 0,
+          "description": "The least capable model this role is competent on (`capability_rank`); 0 = any.",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "windowTokens": {
+          "description": "Tokens one turn of this role needs (a real coding turn, a chat turn).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "windowTokens"
       ],
       "type": "object"
     },

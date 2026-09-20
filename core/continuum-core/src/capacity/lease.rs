@@ -206,7 +206,7 @@ mod tests {
             residents: 0,
             free_slots_live: 0,
             lane_wait_p50_ms: 0,
-            lane_wait_samples: 0,
+            lane_wait_samples: 0, served_context_window: 0,
         }
         .capacity()
     }

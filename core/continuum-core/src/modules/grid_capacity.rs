@@ -190,6 +190,7 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
         lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
         lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
+        served_context_window: serving.served_context_window,
     })
 }
 

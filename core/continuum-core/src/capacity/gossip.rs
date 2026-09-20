@@ -107,6 +107,14 @@ pub struct CapacityOffer {
     pub lane_wait_p50_ms: u64,
     #[serde(default)]
     pub lane_wait_samples: u32,
+    /// The per-slot window this seat serves (its `served_context_window`); 0 = unknown
+    /// (a beacon from an older core). A seat whose window cannot hold a mind's turn is
+    /// not capacity for her however many free slots it offers: the M5, 2026-09-20 14:xxZ,
+    /// placed its residents on a 2,048-token remote seat (172 refused prompts an hour from
+    /// one mind, zero acts) while two 67k lanes stood at home, because the beacon said
+    /// `free_slots_live: 2` and nothing said how wide.
+    #[serde(default)]
+    pub served_context_window: u32,
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -325,6 +333,7 @@ mod tests {
                     free_slots_live: 0,
             lane_wait_p50_ms: 0,
             lane_wait_samples: 0,
+            served_context_window: 0,
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
