@@ -31,6 +31,11 @@
 //! Minds beyond the seats stay DORMANT with identity and memory intact; seats beyond the
 //! minds are OPEN — the count the spawner may mint. A mind is seated at home when home has
 //! a seat for its role, else on any node that has one: residents exist between the grid.
+//!
+//! Two more declared inputs (card 426a26fb): an operator's roster [`Hold`] on a node and a
+//! recipe's declared team as a [`RoleFloor`] per role. Both are inputs to THIS decision,
+//! never something a consumer applies after it — the spawner used to cap its own draw by
+//! the hold and skip held-out names at the draw, a second decision about the same seats.
 
 use uuid::Uuid;
 
@@ -210,10 +215,47 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
             (&p.model_id, p.capability_rank, p.window, p.lanes, p.decode_tps_per_lane.map(f32::to_bits)).hash(&mut h);
         }
     }
+    for hold in &inputs.holds {
+        (hold.node, &hold.only, hold.exclusive).hash(&mut h);
+    }
+    for f in &inputs.floors {
+        (f.role, f.min_seats).hash(&mut h);
+    }
     h.finish()
 }
 
 /// The three declared inputs plus the one society-wide ratio (minds a warm lane serves,
+
+/// An operator's roster hold on one node (`persona::roster_hold`, the names resolved to
+/// mind ids by whoever builds the inputs). The hold is an INPUT to the allocation, not
+/// something a consumer applies after it (Cormac's note on #4259): the spawner used to
+/// cap its own draw by the hold (`seats_under`) and skip held-out identities at the draw,
+/// a second decision about the same seats in a second place.
+///
+/// EXCLUSIVE (the operator's file): on `node` only the named minds sit, and the node has
+/// at most `only.len()` seats — the hold DEFINES that node's roster, so nothing is minted
+/// for a held box. An exclusive hold naming nobody restricts nothing (the file's own
+/// semantics in `seats_under`). DERIVED (a working round's team, not exclusive): the named
+/// minds seat FIRST on that node and everyone else after — never fewer minds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hold {
+    pub node: Uuid,
+    pub only: Vec<Uuid>,
+    pub exclusive: bool,
+}
+
+/// A recipe's declared team: at least `min_seats` of this role are seated before any
+/// higher-priority role takes the rest of the grid, and a shortfall in minds of that
+/// role is reported OPEN for it before the node's best role — the team is the spawn
+/// signal's first claim. A floor of 0 (or none declared) is today's allocation exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleFloor {
+    /// Index into `GridInputs::roles`.
+    pub role: usize,
+    pub min_seats: u32,
+}
+
+/// The declared inputs plus the one society-wide ratio (minds a warm lane serves,
 /// `citizen_health::MINDS_PER_LANE_STARVED_ABOVE` on the live path — passed, not read).
 #[derive(Clone, Debug)]
 pub struct GridInputs {
@@ -221,6 +263,23 @@ pub struct GridInputs {
     pub minds: Vec<Mind>,
     pub nodes: Vec<NodeOffer>,
     pub minds_per_lane: u32,
+    /// Standing roster holds, at most one per node (a later one for the same node wins).
+    pub holds: Vec<Hold>,
+    /// The declared team's minimums, at most one per role.
+    pub floors: Vec<RoleFloor>,
+}
+
+impl GridInputs {
+    fn hold_on(&self, node: Uuid) -> Option<&Hold> {
+        self.holds.iter().rev().find(|h| h.node == node)
+    }
+    /// The node a hold names this mind on, if any — where she sits first.
+    fn held_at(&self, mind: Uuid) -> Option<Uuid> {
+        self.holds.iter().find(|h| h.only.contains(&mind)).map(|h| h.node)
+    }
+    fn floor_of(&self, role: usize) -> u32 {
+        self.floors.iter().filter(|f| f.role == role).map(|f| f.min_seats).max().unwrap_or(0) // unwrap_or: no floor declared = 0, the same law
+    }
 }
 
 /// Why a node serves what it serves.
@@ -303,7 +362,7 @@ pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a
 
 /// What each node serves: its best plan for the highest-priority role it can hold (so
 /// coders stay on the capability), and every role that plan holds fills its seats.
-fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAllocation {
+fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Option<&Hold>) -> NodeAllocation {
     for (role, r) in roles.iter().enumerate() {
         if let Some(plan) = best_plan_for(&offer.plans, &r.requirement) {
             let holds = roles
@@ -312,9 +371,15 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAl
                 .filter(|(_, r)| plan.holds(&r.requirement))
                 .map(|(i, _)| i)
                 .collect();
+            let warm = plan.lanes.saturating_mul(minds_per_lane);
+            // An exclusive hold naming anyone DEFINES this node's roster: its seats.
+            let seats = match hold {
+                Some(h) if h.exclusive && !h.only.is_empty() => warm.min(h.only.len() as u32),
+                _ => warm,
+            };
             return NodeAllocation {
                 node: offer.node,
-                seats: plan.lanes.saturating_mul(minds_per_lane),
+                seats,
                 plan: Some(plan.clone()),
                 verdict: NodeVerdict::Hosts { role },
                 holds,
@@ -332,25 +397,56 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAl
 }
 
 /// The allocation. Deterministic: nodes in offer order, minds in their given order.
+///
+/// Minds are seated in BATCHES: first every role's declared floor (in role order), then
+/// every role's remainder (in role order) — so a declared team is seated before a
+/// higher-priority role takes the rest, and with no floors the batches collapse to the
+/// plain role order. Within a role, the minds a hold names come first (a derived hold
+/// seats its team before anyone else), and a hold's node is where a named mind sits
+/// first. An exclusive hold admits only its names on its node.
 pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let nodes: Vec<NodeAllocation> = inputs
         .nodes
         .iter()
-        .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane))
+        .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane, inputs.hold_on(o.node)))
         .collect();
     // Free seats per node, drawn down as minds are seated; and the seats each node has
     // LENT to other owners' minds, bounded by its terms.
     let mut free: Vec<u32> = nodes.iter().map(|n| n.seats).collect();
     let mut lent: Vec<u32> = vec![0; nodes.len()];
-    // May this mind sit on node i? Her owner's own node: yes. Another owner's: within terms.
-    let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
-        let offer = &inputs.nodes[i];
-        offer.owner == m.owner
-            || (offer.terms.admits_role(m.role) && offer.terms.seats_lent.is_none_or(|cap| lent_now < cap))
-    };
-    let mut seated = Vec::new();
+    let mut seated: Vec<Seat> = Vec::new();
     let mut dormant = Vec::new();
-    for role in 0..inputs.roles.len() {
+    // May this mind sit on node i? ONE predicate: under an exclusive hold, only its names;
+    // then her owner's own node freely, another owner's within its terms.
+    let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
+        let named = match inputs.hold_on(nodes[i].node) {
+            Some(h) if h.exclusive && !h.only.is_empty() => h.only.contains(&m.id),
+            _ => true,
+        };
+        let offer = &inputs.nodes[i];
+        named
+            && (offer.owner == m.owner
+                || (offer.terms.admits_role(m.role) && offer.terms.seats_lent.is_none_or(|cap| lent_now < cap)))
+    };
+    // Per role, in seating order: the minds a hold names first, then the rest, stable.
+    let by_role: Vec<Vec<&Mind>> = (0..inputs.roles.len())
+        .map(|role| {
+            let (held, rest): (Vec<&Mind>, Vec<&Mind>) =
+                inputs.minds.iter().filter(|m| m.role == role).partition(|m| inputs.held_at(m.id).is_some());
+            held.into_iter().chain(rest).collect()
+        })
+        .collect();
+    // The batches: (role, the slice of its minds) — floors first, remainders after.
+    let mut batches: Vec<(usize, &[&Mind])> = Vec::with_capacity(inputs.roles.len() * 2);
+    for (role, minds) in by_role.iter().enumerate() {
+        let floor = (inputs.floor_of(role) as usize).min(minds.len());
+        batches.push((role, &minds[..floor]));
+    }
+    for (role, minds) in by_role.iter().enumerate() {
+        let floor = (inputs.floor_of(role) as usize).min(minds.len());
+        batches.push((role, &minds[floor..]));
+    }
+    for (role, minds) in batches {
         // Every node whose chosen plan holds this role — not only the one it was chosen
         // for: seats are the node's, and roles fill them in priority order.
         let hosts: Vec<usize> = nodes
@@ -359,13 +455,12 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             .filter(|(_, n)| n.holds.contains(&role))
             .map(|(i, _)| i)
             .collect();
-        let minds: Vec<&Mind> = inputs.minds.iter().filter(|m| m.role == role).collect();
         let mut unseated: Vec<&Mind> = Vec::new();
-        // Pass 1: home has a seat for her role — she stays where her memory is.
-        for m in &minds {
-            let at_home = m
-                .home
-                .and_then(|h| hosts.iter().copied().find(|&i| nodes[i].node == h && free[i] > 0 && admits(i, m, lent[i])));
+        // Pass 1: home has a seat for her role — she stays where her memory is. A hold
+        // that names her makes its node her home first.
+        for m in minds {
+            let home = inputs.held_at(m.id).or(m.home);
+            let at_home = home.and_then(|h| hosts.iter().copied().find(|&i| nodes[i].node == h && free[i] > 0 && admits(i, m, lent[i])));
             match at_home {
                 Some(i) => {
                     free[i] -= 1;
@@ -398,17 +493,35 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             }
         }
     }
-    // A seat no existing mind of ANY held role fills is open for the highest-priority
-    // role the node holds — the spawner mints what the node is best at.
-    let open = nodes
-        .iter()
-        .zip(free.iter())
-        .zip(inputs.nodes.iter())
-        .filter_map(|((n, &f), offer)| match n.verdict {
-            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, owner: offer.owner, role, count: f }),
-            _ => None,
-        })
-        .collect();
+    // A seat no existing mind of ANY held role fills is open: first for a declared
+    // floor the grid could not fill for want of minds (the team's claim on the spawn
+    // signal), then for the highest-priority role the node holds — the spawner mints
+    // what the node is best at. A box under an exclusive hold is never minted for: the
+    // hold names its roster. Every row carries the node's owner (#4263): a loan is never
+    // minted for.
+    let held = |node: Uuid| inputs.hold_on(node).is_some_and(|h| h.exclusive && !h.only.is_empty());
+    let mut open: Vec<OpenSeats> = Vec::new();
+    for role in 0..inputs.roles.len() {
+        let have = seated.iter().filter(|s| s.role == role).count() as u32;
+        let mut short = inputs.floor_of(role).saturating_sub(have);
+        for (i, n) in nodes.iter().enumerate() {
+            if short == 0 {
+                break;
+            }
+            if !n.holds.contains(&role) || free[i] == 0 || held(n.node) {
+                continue;
+            }
+            let count = free[i].min(short);
+            free[i] -= count;
+            short -= count;
+            open.push(OpenSeats { node: n.node, owner: inputs.nodes[i].owner, role, count });
+        }
+    }
+    for ((n, &f), offer) in nodes.iter().zip(free.iter()).zip(inputs.nodes.iter()) {
+        if let (NodeVerdict::Hosts { role }, true, false) = (&n.verdict, f > 0, held(n.node)) {
+            open.push(OpenSeats { node: n.node, owner: offer.owner, role: *role, count: f });
+        }
+    }
     GridAllocation { nodes, seated, dormant, open }
 }
 
@@ -459,7 +572,106 @@ mod tests {
         offer(node, vec![plan("7b", 5, 32_768, 1, Some(12.0)), plan("1.5b", 2, 32_768, 3, Some(60.0))])
     }
     fn inputs(nodes: Vec<NodeOffer>, minds: Vec<Mind>) -> GridInputs {
-        GridInputs { roles: vec![coder(), orchestrator()], minds, nodes, minds_per_lane: 2 }
+        GridInputs { roles: vec![coder(), orchestrator()], minds, nodes, minds_per_lane: 2, holds: vec![], floors: vec![] }
+    }
+    fn on(a: &GridAllocation, node: Uuid) -> Vec<Uuid> {
+        a.seated.iter().filter(|s| s.node == node).map(|s| s.mind).collect()
+    }
+
+    // what this catches (card 426a26fb): the operator's EXCLUSIVE hold as an input — on the
+    // held box only its names sit and the box has only that many seats; the rest of the
+    // roster goes where the grid has room; a name with no mind behind it is NOT a seat to
+    // mint (the spawner used to draw the hold's count and ask the provider every second).
+    #[test]
+    fn an_exclusive_hold_defines_a_boxs_roster_and_nothing_is_minted_for_it() {
+        let a_box = Uuid::new_v4();
+        let b_box = Uuid::new_v4();
+        let m = minds(0, Some(a_box), 6); // all six call the first box home
+        let free = allocate(&inputs(vec![big_box(a_box), big_box(b_box)], m.clone()));
+        assert_eq!(on(&free, a_box).len(), 4, "without a hold: four at home, two spill");
+        assert_eq!(on(&free, b_box).len(), 2);
+        let mut i = inputs(vec![big_box(a_box), big_box(b_box)], m.clone());
+        i.holds.push(Hold { node: a_box, only: vec![m[4].id, m[5].id], exclusive: true });
+        let held = allocate(&i);
+        assert_eq!(held.node(a_box).unwrap().seats, 2, "the hold defines the roster: two seats");
+        assert_eq!(on(&held, a_box), vec![m[4].id, m[5].id], "only the named sit there — and they sit FIRST, though last in order");
+        assert_eq!(on(&held, b_box).len(), 4, "the other four go where the grid has room");
+        assert!(held.dormant.is_empty());
+        assert!(held.open.is_empty());
+        // A name with no mind behind it: one seat stays empty and is NOT open to mint.
+        i.holds[0].only = vec![m[4].id, Uuid::new_v4()];
+        let ghost = allocate(&i);
+        assert_eq!(on(&ghost, a_box), vec![m[4].id]);
+        assert!(ghost.open.iter().all(|o| o.node != a_box), "a held box is never minted for");
+        assert_eq!(ghost.dormant.len(), 1, "six minds, five seats (one held empty)");
+        // An exclusive hold naming nobody restricts nothing (the file's own semantics).
+        i.holds[0].only.clear();
+        assert_eq!(on(&allocate(&i), a_box).len(), 4);
+        // A hold or a floor is an input: the key moves with it (the daemon recomputes).
+        let k = inputs_key(&i);
+        i.holds[0].only.push(m[0].id);
+        assert_ne!(inputs_key(&i), k);
+        i.floors.push(RoleFloor { role: 1, min_seats: 1 });
+        assert_ne!(inputs_key(&i), k);
+    }
+
+    // what this catches: a DERIVED hold (a working round's team) orders, never restricts —
+    // its names seat first on its node, everyone else after, never fewer minds.
+    #[test]
+    fn a_derived_hold_seats_its_team_first_and_never_fewer() {
+        let n = Uuid::new_v4();
+        let m = minds(0, Some(n), 6);
+        let mut i = inputs(vec![big_box(n)], m.clone());
+        i.holds.push(Hold { node: n, only: vec![m[5].id, m[4].id], exclusive: false });
+        let a = allocate(&i);
+        assert_eq!(a.node(n).unwrap().seats, 4, "a derived hold does not cap the seats");
+        let seated = on(&a, n);
+        assert_eq!(&seated[..2], &[m[4].id, m[5].id], "the team first, stable in their own order");
+        assert_eq!(&seated[2..], &[m[0].id, m[1].id], "then the rest in their order");
+        assert_eq!(a.dormant, vec![m[2].id, m[3].id]);
+        // A named mind whose home is elsewhere sits on the hold's node first.
+        let mut away = minds(0, Some(Uuid::new_v4()), 1);
+        away.extend(minds(0, Some(n), 4));
+        let mut i = inputs(vec![big_box(n)], away.clone());
+        i.holds.push(Hold { node: n, only: vec![away[0].id], exclusive: false });
+        assert_eq!(on(&allocate(&i), n)[0], away[0].id, "the hold's node is her home first");
+    }
+
+    // what this catches: a recipe's declared team as an input — a 4-seat box, 5 coders and
+    // one orchestrator: with no floor the coders take every seat (priority); with a floor of
+    // one orchestrator it is 3 + 1. A floor the grid cannot fill for want of MINDS is the
+    // spawn signal's first claim: open for the orchestrator before the box's best role.
+    #[test]
+    fn a_declared_team_is_seated_before_a_higher_role_takes_the_rest_and_claims_the_spawn_signal() {
+        let n = Uuid::new_v4();
+        let mut m = minds(0, Some(n), 5);
+        m.extend(minds(1, Some(n), 1));
+        let plain = allocate(&inputs(vec![big_box(n)], m.clone()));
+        assert_eq!(plain.seated.iter().filter(|s| s.role == 1).count(), 0, "no floor: priority seats the coders");
+        let mut i = inputs(vec![big_box(n)], m.clone());
+        i.floors.push(RoleFloor { role: 1, min_seats: 1 });
+        let a = allocate(&i);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 3);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 1);
+        assert_eq!(a.dormant.len(), 2, "two coders wait");
+        assert!(a.open.is_empty());
+        // A floor above the minds that exist reserves nothing for nobody: 3 + 1 still.
+        i.floors[0].min_seats = 3;
+        let a = allocate(&i);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 3);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 1);
+        assert!(a.open.is_empty(), "no free seat: the coders that exist take them");
+        // Two coders, no orchestrator, floor one: the open seats name the orchestrator FIRST.
+        let mut i = inputs(vec![big_box(n)], minds(0, Some(n), 2));
+        i.floors.push(RoleFloor { role: 1, min_seats: 1 });
+        let a = allocate(&i);
+        assert_eq!(a.open, vec![OpenSeats { node: n, owner: US, role: 1, count: 1 }, OpenSeats { node: n, owner: US, role: 0, count: 1 }]);
+        // A floor for a role no node holds opens nothing (the small box cannot seat a coder).
+        let s = Uuid::new_v4();
+        let mut i = inputs(vec![small_box(s)], vec![]);
+        i.floors.push(RoleFloor { role: 0, min_seats: 2 });
+        let a = allocate(&i);
+        assert_eq!(a.open, vec![OpenSeats { node: s, owner: US, role: 1, count: 2 }], "the 7B holds orchestration only");
     }
 
     // what this catches: the 2026-09-20 07:52Z shape — a box whose only runnable plans are
