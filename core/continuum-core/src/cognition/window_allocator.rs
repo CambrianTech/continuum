@@ -19,11 +19,13 @@
 //! constant here, and there must not be: a floor is the next 2048), the candidate
 //! models' footprints, and the budget the governor hands serving.
 //!
-//! **Objective**, in order — (1) every served mind holds her requirement; (2) as
-//! many minds served warmly as fit; (3) the most capable model that satisfies (1)
-//! and (2) for at least one mind. **Never** a lane below a requirement: the
-//! allocator sheds minds (they queue or place on the grid) before it shrinks the
-//! window, and sheds the model before it serves nobody.
+//! **Objective**, in order — (1) every served mind holds her requirement; (2) the
+//! most CAPABLE model that serves at least one mind that way (Joel, 2026-09-20:
+//! "Kimi at 26b MUST be coding" — the coder's seat keeps her model; a mind the
+//! model cannot hold beside her queues or places on the grid, it does not pull the
+//! seat down to a lesser model); (3) among equally capable, the most minds. **Never**
+//! a lane below a requirement: the allocator sheds minds before it shrinks the
+//! window, and sheds the model only when it holds nobody.
 //!
 //! **One window per engine** (llama-server's `--parallel N` slots share a context
 //! size), so the served window is the largest requirement among the minds served,
@@ -85,7 +87,7 @@ impl LaneRequirement {
     /// the seat, else the most `fp` can hold at `lanes` within `budget` (its trained
     /// window bounded by the fit) — the honest cold start, not a number.
     fn resolve(&self, largest_known: Option<u32>, fp: &ModelFootprint, budget: u64, lanes: u32) -> u32 {
-        self.window.or(largest_known).unwrap_or_else(|| fp.window_within(budget, lanes))
+        self.window.or(largest_known).unwrap_or_else(|| fp.window_within(budget, lanes)) // unwrap_or_else: nothing measured on the seat = the most this model holds here, a fit not a constant
     }
 }
 
@@ -148,10 +150,8 @@ fn pack(fp: &ModelFootprint, sorted: &[&LaneRequirement], largest_known: Option<
 
 /// Allocate lanes × window for `requirements` from `candidates` within `budget`.
 ///
-/// Objective order: every served mind at her requirement; then the most minds; then
-/// the most capable model. A model that serves fewer minds than a less capable one
-/// loses — a warm slot for the roster outranks capability the roster cannot use
-/// (the same trade `plan_serving` made; kept). Ties go to capability.
+/// Objective order: every served mind at her requirement; then the most capable
+/// model that serves at least one; then the most minds. The seat keeps its model.
 pub fn allocate(
     requirements: &[LaneRequirement],
     candidates: &[ModelFootprint],
@@ -175,7 +175,10 @@ pub fn allocate(
         let Some((lanes, window)) = pack(fp, &sorted, largest_known, budget.usable_bytes, lane_cap) else { continue };
         let better = match best {
             None => true,
-            Some((b, bl, _)) => lanes > bl || (lanes == bl && fp.capability_rank > b.capability_rank),
+            Some((b, bl, _)) => {
+                fp.capability_rank > b.capability_rank
+                    || (fp.capability_rank == b.capability_rank && lanes > bl)
+            }
         };
         if better {
             best = Some((fp, lanes, window));
@@ -312,13 +315,28 @@ mod tests {
         assert!(matches!(nothing, Unallocatable::NothingFitsOneLane { smallest_requirement: 70_000, .. }), "{nothing:?}");
     }
 
-    // what this catches: more minds served outranks a more capable model that serves
-    // fewer — a warm slot for the roster beats capability the roster cannot use.
+    // what this catches (Joel: "Kimi at 26b MUST be coding"): the seat keeps its most
+    // capable model as long as it holds one mind at her requirement — a third coder
+    // the 27B cannot hold beside the two queues or grid-places; she does not pull
+    // the seat down to the 7B. The 7B is chosen only when the 27B holds nobody.
     #[test]
-    fn more_minds_served_outranks_capability() {
+    fn capability_outranks_head_count_while_one_mind_is_held() {
         let reqs = minds(&[70_000, 70_000, 70_000]);
         let a = allocate(&reqs, &[qwen27b(), small7b()], &budget(30)).expect("fits");
-        assert_eq!(a.model_id, "small-7b", "the 7b serves all three; the 27b only two");
-        assert_eq!(a.lanes, 3);
+        assert_eq!(a.model_id, "qwen-27b");
+        assert_eq!((a.lanes, a.unserved.len()), (2, 1));
+        // The 5090 as it stands: 22 GB handed to serving, q8 KV (32,768 B/token).
+        // Kimi's typical 40k×1.25 = 50k fits ONE 27B lane (3.2 GB after weights: 1.6 GB KV
+        // + 1.2 GB compute floor + the prefill rate); Sahar's 97k does not fit beside her —
+        // Kimi keeps the 27B at her requirement, Sahar is unserved here (queue / grid).
+        let mut q8 = qwen27b();
+        q8.kv_per_token = 32_768;
+        let one_lane = q8.window_within(budget(22).usable_bytes, 1);
+        assert!(one_lane > 40_000 && one_lane < 90_000, "precondition: one 27B lane on this card is tens of k, not hundreds: {one_lane}");
+        let kimi = one_lane - 1_000;
+        let seat = vec![LaneRequirement::declared(Uuid::new_v4(), kimi), LaneRequirement::declared(Uuid::new_v4(), 97_268)];
+        let a = allocate(&seat, &[q8, small7b()], &budget(22)).expect("fits");
+        assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, kimi));
+        assert_eq!(a.unserved.len(), 1);
     }
 }

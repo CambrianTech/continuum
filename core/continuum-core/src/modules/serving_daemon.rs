@@ -1184,7 +1184,7 @@ impl ServingDaemonModule {
         let requirements: Vec<crate::cognition::window_allocator::LaneRequirement> = live
             .iter()
             .map(|p| {
-                let need = self.working_set.demand_of(*p).map(|d| d.peak_tokens).unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet requires the floor, which from_demand applies
+                let need = self.working_set.demand_of(*p).map(|d| crate::cognition::working_set::requirement_tokens(&d)).unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
                 crate::cognition::window_allocator::LaneRequirement::from_demand(
                     *p,
                     need,

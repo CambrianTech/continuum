@@ -121,6 +121,45 @@ pub struct PersonaDemand {
     /// count. Legacy files without it read 0.
     #[serde(default)]
     pub sent_peak: u32,
+    /// The last [`RECENT_TURNS`] untrimmed demands, newest overwriting oldest — what
+    /// her turns TYPICALLY assemble, as opposed to `peak_tokens` (once, ever). The
+    /// lane REQUIREMENT is the median of these with headroom (`typical_tokens`):
+    /// Kimi's peak on the 5090 was 176k, which no lane on a 32 GB card can hold,
+    /// while her turns run ~30–60k — sizing to the peak would shed her model for
+    /// nothing (Joel, 2026-09-20: "fix it, this is the bug"). Legacy files read empty.
+    #[serde(default)]
+    pub recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `recent`.
+    #[serde(default)]
+    pub recent_next: u8,
+}
+
+/// How many recent turns define "typical". Sixteen: a working session, not a
+/// lifetime; a change of task shows within a dozen turns.
+pub const RECENT_TURNS: usize = 16;
+
+/// Push one untrimmed demand into her recent ring (newest overwrites oldest).
+fn push_recent(d: &mut PersonaDemand, demand_tokens: u32) {
+    let i = (d.recent_next as usize) % RECENT_TURNS;
+    d.recent[i] = demand_tokens;
+    d.recent_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// The median of her recent untrimmed demands — her TYPICAL turn. `None` until one
+/// is recorded (a legacy file carries only the peak).
+pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
+    let mut v: Vec<u32> = d.recent.iter().copied().filter(|t| *t > 0).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[v.len() / 2])
+}
+
+/// What a lane must hold for her: the typical turn, else the last one — one honest
+/// sample, never the peak.
+pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
+    typical_tokens(d).unwrap_or(d.last_tokens) // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
 }
 
 /// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
@@ -206,13 +245,20 @@ impl WorkingSetRegistry {
                 d.last_tokens = demand_tokens;
                 d.last_seen_ms = now_ms;
                 d.turns += 1;
+                push_recent(d, demand_tokens);
             })
-            .or_insert(PersonaDemand {
-                peak_tokens: demand_tokens,
-                last_tokens: demand_tokens,
-                last_seen_ms: now_ms,
-                turns: 1,
-                sent_peak: 0,
+            .or_insert_with(|| {
+                let mut d = PersonaDemand {
+                    peak_tokens: demand_tokens,
+                    last_tokens: demand_tokens,
+                    last_seen_ms: now_ms,
+                    turns: 1,
+                    sent_peak: 0,
+                    recent: [0; RECENT_TURNS],
+                    recent_next: 0,
+                };
+                push_recent(&mut d, demand_tokens);
+                d
             })
     }
 
@@ -231,6 +277,8 @@ impl WorkingSetRegistry {
                 last_seen_ms: now_ms,
                 turns: 0,
                 sent_peak: sent_tokens,
+                recent: [0; RECENT_TURNS],
+                recent_next: 0,
             });
         Self::save(persona, &updated);
     }
@@ -568,6 +616,33 @@ mod tests {
     // twelve leased-in coders sending ~30k queued on it. Their prompts must pull the median
     // to what the seat actually serves; and a seat with NO local residents but leased-in
     // minds must still have a floor.
+    // what this catches (Joel 2026-09-20, "fix it, this is the bug"): the REQUIREMENT is
+    // her typical turn, not her peak. Kimi on the 5090: one 176k turn ever, ~30–60k
+    // usually — the requirement is the median of recent turns, the peak stays the
+    // peak, and a legacy record with no ring falls back to her last turn.
+    #[test]
+    fn a_minds_requirement_is_her_typical_turn_never_her_peak() {
+        let reg = WorkingSetRegistry::new();
+        let kimi = Uuid::new_v4();
+        for (i, t) in [176_154u32, 29_911, 56_057, 40_448, 45_000, 31_000, 60_000].iter().enumerate() {
+            reg.record_in_memory(kimi, *t, i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert_eq!(d.peak_tokens, 176_154);
+        assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
+        assert_eq!(requirement_tokens(&d), 45_000);
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0 };
+        assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
+        let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
+        assert_eq!(typical_tokens(&ser), None);
+        // The ring is bounded: after 40 turns only the last 16 define "typical".
+        for i in 0..40u32 {
+            reg.record_in_memory(kimi, 100_000 + i, 100 + i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
+    }
+
     #[test]
     fn the_typical_prompt_includes_the_prompts_a_seat_serves_for_other_nodes() {
         let reg = WorkingSetRegistry::new();
