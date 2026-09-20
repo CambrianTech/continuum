@@ -232,6 +232,9 @@ pub(crate) async fn guard_resident_model(
         if let Some(prompt_tokens) =
             prompt_alone_overflows_served(&body, snap.served_context_window)
         {
+            // The refused size is demand this seat could not hold; it votes on the next
+            // plan's window (the 5090's self-sealed 2048, 2026-09-20).
+            crate::cognition::resource_admission::note_refused_prompt(prompt_tokens.min(u32::MAX as usize) as u32);
             return Err(format!(
                 "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
                  window of {} (caller: {}). Sending it would 500 and POISON the shared \

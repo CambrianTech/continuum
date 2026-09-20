@@ -2351,9 +2351,17 @@ impl LlmDeliberationFaculty {
             let sent = framing_tokens
                 .saturating_add(Self::messages_cost(&fitted.messages))
                 .saturating_add(desired_completion_reserve);
+            // At a window that TRIMMED this turn the post-fit size is the window's
+            // echo, not the turn's — the untrimmed demand is what the plan must hear
+            // (`sent_sample_for_plan`; the 5090's self-sealed 2048, 2026-09-20).
+            let sample = crate::cognition::working_set::WorkingSetRegistry::sent_sample_for_plan(
+                demand_tokens.min(u32::MAX as usize) as u32,
+                sent.min(u32::MAX as usize) as u32,
+                context_window,
+            );
             reg.record_sent(
                 self.persona_id,
-                sent.min(u32::MAX as usize) as u32,
+                sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
         }
