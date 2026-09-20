@@ -1157,10 +1157,15 @@ impl ServingDaemonModule {
         // with no residents of its own but leased-in minds still gets a floor from them.
         let leased_sent = crate::cognition::resource_admission::leased_in_sent_samples();
         let (demand, sent, median) = if live.is_empty() {
+            // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
+            // from their last boot) are the demand pool — not only the leased-in ring. A
+            // node reboots with the same minds; their last prompts are the best floor it
+            // has, and a harness with no registry seeds the pool the same way.
+            let remembered: Vec<uuid::Uuid> = self.working_set.all().into_iter().map(|(id, _)| id).collect();
             (
                 self.working_set.ceiling(),
                 None,
-                self.working_set.sent_median_with(&[], &leased_sent),
+                self.working_set.sent_median_with(&remembered, &leased_sent),
             )
         } else {
             (
@@ -7292,8 +7297,12 @@ mod tests {
         // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
         // No residents are live in this harness, so the seat's leased-in samples carry it —
         // the same ring #4256 votes refused prompts into.
-        for _ in 0..8 {
-            crate::cognition::resource_admission::note_leased_in_sent(56_057);
+        // …in the daemon's OWN working set, never the process-global leased-in ring: that
+        // ring is shared by every test in the binary, and eight 56k samples there re-homed
+        // a 65k lane in `a_jittering_gain_never_accumulates_into_a_re_home` (CI, 2026-09-20).
+        let resident = uuid::Uuid::new_v4();
+        for i in 0..8 {
+            daemon.working_set.record_sent(resident, 56_057, 1 + i);
         }
         // …and a measured demand ceiling above it (the assembled context a turn wanted),
         // as every live node has — without it the demand cap is the bootstrap prior and no
