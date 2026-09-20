@@ -71,7 +71,7 @@ pub struct Mind {
 /// different kind of peer"). Between one owner's own nodes the terms are open and never
 /// consulted. A foreign owner's node lends at most `seats_lent` seats, for `roles` only
 /// (`None` = any); its own minds are never bounded by its own terms.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OfferTerms {
     /// Seats lent to minds of OTHER owners; `None` = unbounded, `Some(0)` = none.
     pub seats_lent: Option<u32>,
@@ -79,9 +79,19 @@ pub struct OfferTerms {
     pub roles: Option<Vec<usize>>,
 }
 
+/// A node with NO declared terms lends nothing to other owners (Cormac's note on #4263:
+/// an unlimited loan is never the default). Between one owner's own nodes terms are not
+/// consulted, so this default only ever binds a foreign node that declared none.
+impl Default for OfferTerms {
+    fn default() -> Self {
+        Self { seats_lent: Some(0), roles: None }
+    }
+}
+
 impl OfferTerms {
+    /// Everything lent — what one owner's own nodes read as, whether or not consulted.
     pub fn open() -> Self {
-        Self::default()
+        Self { seats_lent: None, roles: None }
     }
     pub fn admits_role(&self, role: usize) -> bool {
         self.roles.as_ref().is_none_or(|r| r.contains(&role))
@@ -179,6 +189,8 @@ impl OfferBook {
 
 /// A fingerprint of the allocator's inputs: the daemon recomputes only when it changes
 /// (a beacon repeating the same offer is silence, not work — Joel: "find something once").
+/// IN-PROCESS ONLY: `DefaultHasher` is not stable across builds; never persist or compare
+/// this across nodes.
 pub fn inputs_key(inputs: &GridInputs) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -248,6 +260,10 @@ pub struct Seat {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenSeats {
     pub node: Uuid,
+    /// Whose seats these are: a spawner mints only into its OWN owner's open seats — a
+    /// lender's spare seats are theirs to fill (Cormac's condition on #4263: without this
+    /// our spawner minted two coders for a loan already spent).
+    pub owner: Uuid,
     pub role: usize,
     pub count: u32,
 }
@@ -387,8 +403,9 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let open = nodes
         .iter()
         .zip(free.iter())
-        .filter_map(|(n, &f)| match n.verdict {
-            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, role, count: f }),
+        .zip(inputs.nodes.iter())
+        .filter_map(|((n, &f), offer)| match n.verdict {
+            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, owner: offer.owner, role, count: f }),
             _ => None,
         })
         .collect();
@@ -494,7 +511,7 @@ mod tests {
         for d in &alone.dormant {
             assert_eq!(joined.seat_of(*d), Some(gpu), "a dormant mind wakes where the seat opened");
         }
-        assert_eq!(joined.open, vec![OpenSeats { node: gpu, role: 0, count: 4 }]);
+        assert_eq!(joined.open, vec![OpenSeats { node: gpu, owner: US, role: 0, count: 4 }]);
     }
 
     // what this catches: the grid shrinking — the GPU box drops; its minds reseat on the
@@ -565,7 +582,7 @@ mod tests {
         let n = Uuid::new_v4();
         let few = allocate(&inputs(vec![big_box(n)], minds(0, None, 1)));
         assert_eq!(few.seated.len(), 1);
-        assert_eq!(few.open, vec![OpenSeats { node: n, role: 0, count: 3 }]);
+        assert_eq!(few.open, vec![OpenSeats { node: n, owner: US, role: 0, count: 3 }]);
         let many = allocate(&inputs(vec![big_box(n)], minds(0, None, 25)));
         assert_eq!(many.seated.len(), 4);
         assert_eq!(many.dormant.len(), 21);
@@ -639,7 +656,13 @@ mod tests {
         assert_eq!(on_theirs(&a, US), 2, "we take exactly the two seats lent");
         assert_eq!(a.seated.iter().filter(|s| s.node == ours).count(), 4, "our box full: 4 coders (the orchestrator waits — coders first)");
         assert_eq!(a.dormant.len(), 2, "one coder and the orchestrator: two lent seats, coders only, and our box is full");
-        assert_eq!(a.open.iter().find(|o| o.node == theirs).map(|o| o.count), Some(2), "their two spare seats stay THEIRS to fill");
+        assert_eq!(a.open, vec![OpenSeats { node: theirs, owner: them, role: 0, count: 2 }], "their two spare seats are THEIRS to fill — our spawner mints nothing for a loan already spent");
+        assert!(a.open.iter().all(|o| o.owner != US), "no open seat of ours anywhere");
+        // A foreign node that declared no terms lends nothing.
+        let silent_terms = NodeOffer { terms: OfferTerms::default(), ..lending.clone() };
+        let a = allocate(&inputs(vec![big_box(ours), silent_terms], m.clone()));
+        assert_eq!(on_theirs(&a, US), 0, "no declared terms = no loan");
+        assert_eq!(on_theirs(&a, them), 2);
         // They withdraw the lend: ours come off their box.
         let withdrawn = NodeOffer { terms: OfferTerms { seats_lent: Some(0), roles: None }, ..lending.clone() };
         let a = allocate(&inputs(vec![big_box(ours), withdrawn], m.clone()));
