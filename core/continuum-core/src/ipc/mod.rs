@@ -2789,7 +2789,10 @@ pub fn start_server(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_citizens(resident_roles)
                 .with_serving(serving_plan.as_ref())
-                .with_population(persona_floor),
+                .with_population(persona_floor)
+                // The boot draw's bound before any live plan: the last SETTLED lanes
+                // this host served (card 7c38ff6f) — handed in once, never re-read.
+                .with_remembered_lanes(crate::modules::served_window_store::load_geometry().map(|g| g.lanes)),
             instance_manager.clone(),
             // Persona reasoning binds to whatever the serving daemon has live,
             // read off its published ServingSnapshot (not a probe of our own).
