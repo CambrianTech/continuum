@@ -1008,7 +1008,7 @@ mod tests {
             fixed_per_lane_bytes: 0,
         };
         let host = HostBudget { usable_bytes: 25_000_000_000, perf_cores: 12 };
-        let plan = plan_serving(host, &[model], ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
+        let plan = plan_serving(&host, &[model], &ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
         let lane = LanePlan::of(&plan, None);
         assert_eq!(lane.model_id, "coder-27b");
         assert_eq!(lane.capability_rank, 9);
