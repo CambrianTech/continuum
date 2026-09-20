@@ -335,6 +335,7 @@ fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>)
 /// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+type LeasedInSentSource = Arc<dyn Fn() -> Vec<u32> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -427,6 +428,11 @@ pub struct ServingDaemonModule {
     /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
     /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
     decode_age: DecodeAgeSource,
+    /// The prompt sizes of the generates this seat served for OTHER nodes — the
+    /// leased-in sample ring. Production reads `resource_admission`'s process-global ring;
+    /// tests own it ([`Self::set_leased_in_sent_source`]): a ring shared by every test in
+    /// the binary made one test's 56k samples another test's requirement (CI, 2026-09-20).
+    leased_in_sent: LeasedInSentSource,
     /// The `/slots` activity fingerprint observed at the LAST missed smoke probe (L11).
     /// A changed fingerprint at the next miss proves the serve loop advanced between the
     /// two looks — work the adapter stamps can't see (ghost turns from a dead core's
@@ -794,6 +800,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
+            leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
@@ -1155,7 +1162,7 @@ impl ServingDaemonModule {
         // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
         // size them to the prompts those minds send, not to one local resident's. A seat
         // with no residents of its own but leased-in minds still gets a floor from them.
-        let leased_sent = crate::cognition::resource_admission::leased_in_sent_samples();
+        let leased_sent = (self.leased_in_sent)();
         let (demand, sent, median) = if live.is_empty() {
             // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
             // from their last boot) are the demand pool — not only the leased-in ring. A
@@ -1217,6 +1224,13 @@ impl ServingDaemonModule {
     /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
     /// the process-global happens to hold. See [`DecodeAgeSource`] for why this exists.
     #[cfg(test)]
+    /// Tests: the leased-in prompt samples the demand pool folds in, in place of the
+    /// process-global ring.
+    #[cfg(test)]
+    fn set_leased_in_sent_source(&mut self, source: LeasedInSentSource) {
+        self.leased_in_sent = source;
+    }
+
     fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
         self.decode_age = source;
     }
@@ -7247,13 +7261,15 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(
+        let mut daemon = ServingDaemonModule::new(
             gpu,
             system,
             test_resource_daemon(),
             test_catalog(),
             test_pin_store(),
         );
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
         // A measured demand, as every live node has (the seat's leased-in sample ring is
@@ -7291,7 +7307,11 @@ mod tests {
     async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog(), test_pin_store());
+        let mut daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog(), test_pin_store());
+        // This test OWNS its demand pool: a private working set and an empty leased-in ring.
+        // Both are process globals in production, shared by every test in the binary.
+        daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         let rx = daemon.subscribe();
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
         // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
@@ -7325,13 +7345,15 @@ mod tests {
         // With NO plan published (a cold boot) and a requirement the box cannot hold, the
         // best runnable plan is still published — a dark node is worse than a starved seat
         // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
-        let cold = ServingDaemonModule::new(
+        let mut cold = ServingDaemonModule::new(
             Arc::new(GpuMemoryManager::simulated("Intel", 16 * GB)),
             Arc::new(SystemResourceMonitor::new()),
             test_resource_daemon(),
             test_catalog(),
             test_pin_store(),
         );
+        cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+        cold.set_leased_in_sent_source(Arc::new(Vec::new));
         cold.working_set.record(uuid::Uuid::new_v4(), 200_000, 1);
         let rx_cold = cold.subscribe();
         let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
