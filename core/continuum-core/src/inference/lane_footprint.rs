@@ -168,6 +168,23 @@ fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample:
     }
 }
 
+/// RETIRE the model's record: a record that cannot be re-confirmed at a measurable window
+/// must not keep ruling the plan from disk (Cormac's condition on #4255). A node already in
+/// the trap — a ~244k B/token record taken at 2,048 — would otherwise loop: the record
+/// corrects the plan up to 1 × 2,048, the starved window withholds the reading, the record
+/// stands, the plan stays. Retiring it drops the plan back to the estimate (~33k), which
+/// plans a real window, which the next honest reading replaces. Returns whether a record
+/// was there to retire; the save is immediate so a boot never reads it again.
+pub fn retire(model: &str) -> bool {
+    let mut costs = COSTS.lock();
+    let gone = apply_sample(&mut costs, model, None);
+    if gone {
+        save_all(&costs);
+        LAST_SAVE_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+    gone
+}
+
 /// The fresh measured record for `model`, if any — per-token AND the geometry it was
 /// taken at, so a caller can turn an excess over a known rate into fixed bytes.
 pub fn measured_record(model: &str) -> Option<MeasuredCost> {
@@ -294,6 +311,18 @@ mod tests {
         // The arithmetic the floor guards against: 500 MB of fixed buffers over 2,048 tokens.
         let per_token = per_token_from(500_000_000, 1, 2_048, 0, 0).expect("reads");
         assert!(per_token > 200_000, "a starved window reads fixed buffers as tokens: {per_token} B/token");
+        // A node ALREADY in the trap climbs out: the record taken at the starved window is
+        // RETIRED, not merely left standing (Cormac's condition on #4255) — otherwise
+        // record → 1 × 2,048 → withhold → record is a loop nothing opens.
+        let model = "trapped-fixture";
+        COSTS.lock().insert(
+            model.to_string(),
+            MeasuredCost { per_token_bytes: per_token, lanes: 1, window: 2_048, anon_bytes: 500_000_000, last_ms: now_ms() },
+        );
+        assert!(measured_record(model).is_some(), "the trap record rules before retirement");
+        assert!(retire(model), "a record was there to retire");
+        assert!(measured_record(model).is_none(), "retired: the plan falls back to the estimate and plans a real window");
+        assert!(!retire(model), "nothing left to retire");
     }
 
     // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): the plan's per-token

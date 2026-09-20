@@ -1954,7 +1954,13 @@ impl ServingDaemonModule {
             // hundreds of KB per token — saved, that record fits no window at all and pins
             // the next plan at the floor it fell to (the trap a collapsed node cannot climb
             // out of). Below one full turn's window the measurement is not a measurement.
+            // …and RETIRES the model's record (Cormac's condition on #4255): a node already
+            // in the trap holds a ~244k B/token record that corrects the plan UP to the
+            // floor; left standing behind a withheld reading it rules forever. Retired, the
+            // plan falls back to the estimate, plans a real window, and the next honest
+            // reading replaces the estimate — the node climbs out without a hand on a file.
             Some(_) if !crate::inference::lane_footprint::window_measurable(live.served_context_window) => {
+                let retired = crate::inference::lane_footprint::retire(&active);
                 crate::probe!(
                     class = "serving.footprint.unmeasured",
                     leg = "starved_window",
@@ -1964,9 +1970,10 @@ impl ServingDaemonModule {
                     lanes = live.lanes as u64,
                     window = live.served_context_window as u64,
                     floor = crate::inference::lane_footprint::MEASURABLE_WINDOW_MIN as u64,
-                    "the served window is below one full turn — the per-token reading is WITHHELD: \
-                     the excess over weights is fixed buffers, not tokens, and a record taken here \
-                     would pin the next plan at the floor"
+                    record_retired = retired,
+                    "the served window is below one full turn — the per-token reading is WITHHELD \
+                     (the excess over weights is fixed buffers, not tokens) and the model's record \
+                     is RETIRED so a trap record cannot keep the plan at the floor"
                 );
                 "unmeasured"
             }
