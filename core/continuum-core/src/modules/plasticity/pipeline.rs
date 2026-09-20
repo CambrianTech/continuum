@@ -7,8 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::model_registry::ModelArchConfig;
+
 use super::gguf_writer;
-use super::planner::{self, ModelArchConfig};
+use super::planner;
 use super::types::*;
 
 /// Pipeline configuration.
@@ -49,8 +51,9 @@ pub fn compress(config: &CompressConfig) -> Result<CompressionPipelineResult, St
         topology.layers.first().map(|l| l.num_kv_heads).unwrap_or(0),
     ));
 
-    // Step 2: Resolve model architecture
-    let arch = resolve_arch(&config.architecture, &topology)?;
+    // Step 2: Source model architecture from the base model artifact — dims come
+    // from GGUF metadata / config.json, never guessed from the arch-name string.
+    let arch = ModelArchConfig::from_artifact(&config.model_path)?;
 
     // Step 3: Plan compression
     let recipe = planner::plan_compression(
@@ -83,6 +86,7 @@ pub fn compress(config: &CompressConfig) -> Result<CompressionPipelineResult, St
         &recipe,
         &config.output_path,
         &config.architecture,
+        &arch,
     )?;
 
     // Step 5: Verify
@@ -139,33 +143,6 @@ fn load_topology(capture_path: &Path) -> Result<HeadTopology, String> {
         std::fs::read_to_string(&topology_file).map_err(|e| format!("Read topology: {e}"))?;
 
     serde_json::from_str(&data).map_err(|e| format!("Parse topology: {e}"))
-}
-
-/// Resolve ModelArchConfig from architecture name + topology.
-fn resolve_arch(arch_name: &str, topology: &HeadTopology) -> Result<ModelArchConfig, String> {
-    match arch_name {
-        "qwen2" => Ok(ModelArchConfig::qwen2_32b()),
-        "llama" | "llama3" => {
-            // Try to infer from topology
-            if topology.original_num_heads == 24 && topology.original_num_kv_heads == 8 {
-                Ok(ModelArchConfig::llama_3b())
-            } else {
-                Ok(ModelArchConfig {
-                    num_layers: topology.layers.len(),
-                    hidden_size: topology.head_dim * topology.original_num_heads,
-                    num_attention_heads: topology.original_num_heads,
-                    num_kv_heads: topology.original_num_kv_heads,
-                    head_dim: topology.head_dim,
-                    intermediate_size: 0, // Unknown — would need config.json
-                    vocab_size: 128256,   // Llama default
-                    gqa_ratio: topology.original_num_heads / topology.original_num_kv_heads,
-                })
-            }
-        }
-        _ => Err(format!(
-            "Unknown architecture: {arch_name}. Supported: qwen2, llama"
-        )),
-    }
 }
 
 /// Estimate original model size in BF16 bytes.
@@ -232,28 +209,15 @@ mod tests {
         assert!(parse_device_spec("potato").is_err());
     }
 
-    #[test]
-    fn test_resolve_arch_qwen2() {
-        let topology = HeadTopology {
-            base_model: "test".into(),
-            original_num_heads: 40,
-            original_num_kv_heads: 8,
-            head_dim: 128,
-            parameter_reduction: 0.0,
-            precision_profile: PrecisionProfile::default(),
-            created_at: "".into(),
-            layers: vec![],
-        };
-
-        let arch = resolve_arch("qwen2", &topology).unwrap();
-        assert_eq!(arch.num_layers, 64);
-        assert_eq!(arch.hidden_size, 5120);
-        assert_eq!(arch.num_attention_heads, 40);
+    /// Qwen2.5-Coder-32B dims as a test fixture. Production sources these from the
+    /// artifact via `ModelArchConfig::from_artifact`; constants live only here.
+    fn qwen2_32b_arch() -> ModelArchConfig {
+        ModelArchConfig::new(64, 5120, 40, 8, 128, 27648, 152064, 32768).unwrap()
     }
 
     #[test]
     fn test_estimate_original_size() {
-        let arch = ModelArchConfig::qwen2_32b();
+        let arch = qwen2_32b_arch();
         let topology = HeadTopology {
             base_model: "test".into(),
             original_num_heads: 40,

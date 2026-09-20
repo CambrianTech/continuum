@@ -1,4 +1,4 @@
-//! ShellSession — Persistent shell session per workspace.
+//! ShellSession — Shell execution state per workspace.
 //!
 //! Provides a handle-based shell execution model:
 //!   1. Create session (bound to workspace directory)
@@ -11,8 +11,11 @@
 //! Supports BOTH quick commands (wait=true → immediate result) and
 //! long-running commands (poll repeatedly → streaming output).
 //!
-//! Each command runs in its own process for isolation. The session
-//! maintains working directory and environment across executions.
+//! Each command runs in its own process for isolation. The session retains
+//! execution handles and the cwd/env configured through its methods. A child's
+//! `cd`, variables, exports and shell options do not change later executions.
+//! Files survive the child process. Exit status is the shell's status under its
+//! normal command/pipeline rules, not an assertion that every child succeeded.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,6 +60,13 @@ pub struct ExecutionState {
     pub pid: Option<u32>,
     pub started_at: u64,
     pub finished_at: Option<u64>,
+    /// True once code/shell's inline window elapsed and the HANDLE was handed
+    /// back to the caller (2026-08-24): completion must then be PUSHED — the
+    /// exit fold publishes a command:completed event the dispatch listener
+    /// folds into her working memory, so a finished build reaches her
+    /// perception without her remembering to poll. False for in-window
+    /// completions (the caller already holds the result).
+    pub handed_back: bool,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -168,10 +178,24 @@ impl CompiledSentinel {
 // Shell Session
 // ============================================================================
 
-/// A persistent shell session bound to a workspace.
+/// Shell execution state bound to a workspace.
 ///
-/// Maintains working directory and environment across command executions.
+/// Retains explicitly configured cwd/env across command executions; changes made
+/// inside a child shell are local to that process.
 /// Each command runs in its own isolated process (bash -c "...").
+/// Process-global bus handle for pushed shell completions — set once at boot
+/// (ipc wiring), read by the detached exit-fold task which holds no self. Same
+/// shape as the lane-demand / roster globals; None (tests, early boot) = the
+/// old poll-only behavior, never an error.
+static SHELL_COMPLETION_BUS: std::sync::OnceLock<
+    std::sync::Arc<crate::runtime::message_bus::MessageBus>,
+> = std::sync::OnceLock::new();
+
+/// Wire the completion bus (boot, once). Idempotent; later calls are no-ops.
+pub fn set_shell_completion_bus(bus: std::sync::Arc<crate::runtime::message_bus::MessageBus>) {
+    let _ = SHELL_COMPLETION_BUS.set(bus);
+}
+
 pub struct ShellSession {
     id: String,
     persona_id: String,
@@ -198,12 +222,30 @@ impl ShellSession {
         })?;
 
         let cwd = canonical_root.clone();
+        // Every session shares the machine's ONE cargo build cache. Citizen
+        // layers make N isolated checkouts cheap (CoW — each stores only its
+        // diff), but a `cargo build` inside a layer would otherwise materialize
+        // a full per-layer target/ (~10 GB for continuum-core) and undo the
+        // whole economy. Registry-dependency artifacts are path-independent, so
+        // the shared cache dedupes nearly all of a build across peers; only the
+        // small workspace leaf crates fingerprint per-path. Inherit the core's
+        // own CARGO_TARGET_DIR when set, else the canonical shared location the
+        // start script pins. A later explicit env set through the session still
+        // overrides.
+        let mut env = HashMap::new();
+        let shared_target = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum/cache/cargo-target")));
+        if let Some(t) = shared_target {
+            env.insert("CARGO_TARGET_DIR".to_string(), t.display().to_string());
+        }
         Ok(Self {
             id: session_id.to_string(),
             persona_id: persona_id.to_string(),
             workspace_root: canonical_root,
             cwd,
-            env: HashMap::new(),
+            env,
             executions: HashMap::new(),
             history: Vec::new(),
             total_executions: 0,
@@ -305,6 +347,7 @@ impl ShellSession {
             pid: None,
             started_at: now_ms,
             finished_at: None,
+            handed_back: false,
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -353,9 +396,26 @@ impl ShellSession {
             .ok_or_else(|| "Execution vanished".to_string())?
             .clone();
 
-        // Await completion using the notify mechanism
+        // Completion is REPORTED by the spawned `run_shell_command` task (status +
+        // notify). If that task dies silently (a panic in a spawned task drops the
+        // JoinHandle with no log line), status stays Running forever and a bare
+        // `notified().await` hangs the caller — glass-boxed 2026-07-11: two eval
+        // runs froze mid-exam on a `cargo test` act with NO child process alive.
+        // So completion must be STRUCTURAL, not trusted: re-check state at least
+        // every 2s regardless of notifications, and enforce a hard deadline
+        // (caller timeout + grace; generous default — cargo builds are long) after
+        // which we fail LOUD with the execution id instead of hanging
+        // ([[fallbacks-are-illegal-fail-loud]], task #85).
+        const RECHECK_EVERY: Duration = Duration::from_secs(2);
+        const DEADLINE_GRACE_MS: u64 = 30_000;
+        const DEFAULT_DEADLINE_MS: u64 = 600_000;
+        let deadline = Duration::from_millis(
+            timeout_ms.map_or(DEFAULT_DEADLINE_MS, |t| t.saturating_add(DEADLINE_GRACE_MS)),
+        );
+        let started = std::time::Instant::now();
+
         loop {
-            let (is_done, notify) = {
+            let notify = {
                 let s = state_arc
                     .lock()
                     .map_err(|e| format!("Lock poisoned: {e}"))?;
@@ -368,13 +428,21 @@ impl ShellSession {
                         exit_code: s.exit_code,
                     });
                 }
-                (false, s.output_notify.clone())
+                s.output_notify.clone()
             };
 
-            if !is_done {
-                // Wait for notification (non-blocking async wait)
-                notify.notified().await;
+            if started.elapsed() >= deadline {
+                return Err(format!(
+                    "shell execution '{execution_id}' still reports Running after \
+                     {}s with no completion signal — the runner task likely died \
+                     without reporting; refusing to wait forever",
+                    deadline.as_secs()
+                ));
             }
+
+            // Bounded wait: a notification wakes us immediately; a lost/never-sent
+            // one degrades to a 2s re-check instead of an infinite hang.
+            let _ = tokio::time::timeout(RECHECK_EVERY, notify.notified()).await;
         }
     }
 
@@ -694,15 +762,88 @@ async fn run_shell_command(
     env: &HashMap<String, String>,
     timeout_ms: Option<u64>,
 ) {
-    // Build the command
-    let mut cmd = TokioCommand::new("bash");
-    cmd.arg("-c")
-        .arg(command)
+    // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
+    // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
+    // and every persona's `code/shell` died with
+    //   execvpe(/bin/bash) failed: No such file or directory
+    // while code/read, code/search and code/tree kept working, because only
+    // execution goes through a shell. Observed live: two citizens cycling
+    // through read-and-search all evening and never reaching execution. That
+    // reads as an inert persona; it was a severed limb.
+    let bash = match crate::shell_portable::locate_bash() {
+        Ok(bash) => bash,
+        Err(why) => {
+            // Fail with the REASON, not with a spawn error from inside a child
+            // that the caller cannot interpret.
+            if let Ok(mut s) = state.lock() {
+                s.status = ShellExecutionStatus::Failed;
+                s.stderr_lines.push(format!("no usable shell: {why}"));
+                s.finished_at = Some(now());
+                s.output_notify.notify_one();
+            }
+            return;
+        }
+    };
+    // Run as the USER'S LOGIN SHELL so every persona inherits the user's COMPLETE
+    // environment — their PATH and every program they've installed (uv, cargo, node,
+    // pyenv, git…) — exactly like Claude Code runs in the user's own shell. A bare
+    // non-login `bash -c` only sees whatever env the CORE happened to launch with and
+    // never sources the profile, so a persona could be missing the user's whole
+    // toolchain (measured 2026-08-11: a login zsh resolves uv/cargo/node; a non-login
+    // shell resolves none). On Unix use `$SHELL` (the user's own shell) as a login
+    // shell; fall back to the located POSIX bash. Windows keeps the located bash (the
+    // shell_portable WSL-shim guard) — its env model differs and $SHELL is absent.
+    let (shell_bin, shell_flag): (PathBuf, &str) = if cfg!(windows) {
+        (bash, "-c")
+    } else {
+        match std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.is_empty() && Path::new(s).exists())
+        {
+            Some(user_shell) => (PathBuf::from(user_shell), "-lc"),
+            None => (bash, "-lc"),
+        }
+    };
+
+    // Layer the per-task PATH prefix (the era venv's bin) ON TOP of the login-loaded
+    // PATH. A login shell RE-SETS PATH from the profile, so an inherited PATH override
+    // is clobbered (measured); instead the caller hands the prefix as
+    // CONTINUUM_PATH_PREPEND and we prepend it AFTER the profile loads — the same thing
+    // `source venv/bin/activate` does. No prefix → run the command verbatim. This is the
+    // ONLY hand on PATH; the base environment is entirely the user's own.
+    let effective_command = match env.get("CONTINUUM_PATH_PREPEND") {
+        Some(prefix) if !prefix.is_empty() => {
+            format!("export PATH=\"{prefix}:$PATH\"; {command}")
+        }
+        _ => command.to_string(),
+    };
+
+    let mut cmd = TokioCommand::new(&shell_bin);
+    cmd.arg(shell_flag)
+        .arg(&effective_command)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Don't inherit stdin — non-interactive
         .stdin(std::process::Stdio::null());
+
+    // STRIP SECRETS BEFORE THE CHILD EXISTS. A citizen's shell inherits this
+    // process's environment (Rust's `Command` does that by default), and the core
+    // is started with `set -a; . config.env; set +a` — which puts HF_TOKEN in the
+    // ambient environment. A citizen then runs `env` or `printenv` as an ordinary
+    // part of exploring its workspace, and quoting tool output into a room is
+    // NORMAL behaviour, so the token would reach every enrolled peer across
+    // operators. Observed 2026-09-06: a citizen put a partial environment on the
+    // wire; the variables it happened to include were harmless, which was luck and
+    // not a control.
+    //
+    // This is a DENYLIST and that choice is deliberate here, against the usual
+    // rule: the base environment is intentionally "the user's own" (see the PATH
+    // comment above), so an allowlist would refuse unknown-but-needed variables and
+    // break working citizens — the wrong failure direction for a shell that must
+    // keep running. The floor (not sourcing secrets into the core's ambient
+    // environment at all) is card f25f4141; this is the net above it.
+    strip_secret_env(&mut cmd);
 
     // Apply session environment variables
     for (k, v) in env {
@@ -854,13 +995,52 @@ async fn run_shell_command(
                 s.finished_at = Some(now());
                 // Wake any blocked watch() calls to deliver final status
                 s.output_notify.notify_one();
+                // PUSHED COMPLETION (2026-08-24): a handed-back execution's
+                // finish previously reached her only if she remembered to
+                // poll. Publish the same command:completed shape tracked
+                // dispatches use; the dispatch listener folds it into her
+                // working memory IF the handle was registered (apply.rs does,
+                // on handback).
+                if s.handed_back {
+                    if let (Some(bus), Ok(handle)) =
+                        (SHELL_COMPLETION_BUS.get(), uuid::Uuid::parse_str(&s.id))
+                    {
+                        let mut lines: Vec<&String> =
+                            s.stdout_lines.iter().chain(s.stderr_lines.iter()).collect();
+                        let cut = lines.len().saturating_sub(20);
+                        let tail: String = lines
+                            .split_off(cut)
+                            .into_iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let ev = crate::runtime::command_events::CommandCompletedEvent {
+                            command_name: "code/shell".to_string(),
+                            duration_ms: s.finished_at.unwrap_or(0).saturating_sub(s.started_at), // set 3 lines up; 0 → saturates to 0ms, display only
+                            success: s.exit_code == Some(0),
+                            error: (s.exit_code != Some(0))
+                                .then(|| format!("exit {}", s.exit_code.map_or(-1, |c| c))),
+                            handle: Some(handle),
+                            result: Some(serde_json::json!({
+                                "exitCode": s.exit_code,
+                                "tail": tail,
+                            })),
+                        };
+                        if let Ok(payload) = serde_json::to_value(&ev) { // bus fan-out boundary — the same encode tracked dispatches pay
+                            bus.publish_async_only(
+                                crate::runtime::command_events::COMMAND_COMPLETED_TOPIC,
+                                payload,
+                            );
+                        }
+                    }
+                }
 
                 log_info!(
                     "code",
                     "shell",
                     "Execution {} finished: exit={} cmd={}",
                     &s.id[..8],
-                    s.exit_code.unwrap_or(-1),
+                    s.exit_code.unwrap_or(-1), // killed/no-status path reads as conventional -1 in the error line
                     &s.command
                 );
             }
@@ -901,8 +1081,98 @@ fn now() -> u64 {
 // Tests
 // ============================================================================
 
+/// Does this environment variable NAME look like it carries a credential?
+///
+/// Matched on the NAME only — a value is never inspected, so this can never log
+/// or branch on a secret. Case-insensitive substring match against the shapes
+/// credentials actually use in this tree and its dependencies.
+///
+/// VALIDATED against the real thing rather than invented: run over a live 96-variable
+/// Windows environment it strips ZERO variables (no false positives), while catching
+/// `HF_TOKEN` and passing every non-secret `config.env` entry
+/// (CONTINUUM_STORAGE_PATH, HF_HOME, CONTINUUM_PERSONA_FLOOR, CONTINUUM_PROBE_DIR,
+/// CONTINUUM_SERVING_PLACEMENT). `_KEY` / `KEY_` rather than bare `KEY` is what keeps
+/// MONKEY/KEYBOARD-shaped names out.
+/// Remove every credential-shaped variable from a child's inherited environment
+/// BEFORE it exists — the one strip for every citizen-facing spawn (the shell here,
+/// the snippet runner's python3 / rustc / built binary in `commands/code/run`). Card
+/// f25f4141: the core inherits `config.env` (HF_TOKEN) and a snippet reading
+/// `os.environ` is as ordinary as a shell running `env`; quoting the output into a
+/// room puts it on the wire. Session variables set AFTER this call stay.
+pub(crate) fn strip_secret_env(cmd: &mut TokioCommand) {
+    for (name, _) in std::env::vars() {
+        if is_secret_env_name(&name) {
+            cmd.env_remove(&name);
+        }
+    }
+}
+
+pub(crate) fn is_secret_env_name(name: &str) -> bool {
+    // SEGMENT match, not substring. A substring needle of `KEY_` matches
+    // `MONKEY_DIR` and `KEY` matches `KEYBOARD_LAYOUT` / `TURKEY` — stripping
+    // those would break working citizens, which is the wrong failure direction for
+    // a shell that must keep running. Environment names are `_`-separated, so the
+    // segment IS the word. My first draft used substrings and the test below caught
+    // it on MONKEY_DIR before it shipped.
+    name.to_ascii_uppercase().split('_').any(|seg| {
+        matches!(
+            seg,
+            "TOKEN"
+                | "SECRET"
+                | "SECRETS"
+                | "PASSWORD"
+                | "PASSWD"
+                | "CREDENTIAL"
+                | "CREDENTIALS"
+                | "KEY"
+                | "KEYS"
+                | "APIKEY"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
+
+    // what this catches: a credential reaching a citizen's shell, and from there a
+    // room. Regression for the 2026-09-06 finding — the core is started with
+    // `set -a; . config.env; set +a` (install-service.sh:69), config.env defines
+    // HF_TOKEN, and Rust's Command inherits the parent env by default, so `env` from
+    // any citizen would have returned the live token into tool output that citizens
+    // routinely quote into rooms.
+    #[test]
+    fn secret_shaped_env_names_are_stripped_and_ordinary_ones_are_not() {
+        for name in [
+            "HF_TOKEN", "hf_token", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY",
+            "GH_TOKEN", "DB_PASSWORD", "SOME_CREDENTIAL", "KEY",
+        ] {
+            assert!(is_secret_env_name(name), "{name} should be stripped");
+        }
+        // The five NON-secret config.env entries must survive — stripping these
+        // would break serving, storage and probe capture on every citizen shell.
+        for name in [
+            "CONTINUUM_STORAGE_PATH", "HF_HOME", "CONTINUUM_PERSONA_FLOOR",
+            "CONTINUUM_PROBE_DIR", "CONTINUUM_SERVING_PLACEMENT",
+        ] {
+            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
+        }
+    }
+
+    // what this catches: an over-broad predicate breaking working citizens. `KEY` as
+    // a bare substring would strip MONKEY_DIR and KEYBOARD_LAYOUT; the needles are
+    // `_KEY` / `KEY_` (plus exact `KEY`) precisely so it does not. Measured against a
+    // live 96-variable Windows environment: zero false positives.
+    #[test]
+    fn ordinary_environment_names_survive_the_predicate() {
+        for name in [
+            "PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "SystemRoot", "ComSpec",
+            "PATHEXT", "LANG", "CARGO_TARGET_DIR", "MONKEY_DIR", "KEYBOARD_LAYOUT",
+            "TURKEY", "AIRC_DEFAULT_ROOM_NAME", "CONTINUUM_SKIP_SELF_BUILD",
+        ] {
+            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
+        }
+    }
+
     use super::*;
     use std::fs;
 
@@ -925,6 +1195,31 @@ mod tests {
         let canonical = dir.path().canonicalize().unwrap();
         assert_eq!(session.cwd(), canonical);
         assert_eq!(session.workspace_root(), canonical);
+    }
+
+    // what this catches: the shared-build-cache invariant of the citizen-layer
+    // economy (Joel 2026-07-10: layers are cheap ONLY if builds share ONE
+    // cargo cache). A session must be born with CARGO_TARGET_DIR pointing at
+    // the shared cache, so a peer's `cargo build` inside her CoW layer never
+    // materializes a per-layer target/ (~10 GB each). An explicit session env
+    // set must still override.
+    #[test]
+    fn session_inherits_the_shared_cargo_target_dir() {
+        let (dir, _rt) = setup_workspace();
+        let mut session = ShellSession::new("t", "p1", dir.path()).unwrap();
+        let target = session
+            .env
+            .get("CARGO_TARGET_DIR")
+            .expect("born with the shared cargo cache");
+        assert!(
+            target.contains("cargo-target") || std::env::var("CARGO_TARGET_DIR").is_ok(),
+            "points at the shared cache: {target}"
+        );
+        session.set_env("CARGO_TARGET_DIR".into(), "/tmp/override".into());
+        assert_eq!(
+            session.env.get("CARGO_TARGET_DIR").unwrap(),
+            "/tmp/override"
+        );
     }
 
     #[test]
@@ -981,6 +1276,94 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.status, ShellExecutionStatus::Failed);
         assert_eq!(response.exit_code, Some(42));
+
+        // Regression for card 08ef15c8: report the shell's chosen pipeline/OR
+        // status, never reinterpret a zero exit as validation of every child.
+        let handled = session
+            .execute_and_wait("false || true", Some(5000), rt.handle())
+            .unwrap();
+        assert_eq!(handled.status, ShellExecutionStatus::Completed);
+        assert_eq!(handled.exit_code, Some(0));
+        // The configured Unix shell need not support this Bash/Zsh option.
+        let supports_pipefail = session
+            .execute_and_wait("set -o pipefail", Some(5000), rt.handle())
+            .unwrap()
+            .exit_code
+            == Some(0);
+        if supports_pipefail {
+            for (command, status, exit_code) in [
+                (
+                    "set +o pipefail; false | cat",
+                    ShellExecutionStatus::Completed,
+                    0,
+                ),
+                (
+                    "set -o pipefail; false | cat",
+                    ShellExecutionStatus::Failed,
+                    1,
+                ),
+            ] {
+                let response = session
+                    .execute_and_wait(command, Some(5000), rt.handle())
+                    .unwrap();
+                assert_eq!(response.status, status, "{command}");
+                assert_eq!(response.exit_code, Some(exit_code), "{command}");
+            }
+        }
+    }
+
+    // Regression for card 08ef15c8: an advertised persistent shell caused callers
+    // to reuse a previous command's variables/cwd/options. Only files, handles
+    // and explicitly configured session state survive; each shell is fresh.
+    #[test]
+    fn test_execute_keeps_files_but_not_child_shell_state() {
+        let (dir, rt) = setup_workspace();
+        let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
+        session.set_env("CONTINUUM_SHELL_CONTRACT_STATE".into(), "session".into());
+        let pipeline = "false | cat";
+        let initial = session
+            .execute_and_wait(pipeline, Some(5000), rt.handle())
+            .unwrap();
+        assert!(matches!(initial.exit_code, Some(0 | 1)));
+        let supports_pipefail = session
+            .execute_and_wait("set -o pipefail", Some(5000), rt.handle())
+            .unwrap()
+            .exit_code
+            == Some(0);
+        let option = if initial.exit_code == Some(0) {
+            "-o"
+        } else {
+            "+o"
+        };
+        let mut command = "cd src && export CONTINUUM_SHELL_CONTRACT_STATE=child && \
+                           printf kept > shell-contract-proof"
+            .to_string();
+        if supports_pipefail {
+            command.push_str(&format!(" && set {option} pipefail; {pipeline}"));
+        }
+        let changed = session
+            .execute_and_wait(&command, Some(5000), rt.handle())
+            .unwrap();
+        if supports_pipefail {
+            assert_ne!(changed.exit_code, initial.exit_code);
+        } else {
+            assert_eq!(changed.exit_code, Some(0));
+        }
+        let fresh = session
+            .execute_and_wait(
+                "test -f src/shell-contract-proof && \
+                 test \"$CONTINUUM_SHELL_CONTRACT_STATE\" = session && printf fresh",
+                Some(5000),
+                rt.handle(),
+            )
+            .unwrap();
+        assert_eq!(fresh.exit_code, Some(0), "{fresh:?}");
+        assert!(fresh.stdout.unwrap().contains("fresh"));
+        let repeated = session
+            .execute_and_wait(pipeline, Some(5000), rt.handle())
+            .unwrap();
+        assert_eq!(repeated.status, initial.status);
+        assert_eq!(repeated.exit_code, initial.exit_code);
     }
 
     #[test]

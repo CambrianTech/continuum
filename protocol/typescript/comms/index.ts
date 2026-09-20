@@ -9,7 +9,6 @@ export type { CommsGpuBudget } from './CommsGpuBudget';
 export type { CommsMemoryBudget } from './CommsMemoryBudget';
 export type { CommsRetryBudget } from './CommsRetryBudget';
 export type { CorrelationId } from './CorrelationId';
-export type { EndpointId } from './EndpointId';
 export type { ExternalBufferRef } from './ExternalBufferRef';
 export type { GpuBufferRef } from './GpuBufferRef';
 export type { IntegrityHint } from './IntegrityHint';

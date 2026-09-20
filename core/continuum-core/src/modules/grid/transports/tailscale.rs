@@ -108,8 +108,12 @@ impl TailscaleConnection {
 /// Uses TCP connections over Tailscale WireGuard mesh.
 /// Discovery via `tailscale status --json` CLI.
 pub struct TailscaleTransport {
-    /// Port to listen on / connect to.
-    port: u16,
+    /// Port to listen on / connect to. `0` = OS-assigned: the REAL port is
+    /// stored back here after bind, so `local_address()`/`bound_port()` always
+    /// report the truth. This is what kills the probe-then-rebind TOCTOU race
+    /// (a "free" port can be taken between probe and bind — CI, 2026-08-23:
+    /// `Failed to bind 0.0.0.0:46243: Address already in use`).
+    port: std::sync::atomic::AtomicU16,
     /// TCP listener (set after start()).
     listener: Mutex<Option<Arc<TcpListener>>>,
     /// Our Tailscale IP (discovered at start time).
@@ -119,10 +123,15 @@ pub struct TailscaleTransport {
 impl TailscaleTransport {
     pub fn new(port: u16) -> Self {
         Self {
-            port,
+            port: std::sync::atomic::AtomicU16::new(port),
             listener: Mutex::new(None),
             local_ip: Mutex::new(None),
         }
+    }
+
+    /// The port actually bound (differs from the constructor arg when it was 0).
+    pub fn bound_port(&self) -> u16 {
+        self.port.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn with_default_port() -> Self {
@@ -134,10 +143,14 @@ impl TailscaleTransport {
     pub async fn start_with_ip(&self, ip: &str) -> Result<(), TransportError> {
         *self.local_ip.lock().await = Some(ip.to_string());
 
-        let bind_addr = format!("0.0.0.0:{}", self.port);
+        let bind_addr = format!("0.0.0.0:{}", self.port.load(std::sync::atomic::Ordering::Relaxed));
         let listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
             TransportError::ConnectionFailed(format!("Failed to bind {bind_addr}: {e}"))
         })?;
+        if let Ok(addr) = listener.local_addr() {
+            // Adopt the OS-assigned port so every later report speaks the truth.
+            self.port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
+        }
 
         *self.listener.lock().await = Some(Arc::new(listener));
         Ok(())
@@ -156,7 +169,7 @@ impl GridTransport for TailscaleTransport {
         let ip = self.local_ip.try_lock().ok()?.clone()?;
         Some(TransportAddress::Tailscale {
             ip,
-            port: self.port,
+            port: self.port.load(std::sync::atomic::Ordering::Relaxed),
             machine_name: None,
         })
     }
@@ -179,10 +192,14 @@ impl GridTransport for TailscaleTransport {
         *self.local_ip.lock().await = Some(self_ip.clone());
 
         // Bind TCP listener on all interfaces (Tailscale handles routing)
-        let bind_addr = format!("0.0.0.0:{}", self.port);
+        let bind_addr = format!("0.0.0.0:{}", self.port.load(std::sync::atomic::Ordering::Relaxed));
         let listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
             TransportError::ConnectionFailed(format!("Failed to bind {bind_addr}: {e}"))
         })?;
+        if let Ok(addr) = listener.local_addr() {
+            // Adopt the OS-assigned port so every later report speaks the truth.
+            self.port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
+        }
 
         *self.listener.lock().await = Some(Arc::new(listener));
 
@@ -261,7 +278,7 @@ impl GridTransport for TailscaleTransport {
                 DiscoveredNode {
                     address: TransportAddress::Tailscale {
                         ip,
-                        port: self.port,
+                        port: self.port.load(std::sync::atomic::Ordering::Relaxed),
                         machine_name: Some(peer.host_name.clone()),
                     },
                     capabilities: vec![], // We don't know capabilities until we connect

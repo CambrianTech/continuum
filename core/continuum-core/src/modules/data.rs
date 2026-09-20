@@ -4,21 +4,22 @@
 //! Also handles: vector/* commands (vector similarity search with in-memory caching)
 //! Uses the ORM module's StorageAdapter trait for database-agnostic operations.
 //!
-//! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
-//! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
+//! Callers pass opaque database handles. This module resolves handles against
+//! the host's storage configuration; callers do not construct backend paths.
 
-use crate::modules::embedding::generate_embeddings_batch;
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
-    migration::{MigrationConfig, MigrationEngine, MigrationHandle},
+    migration::{
+        MigrationConfig, MigrationEngine, MigrationHandle, MigrationProgress, MigrationVerification,
+    },
     postgres::PostgresAdapter,
-    query::{FieldFilter, StorageQuery},
+    query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
-    types::{BatchOperation, DataRecord, RecordMetadata, UUID},
+    types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
 use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, HandleRef, ModuleConfig, ModuleContext,
-    ModulePriority, ServiceModule,
+    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
+    ServiceModule,
 };
 use crate::{log_error, log_info};
 use async_trait::async_trait;
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore};
 
@@ -41,6 +43,68 @@ use tokio::sync::{Mutex, Semaphore};
 /// while the semaphore refused to let queries through, causing cascading
 /// timeouts under normal 15-persona load.
 const MAX_CONCURRENT_QUERIES: usize = 16;
+
+// Adapter builders interpolate field/table identifiers. The generic API accepts
+// names, not SQL expressions: otherwise a public-table projection or filter
+// could subquery a protected collection. Values remain ordinary bound data.
+fn require_identifier(name: &str) -> Result<(), String> {
+    let mut bytes = name.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err("invalid storage identifier: expected letters, digits, and underscores".into());
+    }
+    Ok(())
+}
+
+fn require_field_name(name: &str) -> Result<(), String> {
+    for segment in name.split('.') {
+        require_identifier(segment)?;
+    }
+    Ok(())
+}
+
+fn require_query_fields(
+    filter: &Option<HashMap<String, FieldFilter>>,
+    sort: &Option<Vec<SortSpec>>,
+    select: &Option<Vec<String>>,
+) -> Result<(), String> {
+    for name in filter.iter().flat_map(|fields| fields.keys()) {
+        require_field_name(name)?;
+    }
+    for clause in sort.iter().flatten() {
+        require_field_name(&clause.field)?;
+    }
+    for name in select.iter().flatten() {
+        require_field_name(name)?;
+    }
+    Ok(())
+}
+
+fn require_record_fields(data: &Value) -> Result<(), String> {
+    if let Some(fields) = data.as_object() {
+        for name in fields.keys() {
+            require_identifier(name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Private substrate records are reachable only through their owning command.
+/// Match adapter table naming so camelCase aliases cannot bypass the gate.
+fn require_public_collection(collection: &str) -> Result<(), String> {
+    require_identifier(collection)?;
+    let table = crate::orm::adapter::naming::to_table_name(collection);
+    if let Some(owner) = crate::orm::entity::ProtectedCollection::find(&table) {
+        return Err(format!(
+            "protected collection: use {}",
+            owner.owning_command
+        ));
+    }
+    Ok(())
+}
 
 // ============================================================================
 // Vector Search Types and Cache
@@ -88,7 +152,11 @@ struct PaginatedQueryState {
     created_at: std::time::Instant,
 }
 
-/// DataModule manages storage operations. Database path comes from each request.
+/// DataState holds the storage substrate shared between the [`DataModule`]
+/// (its `ServiceModule` shell) and the typed `data/*` commands in
+/// `commands/data/*`. Both capture the same `Arc<DataState>` — the
+/// CodeState/CodeModule convention — so a migrated command drives the exact
+/// state the module owns. Database path comes from each request.
 ///
 /// Adapter-agnostic: connection string determines which adapter is used.
 /// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
@@ -96,7 +164,7 @@ struct PaginatedQueryState {
 ///
 /// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
 /// PostgresAdapter is internally thread-safe via deadpool connection pool.
-pub struct DataModule {
+pub struct DataState {
     /// Adapter cache: connection_string -> initialized adapter (polymorphic)
     /// Lazy initialization per unique connection string
     adapters: DashMap<String, Arc<dyn StorageAdapter>>,
@@ -135,7 +203,28 @@ pub struct DataModule {
     query_semaphore: Semaphore,
 }
 
+/// `ServiceModule` shell over the shared [`DataState`]. The kernel registers
+/// this; the typed `data/*` commands capture `self.state.clone()` via
+/// [`DataModule::commands`]. All storage logic lives on `DataState`.
+pub struct DataModule {
+    pub(crate) state: Arc<DataState>,
+}
+
 impl DataModule {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(DataState::new()),
+        }
+    }
+}
+
+impl Default for DataState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataState {
     pub fn new() -> Self {
         Self {
             adapters: DashMap::new(),
@@ -208,55 +297,84 @@ impl DataModule {
     ///
     /// This keeps the abstraction enforced at the caller boundary: SQL,
     /// URLs, and filenames simply do not exist in the caller's language.
+    /// `$HOME` remains the explicit home override; otherwise the native home
+    /// directory is used (including Windows launches without a shell's HOME).
     fn resolve_handle(&self, handle: &str) -> Result<String, String> {
+        Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir)
+    }
+
+    /// Keep environment access at the resolution boundary so all local handle
+    /// families share one home policy, independently of the launching shell.
+    fn resolve_handle_with(
+        handle: &str,
+        env: impl Fn(&str) -> Option<String>,
+        native_home: impl FnOnce() -> Option<PathBuf>,
+    ) -> Result<String, String> {
+        // Lazy: configured backends and legacy paths do not need a home lookup.
+        let resolve_home = || {
+            if let Some(home) = env("HOME") {
+                return Ok(home);
+            }
+            native_home()
+                .ok_or_else(|| format!("resolve_handle('{handle}'): home directory unavailable"))?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| {
+                    format!("resolve_handle('{handle}'): home directory is not valid UTF-8")
+                })
+        };
+
         // Main DB sentinel — honors DATABASE_URL env, falls back to SQLite.
         if handle == "main" {
-            if let Ok(url) = std::env::var("DATABASE_URL") {
+            if let Some(url) = env("DATABASE_URL") {
                 if !url.is_empty() {
                     return Ok(url);
                 }
             }
-            let home = std::env::var("HOME")
-                .map_err(|_| "resolve_handle('main'): HOME env not set".to_string())?;
+            let home = resolve_home()?;
             return Ok(format!("{}/.continuum/database/main.db", home));
         }
 
-        // Per-persona slug-shape sentinel: @persona:<slug>
-        // Slug matches the on-disk dir under $HOME/.continuum/personas/.
-        // Mac Option B fix — TS in container would otherwise ship a
-        // /root-rooted path the host-side native core can't open even
-        // though the file is the same on both sides of the mount.
-        if let Some(slug) = handle.strip_prefix("@persona:") {
-            if slug.is_empty() {
-                return Err("resolve_handle('@persona:'): empty slug".to_string());
-            }
-            // Defensive: slug must be a single path segment — no escapes.
-            if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
-                return Err(format!(
-                    "resolve_handle('@persona:{}'): slug must be a single path segment",
-                    slug
+        // Per-CITIZEN slug-shape sentinel: @persona:<slug> / @agent:<slug> /
+        // @human:<slug>. Slug matches the on-disk dir under
+        // $HOME/.continuum/<bucket>/. First-class citizenship (Joel 2026-07-25):
+        // an external coding agent and a human get the SAME per-citizen
+        // longterm store a persona has, so the `/continuum:memory` skill gives
+        // an agent durable, own-dir memory (the amnesia fix). One resolution
+        // rule, three buckets. Mac Option B fix — the sentinel lets each side
+        // resolve to its own filesystem view of the shared `~/.continuum` mount.
+        for (sentinel, bucket) in [
+            ("@persona:", "personas"),
+            ("@agent:", "agents"),
+            ("@human:", "humans"),
+        ] {
+            if let Some(slug) = handle.strip_prefix(sentinel) {
+                if slug.is_empty() {
+                    return Err(format!("resolve_handle('{sentinel}'): empty slug"));
+                }
+                // Defensive: slug must be a single path segment — no escapes.
+                if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+                    return Err(format!(
+                        "resolve_handle('{sentinel}{slug}'): slug must be a single path segment"
+                    ));
+                }
+                let home = resolve_home()?;
+                return Ok(format!(
+                    "{home}/.continuum/{bucket}/{slug}/data/longterm.db"
                 ));
             }
-            let home = std::env::var("HOME")
-                .map_err(|_| format!("resolve_handle('@persona:{}'): HOME env not set", slug))?;
-            return Ok(format!(
-                "{}/.continuum/personas/{}/data/longterm.db",
-                home, slug
-            ));
         }
 
         // Telemetry SQLite sentinel.
         if handle == "@metrics" {
-            let home = std::env::var("HOME")
-                .map_err(|_| "resolve_handle('@metrics'): HOME env not set".to_string())?;
+            let home = resolve_home()?;
             return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
         // Safe to check without crate parsing — the shape is unambiguous.
         if is_uuid_shape(handle) {
-            let home = std::env::var("HOME")
-                .map_err(|_| format!("resolve_handle('{}'): HOME env not set", handle))?;
+            let home = resolve_home()?;
             return Ok(format!(
                 "{}/.continuum/personas/{}/longterm.db",
                 home, handle
@@ -293,7 +411,10 @@ impl DataModule {
     ///   2. Route connection string to concrete adapter (Postgres / SQLite /
     ///      future). Adapters are cached keyed by connection string so two
     ///      handles resolving to the same backend share one pool.
-    async fn get_adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
+    pub(crate) async fn get_adapter(
+        &self,
+        handle: &str,
+    ) -> Result<Arc<dyn StorageAdapter>, String> {
         let connection_string = self.resolve_handle(handle)?;
 
         // Check cache (keyed by resolved connection string, not by handle —
@@ -377,7 +498,9 @@ macro_rules! deserialize_params {
 
 /// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
 /// Intentionally simple — avoids pulling uuid crate just for a shape check.
-fn is_uuid_shape(s: &str) -> bool {
+/// `pub(crate)` so `commands/memory` derives the SAME per-persona handle
+/// mapping `resolve_handle` uses (one shape check, one place).
+pub(crate) fn is_uuid_shape(s: &str) -> bool {
     if s.len() != 36 {
         return false;
     }
@@ -393,13 +516,27 @@ impl Default for DataModule {
     }
 }
 
+/// Register the substrate's Rust-authored ORM entities into the global registry.
+/// Idempotent; returns how many collections the registry resolves afterwards.
+pub(crate) fn wire_substrate_orm_entities() -> Result<usize, String> {
+    let registry = crate::orm::OrmEntityRegistry::global();
+    crate::persona::register_substrate_orm_entities(registry)
+        .map_err(|e| format!("substrate ORM entity registration conflict — boot refused: {e}"))?;
+    Ok(crate::persona::SUBSTRATE_ORM_COLLECTIONS
+        .iter()
+        .filter(|c| registry.resolve(c).is_some())
+        .count())
+}
+
 #[async_trait]
 impl ServiceModule for DataModule {
     fn config(&self) -> ModuleConfig {
         ModuleConfig {
             name: "data",
             priority: ModulePriority::Normal,
-            command_prefixes: &["data/", "adapter/", "vector/", "migration/"],
+            // `vector/*` fully migrated to typed self-routing commands
+            // (commands/vector/*.rs) — no legacy arm remains, so the prefix is gone.
+            command_prefixes: &["data/", "adapter/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -408,6 +545,19 @@ impl ServiceModule for DataModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // THE SUBSTRATE'S OWN ENTITIES (2026-09-14): `register_substrate_orm_entities`
+        // existed with a doc comment saying "boot wires it" and NO caller — so every
+        // `data/ensure-schema` for a Rust-authored collection (`staged_credit`, the
+        // learning flywheel's per-persona credit) was refused as an unknown
+        // collection, on every node, and the flywheel stayed dead for work turns
+        // (training.credit.stage_failed ×2 per act turn, 0 staged). A conflict is a
+        // boot failure, never a warning: two shapes for one collection is a bug.
+        let registered = wire_substrate_orm_entities()?;
+        crate::probe!(
+            class = "orm.substrate_entities.registered",
+            registered = registered as u64,
+            "Rust-authored ORM entities registered before the first ensure-schema"
+        );
         // Store context for event publishing
         let ctx_arc = Arc::new(ModuleContext::new(
             ctx.registry.clone(),
@@ -415,123 +565,49 @@ impl ServiceModule for DataModule {
             ctx.compute.clone(),
             ctx.runtime.clone(),
         ));
-        *self.context.write().unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
+        *self
+            .state
+            .context
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        log_info!(
-            "data",
-            "handle_command",
-            "Received: {} params: {}",
-            command,
-            params
-        );
-        // ── Phase 1 typed-IPC dispatch ─────────────────────────────────
-        // Hot-path handlers (CRUD + count + batch + cursor trio + query
-        // join) take typed params. Dispatch deserializes once via the
-        // `deserialize_params!` macro defined above; handler bodies are
-        // pure logic, no `from_value(params.clone())` hop and no .clone().
-        //
-        // Per docs/architecture/ORM-IDEALISM-PLAN.md QW#3: removes 10 of
-        // the 26 clone+parse callsites the survey identified, plus
-        // standardizes parse-error logging at the dispatch level. Cold
-        // handlers (vector/*, migration/*, ensure-schema, list-collections,
-        // adapter/*) keep the in-handler parse for now — Phase 2 step 3
-        // will fold ensure-schema into the entity_schemas typed loader.
-        //
-        // Keeping the dispatch log above — it runs BEFORE deserialize, so
-        // parse errors are diagnosable by scrolling up to see the raw params.
-        match command {
-            "data/create" => {
-                self.handle_create(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/read" => {
-                self.handle_read(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/update" => {
-                self.handle_update(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/delete" => {
-                self.handle_delete(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/query" | "data/list" => {
-                self.handle_query(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/queryWithJoin" => {
-                self.handle_query_with_join(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/count" => {
-                self.handle_count(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/batch" => {
-                self.handle_batch(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/ensure-schema" => {
-                self.handle_ensure_schema(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/list-collections" => self.handle_list_collections(params).await,
-            "data/collection-stats" => self.handle_collection_stats(params).await,
-            "data/truncate" => self.handle_truncate(params).await,
-            "data/clear-all" => self.handle_clear_all(params).await,
-
-            // Paginated queries - server-side cursor management
-            "data/query-open" => {
-                self.handle_query_open(deserialize_params!(command, params)?)
-                    .await
-            }
-            // query-next/close take the cursor via `CommandRequest` so
-            // the typed envelope's `handle` field is reachable. The
-            // body deserializes into `QueryNextParams`/`QueryCloseParams`
-            // which preserve the legacy flat `queryId` shape; the
-            // handler picks whichever shape the caller used.
-            "data/query-next" => {
-                let req = CommandRequest::<QueryNextParams>::from_value(params)?;
-                self.handle_query_next(req).await
-            }
-            "data/query-close" => {
-                let req = CommandRequest::<QueryCloseParams>::from_value(params)?;
-                self.handle_query_close(req).await
-            }
-
-            "adapter/capabilities" => self.handle_capabilities(params).await,
-            "adapter/info" => self.handle_info(params).await,
-
-            // Vector search (migrated from data-daemon-worker)
-            "vector/search" => self.handle_vector_search(params).await,
-            "vector/index" => self.handle_index_vector(params).await,
-            "vector/stats" => self.handle_vector_stats(params).await,
-            "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
-            "vector/backfill" => self.handle_backfill_vectors(params).await,
-
-            // Migration between adapters
-            "migration/start" => self.handle_migration_start(params).await,
-            "migration/status" => self.handle_migration_status(params).await,
-            "migration/pause" => self.handle_migration_pause(params).await,
-            "migration/resume" => self.handle_migration_resume(params).await,
-            "migration/verify" => self.handle_migration_verify(params).await,
-            "migration/cutover" => self.handle_migration_cutover(params).await,
-            "migration/rollback" => self.handle_migration_rollback(params).await,
-
-            _ => Err(format!("Unknown data command: {command}")),
-        }
+        // Legacy Registry-A entry point — delegates to the shared state's
+        // in-process dispatch. As `data/*` arms migrate to typed commands in
+        // `commands/data/*`, the executor's `route_object` path wins first and
+        // this string match shrinks toward deletion (Wave Z).
+        self.state.dispatch(command, params).await
     }
 
     async fn shutdown(&self) -> Result<(), String> {
         // Close all adapters - clear the DashMap
         // Adapters will clean up when their Arc refcount drops to zero
-        self.adapters.clear();
+        self.state.adapters.clear();
         Ok(())
+    }
+
+    /// The migrated `data/*` commands as typed self-routing objects on the ONE
+    /// registry. Each shares this module's `Arc<DataState>`; the executor routes
+    /// their names straight here (winning over the legacy `data/` prefix arm),
+    /// and their `CommandSpec` descriptors flow into `command_registry()` → the
+    /// persona tool surface + grid ACL. See [`crate::commands::data`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        // DataModule owns the adapter pool, so it contributes the `data/*`
+        // content commands, the `vector/*` embedding-search commands, the
+        // `adapter/*` introspection commands, and the `migration/*` operator
+        // commands — each family sharing this module's `Arc<DataState>`.
+        let mut objects = crate::commands::data::command_objects(self.state.clone());
+        objects.extend(crate::commands::vector::command_objects(self.state.clone()));
+        objects.extend(crate::commands::adapter::command_objects(
+            self.state.clone(),
+        ));
+        objects.extend(crate::commands::migration::command_objects(
+            self.state.clone(),
+        ));
+        objects
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -539,43 +615,9 @@ impl ServiceModule for DataModule {
     }
 }
 
-// Command param structs - ALL require dbPath
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateParams {
-    db_path: String,
-    collection: String,
-    id: Option<UUID>,
-    data: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReadParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-    data: Value,
-    #[serde(default)]
-    increment_version: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-}
+// Command param structs for the remaining legacy arms (still dbPath-shaped).
+// The migrated CRUD commands (data/create|read|update|delete) carry their own
+// clean `handle`-based params in `commands/data/*.rs`.
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -613,103 +655,10 @@ struct QueryWithJoinParams {
     select: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CountParams {
-    db_path: String,
-    collection: String,
-    #[serde(default)]
-    filter: Option<serde_json::Map<String, Value>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BatchParams {
-    db_path: String,
-    operations: Vec<BatchOperation>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureSchemaParams {
-    db_path: String,
-    /// Phase 2: callers pass a collection NAME, not an inline CollectionSchema.
-    /// Rust resolves the schema from entity_schemas.json (decorator-sourced
-    /// at build time via generate-entity-schemas.ts). The language level
-    /// never constructs SQL / fields / indexes on the wire.
-    collection: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CollectionParams {
-    db_path: String,
-    collection: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DbPathOnly {
-    db_path: String,
-}
-
-/// Vector search params (matches data-daemon API)
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VectorSearchParams {
-    db_path: String,
-    collection: String,
-    query_vector: Vec<f64>,
-    #[serde(default = "default_k")]
-    k: usize,
-    #[serde(default)]
-    threshold: f64,
-    #[serde(default = "default_true")]
-    include_data: bool,
-}
-
-fn default_k() -> usize {
-    10
-}
-fn default_true() -> bool {
-    true
-}
-fn default_batch_size() -> usize {
-    100
-}
-
-/// Index vector params - store embedding for a record
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexVectorParams {
-    db_path: String,
-    collection: String,
-    id: String,
-    embedding: Vec<f64>,
-}
-
-/// Backfill vectors params - generate embeddings for existing records
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BackfillVectorsParams {
-    db_path: String,
-    collection: String,
-    text_field: String,
-    #[serde(default = "default_batch_size")]
-    batch_size: usize,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    filter: Option<std::collections::HashMap<String, FieldFilter>>,
-}
-
-/// Vector stats params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VectorStatsParams {
-    db_path: String,
-    collection: String,
-}
+// Vector command params (collection/search/index/backfill/stats) moved to their
+// typed command files under `commands/vector/*.rs`; the DataState methods they
+// call take plain args (handle, collection, …). The `default_k`/`default_true`/
+// `default_batch_size` serde helpers moved with them.
 
 // ============================================================================
 // Paginated Query Params
@@ -807,157 +756,191 @@ struct QueryOpenInner {
     has_more: bool,
 }
 
-// ============================================================================
-// Migration Params
-// ============================================================================
+// Migration command params now live with their typed ActionCommands in
+// commands/migration/*. The `migration/*` output structs (MigrationProgress,
+// MigrationVerification on the engine; MigrationCutover, MigrationRollback below)
+// are the wire contracts.
 
-/// Start migration params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationStartParams {
-    source: String,
-    target: String,
-    #[serde(default = "default_migration_batch")]
-    batch_size: usize,
-    #[serde(default = "default_migration_throttle")]
-    throttle_ms: u64,
-    #[serde(default)]
-    collections: Option<Vec<String>>,
-}
+impl DataState {
+    /// In-process command dispatch — the legacy `match` over `data/*`,
+    /// `adapter/*`, `vector/*`, `migration/*`. The [`DataModule`] shell's
+    /// `handle_command` delegates here so dispatch logic lives with the state it
+    /// touches. Each typed `data/*` command in `commands/data/*` calls the
+    /// corresponding `handle_*` directly, bypassing this string match — this
+    /// stays only until every arm is migrated and Registry A is retired.
+    async fn dispatch(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        log_info!(
+            "data",
+            "handle_command",
+            "Received: {} params: {}",
+            command,
+            params
+        );
+        match command {
+            // data/create, data/read, data/update, data/delete are now typed,
+            // self-routing commands (`commands/data/{create,read,update,delete}.rs`)
+            // driving `DataState::{create,read,update,delete}_record`. The typed
+            // object map wins over this match, so their legacy arms are gone.
+            // `data/list` is now the typed, persona-facing command
+            // (`commands/data/list.rs`) — routed via the typed object map, which
+            // wins over this legacy arm. `data/query` keeps the explicit-`db_path`
+            // `QueryParams` shape its internal Rust callers (chat, channel,
+            // self-task) depend on.
+            "data/query" => {
+                self.handle_query(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/queryWithJoin" => {
+                self.handle_query_with_join(deserialize_params!(command, params)?)
+                    .await
+            }
+            // data/count, data/list-collections, data/collection-stats, data/batch,
+            // data/ensure-schema, data/truncate, data/clear-all are now typed
+            // self-routing commands (commands/data/*.rs) driving the corresponding
+            // DataState methods. The typed object map wins over this match, so their
+            // legacy arms are gone.
 
-fn default_migration_batch() -> usize {
-    500
-}
-fn default_migration_throttle() -> u64 {
-    10
-}
+            // Paginated queries - server-side cursor management
+            "data/query-open" => {
+                self.handle_query_open(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query-next" => {
+                let req = CommandRequest::<QueryNextParams>::from_value(params)?;
+                self.handle_query_next(req).await
+            }
+            "data/query-close" => {
+                let req = CommandRequest::<QueryCloseParams>::from_value(params)?;
+                self.handle_query_close(req).await
+            }
 
-/// Cutover params - switch active connection
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationCutoverParams {
-    /// The db_path currently in use to swap out
-    current: String,
-    /// The new connection string to swap in
-    target: String,
-}
+            // adapter/info is now a typed self-routing command
+            // (commands/adapter/info.rs) driving DataState::adapter_info; it
+            // subsumes the old adapter/capabilities (capabilities are a field on
+            // the AdapterInfo result now, not a parallel command).
 
-/// Rollback params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationRollbackParams {
-    /// The db_path that was swapped in (to remove)
-    current: String,
-}
+            // vector/* are now typed self-routing commands (commands/vector/*.rs)
+            // driving DataState::{vector_search,index_vector,vector_stats,
+            // invalidate_vector_cache,backfill_vectors}. Each carries a real result
+            // struct (VectorSearchResults / VectorStats / …) instead of an ad-hoc
+            // json! blob, so the persona surface, codegen, and uu see the shape.
 
-impl DataModule {
+            // migration/* fully migrated to typed ActionCommands (commands/migration/*,
+            // contributed via DataModule::commands()); no legacy arm remains.
+            _ => Err(format!("Unknown data command: {command}")),
+        }
+    }
+
     /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
     /// Dispatch (handle_command) does the parse; handler body is pure logic.
     /// Follow this shape for QW#3's other hot-handler conversions.
-    async fn handle_create(&self, params: CreateParams) -> Result<CommandResult, String> {
-        use std::time::Instant;
-        let start = Instant::now();
+    /// Create a record (single source for the typed `data/create` command).
+    /// `handle` names the storage; the persona-facing command defaults it to
+    /// "main". A missing `id` is minted. Publishes `<collection>:created` on
+    /// success. The body is unchanged from the legacy `handle_create` arm.
+    pub(crate) async fn create_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: Option<UUID>,
+        data: Value,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(&collection)?;
+        let start = std::time::Instant::now();
 
-        let id = params
-            .id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let collection = params.collection.clone();
-
+        require_record_fields(&data)?;
+        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let record = DataRecord {
             id: id.clone(),
-            collection: params.collection,
-            data: params.data,
+            collection: collection.clone(),
+            data,
             metadata: RecordMetadata::default(),
         };
 
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
         let result = adapter.create(record).await;
-        let total_ms = start.elapsed().as_millis();
+        self.log_slow_query("create", &collection, start.elapsed().as_millis());
 
-        // Log slow creates to module log file
-        self.log_slow_query("create", &collection, total_ms);
-
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "created",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    async fn handle_read(&self, params: ReadParams) -> Result<CommandResult, String> {
-        use std::time::Instant;
-        let start = Instant::now();
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.read(&params.collection, &params.id).await;
-        let total_ms = start.elapsed().as_millis();
-
-        // Log slow reads to module log file
-        self.log_slow_query("read", &params.collection, total_ms);
-
-        CommandResult::json(&result)
+    /// Read a record by id (single source for the typed `data/read` command).
+    pub(crate) async fn read_record(
+        &self,
+        handle: &str,
+        collection: &str,
+        id: &UUID,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(collection)?;
+        let start = std::time::Instant::now();
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.read(collection, id).await;
+        self.log_slow_query("read", collection, start.elapsed().as_millis());
+        Ok(result)
     }
 
-    async fn handle_update(&self, params: UpdateParams) -> Result<CommandResult, String> {
-        let collection = params.collection.clone();
-        let id = params.id.clone();
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+    /// Update a record by id (single source for the typed `data/update` command).
+    /// Publishes `<collection>:updated` on success.
+    pub(crate) async fn update_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(&collection)?;
+        require_record_fields(&data)?;
+        let adapter = self.get_adapter(handle).await?;
         let result = adapter
-            .update(
-                &params.collection,
-                &params.id,
-                params.data,
-                params.increment_version,
-            )
+            .update(&collection, &id, data, increment_version)
             .await;
 
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "updated",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    async fn handle_delete(&self, params: DeleteParams) -> Result<CommandResult, String> {
-        let collection = params.collection.clone();
-        let id = params.id.clone();
+    /// Delete a record by id (single source for the typed `data/delete` command).
+    /// Publishes `<collection>:deleted` on success.
+    pub(crate) async fn delete_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: UUID,
+    ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(&collection)?;
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.delete(&collection, &id).await;
 
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.delete(&params.collection, &params.id).await;
-
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "deleted",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
     async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
         // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
         // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
         let _permit = self
@@ -1000,10 +983,115 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
+    /// Persona/UI-facing list: read a collection by an intuitive plain-JSON
+    /// filter + optional ordering/paging, returning the matching records and an
+    /// accurate `total` (SQL COUNT, not `items.len()`). The storage handle
+    /// defaults to "main" (the shared DB) — callers never name a `db_path`;
+    /// power callers may target a per-persona store via `handle`.
+    ///
+    /// This is the typed `data/list` command's body (`commands/data/list.rs`).
+    /// The legacy `data/query` arm keeps the explicit-`db_path` `QueryParams`
+    /// shape its internal Rust callers (chat, channel, self-task) still use.
+    pub(crate) async fn list(&self, params: DataListParams) -> Result<DataListResult, String> {
+        require_public_collection(&params.collection)?;
+        // Bound peak heap when many personas list concurrently (same gate as
+        // handle_query). Excess callers wait — bounded, not dropped.
+        let _permit = self
+            .query_semaphore
+            .acquire()
+            .await
+            .map_err(|_| "query semaphore closed")?;
+
+        let handle = params.handle.as_deref().unwrap_or("main");
+
+        // Plain-JSON filter → typed FieldFilter map. FieldFilter is untagged, so
+        // `{"roomId": "general"}` becomes an equality match and
+        // `{"age": {"$gt": 18}}` an operator match — natural JSON, no special
+        // syntax for the persona to learn. Bad filter shape fails loud.
+        let filter = match params.filter {
+            Some(v) => Some(
+                serde_json::from_value::<HashMap<String, FieldFilter>>(v)
+                    .map_err(|e| format!("data/list: invalid filter — {e}"))?,
+            ),
+            None => None,
+        };
+
+        let sort = params.sort.map(|clauses| {
+            clauses
+                .into_iter()
+                .map(|c| SortSpec {
+                    field: c.field,
+                    direction: match c.direction {
+                        SortDir::Asc => SortDirection::Asc,
+                        SortDir::Desc => SortDirection::Desc,
+                    },
+                })
+                .collect::<Vec<_>>()
+        });
+
+        require_query_fields(&filter, &sort, &None)?;
+        let adapter = self.get_adapter(handle).await?;
+
+        // Accurate total: SQL COUNT over the same filter, independent of paging.
+        let count_res = adapter
+            .count(StorageQuery {
+                collection: params.collection.clone(),
+                filter: filter.clone(),
+                ..Default::default()
+            })
+            .await;
+        if !count_res.success {
+            return Err(format!(
+                "data/list: count failed for '{}' — {}",
+                params.collection,
+                count_res.error.unwrap_or_else(|| "unknown error".into())
+            ));
+        }
+        let total = count_res.data.unwrap_or(0) as u32;
+
+        let res = adapter
+            .query(StorageQuery {
+                collection: params.collection.clone(),
+                filter,
+                sort,
+                limit: params.limit.map(|n| n as usize),
+                offset: params.offset.map(|n| n as usize),
+                ..Default::default()
+            })
+            .await;
+        if !res.success {
+            return Err(format!(
+                "data/list: query failed for '{}' — {}",
+                params.collection,
+                res.error.unwrap_or_else(|| "unknown error".into())
+            ));
+        }
+
+        let records = res.data.unwrap_or_default();
+        let mut items = Vec::with_capacity(records.len());
+        for r in records {
+            items.push(
+                serde_json::to_value(r)
+                    .map_err(|e| format!("data/list: serialize record — {e}"))?,
+            );
+        }
+
+        Ok(DataListResult { items, total })
+    }
+
     async fn handle_query_with_join(
         &self,
         params: QueryWithJoinParams,
     ) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
+        for join in params.joins.iter().flatten() {
+            require_public_collection(&join.collection)?;
+            require_identifier(&join.alias)?;
+            require_field_name(&join.local_field)?;
+            require_field_name(&join.foreign_field)?;
+            require_query_fields(&None, &None, &join.select)?;
+        }
         let _permit = self
             .query_semaphore
             .acquire()
@@ -1027,13 +1115,25 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_count(&self, params: CountParams) -> Result<CommandResult, String> {
+    /// Count records in a collection (optionally filtered). Drives the typed
+    /// `data/count` command. Returns the adapter's `StorageResult<usize>` — an
+    /// accurate SQL COUNT, paging-independent.
+    pub(crate) async fn count_records(
+        &self,
+        handle: &str,
+        collection: String,
+        filter: Option<serde_json::Map<String, Value>>,
+    ) -> Result<StorageResult<usize>, String> {
+        require_public_collection(&collection)?;
+        for name in filter.iter().flat_map(|fields| fields.keys()) {
+            require_field_name(name)?;
+        }
         use std::time::Instant;
         let start = Instant::now();
 
         let query = StorageQuery {
-            collection: params.collection.clone(),
-            filter: params.filter.map(|m| {
+            collection: collection.clone(),
+            filter: filter.map(|m| {
                 m.into_iter()
                     .map(|(k, v)| (k, FieldFilter::Value(v)))
                     .collect()
@@ -1042,7 +1142,7 @@ impl DataModule {
         };
 
         let adapter_start = Instant::now();
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
         let adapter_ms = adapter_start.elapsed().as_millis();
 
         let count_start = Instant::now();
@@ -1055,7 +1155,7 @@ impl DataModule {
                 "data",
                 "count",
                 "TIMING: collection={}, total={}ms (adapter={}ms, count={}ms), success={}",
-                params.collection,
+                collection,
                 total_ms,
                 adapter_ms,
                 count_ms,
@@ -1063,14 +1163,26 @@ impl DataModule {
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    async fn handle_batch(&self, params: BatchParams) -> Result<CommandResult, String> {
-        let op_count = params.operations.len();
+    /// Apply a batch of create/update/delete operations atomically. Drives
+    /// `data/batch`.
+    pub(crate) async fn batch_operations(
+        &self,
+        handle: &str,
+        operations: Vec<BatchOperation>,
+    ) -> Result<StorageResult<Vec<Value>>, String> {
+        for operation in &operations {
+            require_public_collection(&operation.collection)?;
+            if let Some(data) = &operation.data {
+                require_record_fields(data)?;
+            }
+        }
+        let op_count = operations.len();
 
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.batch(params.operations).await;
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.batch(operations).await;
 
         // Publish batch event on success
         if result.success {
@@ -1084,7 +1196,7 @@ impl DataModule {
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
     /// Phase 2 Step 3: ensure_schema pivot through resolve().
@@ -1092,10 +1204,15 @@ impl DataModule {
     /// Schema content sourced from entity_schemas.json (build-time codegen
     /// from TS decorators), resolved per collection by the entity_schemas
     /// module. Unknown collection → hard fail with rebuild hint.
-    async fn handle_ensure_schema(
+    /// Ensure a collection's schema exists, resolving the schema by collection
+    /// NAME (the wire never carries inline SQL/fields/indexes). Drives
+    /// `data/ensure-schema`.
+    pub(crate) async fn ensure_collection_schema(
         &self,
-        params: EnsureSchemaParams,
-    ) -> Result<CommandResult, String> {
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(collection)?;
         // Resolution order per [[orm-everything-not-hand-edited-files]]:
         //   1. Rust-native registry (substrate entities authored Rust-first:
         //      hw_tiers, role_templates, identity pools, universes).
@@ -1103,100 +1220,80 @@ impl DataModule {
         //      cognition, timeline — the existing pipeline).
         //   3. Error — collection unknown to either path.
         let collection_schema = if let Some(rust_schema) =
-            crate::orm::OrmEntityRegistry::global().resolve(&params.collection)
+            crate::orm::OrmEntityRegistry::global().resolve(collection)
         {
             rust_schema
-        } else if let Some(entity) = crate::modules::entity_schemas::resolve(&params.collection) {
+        } else if let Some(entity) = crate::modules::entity_schemas::resolve(collection) {
             crate::modules::entity_schemas::to_collection_schema(entity)
         } else {
             return Err(format!(
-                "Unknown collection '{}' — not in the Rust ORM registry and not in \
+                "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
                  entity_schemas.json. If this is a newly added TS-decorated entity, \
                  rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
                  confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
-                 at boot.",
-                params.collection
+                 at boot."
             ));
         };
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.ensure_schema(collection_schema).await;
-
-        CommandResult::json(&result)
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.ensure_schema(collection_schema).await)
     }
 
-    async fn handle_list_collections(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.list_collections().await;
-
-        CommandResult::json(&result)
+    /// List the collection names present in a store. Drives `data/list-collections`.
+    pub(crate) async fn list_collection_names(
+        &self,
+        handle: &str,
+    ) -> Result<StorageResult<Vec<String>>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        let mut result = adapter.list_collections().await;
+        if let Some(collections) = result.data.as_mut() {
+            collections.retain(|name| require_public_collection(name).is_ok());
+        }
+        Ok(result)
     }
 
-    async fn handle_collection_stats(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.collection_stats(&params.collection).await;
-
-        CommandResult::json(&result)
+    /// Statistics for one collection (record count, size, last-modified, schema,
+    /// indices). Drives `data/collection-stats`.
+    pub(crate) async fn collection_statistics(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<crate::orm::types::CollectionStats>, String> {
+        require_public_collection(collection)?;
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.collection_stats(collection).await)
     }
 
-    async fn handle_truncate(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.truncate(&params.collection).await;
-
-        CommandResult::json(&result)
+    /// Delete every record in one collection (keeps the schema). Drives
+    /// `data/truncate`.
+    pub(crate) async fn truncate_collection(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<bool>, String> {
+        require_public_collection(collection)?;
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.truncate(collection).await)
     }
 
-    async fn handle_clear_all(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.clear_all().await;
-
-        CommandResult::json(&result)
+    /// Wipe every collection in a store. Drives `data/clear-all`.
+    pub(crate) async fn clear_all_collections(
+        &self,
+        handle: &str,
+    ) -> Result<StorageResult<crate::orm::adapter::ClearAllResult>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.clear_all().await)
     }
 
-    async fn handle_capabilities(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let caps = adapter.capabilities();
-
-        Ok(CommandResult::Json(json!({
-            "supportsTransactions": caps.supports_transactions,
-            "supportsJoins": caps.supports_joins,
-            "supportsIndexing": caps.supports_indexing,
-            "supportsFullTextSearch": caps.supports_full_text_search,
-            "supportsVectorSearch": caps.supports_vector_search,
-            "supportsBatch": caps.supports_batch,
-            "maxRecordSize": caps.max_record_size,
-        })))
-    }
-
-    async fn handle_info(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let caps = adapter.capabilities();
-
-        Ok(CommandResult::Json(json!({
-            "adapter": adapter.name(),
-            "path": params.db_path,
-            "capabilities": {
-                "supportsTransactions": caps.supports_transactions,
-                "supportsJoins": caps.supports_joins,
-            }
-        })))
+    /// Adapter identity + full capability surface for a store. Drives the typed
+    /// `adapter/info` command (which subsumes the old `adapter/capabilities` —
+    /// capabilities are now a field on this one result, not a parallel command).
+    pub(crate) async fn adapter_info(&self, handle: &str) -> Result<AdapterInfo, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(AdapterInfo {
+            adapter: adapter.name().to_string(),
+            handle: handle.to_string(),
+            capabilities: adapter.capabilities(),
+        })
     }
 
     // =========================================================================
@@ -1212,22 +1309,24 @@ impl DataModule {
     /// 1. Check cache (RwLock read - concurrent, no blocking)
     /// 2. If miss, load from SQLite (serialized, but only once per collection)
     /// 3. Parallel rayon search against cached vectors
-    async fn handle_vector_search(&self, params: Value) -> Result<CommandResult, String> {
+    ///
+    /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
+    /// Loads (and caches) the collection's vectors, scores them against the query
+    /// vector in parallel, and returns the top-`k` hits above `threshold`.
+    pub(crate) async fn vector_search(
+        &self,
+        handle: &str,
+        collection: &str,
+        query_vector: Vec<f64>,
+        k: usize,
+        threshold: f64,
+        include_data: bool,
+    ) -> Result<VectorSearchResults, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let search_start = Instant::now();
 
-        let params: VectorSearchParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/search",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let cache_key = (handle.to_string(), collection.to_string());
 
         // Step 1: Try to get vectors from cache (RwLock read - concurrent)
         let cached_vectors: Option<Arc<Vec<CachedVector>>> = {
@@ -1240,7 +1339,7 @@ impl DataModule {
                 "data",
                 "vector/search",
                 "Cache HIT for {} ({} vectors)",
-                params.collection,
+                collection,
                 vectors.len()
             );
             vectors
@@ -1250,16 +1349,16 @@ impl DataModule {
                 "data",
                 "vector/search",
                 "Cache MISS for {} - loading from SQLite",
-                params.collection
+                collection
             );
             let load_start = Instant::now();
 
             // Get adapter and load vectors
-            let adapter = self.get_adapter(&params.db_path).await?;
+            let adapter = self.get_adapter(handle).await?;
 
             // Query all records with embeddings
             let query = StorageQuery {
-                collection: params.collection.clone(),
+                collection: collection.to_string(),
                 ..Default::default()
             };
 
@@ -1301,25 +1400,24 @@ impl DataModule {
                 "vector/search",
                 "Cached {} vectors for {} in {:?}",
                 count,
-                params.collection,
+                collection,
                 load_start.elapsed()
             );
             vectors_arc
         };
 
         if corpus.is_empty() {
-            return Ok(CommandResult::Json(json!({
-                "results": [],
-                "count": 0,
-                "corpusSize": 0
-            })));
+            return Ok(VectorSearchResults {
+                results: Vec::new(),
+                count: 0,
+                corpus_size: 0,
+            });
         }
 
         let corpus_size = corpus.len();
 
         // Step 2: Parallel cosine similarity with rayon
-        let query_vec = &params.query_vector;
-        let threshold = params.threshold;
+        let query_vec = &query_vector;
 
         let mut scored: Vec<(String, f64)> = corpus
             .par_iter()
@@ -1336,25 +1434,25 @@ impl DataModule {
         // Sort by score descending
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_k: Vec<(String, f64)> = scored.into_iter().take(params.k).collect();
+        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
         let count = top_k.len();
 
         // Build results
-        let results: Vec<Value> = if params.include_data {
+        let results: Vec<VectorHit> = if include_data {
             // Fetch full records for top-k (need another query)
-            let adapter = self.get_adapter(&params.db_path).await?;
+            let adapter = self.get_adapter(handle).await?;
             let mut full_results = Vec::new();
 
             for (id, score) in &top_k {
-                let result = adapter.read(&params.collection, id).await;
+                let result = adapter.read(collection, id).await;
                 if result.success {
                     if let Some(record) = result.data {
-                        full_results.push(json!({
-                            "id": id,
-                            "score": score,
-                            "distance": 1.0 - score,
-                            "data": record.data
-                        }));
+                        full_results.push(VectorHit {
+                            id: id.clone(),
+                            score: *score,
+                            distance: 1.0 - score,
+                            data: Some(record.data),
+                        });
                     }
                 }
             }
@@ -1362,12 +1460,11 @@ impl DataModule {
         } else {
             top_k
                 .into_iter()
-                .map(|(id, score)| {
-                    json!({
-                        "id": id,
-                        "score": score,
-                        "distance": 1.0 - score
-                    })
+                .map(|(id, score)| VectorHit {
+                    id,
+                    score,
+                    distance: 1.0 - score,
+                    data: None,
                 })
                 .collect()
         };
@@ -1381,11 +1478,11 @@ impl DataModule {
             search_start.elapsed()
         );
 
-        Ok(CommandResult::Json(json!({
-            "results": results,
-            "count": count,
-            "corpusSize": corpus_size
-        })))
+        Ok(VectorSearchResults {
+            results,
+            count,
+            corpus_size,
+        })
     }
 
     /// Parse embedding from record data (supports BLOB and JSON array)
@@ -1450,35 +1547,29 @@ impl DataModule {
 
     /// Index a vector - store embedding for a record
     /// Updates the record's 'embedding' field with the provided vector
-    async fn handle_index_vector(&self, params: Value) -> Result<CommandResult, String> {
+    /// Store an embedding on a record (the record's `embedding` field) and drop
+    /// the collection's cached vector set so the next search reloads it.
+    pub(crate) async fn index_vector(
+        &self,
+        handle: &str,
+        collection: &str,
+        id: String,
+        embedding: Vec<f64>,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: IndexVectorParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/index",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Update the record's embedding field
-        let update_data = json!({
-            "embedding": params.embedding
-        });
+        let update_data = json!({ "embedding": embedding });
 
-        let result = adapter
-            .update(&params.collection, &params.id, update_data, false)
-            .await;
+        let result = adapter.update(collection, &id, update_data, false).await;
 
         // Invalidate vector cache for this collection since we modified an embedding
         {
-            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let cache_key = (handle.to_string(), collection.to_string());
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
@@ -1488,35 +1579,29 @@ impl DataModule {
             "data",
             "vector/index",
             "Indexed vector for {} in {}ms, success={}",
-            params.id,
+            id,
             total_ms,
             result.success
         );
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    /// Get vector index statistics for a collection
-    async fn handle_vector_stats(&self, params: Value) -> Result<CommandResult, String> {
+    /// Get vector index statistics for a collection.
+    pub(crate) async fn vector_stats(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<VectorStats, String> {
+        require_public_collection(collection)?;
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: VectorStatsParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/stats",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Get total record count
         let total_query = StorageQuery {
-            collection: params.collection.clone(),
+            collection: collection.to_string(),
             ..Default::default()
         };
         let total_result = adapter.count(total_query).await;
@@ -1525,7 +1610,7 @@ impl DataModule {
         // Query to count records WITH embeddings
         // We need to query and check which have embedding field
         let query = StorageQuery {
-            collection: params.collection.clone(),
+            collection: collection.to_string(),
             limit: Some(10000), // Reasonable limit
             ..Default::default()
         };
@@ -1549,7 +1634,7 @@ impl DataModule {
         }
 
         // Check cache status
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let cache_key = (handle.to_string(), collection.to_string());
         let cached_count = {
             let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
             cache.get(&cache_key).map(|c| c.vectors.len()).unwrap_or(0)
@@ -1560,42 +1645,32 @@ impl DataModule {
             "data",
             "vector/stats",
             "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
-            params.collection,
+            collection,
             total_ms,
             total_records,
             records_with_vectors,
             vector_dimensions
         );
 
-        // Wrap in StorageResult-style response for TypeScript compatibility
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "data": {
-                "collection": params.collection,
-                "totalRecords": total_records,
-                "recordsWithVectors": records_with_vectors,
-                "vectorDimensions": vector_dimensions,
-                "cachedVectors": cached_count,
-                "lastUpdated": chrono::Utc::now().to_rfc3339()
-            }
-        })))
+        Ok(VectorStats {
+            collection: collection.to_string(),
+            total_records,
+            records_with_vectors,
+            vector_dimensions,
+            cached_vectors: cached_count,
+            last_updated: chrono::Utc::now().to_rfc3339(),
+        })
     }
 
     /// Invalidate vector cache for a collection
     /// Called when records are modified outside of vector/index
-    async fn handle_invalidate_vector_cache(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/invalidate-cache",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+    pub(crate) async fn invalidate_vector_cache(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<VectorCacheInvalidation, String> {
+        require_public_collection(collection)?;
+        let cache_key = (handle.to_string(), collection.to_string());
         let removed = {
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key).is_some()
@@ -1605,46 +1680,67 @@ impl DataModule {
             "data",
             "vector/invalidate-cache",
             "Invalidated cache for {}: removed={}",
-            params.collection,
+            collection,
             removed
         );
 
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "collection": params.collection,
-            "cacheInvalidated": removed
-        })))
+        Ok(VectorCacheInvalidation {
+            collection: collection.to_string(),
+            cache_invalidated: removed,
+        })
     }
 
     /// Backfill vectors - generate embeddings for records missing them
     ///
     /// Uses batch embedding generation for efficiency (10x faster than single).
     /// Processes in configurable batch sizes to manage memory.
-    async fn handle_backfill_vectors(&self, params: Value) -> Result<CommandResult, String> {
+    /// Generate embeddings for records in a collection that lack one, in batches.
+    /// `text_field` names the field to embed; `filter` narrows the records;
+    /// `model` is advisory (the gateway selects the served embed model).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn backfill_vectors(
+        &self,
+        handle: &str,
+        collection: &str,
+        text_field: &str,
+        batch_size: usize,
+        model: Option<String>,
+        filter: Option<std::collections::HashMap<String, FieldFilter>>,
+    ) -> Result<VectorBackfillStats, String> {
+        require_public_collection(collection)?;
+        require_field_name(text_field)?;
+        require_query_fields(&filter, &None, &None)?;
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: BackfillVectorsParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "vector/backfill",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
+        // Embedding is adapter-routed (unsloth /v1/embeddings, task #40) — the
+        // SAME async neural-or-lexical embedder the live recall path uses. Build
+        // it ONCE for the whole backfill. `params.model` is advisory only now;
+        // the served embed model is selected by the gateway. Fail loud if no
+        // embedder can be built (no in-process ONNX fallback).
+        let embedder = crate::modules::embedding::build_adapter_embedder()
+            .await
+            .map_err(|e| format!("vector/backfill: cannot build embedder: {e}"))?;
 
-        let model_name = params.model.as_deref().unwrap_or("AllMiniLML6V2");
-        let batch_size = params.batch_size;
+        // `model` is advisory only now — the served embed model is chosen
+        // by the gateway (task #40). Log when a caller requested a specific model
+        // so the divergence from the old fastembed model-name semantics is visible.
+        if let Some(requested) = model.as_deref() {
+            log_info!(
+                "data",
+                "vector/backfill",
+                "requested embed model '{}' is advisory; using gateway embedder '{}'",
+                requested,
+                embedder.id()
+            );
+        }
 
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Query all records from collection
         let query = StorageQuery {
-            collection: params.collection.clone(),
-            filter: params.filter.clone(),
+            collection: collection.to_string(),
+            filter: filter.clone(),
             ..Default::default()
         };
         let query_result = adapter.query(query).await;
@@ -1665,7 +1761,7 @@ impl DataModule {
             "vector/backfill",
             "Starting backfill for {} records in {}",
             total,
-            params.collection
+            collection
         );
 
         // Process in batches for memory efficiency
@@ -1683,7 +1779,7 @@ impl DataModule {
                 }
 
                 // Extract text from specified field
-                if let Some(text) = record.data.get(&params.text_field) {
+                if let Some(text) = record.data.get(text_field) {
                     if let Some(text_str) = text.as_str() {
                         if !text_str.is_empty() {
                             texts_to_embed.push((i, text_str));
@@ -1696,42 +1792,47 @@ impl DataModule {
                 continue;
             }
 
-            // Batch generate embeddings
-            let text_refs: Vec<&str> = texts_to_embed.iter().map(|(_, t)| *t).collect();
-            match generate_embeddings_batch(&text_refs, model_name) {
-                Ok(embeddings) => {
-                    // Update each record with its embedding
-                    for ((idx, _), embedding) in texts_to_embed.iter().zip(embeddings.iter()) {
-                        let record = &chunk[*idx];
-
-                        // Convert f32 to f64 for JSON
-                        let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
-
-                        let update_data = json!({
-                            "embedding": embedding_f64
-                        });
-
-                        let update_result = adapter
-                            .update(&params.collection, &record.id, update_data, false)
-                            .await;
-
-                        if update_result.success {
-                            processed += 1;
-                        } else {
-                            failed += 1;
-                        }
-                    }
+            // Embed each text through the adapter-routed embedder (async,
+            // content-addressed cache, neural-or-lexical — task #40). An empty
+            // vector means the embedder produced no signal for that text; skip
+            // it as a failure rather than writing zeros.
+            for (idx, text) in texts_to_embed.iter() {
+                let embedding = embedder.embed(text).await;
+                if embedding.is_empty() {
+                    log_error!(
+                        "data",
+                        "vector/backfill",
+                        "embedder returned no signal for record in {}",
+                        collection
+                    );
+                    failed += 1;
+                    continue;
                 }
-                Err(e) => {
-                    log_error!("data", "vector/backfill", "Batch embedding failed: {}", e);
-                    failed += texts_to_embed.len();
+
+                let record = &chunk[*idx];
+
+                // Convert f32 to f64 for JSON
+                let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
+
+                let update_data = json!({
+                    "embedding": embedding_f64
+                });
+
+                let update_result = adapter
+                    .update(collection, &record.id, update_data, false)
+                    .await;
+
+                if update_result.success {
+                    processed += 1;
+                } else {
+                    failed += 1;
                 }
             }
         }
 
         // Invalidate vector cache since we modified embeddings
         {
-            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let cache_key = (handle.to_string(), collection.to_string());
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
@@ -1741,7 +1842,7 @@ impl DataModule {
             "data",
             "vector/backfill",
             "Backfill complete for {}: total={}, processed={}, skipped={}, failed={} in {}ms",
-            params.collection,
+            collection,
             total,
             processed,
             skipped,
@@ -1749,17 +1850,14 @@ impl DataModule {
             total_ms
         );
 
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "data": {
-                "collection": params.collection,
-                "total": total,
-                "processed": processed,
-                "skipped": skipped,
-                "failed": failed,
-                "elapsedMs": total_ms
-            }
-        })))
+        Ok(VectorBackfillStats {
+            collection: collection.to_string(),
+            total,
+            processed,
+            skipped,
+            failed,
+            elapsed_ms: total_ms as u64,
+        })
     }
 
     // =========================================================================
@@ -1786,6 +1884,8 @@ impl DataModule {
     /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
     /// - DashMap for concurrent query state (lock-free reads)
     async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
+        require_public_collection(&params.collection)?;
+        require_query_fields(&params.filter, &params.sort, &None)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -1838,8 +1938,10 @@ impl DataModule {
             created_at: Instant::now(),
         };
 
-        self.paginated_queries
-            .insert(cursor_id_str.clone(), Arc::new(tokio::sync::Mutex::new(state)));
+        self.paginated_queries.insert(
+            cursor_id_str.clone(),
+            Arc::new(tokio::sync::Mutex::new(state)),
+        );
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -2075,36 +2177,32 @@ impl DataModule {
     // =========================================================================
 
     /// Start a streaming migration between two adapters (async — returns immediately)
-    async fn handle_migration_start(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationStartParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "migration/start",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
+    /// Start a streaming migration between two adapter connection strings as a
+    /// background task; returns the initial progress snapshot immediately. Single
+    /// source for the typed `migration/start` command.
+    pub(crate) async fn migration_start(
+        &self,
+        source: String,
+        target: String,
+        batch_size: usize,
+        throttle_ms: u64,
+        collections: Option<Vec<String>>,
+    ) -> Result<MigrationProgress, String> {
         // Get or create adapters for source and target
-        let source = self.get_adapter(&params.source).await?;
-        let target = self.get_adapter(&params.target).await?;
+        let source_adapter = self.get_adapter(&source).await?;
+        let target_adapter = self.get_adapter(&target).await?;
 
         let config = MigrationConfig {
-            batch_size: params.batch_size,
-            throttle_ms: params.throttle_ms,
-            collections: params.collections,
+            batch_size,
+            throttle_ms,
+            collections,
         };
 
-        let mut engine = MigrationEngine::new(source, target, config);
+        let mut engine = MigrationEngine::new(source_adapter, target_adapter, config);
         let handle = engine.handle();
 
         // Store handle for status/pause/resume/verify (before spawning)
         *self.active_migration.lock().await = Some(handle.clone());
-
-        let src = params.source.clone();
-        let tgt = params.target.clone();
 
         // Spawn migration as background task — returns immediately
         tokio::spawn(async move {
@@ -2112,8 +2210,8 @@ impl DataModule {
                 "data",
                 "migration/start",
                 "Background migration started: {} -> {}",
-                src,
-                tgt
+                source,
+                target
             );
             match engine.run().await {
                 Ok(status) => {
@@ -2125,132 +2223,120 @@ impl DataModule {
             }
         });
 
-        // Return handle status immediately
-        Ok(CommandResult::Json(handle.status_json()))
+        Ok(handle.status())
     }
 
-    /// Get migration progress (lock-free — reads atomic counters)
-    async fn handle_migration_status(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Get migration progress (lock-free — reads atomic counters). Single source
+    /// for the typed `migration/status` command.
+    pub(crate) async fn migration_status(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => Ok(CommandResult::Json(handle.status_json())),
+            Some(handle) => Ok(handle.status()),
             None => Err("No active migration".into()),
         }
     }
 
-    /// Pause active migration (atomic flag — returns immediately)
-    async fn handle_migration_pause(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Pause the active migration (atomic flag). Single source for `migration/pause`.
+    pub(crate) async fn migration_pause(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
             Some(handle) => {
                 handle.pause();
                 log_info!("data", "migration/pause", "Migration paused");
-                Ok(CommandResult::Json(handle.status_json()))
+                Ok(handle.status())
             }
             None => Err("No active migration".into()),
         }
     }
 
-    /// Resume paused migration (clears pause flag, migration loop re-checks)
-    async fn handle_migration_resume(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Resume a paused migration (clears the pause flag). Single source for
+    /// `migration/resume`.
+    pub(crate) async fn migration_resume(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
             Some(handle) => {
                 handle.resume();
                 log_info!("data", "migration/resume", "Migration resumed");
-                Ok(CommandResult::Json(handle.status_json()))
+                Ok(handle.status())
             }
             None => Err("No active migration".into()),
         }
     }
 
-    /// Verify migration integrity (compare counts between source and target)
-    async fn handle_migration_verify(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Verify migration integrity (compare counts between source and target).
+    /// Single source for the typed `migration/verify` command.
+    pub(crate) async fn migration_verify(&self) -> Result<MigrationVerification, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => {
-                let verify = handle.verify().await?;
-                Ok(CommandResult::Json(verify))
-            }
+            Some(handle) => handle.verify().await,
             None => Err("No active migration".into()),
         }
     }
 
-    /// Cutover: swap the active adapter for a connection string
-    /// After migration, this redirects all operations to the new backend
-    async fn handle_migration_cutover(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationCutoverParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "migration/cutover",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
-
+    /// Cutover: swap the active adapter for a new connection string, redirecting
+    /// all subsequent operations to the new backend. Single source for
+    /// `migration/cutover`.
+    pub(crate) async fn migration_cutover(
+        &self,
+        current: String,
+        target: String,
+    ) -> Result<MigrationCutover, String> {
         // Store current for rollback
-        *self.previous_connection.lock().await = Some(params.current.clone());
+        *self.previous_connection.lock().await = Some(current.clone());
 
         // Remove old adapter from cache (forces re-creation on next access)
-        self.adapters.remove(&params.current);
+        self.adapters.remove(&current);
 
         // Pre-warm the target adapter
-        let _target = self.get_adapter(&params.target).await?;
+        let target_adapter = self.get_adapter(&target).await?;
 
         log_info!(
             "data",
             "migration/cutover",
             "Cutover: {} -> {}",
-            params.current,
-            params.target
+            current,
+            target
         );
 
-        Ok(CommandResult::Json(json!({
-            "previous": params.current,
-            "active": params.target,
-            "adapter": _target.name()
-        })))
+        Ok(MigrationCutover {
+            previous: current,
+            active: target,
+            adapter: target_adapter.name().to_string(),
+        })
     }
 
-    /// Rollback: revert to the previous connection string
-    async fn handle_migration_rollback(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationRollbackParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "migration/rollback",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
-
-        let previous = self.previous_connection.lock().await;
-        match previous.as_ref() {
+    /// Rollback: revert to the previously-active connection string recorded by the
+    /// last cutover. Single source for the typed `migration/rollback` command.
+    pub(crate) async fn migration_rollback(
+        &self,
+        current: String,
+    ) -> Result<MigrationRollback, String> {
+        // Snapshot the previous connection and release the lock before awaiting.
+        let prev = {
+            let guard = self.previous_connection.lock().await;
+            guard.as_ref().cloned()
+        };
+        match prev {
             Some(prev) => {
                 // Remove current adapter
-                self.adapters.remove(&params.current);
+                self.adapters.remove(&current);
 
                 // Pre-warm previous adapter
-                let _adapter = self.get_adapter(prev).await?;
+                let adapter = self.get_adapter(&prev).await?;
 
                 log_info!(
                     "data",
                     "migration/rollback",
                     "Rolled back: {} -> {}",
-                    params.current,
+                    current,
                     prev
                 );
 
-                Ok(CommandResult::Json(json!({
-                    "rolledBackFrom": params.current,
-                    "rolledBackTo": prev,
-                    "adapter": _adapter.name()
-                })))
+                Ok(MigrationRollback {
+                    rolled_back_from: current,
+                    rolled_back_to: prev,
+                    adapter: adapter.name().to_string(),
+                })
             }
             None => Err("No previous connection to rollback to".into()),
         }
@@ -2260,7 +2346,111 @@ impl DataModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::types::CollectionSchema;
+
+    // What this catches: generic data/vector commands cannot bypass the owning
+    // recall command's authorization or mutate its retained decisions.
+    #[tokio::test]
+    async fn recall_capture_rejects_generic_access_paths() {
+        use crate::orm::OrmEntity;
+        let module = DataModule::new();
+        let private = crate::genome::recall_impl::RecallDecision::COLLECTION;
+        let aliases = [private.to_string(), crate::orm::adapter::naming::to_collection_name(private)];
+        let commands = module.commands();
+        for collection in aliases {
+            for name in ["data/create", "data/read", "data/update", "data/delete",
+                "data/list", "data/count", "data/ensure-schema", "data/collection-stats",
+                "data/truncate", "vector/search", "vector/index", "vector/stats",
+                "vector/invalidate-cache", "vector/backfill"] {
+                let command = commands.iter().find(|c| c.name() == name).expect(name);
+                let error = command.invoke(json!({
+                    "collection": collection, "dbPath": "invalid-handle",
+                    "id": "record", "data": {}, "embedding": [1.0],
+                    "queryVector": [1.0], "textField": "need"
+                }), None).await.expect_err(name);
+                assert!(error.contains("protected collection"), "{name}: {error}");
+            }
+            for name in ["data/query", "data/query-open", "data/queryWithJoin"] {
+                let error = module.state.dispatch(name, json!({
+                    "collection": collection, "dbPath": "invalid-handle"
+                })).await.expect_err(name);
+                assert!(error.contains("protected collection"), "{name}: {error}");
+            }
+            let error = module.state.handle_query_with_join(serde_json::from_value(json!({
+                "collection": "public", "dbPath": "invalid-handle",
+                "joins": [{"collection": collection, "alias": "decision",
+                    "localField": "id", "foreignField": "id", "type": "left"}]
+            })).unwrap()).await.expect_err("private join");
+            assert!(error.contains("protected collection"));
+            for operation_type in [crate::orm::types::BatchOperationType::Create,
+                crate::orm::types::BatchOperationType::Read,
+                crate::orm::types::BatchOperationType::Update,
+                crate::orm::types::BatchOperationType::Delete] {
+                let error = module.state.batch_operations("invalid-handle", vec![BatchOperation {
+                    operation_type, collection: collection.clone(), id: Some("record".into()), data: Some(json!({}))
+                }]).await.expect_err("private batch");
+                assert!(error.contains("protected collection"));
+            }
+        }
+    }
+
+    // What this catches: SQL-expression escapes cannot read private decisions;
+    // ordinary queries and explicitly owner-gated clearing retain their behavior.
+    #[tokio::test]
+    async fn recall_capture_blocks_query_escapes_without_breaking_owner_clear() {
+        use crate::orm::OrmEntity;
+        let module = DataModule::new();
+        let (_tmp, path) = test_db_path("protected-recall");
+        let private = crate::genome::recall_impl::RecallDecision::COLLECTION;
+        let adapter = module.state.get_adapter(&path).await.unwrap();
+        let stored = adapter.create(DataRecord {
+            id: "private-record".into(), collection: private.into(),
+            data: json!({"need": "private need"}), metadata: RecordMetadata::default(),
+        }).await;
+        assert!(stored.success, "{:?}", stored.error);
+        assert!(module.state.create_record(&path, "public".into(), Some("public-record".into()), json!({"value": 1})).await.unwrap().success);
+        assert!(module.state.read_record(&path, "public", &"public-record".into()).await.unwrap().success);
+        // These previously interpolated SQL expressions could bypass a plain
+        // protected-collection equality check while naming a public collection.
+        for attack in [
+            json!({"collection": "public", "select": [format!("(select need from {private} limit 1) as leaked")]}),
+            json!({"collection": format!("{private} where 1=1")}),
+            json!({"collection": "public", "filter": {(format!("(select need from {private} limit 1)")): "private need"}}),
+            json!({"collection": "public", "sort": [{"field": format!("(select need from {private} limit 1)"), "direction": "asc"}]}),
+        ] {
+            let mut params = attack;
+            params["dbPath"] = json!(path);
+            let error = module.state.dispatch("data/query", params).await.expect_err("SQL expression must not execute");
+            assert!(error.contains("invalid storage identifier"), "{error}");
+        }
+        let ordinary = module.state.dispatch("data/query", json!({
+            "dbPath": path, "collection": "public", "select": ["value"],
+            "filter": {"value": 1}, "sort": [{"field": "value", "direction": "asc"}]
+        })).await.unwrap();
+        assert!(ordinary.to_json_value().unwrap()["success"].as_bool().unwrap());
+        let names = module.state.list_collection_names(&path).await.unwrap().data.unwrap();
+        assert!(names.iter().all(|name| require_public_collection(name).is_ok()));
+        assert!(adapter.read(private, &"private-record".into()).await.success);
+        assert!(module.state.clear_all_collections(&path).await.unwrap().success);
+        assert!(!adapter.read(private, &"private-record".into()).await.success);
+
+    }
+
+
+
+    /// what this catches: the substrate's own collections unknown to the ORM at
+    /// runtime — `register_substrate_orm_entities` had no production caller for
+    /// weeks; `staged_credit` was refused by ensure-schema on every node and the
+    /// learning flywheel never staged a credit. Boot must wire it, and the wiring
+    /// must make every substrate collection resolvable on the GLOBAL registry.
+    #[test]
+    fn boot_wiring_makes_every_substrate_collection_resolvable_on_the_global_registry() {
+        let n = wire_substrate_orm_entities().expect("no conflict on a fresh or repeated wiring"); // JUSTIFIED: the invariant under test
+        assert_eq!(n, crate::persona::SUBSTRATE_ORM_COLLECTIONS.len(), "every substrate collection resolves");
+        for c in crate::persona::SUBSTRATE_ORM_COLLECTIONS {
+            assert!(crate::orm::OrmEntityRegistry::global().resolve(c).is_some(), "{c} must resolve");
+        }
+        assert!(crate::orm::OrmEntityRegistry::global().resolve("staged_credit").is_some());
+    }    use crate::orm::types::CollectionSchema;
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
     /// legacy passthrough. Tests still hit the abstraction (handle resolves
@@ -2281,23 +2471,271 @@ mod tests {
         (dir, path)
     }
 
-    #[tokio::test]
-    async fn test_data_module_requires_db_path() {
-        let module = DataModule::new();
-
-        // Should fail without dbPath
+    /// Test seam: drive [`DataState::create_record`] through the SAME params
+    /// deserialization the typed `data/create` command uses, returning the JSON
+    /// envelope the legacy arm produced so the storage-layer tests below keep
+    /// asserting one shape. (The command-object wiring itself is covered by
+    /// `commands/data/mod.rs`'s tests; this exercises the data path.)
+    async fn create_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
         let result = module
-            .handle_command(
-                "data/create",
-                json!({
-                    "collection": "test_users",
-                    "data": { "name": "Alice" }
-                }),
-            )
-            .await;
+            .state
+            .create_record(handle, p.collection, p.id, p.data)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("dbPath"));
+    /// Test seam: the read counterpart of [`create_via_state`].
+    async fn read_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::data::read::DataReadParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .read_record(handle, &p.collection, &p.id)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam: drive [`DataState::index_vector`] through the same
+    /// [`VectorIndexParams`](crate::commands::vector::index::VectorIndexParams)
+    /// deserialization the typed `vector/index` command uses. Returns the typed
+    /// `StorageResult<DataRecord>` as JSON.
+    async fn index_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::index::VectorIndexParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .index_vector(handle, &p.collection, p.id, p.embedding)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/stats` command. Returns [`VectorStats`] as
+    /// top-level JSON (the new contract — no `data` envelope).
+    async fn stats_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::stats::VectorStatsParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module.state.vector_stats(handle, &p.collection).await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/search` command. Returns
+    /// [`VectorSearchResults`] as top-level JSON.
+    async fn search_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::search::VectorSearchParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .vector_search(
+                handle,
+                &p.collection,
+                p.query_vector,
+                p.k,
+                p.threshold,
+                p.include_data,
+            )
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/invalidate-cache` command. Returns
+    /// [`VectorCacheInvalidation`] as top-level JSON.
+    async fn invalidate_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::invalidate_cache::VectorInvalidateCacheParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .invalidate_vector_cache(handle, &p.collection)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/backfill` command. Mirrors the command's
+    /// filter parse and returns [`VectorBackfillStats`] as top-level JSON.
+    async fn backfill_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::backfill::VectorBackfillParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
+            Some(map) => Some(
+                serde_json::from_value(serde_json::Value::Object(map))
+                    .map_err(|e| format!("invalid filter: {e}"))?,
+            ),
+            None => None,
+        };
+        let result = module
+            .state
+            .backfill_vectors(
+                handle,
+                &p.collection,
+                &p.text_field,
+                p.batch_size,
+                p.model,
+                filter,
+            )
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// what this catches: card d2698cdc — native Windows launches without HOME
+    /// lost chat and citizen memory. Every local handle must use the same native
+    /// home fallback while preserving explicit overrides and citizen isolation.
+    #[test]
+    fn database_handles_preserve_layout_with_native_home_and_overrides() {
+        let handles = [
+            ("main", "database/main.db"),
+            ("@persona:Asha", "personas/Asha/data/longterm.db"),
+            ("@agent:claude-code", "agents/claude-code/data/longterm.db"),
+            ("@human:operator", "humans/operator/data/longterm.db"),
+            ("@metrics", "metrics/metrics.sqlite"),
+            (
+                "e2f0e022-04ac-4f66-a26c-7146551745b4",
+                "personas/e2f0e022-04ac-4f66-a26c-7146551745b4/longterm.db",
+            ),
+        ];
+        for (home_override, native_home, expected_home) in [
+            (
+                Some("/tmp/explicit-home"),
+                "C:/Users/native",
+                "/tmp/explicit-home",
+            ),
+            (None, "C:/Users/native", "C:/Users/native"),
+            (None, "/Users/native", "/Users/native"),
+        ] {
+            for (handle, suffix) in handles {
+                let resolved = DataState::resolve_handle_with(
+                    handle,
+                    |key| match key {
+                        "HOME" => home_override.map(str::to_owned),
+                        // Empty DATABASE_URL must still select local SQLite.
+                        "DATABASE_URL" => Some(String::new()),
+                        _ => panic!("unexpected environment lookup: {key}"),
+                    },
+                    || {
+                        assert!(home_override.is_none(), "explicit HOME takes precedence");
+                        Some(PathBuf::from(native_home))
+                    },
+                )
+                .expect("local handle resolves");
+                assert_eq!(resolved, format!("{expected_home}/.continuum/{suffix}"));
+            }
+        }
+
+        let url = "postgres://localhost/continuum";
+        assert_eq!(
+            DataState::resolve_handle_with(
+                "main",
+                |key| {
+                    assert_eq!(key, "DATABASE_URL", "configured backend needs no HOME");
+                    Some(url.to_owned())
+                },
+                || panic!("configured backend needs no native home"),
+            )
+            .unwrap(),
+            url,
+        );
+        for (handle, _) in handles {
+            let error = DataState::resolve_handle_with(handle, |_| None, || None).unwrap_err();
+            assert_eq!(
+                error,
+                format!("resolve_handle('{handle}'): home directory unavailable")
+            );
+        }
+
+        // Invalid sentinels fail before resolving a home or touching storage.
+        for prefix in ["@persona:", "@agent:", "@human:"] {
+            for slug in ["", "../evil", "nested/evil", "nested\\evil"] {
+                assert!(DataState::resolve_handle_with(
+                    &format!("{prefix}{slug}"),
+                    |_| panic!("invalid slug needs no environment lookup"),
+                    || panic!("invalid slug needs no native home"),
+                )
+                .is_err());
+            }
+        }
+        for legacy in [url, "postgresql://localhost/continuum", "/tmp/legacy.db"] {
+            assert_eq!(
+                DataState::resolve_handle_with(
+                    legacy,
+                    |_| panic!("legacy connection needs no environment lookup"),
+                    || panic!("legacy connection needs no native home"),
+                )
+                .unwrap(),
+                legacy,
+            );
+        }
+    }
+
+    #[test]
+    fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
+        // what this catches: the persona-facing `data/create` contract dropped the
+        // required `dbPath` leak — `handle` is optional and resolves to "main"
+        // downstream — while legacy callers passing `dbPath` keep working through
+        // the serde alias. If the alias or the optionality regresses, either the
+        // persona surface re-grows a storage-handle leak or chat/sentinel/self_task
+        // (which still send `dbPath`) silently start writing to the wrong store.
+        let clean: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(json!({
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }))
+            .expect("clean params deserialize");
+        assert!(clean.handle.is_none(), "omitted handle stays None (→ main)");
+
+        let legacy: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(json!({
+                "dbPath": "some/store.db",
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }))
+            .expect("legacy dbPath params deserialize");
+        assert_eq!(
+            legacy.handle.as_deref(),
+            Some("some/store.db"),
+            "legacy dbPath aliases onto handle"
+        );
     }
 
     #[tokio::test]
@@ -2323,20 +2761,19 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create with dbPath
-        let create_result = module
-            .handle_command(
-                "data/create",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_users",
-                    "data": { "name": "Alice" }
-                }),
-            )
-            .await;
+        let create_result = create_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }),
+        )
+        .await;
 
         assert!(
             create_result.is_ok(),
@@ -2349,16 +2786,15 @@ mod tests {
             let id = result["data"]["id"].as_str().unwrap();
 
             // Read with dbPath
-            let read_result = module
-                .handle_command(
-                    "data/read",
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_users",
-                        "id": id
-                    }),
-                )
-                .await;
+            let read_result = read_via_state(
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_users",
+                    "id": id
+                }),
+            )
+            .await;
 
             assert!(read_result.is_ok());
             if let Ok(CommandResult::Json(read)) = read_result {
@@ -2402,20 +2838,19 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record
-        let create_result = module
-            .handle_command(
-                "data/create",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors",
-                    "data": { "content": "Hello world" }
-                }),
-            )
-            .await;
+        let create_result = create_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors",
+                "data": { "content": "Hello world" }
+            }),
+        )
+        .await;
 
         assert!(
             create_result.is_ok(),
@@ -2430,37 +2865,35 @@ mod tests {
 
         // Index a vector for this record
         let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let index_result = module
-            .handle_command(
-                "vector/index",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors",
-                    "id": record_id,
-                    "embedding": test_embedding
-                }),
-            )
-            .await;
+        let index_result = index_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors",
+                "id": record_id,
+                "embedding": test_embedding
+            }),
+        )
+        .await;
 
         assert!(index_result.is_ok());
         if let Ok(CommandResult::Json(result)) = &index_result {
             assert!(result["success"].as_bool().unwrap_or(false));
         }
 
-        // Get vector stats
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors"
-                }),
-            )
-            .await;
+        // Get vector stats — the typed VectorStats serializes at top level (no
+        // `data` envelope), the new contract the `vector/stats` command returns.
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors"
+            }),
+        )
+        .await;
 
         assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_result {
             assert_eq!(stats["collection"], "test_vectors");
             assert_eq!(stats["totalRecords"], 1);
             assert_eq!(stats["recordsWithVectors"], 1);
@@ -2502,7 +2935,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create records with embeddings
@@ -2513,36 +2946,34 @@ mod tests {
         ];
 
         for (idx, emb) in embeddings.iter().enumerate() {
-            let _ = module
-                .handle_command(
-                    "data/create",
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_search",
-                        "data": {
-                            "content": format!("Document {}", idx),
-                            "embedding": emb
-                        }
-                    }),
-                )
-                .await;
+            let _ = create_via_state(
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_search",
+                    "data": {
+                        "content": format!("Document {}", idx),
+                        "embedding": emb
+                    }
+                }),
+            )
+            .await;
         }
 
         // Search for similar vectors
         let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let search_result = module
-            .handle_command(
-                "vector/search",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_search",
-                    "queryVector": query_vector,
-                    "k": 3,
-                    "threshold": 0.0,
-                    "includeData": true
-                }),
-            )
-            .await;
+        let search_result = search_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_search",
+                "queryVector": query_vector,
+                "k": 3,
+                "threshold": 0.0,
+                "includeData": true
+            }),
+        )
+        .await;
 
         assert!(search_result.is_ok());
         if let Ok(CommandResult::Json(result)) = search_result {
@@ -2581,83 +3012,76 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record with embedding
-        let _ = module
-            .handle_command(
-                "data/create",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache",
-                    "data": {
-                        "embedding": vec![1.0; 384]
-                    }
-                }),
-            )
-            .await;
+        let _ = create_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache",
+                "data": {
+                    "embedding": vec![1.0; 384]
+                }
+            }),
+        )
+        .await;
 
         // First search populates cache
         let query: Vec<f64> = vec![1.0; 384];
-        let _ = module
-            .handle_command(
-                "vector/search",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache",
-                    "queryVector": query,
-                    "k": 1
-                }),
-            )
-            .await;
+        let _ = search_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache",
+                "queryVector": query,
+                "k": 1
+            }),
+        )
+        .await;
 
-        // Verify cache has vectors via stats
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        // Verify cache has vectors via stats (top-level VectorStats, new contract)
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
-        if let Ok(CommandResult::Json(result)) = &stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = &stats_result {
             assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
         }
 
-        // Invalidate cache
-        let invalidate_result = module
-            .handle_command(
-                "vector/invalidate-cache",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        // Invalidate cache — VectorCacheInvalidation carries `cacheInvalidated`
+        // (and the collection), the typed contract `vector/invalidate-cache` returns.
+        let invalidate_result = invalidate_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
         assert!(invalidate_result.is_ok());
         if let Ok(CommandResult::Json(result)) = invalidate_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
             assert!(result["cacheInvalidated"].as_bool().unwrap_or(false));
         }
 
         // Verify cache is empty
-        let stats_after = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        let stats_after = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
-        if let Ok(CommandResult::Json(result)) = stats_after {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_after {
             assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
         }
     }
@@ -2683,21 +3107,20 @@ mod tests {
         };
 
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create 25 records
         for i in 0..25 {
-            let _ = module
-                .handle_command(
-                    "data/create",
-                    json!({
-                        "dbPath": db_path,
-                        "collection": "test_paginated",
-                        "data": { "name": format!("Item {}", i) }
-                    }),
-                )
-                .await;
+            let _ = create_via_state(
+                &module,
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_paginated",
+                    "data": { "name": format!("Item {}", i) }
+                }),
+            )
+            .await;
         }
 
         // Open paginated query with page size 10. Default count_exact=false
@@ -2804,20 +3227,19 @@ mod tests {
             indexes: vec![],
         };
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..7 {
-            let _ = module
-                .handle_command(
-                    "data/create",
-                    json!({
-                        "dbPath": db_path,
-                        "collection": "test_count_exact",
-                        "data": { "name": format!("Item {}", i) }
-                    }),
-                )
-                .await;
+            let _ = create_via_state(
+                &module,
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_count_exact",
+                    "data": { "name": format!("Item {}", i) }
+                }),
+            )
+            .await;
         }
 
         let open_result = module
@@ -2880,60 +3302,55 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create records without embeddings
         for i in 0..5 {
-            let _ = module
-                .handle_command(
-                    "data/create",
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_backfill",
-                        "data": { "content": format!("Test content number {}", i) }
-                    }),
-                )
-                .await;
-        }
-
-        // Run backfill
-        let backfill_result = module
-            .handle_command(
-                "vector/backfill",
+            let _ = create_via_state(
+                &module,
                 json!({
                     "dbPath": &db_path,
                     "collection": "test_backfill",
-                    "textField": "content",
-                    "batchSize": 10
+                    "data": { "content": format!("Test content number {}", i) }
                 }),
             )
             .await;
+        }
+
+        // Run backfill — VectorBackfillStats serializes at top level (the new
+        // contract); counts live directly on the object, not under a `data` envelope.
+        let backfill_result = backfill_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_backfill",
+                "textField": "content",
+                "batchSize": 10
+            }),
+        )
+        .await;
 
         assert!(backfill_result.is_ok(), "Backfill should succeed");
 
-        if let Ok(CommandResult::Json(result)) = backfill_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
-            let data = &result["data"];
-            assert_eq!(data["total"].as_u64().unwrap(), 5);
-            assert_eq!(data["processed"].as_u64().unwrap(), 5);
-            assert_eq!(data["failed"].as_u64().unwrap(), 0);
+        if let Ok(CommandResult::Json(stats)) = backfill_result {
+            assert_eq!(stats["total"].as_u64().unwrap(), 5);
+            assert_eq!(stats["processed"].as_u64().unwrap(), 5);
+            assert_eq!(stats["failed"].as_u64().unwrap(), 0);
         }
 
         // Verify embeddings were added
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_backfill"
-                }),
-            )
-            .await;
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_backfill"
+            }),
+        )
+        .await;
 
         assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_result {
             assert_eq!(stats["recordsWithVectors"].as_u64().unwrap(), 5);
             assert!(stats["vectorDimensions"].as_u64().unwrap() > 0);
         }
@@ -2944,7 +3361,7 @@ mod tests {
         // Test identical vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim - 1.0).abs() < 0.001,
             "Identical vectors should have similarity 1.0"
@@ -2953,7 +3370,7 @@ mod tests {
         // Test orthogonal vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             sim.abs() < 0.001,
             "Orthogonal vectors should have similarity 0.0"
@@ -2962,7 +3379,7 @@ mod tests {
         // Test opposite vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim + 1.0).abs() < 0.001,
             "Opposite vectors should have similarity -1.0"
@@ -2971,7 +3388,7 @@ mod tests {
         // Test with 384-dimension vectors (typical embedding size)
         let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
         let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim - 1.0).abs() < 0.001,
             "Identical 384-dim vectors should have similarity 1.0"
@@ -3017,20 +3434,19 @@ mod tests {
             }],
             indexes: vec![],
         };
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..rows {
-            let _ = module
-                .handle_command(
-                    "data/create",
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_handle_cursor",
-                        "data": { "name": format!("Item {i}") }
-                    }),
-                )
-                .await;
+            let _ = create_via_state(
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_handle_cursor",
+                    "data": { "name": format!("Item {i}") }
+                }),
+            )
+            .await;
         }
         (module, tmp, db_path)
     }
@@ -3201,8 +3617,7 @@ mod tests {
             .await
             .expect_err("empty params must surface a typed error");
         assert!(
-            err.contains("neither `handle`")
-                && err.contains("nor `queryId`"),
+            err.contains("neither `handle`") && err.contains("nor `queryId`"),
             "error must name both supported shapes: {err}"
         );
     }
@@ -3346,53 +3761,52 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-    //
-    // Per Joel 2026-05-30: "Each persona exists in its own threads."
-    //
-    // The DataModule is registered ONCE; every persona's thread calls
-    // its `&self` handlers concurrently. The paginated-query state
-    // map is a `DashMap` precisely so concurrent cursor activity
-    // doesn't serialize at a module-level mutex. The tests below
-    // pin the invariants the substrate is designed to uphold under
-    // that load — they are not exercising rare paths, they are the
-    // production scenario.
-    //
-    // Every test uses `flavor = "multi_thread", worker_threads = 4`
-    // so tasks actually preempt each other on distinct OS threads.
-    // Single-threaded tokio would silently serialize and pass even
-    // if the substrate had a data race.
+        //
+        // Per Joel 2026-05-30: "Each persona exists in its own threads."
+        //
+        // The DataModule is registered ONCE; every persona's thread calls
+        // its `&self` handlers concurrently. The paginated-query state
+        // map is a `DashMap` precisely so concurrent cursor activity
+        // doesn't serialize at a module-level mutex. The tests below
+        // pin the invariants the substrate is designed to uphold under
+        // that load — they are not exercising rare paths, they are the
+        // production scenario.
+        //
+        // Every test uses `flavor = "multi_thread", worker_threads = 4`
+        // so tasks actually preempt each other on distinct OS threads.
+        // Single-threaded tokio would silently serialize and pass even
+        // if the substrate had a data race.
 
-    /// Build a fresh `Arc<DataModule>` + tempdir + schema + N seeded
-    /// rows for a concurrency test. Returns the Arc so callers can
-    /// `.clone()` it into spawned tasks without lifetime gymnastics.
-    /// The tempdir's lifetime extends past the test body when bound
-    /// to a `let _tmp = ...` binding so the SQLite file stays alive
-    /// for the duration of every spawned task.
-    async fn setup_concurrent(
-        suffix: &str,
-        rows: usize,
-    ) -> (Arc<DataModule>, tempfile::TempDir, String) {
-        let module = Arc::new(DataModule::new());
-        let (tmp, db_path) = test_db_path(suffix);
-        let schema = CollectionSchema {
-            collection: "test_handle_cursor".to_string(),
-            fields: vec![crate::orm::types::SchemaField {
-                name: "name".to_string(),
-                field_type: crate::orm::types::FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            }],
-            indexes: vec![],
-        };
-        let adapter = module.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
-        for i in 0..rows {
-            let _ = module
-                .handle_command(
-                    "data/create",
+        /// Build a fresh `Arc<DataModule>` + tempdir + schema + N seeded
+        /// rows for a concurrency test. Returns the Arc so callers can
+        /// `.clone()` it into spawned tasks without lifetime gymnastics.
+        /// The tempdir's lifetime extends past the test body when bound
+        /// to a `let _tmp = ...` binding so the SQLite file stays alive
+        /// for the duration of every spawned task.
+        async fn setup_concurrent(
+            suffix: &str,
+            rows: usize,
+        ) -> (Arc<DataModule>, tempfile::TempDir, String) {
+            let module = Arc::new(DataModule::new());
+            let (tmp, db_path) = test_db_path(suffix);
+            let schema = CollectionSchema {
+                collection: "test_handle_cursor".to_string(),
+                fields: vec![crate::orm::types::SchemaField {
+                    name: "name".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            };
+            let adapter = module.state.get_adapter(&db_path).await.unwrap();
+            let _ = adapter.ensure_schema(schema).await;
+            for i in 0..rows {
+                let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_handle_cursor",
@@ -3400,260 +3814,500 @@ mod tests {
                     }),
                 )
                 .await;
+            }
+            (module, tmp, db_path)
         }
-        (module, tmp, db_path)
-    }
 
-    /// N personas open their own cursor at the same time. Every cursor
-    /// must mint a DISTINCT HandleRef.id (UUID collision check), every
-    /// cursor must be independently reachable via query-next, and
-    /// closing one must NOT close any other.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn cursors_are_isolated_under_concurrent_open_and_next() {
-        const PARALLEL: usize = 20;
-        // 10 rows seeded → pageSize 3 means each cursor's first page
-        // is a full 3-item page (3 + 3 + 3 + 1 = 4 pages total).
-        let (module, _tmp, db_path) = setup_concurrent("conc_isolated", 10).await;
+        /// N personas open their own cursor at the same time. Every cursor
+        /// must mint a DISTINCT HandleRef.id (UUID collision check), every
+        /// cursor must be independently reachable via query-next, and
+        /// closing one must NOT close any other.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn cursors_are_isolated_under_concurrent_open_and_next() {
+            const PARALLEL: usize = 20;
+            // 10 rows seeded → pageSize 3 means each cursor's first page
+            // is a full 3-item page (3 + 3 + 3 + 1 = 4 pages total).
+            let (module, _tmp, db_path) = setup_concurrent("conc_isolated", 10).await;
 
-        // Phase 1: every persona opens its own cursor in parallel.
-        let mut open_tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let module = module.clone();
-            let db_path = db_path.clone();
-            open_tasks.push(tokio::spawn(async move {
-                let result = module
-                    .handle_command(
-                        "data/query-open",
-                        json!({
-                            "dbPath": db_path,
-                            "collection": "test_handle_cursor",
-                            "pageSize": 3,
-                        }),
-                    )
-                    .await
-                    .expect("query-open must succeed");
-                let CommandResult::Json(v) = result else {
-                    panic!("expected Json")
-                };
-                v["handle"].clone()
-            }));
-        }
-        let handles: Vec<Value> = futures::future::join_all(open_tasks)
-            .await
-            .into_iter()
-            .map(|h| h.expect("task must not panic"))
-            .collect();
+            // Phase 1: every persona opens its own cursor in parallel.
+            let mut open_tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let module = module.clone();
+                let db_path = db_path.clone();
+                open_tasks.push(tokio::spawn(async move {
+                    let result = module
+                        .handle_command(
+                            "data/query-open",
+                            json!({
+                                "dbPath": db_path,
+                                "collection": "test_handle_cursor",
+                                "pageSize": 3,
+                            }),
+                        )
+                        .await
+                        .expect("query-open must succeed");
+                    let CommandResult::Json(v) = result else {
+                        panic!("expected Json")
+                    };
+                    v["handle"].clone()
+                }));
+            }
+            let handles: Vec<Value> = futures::future::join_all(open_tasks)
+                .await
+                .into_iter()
+                .map(|h| h.expect("task must not panic"))
+                .collect();
 
-        // Every minted cursor must have a distinct id.
-        let mut ids: Vec<String> = handles
-            .iter()
-            .map(|h| h["id"].as_str().unwrap().to_string())
-            .collect();
-        ids.sort();
-        let before = ids.len();
-        ids.dedup();
-        assert_eq!(
-            ids.len(),
-            before,
-            "concurrent query-open MUST produce distinct cursor UUIDs ({} dups)",
-            before - ids.len()
-        );
-        assert_eq!(ids.len(), PARALLEL);
-
-        // Phase 2: every persona advances its OWN cursor in parallel.
-        // Each cursor's first query-next must return a full page (3
-        // items); page numbering must be per-cursor (always 1 for the
-        // first call), not cross-contaminated.
-        let mut next_tasks = Vec::with_capacity(PARALLEL);
-        for handle in &handles {
-            let module = module.clone();
-            let handle = handle.clone();
-            next_tasks.push(tokio::spawn(async move {
-                let result = module
-                    .handle_command("data/query-next", json!({ "handle": handle }))
-                    .await
-                    .expect("query-next must succeed");
-                let CommandResult::Json(v) = result else {
-                    panic!("expected Json")
-                };
-                (
-                    v["data"]["items"].as_array().unwrap().len(),
-                    v["data"]["pageNumber"].as_u64().unwrap(),
-                )
-            }));
-        }
-        let next_results: Vec<(usize, u64)> = futures::future::join_all(next_tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        for (i, (items, page)) in next_results.iter().enumerate() {
+            // Every minted cursor must have a distinct id.
+            let mut ids: Vec<String> = handles
+                .iter()
+                .map(|h| h["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            let before = ids.len();
+            ids.dedup();
             assert_eq!(
+                ids.len(),
+                before,
+                "concurrent query-open MUST produce distinct cursor UUIDs ({} dups)",
+                before - ids.len()
+            );
+            assert_eq!(ids.len(), PARALLEL);
+
+            // Phase 2: every persona advances its OWN cursor in parallel.
+            // Each cursor's first query-next must return a full page (3
+            // items); page numbering must be per-cursor (always 1 for the
+            // first call), not cross-contaminated.
+            let mut next_tasks = Vec::with_capacity(PARALLEL);
+            for handle in &handles {
+                let module = module.clone();
+                let handle = handle.clone();
+                next_tasks.push(tokio::spawn(async move {
+                    let result = module
+                        .handle_command("data/query-next", json!({ "handle": handle }))
+                        .await
+                        .expect("query-next must succeed");
+                    let CommandResult::Json(v) = result else {
+                        panic!("expected Json")
+                    };
+                    (
+                        v["data"]["items"].as_array().unwrap().len(),
+                        v["data"]["pageNumber"].as_u64().unwrap(),
+                    )
+                }));
+            }
+            let next_results: Vec<(usize, u64)> = futures::future::join_all(next_tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            for (i, (items, page)) in next_results.iter().enumerate() {
+                assert_eq!(
                 *items, 3,
                 "cursor {i}: first page must return pageSize items independently of sibling cursors"
             );
-            assert_eq!(
-                *page, 1,
-                "cursor {i}: first call's pageNumber must be 1 — per-cursor state, not shared"
-            );
-        }
+                assert_eq!(
+                    *page, 1,
+                    "cursor {i}: first call's pageNumber must be 1 — per-cursor state, not shared"
+                );
+            }
 
-        // Phase 3: close half the cursors in parallel. The OTHER half
-        // must still be usable — close MUST be per-cursor.
-        let (to_close, to_keep): (Vec<_>, Vec<_>) = handles
-            .iter()
-            .enumerate()
-            .partition(|(i, _)| i % 2 == 0);
+            // Phase 3: close half the cursors in parallel. The OTHER half
+            // must still be usable — close MUST be per-cursor.
+            let (to_close, to_keep): (Vec<_>, Vec<_>) =
+                handles.iter().enumerate().partition(|(i, _)| i % 2 == 0);
 
-        let mut close_tasks = Vec::with_capacity(to_close.len());
-        for (_, handle) in &to_close {
-            let module = module.clone();
-            let handle = (*handle).clone();
-            close_tasks.push(tokio::spawn(async move {
-                module
-                    .handle_command("data/query-close", json!({ "handle": handle }))
+            let mut close_tasks = Vec::with_capacity(to_close.len());
+            for (_, handle) in &to_close {
+                let module = module.clone();
+                let handle = (*handle).clone();
+                close_tasks.push(tokio::spawn(async move {
+                    module
+                        .handle_command("data/query-close", json!({ "handle": handle }))
+                        .await
+                }));
+            }
+            for r in futures::future::join_all(close_tasks).await {
+                r.unwrap().expect("close must succeed");
+            }
+
+            // Closed cursors fail loud on next.
+            for (_, handle) in &to_close {
+                let err = module
+                    .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
                     .await
-            }));
-        }
-        for r in futures::future::join_all(close_tasks).await {
-            r.unwrap().expect("close must succeed");
-        }
+                    .expect_err("closed cursor's next must Err");
+                assert!(
+                    err.contains("handle not found"),
+                    "closed cursor must surface handle-not-found, got: {err}"
+                );
+            }
 
-        // Closed cursors fail loud on next.
-        for (_, handle) in &to_close {
-            let err = module
-                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
-                .await
-                .expect_err("closed cursor's next must Err");
-            assert!(
-                err.contains("handle not found"),
-                "closed cursor must surface handle-not-found, got: {err}"
-            );
-        }
-
-        // Kept cursors still serve their next page (page 2).
-        for (i, handle) in &to_keep {
-            let result = module
-                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
-                .await
-                .unwrap_or_else(|e| panic!("kept cursor {i} must still work: {e}"));
-            let CommandResult::Json(v) = result else {
-                panic!("expected Json")
-            };
-            assert_eq!(
+            // Kept cursors still serve their next page (page 2).
+            for (i, handle) in &to_keep {
+                let result = module
+                    .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
+                    .await
+                    .unwrap_or_else(|e| panic!("kept cursor {i} must still work: {e}"));
+                let CommandResult::Json(v) = result else {
+                    panic!("expected Json")
+                };
+                assert_eq!(
                 v["data"]["pageNumber"], 2,
                 "kept cursor {i}: page 2 follows page 1 — closing sibling cursors did NOT touch this one's state"
             );
-        }
-    }
-
-    /// Same cursor reached by N concurrent `query-next` calls (whether
-    /// from one persona retrying or two callers sharing a handle): the
-    /// substrate MUST serialize them via the per-cursor mutex so the
-    /// cursor advances atomically. Each non-tail page must be served
-    /// AT MOST ONCE.
-    ///
-    /// Originally caught a real substrate kink: without the per-cursor
-    /// mutex, all N concurrent callers read the same `current_page`
-    /// snapshot and all returned pageNumber=1. The fix wrapped each
-    /// cursor's state in a `tokio::sync::Mutex` so the read-then-
-    /// async-then-write window is atomic per cursor.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn same_cursor_concurrent_next_does_not_corrupt_state() {
-        const PARALLEL: usize = 8;
-        // 30 items at pageSize 5 = 6 pages. With the per-cursor mutex,
-        // each non-tail page (1..=5) is served exactly once and page 6
-        // is the terminal page (hasMore=false); any extra concurrent
-        // calls after that observe the empty-tail response.
-        let (module, _tmp, db_path) = setup_concurrent("conc_same_cursor", 30).await;
-
-        let open = module
-            .handle_command(
-                "data/query-open",
-                json!({
-                    "dbPath": db_path,
-                    "collection": "test_handle_cursor",
-                    "pageSize": 5,
-                }),
-            )
-            .await
-            .expect("open must succeed");
-        let CommandResult::Json(open) = open else {
-            panic!("expected Json")
-        };
-        let handle = open["handle"].clone();
-
-        // Fire PARALLEL concurrent next calls against the SAME handle.
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let module = module.clone();
-            let handle = handle.clone();
-            tasks.push(tokio::spawn(async move {
-                module
-                    .handle_command("data/query-next", json!({ "handle": handle }))
-                    .await
-            }));
-        }
-        let outcomes: Vec<Result<CommandResult, String>> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        // No call should error from concurrency (DashMap's per-shard
-        // locking handles the contention). After the cursor exhausts,
-        // the substrate returns success with `hasMore=false` and an
-        // empty items list — not an error.
-        for (i, outcome) in outcomes.iter().enumerate() {
-            assert!(
-                outcome.is_ok(),
-                "concurrent next call {i} must not Err: {:?}",
-                outcome
-            );
+            }
         }
 
-        // The 6 valid pages + however many empty-tail responses fired
-        // before the cursor exhausted. Page numbers must be monotone
-        // when sorted; no duplicates of a non-tail page (each non-tail
-        // page can only be served ONCE because the cursor advances).
-        let mut page_numbers: Vec<u64> = outcomes
-            .iter()
-            .filter_map(|o| o.as_ref().ok())
-            .filter_map(|r| match r {
-                CommandResult::Json(v) => v["data"]["pageNumber"].as_u64(),
-                _ => None,
-            })
-            .collect();
-        page_numbers.sort();
+        /// Same cursor reached by N concurrent `query-next` calls (whether
+        /// from one persona retrying or two callers sharing a handle): the
+        /// substrate MUST serialize them via the per-cursor mutex so the
+        /// cursor advances atomically. Each non-tail page must be served
+        /// AT MOST ONCE.
+        ///
+        /// Originally caught a real substrate kink: without the per-cursor
+        /// mutex, all N concurrent callers read the same `current_page`
+        /// snapshot and all returned pageNumber=1. The fix wrapped each
+        /// cursor's state in a `tokio::sync::Mutex` so the read-then-
+        /// async-then-write window is atomic per cursor.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn same_cursor_concurrent_next_does_not_corrupt_state() {
+            const PARALLEL: usize = 8;
+            // 30 items at pageSize 5 = 6 pages. With the per-cursor mutex,
+            // each non-tail page (1..=5) is served exactly once and page 6
+            // is the terminal page (hasMore=false); any extra concurrent
+            // calls after that observe the empty-tail response.
+            let (module, _tmp, db_path) = setup_concurrent("conc_same_cursor", 30).await;
 
-        // Every served page number must be in [1, 6] (we have 30 items
-        // at pageSize 5 → 6 real pages, all subsequent calls see page
-        // 6 again because the cursor stays at exhausted).
-        for &pn in &page_numbers {
-            assert!(
-                (1..=6).contains(&pn),
-                "concurrent next produced an out-of-range pageNumber: {pn} (expected 1..=6)"
-            );
-        }
+            let open = module
+                .handle_command(
+                    "data/query-open",
+                    json!({
+                        "dbPath": db_path,
+                        "collection": "test_handle_cursor",
+                        "pageSize": 5,
+                    }),
+                )
+                .await
+                .expect("open must succeed");
+            let CommandResult::Json(open) = open else {
+                panic!("expected Json")
+            };
+            let handle = open["handle"].clone();
 
-        // CRITICAL: each non-tail page (1..=5) must appear AT MOST
-        // once — DashMap's `get_mut` serializes mutators, so the
-        // cursor only advances through each page once. (Page 6 may
-        // appear multiple times because once exhausted the cursor
-        // stops advancing but keeps returning the empty-tail response
-        // — that's the contract.)
-        let mut non_tail_counts = std::collections::HashMap::new();
-        for &pn in page_numbers.iter().filter(|&&pn| pn < 6) {
-            *non_tail_counts.entry(pn).or_insert(0) += 1;
-        }
-        for (page, count) in non_tail_counts {
-            assert_eq!(
+            // Fire PARALLEL concurrent next calls against the SAME handle.
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let module = module.clone();
+                let handle = handle.clone();
+                tasks.push(tokio::spawn(async move {
+                    module
+                        .handle_command("data/query-next", json!({ "handle": handle }))
+                        .await
+                }));
+            }
+            let outcomes: Vec<Result<CommandResult, String>> = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            // No call should error from concurrency (DashMap's per-shard
+            // locking handles the contention). After the cursor exhausts,
+            // the substrate returns success with `hasMore=false` and an
+            // empty items list — not an error.
+            for (i, outcome) in outcomes.iter().enumerate() {
+                assert!(
+                    outcome.is_ok(),
+                    "concurrent next call {i} must not Err: {:?}",
+                    outcome
+                );
+            }
+
+            // The 6 valid pages + however many empty-tail responses fired
+            // before the cursor exhausted. Page numbers must be monotone
+            // when sorted; no duplicates of a non-tail page (each non-tail
+            // page can only be served ONCE because the cursor advances).
+            let mut page_numbers: Vec<u64> = outcomes
+                .iter()
+                .filter_map(|o| o.as_ref().ok())
+                .filter_map(|r| match r {
+                    CommandResult::Json(v) => v["data"]["pageNumber"].as_u64(),
+                    _ => None,
+                })
+                .collect();
+            page_numbers.sort();
+
+            // Every served page number must be in [1, 6] (we have 30 items
+            // at pageSize 5 → 6 real pages, all subsequent calls see page
+            // 6 again because the cursor stays at exhausted).
+            for &pn in &page_numbers {
+                assert!(
+                    (1..=6).contains(&pn),
+                    "concurrent next produced an out-of-range pageNumber: {pn} (expected 1..=6)"
+                );
+            }
+
+            // CRITICAL: each non-tail page (1..=5) must appear AT MOST
+            // once — DashMap's `get_mut` serializes mutators, so the
+            // cursor only advances through each page once. (Page 6 may
+            // appear multiple times because once exhausted the cursor
+            // stops advancing but keeps returning the empty-tail response
+            // — that's the contract.)
+            let mut non_tail_counts = std::collections::HashMap::new();
+            for &pn in page_numbers.iter().filter(|&&pn| pn < 6) {
+                *non_tail_counts.entry(pn).or_insert(0) += 1;
+            }
+            for (page, count) in non_tail_counts {
+                assert_eq!(
                 count, 1,
                 "page {page} served {count} times — the cursor advanced through it MORE than once, indicating a lost serialization"
             );
+            }
         }
-    }
     } // end mod stress
+}
 
+// ── SDK contract: data/list (sdk_codegen) ──────────────────────────
+//
+// The Rust-rooted contract for `data/list` — the persona/UI-facing collection
+// read. Per the single-source principle the TYPE leads and the handler conforms:
+// `data/list` is, by contract, "collection (+ optional filter/ordering/paging)
+// → items + accurate total". The typed command in `commands/data/list.rs` drives
+// [`DataState::list`], which honors exactly this shape. There is deliberately NO
+// `db_path` here: a persona reading rooms or messages must never reason about a
+// database handle — the shared "main" store is the default, and power callers
+// target a specific store via the optional `handle`.
+
+/// Sort direction for a `data/list` ordering clause.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/SortDir.ts")]
+pub enum SortDir {
+    Asc,
+    Desc,
+}
+
+/// One ordering clause: a field + a direction.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/OrderByClause.ts"
+)]
+pub struct OrderByClause {
+    pub field: String,
+    pub direction: SortDir,
+}
+
+/// Params for `data/list` — read records from a collection.
+///
+/// Persona/UI-facing contract: name the `collection` and (optionally) an
+/// intuitive plain-JSON `filter`, ordering, and paging. There is deliberately
+/// no database handle to reason about — the shared "main" store is the default.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataListParams.ts"
+)]
+pub struct DataListParams {
+    /// The collection to read (e.g. "rooms", "users", "messages").
+    pub collection: String,
+    /// Optional field filter as plain JSON: `{"roomId": "general"}` for an
+    /// equality match, `{"age": {"$gt": 18}}` for an operator match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub filter: Option<serde_json::Value>,
+    /// Optional ordering clauses, applied in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sort: Option<Vec<OrderByClause>>,
+    /// Max records to return. Omit for all matching (bounded by the store).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+    /// Records to skip before returning (paging alongside `limit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub offset: Option<u32>,
+    /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
+    /// "@persona:<slug>" or "@metrics" to target a specific store.
+    ///
+    /// WIRE NOTE: on the flat wire the `handle` key is CLAIMED by the
+    /// [`CommandRequest`](crate::runtime::CommandRequest) envelope (a kernel
+    /// `HandleRef`), so a string here never reaches these params under that
+    /// name — callers pass the storage handle as `dbPath` (the alias below),
+    /// same as `data/create`.
+    #[serde(default, alias = "dbPath", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub handle: Option<String>,
+}
+
+/// Result of `data/list` — the matching records + an accurate total.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataListResult.ts"
+)]
+pub struct DataListResult {
+    /// The matching records (each carries id, collection, data, metadata).
+    #[ts(type = "Array<unknown>")]
+    pub items: Vec<serde_json::Value>,
+    /// Total records matching the filter (SQL COUNT — independent of `limit`).
+    pub total: u32,
+}
+
+/// Output of `adapter/info` — the storage adapter's identity plus its full
+/// capability surface for a given handle. Subsumes the old `adapter/capabilities`
+/// (capabilities are a field here, not a parallel command).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/AdapterInfo.ts")]
+pub struct AdapterInfo {
+    /// The adapter implementation name (e.g. "sqlite", "postgres").
+    pub adapter: String,
+    /// The storage handle this info describes.
+    pub handle: String,
+    /// What the adapter can do (transactions, joins, indexing, vector search, …).
+    pub capabilities: crate::orm::adapter::AdapterCapabilities,
+}
+
+// ============================================================================
+// vector/* typed outputs
+//
+// The vector handlers once returned ad-hoc `json!` blobs. As typed commands
+// they carry real result structs — so the persona surface, codegen, and `uu`
+// all see the shape, and a caller can deserialize without guessing field names.
+// ============================================================================
+
+/// A single hit from `vector/search` — a record id with its cosine `score`
+/// and the `distance` (`1 - score`). `data` is the full record, populated only
+/// when the caller passed `includeData`.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorHit.ts")]
+pub struct VectorHit {
+    pub id: String,
+    pub score: f64,
+    pub distance: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Output of `vector/search` — the top-k nearest records by cosine similarity,
+/// plus the `corpus_size` the search ran against (the recall context: a small
+/// corpus means low confidence in the ranking).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorSearchResults.ts"
+)]
+pub struct VectorSearchResults {
+    /// The ranked hits (highest score first), at most `k`.
+    pub results: Vec<VectorHit>,
+    /// Number of hits returned (`results.len()`).
+    pub count: usize,
+    /// Number of vectors the search scored against.
+    pub corpus_size: usize,
+}
+
+/// Output of `vector/stats` — how many records in a collection carry an
+/// embedding, the vector dimensionality, and the in-memory cache occupancy.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorStats.ts"
+)]
+pub struct VectorStats {
+    pub collection: String,
+    /// Total records in the collection.
+    pub total_records: usize,
+    /// Records that carry a non-empty embedding.
+    pub records_with_vectors: usize,
+    /// Dimensionality of the embeddings (0 if none indexed).
+    pub vector_dimensions: usize,
+    /// Vectors currently held in the in-memory similarity cache.
+    pub cached_vectors: usize,
+    /// RFC-3339 timestamp this snapshot was computed.
+    pub last_updated: String,
+}
+
+/// Output of `vector/invalidate-cache` — whether a cached vector set for the
+/// collection existed and was dropped.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorCacheInvalidation.ts"
+)]
+pub struct VectorCacheInvalidation {
+    pub collection: String,
+    /// True if a cache entry existed and was removed.
+    pub cache_invalidated: bool,
+}
+
+/// Output of `vector/backfill` — the per-collection tally of an embedding
+/// backfill pass: how many records were embedded, already had a vector, or
+/// failed.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorBackfillStats.ts"
+)]
+pub struct VectorBackfillStats {
+    pub collection: String,
+    /// Records examined.
+    pub total: usize,
+    /// Records freshly embedded this pass.
+    pub processed: usize,
+    /// Records skipped because they already had an embedding.
+    pub skipped: usize,
+    /// Records the embedder produced no signal for, or whose write failed.
+    pub failed: usize,
+    /// Wall-clock duration of the pass, in milliseconds.
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+}
+
+/// Output of `migration/cutover` — the connection swap that redirected the active
+/// backend to `active`, recording `previous` for a later rollback.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationCutover.ts"
+)]
+pub struct MigrationCutover {
+    /// The connection string that was swapped out (stored for rollback).
+    pub previous: String,
+    /// The connection string now active.
+    pub active: String,
+    /// The adapter backing the newly-active connection.
+    pub adapter: String,
+}
+
+/// Output of `migration/rollback` — the reversion from `rolledBackFrom` to the
+/// previously-active `rolledBackTo` connection.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationRollback.ts"
+)]
+pub struct MigrationRollback {
+    /// The connection string that was swapped out by the rollback.
+    pub rolled_back_from: String,
+    /// The connection string restored to active.
+    pub rolled_back_to: String,
+    /// The adapter backing the restored connection.
+    pub adapter: String,
 }

@@ -1,0 +1,22 @@
+{
+  "//": "Typecheck config for @continuum/patterns. Mirrors @continuum/chat-view: framework-free and platform-neutral, so NO DOM lib — it must typecheck identically under a browser bundler (apps/web), Node (apps/tui), and any future consumer. tsc is --noEmit typecheck only.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}

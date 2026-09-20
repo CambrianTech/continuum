@@ -1,0 +1,229 @@
+name: Continuum Rust Tests
+
+on:
+  pull_request:
+  push:
+    branches: [canary, main]
+
+concurrency:
+  group: continuum-rust-tests-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select existing checks
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      installer: ${{ steps.select.outputs.installer }}
+    steps:
+      - uses: actions/github-script@v7
+        id: select
+        with:
+          script: |
+            // Keep required jobs reporting on every PR; unknown/mixed changes run everything.
+            let rust = true, installer = true;
+            if (context.eventName === 'pull_request') {
+              try {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo, pull_number: context.issue.number, per_page: 100
+                });
+                // Include rename sources: moving Rust into docs still changes Rust.
+                const paths = files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
+                if (files.length > 0 && files.length < 3000 &&
+                    files.length === context.payload.pull_request.changed_files) {
+                  const docs = p => (p.startsWith('docs/') || p.endsWith('.md')) && !p.startsWith('docs/genome/');
+                  const windows = p => /^(install\.ps1|tools\/scripts\/(lib\/windows-(service|prepared)\.ps1|tests\/windows-service\.test\.ps1|register-core-service\.ps1|run-service-hidden\.ps1))$/.test(p);
+                  rust = paths.some(p => !docs(p) && !windows(p));
+                  installer = rust || paths.some(windows);
+                }
+              } catch (error) {
+                core.warning(`Cannot classify changes; running all checks: ${error.message}`);
+              }
+            }
+            core.setOutput('rust', String(rust));
+            core.setOutput('installer', String(installer));
+
+  cargo-test-continuum-core:
+    name: cargo test -p continuum-core --lib
+    needs: changes
+    # A failed selector must not turn required checks into successful skips.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: ${{ needs.changes.outputs.rust != 'false' && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_DB: continuum_test
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.rust != 'false'
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cargo --version
+
+      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+            libclang-dev clang build-essential \
+            libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: continuum-rust-1.95
+          cache-on-failure: true
+
+      - name: cargo test -p continuum-core --lib
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          bash tools/scripts/tests/start-server-build-only.test.sh
+          python3 tools/scripts/tests/test_ci_lib_test_artifact.py
+          # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
+          # compiler-message records, which the render-diagnostics form sends to stderr
+          # as text instead. The artifact script reads compiler-artifact records, present
+          # in both.
+          cargo test -p continuum-core --lib --no-run --message-format=json > lib-artifacts.jsonl
+          # Warning debt is monotonic: the same stream, counted against
+          # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
+          bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
+          python3 tools/scripts/ci-lib-test-artifact.py lib-artifacts.jsonl \
+            core/continuum-core "$(rustc --print target-libdir)" > lib-test.env
+          cat lib-test.env >> "$GITHUB_ENV"
+          while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
+          cd core/continuum-core
+          LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
+            --skip 'gpu::memory_manager::' \
+            --skip 'modules::gpu::' \
+            --skip 'modules::persona_allocator::' \
+            --skip 'persona::allocator::tests::test_allocate'
+
+      # These tests share a database schema; run serially and reject zero matches.
+      - name: cargo test -p continuum-core --lib (Postgres, --ignored)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
+            "$CONTINUUM_LIB_TEST" orm::postgres --ignored --test-threads=1) 2>&1 | tee pg.log
+          passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
+          echo "postgres tests passed: ${passed:-0}"
+          if [ "${passed:-0}" -lt 1 ]; then
+            echo "::error::No Postgres tests ran. The service, the filter or the #[ignore] markers disagree — a green step here would be a lie about an unverified adapter."
+            exit 1
+          fi
+
+      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
+
+      - name: Verify protocol/typescript/ in sync with Rust source
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          if ! git diff --exit-code protocol/typescript/ protocol/schema/; then
+            echo "::error::ts-rs binding drift detected. Some Rust types"
+            echo "were modified but their regenerated TypeScript bindings"
+            echo "(in protocol/typescript/) were not committed."
+            echo ""
+            echo "Fix: run cargo test locally to regenerate, then:"
+            echo "  git add protocol/typescript/"
+            echo "  git commit --amend --no-edit"
+            echo "  git push --force-with-lease"
+            echo ""
+            echo "Or: include the regenerated .ts files in a follow-up commit."
+            exit 1
+          fi
+          echo "✓ protocol/typescript/ is in sync with Rust source"
+
+  # Required legacy context mirrors the drift check above; never compile twice.
+  ts-rs-binding-drift-detector:
+    name: ts-rs binding drift detector
+    needs: cargo-test-continuum-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Mirror the binding-drift verdict from cargo-test-continuum-core
+        run: |
+          echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
+          echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
+          echo ""
+          echo "That job passed, so the drift check within it passed."
+          echo "This job publishes the required status context; it does not re-check."
+
+  cargo-check-windows:
+    name: cargo check windows-msvc (lib + tests)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.installer != 'false'
+        with:
+          submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: continuum-rust-windows-1.95
+          cache-on-failure: true
+      - name: cargo check (lib + test harness, incl. test-fixtures targets)
+        if: needs.changes.outputs.rust != 'false'
+        run: cargo check -p continuum-core --lib --tests --features test-fixtures
+      - name: Windows installed release and supervisor regressions
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: ./tools/scripts/tests/windows-service.test.ps1
+      - name: Warm builds preserve live services
+        if: needs.changes.outputs.installer != 'false'
+        shell: bash
+        run: bash tools/scripts/tests/start-server-build-only.test.sh
+      - name: Windows native cache and engine ownership regressions
+        if: needs.changes.outputs.rust != 'false'
+        shell: powershell
+        run: |
+          $helperTest = Join-Path $env:RUNNER_TEMP 'continuum-msvc-cache-test.exe'
+          rustc --edition 2021 --test core/llama/msvc_cache.rs -o $helperTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $helperTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ownerTest = Join-Path $env:RUNNER_TEMP 'continuum-owned-engine-test.exe'
+          rustc --edition 2021 --test core/continuum-core/src/bin/continuum/owned_engines.rs -o $ownerTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $ownerTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

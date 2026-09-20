@@ -18,7 +18,7 @@
 
 use dashmap::DashMap;
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::OnceCell;
 
 /// A lazy-computed value. Computed once, shared via Arc.
@@ -133,6 +133,30 @@ impl SharedCompute {
     pub fn key_count(&self, scope: &str) -> usize {
         self.cache.get(scope).map(|m| m.len()).unwrap_or(0)
     }
+}
+
+/// The ONE process-global compute-once/share-many cache.
+///
+/// Media derivatives (a frame's scaled thumbnails, its text description, its
+/// vision-encode KV) are keyed by content hash, so two personas looking at the
+/// same frame must share ALL of its derivatives — the compute-once/share-many
+/// property that IS the multi-persona vision moat. A *parallel* cache would
+/// silently double every describe/scale, so the substrate keeps exactly one
+/// instance ([[media-is-compute-once-zero-copy-hardware-grade]],
+/// [[vision-replication-is-the-multipersona-moat-vs-cloud]]).
+///
+/// [`Runtime::new`](crate::runtime::Runtime::new) ADOPTS this instance for its own
+/// `compute` handle, so a module reaching it via `ModuleContext.compute` and a
+/// persona reaching it via this accessor see the SAME cache — the LiveKit media
+/// ingest that warms a frame's cells and the `MediaPerceptionSource` that reads
+/// them cannot diverge. Lazily created; the cache is content-addressed and pure,
+/// so sharing across every consumer (including the substrate `Runtime`) is
+/// correct by construction.
+pub fn global() -> Arc<SharedCompute> {
+    static GLOBAL: OnceLock<Arc<SharedCompute>> = OnceLock::new();
+    GLOBAL
+        .get_or_init(|| Arc::new(SharedCompute::new()))
+        .clone()
 }
 
 #[cfg(test)]

@@ -61,6 +61,18 @@ pub trait AdmissionPersistenceSink: Send + Sync {
     /// `record_recall_hit` mutates the in-memory DashMap. The
     /// metadata snapshot reflects the post-mutation state.
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata);
+
+    /// Called from `AdmissionState::redact` after an already-admitted engram's
+    /// `content`/`recall_keys` are rewritten in place (a policy scrubbed an
+    /// answer key / secret / PII out of it). This is a CONTENT update, not a new
+    /// admission and not a metadata update — the engram keeps its id, salience,
+    /// and recall history; only its text changed. The durable row must be
+    /// re-saved so the scrub survives restart (else the un-redacted content
+    /// rehydrates from disk).
+    ///
+    /// Default is a no-op so in-memory-only sinks (Noop) and any future adapter
+    /// stay correct without change; persistence-backed sinks override it.
+    fn observe_content_update(&self, _engram: &Engram) {}
 }
 
 // ─── NoopSink ──────────────────────────────────────────────────────────
@@ -217,6 +229,28 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
             }
         });
     }
+
+    fn observe_content_update(&self, engram: &Engram) {
+        // Re-save the engram row under its EXISTING id (OrmStore::save is an
+        // upsert keyed by engram_id, same call the admission path uses). Only
+        // the content/recall_keys changed; metadata is untouched, so we do not
+        // touch the metadata store or the row_id cache. Fire-and-forget, same
+        // as admission — the redaction command's report reflects the in-memory
+        // rewrite; this makes it durable.
+        let engram = engram.clone();
+        let engram_id = engram.id;
+        let engram_store = Arc::clone(&self.engram_store);
+        tokio::spawn(async move {
+            if let Err(e) = engram_store.save(engram_id, &engram).await {
+                tracing::warn!(
+                    engram_id = %engram_id,
+                    error = %e,
+                    "OrmPersistenceSink: redaction content-update save failed — \
+                     the un-redacted content will rehydrate on next boot; re-run redaction"
+                );
+            }
+        });
+    }
 }
 
 /// Helper struct so the async task can take a tidy bundle of values
@@ -272,6 +306,7 @@ async fn update_metadata_row(
 pub struct RecordingSink {
     admissions: std::sync::Mutex<Vec<(Engram, RecallMetadata)>>,
     metadata_updates: std::sync::Mutex<Vec<(Uuid, RecallMetadata)>>,
+    content_updates: std::sync::Mutex<Vec<Engram>>,
 }
 
 impl RecordingSink {
@@ -279,6 +314,7 @@ impl RecordingSink {
         Self {
             admissions: std::sync::Mutex::new(Vec::new()),
             metadata_updates: std::sync::Mutex::new(Vec::new()),
+            content_updates: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -293,6 +329,12 @@ impl RecordingSink {
     pub fn metadata_updates_seen(&self) -> Vec<(Uuid, RecallMetadata)> {
         self.metadata_updates.lock().unwrap().clone()
     }
+
+    /// Engrams whose content was re-saved via `observe_content_update`
+    /// (redaction rewrote them). Lets a test assert the durable-rewrite fired.
+    pub fn content_updates_seen(&self) -> Vec<Engram> {
+        self.content_updates.lock().unwrap().clone()
+    }
 }
 
 impl Default for RecordingSink {
@@ -306,10 +348,19 @@ impl AdmissionPersistenceSink for RecordingSink {
         "recording"
     }
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
-        self.admissions.lock().unwrap().push((engram.clone(), metadata));
+        self.admissions
+            .lock()
+            .unwrap()
+            .push((engram.clone(), metadata));
     }
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
-        self.metadata_updates.lock().unwrap().push((engram_id, metadata));
+        self.metadata_updates
+            .lock()
+            .unwrap()
+            .push((engram_id, metadata));
+    }
+    fn observe_content_update(&self, engram: &Engram) {
+        self.content_updates.lock().unwrap().push(engram.clone());
     }
 }
 
@@ -372,14 +423,7 @@ impl OrmLoader {
     /// longer scans the whole table).
     pub async fn load_with_row_ids(
         &self,
-    ) -> Result<
-        (
-            Vec<Engram>,
-            Vec<(Uuid, RecallMetadata)>,
-            Vec<(Uuid, Uuid)>,
-        ),
-        OrmStoreError,
-    > {
+    ) -> Result<(Vec<Engram>, Vec<(Uuid, RecallMetadata)>, Vec<(Uuid, Uuid)>), OrmStoreError> {
         let engrams_with_ids = self.engram_store.find_all().await?;
         let metadata_with_ids = self.metadata_store.find_all().await?;
         let engrams: Vec<Engram> = engrams_with_ids.into_iter().map(|(_, e)| e).collect();
@@ -402,6 +446,7 @@ mod tests {
 
     fn sample_engram(content: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),
@@ -524,7 +569,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
-                sender_name: "joel".to_string(),
+                sender_name: "operator".to_string(),
                 sender_type: crate::persona::types::SenderType::Human,
                 content: "persistence proof engram alpha".to_string(),
                 timestamp: 1_000,
@@ -536,7 +581,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
-                sender_name: "joel".to_string(),
+                sender_name: "operator".to_string(),
                 sender_type: crate::persona::types::SenderType::Human,
                 content: "persistence proof engram beta".to_string(),
                 timestamp: 2_000,
@@ -600,7 +645,66 @@ mod tests {
             scored_ids, original_ids,
             "recall after restart returns the originally-admitted engram ids"
         );
+    }
 
+    /// What this catches: the PORTABILITY invariant for a persona's
+    /// context-keyed memory — "move the home, keep the self." A persona's
+    /// `(token, engram_db)` lives in one home; its identity resolves from that
+    /// home (airc-lib's `attach_as`), so moving the home to another node and
+    /// re-spawning yields the same individual with the same memory. This proves
+    /// the memory half locally: write an engram tagged with its room
+    /// (contextId), drop the store (the home goes quiet / moves), re-open
+    /// `OrmStore<Engram>` from the SAME path (spawn-from-the-moved-home), and
+    /// confirm the engram returns with its room intact. This is the exact shape
+    /// of the eventual cross-node M5⇄BigMama persona move. See
+    /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A.
+    #[tokio::test]
+    async fn engram_context_survives_home_reopen_portability_proof() {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("engrams.sqlite");
+        let room = Uuid::new_v4();
+
+        // ── Lifetime 1: persona alive on "node A" — admit a room-keyed engram ──
+        let engram_id = {
+            let mut adapter = SqliteAdapter::new();
+            let mut config = AdapterConfig::default();
+            config.connection_string = path.to_string_lossy().into_owned();
+            adapter.initialize(config).await.expect("adapter init");
+            let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+            let store = OrmStore::<Engram>::new(adapter).await.unwrap();
+
+            let mut engram = sample_engram("portable memory");
+            engram.context_id = Some(room);
+            let id = engram.id;
+            store.save(id, &engram).await.expect("save engram");
+            id
+            // store + adapter dropped here — the home goes quiet / moves nodes
+        };
+
+        // ── Lifetime 2: spawn from the SAME home on "node B" ──
+        let mut adapter2 = SqliteAdapter::new();
+        let mut config2 = AdapterConfig::default();
+        config2.connection_string = path.to_string_lossy().into_owned();
+        adapter2.initialize(config2).await.expect("adapter init 2");
+        let adapter2: Arc<dyn StorageAdapter> = Arc::new(adapter2);
+        let store2 = OrmStore::<Engram>::new(adapter2).await.unwrap();
+
+        let loaded = store2
+            .find_by_id(engram_id)
+            .await
+            .expect("find_by_id")
+            .expect("engram present after re-opening the moved home");
+        assert_eq!(
+            loaded.context_id,
+            Some(room),
+            "the engram's room (contextId) must survive the home move — \
+             memory arrives keyed by the same conversation"
+        );
+        assert_eq!(loaded.content, "portable memory");
     }
 
     /// What this catches: OrmPersistenceSink + OrmLoader form a
@@ -652,6 +756,5 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-
     }
 }

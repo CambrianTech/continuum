@@ -5,8 +5,11 @@ edition = "2021"
 description = "continuum command-line client. Links continuum-client directly (no Node, no IPC daemon middleware) — every command goes through the same Connection/CommandClient seam the substrate's integration tests exercise. Successor to src/jtag (per task #143)."
 
 [[bin]]
-# Short, memorable command name. The shell shim that lands on $PATH can
-# alias `jtag` → `ctm` for backward muscle-memory.
+# Short, memorable command name. `ctm` reads as "continuum" with the
+# vowels removed (c[on]t[inuu]m) — three characters, types fast,
+# doesn't collide with any standard Unix binary on the platforms we
+# target. The shell shim that lands on $PATH can alias `jtag` → `ctm`
+# for backward muscle-memory.
 name = "ctm"
 path = "src/main.rs"
 

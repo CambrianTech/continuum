@@ -127,6 +127,9 @@ pub enum DiscoveryFailure {
     #[error("airc binary not on PATH and auto-install was disabled (CONTINUUM_NO_AUTOINSTALL=1)")]
     AutoInstallDisabled,
 
+    #[error("airc not on PATH — installing in the background; node is UP (local commands work), restart the core once the install completes to join airc as a grid peer")]
+    AutoInstallInProgress,
+
     #[error("airc binary install failed: {0}")]
     InstallFailed(String),
 
@@ -169,9 +172,7 @@ pub enum DiscoveryFailure {
     )]
     UnparseableRoomOutput(String),
 
-    #[error(
-        "no default room set — run `airc room <name>` to subscribe the scope to a room"
-    )]
+    #[error("no default room set — run `airc room <name>` to subscribe the scope to a room")]
     NoDefaultRoom,
 }
 
@@ -226,10 +227,8 @@ mod tests {
     /// EACCES, or "file exists but not a socket."
     #[test]
     fn stale_socket_carries_path_and_io_reason() {
-        let reason = DiscoveryFailure::StaleSocket(
-            PathBuf::from("/tmp/dead.sock"),
-            "ECONNREFUSED".into(),
-        );
+        let reason =
+            DiscoveryFailure::StaleSocket(PathBuf::from("/tmp/dead.sock"), "ECONNREFUSED".into());
         let display = format!("{reason}");
         assert!(display.contains("/tmp/dead.sock"));
         assert!(display.contains("ECONNREFUSED"));

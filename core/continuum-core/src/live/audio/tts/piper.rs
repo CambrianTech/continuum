@@ -55,11 +55,12 @@ impl PiperTTS {
             }
         }
 
+        use crate::live::audio::model_root::voice_model_path;
         let candidates = [
-            PathBuf::from("models/piper/en_US-libritts_r-medium.onnx"), // Primary
-            PathBuf::from("models/piper/en_US-amy-medium.onnx"),        // Alternative
-            PathBuf::from("models/piper/piper.onnx"),                   // Generic
-            PathBuf::from("models/tts/piper.onnx"),
+            voice_model_path("piper/en_US-libritts_r-medium.onnx"), // Primary
+            voice_model_path("piper/en_US-amy-medium.onnx"),        // Alternative
+            voice_model_path("piper/piper.onnx"),                   // Generic
+            voice_model_path("tts/piper.onnx"),
             dirs::data_dir()
                 .unwrap_or_default()
                 .join("piper/en_US-libritts_r-medium.onnx"),

@@ -1,0 +1,235 @@
+//! The wake backlog: which drained inbound lines qualify for a turn, which one
+//! triggers it, and the delivery receipt each directed line earns.
+//!
+//! Two defects this file replaces (both found live 2026-09-04, the deaf-citizens
+//! night): (1) staleness was `lamport <= high_water`, but a lamport is the
+//! PUBLISHER's clock, not a room order — the operator self-peer's young clock
+//! read as stale against citizens' large ones, so a human line was skipped
+//! before it could trigger anything; (2) the trigger preferred the newest
+//! line that @mentioned her, else the newest overall — a human line without
+//! a mention lost to any newer citizen work receipt, and the "heard by N"
+//! receipt fired only for the chosen line. Now: staleness is by event id
+//! (a ring), the trigger is the newest priority line (human opportunity or a
+//! mention), and every priority line drained earns its heard receipt.
+
+use std::collections::{HashSet, VecDeque};
+
+use uuid::Uuid;
+
+use super::service_loop::IncomingMessage;
+
+/// Event-id ring for replay/redelivery dedupe at the loop head. Small: the
+/// pump already dedupes the store catch-up; this catches re-open replays.
+pub(crate) struct SeenIds {
+    ring: VecDeque<Uuid>,
+    ids: HashSet<Uuid>,
+    cap: usize,
+}
+
+impl SeenIds {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            ring: VecDeque::with_capacity(cap),
+            ids: HashSet::with_capacity(cap),
+            cap,
+        }
+    }
+
+    /// Note an id; `true` when it is NEW (first sight), `false` on a repeat.
+    pub(crate) fn note(&mut self, id: Uuid) -> bool {
+        if self.ids.contains(&id) {
+            return false;
+        }
+        if self.cap == 0 {
+            return true;
+        }
+        if self.ring.len() == self.cap {
+            if let Some(evicted) = self.ring.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+        self.ids.insert(id);
+        self.ring.push_back(id);
+        true
+    }
+}
+
+/// Is this drained line stale? By event id when the source stamps one; by the
+/// publisher clock only for id-less sources (scripted/test conversations).
+pub(crate) fn is_stale(m: &IncomingMessage, seen: &mut SeenIds, high_water: u64) -> bool {
+    if m.event_id.is_nil() {
+        m.lamport <= high_water
+    } else {
+        !seen.note(m.event_id)
+    }
+}
+
+/// Can this drained line be the TRIGGER of a turn at all? A priority line
+/// (human, or anyone naming her) always; an undirected line from a fellow
+/// CITIZEN yes — that is conversation among citizens; an undirected line from
+/// an AGENT (neither human nor citizen) NEVER — it is perceived (transcript,
+/// digest) and takes no lane. Measured 2026-09-05: 34 of Joaquin's last 60
+/// turns were message turns on BigMama's and IntelMac's walls in the project
+/// room; her held card had zero edits in eight hours (card ae4bb4fd).
+pub(crate) fn triggers_a_turn(priority: bool, sender_is_citizen: bool, is_receipt: bool) -> bool {
+    priority || (sender_is_citizen && !is_receipt)
+}
+
+/// A RECEIPT is a citizen's own trace — her 💭 thought line or her ⚙ act line — written
+/// for the human and the HUD, not addressed to anyone. It reaches the digest (perception)
+/// and never wakes a turn. Measured 2026-09-13 10:00–14:00Z: every holder in the seed-4
+/// room took a lane every ~4 min on a teammate's receipt (57–86 admitted inputs each,
+/// from_peer = a citizen), re-orienting ("let me take stock") instead of working; the room
+/// read "spinning" to the citizens themselves. A plain citizen line (a question, one line
+/// of help) still wakes; a human's or a mention always does (priority).
+pub(crate) fn is_receipt(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with(crate::persona::presence_glyph::THOUGHT)
+        || t.starts_with(crate::persona::presence_glyph::ACT)
+}
+
+/// The trigger for ONE turn over the drained backlog: the newest priority line
+/// (a question put to her outranks newer ambient chatter — she answers it with
+/// the newer context visible in the transcript), else the newest overall.
+/// Returns the trigger and how many lines were coalesced into it.
+pub(crate) fn pick_trigger(
+    mut qualifying: Vec<IncomingMessage>,
+    priority: impl Fn(&IncomingMessage) -> bool,
+) -> Option<(IncomingMessage, usize)> {
+    let coalesced = qualifying.len().saturating_sub(1);
+    let picked = qualifying
+        .iter()
+        .rposition(|m| priority(m))
+        .map(|i| qualifying.swap_remove(i))
+        .or_else(|| qualifying.pop())?;
+    Some((picked, coalesced))
+}
+
+/// FEEDBACK FOR THE INTERFACE: this citizen HEARD the line — the delivery
+/// receipt the human sees as "heard by N" on the row (Joel 2026-09-04: "more
+/// feedback events for the interface"). Fired for every directed line drained,
+/// not only the one that triggers the turn: hearing is delivery, not reply.
+pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
+    if msg.event_id.is_nil() {
+        return;
+    }
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            crate::ipc::positron_source::CHAT_HEARD,
+            serde_json::json!({
+                "message_id": msg.event_id,
+                "room_id": msg.room_id,
+                "persona_id": persona,
+            }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every
+    // holder in a five-coder room took a lane per teammate trace and re-oriented instead
+    // of working. A citizen's plain line still wakes; a human's line always does.
+    #[test]
+    fn a_teammates_receipt_is_perceived_never_served() {
+        assert!(is_receipt("💭 Let me take stock honestly. I'm Kira…"));
+        assert!(is_receipt("  ⚙ code/read  ✓"));
+        assert!(!is_receipt("Kira, the fix is in sinks.py line 40 — try the mtime path"));
+        assert!(!triggers_a_turn(false, true, true), "a citizen's receipt never wakes a turn");
+        assert!(triggers_a_turn(false, true, false), "a citizen's plain line still wakes");
+        assert!(triggers_a_turn(true, false, true), "a priority line (human, mention) always wakes");
+        assert!(!triggers_a_turn(false, false, false), "an undirected agent line never wakes");
+    }
+
+    fn line(peer: u8, lamport: u64, text: &str) -> IncomingMessage {
+        IncomingMessage {
+            event_id: Uuid::new_v4(),
+            lamport,
+            peer_id: Uuid::from_u128(peer as u128),
+            room_id: Uuid::from_u128(7),
+            text: text.to_string(),
+        }
+    }
+
+    // what this catches: an undirected AGENT line is perceived but never a
+    // trigger; a citizen's ambient line and any directed line still are.
+    #[test]
+    fn an_undirected_agent_line_never_triggers_a_turn() {
+        assert!(
+            !triggers_a_turn(false, false, false),
+            "agent wall, no mention: perceived only"
+        );
+        assert!(triggers_a_turn(true, false, false), "agent naming her: a turn");
+        assert!(
+            triggers_a_turn(false, true, false),
+            "citizen chatter: conversation, a turn"
+        );
+        assert!(triggers_a_turn(true, true, false));
+    }
+
+    // what this catches: the per-publisher lamport read a human line as stale
+    // against citizens' larger clocks (the 9/4 deaf-citizens regression).
+    #[test]
+    fn a_human_line_with_a_small_publisher_clock_is_not_stale() {
+        let mut seen = SeenIds::new(8);
+        let human = line(1, 3, "Joel here — which card do you hold?");
+        assert!(!is_stale(&human, &mut seen, 157_000));
+    }
+
+    // what this catches: a re-open replay redelivering the same event id.
+    #[test]
+    fn a_replayed_event_id_is_stale_the_second_time() {
+        let mut seen = SeenIds::new(8);
+        let m = line(1, 3, "once");
+        assert!(!is_stale(&m, &mut seen, 0));
+        assert!(is_stale(&m, &mut seen, 0));
+    }
+
+    // The index must evict with the ordered ring; retained snapshots do not
+    // refresh recency or grow the bounded set on duplicate admission.
+    #[test]
+    fn seen_id_index_evicts_with_the_ring() {
+        let mut seen = SeenIds::new(2);
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        assert!(seen.note(a));
+        assert!(seen.note(b));
+        assert!(!seen.note(a));
+        assert!(seen.note(c));
+        assert!(seen.note(a));
+        assert!(!seen.note(c));
+        assert_eq!(seen.ids.len(), 2);
+        assert_eq!(seen.ring.len(), 2);
+        let mut empty = SeenIds::new(0);
+        assert!(empty.note(a));
+        assert!(empty.note(a));
+        assert!(empty.ids.is_empty());
+        assert!(empty.ring.is_empty());
+    }
+
+    // what this catches: a human line without an @mention losing the turn to a
+    // newer citizen work receipt.
+    #[test]
+    fn a_human_opportunity_wins_over_newer_citizen_chatter_without_a_mention() {
+        use crate::cognition::workspace::TurnAttention;
+        let identity =
+            crate::persona::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Kimi");
+        let human = line(1, 3, "Joel here — which card do you hold?");
+        let human_id = human.event_id;
+        let receipt = line(2, 900, "💭 Let me get my bearings.");
+        let (picked, coalesced) = pick_trigger(vec![human, receipt], |m| {
+            TurnAttention::for_message(identity.mentions(&m.text), m.peer_id == Uuid::from_u128(1))
+                .requires_priority()
+        })
+        .unwrap();
+        assert_eq!(picked.event_id, human_id);
+        assert_eq!(coalesced, 1);
+        assert!(
+            !identity.mentions(&picked.text),
+            "human priority does not require a name"
+        );
+    }
+}

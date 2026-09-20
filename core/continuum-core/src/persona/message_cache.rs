@@ -49,6 +49,19 @@ pub enum SenderCategory {
     AI,
 }
 
+impl SenderCategory {
+    /// Project a wire sender-type string onto the gating category. Humans are
+    /// `Human`; personas/agents/system are all `AI` for gating purposes. Unknown
+    /// values fail loud rather than defaulting to `AI` (the legacy silent bucket).
+    pub fn from_wire(s: &str) -> Result<Self, String> {
+        match s {
+            "human" => Ok(Self::Human),
+            "ai" | "persona" | "agent" | "system" | "bot" => Ok(Self::AI),
+            other => Err(format!("Invalid sender_type: {other}")),
+        }
+    }
+}
+
 // =============================================================================
 // ECHO CHAMBER RESULT
 // =============================================================================

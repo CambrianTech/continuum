@@ -106,6 +106,21 @@ pub struct HardwareProfile {
     pub system_ram_bytes: u64,
 }
 
+impl HardwareProfile {
+    /// True when this node has ANY GPU backend (Metal / CUDA / Vulkan).
+    ///
+    /// This is the eligibility predicate for the cross-node GPU-first
+    /// guardrail (Joel's "GPU-first ALWAYS", promoted from per-node to
+    /// ACROSS-node; no_cpu_fallback contract, offload path): a CPU-only
+    /// node (all three false) must NEVER be an eligible offload target for
+    /// a heavy inference job — the substrate refuses rather than silently
+    /// degrade a remote peer to CPU. Mirrors the per-node residency-gate
+    /// GPU refusal at the cross-node boundary.
+    pub fn has_gpu(&self) -> bool {
+        self.has_metal || self.has_cuda || self.has_vulkan
+    }
+}
+
 /// One inference capability this node can take. Composed by
 /// `probe_inference_capabilities` from a `HardwareProfile`; advertised by
 /// PR-2's grid announcer; scored by PR-3's router.
@@ -236,6 +251,42 @@ mod tests {
         assert!(j.contains("\"systemRamBytes\":64000000000"));
         let back: HardwareProfile = serde_json::from_str(&j).unwrap();
         assert_eq!(back, h);
+    }
+
+    /// What this catches: HardwareProfile::has_gpu() is true for ANY GPU
+    /// backend (Metal OR CUDA OR Vulkan) and false only when all three are
+    /// absent. This predicate is the cross-node GPU-first guardrail's
+    /// eligibility test (no_cpu_fallback offload path) — a regression that
+    /// checked only has_metal would mis-classify CUDA/Vulkan GPU peers as
+    /// ineligible, or a flipped condition would let CPU-only peers through.
+    #[test]
+    fn has_gpu_true_for_any_backend_false_for_cpu_only() {
+        let cpu_only = HardwareProfile {
+            platform: "cpu-box".into(),
+            has_metal: false,
+            has_cuda: false,
+            has_vulkan: false,
+            free_vram_bytes: 0,
+            total_vram_bytes: 0,
+            cpu_cores: 8,
+            system_ram_bytes: 16_000_000_000,
+        };
+        assert!(!cpu_only.has_gpu(), "all-false = CPU-only = no GPU");
+        assert!(HardwareProfile {
+            has_metal: true,
+            ..cpu_only.clone()
+        }
+        .has_gpu());
+        assert!(HardwareProfile {
+            has_cuda: true,
+            ..cpu_only.clone()
+        }
+        .has_gpu());
+        assert!(HardwareProfile {
+            has_vulkan: true,
+            ..cpu_only.clone()
+        }
+        .has_gpu());
     }
 
     /// What this catches: InferenceCapability full round-trip with the

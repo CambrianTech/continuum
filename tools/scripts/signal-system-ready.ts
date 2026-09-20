@@ -36,7 +36,7 @@ import { SystemReadySignaler } from './signaling/server/SystemReadySignaler';
 // Maintain exact CLI compatibility
 async function main() {
   // CRITICAL: Initialize SecretManager to load config.env into process.env
-  const { SecretManager } = await import('../system/secrets/SecretManager');
+  const { SecretManager } = await import('../../src/system/secrets/SecretManager');
   await SecretManager.getInstance().initialize();
 
   const signaler = new SystemReadySignaler();

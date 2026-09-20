@@ -18,6 +18,10 @@ pub mod airc_admission;
 pub mod airc_citizen;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
+pub mod operator_avatar_seed;
+pub mod operator_peer;
+pub mod org_room;
+pub mod command_inbound_pump;
 // `scripted_*` are SYSTEM-level test/replay primitives per
 // [[test-fixtures-are-system-primitives]] — ubiquitous across every
 // test in the substrate, never bespoke per module. They're gated to
@@ -25,62 +29,105 @@ pub mod airc_runtime;
 // Joel (2026-06-01): "You mix this fake shit in and it's going live
 // ALL THE TIME. The fake shit is a CHOSEN model adapter no other
 // form. Declaration." cfg gating IS the declaration.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub mod scripted_adapter_factory;
-#[cfg(any(test, feature = "test-fixtures"))]
-pub mod scripted_conversation;
+pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
+pub mod base_model_policy;
+pub mod cached_source;
+pub mod card;
+pub mod card_holder;
+pub mod card_ledger_fact;
 pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
+pub mod channel_view;
+pub mod claim_rejections;
 pub mod cognition;
 pub mod cognition_io;
+pub mod cognition_pulse;
 pub mod decay_tick;
 pub mod domain_classifier;
+pub mod durable_history;
 pub mod engram;
 pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
+pub mod focus;
 pub mod genome_paging;
+pub mod grounding_invalidation;
 pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
 pub mod inbox;
-pub mod inference_profile;
-pub mod profile_builder;
-pub mod service_loop;
-pub mod spawner;
-pub mod spawner_module;
-pub mod supervisor;
 pub mod inbox_admission;
+pub mod inference_profile;
+pub mod loop_dedup;
+pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
+pub mod mission_source;
+pub mod model_override;
+pub mod grid_roster_memory;
+pub mod placement_reservation;
+pub mod placement_switch;
+pub mod self_peer;
+pub mod remote_lane_factory;
 pub mod model_selection;
 pub mod name_generator;
+pub mod persona_identity;
+pub mod portability;
+pub mod profile_builder;
+pub mod projection;
 pub mod prompt_assembly;
 pub mod rag_budget;
+pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
 pub mod rag_replay;
 pub mod recall_metadata;
 pub mod recorder;
+pub mod redaction;
 pub mod resource_forecast;
 pub mod response;
 pub mod resume_or_mint_provider;
+pub mod resting_seat;
+pub mod roster_hold;
 pub mod role_template;
+pub mod room_board_source;
+pub mod room_doctrine_source;
+pub mod identity_card_cache;
+pub mod room_roster_source;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_adapter_factory;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_conversation;
 pub mod seed;
 pub mod self_task_generator;
+pub mod act_question;
+pub mod service_loop;
+pub mod presence_glyph;
+pub mod wake_backlog;
+pub mod work_burst;
+pub mod instance_env_fact;
+pub mod work_focus;
+pub mod work_pull;
+pub mod staged_workspace;
 pub mod service_module;
+pub mod spawner;
+pub mod spawner_module;
+pub mod supervisor;
 pub mod text_analysis;
 pub mod trace;
+pub mod training_producer;
 pub mod turn_context;
 pub mod turn_frame;
 pub mod types;
 pub mod unified;
+pub mod wall_source;
+pub mod workspace_map_source;
 
 pub use admission::{
     build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
@@ -107,8 +154,8 @@ pub use engram::{
     EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
 };
 pub use evaluator::{
-    AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
-    RecentResponse, SleepMode, SleepState,
+    analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
+    FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
 };
 pub use genome_paging::{
     ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,
@@ -123,6 +170,7 @@ pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,
 };
+pub use model_override::{PersonaModelOverride, PersonaModelOverrideError};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
@@ -161,11 +209,42 @@ pub use unified::PersonaCognition;
 ///
 /// Production boot:
 ///   `register_substrate_orm_entities(OrmEntityRegistry::global())?;`
+/// Every collection [`register_substrate_orm_entities`] registers — the boot
+/// receipt and the regression test count against this list.
+pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
+    <hw_tier_descriptor::HwTierDescriptor as crate::orm::OrmEntity>::COLLECTION,
+    <role_template::RoleTemplate as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCredit as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::StagedCreditGeneration as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::WorkCreditBinding as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CreditTransferIntent as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CreditGenerationReservation as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CreditReviewDecision as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CreditReviewAcceptance as crate::orm::OrmEntity>::COLLECTION,
+];
+
 pub fn register_substrate_orm_entities(
     registry: &crate::orm::OrmEntityRegistry,
 ) -> Result<(), crate::orm::RegistrationError> {
     registry.register::<hw_tier_descriptor::HwTierDescriptor>()?;
     registry.register::<role_template::RoleTemplate>()?;
+    // Card 0d51573a. Registered HERE, at boot, not merely derived: `data/ensure-schema`
+    // resolves a collection by NAME through this registry, so an unregistered
+    // collection errors "Unknown collection …" — and the failure if you skip it is
+    // SILENT rather than loud, which is why it is worth a comment. sqlite's create
+    // path auto-creates a missing table from the DATA'S SHAPE, so staging would
+    // appear to succeed while producing tables carrying none of the declared
+    // indexes, including the unique one on (stagedCreditId, submittedRequestId)
+    // that stops one generation being credited to a staged turn twice. A dropped
+    // unique index is not a visible failure; it is a constraint that quietly stops
+    // being enforced.
+    registry.register::<training_producer::StagedCredit>()?;
+    registry.register::<training_producer::StagedCreditGeneration>()?;
+    registry.register::<training_producer::reviewed::WorkCreditBinding>()?;
+    registry.register::<training_producer::reviewed::CreditTransferIntent>()?;
+    registry.register::<training_producer::reviewed::CreditGenerationReservation>()?;
+    registry.register::<training_producer::reviewed::CreditReviewDecision>()?;
+    registry.register::<training_producer::reviewed::CreditReviewAcceptance>()?;
     Ok(())
 }
 

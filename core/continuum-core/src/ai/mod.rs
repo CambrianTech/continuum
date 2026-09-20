@@ -36,8 +36,12 @@ pub mod anthropic_adapter;
 // adapter no other form. Declaration." cfg gating IS the declaration.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod heuristic_adapter;
+pub mod inference_error;
+pub mod json_in_prompt_tools;
 pub mod openai_adapter;
+pub mod openai_endpoints;
 pub mod registry_bridge;
+pub mod stream_sinks;
 pub mod types;
 
 // Re-export commonly used types
@@ -47,11 +51,13 @@ pub use adapter::{
 };
 pub use anthropic_adapter::AnthropicAdapter;
 #[cfg(any(test, feature = "test-fixtures"))]
-pub use heuristic_adapter::{HeuristicInferenceAdapter, HEURISTIC_DEFAULT_MODEL, HEURISTIC_PROVIDER_ID};
+pub use heuristic_adapter::{
+    HeuristicInferenceAdapter, HEURISTIC_DEFAULT_MODEL, HEURISTIC_PROVIDER_ID,
+};
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelCapability,
-    ModelInfo, NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-    ToolCall, ToolChoice, ToolInputSchema, ToolResult, UsageMetrics,
+    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
+    NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse, ToolCall,
+    ToolChoice, ToolInputSchema, ToolResult, UsageMetrics,
 };

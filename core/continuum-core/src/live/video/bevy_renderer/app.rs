@@ -47,6 +47,8 @@ pub(super) fn run_bevy_app(
         .insert_resource(SnapshotTracker::new())
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
+        .insert_resource(scene::physics::PhysicsBackendRegistry::default())
+        .insert_resource(animation::AnimatorRegistry::default())
         .insert_resource(SharedMemoryStats(memory_stats))
         .add_plugins(
             DefaultPlugins
@@ -79,19 +81,47 @@ pub(super) fn run_bevy_app(
                 process_commands,
                 monitor_load_states,
                 update_memory_stats,
+                // Render governor: set the desired idle cadence from live load
+                // (active/speaking slots) so idle faces throttle under a crowded call
+                // while the speaker stays full-fps. sync_idle_cadence applies it.
+                animation::govern_idle_cadence,
                 sync_idle_cadence,
                 scene::room::populate_rooms,
             ),
         )
-        // Animation systems — Query-driven, no run_if gate needed.
-        // Each system only runs if matching entities exist (Query is empty = no-op).
+        // Animation phases run in a total order: Intent (supervisor decides pose
+        // vs built-in, morph discovery, cadence) → Pose (built-in writers +
+        // apply_external_pose write Transforms/morphs) → Readback (capture the
+        // rendered frame). Parallelism is preserved *within* each phase; the
+        // `.chain()` only orders the phases. This replaces the old unordered
+        // tuple, whose last-writer-wins only worked because the built-in writers
+        // happened to touch disjoint bones.
+        .configure_sets(
+            Update,
+            (
+                animation::AnimationSet::Intent,
+                animation::AnimationSet::Pose,
+                animation::AnimationSet::Readback,
+            )
+                .chain(),
+        )
+        // Intent: decide per-slot ownership + prepare inputs the writers need.
         .add_systems(
             Update,
             (
-                animation::manage_render_cadence,
-                ensure_continuous_readback,
-                request_snapshot_readback,
+                animation::drive_animators,
+                animation::drive_cognitive_gestures,
                 animation::discover_morph_targets,
+                animation::manage_render_cadence,
+            )
+                .in_set(animation::AnimationSet::Intent),
+        )
+        // Pose: built-in writers (each gated `Without<ExternalPose>`) compute the
+        // procedural set; `apply_external_pose` drives the VLA-owned set. Disjoint
+        // entity sets, so they never double-write. Query-driven — empty = no-op.
+        .add_systems(
+            Update,
+            (
                 animation::animate_idle,
                 animation::animate_speaking,
                 animation::animate_expression,
@@ -99,9 +129,16 @@ pub(super) fn run_bevy_app(
                 animation::animate_breathing,
                 animation::animate_idle_gestures,
                 animation::animate_eye_gaze,
-                animation::drive_cognitive_gestures,
                 animation::animate_body_gestures,
-            ),
+                animation::apply_external_pose,
+            )
+                .in_set(animation::AnimationSet::Pose),
+        )
+        // Readback: capture the posed frame for streaming / snapshots.
+        .add_systems(
+            Update,
+            (ensure_continuous_readback, request_snapshot_readback)
+                .in_set(animation::AnimationSet::Readback),
         )
         .add_systems(
             PostUpdate,

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # System Stop — Nuclear process cleanup
 # Kills ALL JTAG-related processes and cleans up sockets/signals.
 # This is the ONLY stop script. Keep it simple and brutal.
@@ -26,6 +27,14 @@ done
 if pgrep -f "livekit-server" > /dev/null 2>&1; then
   echo -e "   Stopping LiveKit server..."
   pkill -9 -f "livekit-server" 2>/dev/null || true
+fi
+# 2b. Kill the livekit-bridge sidecar (started with the core by start-server.sh's
+#     start_livekit_rail; symmetric teardown so it doesn't leak the socket + a dead
+#     webrtc process across restarts).
+if pgrep -f "livekit-bridge" > /dev/null 2>&1; then
+  echo -e "   Stopping LiveKit bridge sidecar..."
+  pkill -9 -f "livekit-bridge" 2>/dev/null || true
+  rm -f "$HOME/.continuum/sockets/livekit-bridge.sock" 2>/dev/null || true
 fi
 
 # 3. Kill Rust workers (from workers-config.json)

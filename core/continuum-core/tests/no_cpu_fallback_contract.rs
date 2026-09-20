@@ -50,6 +50,17 @@ const ENFORCEMENT_SOURCE: &str = include_str!("../src/inference_capability/enfor
 
 const HW_PROBE_SOURCE: &str = include_str!("../src/inference_capability/hw_probe.rs");
 
+// Cross-node (offload) GPU-first guardrail — the 9th path. "GPU-first
+// ALWAYS" promoted from per-node to ACROSS-node: a weak node offloading a
+// heavy job must land on a GPU peer, never a CPU-only peer; if only CPU
+// peers are reachable the routing mechanism must REFUSE, not silently
+// degrade a remote peer to CPU. These constants pin the eligibility
+// predicate so a future PR can't drop it (or route heavy offload through
+// the GPU-agnostic `find_capable`) without breaking this gate.
+const CAPABILITY_TYPES_SOURCE: &str = include_str!("../src/inference_capability/types.rs");
+
+const CAPABILITY_REGISTRY_SOURCE: &str = include_str!("../src/inference_capability/registry.rs");
+
 #[test]
 fn llamacpp_default_config_requires_full_gpu_offload() {
     // The production load path is `LlamaCppConfig::default()` →
@@ -249,5 +260,34 @@ fn hw_probe_does_not_introduce_cpu_fallback() {
         "hw_probe.rs must expose build_hardware_profile so the residency gate can be tested \
          with synthetic profiles. Privatizing it would force every test to hit real \
          hardware — flaky + slow + wrong shape."
+    );
+}
+
+#[test]
+fn cross_node_offload_has_gpu_first_guardrail() {
+    // 9th no-CPU-fallback path: the OFFLOAD path. "GPU-first ALWAYS"
+    // promoted from per-node to ACROSS-node. The per-node gates above stop
+    // a single box from running CPU inference; this stops a weak box from
+    // OFFLOADING a heavy job onto a CPU-only peer over the grid. The
+    // guardrail is a GPU-class eligibility predicate that makes CPU-only
+    // peers ineligible offload targets — so when no GPU peer is reachable
+    // the routing mechanism must REFUSE rather than silently CPU-serve.
+    // (Behavioral tests live in inference_capability/{types,registry}.rs;
+    // these source assertions are the ratchet that stops a silent removal.)
+
+    assert!(
+        CAPABILITY_TYPES_SOURCE.contains("fn has_gpu"),
+        "HardwareProfile must expose has_gpu() (Metal || CUDA || Vulkan) — the eligibility \
+         predicate for the cross-node offload guardrail. Removing it (or narrowing it to \
+         has_metal only) lets a heavy job offload onto a CPU-only or mis-classified peer: \
+         the across-node 'GPU-first ALWAYS' violation."
+    );
+    assert!(
+        CAPABILITY_REGISTRY_SOURCE.contains("fn find_gpu_capable"),
+        "NodeCapabilityRegistry must expose find_gpu_capable() — the GPU-first offload \
+         selector that filters out CPU-only peers. If you removed it, or routing started \
+         using the GPU-agnostic find_capable() for heavy OFFLOAD selection, a weak node can \
+         silently offload to a CPU peer. Re-add the guardrail (and its registry tests) \
+         before removing this assertion."
     );
 }

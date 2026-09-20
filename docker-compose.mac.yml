@@ -56,18 +56,7 @@ services:
     deploy:
       replicas: 0
 
-  # node-server runs in Docker on Mac (containerized per Option B).
-  # It needs to reach the NATIVE continuum-core-server on the host.
-  # Unix sockets don't traverse Docker Desktop's VM boundary on Mac, so
-  # continuum-core binds an additional TCP listener on 127.0.0.1:9100
-  # (via CONTINUUM_CORE_TCP=9100 exported by install.sh before `npm start`),
-  # and node-server connects to that via host.docker.internal (Docker
-  # Desktop's standard alias for the host).
-  #
-  # No postgres override needed — postgres is now opt-in via the `postgres`
-  # compose profile, and node-server no longer connects to any DB directly
-  # (all data ops go through continuum-core via IPC with opaque handles).
-  node-server:
-    environment:
-      # Added for Mac: overrides the default Unix-socket path lookup.
-      - CONTINUUM_CORE_URL=tcp://host.docker.internal:9100
+  # node-server removed with the old-Node UI chain (base compose). On Mac the
+  # reliable client is the native Tauri DESKTOP attaching to the native
+  # continuum-core's WS ingress directly — no containerized web service to
+  # override here. (continuum-core still runs native on Mac: replicas:0 above.)

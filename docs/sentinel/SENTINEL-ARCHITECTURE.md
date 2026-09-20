@@ -1278,7 +1278,7 @@ This creates a unified system where:
 - **Continuous learning** improves all three over time
 
 See related documentation:
-- [LORA-GENOME-PAGING.md](../../system/user/server/modules/LORA-GENOME-PAGING.md) — Adapter paging and LRU eviction
+- [LORA-GENOME-PAGING.md](../architecture/GENOME-FOUNDRY-SENTINEL.md) — Adapter paging and LRU eviction
 - [LORA-MESH-DISTRIBUTION.md](../genome/LORA-MESH-DISTRIBUTION.md) — P2P mesh, semantic search, registry model
 - [LORA-LAB-ARCHITECTURE.md](../genome/LORA-LAB-ARCHITECTURE.md) — Local training and inference
 
@@ -2830,9 +2830,9 @@ Long-term vision items.
 
 ### Implementation
 
-- [Rust SentinelModule](../workers/continuum-core/src/modules/sentinel/) — Pipeline executor, process isolation, concurrency
-- [SentinelDefinition.ts](../system/sentinel/SentinelDefinition.ts) — JSON schema and SentinelBuilder
-- [ModelProvider.ts](../system/sentinel/ModelProvider.ts) — Multi-provider model selection
+- [Rust SentinelModule](../../core/continuum-core/src/modules/) — Pipeline executor, process isolation, concurrency
+- [SentinelDefinition.ts](../../legacy/src/system/sentinel/SentinelDefinition.ts) — JSON schema and SentinelBuilder
+- [ModelProvider.ts](../../legacy/src/system/sentinel/ModelProvider.ts) — Multi-provider model selection
 
 ### Design Documents
 
@@ -2848,12 +2848,12 @@ Long-term vision items.
 
 ### Pipeline Templates
 
-- [TeacherPipeline.ts](../system/sentinel/pipelines/TeacherPipeline.ts) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
-- [StudentPipeline.ts](../system/sentinel/pipelines/StudentPipeline.ts) — Academy student (pre-test, train, exam, phenotype validate)
-- [LoRATrainingPipeline.ts](../system/sentinel/pipelines/LoRATrainingPipeline.ts) — Standalone LoRA training pipeline
-- [KnowledgeExplorationPipeline.ts](../system/sentinel/pipelines/KnowledgeExplorationPipeline.ts) — Data source exploration and fact extraction
-- [BenchmarkPipeline.ts](../system/sentinel/pipelines/BenchmarkPipeline.ts) — Benchmark generation and runner pipelines
-- [sentinel-lora-training.md](sentinel-lora-training.md) — LoRA training pipeline commands + Academy quick start
+- [TeacherPipeline.ts](../../legacy/src/system/sentinel/pipelines/TeacherPipeline.ts) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
+- [StudentPipeline.ts](../../legacy/src/system/sentinel/pipelines/StudentPipeline.ts) — Academy student (pre-test, train, exam, phenotype validate)
+- [LoRATrainingPipeline.ts](../../legacy/src/system/sentinel/pipelines/LoRATrainingPipeline.ts) — Standalone LoRA training pipeline
+- [KnowledgeExplorationPipeline.ts](../../legacy/src/system/sentinel/pipelines/KnowledgeExplorationPipeline.ts) — Data source exploration and fact extraction
+- [BenchmarkPipeline.ts](../../legacy/src/system/sentinel/pipelines/BenchmarkPipeline.ts) — Benchmark generation and runner pipelines
+- [sentinel-lora-training.md](SENTINEL-PIPELINE-ARCHITECTURE.md) — LoRA training pipeline commands + Academy quick start
 
 ### External
 

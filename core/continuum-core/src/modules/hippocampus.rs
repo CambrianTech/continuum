@@ -228,9 +228,9 @@ impl BrainRegion for HippocampusModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::embedding::EmbeddingError;
     use crate::memory::{EmbeddingProvider, PersonaMemoryManager};
     use crate::runtime::ReadyBuffer;
+    use async_trait::async_trait;
 
     /// Stub embedding provider for tests — mirrors the one in
     /// `crate::memory::tests` since that one's not pub. The skeleton
@@ -238,18 +238,16 @@ mod tests {
     /// constructing one to share with `MemoryModule` in later slices.
     struct StubEmbedding;
 
+    #[async_trait]
     impl EmbeddingProvider for StubEmbedding {
-        fn name(&self) -> &str {
+        fn id(&self) -> &str {
             "hippocampus-test-stub"
         }
-        fn dimensions(&self) -> usize {
+        fn dim(&self) -> usize {
             384
         }
-        fn embed(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
-            Ok(vec![0.0; 384])
-        }
-        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-            Ok(texts.iter().map(|_| vec![0.0; 384]).collect())
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            vec![0.0; 384]
         }
     }
 

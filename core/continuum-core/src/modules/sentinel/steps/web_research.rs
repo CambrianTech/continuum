@@ -38,8 +38,10 @@ pub async fn execute(
     }
 
     // Dispatch to TypeScript — bypasses Rust registry (sentinel/ prefix collision)
-    let result =
-        crate::runtime::command_executor::execute_ts_json("sentinel/web-research", params).await;
+    let result = match pipeline_ctx.executor {
+        Some(exec) => exec.execute_ts_json("sentinel/web-research", params).await,
+        None => Err("WebResearch step: no CommandExecutor in pipeline context".to_string()),
+    };
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

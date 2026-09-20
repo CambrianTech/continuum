@@ -98,9 +98,19 @@ pub async fn execute(
 
     // Route to TypeScript via Unix socket — sentinel/ prefix is NOT claimed by a Rust module,
     // but we use execute_ts_json for consistency with the provider architecture living in TypeScript.
-    let json = runtime::command_executor::execute_ts_json("sentinel/coding-agent", params)
-        .await
-        .map_err(|e| step_err(pipeline_ctx.handle_id, "CodingAgent step", e))?;
+    let json = match pipeline_ctx.executor {
+        Some(exec) => exec
+            .execute_ts_json("sentinel/coding-agent", params)
+            .await
+            .map_err(|e| step_err(pipeline_ctx.handle_id, "CodingAgent step", e))?,
+        None => {
+            return Err(step_err(
+                pipeline_ctx.handle_id,
+                "CodingAgent step",
+                "no CommandExecutor in pipeline context".to_string(),
+            ));
+        }
+    };
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

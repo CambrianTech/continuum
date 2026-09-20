@@ -16,8 +16,13 @@
 //!
 //! Phase 2.0 ships:
 //!   - The trait
-//!   - `CpuMonitor` (no-GPU fallback) as the first concrete adapter
-//!   - `MockMonitor` for unit testing the policy without a real GPU
+//!   - `MockMonitor` (test-only) for unit testing the policy without a real GPU
+//!
+//! There is NO CpuMonitor / no-GPU fallback adapter: GPU acceleration is
+//! required (`detect_gpu()` hard-fails without it, #980), and a CPU stand-in
+//! would only mask a missing device with silently-wrong numbers — turning a
+//! GPU build "all CPU again" without anyone noticing. Absent device → fail
+//! loud at the seam, never substitute.
 //!
 //! Phase 2.0a (follow-up):
 //!   - `MetalMonitor` via IOReport FFI (the actual fix for the
@@ -27,15 +32,51 @@
 //!   - `VulkanMonitor` via VK_EXT_memory_budget for cross-vendor
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::watch;
+use ts_rs::TS;
 
 /// Live, fast-to-read memory + utilization signals for the policy.
 /// Each implementation talks to its platform's actual monitoring API.
 /// The trait normalizes the shape so the policy doesn't care which
 /// platform produced the signals.
+/// Whether the GPU draws on its own memory or shares the host's.
+///
+/// Detected from the platform (Metal's `hasUnifiedMemory`), never inferred from the
+/// OS — an Intel Mac with a discrete AMD card runs macOS and is NOT unified, so a
+/// `cfg!(target_os = "macos")` guard would be wrong on real hardware.
+///
+/// This used to live inside `metal_monitor` as a private sampling detail, on the
+/// stated assumption that "production callers should use the trait methods, which
+/// abstract the mode away". That assumption held for pressure (a ratio is a ratio)
+/// and broke for the ResourceGovernor, which must know whether VRAM and RAM are two
+/// pools or one before it can hand out bytes of either — see
+/// [`UnifiedMemoryPool`](crate::resources::UnifiedMemoryPool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    /// Apple Silicon — GPU and CPU share one address space and one physical pool.
+    /// System VM free pages ARE the GPU free signal, and a byte leased as VRAM is
+    /// the same byte as one leased as RAM.
+    Unified,
+    /// Discrete GPU — its own VRAM pool, physically separate from system DRAM.
+    /// The two axes are genuinely independent.
+    Discrete,
+}
+
 pub trait GpuMonitor: Send + Sync {
     /// Platform identifier — "metal" | "cuda" | "vulkan" | "cpu" | "mock".
     fn platform(&self) -> &'static str;
+
+    /// Whether this device shares the host's physical memory.
+    ///
+    /// Defaults to [`MemoryMode::Discrete`] — the correct answer for every discrete
+    /// card, and the behavior the governor had before unified memory was modeled at
+    /// all, so an adapter that does not override this is unchanged rather than
+    /// silently wrong. Metal overrides it with the real `hasUnifiedMemory` answer.
+    /// A future UMA backend (an ARM iGPU via Vulkan) MUST override it.
+    fn memory_mode(&self) -> MemoryMode {
+        MemoryMode::Discrete
+    }
 
     /// Human-readable device name (e.g. "Apple M5 Pro", "NVIDIA RTX 5090",
     /// "CPU (no GPU)"). For logs and the policy's "what hardware are we
@@ -49,7 +90,18 @@ pub trait GpuMonitor: Send + Sync {
     /// CURRENTLY free bytes — observed from the platform, NOT from our
     /// internal allocation accounting. This is the signal that lets the
     /// policy detect a video game grabbing our headroom.
-    fn free_bytes(&self) -> u64;
+    ///
+    /// `None` is "unknown", NEVER "zero" and never "all of it" — before the
+    /// monitor's first sample, or when the platform read fails. Same law as
+    /// [`HostMemoryReader::available_bytes`](crate::resources::capacity::HostMemoryReader::available_bytes),
+    /// which is this signal's host-RAM sibling; the degradation policy for an
+    /// unknown reading is the CAPACITY SOURCE's to decide, not the monitor's.
+    ///
+    /// This returned `Option` in place of a `u64` because the Metal impl was
+    /// answering a failed Mach syscall with `total_bytes` — i.e. "the syscall
+    /// broke, so assume every byte is free", the most optimistic possible lie
+    /// told directly to the governor. An unreadable sensor is not a full tank.
+    fn free_bytes(&self) -> Option<u64>;
 
     /// Bytes allocated by OUR process specifically. Lets the policy
     /// distinguish "system is tight" from "we are tight" and react
@@ -99,90 +151,40 @@ pub trait GpuMonitor: Send + Sync {
 }
 
 /// Atomic snapshot of all monitor signals. Used by the FootprintRegistry
-/// sanity check and the learned-policy training corpus capture.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// sanity check, the learned-policy training corpus capture, and — as a
+/// ts-rs wire type — the Positron SYS-gauge GPU series (device-wide
+/// `used = total_bytes - free_bytes`, the same system-wide framing the
+/// CPU/MEM series already use; `process_bytes` is our-process-only and is
+/// deliberately kept distinct).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuSnapshot.ts")]
 pub struct GpuSnapshot {
     pub platform: String,
     pub device_name: String,
+    #[ts(type = "number")]
     pub total_bytes: u64,
-    pub free_bytes: u64,
+    /// Absent when the platform has no free-bytes reading yet — a renderer
+    /// must show "unknown", never compute `used = total - 0` and paint a
+    /// full bar. See [`GpuMonitor::free_bytes`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub free_bytes: Option<u64>,
+    #[ts(type = "number")]
     pub process_bytes: u64,
     pub utilization: f32,
+    #[ts(optional)]
     pub temperature_c: Option<f32>,
+    #[ts(optional)]
     pub power_watts: Option<f32>,
     pub pressure: f32,
 }
 
-// ─── CpuMonitor — no-GPU fallback ────────────────────────────────────
-
-/// The "no GPU detected" fallback adapter. Reports system RAM as the
-/// "total" budget and never claims utilization (CPU inference still
-/// works, we just can't measure GPU stats). Used on Linux servers
-/// without GPUs, in test harnesses that want a deterministic monitor,
-/// and as the safety floor when GPU detection fails.
-pub struct CpuMonitor {
-    device_name: String,
-    total_bytes: u64,
-    pressure_tx: watch::Sender<f32>,
-    pressure_rx: watch::Receiver<f32>,
-}
-
-impl CpuMonitor {
-    pub fn new(total_ram_bytes: u64) -> Self {
-        let (pressure_tx, pressure_rx) = watch::channel(0.0);
-        Self {
-            device_name: "CPU (no GPU)".to_string(),
-            total_bytes: total_ram_bytes,
-            pressure_tx,
-            pressure_rx,
-        }
-    }
-
-    /// Update the pressure signal from caller-supplied accounting.
-    /// CPU-only setup has no live OS-level pressure source for "GPU
-    /// memory", so the caller (typically the FootprintRegistry's own
-    /// sum) becomes the proxy. Not as good as a real OS signal but
-    /// preserves the trait shape so the policy code doesn't change.
-    pub fn update_pressure(&self, p: f32) {
-        let _ = self.pressure_tx.send(p.clamp(0.0, 1.0));
-    }
-}
-
-impl GpuMonitor for CpuMonitor {
-    fn platform(&self) -> &'static str {
-        "cpu"
-    }
-    fn device_name(&self) -> &str {
-        &self.device_name
-    }
-    fn total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-    fn free_bytes(&self) -> u64 {
-        // Without an OS query, "free" = total minus the policy's
-        // own accounting reflected in the pressure signal.
-        let pressure = *self.pressure_rx.borrow();
-        let used = (self.total_bytes as f64 * pressure as f64) as u64;
-        self.total_bytes.saturating_sub(used)
-    }
-    fn process_bytes(&self) -> u64 {
-        // Same source as free: derived from accounted pressure.
-        let pressure = *self.pressure_rx.borrow();
-        (self.total_bytes as f64 * pressure as f64) as u64
-    }
-    fn utilization(&self) -> f32 {
-        0.0 // No GPU compute utilization to report.
-    }
-    fn temperature_c(&self) -> Option<f32> {
-        None
-    }
-    fn power_watts(&self) -> Option<f32> {
-        None
-    }
-    fn pressure_rx(&self) -> watch::Receiver<f32> {
-        self.pressure_rx.clone()
-    }
-}
+// NOTE: there is deliberately NO `CpuMonitor`. A "no-GPU fallback"
+// monitor is the exact plague `detect_gpu()` already outlaws (#980): GPU
+// acceleration is REQUIRED, and a CPU stand-in only masks a missing real
+// device with silently-wrong numbers. Absent GPU → fail loud, never
+// substitute. `MockMonitor` below is the test double; it is NOT a
+// production fallback (it lives for `#[cfg(test)]` policy scenarios only).
 
 // ─── MockMonitor — for unit tests of the policy ──────────────────────
 
@@ -254,8 +256,11 @@ impl GpuMonitor for MockMonitor {
     fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
-    fn free_bytes(&self) -> u64 {
-        self.free_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    fn free_bytes(&self) -> Option<u64> {
+        // A scripted mock always HAS a reading — the scenario set it. The
+        // unknown state is a property of real sensors, so tests that want it
+        // reach for a monitor that models the failure, not a `None` here.
+        Some(self.free_bytes.load(std::sync::atomic::Ordering::Relaxed))
     }
     fn process_bytes(&self) -> u64 {
         self.process_bytes
@@ -289,63 +294,81 @@ impl GpuMonitor for MockMonitor {
     }
 }
 
+// ─── detect — the live-monitor analog of GpuMemoryManager::detect ────
+
+/// Detect and construct the **live-scanning** GPU monitor for THIS host.
+///
+/// This is the live-signal sibling of [`GpuMemoryManager::detect`](crate::gpu::memory_manager::GpuMemoryManager::detect):
+/// where that one captures a *static* working-set hint at boot,
+/// this one returns a monitor that re-samples free/process VRAM every
+/// tick (the signal that lets the resource governor SEE a game or
+/// renderer grabbing our headroom — the whole point of the
+/// net-of-external ceiling in [`GpuCapacitySource`](crate::resources::capacity::GpuCapacitySource)).
+///
+/// Returns `None` when no live-scanning adapter exists *for this
+/// platform yet* — `MetalMonitor` is the only one built today;
+/// `NvidiaMonitor` (NVML) and `VulkanMonitor` (`VK_EXT_memory_budget`)
+/// are the documented Phase 2.0a follow-ups. `None` is an honest
+/// **capability gap**, and it is emphatically NOT a cue to substitute a
+/// CPU monitor: a fake-GPU-monitor reporting RAM-as-VRAM is the exact
+/// "all CPU again" plague — it would silently mask a real GPU we should
+/// be using behind fabricated numbers. The caller (the governor boot
+/// site) MUST surface `None` loudly by name and fail at the seam; it must
+/// never swallow `None` into "use total" or "no governance needed".
+///
+/// To be precise about the one legitimate CPU scenario: the rule is GPU
+/// for all models, with a SINGLE sanctioned exception — a standalone
+/// install on a GPU-less Intel Mac with no grid peer to offload to. That
+/// is a deliberate, explicitly-chosen, loudly-logged deployment path, not
+/// a value this function ever silently returns. (Contrast
+/// [`detect_gpu`](crate::gpu::memory_manager) which today hard-fails on a
+/// genuinely GPU-less host; that absolute is the #980 stance and any CPU
+/// deployment path must be its own explicit branch, never a swallowed
+/// `None` here.)
+///
+/// On Apple Silicon the returned monitor is unified-memory aware, so
+/// its `free_bytes()` tracks real system headroom — exactly the live
+/// number serving's budget should be capped at.
+pub fn detect() -> Option<Arc<dyn GpuMonitor>> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(m) = MetalMonitor::new() {
+            return Some(m as Arc<dyn GpuMonitor>);
+        }
+    }
+    // NVIDIA via `nvidia-smi` — covers CUDA hosts AND NVIDIA-on-Vulkan
+    // hosts with a genuine live free-VRAM signal (not a static lie).
+    // `new()` returns None on non-NVIDIA hosts, so this is safe to try
+    // everywhere; on macOS the Metal branch above already returned.
+    if let Some(m) = super::NvidiaMonitor::new() {
+        return Some(m as Arc<dyn GpuMonitor>);
+    }
+    // Remaining real adapter still to build: a Vulkan live monitor
+    // (AMD/Intel via VK_EXT_memory_budget — needs `ash` FFI). It is
+    // deliberately NOT faked with a static heap size: a stale `free` that
+    // never drops is the exact bug this whole live-monitor layer exists to
+    // kill. On such a host detect() returns None and the governor boot site
+    // fails loud naming the missing adapter — never a silent substitute.
+    //
+    // This adapter is double-duty: besides non-NVIDIA Linux GPUs, Vulkan is
+    // the ONLY shape by which a Linux container on a Mac could ever see the
+    // GPU — a Linux guest cannot call Metal directly, so any Mac-GPU-in-Docker
+    // passthrough surfaces as paravirtualized Metal-through-Vulkan. Because
+    // detect() is a real runtime PROBE (not platform inference), the day that
+    // ships it lights up here with no other change. Today: Mac deploys NATIVE
+    // (the Metal branch above, --features metal); Docker is the Linux/CUDA
+    // artifact (the NvidiaMonitor branch). CUDA-in-Docker is the proven path.
+    None
+}
+
+#[cfg(target_os = "macos")]
+use super::MetalMonitor;
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// What this catches: CpuMonitor declaring itself a non-cpu platform
-    /// (would mislead the policy into trying GPU-specific code paths).
-    ///
-    /// Validated 2026-04-21: returned "cuda" from platform(), test fails.
-    #[test]
-    fn cpu_monitor_identifies_as_cpu_platform() {
-        let m = CpuMonitor::new(8 * 1024 * 1024 * 1024);
-        assert_eq!(m.platform(), "cpu");
-        assert!(m.device_name().contains("CPU"));
-    }
-
-    /// What this catches: CpuMonitor's free_bytes not adjusting with
-    /// pressure updates. Without this, the fallback monitor reports
-    /// constant free=total and the policy thinks RAM is infinite.
-    ///
-    /// Validated 2026-04-21: removed pressure subtraction in free_bytes,
-    /// test fails because free stays at total after pressure update.
-    #[test]
-    fn cpu_monitor_free_bytes_decreases_with_pressure() {
-        let total = 8 * 1024 * 1024 * 1024u64;
-        let m = CpuMonitor::new(total);
-        assert_eq!(m.free_bytes(), total, "no pressure → all free");
-
-        m.update_pressure(0.5);
-        let half_used = m.free_bytes();
-        assert!(
-            half_used < total && half_used > total / 4,
-            "50% pressure → roughly half free; got {half_used} of {total}"
-        );
-
-        m.update_pressure(1.0);
-        assert!(
-            m.free_bytes() < total / 10,
-            "full pressure → near-zero free"
-        );
-    }
-
-    /// What this catches: pressure value escaping the 0.0..1.0 range
-    /// when caller pushes nonsense (e.g. update_pressure(2.5)). Clamping
-    /// is the trait invariant; downstream policy assumes it.
-    ///
-    /// Validated 2026-04-21: removed clamp in update_pressure, test
-    /// fails because pressure_rx returns 2.5 directly.
-    #[test]
-    fn cpu_monitor_clamps_pressure_to_unit_range() {
-        let m = CpuMonitor::new(1024);
-        m.update_pressure(2.5);
-        assert!((0.0..=1.0).contains(&*m.pressure_rx().borrow()));
-        m.update_pressure(-1.0);
-        assert!((0.0..=1.0).contains(&*m.pressure_rx().borrow()));
-    }
 
     /// What this catches: MockMonitor not actually being mutable
     /// (e.g. a typo storing into the wrong field, or atomics dropped).
@@ -364,7 +387,7 @@ mod tests {
         m.set_power_watts(45.0);
         m.set_pressure(0.6);
 
-        assert_eq!(m.free_bytes(), 1024);
+        assert_eq!(m.free_bytes(), Some(1024));
         assert_eq!(m.process_bytes(), 8192);
         assert!((m.utilization() - 0.75).abs() < 0.01);
         assert_eq!(m.temperature_c(), Some(82.0)); // i32 truncation
@@ -409,7 +432,7 @@ mod tests {
         let snap = m.snapshot();
         assert_eq!(snap.platform, "mock");
         assert_eq!(snap.total_bytes, 1_000_000);
-        assert_eq!(snap.free_bytes, 700_000);
+        assert_eq!(snap.free_bytes, Some(700_000));
         assert_eq!(snap.process_bytes, 200_000);
         assert!((snap.utilization - 0.4).abs() < 0.01);
         assert!((snap.pressure - 0.3).abs() < 0.01);
@@ -424,10 +447,39 @@ mod tests {
     /// receiver doesn't see the update.
     #[test]
     fn pressure_rx_receives_subsequent_updates() {
-        let m = CpuMonitor::new(1024);
+        let m = MockMonitor::new(1024);
         let rx = m.pressure_rx();
-        m.update_pressure(0.42);
+        m.set_pressure(0.42);
         // borrow() reads latest published value
         assert!((*rx.borrow() - 0.42).abs() < 0.01);
+    }
+
+    /// What this catches: detect() handing back a monitor with a
+    /// garbage capacity (the `total == 0 → None` guard regressing) or a
+    /// bogus platform tag. Deliberately environment-INDEPENDENT (task
+    /// #72): a headless build env with no Metal device returns None, and
+    /// that's a valid pass — we only assert the invariant that WHEN a
+    /// live monitor is detected it reports real capacity and a known
+    /// platform. `#[tokio::test]` because MetalMonitor::new spawns its
+    /// sampling daemon on the shared runner, which needs a reactor.
+    #[tokio::test]
+    async fn detect_yields_a_sane_monitor_or_honest_none() {
+        match detect() {
+            Some(m) => {
+                assert!(
+                    m.total_bytes() > 0,
+                    "a detected live monitor must report real VRAM capacity, not 0"
+                );
+                assert!(
+                    matches!(m.platform(), "metal" | "cuda" | "vulkan"),
+                    "unexpected live-monitor platform tag: {}",
+                    m.platform()
+                );
+            }
+            // No live-scanning adapter for this platform/host yet — an
+            // honest capability gap, not a failure. The governor boot
+            // site is responsible for surfacing it loudly.
+            None => {}
+        }
     }
 }

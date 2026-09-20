@@ -213,10 +213,8 @@ mod tests {
     //! actually emits fixtures from persona/turn-execute) lands
     //! against a stable contract.
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PersonaId};
-    use crate::inference::llm_module::{
-        CompositionPlan, FinishReason, GenerationBudget, InferenceRequestId, SamplingParams,
-    };
+    use crate::identity::PeerId;
+    use crate::inference::llm_module::{FinishReason, InferenceRequestId};
     use crate::persona::inbox::{PersonaInboxFrame, PersonaInboxFrameMetrics};
     use crate::persona::turn_frame::{
         ConsolidatedInboxChunk, RagAssemblySeed, PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
@@ -266,7 +264,7 @@ mod tests {
     fn sample_inference_complete() -> InferenceComplete {
         InferenceComplete {
             request_id: InferenceRequestId::new(Uuid::from_u128(100)),
-            persona: PersonaId::new(Uuid::from_u128(1)),
+            persona: PeerId::from_uuid(Uuid::from_u128(1)),
             completion_tokens: vec![1, 2, 3],
             completion_text: Some("hello world".to_string()),
             finish_reason: FinishReason::Stop,
@@ -278,7 +276,7 @@ mod tests {
     fn sample_first_token() -> FirstTokenEmitted {
         FirstTokenEmitted {
             request_id: InferenceRequestId::new(Uuid::from_u128(100)),
-            persona: PersonaId::new(Uuid::from_u128(1)),
+            persona: PeerId::from_uuid(Uuid::from_u128(1)),
             elapsed_us: 250_000,
         }
     }

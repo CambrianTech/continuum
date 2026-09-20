@@ -15,12 +15,14 @@
 //! - Local (Candle, llama.cpp)
 
 use crate::clog_warn;
+use crate::model_registry::{Capability, ProviderKind, ToolProtocol};
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::types::{
-    EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelCapability, ModelInfo,
-    TextGenerationRequest, TextGenerationResponse,
+    EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelInfo, TextGenerationRequest,
+    TextGenerationResponse,
 };
 
 /// Device preference for inference — same pattern as PyTorch device='cuda'
@@ -88,47 +90,8 @@ impl Default for AdapterConfig {
     }
 }
 
-/// How the adapter ACCEPTS tool-call requests. This is arc 1's pivot
-/// insurance: cognition asks "can you do tools?" and the substrate
-/// routes accordingly — no special-casing per adapter, no "if openai
-/// then ..." branches. Per `[[adapter-pattern-is-the-pivot-insurance]]`.
-///
-/// The substrate's tool-execution loop reads this and either:
-/// 1. Calls the adapter natively (NativeFunctionCalling, JsonMode) and
-///    parses the structured response, OR
-/// 2. Wraps tool descriptors into the prompt itself (JsonInPrompt,
-///    XmlTags) and parses tool calls out of the text output stream
-///
-/// Adapters declare ONE protocol — the best they natively support.
-/// Bridged protocols (e.g., wrapping JsonInPrompt over a base model that
-/// could do better) belong in cognition's compose phase, not here.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ToolCallProtocol {
-    /// No tool calling at all — caller must implement tool execution
-    /// out-of-band or skip tool use. Pure-text completion adapters
-    /// (HeuristicAdapter, embedding-only models).
-    #[default]
-    None,
-    /// Tools described in the system/user prompt as JSON schema; the
-    /// model emits JSON in its text output, substrate parses. Works on
-    /// any text model with sufficient instruction-following. The
-    /// fallback any prompt-driven model can fulfill.
-    JsonInPrompt,
-    /// Provider's native JSON mode (`response_format = json_object`) —
-    /// the model is constrained at sampling time to emit valid JSON.
-    /// Stronger guarantee than JsonInPrompt; weaker than function calling.
-    JsonMode,
-    /// Native function calling primitives — provider returns structured
-    /// tool_calls in its API response shape (OpenAI tools, Anthropic
-    /// tool_use). The substrate consumes them directly without parsing.
-    NativeFunctionCalling,
-    /// XML-style tool tags inside text output — Anthropic's pre-tool-use
-    /// pattern. Substrate parses `<tool>...</tool>` blocks.
-    XmlTags,
-}
-
 /// How the adapter ACCEPTS structured-output schemas. Same shape as
-/// `ToolCallProtocol` — cognition asks "can you constrain output to
+/// `ToolProtocol` — cognition asks "can you constrain output to
 /// this schema?" and routes accordingly. Independent of tool calling
 /// because some adapters support schemas without tools (and vice versa).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -148,82 +111,211 @@ pub enum StructuredOutputProtocol {
     PromptOnly,
 }
 
-/// Which modalities the adapter handles. The pivot insurance for
-/// sensory parity per `[[ai-namespace-multimodal-crutches]]`: lesser
-/// models declare `vision_in = false` here; the substrate's
-/// VisionDescriptionService bridges by rendering an image description
-/// into text BEFORE the adapter sees the request. Same for STT (audio
-/// → text) and TTS (text → audio). Capability declared honestly =
-/// bridges applied correctly = LCD personas get the same sensory
-/// experience as Claude.
+/// The coherent NATIVE protocol pair an adapter speaks — `tool_call_protocol`
+/// and `structured_output_protocol` always travel together, so the pairing is
+/// codified here once instead of being re-derived (and risked-inconsistent) in
+/// every `capabilities()`. Picking a `NativeProtocols` makes an incoherent
+/// combo (native function-calling tools but prompt-only structure, say)
+/// unrepresentable, and gives the next adapter author ONE thing to choose.
+///
+/// Each variant is a real, observed adapter shape. To add a base model with a
+/// new wire format, add a variant here — never a fresh ad-hoc `(tool, struct)`
+/// pair in an adapter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ModalitySet {
-    /// Accepts text input (system + user messages, raw prompts).
-    pub text_in: bool,
-    /// Produces text output (the common case).
-    pub text_out: bool,
-    /// Accepts image input natively (base64 or URL).
-    pub vision_in: bool,
-    /// Accepts audio input natively (audio file or raw samples).
-    pub audio_in: bool,
-    /// Produces audio output natively (TTS-equivalent).
-    pub audio_out: bool,
+pub enum NativeProtocols {
+    /// No native protocol — the model makes no tool/structure guarantee.
+    /// Cognition does everything out-of-band. The text/embedding floor
+    /// (heuristic, embedding-only, remote-peer-unknown).
+    #[default]
+    None,
+    /// No native protocol, but the model is a competent chat model: tools and
+    /// schema are described in-prompt and cognition validates + retries.
+    /// (OpenAI-compatible endpoint serving a model without tool support.)
+    PromptEmulated,
+    /// Cloud function-calling: native `tool_use`/`tool_calls` blocks + native
+    /// JSON-Schema enforcement. (Anthropic, OpenAI-with-tools.)
+    FunctionCalling,
+    /// llama.cpp family: prompt-driven tool JSON + GBNF grammar-constrained
+    /// structured output (the sampler refuses grammar-violating tokens).
+    GrammarConstrained,
 }
 
-impl ModalitySet {
-    /// Text-only modality (most LLMs).
-    pub const TEXT_ONLY: Self = Self {
-        text_in: true,
-        text_out: true,
-        vision_in: false,
-        audio_in: false,
-        audio_out: false,
-    };
+impl NativeProtocols {
+    /// The tool-calling protocol half of the pair.
+    pub fn tool_call(self) -> ToolProtocol {
+        match self {
+            Self::None => ToolProtocol::None,
+            Self::PromptEmulated => ToolProtocol::None,
+            Self::FunctionCalling => ToolProtocol::NativeFunctionCalling,
+            Self::GrammarConstrained => ToolProtocol::JsonInPrompt,
+        }
+    }
+
+    /// The structured-output protocol half of the pair.
+    pub fn structured_output(self) -> StructuredOutputProtocol {
+        match self {
+            Self::None => StructuredOutputProtocol::None,
+            Self::PromptEmulated => StructuredOutputProtocol::PromptOnly,
+            Self::FunctionCalling => StructuredOutputProtocol::JsonSchema,
+            Self::GrammarConstrained => StructuredOutputProtocol::GrammarConstrained,
+        }
+    }
 }
 
 /// AI provider adapter capabilities — the typed surface the substrate's
 /// coordinator consults when routing a workload to the best-fit adapter.
 ///
-/// Arc 1 (card 42bd9367): added typed protocol descriptors
-/// (`tool_call_protocol`, `structured_output_protocol`, `modalities`)
-/// alongside the legacy bool flags. The bool flags are retained for
-/// existing callers; new selectors should consult the typed fields.
+/// ONE capability vocabulary (#65 collapse): `model_registry::Capability`.
+/// There is no `ModalitySet`, no `supports_*` bool mirror, no second enum —
+/// `caps.has(Capability::Vision)` IS the modality check, and that same check
+/// is what fires the sensory bridge: a capability NOT in this set is bridged
+/// by the substrate before the adapter sees the request (vision →
+/// VisionDescriptionService, AudioInput → STT, AudioOutput → TTS). Capability
+/// declared honestly = bridges applied correctly = LCD personas get the same
+/// sensory experience as Claude (`[[ai-namespace-multimodal-crutches]]`).
+///
 /// Per `[[adapter-pattern-is-the-pivot-insurance]]`: every ML-touching
-/// capability sits behind this trait so the substrate can pivot
-/// (swap framework, swap model, swap provider) by declaration, not
-/// rewrite.
+/// capability sits behind this trait so the substrate can pivot (swap
+/// framework, swap model, swap provider) by declaration, not rewrite. The
+/// only non-capability members are the scalars cognition needs to bound a
+/// turn and the protocol descriptors the tool/structured-output loops route
+/// through (protocol = HOW, distinct axis from WHAT the model can do).
 #[derive(Debug, Clone, Default)]
 pub struct AdapterCapabilities {
-    pub supports_text_generation: bool,
-    pub supports_chat: bool,
-    pub supports_tool_use: bool,
-    pub supports_vision: bool,
-    pub supports_streaming: bool,
-    pub supports_embeddings: bool,
-    pub supports_audio: bool,
-    pub supports_image_generation: bool,
+    /// What the adapter's model can do — the single source of truth.
+    pub capabilities: BTreeSet<Capability>,
+    /// Inference runs on this host (provider kind == Local).
     pub is_local: bool,
-    pub max_context_window: u32,
+    /// Context window (input + output limit) AS DECLARED BY THE ADAPTER.
+    ///
+    /// `None` means the adapter has not declared one — NOT "assume a small default". This
+    /// used to be a bare `u32` seeded from a `FLOOR_CONTEXT_WINDOW = 4096` constant, so any
+    /// adapter that didn't override reported 4096 as its ceiling. Nothing budgeted against it
+    /// yet, which is the only reason it hadn't already broken a 1M-context model — but the
+    /// obvious next use of this field (budgeting, which is exactly what #46 was about) would
+    /// have silently clamped every under-declaring adapter to 4k. Making "undeclared"
+    /// unrepresentable as a number closes that off by construction: a consumer must handle
+    /// `None` deliberately (ask the served lane) instead of inheriting a guess.
+    /// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+    pub max_context_window: Option<u32>,
+    /// Maximum tokens the adapter will emit in a single response, as declared. Distinct from
+    /// `max_context_window`. `None` = undeclared, same contract as above (#45: the adapter
+    /// owns generation length; nobody downstream invents a cap).
+    pub max_output_tokens: Option<u32>,
 
-    // ─── Arc 1: typed protocol descriptors (card 42bd9367) ─────────────────
-    /// Tool-calling protocol the adapter NATIVELY supports. Cognition's
-    /// tool loop routes through this. `None` means the substrate either
-    /// skips tools or wraps via prompt-text emulation in compose phase.
-    pub tool_call_protocol: ToolCallProtocol,
-    /// Structured-output protocol the adapter NATIVELY supports.
-    /// Independent of tool calling. `None` means schema validation +
-    /// retry happen in cognition.
+    /// Tool-calling protocol the adapter NATIVELY speaks. Cognition's tool
+    /// loop routes through this. Default means prompt-text emulation in compose.
+    pub tool_call_protocol: ToolProtocol,
+    /// Structured-output protocol the adapter NATIVELY speaks. Independent of
+    /// tool calling. Default means schema validation + retry happen in cognition.
     pub structured_output_protocol: StructuredOutputProtocol,
-    /// Modalities the adapter handles natively. Modalities NOT in this
-    /// set are bridged by the substrate before the adapter sees the
-    /// request (vision → VisionDescriptionService, audio_in → STT,
-    /// audio_out → TTS). LCD personas get sensory parity via bridges
-    /// per `[[ai-namespace-multimodal-crutches]]`.
-    pub modalities: ModalitySet,
-    /// Maximum tokens the adapter will emit in a single response.
-    /// Distinct from `max_context_window` (input + output limit).
-    /// Used by cognition to bound the compose phase.
-    pub max_output_tokens: u32,
+}
+
+impl AdapterCapabilities {
+    /// Does the adapter's model declare this capability? The one accessor —
+    /// modality routing, tool gating, embedding/image-gen all resolve here.
+    pub fn has(&self, cap: Capability) -> bool {
+        self.capabilities.contains(&cap)
+    }
+
+    /// A minimal text-only capability set — the common case for a basic
+    /// chat/completion adapter (and the trait's default `capabilities()`).
+    /// This is also the [`builder`](Self::builder) seed, so a richer adapter
+    /// declares only what it adds on top of the floor.
+    pub fn text_only() -> Self {
+        Self {
+            capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
+            // Undeclared, NOT a small default — see the field docs.
+            max_context_window: None,
+            max_output_tokens: None,
+            // The floor has no ToolUse capability, so its protocol pair must be
+            // None — set it explicitly, NOT via Default. `ToolProtocol::default()`
+            // is `NativeFunctionCalling` (the right default for a registry Provider
+            // that DOES declare tools), which would falsely advertise native
+            // function calling on a text-only adapter. The protocol must always
+            // match the capability: no ToolUse ⇒ no tool protocol.
+            tool_call_protocol: ToolProtocol::None,
+            structured_output_protocol: StructuredOutputProtocol::None,
+            ..Default::default()
+        }
+    }
+
+    /// Fluent constructor seeded from the text-only floor. The codified
+    /// projection every adapter's `capabilities()` builds through, so the next
+    /// adapter declares (what, where, how-big, which-protocols) without
+    /// hand-assembling the struct or risking an incoherent protocol pair:
+    /// ```ignore
+    /// AdapterCapabilities::builder()
+    ///     .capabilities([Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Vision])
+    ///     .remote()
+    ///     .context_window(200_000)
+    ///     .max_output_tokens(8_192)
+    ///     .protocols(NativeProtocols::FunctionCalling)
+    ///     .build()
+    /// ```
+    /// Zero runtime cost — moves a value, compiles to the same as a literal.
+    pub fn builder() -> AdapterCapabilitiesBuilder {
+        AdapterCapabilitiesBuilder {
+            inner: Self::text_only(),
+        }
+    }
+}
+
+/// Builder for [`AdapterCapabilities`] — see [`AdapterCapabilities::builder`].
+#[derive(Debug, Clone)]
+pub struct AdapterCapabilitiesBuilder {
+    inner: AdapterCapabilities,
+}
+
+impl AdapterCapabilitiesBuilder {
+    /// Declare the full capability set (replaces the floor's text+chat).
+    pub fn capabilities(mut self, caps: impl IntoIterator<Item = Capability>) -> Self {
+        self.inner.capabilities = caps.into_iter().collect();
+        self
+    }
+
+    /// Add one capability on top of the current set.
+    pub fn with(mut self, cap: Capability) -> Self {
+        self.inner.capabilities.insert(cap);
+        self
+    }
+
+    /// Inference runs on this host (provider kind == Local).
+    pub fn local(mut self) -> Self {
+        self.inner.is_local = true;
+        self
+    }
+
+    /// Inference runs off-host (cloud API or remote grid peer).
+    pub fn remote(mut self) -> Self {
+        self.inner.is_local = false;
+        self
+    }
+
+    /// Context window (input + output ceiling) — from the served model.
+    pub fn context_window(mut self, n: u32) -> Self {
+        self.inner.max_context_window = Some(n);
+        self
+    }
+
+    /// Maximum tokens emitted in a single response — from the served model.
+    pub fn max_output_tokens(mut self, n: u32) -> Self {
+        self.inner.max_output_tokens = Some(n);
+        self
+    }
+
+    /// Declare the coherent native (tool-call, structured-output) protocol
+    /// pair in one move. See [`NativeProtocols`].
+    pub fn protocols(mut self, protocols: NativeProtocols) -> Self {
+        self.inner.tool_call_protocol = protocols.tool_call();
+        self.inner.structured_output_protocol = protocols.structured_output();
+        self
+    }
+
+    /// Finish building.
+    pub fn build(self) -> AdapterCapabilities {
+        self.inner
+    }
 }
 
 /// LoRA capabilities reported by adapters
@@ -267,6 +359,37 @@ pub enum ApiStyle {
     Local,
 }
 
+/// A unit of generated output, delivered to the consumer the INSTANT the backend
+/// produces it — the streaming primitive. A token that exists now reaches the
+/// subscriber now: the same shape as an audio sample, a video frame, or a game
+/// state delta on the wire. Generation is a low-latency *stream*, not a `Future`
+/// you await for the whole result; [`AIProviderAdapter::generate_text`] is just
+/// the convenience drain over [`AIProviderAdapter::generate_stream`] for callers
+/// that don't need the tokens live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenerationChunk {
+    /// A fragment of the user-facing answer, emitted as the model decodes it.
+    Token(String),
+    /// A fragment of the model's private reasoning (`<think>` / `reasoning_content`).
+    /// Surfaced on its OWN variant so a consumer can show "thinking…" live without
+    /// ever leaking chain-of-thought into the room — the answer/reasoning split is
+    /// preserved on the stream, not just on the assembled response.
+    Reasoning(String),
+    /// PREFILL advanced — the slot has ingested `processed` of `total` prompt
+    /// tokens (`cached` of them served free by the KV prefix cache). Emitted
+    /// BEFORE any token exists, so a consumer can show honest progress during
+    /// the long silence a big prompt buys ([[honest-presence-lifecycle]]).
+    ///
+    /// This is also the liveness signal the stream watchdog keys on: a healthy
+    /// prefill raises `processed`, a wedged slot freezes it. Consumers that only
+    /// care about text may ignore this variant.
+    Prefill {
+        processed: u64,
+        total: u64,
+        cached: u64,
+    },
+}
+
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
@@ -279,20 +402,85 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Get adapter human-readable name
     fn name(&self) -> &str;
 
-    /// Get adapter capabilities
-    fn capabilities(&self) -> AdapterCapabilities;
+    /// Get adapter capabilities.
+    ///
+    /// Default: a text-only set (`AdapterCapabilities::text_only`).
+    /// Override to declare tools, vision, audio, streaming, or richer
+    /// context/output limits.
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities::text_only()
+    }
 
-    /// Get API style
-    fn api_style(&self) -> ApiStyle;
+    /// Get API style.
+    ///
+    /// Default: `Local` (in-process inference). Cloud adapters override
+    /// with `OpenAI` / `Anthropic` / `Google`.
+    fn api_style(&self) -> ApiStyle {
+        ApiStyle::Local
+    }
+
+    /// RESTORE-AHEAD (compression-ladder rung 1, FOLLOW-THE-SIGNAL doc): the
+    /// caller is ABOUT to generate for this activity — begin paging its warm
+    /// KV state into a serving slot NOW, overlapped with the caller's own
+    /// prompt assembly, instead of racing the restore against the turn at pin
+    /// time (measured 2026-09-01: pin-time restores queue behind busy slots to
+    /// the 10s timeout; the scheduler knowing "she is next" IS the cache
+    /// prediction, so use it). Non-blocking: implementations spawn and return.
+    ///
+    /// Default: no-op — cloud adapters and adapters without slot paging have
+    /// nothing to warm.
+    fn warm_ahead(&self, _persona: uuid::Uuid, _room: uuid::Uuid) {}
+
+    /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
+    /// or `None` when the adapter's own binding window is already authoritative.
+    ///
+    /// This is the single source of truth cognition budgets its prompt against — the
+    /// window of the persona's ACTUAL lane, read live, never a global snapshot and
+    /// never a post-hoc clamp ([[budget-at-assembly-never-clamp-the-prompt]],
+    /// [[no-hardcoded-context-numbers-derive-from-the-live-window]]). Each adapter
+    /// knows which lane it is bound to, so each answers for itself:
+    /// - shared single-resident gateway → the gateway's current served slot (the live
+    ///   `/props` truth for the one resident model), so a lane that relaunched
+    ///   smaller/larger is tracked in BOTH directions;
+    /// - a DEDICATED lane an adapter owns (an eval fork's `EphemeralServingLane`) →
+    ///   `None`: its window was pinned from ITS OWN `/props` at spawn and is carried on
+    ///   the binding; the global gateway snapshot describes a DIFFERENT server and must
+    ///   never be consulted for it (glass-boxed 2026-07-20: reading the global slot
+    ///   starved an eval fork's prompt to the live lane's per-slot window → webdev-rs
+    ///   0/6 while short coder prompts passed);
+    /// - cloud / in-process → `None`: the declared binding window stands.
+    ///
+    /// Default `None` — the binding window is authoritative unless an adapter has a
+    /// live lane to report.
+    fn live_served_window(&self) -> Option<u32> {
+        None
+    }
 
     /// Get default model for this provider
     fn default_model(&self) -> &str;
+
+    /// The model ids this adapter will ACTUALLY serve right now — what a
+    /// refusal may tell a caller to pass. Default: just `default_model()`.
+    /// Gateway adapters whose catalog default can drift from the live lane
+    /// (llama-server / DMR after a relaunch — the 5090 2026-07-24 misname)
+    /// override this with their verified runtime set. Never a guess: an
+    /// adapter that cannot know returns its declared default only.
+    fn served_model_ids(&self) -> Vec<String> {
+        vec![self.default_model().to_string()]
+    }
 
     /// Initialize the adapter (verify API key, load the model file
     /// off disk). Pays the model-load wall-clock once at boot so
     /// downstream consumers see the model's real capabilities from
     /// the first query on.
-    async fn initialize(&mut self) -> Result<(), String>;
+    ///
+    /// Default: `Ok(())` — adapters with no init contract (cloud
+    /// providers that authenticate lazily, in-process/heuristic
+    /// adapters, test fixtures) opt out silently. Local model adapters
+    /// that load weights off disk MUST override.
+    async fn initialize(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Warm the adapter's hot path BEFORE the first real `generate_text`
     /// call. For llama.cpp: run a tiny throwaway decode against a
@@ -320,17 +508,74 @@ pub trait AIProviderAdapter: Send + Sync {
         Ok(())
     }
 
-    /// Shutdown the adapter
-    async fn shutdown(&mut self) -> Result<(), String>;
+    /// Shutdown the adapter.
+    ///
+    /// Default: `Ok(())` — adapters holding no releasable resources opt
+    /// out. Adapters owning a model handle, socket, or worker process
+    /// override to release it.
+    async fn shutdown(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     // ─── Text Generation ────────────────────────────────────────────────────
 
-    /// Generate text (main entry point)
+    /// Generate with typed transport/admission failures. Backends can migrate
+    /// their existing streaming implementation without changing legacy callers
+    /// or fabricating a classification for an untyped provider error.
+    async fn generate_stream_checked(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.generate_stream(request, sink)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Generate text (convenience drain over [`generate_stream`])
     /// Handles both plain text generation AND tool calling
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String>;
+
+    /// Generate, delivering each [`GenerationChunk`] to `sink` the INSTANT the
+    /// backend produces it, and returning the fully-assembled response when the
+    /// stream completes. This is the streaming primitive — low-latency, buffered,
+    /// the shape every UI / audio / video / live-cognition path wants. The
+    /// blocking [`generate_text`] is the drain over this: await the whole answer
+    /// when you don't need the tokens live.
+    ///
+    /// `sink` is an unbounded channel so a slow consumer never stalls token
+    /// decode; a consumer that only wants the final answer passes a sink it
+    /// drops/ignores (the chunks are cheap to discard).
+    ///
+    /// Default impl: a NON-incremental adapter (a cloud one-shot endpoint, the
+    /// heuristic test adapter) genuinely has nothing to stream — it produces the
+    /// whole answer at once. It honestly emits that as a single trailing chunk
+    /// then returns the same response. This is a capability statement, not a
+    /// fallback that hides a failure: there is no partial output to deliver.
+    /// Streaming backends (OpenAI-compatible / llama-server) override this with a
+    /// real token-by-token stream and reimplement `generate_text` on top of it.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, String> {
+        let response = self.generate_text(request).await?;
+        if sink.is_closed() {
+            return Ok(response); // No observer: keep the result without cloning discarded chunks.
+        }
+        if let Some(reasoning) = response.reasoning.as_ref() {
+            if !reasoning.is_empty() {
+                let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));
+            }
+        }
+        if !response.text.is_empty() {
+            let _ = sink.send(GenerationChunk::Token(response.text.clone()));
+        }
+        Ok(response)
+    }
 
     // ─── Embeddings (optional) ──────────────────────────────────────────────
 
@@ -344,38 +589,42 @@ pub trait AIProviderAdapter: Send + Sync {
 
     // ─── Health & Metadata ──────────────────────────────────────────────────
 
-    /// Check provider health
-    async fn health_check(&self) -> HealthStatus;
+    /// Check provider health.
+    ///
+    /// Default: `HealthStatus::healthy()` — in-process / local / test
+    /// adapters with no remote endpoint to probe are nominally healthy
+    /// once constructed. Cloud adapters override to probe their endpoint
+    /// and report real latency / error-rate / rate-limit state.
+    async fn health_check(&self) -> HealthStatus {
+        HealthStatus::healthy()
+    }
 
-    /// Get available models from this provider
-    async fn get_available_models(&self) -> Vec<ModelInfo>;
+    /// Get available models from this provider.
+    ///
+    /// Default: empty — a minimal adapter advertises no model catalog
+    /// (callers use `default_model`). Adapters with a real catalog
+    /// (cloud `/v1/models`, DMR) override with their live list. Note
+    /// `ModelInfo` has no defaults by design, so the honest default here
+    /// is "no catalog," not a synthesized entry.
+    async fn get_available_models(&self) -> Vec<ModelInfo> {
+        Vec::new()
+    }
 
     /// Get metadata for a specific model by ID.
     /// Returns the ModelInfo with ALL required fields (context_window,
     /// tokens_per_second, cost, capabilities). The adapter is the authority
     /// on its own models — no lookup tables, no guessing.
-    fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
+    fn model_metadata(&self, _model_id: &str) -> Option<ModelInfo> {
         // Default: search available_models synchronously from cached list.
         // Adapters with runtime catalogs (DMR, cloud /v1/models) should
         // override this with their live data.
         None // Adapters MUST override — None means "I don't know my own models"
     }
 
-    /// Check if this adapter supports a specific capability
-    fn supports(&self, capability: ModelCapability) -> bool {
-        let caps = self.capabilities();
-        match capability {
-            ModelCapability::TextGeneration => caps.supports_text_generation,
-            ModelCapability::Chat => caps.supports_chat,
-            ModelCapability::ToolUse => caps.supports_tool_use,
-            ModelCapability::ImageAnalysis | ModelCapability::Multimodal => caps.supports_vision,
-            ModelCapability::Embeddings => caps.supports_embeddings,
-            ModelCapability::AudioGeneration | ModelCapability::AudioTranscription => {
-                caps.supports_audio
-            }
-            ModelCapability::ImageGeneration => caps.supports_image_generation,
-            _ => false,
-        }
+    /// Check if this adapter's model declares a capability. Resolves through
+    /// the ONE vocabulary — `adapter.capabilities().has(Capability::X)`.
+    fn supports(&self, capability: Capability) -> bool {
+        self.capabilities().has(capability)
     }
 
     // ─── LoRA Capabilities ─────────────────────────────────────────────────────
@@ -496,10 +745,7 @@ impl std::fmt::Display for AdapterSelectionError {
                 registered_providers,
                 non_production_adapters_present,
             } => {
-                write!(
-                    f,
-                    "no production-capable adapter found for "
-                )?;
+                write!(f, "no production-capable adapter found for ")?;
                 if let Some(p) = preferred_provider {
                     write!(f, "preferred_provider='{}' ", p)?;
                 }
@@ -659,17 +905,14 @@ impl AdapterRegistry {
     /// layer's evaluate_response holds the Arc across the inference
     /// call so the read lock can drop). Cheap reference count bump.
     pub fn get_arc(&self, provider_id: &str) -> Option<Arc<dyn AIProviderAdapter>> {
-        self.adapters
-            .get(provider_id)
-            .cloned()
-            .or_else(|| {
-                self.priority_order.iter().find_map(|key| {
-                    self.adapters
-                        .get(key)
-                        .filter(|adapter| adapter.provider_id() == provider_id)
-                        .cloned()
-                })
+        self.adapters.get(provider_id).cloned().or_else(|| {
+            self.priority_order.iter().find_map(|key| {
+                self.adapters
+                    .get(key)
+                    .filter(|adapter| adapter.provider_id() == provider_id)
+                    .cloned()
             })
+        })
     }
 
     /// Get available adapters (those that initialized successfully)
@@ -678,6 +921,30 @@ impl AdapterRegistry {
             .iter()
             .filter_map(|id| self.adapters.get(id).map(|_| id.as_str()))
             .collect()
+    }
+
+    /// What each available adapter actually serves: `(provider_id, model_id)`
+    /// pairs in priority order, deduplicated, from each adapter's
+    /// [`AIProviderAdapter::served_model_ids`] (live runtime set where the
+    /// adapter has one, declared default otherwise). This is the list a refusal
+    /// must show a caller who named a model the registry can't route —
+    /// `available()` is provider ids, which a grid consumer with no local
+    /// registry cannot turn into a valid `model` (card a466fdd4: IntelMac → 5090
+    /// was refused with a list it couldn't act on).
+    pub fn served_models(&self) -> Vec<(&str, String)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for id in &self.priority_order {
+            let Some(adapter) = self.adapters.get(id) else {
+                continue;
+            };
+            for model in adapter.served_model_ids() {
+                if seen.insert((id.as_str(), model.clone())) {
+                    out.push((id.as_str(), model));
+                }
+            }
+        }
+        out
     }
 
     /// Select best adapter based on request.
@@ -749,30 +1016,31 @@ impl AdapterRegistry {
             // "local" — fall through to device-filtered auto-selection below
         }
 
-        // 2. Cloud-provider prefix detection (always eligible regardless of device).
-        // These are the well-known cloud API providers whose model names
-        // unambiguously identify the provider.
+        // 2. Registry-driven cloud routing (#70). A model's provider is a
+        // registry FACT — look it up instead of re-guessing it from the name
+        // prefix. Only CLOUD providers short-circuit here: they're always
+        // eligible (no local device cost), whereas local models must fall
+        // through to tier-3 device-filtered selection. An UNREGISTERED model
+        // name resolves to nothing and falls through too — we never route by
+        // guessing a provider from an unmodeled name (that was the smell).
+        // `try_global()` (not `global()`): consult the registry IF it's up.
+        // This is not a fallback — tier 2 asks "is this a registered CLOUD
+        // model?", and "registry not yet initialized" is materially the same
+        // answer as "not a registered cloud model": proceed to tier 3. In
+        // production the registry is always booted in backend_init before any
+        // adapter selects, so the None branch here is exclusively the bare
+        // unit-test case; panicking via global() would couple selection to
+        // global boot for no gain.
         if let Some(model_name) = model {
-            let model_lower = model_name.to_lowercase();
-            let cloud_match: Option<&str> = if model_lower.starts_with("claude") {
-                Some("anthropic")
-            } else if model_lower.starts_with("gpt")
-                || model_lower.starts_with("o1")
-                || model_lower.starts_with("o3")
-            {
-                Some("openai")
-            } else if model_lower.starts_with("deepseek") {
-                Some("deepseek")
-            } else if model_lower.starts_with("grok") {
-                Some("xai")
-            } else if model_lower.starts_with("gemini") {
-                Some("google")
-            } else {
-                None
-            };
-            if let Some(provider_id) = cloud_match {
-                if let Some(adapter) = self.get(provider_id) {
-                    return Some((provider_id, adapter));
+            if let Some(reg) = crate::model_registry::try_global() {
+                if let Some(spec) = reg.model(model_name) {
+                    let is_cloud =
+                        reg.provider(&spec.provider).map(|p| p.kind) == Some(ProviderKind::Cloud);
+                    if is_cloud {
+                        if let Some(adapter) = self.get(&spec.provider) {
+                            return Some((spec.provider.as_str(), adapter));
+                        }
+                    }
                 }
             }
         }
@@ -849,12 +1117,16 @@ mod tests {
     //! two would leave a phantom in `available()` after deregister, which
     //! is exactly the bug a DMR watchdog needs to NOT have.
     use super::*;
-    use crate::ai::types::{
-        HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    };
+    use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
 
-    /// Minimal adapter for registry-shape tests. Doesn't actually do
-    /// inference — every operation either no-ops or returns a stub.
+    /// Minimal adapter for registry-shape tests. Doubles as the live
+    /// proof of the trait's default impls: it implements ONLY the four
+    /// required methods (provider_id, name, default_model, generate_text)
+    /// plus `supports_model` for the model-routing test — everything else
+    /// (capabilities, api_style, initialize, shutdown, health_check,
+    /// get_available_models, device_type) comes from the trait defaults.
+    /// If those defaults regress, this stops compiling or the
+    /// `minimal_adapter_inherits_sensible_defaults` test below fails.
     struct StubAdapter {
         id: String,
         model: Option<String>,
@@ -868,20 +1140,8 @@ mod tests {
         fn name(&self) -> &str {
             &self.id
         }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities::default()
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
         fn default_model(&self) -> &str {
             "stub"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
         }
         async fn generate_text(
             &self,
@@ -889,24 +1149,8 @@ mod tests {
         ) -> Result<TextGenerationResponse, String> {
             Err("stub adapter — no inference".into())
         }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus {
-                status: crate::ai::types::HealthState::Healthy,
-                api_available: true,
-                response_time_ms: 0,
-                error_rate: 0.0,
-                last_checked: 0,
-                message: Some("stub".to_string()),
-            }
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            Vec::new()
-        }
-        fn device_type(&self) -> InferenceDevice {
-            InferenceDevice::Gpu
-        }
-        fn supports_model(&self, _model: &str) -> bool {
-            self.model.as_deref().map_or(true, |model| model == _model)
+        fn supports_model(&self, model: &str) -> bool {
+            self.model.as_deref().map_or(true, |m| m == model)
         }
     }
 
@@ -989,5 +1233,115 @@ mod tests {
             .expect("qwen2-vl adapter selected");
         assert!(qwen2.supports_model("qwen2-vl"));
         assert!(!qwen2.supports_model("qwen3.5"));
+    }
+
+    // what this catches: regression in the AIProviderAdapter default impls.
+    // A minimal adapter (4 required methods) must inherit sensible defaults
+    // for the long tail so new providers + test fixtures don't boilerplate
+    // 10 methods (cv::Algorithm anti-pattern — common case must be trivial).
+    #[tokio::test]
+    async fn minimal_adapter_inherits_sensible_defaults() {
+        let mut a = StubAdapter {
+            id: "minimal".to_string(),
+            model: None,
+        };
+
+        // Lifecycle defaults are no-op-Ok.
+        assert!(a.initialize().await.is_ok());
+        assert!(a.shutdown().await.is_ok());
+
+        // api_style defaults to local in-process inference.
+        assert_eq!(a.api_style(), ApiStyle::Local);
+
+        // capabilities default to a text-only set — one vocabulary.
+        let caps = a.capabilities();
+        assert!(caps.has(Capability::TextGeneration));
+        assert!(caps.has(Capability::Chat));
+        assert!(!caps.has(Capability::ToolUse));
+        assert!(!caps.has(Capability::Vision));
+
+        // health defaults to nominal-healthy (no remote probe).
+        let health = a.health_check().await;
+        assert_eq!(health.status, crate::ai::types::HealthState::Healthy);
+        assert!(health.api_available);
+
+        // no advertised catalog by default — callers use default_model.
+        assert!(a.get_available_models().await.is_empty());
+
+        // device defaults to GPU; production-capable unless opted out.
+        assert_eq!(a.device_type(), InferenceDevice::Gpu);
+        assert!(a.is_production_capable());
+    }
+
+    // what this catches: the codified `capabilities()` projection regressing —
+    // builder() must seed the text-only floor (so an adapter declares only what
+    // it adds), and each NativeProtocols variant must map to its coherent
+    // (tool_call, structured_output) pair. If someone re-splits the protocol
+    // pair or changes the floor, the next adapter silently gets a wrong/
+    // incoherent surface; this pins both.
+    #[test]
+    fn builder_seeds_floor_and_native_protocols_pair_coherently() {
+        // builder() with no overrides == the text-only floor.
+        let floor = AdapterCapabilities::builder().build();
+        assert_eq!(
+            floor.capabilities,
+            AdapterCapabilities::text_only().capabilities
+        );
+        assert!(floor.has(Capability::TextGeneration) && floor.has(Capability::Chat));
+        assert!(!floor.has(Capability::ToolUse));
+        assert!(!floor.is_local);
+        assert_eq!(floor.tool_call_protocol, ToolProtocol::None);
+        assert_eq!(
+            floor.structured_output_protocol,
+            StructuredOutputProtocol::None
+        );
+
+        // A rich declaration adds only the deltas on top of the floor.
+        let rich = AdapterCapabilities::builder()
+            .capabilities([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+            ])
+            .local()
+            .context_window(200_000)
+            .max_output_tokens(8_192)
+            .protocols(NativeProtocols::FunctionCalling)
+            .build();
+        assert!(rich.has(Capability::ToolUse) && rich.is_local);
+        assert_eq!(rich.max_context_window, Some(200_000));
+        assert_eq!(rich.max_output_tokens, Some(8_192));
+
+        // Each protocol profile maps to its coherent pair — the whole point of
+        // NativeProtocols (an incoherent combo is unrepresentable).
+        for (profile, tool, structured) in [
+            (
+                NativeProtocols::None,
+                ToolProtocol::None,
+                StructuredOutputProtocol::None,
+            ),
+            (
+                NativeProtocols::PromptEmulated,
+                ToolProtocol::None,
+                StructuredOutputProtocol::PromptOnly,
+            ),
+            (
+                NativeProtocols::FunctionCalling,
+                ToolProtocol::NativeFunctionCalling,
+                StructuredOutputProtocol::JsonSchema,
+            ),
+            (
+                NativeProtocols::GrammarConstrained,
+                ToolProtocol::JsonInPrompt,
+                StructuredOutputProtocol::GrammarConstrained,
+            ),
+        ] {
+            assert_eq!(profile.tool_call(), tool, "{profile:?} tool half");
+            assert_eq!(
+                profile.structured_output(),
+                structured,
+                "{profile:?} structured half"
+            );
+        }
     }
 }

@@ -42,8 +42,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
+use crate::context::citizens_kind_dir;
+use crate::identity::IdentityKind;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::seed::read_seed;
 
@@ -97,11 +100,43 @@ impl FilesystemPersonaResolver {
             .map_err(|e| format!("read_seed at {}: {e}", seed_path.display()))
     }
 
+    /// The on-disk agent name for a persona id — a scan of the citizen seeds
+    /// (`citizens/personas/<name>/seed.json`), the ONE layout `seed_path_for`
+    /// reads. Fails loud naming the id when no seed carries it.
+    pub async fn agent_name_for_id(continuum_root: &Path, id: Uuid) -> Result<String, String> {
+        let dir = citizens_kind_dir(continuum_root, IdentityKind::Persona);
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| format!("read citizens dir {}: {e}", dir.display()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("scan citizens dir {}: {e}", dir.display()))?
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(seed) = read_seed(&seed_path_for(continuum_root, &name)).await else {
+                continue; // not a citizen dir (no seed) — skip, never fail the scan
+            };
+            if seed.persona_id() == id {
+                return Ok(name);
+            }
+        }
+        Err(format!(
+            "no persona seed under {} carries id {id}",
+            dir.display()
+        ))
+    }
+
     /// Compute the airc home for a persona — exposed for tests +
     /// the production demo binary that needs the same path.
+    ///
+    /// Derives the scan root from `citizens_kind_dir` — the single
+    /// source of truth for the citizen layout — so this read path
+    /// can never drift from the Slice-4 write path again (the seed
+    /// lives at `citizens/personas/<name>/`, NOT the pre-Slice-4
+    /// `personas/<name>/` this file used to hardcode).
     pub fn airc_home_for(continuum_root: &Path, agent_name: &str) -> PathBuf {
-        continuum_root
-            .join("personas")
+        citizens_kind_dir(continuum_root, IdentityKind::Persona)
             .join(agent_name)
             .join("airc")
     }
@@ -109,7 +144,16 @@ impl FilesystemPersonaResolver {
 
 #[async_trait]
 impl PersonaResolver for FilesystemPersonaResolver {
-    async fn resolve(&self, name: &str) -> Result<PersonaResolution, String> {
+    async fn resolve(&self, name_or_id: &str) -> Result<PersonaResolution, String> {
+        // A peer id is as good an address as a name: every page that holds a
+        // citizen holds her id (the directory seed, a roster row, a card owner),
+        // and the mind page inspects by it (caught live 2026-09-03 — the web had
+        // to map id→name itself). The name stays the on-disk key.
+        let name = match Uuid::parse_str(name_or_id.trim()) {
+            Ok(id) => Self::agent_name_for_id(&self.continuum_root, id).await?,
+            Err(_) => name_or_id.to_string(),
+        };
+        let name = name.as_str();
         let seed = Self::read_persona_seed(&self.continuum_root, name).await?;
         let persona_id = seed.persona_id();
 
@@ -118,18 +162,15 @@ impl PersonaResolver for FilesystemPersonaResolver {
             .await
             .map_err(|e| format!("ensure airc home {}: {e}", airc_home.display()))?;
 
-        let airc = airc_lib::Airc::attach_as(
-            airc_home.clone(),
-            name,
-            self.airc_socket_path.clone(),
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "airc attach_as for persona '{name}' at {}: {e}",
-                airc_home.display()
-            )
-        })?;
+        let airc =
+            airc_lib::Airc::attach_as(airc_home.clone(), name, self.airc_socket_path.clone())
+                .await
+                .map_err(|e| {
+                    format!(
+                        "airc attach_as for persona '{name}' at {}: {e}",
+                        airc_home.display()
+                    )
+                })?;
 
         let adapter_id = self
             .default_adapter
@@ -152,8 +193,12 @@ impl PersonaResolver for FilesystemPersonaResolver {
 }
 
 fn seed_path_for(continuum_root: &Path, agent_name: &str) -> PathBuf {
-    continuum_root
-        .join("personas")
+    // Single source of truth for the citizen layout — mirrors the Slice-4
+    // write path (`citizens/personas/<name>/seed.json`). Re-literaling
+    // `join("personas")` here is exactly the drift `citizens_kind_dir`'s
+    // doc comment forbids: the write moved, this read didn't, and the
+    // glass-box inspector silently 404'd on every live persona.
+    citizens_kind_dir(continuum_root, IdentityKind::Persona)
         .join(agent_name)
         .join("seed.json")
 }
@@ -164,12 +209,39 @@ mod tests {
     use crate::persona::seed::PersonaSeedFile;
     use uuid::Uuid;
 
+    // Write through the SAME `seed_path_for` the resolver reads — so a
+    // future move of the on-disk layout can never let the test's write
+    // path drift from production's read path (which is exactly the bug
+    // this file just fixed: seeds moved to `citizens/personas/`, the
+    // reader still looked in `personas/`).
     fn write_seed_file(root: &Path, agent_name: &str, seed: &PersonaSeedFile) {
-        let dir = root.join("personas").join(agent_name);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("seed.json");
+        let path = seed_path_for(root, agent_name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let json = serde_json::to_string_pretty(seed).unwrap();
         std::fs::write(path, json).unwrap();
+    }
+
+    // what this catches: the mind page addresses a citizen by her PEER ID; the
+    // resolver must find her seed by id, not only by the on-disk name.
+    #[tokio::test]
+    async fn a_persona_id_resolves_to_its_on_disk_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let persona_id = Uuid::from_u128(0xBEEF);
+        let seed = PersonaSeedFile::V1 {
+            persona_id,
+            agent_name: "Kira".to_string(),
+            created_at_ms: 1_700_000_000_000,
+            avatar_vrm: None,
+        };
+        write_seed_file(tmp.path(), "Kira", &seed);
+        let name = FilesystemPersonaResolver::agent_name_for_id(tmp.path(), persona_id)
+            .await
+            .unwrap();
+        assert_eq!(name, "Kira");
+        let err = FilesystemPersonaResolver::agent_name_for_id(tmp.path(), Uuid::from_u128(1))
+            .await
+            .unwrap_err();
+        assert!(err.contains("carries id"), "{err}");
     }
 
     // ── read_persona_seed (no airc daemon required) ─────────────
@@ -182,6 +254,7 @@ mod tests {
             persona_id,
             agent_name: "Paige".to_string(),
             created_at_ms: 1_700_000_000_000,
+            avatar_vrm: None,
         };
         write_seed_file(tmp.path(), "Paige", &seed);
 
@@ -208,9 +281,9 @@ mod tests {
     #[tokio::test]
     async fn read_persona_seed_malformed_returns_typed_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("personas").join("Garbage");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("seed.json"), "{ not valid json ").unwrap();
+        let seed_path = seed_path_for(tmp.path(), "Garbage");
+        std::fs::create_dir_all(seed_path.parent().unwrap()).unwrap();
+        std::fs::write(&seed_path, "{ not valid json ").unwrap();
 
         let err = FilesystemPersonaResolver::read_persona_seed(tmp.path(), "Garbage")
             .await
@@ -222,23 +295,26 @@ mod tests {
 
     // ── path helpers ────────────────────────────────────────────
 
+    // what this catches: the read path must track the Slice-4 write path
+    // (`citizens/personas/<name>/`). Before the fix these asserted the dead
+    // `personas/<name>/` layout, so the inspector 404'd on every live persona.
     #[test]
     fn airc_home_for_matches_canonical_layout() {
-        let root = PathBuf::from("/Users/joel/.continuum");
+        let root = PathBuf::from("/Users/operator/.continuum");
         let home = FilesystemPersonaResolver::airc_home_for(&root, "Paige");
         assert_eq!(
             home,
-            PathBuf::from("/Users/joel/.continuum/personas/Paige/airc")
+            PathBuf::from("/Users/operator/.continuum/citizens/personas/Paige/airc")
         );
     }
 
     #[test]
     fn seed_path_matches_canonical_layout() {
-        let root = PathBuf::from("/Users/joel/.continuum");
+        let root = PathBuf::from("/Users/operator/.continuum");
         let p = seed_path_for(&root, "Paige");
         assert_eq!(
             p,
-            PathBuf::from("/Users/joel/.continuum/personas/Paige/seed.json")
+            PathBuf::from("/Users/operator/.continuum/citizens/personas/Paige/seed.json")
         );
     }
 
@@ -252,11 +328,9 @@ mod tests {
         use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("airc.sock"); // doesn't exist; we won't attach
-        let adapter: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
-        let resolver =
-            FilesystemPersonaResolver::new(tmp.path().to_path_buf(), socket.clone())
-                .with_default_adapter(adapter.clone());
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let resolver = FilesystemPersonaResolver::new(tmp.path().to_path_buf(), socket.clone())
+            .with_default_adapter(adapter.clone());
         // Adapter is stored — verified by Arc strong_count >= 2
         // (the resolver's clone + ours).
         assert!(Arc::strong_count(&adapter) >= 2);

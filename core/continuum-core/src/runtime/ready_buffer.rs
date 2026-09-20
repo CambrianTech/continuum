@@ -120,6 +120,18 @@ where
             inner: Arc::new(DashMap::with_capacity(capacity)),
         }
     }
+
+    /// Snapshot every `(key, value)` currently published — for consumers that
+    /// aggregate ACROSS keys (the vitals radiator summing a persona's staged
+    /// unread depth over its `(persona, room)` digest entries). Clones under
+    /// the per-shard read locks, one shard at a time; never holds a lock
+    /// across the whole map, so publishers are not stalled.
+    pub fn entries(&self) -> Vec<(K, V)> {
+        self.inner
+            .iter()
+            .map(|e| (e.key().clone(), e.value().value.clone()))
+            .collect()
+    }
 }
 
 impl<K, V> Default for DashMapReadyBuffer<K, V>

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # Test PersonaUser speaking in voice call
 # This validates the end-to-end flow
 

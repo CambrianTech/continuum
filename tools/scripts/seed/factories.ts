@@ -7,11 +7,11 @@
  * IMPORTANT: Use constants from UserCapabilitiesDefaults.ts for single source of truth
  */
 
-import type { UserCapabilities } from '../../system/data/entities/UserEntity';
+import type { UserCapabilities } from '../../../src/system/data/entities/UserEntity';
 import {
   getDefaultCapabilitiesForType,
   getDefaultPreferencesForType
-} from '../../system/user/config/UserCapabilitiesDefaults';
+} from '../../../src/system/user/config/UserCapabilitiesDefaults';
 
 /** Seed data shape for a chat room (pre-persistence) */
 interface SeedRoom {

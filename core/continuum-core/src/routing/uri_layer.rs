@@ -134,12 +134,7 @@ impl<S> Layer<S> for UriCaptureLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    fn on_new_span(
-        &self,
-        attrs: &span::Attributes<'_>,
-        id: &span::Id,
-        ctx: Context<'_, S>,
-    ) {
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let mut visitor = UriFieldVisitor::default();
         attrs.record(&mut visitor);
         if let Some(uri) = visitor.uri {
@@ -211,7 +206,11 @@ mod tests {
     fn chain_empty_outside_any_span() {
         install_capture(|| {
             let chain = current_uri_chain();
-            assert!(chain.is_empty(), "expected empty chain outside any span, got {:?}", chain);
+            assert!(
+                chain.is_empty(),
+                "expected empty chain outside any span, got {:?}",
+                chain
+            );
         });
     }
 
@@ -221,10 +220,7 @@ mod tests {
             let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
             let _enter = span.enter();
             let chain = current_uri_chain();
-            assert_eq!(
-                chain,
-                vec!["airc:///inference/llm/generate".to_string()]
-            );
+            assert_eq!(chain, vec!["airc:///inference/llm/generate".to_string()]);
         });
     }
 
@@ -305,13 +301,20 @@ mod tests {
 
     #[test]
     fn no_subscriber_returns_empty_chain() {
-        // Outside `with_default` — no UriCaptureLayer installed
-        let span = tracing::info_span!("cmd", uri = "airc:///orphan");
-        let _enter = span.enter();
-        assert!(
-            current_uri_chain().is_empty(),
-            "no installed Layer means no captured frames; substrate refuses to fabricate"
-        );
+        // Pin an explicit NoSubscriber for this thread. The test's premise is
+        // "no UriCaptureLayer installed", but other tests in this binary can
+        // install a GLOBAL default that includes UriCaptureLayer (e.g.
+        // tracing_init's `try_init`), which captured this span and made the
+        // test order-dependent. with_default(NoSubscriber) restores the
+        // intended no-layer world regardless of what ran before.
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            let span = tracing::info_span!("cmd", uri = "airc:///orphan");
+            let _enter = span.enter();
+            assert!(
+                current_uri_chain().is_empty(),
+                "no installed Layer means no captured frames; substrate refuses to fabricate"
+            );
+        });
     }
 
     #[test]

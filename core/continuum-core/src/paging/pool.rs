@@ -306,8 +306,15 @@ pub type EvictionPriority<V> = Arc<dyn Fn(&PoolEntryView, &V) -> i64 + Send + Sy
 
 /// LRU eviction priority — older `last_access_at` evicts first.
 /// Value-blind; works for any V.
+///
+/// SIGN MATTERS: `evict_at_least` sorts ascending and evicts from the front,
+/// so the OLDEST entry needs the LOWEST value — the raw timestamp, unnegated.
+/// The first cut returned `-(last_access_at)`, which inverted the whole policy
+/// into MRU: every pool using this helper evicted its most-recently-touched
+/// entry first (caught 2026-08-26 by the KV slot pool's recycle test — the
+/// warm slot that had JUST been refreshed was the one evicted).
 pub fn lru_priority<V>() -> EvictionPriority<V> {
-    Arc::new(|entry: &PoolEntryView, _value: &V| -(entry.last_access_at as i64))
+    Arc::new(|entry: &PoolEntryView, _value: &V| entry.last_access_at as i64)
 }
 
 /// Size-weighted LRU — among similarly-aged entries, larger evicts first.
@@ -316,7 +323,9 @@ pub fn lru_priority<V>() -> EvictionPriority<V> {
 /// Value-blind; works for any V.
 pub fn size_weighted_lru<V>() -> EvictionPriority<V> {
     Arc::new(|entry: &PoolEntryView, _value: &V| {
-        -(entry.last_access_at as i64) - (entry.size_bytes / 1024) as i64
+        // Same ascending-sort contract as [`lru_priority`]: older evicts first,
+        // and among similar ages the LARGER entry evicts first (lower value).
+        entry.last_access_at as i64 - (entry.size_bytes / 1024) as i64
     })
 }
 
@@ -721,34 +730,11 @@ where
 
     /// Snapshot stats for monitoring + PressureBroker queries.
     pub async fn stats(&self) -> PoolStats {
-        let entries = self.inner.entries.read();
-        let mut total_bytes: u64 = 0;
-        let mut pinned_count: usize = 0;
-        for entry in entries.values() {
-            total_bytes += entry.size_bytes;
-            if entry.pin_count.load(Ordering::Acquire) > 0 {
-                pinned_count += 1;
-            }
-        }
-        let max_bytes = self.inner.config.max_bytes;
-        let pressure = if max_bytes > 0 {
-            total_bytes as f64 / max_bytes as f64
-        } else {
-            0.0
-        };
-        let inflight_count = self.inner.inflight.lock().await.len();
-        PoolStats {
-            name: self.inner.config.name.clone(),
-            entry_count: entries.len(),
-            pinned_count,
-            total_bytes,
-            max_bytes,
-            pressure,
-            hit_count: self.inner.hits.load(Ordering::Relaxed),
-            miss_count: self.inner.misses.load(Ordering::Relaxed),
-            eviction_count: self.inner.evictions.load(Ordering::Relaxed),
-            inflight_count,
-        }
+        // The synchronous snapshot releases the entries guard before we wait
+        // for inflight loads. Monitoring must not stall entry writers/eviction.
+        let mut stats = self.stats_blocking();
+        stats.inflight_count = self.inner.inflight.lock().await.len();
+        stats
     }
 
     /// Reduce occupancy to 75% of max_bytes by evicting unpinned entries
@@ -976,6 +962,41 @@ mod tests {
         );
     }
 
+    // what this catches: the LRU sign inversion. evict_at_least sorts priority
+    // ascending and evicts from the front, so lru_priority must give the OLDEST
+    // entry the LOWEST value. The first cut negated the timestamp — MRU wearing
+    // LRU's name — and every pool using the helper evicted its most-recently-
+    // touched entry first (caught live 2026-08-26: the KV slot pool evicted the
+    // warm slot that had JUST been refreshed). regression for that inversion.
+    #[tokio::test]
+    async fn lru_priority_evicts_the_oldest_not_the_newest() {
+        let pool: PagedResourcePool<String, u32> = PagedResourcePool::new(PoolConfig {
+            name: "lru-order".into(),
+            max_bytes: 100,
+            sizer: Arc::new(|_| 1),
+            eviction_priority: lru_priority(),
+        });
+        pool.load_or_share("old".to_string(), |_| async { Ok(1u32) })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        pool.load_or_share("new".to_string(), |_| async { Ok(2u32) })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // Refresh "new" so its last_access is strictly freshest.
+        let _ = pool.get(&"new".to_string());
+        assert_eq!(pool.evict_at_least(1), 1);
+        assert!(
+            pool.get(&"old".to_string()).is_none(),
+            "the OLDEST entry is the one evicted"
+        );
+        assert!(
+            pool.get(&"new".to_string()).is_some(),
+            "the freshest entry survives"
+        );
+    }
+
     #[tokio::test]
     async fn eviction_drops_to_target_when_far_over() {
         let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
@@ -1042,6 +1063,8 @@ mod tests {
         assert_eq!(r2.unwrap(), 123);
     }
 
+    // what this catches: card d2698cdc — stats waiting for the inflight map
+    // must release the entries lock while preserving its occupancy snapshot.
     #[tokio::test]
     async fn stats_pressure_tracks_occupancy() {
         let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
@@ -1051,9 +1074,23 @@ mod tests {
             eviction_priority: lru_priority(),
         });
         pool.insert("k".to_string(), vec![0; 25]);
-        let stats = pool.stats().await;
+        let inflight_guard = pool.inner.inflight.lock().await;
+        let mut pending_stats = std::pin::pin!(pool.stats());
+        assert!(futures::poll!(pending_stats.as_mut()).is_pending());
+        assert!(
+            pool.inner.entries.try_write().is_some(),
+            "a stats wait must not retain the synchronous entries guard"
+        );
+        pool.insert("later".to_string(), vec![0; 10]);
+        drop(inflight_guard);
+        let stats = pending_stats.await;
+        assert_eq!(stats.entry_count, 1, "occupancy is the pre-wait snapshot");
         assert_eq!(stats.total_bytes, 25);
+        assert_eq!(stats.inflight_count, 0);
         assert!((stats.pressure - 0.25).abs() < 0.001);
+        let current = pool.stats().await;
+        assert_eq!(current.entry_count, 2);
+        assert_eq!(current.total_bytes, 35);
     }
 
     #[tokio::test]

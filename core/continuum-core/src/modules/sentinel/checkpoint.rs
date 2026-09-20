@@ -157,9 +157,7 @@ mod tests {
     /// directory was root-owned from prior docker-compose bind-mounts.
     fn ensure_checkpoint_dir_isolated() {
         static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let dir = DIR.get_or_init(|| {
-            tempfile::tempdir().expect("create checkpoint test tempdir")
-        });
+        let dir = DIR.get_or_init(|| tempfile::tempdir().expect("create checkpoint test tempdir"));
         // Set every call: cargo runs tests in parallel and any other
         // test that clears CONTINUUM_CHECKPOINT_DIR could race us;
         // re-setting per test keeps the contract local.

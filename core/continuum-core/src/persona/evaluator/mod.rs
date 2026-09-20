@@ -54,7 +54,7 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Full evaluation request — ONE IPC call replaces 5 TS gates.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/FullEvaluateRequest.ts"
@@ -63,6 +63,9 @@ pub struct FullEvaluateRequest {
     #[ts(type = "string")]
     pub persona_id: Uuid,
     pub persona_name: String,
+    /// Defaults to `""` when the caller omits it — matches the legacy
+    /// `p.str_or("persona_unique_id", "")` read the typed command replaces.
+    #[serde(default)]
     pub persona_unique_id: String,
     #[ts(type = "string")]
     pub message_id: Uuid,
@@ -75,9 +78,13 @@ pub struct FullEvaluateRequest {
     pub content: String,
     #[ts(type = "number")]
     pub timestamp: u64,
+    /// Defaults to `false` when omitted — matches the legacy `p.bool_or("is_voice", false)`.
+    #[serde(default)]
     pub is_voice: bool,
     #[ts(optional, type = "string")]
     pub voice_session_id: Option<Uuid>,
+    /// Defaults to `false` when omitted — matches the legacy `p.bool_or("sender_is_human", false)`.
+    #[serde(default)]
     pub sender_is_human: bool,
     /// Pre-computed topic similarity for sleep mode (optional).
     /// If not provided and sleep mode is until_topic, we compute inline.
@@ -142,7 +149,10 @@ pub struct SocialSignals {
 
 /// Detailed gate information for diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/GateDetails.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/GateDetails.ts"
+)]
 pub struct GateDetails {
     #[ts(optional, type = "number")]
     pub response_count: Option<u32>,
@@ -410,6 +420,175 @@ pub fn full_evaluate(
             echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
         }),
         social_signals: Some(social_signals),
+    }
+}
+
+// =============================================================================
+// BURST-AWARE EVALUATOR (task #248 PR C — demand-pull cognition path)
+// =============================================================================
+
+/// Result of evaluating a burst — analyzed at the cognition layer
+/// ONCE per channel-tick (the demand-pull doctrine in production form).
+///
+/// Parallel to [`FullEvaluateResult`] but burst-aware: carries the
+/// post-decision context (`respond_context`) cognition needs to compose
+/// a response, so the response phase doesn't have to walk the burst's
+/// items a second time.
+///
+/// Per `[[cognition-batches-per-channel-adapter]]`: cognition's
+/// `analyze` fires ONCE per `Vec<CoherentInput>` from
+/// `service_cycle_batched`, regardless of how many items each channel
+/// drained. This struct is what that single call returns per channel.
+#[derive(Debug, Clone)]
+pub struct BurstEvaluateResult {
+    /// Cognition's gate decision — same semantic as
+    /// [`FullEvaluateResult::should_respond`].
+    pub should_respond: bool,
+    pub confidence: f32,
+    pub reason: String,
+    /// Which gate decided (same string-tag set as `full_evaluate`).
+    pub gate: String,
+    /// How many raw items the burst aggregated. Equal to
+    /// `ChatCoherentInput::burst_message_count` when input is Chat.
+    pub burst_message_count: usize,
+    /// The room the burst came from. `Uuid::nil()` for non-Chat
+    /// CoherentInput variants.
+    pub primary_room: Uuid,
+    /// If `should_respond` is true, this carries the prompt-assembly
+    /// context. None when cognition decided silent. Lets the response
+    /// phase avoid re-walking the burst.
+    pub respond_context: Option<BurstRespondContext>,
+}
+
+/// Prompt-assembly context for a burst that cognition wants to
+/// respond to. Mirrors the fields cognition's prompt assembler reads
+/// from a single message but at burst granularity.
+#[derive(Debug, Clone)]
+pub struct BurstRespondContext {
+    pub room_id: Uuid,
+    /// Aggregated burst content — newline-joined "Sender: message"
+    /// lines including consolidated_context. Matches
+    /// `ChatCoherentInput::aggregated_content`.
+    pub aggregated_content: String,
+    pub last_sender_name: String,
+    pub burst_message_count: usize,
+    /// Identity-aware flag from `ChatChannelView::interpret`. Personas
+    /// named in the burst see this true; others see false.
+    pub anyone_mentioned_persona: bool,
+}
+
+/// Demand-pull cognition entry point — the PR C decision shape from
+/// the design doc:
+///
+/// > Option 3: Add `analyze_burst(&CoherentInput) -> BurstDecision`
+/// > alongside the existing per-item path. The new entry point IS the
+/// > demand-pull doctrine; the old per-item path stays for
+/// > compatibility, gets `#[deprecated]`'d, and gets ripped in PR C+1.
+///
+/// Per the doctrine: cognition's gate fires ONCE per channel-tick per
+/// burst, regardless of how many items the burst aggregated. The
+/// initial implementation maps a `Chat` burst into a synthetic
+/// [`FullEvaluateRequest`] and reuses [`full_evaluate`] for the gate
+/// logic — same trustworthy gate stack, batched input. Future
+/// refactors can replace the synthetic-request path with a
+/// burst-native gate implementation; the trait shape stays stable.
+///
+/// `Other` variants (Audio/Code/Background — domains without typed
+/// views yet) return a silent decision; downstream cognition skips
+/// them until typed views land (PR D for Audio).
+pub fn analyze_burst(
+    input: &crate::persona::channel_view::CoherentInput,
+    persona_id: Uuid,
+    persona_name: &str,
+    persona_unique_id: &str,
+    rate_limiter: &RateLimiterState,
+    sleep_state: &SleepState,
+    engine: &PersonaCognitionEngine,
+    message_cache: &RecentMessageCache,
+    now_ms: u64,
+) -> BurstEvaluateResult {
+    use crate::persona::channel_view::CoherentInput;
+
+    match input {
+        CoherentInput::Chat(chat) => {
+            // Build a synthetic single-message request from the burst's
+            // aggregated context. The doctrine is "ONE gate call per
+            // burst" — the synthetic shape is the path from burst →
+            // existing `full_evaluate`. PR C+1 can swap this for a
+            // burst-native gate without changing the trait surface.
+            //
+            // `message_id` is a burst-anchor UUID derived per call so
+            // downstream caches don't conflate two ticks' bursts on
+            // the same room.
+            let synthetic = FullEvaluateRequest {
+                persona_id,
+                persona_name: persona_name.to_string(),
+                persona_unique_id: persona_unique_id.to_string(),
+                message_id: Uuid::new_v4(),
+                room_id: chat.primary_room,
+                // Burst-level sender is the aggregate-of-senders; we
+                // pin it to nil and let the LLM read individual
+                // senders out of `aggregated_content`.
+                sender_id: Uuid::nil(),
+                sender_name: chat.last_sender_name.clone(),
+                // Sender-type at burst level is a heuristic — if the
+                // burst aggregated cross-sender messages, "human" is
+                // the safe default (matches the legacy fast-path
+                // interpretation of chat bursts).
+                sender_type: SenderType::Human,
+                content: chat.aggregated_content.clone(),
+                timestamp: now_ms,
+                is_voice: false,
+                voice_session_id: None,
+                sender_is_human: true,
+                topic_similarity: None,
+                recent_room_texts: None,
+            };
+            let inner = full_evaluate(
+                &synthetic,
+                rate_limiter,
+                sleep_state,
+                engine,
+                message_cache,
+                now_ms,
+            );
+
+            BurstEvaluateResult {
+                should_respond: inner.should_respond,
+                confidence: inner.confidence,
+                reason: inner.reason,
+                gate: inner.gate,
+                burst_message_count: chat.burst_message_count,
+                primary_room: chat.primary_room,
+                respond_context: inner.should_respond.then(|| BurstRespondContext {
+                    room_id: chat.primary_room,
+                    aggregated_content: chat.aggregated_content.clone(),
+                    last_sender_name: chat.last_sender_name.clone(),
+                    burst_message_count: chat.burst_message_count,
+                    anyone_mentioned_persona: chat.anyone_mentioned_persona,
+                }),
+            }
+        }
+        CoherentInput::Other {
+            domain, item_count, ..
+        } => {
+            // Non-Chat domains drain into Other until their typed
+            // views land (PR D for Audio). Cognition decides silent
+            // for these bursts — no gate logic runs, no inference
+            // would be wasted on a burst the substrate hasn't taught
+            // us how to interpret yet. Per `[[no-fallbacks-ever]]`:
+            // explicit silent decision with a typed reason, NOT a
+            // fall-through to chat semantics that would mis-route.
+            BurstEvaluateResult {
+                should_respond: false,
+                confidence: 0.0,
+                reason: format!("non-Chat burst from {domain:?} — typed view not yet implemented"),
+                gate: "other-domain-silent".into(),
+                burst_message_count: *item_count,
+                primary_room: Uuid::nil(),
+                respond_context: None,
+            }
+        }
     }
 }
 
@@ -820,11 +999,18 @@ mod tests {
             now_ms(),
         );
         assert!(result.should_respond);
-        assert!(
-            result.decision_time_ms < 10.0,
-            "Decision should be <10ms, was {}ms",
-            result.decision_time_ms
-        );
+        // The wall-clock assertion that used to live here (`decision_time_ms < 10.0`)
+        // is GONE, and deliberately not replaced with a looser bound. It failed CI at
+        // 10.73ms — not because the gates regressed, but because a shared runner was
+        // busy. A correctness test that a loaded machine can fail is not measuring the
+        // code; it is measuring the machine, and it spends the reviewer's trust every
+        // time it flakes. The performance claim it was making is real and worth
+        // keeping, so it MOVED to the stress block below, where `cargo test` does not
+        // adjudicate it (CLAUDE.md § test rules, item 2). Same treatment as the
+        // grounding-cost flake in PR #2330. Siblings of this class still exist and are
+        // NOT touched here because they are not failing and have 20-50x more headroom:
+        // command_executor.rs (<500ms), rag/engine.rs (<250ms), sentinel/parallel.rs
+        // (<180ms). If any of them starts flaking, this is the fix.
     }
 
     #[test]
@@ -883,4 +1069,50 @@ mod tests {
     // moved to their respective submodules in continuum#1208:
     //   - rate_limiter::tests
     //   - adequacy::tests
+
+    /// Performance claims about the gate path. Compile-time gated so a busy shared
+    /// runner never adjudicates them (CLAUDE.md § test rules, item 2): default
+    /// `cargo test` skips this block entirely, and it is run deliberately, on a quiet
+    /// machine, when the claim is what you actually want to check.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        // what this catches: the gate path taking a slow route — an added I/O call,
+        // a lock, an inference hop. Every gate is a pure function over in-memory
+        // state, so the decision is sub-millisecond work; a budget of 10ms is ~10x
+        // headroom over that and still catches a category change. Measured over
+        // repeated runs rather than one sample, because a single timing of a live
+        // system is not a fact about it — one scheduler hiccup is not a regression.
+        #[test]
+        fn gate_path_stays_off_the_slow_route() {
+            let (engine, persona_id) = test_engine("TestBot");
+            let request = test_request(persona_id, "TestBot");
+            let sleep = SleepState::default();
+            let rate_limiter = RateLimiterState::default();
+
+            const RUNS: usize = 50;
+            let mut times: Vec<f64> = (0..RUNS)
+                .map(|_| {
+                    full_evaluate(
+                        &request,
+                        &rate_limiter,
+                        &sleep,
+                        &engine,
+                        &RecentMessageCache::new(),
+                        now_ms(),
+                    )
+                    .decision_time_ms
+                })
+                .collect();
+            times.sort_by(|a, b| a.partial_cmp(b).expect("decision times are finite"));
+            let median = times[RUNS / 2];
+            assert!(
+                median < 10.0,
+                "median gate decision over {RUNS} runs should be <10ms, was {median}ms \
+                 (slowest {}ms) — something on the gate path is doing real work",
+                times[RUNS - 1]
+            );
+        }
+    }
 }

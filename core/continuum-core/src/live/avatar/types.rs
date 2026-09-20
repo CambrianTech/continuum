@@ -19,6 +19,17 @@ pub struct AvatarModel {
     pub style: AvatarStyle,
     /// Voice characteristics this model matches best
     pub voice_profile: VoiceProfile,
+    /// Provisioning URL — where this avatar is downloaded from. THE single source of
+    /// truth for the download (no longer hardcoded in download-avatar-models.sh);
+    /// [[persona-visual-identity]] "additions are first-class": add one entry here and
+    /// it downloads, gets gender-tagged, and the coherent draw picks it up.
+    pub url: &'static str,
+    /// How to fetch `url`: "vroid-zip" (download a zip, extract the .vrm) or "vrm"
+    /// (direct .vrm file). The provisioner branches on this, so a new avatar from a
+    /// different source is a pure data change.
+    pub source_kind: &'static str,
+    /// License identifier (all current models are CC0).
+    pub license: &'static str,
 }
 
 /// Dynamic avatar model — discovered at runtime from filesystem + manifest.
@@ -43,7 +54,10 @@ pub struct DynamicAvatarModel {
 
 /// Avatar art style categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/voice/AvatarStyle.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/voice/AvatarStyle.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AvatarStyle {
     /// Anime VRoid-style (high detail, full blend shapes, 35-50k triangles)
@@ -95,11 +109,18 @@ pub enum PitchRange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/voice/AvatarGender.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/voice/AvatarGender.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AvatarGender {
     Male,
     Female,
+    /// Neuter — they/them. A real minority ([[procedural-persona-genesis]]); its
+    /// presentation is not constrained to masc/fem, so a Neutral persona draws its
+    /// avatar/voice from the full pool (any presentation is coherent with they/them).
+    Neutral,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -155,9 +176,11 @@ impl From<&DynamicAvatarModel> for AvatarCatalogEntry {
 pub struct AvatarPreference {
     /// Preferred art style (None = any)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub style: Option<AvatarStyle>,
     /// Preferred specific model ID (highest priority if set)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub model_id: Option<String>,
     /// Exclude these tags
     #[serde(default)]

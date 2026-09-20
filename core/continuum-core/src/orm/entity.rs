@@ -98,6 +98,24 @@ pub trait OrmEntity: Send + Sync + 'static {
     fn collection_schema() -> CollectionSchema;
 }
 
+/// Declarative visibility metadata for records served by an owning domain
+/// command. Collected at link time, so privacy does not depend on module boot
+/// order or whether that module is active. Generic data readers consult this
+/// alongside the existing entity schema registry.
+pub struct ProtectedCollection {
+    pub collection: &'static str,
+    pub owning_command: &'static str,
+}
+inventory::collect!(ProtectedCollection);
+
+impl ProtectedCollection {
+    pub fn find(table: &str) -> Option<&'static Self> {
+        inventory::iter::<Self>
+            .into_iter()
+            .find(|entry| table.eq_ignore_ascii_case(entry.collection))
+    }
+}
+
 /// Global write-once-at-boot registry of Rust-authored entities.
 ///
 /// Concurrency: `RwLock` so the boot path can `write` once and every
@@ -139,7 +157,10 @@ impl OrmEntityRegistry {
     pub fn register<E: OrmEntity>(&self) -> Result<(), RegistrationError> {
         let schema = E::collection_schema();
         let collection = schema.collection.clone();
-        let mut map = self.schemas.write().expect("OrmEntityRegistry lock poisoned");
+        let mut map = self
+            .schemas
+            .write()
+            .expect("OrmEntityRegistry lock poisoned");
         match map.get(&collection) {
             Some(existing) if schemas_equivalent(existing, &schema) => Ok(()),
             Some(_) => Err(RegistrationError::SchemaConflict {
@@ -156,14 +177,20 @@ impl OrmEntityRegistry {
     /// Returns `None` when the collection isn't registered here; the
     /// caller falls back to `entity_schemas.json`.
     pub fn resolve(&self, collection: &str) -> Option<CollectionSchema> {
-        let map = self.schemas.read().expect("OrmEntityRegistry lock poisoned");
+        let map = self
+            .schemas
+            .read()
+            .expect("OrmEntityRegistry lock poisoned");
         map.get(collection).cloned()
     }
 
     /// All registered collection names. Useful for diagnostics and the
     /// `data/list-collections` path.
     pub fn collection_names(&self) -> Vec<String> {
-        let map = self.schemas.read().expect("OrmEntityRegistry lock poisoned");
+        let map = self
+            .schemas
+            .read()
+            .expect("OrmEntityRegistry lock poisoned");
         map.keys().cloned().collect()
     }
 

@@ -21,8 +21,11 @@ use uuid::Uuid;
 /// That keeps the kernel command compositional with the future
 /// `channel` module rather than dragging room-name semantics into
 /// every consumer of the chat surface.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatPollParams.ts")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatPollParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPollParams {
     /// Restrict the poll to a specific room. Optional — omitting it
@@ -39,6 +42,16 @@ pub struct ChatPollParams {
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
 
+    /// Anchor message for BACKWARD pagination — the scroll-back cursor.
+    /// When set, return the `limit` messages strictly BEFORE this
+    /// message's timestamp (still delivered in chronological order).
+    /// The endless-scroll loop: render the live tail, then keep passing
+    /// the OLDEST id on screen to page history out of durable storage.
+    /// Mutually exclusive with `after_message_id`.
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<Uuid>,
+
     /// Max number of messages to return. Defaults to 50 if the caller
     /// omits it.
     #[serde(default)]
@@ -51,7 +64,10 @@ pub struct ChatPollParams {
 /// `CommandResponse<ChatPollResult>`, so callers see
 /// `{ success, data: { messages, count }, error? }`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatPollResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatPollResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPollResult {
     /// Messages returned by the poll, in chronological order
@@ -72,8 +88,17 @@ pub struct ChatPollResult {
     /// pagination/loop ergonomics — the next poll round just keeps
     /// passing the most-recently-seen id.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
+
+    /// Echo of the `before_message_id` the caller passed in — the next
+    /// scroll-back page passes the OLDEST id it now holds. An empty
+    /// `messages` with this set means history is exhausted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<Uuid>,
 }
 
 // ── chat/send ────────────────────────────────────────────────────────
@@ -92,8 +117,11 @@ pub struct ChatPollResult {
 /// pre-warming are deferred to follow-up PRs — this first migration
 /// stress-tests the dual-write composition (chat → data + chat → airc)
 /// which is the substrate-shaped kink the design needed proof of.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatSendParams.ts")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatSendParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSendParams {
     /// Destination room. The kernel command requires an
@@ -136,7 +164,10 @@ pub struct ChatSendParams {
 /// from the handler — the message never reaches the store, no airc
 /// publish is attempted.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatSendResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatSendResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSendResult {
     /// The stored message's UUID. Always present on success. Callers
@@ -171,6 +202,14 @@ pub const CHAT_MESSAGES_COLLECTION: &str = "chat_messages";
 /// Default `limit` when the caller omits it on `chat/poll`. Matches
 /// the historical TS default (`params.limit || 50`).
 pub const DEFAULT_POLL_LIMIT: usize = 50;
+
+// The `chat/send` + `chat/poll` descriptors are now published by the typed
+// `ActionCommand`s in `crate::commands::chat` (each `action_command!` block
+// emits its own `register_command!`), so the registry self-assembles from the
+// SAME site that owns the runtime object. The old enveloped `CommandSpec`
+// stubs that used to live here were deleted in the DynCommand migration — a
+// second registration of these names would hard-panic `command_registry()`
+// on a duplicate NAME.
 
 #[cfg(test)]
 mod tests {
@@ -218,11 +257,17 @@ mod tests {
             messages: vec![],
             count: 0,
             after_message_id: None,
+            before_message_id: None,
         };
         let val = serde_json::to_value(&r).unwrap();
         assert!(
             !val.as_object().unwrap().contains_key("afterMessageId"),
             "missing after_message_id should round-trip as absent, not null"
+        );
+        // The backward cursor echoes the same way: absent, never null.
+        assert!(
+            !val.as_object().unwrap().contains_key("beforeMessageId"),
+            "missing before_message_id should round-trip as absent, not null"
         );
     }
 
@@ -233,6 +278,7 @@ mod tests {
             messages: vec![],
             count: 0,
             after_message_id: Some(id),
+            before_message_id: None,
         };
         let val = serde_json::to_value(&r).unwrap();
         assert_eq!(val["afterMessageId"], json!(id.to_string()));

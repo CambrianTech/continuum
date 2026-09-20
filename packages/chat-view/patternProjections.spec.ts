@@ -1,0 +1,315 @@
+/**
+ * Chat → pattern-primitive projection tests.
+ *
+ * Proves the chat activity expresses itself on the consumer-neutral primitives
+ * (ACTIVITY-ROOM-PATTERNS.md): the roster is a `Listing`, the room is a nav
+ * `Listing` cell, and the whole room composes into a `Workspace` whose `Content`
+ * is keyed by the room's `purpose`. Projections take the flat `ChatViewModel`, so
+ * these fixtures need no wire types.
+ */
+
+import { describe, it, expect } from 'vitest';
+import type { ChatViewModel } from './chatViewModel';
+import {
+  rosterListing,
+  roomsListing,
+  roomsListingFromNav,
+  continuonWidget,
+  systemPanelWidget,
+  nodesWidget,
+  chatWorkspace,
+  type ChatContentBody,
+} from './patternProjections';
+import type { NavViewState } from '@continuum/sdk-typescript';
+
+const vm: ChatViewModel = {
+  roomName: 'general',
+  roomId: 'room-1',
+  purpose: 'chat',
+  transcript: [],
+  memberCount: 2,
+  activeCount: 1,
+  members: [
+    {
+      id: 'a',
+      name: 'Asha',
+      kind: 'agent',
+      active: true,
+      runtime: 'persona',
+      vitals: { energy: 80, attention: 90 },
+      loadout: { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
+      lastSeenMs: 1_700_000_000_000,
+      genes: ['rust-hands', 'tool-fluency'],
+    },
+    { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {}, lastSeenMs: 0 },
+  ],
+  messages: [
+    { id: 'm1', senderId: 'a', senderName: 'Asha', kind: 'agent', content: 'hi', time: '00:00', runtime: 'persona' },
+  ],
+  isEmpty: false,
+};
+
+describe('chat → pattern projections', () => {
+  // Regression b742642d: project rooms must carry a board body, and a late
+  // snapshot from another room must never appear as the selected room's work.
+  it('projects project content with only its own board snapshot', () => {
+    const project = { ...vm, purpose: 'project' };
+    const board = { room_id: vm.roomId, lanes: [], cards: [] };
+    expect(chatWorkspace(project, { board }).content).toMatchObject({
+      purpose: 'project', body: { title: vm.roomName, board: { status: 'ready', snapshot: board }, chat: { messages: vm.messages } },
+    });
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).toMatchObject({ board: { status: 'rejected', reason: 'foreign-room' } });
+    expect(chatWorkspace(project, { board: { ...board, room_id: 'other-room' } }).content.body).not.toHaveProperty('board.snapshot');
+    expect(chatWorkspace(project).content.body).toMatchObject({ board: { status: 'awaiting' } });
+  });
+  // what this catches: the roster projects to the people-`Listing` — the cell
+  // template resolves glyph/badges/status so a target only draws them.
+  it('projects the roster into the people Listing', () => {
+    const l = rosterListing(vm);
+    expect(l.id).toBe('roster');
+    expect(l.title).toBe('Users & Agents');
+    expect(l.cells).toHaveLength(2);
+    const [asha] = l.cells;
+    expect(asha).toMatchObject({
+      id: 'a',
+      title: 'Asha',
+      glyph: '🤖',
+      status: 'active',
+      badges: ['agent', 'persona'],
+    });
+    // a human with no runtime carries just its kind badge, idle status
+    expect(l.cells[1]).toMatchObject({ title: 'Joel', glyph: '🧑', status: 'idle', badges: ['human'] });
+  });
+
+  // what this catches: a member's vitals ride along as neutral cell `meters`, so a
+  // target draws the ACT bars from the Listing alone — the projection is LOSSLESS and
+  // the rich view-model never has to cross the render boundary. A member with no vitals
+  // carries no `meters` key (absent, not an empty object), so targets draw no meter.
+  it('carries member vitals as neutral cell meters, absent when empty', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.meters).toEqual({ energy: 80, attention: 90 });
+    expect(cells[1]).not.toHaveProperty('meters');
+  });
+
+  // what this catches: a member's LOADOUT (model·size·ctx) rides the neutral cell
+  // losslessly — the SAME design as `meters` — so a target draws the strip from the
+  // Listing alone. A member with no loadout carries no `loadout` key (absent, never
+  // a fabricated model).
+  it('carries member loadout as a neutral cell field, absent when none', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.loadout).toEqual({
+      model: 'devstral-24b',
+      params: 24_000_000_000,
+      contextWindow: 32_768,
+    });
+    expect(cells[1]).not.toHaveProperty('loadout');
+  });
+
+  // what this catches: a member's gene NAMES ride the neutral cell losslessly —
+  // the label half of a `meters.genome` count — so a target names each lit
+  // genome segment. A member with none carries no `genes` key (absent, never
+  // fabricated labels).
+  it('carries member gene names as a neutral cell field, absent when none', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.genes).toEqual(['rust-hands', 'tool-fluency']);
+    expect(cells[1]).not.toHaveProperty('genes');
+  });
+
+  // what this catches: a member's recency (last_seen_ms) rides the neutral cell as
+  // `lastActiveMs` — the tile's "55m ago" stamp (card 2661a1b1) — and an unreported
+  // recency (0) attaches no key, so no fabricated stamp is ever drawn.
+  it('carries member recency as lastActiveMs, absent when unreported', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.lastActiveMs).toBe(1_700_000_000_000);
+    expect(cells[1]).not.toHaveProperty('lastActiveMs');
+  });
+
+  // what this catches: the focused room projects to the nav `Listing` (the tab
+  // bar / channel-attention), carrying its purpose as the cell group.
+  it('projects the focused room into the nav Listing', () => {
+    const nav = roomsListing(vm);
+    expect(nav.id).toBe('rooms');
+    expect(nav.cells).toHaveLength(1);
+    expect(nav.cells[0]).toMatchObject({ id: 'room-1', title: 'general', status: 'active', group: 'chat' });
+  });
+
+  // what this catches: the whole room composes into a Workspace — nav + left
+  // people-Listing + Content keyed by the room's purpose + an (empty) context.
+  // This is the data spine a RenderTarget draws; foundry slots in as a different
+  // purpose + content body with NO shell change.
+  it('composes the room into a Workspace with purpose-keyed Content', () => {
+    const ws = chatWorkspace(vm);
+    expect(ws.nav.id).toBe('rooms');
+    // The left rail is a global widget stack: Continuon (identity header) ·
+    // System (the two-faced SYS|AI panel) · Rooms (listing) · Users & Agents
+    // (listing). The roster is the participants listing (id 'roster').
+    expect(ws.left).toHaveLength(4);
+    expect(ws.left.map((w) => w.kind)).toEqual(['continuon', 'system', 'listing', 'listing']);
+    const roster = ws.left.find(
+      (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'roster',
+    );
+    expect(roster).toBeDefined();
+    expect(roster?.id).toBe('roster');
+    expect(ws.content.purpose).toBe('chat');
+    // `WorkspaceView.content.body` is deliberately opaque (`ContentView<unknown>`) at
+    // the workspace boundary; a chat-aware test narrows to the exported chat body.
+    const body = ws.content.body as ChatContentBody;
+    expect(body.messages).toHaveLength(1);
+    expect(body.isEmpty).toBe(false);
+    // The right contextual rail carries the room-info card — purpose, presence,
+    // and the agent/human mix, all derived from the same snapshot (no new pipe).
+    expect(ws.context.listings).toHaveLength(1);
+    const info = ws.context.listings[0];
+    expect(info?.id).toBe('room-info');
+    expect(info?.cells.map((c) => c.title)).toEqual([
+      'chat',
+      '2 members · 1 active',
+      '1 agents · 1 humans',
+    ]);
+  });
+
+  // what this catches: the continuon header is projected purely from data the chat
+  // state already carries — the ticker digests the LAST turns (newest last, hard
+  // truncation so the header never becomes a second transcript), `alive` reflects
+  // real presence, and the version badge attaches only when the host reported one
+  // (honest-absent, never a fabricated stamp).
+  it('projects the continuon header with a digested ticker and honest version', () => {
+    const longVm: ChatViewModel = {
+      ...vm,
+      messages: [
+        ...vm.messages,
+        { id: 'm2', senderId: 'a', senderName: 'Asha', kind: 'agent', time: '00:01', runtime: 'persona',
+          content: 'a very long line that must be clipped hard because the ticker is a log strip, not a transcript' },
+      ],
+    };
+    const w = continuonWidget(longVm, 'v0.1.0');
+    expect(w.kind).toBe('continuon');
+    expect(w.body.wordmark).toBe('continuum');
+    expect(w.body.version).toBe('v0.1.0');
+    expect(w.body.alive).toBe(true);
+    expect(w.body.ticker).toHaveLength(2);
+    expect(w.body.ticker[0]).toBe('Asha: hi');
+    expect(w.body.ticker[1]?.length).toBeLessThanOrEqual('Asha: '.length + 34);
+    expect(w.body.ticker[1]?.endsWith('…')).toBe(true);
+    // No version reported → no badge field at all.
+    expect(continuonWidget(vm).body).not.toHaveProperty('version');
+    // The workspace puts the continuon at the TOP of the rail.
+    expect(chatWorkspace(vm).left[0]?.kind).toBe('continuon');
+  });
+
+  // what this catches: the two-faced System panel composes the EXISTING gauge +
+  // metrics projections (no new numbers): without the live sys feed the gauge
+  // face is honestly absent (no fabricated flat graph), with it the reshaped
+  // series ride in; the AI stats derive from the roster either way.
+  it('composes the system panel with an honestly-absent gauge until sys delivers', () => {
+    const dry = systemPanelWidget(vm);
+    expect(dry.kind).toBe('system');
+    expect(dry.body).not.toHaveProperty('gauge');
+    expect(dry.body.stats.stats.map((s) => s.label)).toEqual(['here', 'thinking', 'genome']);
+    const wet = systemPanelWidget(vm, {
+      series: [{ label: 'cpu', points: [10, 20], current: '20%' }],
+      sample_interval_ms: 2000,
+    });
+    expect(wet.body.gauge?.series[0]).toMatchObject({ label: 'CPU', current: '20%' });
+  });
+
+  // what this catches: the NODES strip only exists when a live metrics feed
+  // attests this node (host name present) — no feed / no name = no widget,
+  // never a fabricated "1/1 online". And with the feed, the strip is a status
+  // widget over the one Listing primitive with THIS node active.
+  it('projects the nodes strip only from an attested metrics feed', () => {
+    expect(nodesWidget(undefined)).toBeUndefined();
+    expect(nodesWidget({ series: [], sample_interval_ms: 2000 })).toBeUndefined();
+    const w = nodesWidget({ series: [], sample_interval_ms: 2000, node: 'bigmama.local' });
+    expect(w?.kind).toBe('status');
+    expect(w?.body.cells).toEqual([
+      { id: 'local', title: 'bigmama.local', subtitle: 'this node', status: 'active' },
+    ]);
+    // The workspace slots it between the System panel and the Rooms listing.
+    const sys = { series: [], sample_interval_ms: 2000, node: 'bigmama.local' };
+    expect(chatWorkspace(vm, { sys }).left.map((x) => x.kind)).toEqual([
+      'continuon', 'system', 'status', 'listing', 'listing',
+    ]);
+  });
+
+  // what this catches: brick 1 (POSITRON-WIDGET-SOPHISTICATION.md) — the live
+  // nav view supersedes the single-cell rooms listing with the real room SET:
+  // the focused room draws active (not cells[0] by accident of order), unread
+  // rides the neutral `count` (absent at 0 — no fabricated badge), and the tab
+  // kind is the group facet the All/Rooms/DMs filter runs over.
+  it('projects the nav room set with unread counts and focused-room highlight', () => {
+    const nav: NavViewState = {
+      user_id: 'joel',
+      current_tab: 'room-2',
+      open_tabs: [
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, opened: true, purpose: '', parent_ref: '', display_label: '' },
+      ],
+      last_read: { 'room-1': 1 },
+      bookmarks: [],
+    };
+    // The chat view is focused on room-1 — THAT drives the active cell, because
+    // the rooms rail highlights what the surface is showing.
+    const listing = roomsListingFromNav(nav, 'room-1');
+    expect(listing.id).toBe('rooms');
+    expect(listing.cells).toHaveLength(2);
+    expect(listing.cells[0]).toMatchObject({ id: 'room-1', status: 'active', group: 'room' });
+    expect(listing.cells[0]?.count).toBeUndefined();
+    expect(listing.cells[1]).toMatchObject({ id: 'room-2', status: 'idle', count: 4 });
+    // The recipe-defined purpose rides as the description line; an unresolved
+    // (empty) purpose attaches no subtitle — honest, never a fabricated blurb.
+    expect(listing.cells[0]?.subtitle).toBe('chat');
+    expect(listing.cells[1]).not.toHaveProperty('subtitle');
+    // And the workspace swaps the nav-derived listing into BOTH the nav slot and
+    // the rooms rail widget when nav is present.
+    const ws = chatWorkspace(vm, { nav });
+    expect(ws.nav.cells).toHaveLength(2);
+    const rooms = ws.left.find(
+      (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'rooms',
+    );
+    expect((rooms?.body as { cells: unknown[] }).cells).toHaveLength(2);
+  });
+});
+
+describe('recipe-purpose family dispatch (#431)', () => {
+  // what this catches: a dispatched benchmark round's room being UNRENDERABLE.
+  // Recipes bind rooms to hierarchical purposes (benchmark/hard-rs); before the
+  // family resolver, chatWorkspace passed that purpose through with a CHAT body
+  // and the registry threw `no content renderer for room purpose` — measured
+  // live 2026-08-22 on every run room the dispatcher spawned.
+  it('a benchmark-family room renders the bench board, frame-first before the feed', () => {
+    const bench = { ...vm, purpose: 'benchmark/hard-rs', parent_ref: '', display_label: '' };
+    const ws = chatWorkspace(bench);
+    expect(ws.content.purpose).toBe('bench');
+    // Honest pre-feed frame (same contract as arena/serving): the face renders
+    // with feedLive=false rather than falling back to chat or erroring.
+    const body = ws.content.body as { runs: unknown[]; feedLive: boolean };
+    expect(body.feedLive).toBe(false);
+    expect(body.runs).toEqual([]);
+  });
+
+  it('a video-chat room renders the live face; unknown purposes still pass through fail-loud', () => {
+    const call = chatWorkspace({ ...vm, purpose: 'video-chat' });
+    expect(call.content.purpose).toBe('live');
+    // Unknown purpose is NOT silently rewritten — the registry stays the
+    // fail-loud authority on truly unregistered activities.
+    const unknown = chatWorkspace({ ...vm, purpose: 'totally-novel' });
+    expect(unknown.content.purpose).toBe('totally-novel');
+  });
+});
+
+describe('the settings face (operator panel)', () => {
+  // what this catches: the settings overlay's dispatch contract — while open it
+  // WINS outright (an explicit operator act), renders the awaiting frame before
+  // the fetch lands, and on close every other face resumes. One consent surface
+  // in the UI, same verbs as the terminal.
+  it('an open settings overlay wins the content dispatch, awaiting-first', () => {
+    const ws = chatWorkspace(vm, { settings: { open: true } });
+    expect(ws.content.purpose).toBe('settings');
+    const body = ws.content.body as { loaded: boolean; genes: unknown[] };
+    expect(body.loaded).toBe(false);
+    expect(body.genes).toEqual([]);
+    const closed = chatWorkspace(vm, { settings: { open: false } });
+    expect(closed.content.purpose).toBe('chat');
+  });
+});

@@ -88,21 +88,29 @@ pub fn citizen_home_path(
     path.join(label).join("airc")
 }
 
+/// The directory CONTAINING every citizen home of a given kind:
+/// `<continuum_root>/citizens/<kind_slug>/`. This is the parent that
+/// [`citizen_home_path`] places `<label>/airc/` under — the single source of
+/// truth for "where do I scan to enumerate the personas/agents/… on this box."
+/// Resume/discovery code MUST derive its scan root from here, never re-literal
+/// `join("personas")` (the pre-Slice-4 path), so the write path and the read
+/// path can never drift apart again.
+///
+/// (Agent kinds nest a `<provider>/` level below this; enumerate per-provider
+/// subdirs for those. Persona/Human/Jtag/Web place `<label>/` directly here.)
+pub fn citizens_kind_dir(continuum_root: &Path, kind: IdentityKind) -> PathBuf {
+    continuum_root.join("citizens").join(kind_slug(kind))
+}
+
 /// Pre-Slice-4 layouts, kept for migration detection (Slice 4 hard-
 /// errors on these per [[no-fallbacks-ever]]).
 ///
 /// - Personas: `<continuum_root>/personas/<label>/airc/`
 /// - Claude (the only Agent-equivalent pre-refactor):
 ///   `<continuum_root>/claudes/<label>/airc/`
-pub fn legacy_home_path(
-    continuum_root: &Path,
-    kind: IdentityKind,
-    label: &str,
-) -> Option<PathBuf> {
+pub fn legacy_home_path(continuum_root: &Path, kind: IdentityKind, label: &str) -> Option<PathBuf> {
     match kind {
-        IdentityKind::Persona => {
-            Some(continuum_root.join("personas").join(label).join("airc"))
-        }
+        IdentityKind::Persona => Some(continuum_root.join("personas").join(label).join("airc")),
         IdentityKind::Agent => {
             // Pre-Slice-4 there was only Claude under `claudes/`.
             // Codex/Gemini/etc. didn't have layouts to migrate; they
@@ -125,26 +133,40 @@ mod tests {
         assert_eq!(path, PathBuf::from("/r/citizens/personas/maya/airc"));
     }
 
+    // what this catches: THE bug that minted a stranger every boot (filling
+    // `personas-archive/`). The instance manager WRITES seed.json at
+    // `citizen_home_path(...).parent()/seed.json`; the resumer SCANS
+    // `citizens_kind_dir(...)` for `<subdir>/seed.json`. If those two ever diverge
+    // (as they did when the resumer hard-coded `personas/` instead of
+    // `citizens/personas/`), the write lands where the read never looks → no
+    // persona ever resumes. This pins write-path == read-path for a Persona.
+    #[test]
+    fn seed_write_path_lives_under_the_resumer_scan_dir() {
+        let root = PathBuf::from("/r");
+        let label = "asha";
+        let home = citizen_home_path(&root, IdentityKind::Persona, None, label);
+        // The instance manager derives the seed path from the home's parent.
+        let seed_path = home.parent().expect("home has a parent").join("seed.json");
+        // The resumer scans this dir's `<label>/seed.json`.
+        let scan_dir = citizens_kind_dir(&root, IdentityKind::Persona);
+        assert_eq!(
+            seed_path,
+            scan_dir.join(label).join("seed.json"),
+            "the seed the bootstrap writes MUST land where the resumer scans — else \
+             personas never resume and a stranger is minted every boot"
+        );
+    }
+
     #[test]
     fn agent_path_carries_provider_segment() {
         let root = PathBuf::from("/r");
-        let path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("claude"),
-            "default",
-        );
+        let path = citizen_home_path(&root, IdentityKind::Agent, Some("claude"), "default");
         assert_eq!(
             path,
             PathBuf::from("/r/citizens/agents/claude/default/airc")
         );
 
-        let codex_path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("codex"),
-            "default",
-        );
+        let codex_path = citizen_home_path(&root, IdentityKind::Agent, Some("codex"), "default");
         assert_eq!(
             codex_path,
             PathBuf::from("/r/citizens/agents/codex/default/airc")
@@ -152,12 +174,7 @@ mod tests {
 
         // Same provider + same label across kinds: provider is the
         // discriminator. Different providers DON'T collide.
-        let gemini_path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("gemini"),
-            "default",
-        );
+        let gemini_path = citizen_home_path(&root, IdentityKind::Agent, Some("gemini"), "default");
         assert_ne!(path, gemini_path);
     }
 
@@ -165,8 +182,8 @@ mod tests {
     fn human_jtag_web_paths_skip_provider_segment() {
         let root = PathBuf::from("/r");
         assert_eq!(
-            citizen_home_path(&root, IdentityKind::Human, None, "joel-laptop"),
-            PathBuf::from("/r/citizens/humans/joel-laptop/airc")
+            citizen_home_path(&root, IdentityKind::Human, None, "operator-laptop"),
+            PathBuf::from("/r/citizens/humans/operator-laptop/airc")
         );
         assert_eq!(
             citizen_home_path(&root, IdentityKind::Jtag, None, "inv-001"),
@@ -205,11 +222,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "provider is REQUIRED when kind == Agent")]
     fn agent_without_provider_panics() {
-        let _ = citizen_home_path(
-            &PathBuf::from("/r"),
-            IdentityKind::Agent,
-            None,
-            "default",
-        );
+        let _ = citizen_home_path(&PathBuf::from("/r"), IdentityKind::Agent, None, "default");
     }
 }

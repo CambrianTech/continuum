@@ -6,7 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"
 
-echo -e "${BLUE}🦀 Rust Setup for JTAG Workers${NC}"
+echo -e "${BLUE}🦀 Rust build prerequisites for continuum-core${NC}"
 echo -e "================================="
 echo ""
 
@@ -57,68 +57,46 @@ else
 fi
 
 # ============================================================================
-# Step 4: Build all Rust workers
+# Step 3.5: Native build prereqs — cmake + vendored git submodules
 # ============================================================================
+# continuum-core compiles vendored llama.cpp/whisper.cpp via cmake. On a fresh
+# clone the submodules are empty (no CMakeLists.txt) and cmake may be absent —
+# either one makes `cargo build` (and therefore `npm start`) fail. Ensure both.
 
-echo -e "${YELLOW}4. Building Rust workers...${NC}"
+echo -e "${YELLOW}3.5 Checking cmake + vendored submodules...${NC}"
 
-# Navigate to jtag root (SCRIPT_DIR set at top via preflight source)
-JTAG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$JTAG_ROOT"
-
-CONFIG_FILE="workers/workers-config.json"
-
-if [ ! -f "$CONFIG_FILE" ]; then
-  echo -e "   ${RED}❌ Worker config not found: $CONFIG_FILE${NC}"
-  exit 1
+if command -v cmake &>/dev/null; then
+  echo -e "   ${GREEN}✅ cmake installed${NC}"
+else
+  echo -e "   ${YELLOW}⚠️  cmake not found. Installing...${NC}"
+  preflight_pkg_install cmake
+  echo -e "   ${GREEN}✅ cmake installed${NC}"
 fi
 
-# Count enabled workers
-ENABLED_COUNT=$(jq '[.workers[] | select(.enabled != false)] | length' "$CONFIG_FILE")
-echo -e "   Found ${ENABLED_COUNT} enabled workers"
-
-# Build each enabled worker
-BUILT=0
-jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r worker; do
-  name=$(echo "$worker" | jq -r '.name')
-  binary=$(echo "$worker" | jq -r '.binary')
-  build_dir=$(dirname "$binary" | sed 's|/target/.*||')
-
-  echo -e "   ${YELLOW}Building ${name}-worker...${NC}"
-
-  if [ -d "$build_dir" ]; then
-    (cd "$build_dir" && source "$SCRIPT_DIR/shared/cargo-features.sh" && cargo build --release $CARGO_GPU_FEATURES 2>&1 | tail -3)
-
-    # Verify binary was created
-    if [ -f "$binary" ]; then
-      SIZE=$(du -h "$binary" | cut -f1)
-      echo -e "   ${GREEN}✅ ${name}-worker built ($SIZE)${NC}"
-    else
-      echo -e "   ${RED}❌ ${name}-worker build failed${NC}"
-    fi
-  else
-    echo -e "   ${RED}❌ Build directory not found: $build_dir${NC}"
-  fi
-done
+# `git submodule update` is a no-op if already initialized; git resolves the
+# repo root regardless of cwd, so this is safe to run from tools/scripts.
+echo -e "   ${YELLOW}Initializing vendored submodules (llama.cpp, whisper.cpp)...${NC}"
+git submodule update --init --recursive
+echo -e "   ${GREEN}✅ Vendored submodules ready${NC}"
 
 # ============================================================================
-# Step 5: Verify builds
+# The Rust WORKERS build used to live here (steps 4-5) and was removed.
+#
+# It read `workers/workers-config.json` and built each binary under
+# `workers/target/release/`. That subsystem was consolidated into
+# `continuum-core`: neither `workers/` nor `core/workers/` exists, so the step
+# could only ever `exit 1` with "Worker config not found" — which it did on
+# EVERY run of the README-documented `npm run setup:rust` (README.md:134).
+#
+# The prerequisite work above (rust toolchain, build tools, jq, cmake, vendored
+# submodules) is what README.md:129 actually promises this script does, and it
+# succeeded before dying on the dead step. Removed rather than repointed: there
+# is no worker layout left to point at. `npm start` builds continuum-core.
+#
+# Sibling stale references to the same vanished layout (task #80): 
+#   tools/scripts/system-stop.sh:11, core/stop-workers.sh:2,
+#   tools/generator/generate-worker-registry.ts:112.
 # ============================================================================
-
-echo -e "${YELLOW}5. Verifying builds...${NC}"
-
-ALL_GOOD=true
-jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r worker; do
-  name=$(echo "$worker" | jq -r '.name')
-  binary=$(echo "$worker" | jq -r '.binary')
-
-  if [ -f "$binary" ]; then
-    echo -e "   ${GREEN}✅ ${name}-worker${NC}"
-  else
-    echo -e "   ${RED}❌ ${name}-worker missing${NC}"
-    ALL_GOOD=false
-  fi
-done
 
 # ============================================================================
 # Summary
@@ -128,8 +106,10 @@ echo ""
 echo -e "${BLUE}=================================${NC}"
 echo -e "${GREEN}🎉 Rust setup complete!${NC}"
 echo ""
+# `npm run worker:start` / `worker:status` used to be advertised here. Neither
+# script exists in package.json — the last thing this script told a new user to
+# do was run two commands that fail. `npm start` (package.json:18) is the real
+# next step and builds continuum-core natively.
 echo -e "Next steps:"
-echo -e "  ${YELLOW}npm run worker:start${NC}  - Start all workers"
-echo -e "  ${YELLOW}npm run worker:status${NC} - Check worker status"
-echo -e "  ${YELLOW}npm start${NC}             - Start full system (includes workers)"
+echo -e "  ${YELLOW}npm start${NC}  - build + start the system (continuum-core, native)"
 echo ""

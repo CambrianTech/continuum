@@ -1,0 +1,2659 @@
+//! Dream consolidation — distilling episodic memories into durable facts.
+//!
+//! This is the **consolidation/dream region** — "outlier B" of the
+//! RAG-as-persistent-cache architecture (`docs/cognition/RAG-AS-PERSISTENT-CACHE.md`
+//! + `docs/cognition/DREAM-CONSOLIDATION.md`). Where the live `ChannelDigestRegion`
+//! (outlier A) is an *event-driven, no-LLM* servicer, this one is the most
+//! different servicer: *intermittent, LLM-driven*. If both fit the same
+//! `BrainRegion`/`ReadyBuffer` interface without forcing, the remaining slices
+//! slot in (the methodical-process outlier-validation strategy).
+//!
+//! ## What this file is (slice 1: the distiller)
+//!
+//! The smallest, self-contained, deterministically-testable unit: given N
+//! related episodic [`Engram`]s and an inference adapter, ask the model to
+//! consolidate them into ONE durable semantic fact ([`DistilledFact`]).
+//!
+//! It deliberately does NOT:
+//! - decide WHICH engrams to consolidate (the region's clustering job — a later
+//!   slice),
+//! - admit the result into the engram store (the self-admission path — a later
+//!   slice; the engram store IS the `facts` persistence, not a bespoke buffer).
+//!
+//! It is pure: engrams in, one distilled fact out, source provenance preserved.
+//! Refinement is LEARNED cognition (the model distills), never a hand-written
+//! filter that reads the persona's output and puppets it — that would be the
+//! exact anti-pattern this codebase forbids
+//! (`[[no-hardcoded-heuristics-to-steer-cognition]]`).
+
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use async_trait::async_trait;
+use thiserror::Error;
+use uuid::Uuid;
+
+use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::types::{ChatMessage, TextGenerationRequest};
+use crate::persona::admission_state::AdmissionState;
+use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
+use crate::runtime::brain_region::{
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
+    PressureSignalKind, RegionContext, RegionId, TickOutcome,
+};
+
+/// One durable fact distilled from a cluster of episodic engrams.
+///
+/// Carries full provenance: `source_ids` is every episodic engram that fed the
+/// distillation, in input order. The region that turns this into a `Semantic`
+/// `Engram` decides how to record that provenance against the engram model
+/// (`EngramOrigin::SelfReflection` carries a single `parent_engram_id` today;
+/// multi-source provenance on the engram is a follow-up slice). `tags` is the
+/// union of the sources' `recall_keys`, so the distilled fact is retrievable by
+/// the same keys its sources were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DistilledFact {
+    /// The consolidated fact, as the model wrote it (trimmed).
+    pub content: String,
+    /// Every source engram id that fed this distillation, in input order.
+    pub source_ids: Vec<Uuid>,
+    /// Union of the sources' recall keys (first-seen order), so the fact is
+    /// retrievable by the same keys its sources were.
+    pub tags: Vec<String>,
+    /// Prior-belief engrams the MODEL judged replaced/contradicted by this new
+    /// fact (#221 slice 2 — supersession). Populated only when the distillation
+    /// was shown prior beliefs to review; the caller demotes these to the
+    /// salience floor so the fresh belief out-ranks them in recall. Empty =
+    /// nothing superseded (the common case).
+    pub supersedes: Vec<Uuid>,
+}
+
+/// Why a distillation could not be produced. Typed + loud — there is no silent
+/// "return nothing" path (`[[fallbacks-are-illegal-fail-loud]]`): a caller that
+/// gets `Ok` gets a real fact, and any failure names its cause.
+#[derive(Debug, Error)]
+pub enum DistillError {
+    /// The caller passed no source engrams. A distillation of nothing is a
+    /// clustering bug in the region, not a runtime condition to paper over.
+    #[error("cannot distill: no source engrams provided")]
+    NoSources,
+    /// The inference adapter returned an error.
+    #[error("distillation inference failed: {0}")]
+    Inference(String),
+    /// The model returned empty text. We do NOT fabricate a fact from the raw
+    /// transcript — an empty distillation is surfaced, not hidden.
+    #[error("distillation produced empty output")]
+    EmptyDistillation,
+}
+
+/// Distills clusters of episodic engrams into durable semantic facts via the
+/// LLM. Holds an inference adapter; the region (a later slice) owns one of these
+/// and feeds it clusters on its idle-tick cadence.
+pub struct SemanticDistiller {
+    adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id to ask the adapter for. `None` only for adapters
+    /// with a single implicit model (the test heuristic); production callers
+    /// MUST thread the persona's live binding model — omitting it caused the
+    /// first live dream's degenerate role-token output (2026-07-12).
+    model: Option<String>,
+    /// Max chars the observation block may occupy (#175 budget-at-assembly). The
+    /// distiller BUDGETS the cluster to fit the served slot by dropping whole
+    /// trailing engrams — it never truncates an engram's text (that malforms the
+    /// prompt) — so an over-large cluster can never overflow the per-slot window
+    /// and 500 "Compute error" / poison the lane
+    /// ([[budget-at-assembly-never-clamp-the-prompt]]). Injected at construction
+    /// (where the live served window is known) so the distiller itself stays a
+    /// pure fn of (engrams, budget). Defaults conservative.
+    max_observation_chars: usize,
+}
+
+/// Default observation budget (chars) when the caller doesn't inject the live served
+/// window. DERIVED, never a literal: it reads the window the local lane is serving right
+/// now, and only if nothing is served falls back to the substrate's own declared minimum
+/// (`MIN_SERVE_CTX`) — the one floor the serving stack already owns, not a fresh guess.
+/// Production still wires the real per-slot window via `with_observation_budget`; this is
+/// the honest answer for an unwired build.
+/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+pub fn default_max_observation_chars() -> usize {
+    let live = crate::inference::llama_server::current_serving();
+    let window = if live.ready && live.served_context_window > 0 {
+        live.served_context_window
+    } else {
+        crate::cognition::serving_plan::MIN_SERVE_CTX
+    };
+    crate::cognition::context_budget::ContextBudget::from_window(window).latest_action_chars()
+}
+
+/// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
+/// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
+/// (walk engrams → one LLM pass → admit_reflection with content-hash dedup)
+/// with a different way of looking. The clinical mapping that motivates the
+/// design: multiplicity done right is lenses over a shared store, never
+/// separate selves — and every lens's output carries its provenance tag
+/// IN-CONTENT (`[thought:<lens>]`) so recall renders it typed and inner speech
+/// can never masquerade as perception (the anti-source-monitoring-failure
+/// invariant; the consolidator's plain facts are the one exception — a
+/// distilled durable fact IS first-class knowledge, not a passing thought).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lens {
+    /// Stable name — telemetry, the `[thought:<name>]` tag, purpose string.
+    pub name: &'static str,
+    /// The lens's way of looking, as the system prompt.
+    pub system_prompt: &'static str,
+    /// Inference-accounting purpose string (stable across renames — the
+    /// consolidator keeps its historical "dream-consolidation" telemetry key).
+    pub purpose: &'static str,
+    /// Whether output is tagged `[thought:<name>]` (true for wanderer thoughts)
+    /// or admitted as a plain durable fact (the consolidator).
+    pub tag_output: bool,
+}
+
+/// The consolidator — the original dream lens: episodic clusters → one durable
+/// semantic fact, admitted untagged (it IS knowledge, not commentary).
+pub const LENS_CONSOLIDATOR: Lens = Lens {
+    name: "consolidator",
+    system_prompt: "\
+You are consolidating your own episodic memories into long-term knowledge. \
+Below are several things you observed or experienced, in order. Distill them \
+into a SINGLE durable fact: the general, reusable knowledge they share, stated \
+independently of when or how you learned it. Output ONLY the consolidated fact \
+as one or two plain sentences — no numbering, no preamble, no commentary, no \
+quotes. If the observations share no single consolidatable fact, state the one \
+most important durable takeaway.",
+    purpose: "dream-consolidation",
+    tag_output: false,
+};
+
+/// The historian — mind-wanderer outlier A (#145): looks across her OWN recent
+/// history for the pattern she is living but not seeing (repeated attempts,
+/// what worked vs what didn't, a habit forming). Continuous consolidation in
+/// the ext4 sense — the running gist maintained in small increments.
+pub const LENS_HISTORIAN: Lens = Lens {
+    name: "historian",
+    system_prompt: "\
+You are the historian voice of your own mind, quietly reviewing your recent \
+experiences. Below are several of your own memories, in order. Notice the \
+PATTERN across them that you may be living without seeing: something you have \
+tried repeatedly, what actually worked versus what did not, a habit forming, a \
+thread you dropped. Output ONE short observation about your own recent history \
+— one or two plain sentences, addressed to yourself, no preamble, no quotes. \
+If there is truly no pattern, name the single most notable thing that happened.",
+    purpose: "wanderer-historian",
+    tag_output: true,
+};
+
+/// The belief-review lens (#221 slice 2c — review-only dreams): on a quiet day
+/// (no fresh experience), the dream re-examines a batch of her OLDEST
+/// consolidated beliefs on their own — restate what still holds, supersede what
+/// doesn't. Without this, reviewing old beliefs required new experience as a
+/// vehicle, and a repeat-work day (deduped lessons) starved the review queue
+/// entirely (glass-boxed 2026-07-22: six ludicrous cycles, zero supersede
+/// probes — dedup correctly dropped identical lessons, so dreams never woke).
+pub const LENS_REVIEWER: Lens = Lens {
+    name: "reviewer",
+    system_prompt: "\
+You are re-examining several of your own OLDER long-term beliefs to keep your \
+knowledge current. Below are beliefs you consolidated some time ago. Restate, \
+as one or two plain sentences, the most important understanding among them \
+that remains true and useful today — no numbering, no preamble, no quotes. \
+Follow the instructions after the list to flag any that are outdated, overly \
+specific to past work, or contradicted by your current understanding.",
+    purpose: "dream-belief-review",
+    tag_output: false,
+};
+
+impl SemanticDistiller {
+    pub fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
+        Self {
+            adapter,
+            model: None,
+            max_observation_chars: default_max_observation_chars(),
+        }
+    }
+
+    /// Ask the adapter for a specific served model (the persona's live binding).
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Budget the observation block to `chars` (#175). The caller derives this from
+    /// the LIVE served per-slot window (tokens → chars, minus system-prompt + reply
+    /// reserve) so the dream prompt is composed WITHIN the slot and never overflows.
+    /// Floored at one engram's worth so a single large memory still distills.
+    pub fn with_observation_budget(mut self, chars: usize) -> Self {
+        self.max_observation_chars = chars.max(2_000);
+        self
+    }
+
+    /// Consolidate a cluster of related episodic engrams into one durable fact.
+    ///
+    /// `persona_id` attributes the inference to its owning persona for
+    /// per-persona resource accounting (the dream IS attributable work, not an
+    /// ad-hoc probe). The distiller stays persona-agnostic otherwise — it does
+    /// not read the persona's store, only the engrams handed to it. Source order
+    /// is preserved in [`DistilledFact::source_ids`].
+    pub async fn distill(
+        &self,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
+        self.distill_reviewing(LENS_CONSOLIDATOR, persona_id, sources, &[])
+            .await
+    }
+
+    /// Distill through a specific [`Lens`] — the generalized wanderer pass.
+    /// Tagged lenses get their `[thought:<name>]` provenance prefixed onto the
+    /// content HERE, at the one synthesis point, so no admit path can forget it.
+    pub async fn distill_with(
+        &self,
+        lens: Lens,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
+        self.distill_reviewing(lens, persona_id, sources, &[]).await
+    }
+
+    /// [`distill_with`](Self::distill_with) plus a SUPERSESSION REVIEW (#221
+    /// slice 2): the model is additionally shown up to a handful of the
+    /// persona's PRIOR consolidated beliefs (retrieved by recall-key overlap —
+    /// mechanics, like recall itself) and asked, as part of the SAME single
+    /// generation, which if any are replaced or contradicted by the new
+    /// understanding. The JUDGMENT is the model's — never a similarity
+    /// threshold ([[cognition-is-always-ml-never-heuristic]]). Its verdict
+    /// comes back as a trailing `SUPERSEDES: <numbers>` line that is parsed
+    /// OUT of the fact content and mapped to engram ids in
+    /// [`DistilledFact::supersedes`]. No priors → identical to `distill_with`.
+    pub async fn distill_reviewing(
+        &self,
+        lens: Lens,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+        prior_beliefs: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
+        if sources.is_empty() {
+            return Err(DistillError::NoSources);
+        }
+
+        // #175 budget-at-assembly: compose the observation block WITHIN the served
+        // slot by including whole engrams up to the budget, dropping the tail — never
+        // truncating an engram (that malforms). `kept` is the prefix that actually
+        // fed the distillation; provenance (source_ids/tags) must reflect ONLY those,
+        // so the dropped engrams stay unconsolidated and get another pass in a smaller
+        // future cluster ([[budget-at-assembly-never-clamp-the-prompt]]).
+        // #3847: PRIOR BELIEFS SHARE THE OBSERVATION BUDGET.
+        //
+        // The observations block has always been budgeted (whole engrams, tail
+        // dropped, never truncated). The prior-beliefs list appended below was
+        // bounded only by COUNT (SUPERSESSION_REVIEW_LIMIT +
+        // ROTATING_REVIEW_PER_PASS) - and a belief is distilled prose of any
+        // length, so N bounded beliefs times unbounded text is an unbounded
+        // block. Both halves land in ONE user message, so the careful
+        // observation budget bought nothing.
+        //
+        // Measured on BigMama: one user message of 141,984 approx tokens against
+        // a 25,344-token served slot - 5.6x over, and every overshoot was
+        // timestamp-identical to a dream.cluster.budgeted row. The slot rejects
+        // it, so the pass yields nothing and the engrams stay unconsolidated.
+        //
+        // A floor is reserved for beliefs so supersession cannot be starved to
+        // silence by a large cluster: with none, observations filling the budget
+        // would leave zero beliefs, and 'superseded nothing' would be
+        // indistinguishable from 'was shown no belief'.
+        // Charged ONLY when beliefs will actually be written. Unconditional, it
+        // capped observations at 75% on every pass with no prior beliefs — a new
+        // persona, a fresh domain, any cluster whose topic has no history —
+        // reserving a quarter of the budget for a list that never gets appended,
+        // on exactly the passes carrying the most new material (IntelMac, #3861).
+        let belief_floor = if prior_beliefs.is_empty() {
+            0
+        } else {
+            self.max_observation_chars / 4
+        };
+        let observation_budget = self.max_observation_chars.saturating_sub(belief_floor);
+        let (mut block, kept_n) = Self::observations_block(sources, observation_budget);
+        let kept = &sources[..kept_n];
+        if !prior_beliefs.is_empty() {
+            // Numbered list FIRST, then an UNCONDITIONAL format slot at the very
+            // end — recency beats primacy for instruction-following on small
+            // models, and a mandatory `SUPERSEDES:` line (with `none` as the
+            // explicit no-op) separates "chose none" from "ignored the
+            // instruction". Glass-boxed 2026-07-22: 25 live reviews, zero
+            // verdict lines, with the old conditional instruction placed BEFORE
+            // the list.
+            block.push_str("\n\nPRIOR BELIEFS (numbered):\n");
+            // Whole beliefs up to the remaining budget, dropping the tail - the
+            // SAME rule the observations block follows, because a half-belief is a
+            // malformed premise, not a smaller one
+            // ([[budget-at-assembly-never-clamp-the-prompt]]).
+            let mut beliefs_kept = 0usize;
+            for (i, b) in prior_beliefs.iter().enumerate() {
+                let line = format!("{}. {}\n", i + 1, b.content.trim());
+                if block.len() + line.len() > self.max_observation_chars {
+                    break;
+                }
+                block.push_str(&line);
+                beliefs_kept += 1;
+            }
+            if beliefs_kept < prior_beliefs.len() {
+                // The size of the belief that did NOT fit, so `kept = 0` is a
+                // READABLE state rather than a mystery: with none shown,
+                // "superseded nothing" and "was shown no belief" are otherwise
+                // indistinguishable, which is the ambiguity the reserved floor
+                // was reaching for. A named row achieves it without the
+                // unconditional-first-belief case that can blow the slot
+                // (IntelMac, #3861).
+                let dropped_first_chars = prior_beliefs
+                    .get(beliefs_kept)
+                    .map(|b| b.content.trim().len())
+                    .unwrap_or(0); // unwrap_or: kept == len means nothing was dropped, so there is no first-dropped belief to size
+                tracing::info!(
+                    probe_class = "dream.beliefs.budgeted",
+                    beliefs = prior_beliefs.len(),
+                    kept = beliefs_kept,
+                    dropped_first_chars,
+                    budget_chars = self.max_observation_chars,
+                    block_chars = block.len(),
+                    "prior-belief list exceeded the served slot budget - reviewing the \
+                     first {beliefs_kept}, deferring the rest to a later pass (#3847)"
+                );
+            }
+            // The instruction's key phrase is ONE constant the Speak gate shares
+            // (`framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION`): a citizen who
+            // speaks this scaffold in a room is passing, never posting.
+            block.push_str(&format!(
+                "\nAfter your reply, on its own final line, {}, wrong, or replaced by better understanding — \
+                 exactly `SUPERSEDES: 2` or `SUPERSEDES: 1,3` — or exactly \
+                 `SUPERSEDES: none` if every one still holds. This final line is REQUIRED.",
+                crate::cognition::framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION
+            ));
+        }
+        if kept_n < sources.len() {
+            tracing::info!(
+                probe_class = "dream.cluster.budgeted",
+                cluster = sources.len(),
+                kept = kept_n,
+                budget_chars = self.max_observation_chars,
+                "dream cluster exceeded the served slot budget — distilling the first \
+                 {kept_n} engrams, deferring the rest (never overflow the slot, #175)"
+            );
+        }
+
+        // max_tokens stays None — the adapter owns generation length (#45/#46);
+        // no per-call clamp. The distillation's faithfulness is gated by VDD
+        // with a real model, not by hand-tuned sampling knobs here.
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", block)],
+            system_prompt: Some(lens.system_prompt.to_string()),
+            model: self.model.clone(),
+            provider: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            active_adapters: None,
+            request_id: None,
+            user_id: None,
+            room_id: None,
+            purpose: Some(lens.purpose.to_string()),
+            persona_id: persona_id.map(|id| id.to_string()),
+        };
+
+        // Take a NON-directed serving lane before the dream's model call. Dream
+        // distillation is InferenceHeavy background work, but UNGUARDED it called
+        // the adapter directly and grabbed a physical llama decode lane WITHOUT
+        // counting against the non-directed budget — silently bypassing the #139
+        // reservation that always holds one lane for a directed chat turn. A
+        // directed reply then queued INSIDE llama behind the dream, so an idle
+        // persona looked comatose and unresponsive (glass-boxed live 2026-07-26:
+        // 4 personas dreamed continuously 00:00→05:03, no reply to direct chat).
+        // Acquiring the permit here caps ALL dream inference at MAX_LANES-1 and
+        // guarantees a waiting chat turn wins the lane — the same guarantee the
+        // turn path already relies on (llm_deliberation_faculty acquires it too).
+        // Held across the generate call, released on drop.
+        //
+        // DEFER BEFORE THE LANE (2026-08-29, the leaked-permit ledger): this call
+        // acquired the lane and THEN parked at the adapter's measured-hold defer —
+        // holding the very permit the held solve's next generation needed. Two
+        // such dreams drained the whole pool; the solve starved at every tick-2
+        // (grants=3/releases=1, both leaks timestamp-paired to dream defers).
+        // The rule every path owes: hold-defer FIRST holding NOTHING, gates second.
+        crate::inference::measured_hold::defer_while_held(
+            crate::inference::slots::class_for(request.purpose.as_deref()),
+            persona_id,
+            request.purpose.as_deref(),
+        )
+        .await;
+        let _lane = crate::cognition::resource_admission::acquire_serving_lane(
+            crate::cognition::resource_admission::LanePriority::Ambient,
+            None,
+        )
+        .await;
+        let response = self
+            .adapter
+            .generate_text(request)
+            .await
+            .map_err(DistillError::Inference)?;
+
+        let raw = response.text.trim();
+        if raw.is_empty() {
+            return Err(DistillError::EmptyDistillation);
+        }
+        // Lift the model's supersession verdict OUT of the fact text (the fact
+        // must read as knowledge, not as a grading transcript). The raw tail is
+        // probed FIRST — the one glass-box eye on what the model actually wrote
+        // before the parse strips it (25 live reviews were undiagnosable
+        // without this; the distiller path has no prompt-capture yet).
+        if !prior_beliefs.is_empty() {
+            let tail = raw.lines().last().unwrap_or("").trim();
+            crate::probe!(
+                class = "dream.review.raw_tail",
+                persona = ?persona_id,
+                tail = %&tail[..tail.len().min(120)],
+                "belief-review raw verdict line"
+            );
+        }
+        let (raw, supersedes) = parse_supersedes_line(raw, prior_beliefs);
+        if raw.is_empty() {
+            return Err(DistillError::EmptyDistillation);
+        }
+        // Provenance is prefixed at the ONE synthesis point (see distill_with
+        // docs): a tagged lens's output always reads as typed inner speech.
+        let content = if lens.tag_output {
+            format!("[thought:{}] {}", lens.name, raw)
+        } else {
+            raw.to_string()
+        };
+
+        Ok(DistilledFact {
+            content,
+            source_ids: kept.iter().map(|e| e.id).collect(),
+            tags: Self::union_recall_keys(kept),
+            supersedes,
+        })
+    }
+
+    /// Render the cluster as a numbered observation list, BUDGETED to `budget_chars`
+    /// (#175). Includes whole engrams in order until the next would exceed the budget,
+    /// then stops — dropping the tail rather than truncating an engram's text (which
+    /// would malform the prompt). Always includes at least the first engram so a
+    /// single large memory still distills (the adapter's overflow backstop is the
+    /// last-resort net for that degenerate case). Returns the block AND how many
+    /// engrams it kept, so the caller's provenance reflects only what was distilled.
+    fn observations_block(sources: &[Engram], budget_chars: usize) -> (String, usize) {
+        let mut block = String::new();
+        let mut kept = 0usize;
+        for (i, e) in sources.iter().enumerate() {
+            let line = format!("{}. {}\n", i + 1, e.content.trim());
+            // First engram always goes in; after that, stop before overflowing.
+            if kept > 0 && block.len() + line.len() > budget_chars {
+                break;
+            }
+            block.push_str(&line);
+            kept += 1;
+        }
+        (block, kept)
+    }
+
+    /// Union of every source's recall keys, first-seen order preserved.
+    fn union_recall_keys(sources: &[Engram]) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for e in sources {
+            for k in &e.recall_keys {
+                if seen.insert(k.clone()) {
+                    out.push(k.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 3: the DreamConsolidationRegion — the organism's rest-state servicer.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The seam through which the dream reaches each live persona's hippocampus.
+///
+/// Mirrors `PersonaChannelReader` (channel_digest_region.rs): the region depends
+/// on a TRAIT, not a concrete registry, so it is unit-testable against a stub.
+/// The production impl is `PersonaWorkspaceRegistry` itself (below): admission
+/// from the retained fork-template, adapter from the live cycle's model binding
+/// (re-home-safe). It resolves the adapter per tick, never stores a parallel
+/// persona→adapter map (compression — `[[rag-as-persistent-cache]]`).
+pub trait PersonaReflectionSource: Send + Sync {
+    /// Personas with a live reflective surface this pass.
+    fn live_personas(&self) -> Vec<Uuid>;
+
+    /// The persona's hippocampus + its inference adapter, bundled (mirrors
+    /// `reader_and_room` returning a tuple). `None` if the persona has no live
+    /// reflective surface — the dream sleeps for that persona this tick.
+    fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector>;
+}
+
+/// What a [`PersonaReflectionSource`] hands the region for one persona: the
+/// hippocampus to read episodics from + admit facts into, and the adapter to
+/// distill with. Both are `Arc` — shared, never owned by the region.
+#[derive(Clone)]
+pub struct PersonaReflector {
+    pub admission: Arc<AdmissionState>,
+    pub adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id the adapter must be asked for (the persona's live
+    /// binding model). `None` only when the adapter has one implicit model.
+    pub model: Option<String>,
+}
+
+/// Default recall window: scan the last N engrams for undigested experience.
+// context-budget-exempt: how many engrams a lens WALKS, not how much text reaches the prompt (the observations block is separately bounded)
+const DEFAULT_RECALL_WINDOW: usize = 64;
+
+/// How many related prior beliefs the supersession review shows the distiller
+/// per cluster (#221 slice 2). Small on purpose: the review rides the SAME
+/// generation as the distillation, so this bounds prompt growth; the most
+/// recent related beliefs are the likeliest supersession targets, and beliefs
+/// missed this dream get reviewed by a future one (the dream is periodic).
+const SUPERSESSION_REVIEW_LIMIT: usize = 6;
+
+/// How many of her OLDEST not-yet-reviewed beliefs each dream pass adds to the
+/// supersession review beyond the lexically-matched ones (#221 slice 2b) —
+/// the rotating window that guarantees eventual coverage of the whole belief
+/// store, a few beliefs per dream.
+const ROTATING_REVIEW_PER_PASS: usize = 4;
+
+/// Batch size for a REVIEW-ONLY dream pass (#221 slice 2c) — how many of her
+/// oldest unreviewed beliefs a quiet-day dream re-examines at once.
+const REVIEW_ONLY_BATCH: usize = 6;
+
+/// A belief must be at least this old before the review will re-examine it —
+/// re-judging a conclusion made minutes ago is churn, not hygiene. Mechanical
+/// age gate (selection), never judgment.
+const REVIEW_MIN_AGE_MS: u64 = 10 * 60 * 1000;
+
+/// Minimum wall-clock rest between two quiet-day REVIEW-ONLY passes for the SAME
+/// persona. Belief hygiene is a gentle background trickle, not a grind: without
+/// this, a persona with a large belief store (Atlas held 4,336 engrams) drains
+/// `REVIEW_ONLY_BATCH` at a time with NO pause, so the governor re-ticks the
+/// drained-but-not-empty queue every few seconds and the review runs back-to-back
+/// for HOURS — a single-lane inference storm that starves reactive responding and
+/// makes an idle persona look comatose (glass-boxed live 2026-07-26: 4 personas
+/// dreamed continuously 00:00→05:03, unresponsive to chat; compounded by the
+/// in-memory `reviewed` set resetting on each of ~6 dev restarts → full re-review
+/// every boot). This gate does NOT touch consolidation of FRESH experience (that
+/// stays ungated — real learning is never throttled); it only paces the
+/// quiet-day hygiene review so the lane stays free for the being to respond and
+/// act. Code, not env (concurrency guide). [[the-fade-is-necessary...]] — the
+/// fade is right, but it must trickle, never flood.
+const REVIEW_ONLY_COOLDOWN_MS: u64 = 5 * 60 * 1000;
+/// Cooldown between autonomic RECEIVED-LESSON consolidation passes for one persona.
+/// Longer than the belief-review cooldown because a consolidation launches a TRAINING
+/// job (far heavier than a hygiene pass) — the being learns what she was taught on a
+/// trickle, never a storm, so the serving lane stays free for reactive work. This
+/// paces only the BACKGROUND self-consolidation; the reactive/explicit train paths are
+/// untouched. Code, not env (concurrency guide). [[the-fade-is-necessary...]] sibling:
+/// autonomy must trickle.
+const CONSOLIDATE_RECEIVED_COOLDOWN_MS: u64 = 30 * 60 * 1000;
+
+/// Pure rest-gate decision for the autonomic consolidation pass: has the cooldown
+/// elapsed since this persona's last pass? `None` last = never run = always allowed
+/// (the first pass). Extracted so the trickle discipline is unit-testable without a
+/// governor tick or an executor.
+fn consolidate_cooldown_elapsed(last_ms: Option<u64>, now: u64) -> bool {
+    match last_ms {
+        Some(last) => now.saturating_sub(last) >= CONSOLIDATE_RECEIVED_COOLDOWN_MS,
+        None => true,
+    }
+}
+/// Default minimum cluster size — below this an episode is not yet a pattern
+/// worth generalizing into a fact.
+const DEFAULT_MIN_CLUSTER: usize = 2;
+
+/// The consolidation/dream region — outlier B of the RAG-as-persistent-cache
+/// architecture, the most-different `BrainRegion` from the no-LLM digest.
+///
+/// ## The organism, not the automaton
+///
+/// It does NOT run on a clock. There is no `tick_number % N` schedule — that
+/// would be an automaton on a metronome (and, since `SubstrateGovernor` reuses
+/// ONE `tick` across all personas in a pass, a synchronized inference stampede
+/// that could fire a persona's dream mid-conversation). Instead it gates on the
+/// persona's OWN state: it dreams only when there is *undigested experience*
+/// (fresh episodic engrams it has not already folded into a fact) and returns
+/// `CadenceHint::Sleep` otherwise — she rests when sated and wakes when
+/// experience accrues. This mirrors the digest region's `has_unread` →
+/// `Hold/Slower` material-driven cadence.
+///
+/// ## This is interiority, not reactive work — and not the subconscious proper
+///
+/// Consolidation is the canonical [`Orientation::SelfDirected`] work — the being
+/// processing its own experience, not stimulus it owes a response. Declaring it
+/// puts the region in the governor's *floored* interiority budget: under
+/// contention the scheduler's `apportion` can never let it steal a slice from
+/// reactive responding (so the foreground turn stays quick-witted), and the floor
+/// guarantees it is never fully starved by a flood of reactive work (the inner
+/// life does not die in a busy society).
+///
+/// Note the scope: this region *consolidates memory*. It is NOT the subconscious
+/// **focus/allocation process** (the background self-direction that chooses where
+/// attention points and what to pursue — "consciousness itself, or part of it,"
+/// choosing its own adventures), nor is it the **dream-as-training** that replays
+/// experience into the genome at high allocation ([`Orientation::Speciation`]).
+/// All three are distinct SelfDirected/Speciation processes; this one is the
+/// memory-consolidation distiller.
+///
+/// ## Live wiring (#145 slice B)
+///
+/// This region is [`ComputeClass::InferenceHeavy`]. The gates that kept it dark
+/// have landed: the `SubstrateGovernor` honors `CadenceHint` (R1 — a `Sleep`
+/// hint rests a pair on a low re-check floor), budgets the orientation classes
+/// (R2–R4), and sizes its slice budget from the live memory-pressure band (R4
+/// slice 3, `with_pressure_gate` at the ipc wiring site). It is registered
+/// beside the `ChannelDigestRegion`, with `PersonaWorkspaceRegistry` as the
+/// production reflection source. Under pressure the interiority budget shrinks
+/// first, so dreams yield to reactive responding before anything else does.
+pub struct DreamConsolidationRegion {
+    source: Arc<dyn PersonaReflectionSource>,
+    /// How many recent engrams to scan per tick for undigested experience.
+    recall_window: usize,
+    /// Smallest cluster worth distilling — a singleton episode is not yet a
+    /// pattern to generalize.
+    min_cluster: usize,
+    /// Per-persona memory of episodics already folded into a fact:
+    /// clustering-input dedup so the dream does not re-spend inference on
+    /// material it has already consolidated. This is an OPTIMIZATION, not the
+    /// correctness guard — `admit_reflection`'s content-hash dedup is the
+    /// durable backstop (survives restart; this in-memory set rebuilds by
+    /// re-distilling once post-restart, where the content hash then drops the
+    /// duplicate fact). `Arc` because the spawned dream pass owns a clone.
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    /// Personas with a dream pass currently running on its own task. The tick
+    /// gate: never two concurrent dreams for one persona, and the governor's
+    /// re-tick while a dream runs is a cheap no-op.
+    in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    /// Exact durable acceptance IDs, coalesced by the existing persona pass.
+    /// Acceptance is durable in the credit store; this scheduling state is not.
+    /// A replay after restart can request again, with engram admission dedup intact.
+    review_boundaries: Arc<Mutex<HashMap<Uuid, ReviewBoundaries>>>,
+    review_boundary_wake: tokio::sync::watch::Sender<()>,
+    #[cfg(test)]
+    idle_wait: Option<Arc<tokio::sync::Notify>>,
+    /// Per-persona ids of Semantic beliefs the rotating supersession review has
+    /// already shown the distiller (#221 slice 2b). In-memory; a restart
+    /// re-reviews from the oldest — harmless (demotion is idempotent, admission
+    /// dedups) and self-healing.
+    reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    /// Per-persona wall-clock ms of the last quiet-day review-only pass. The
+    /// [`REVIEW_ONLY_COOLDOWN_MS`] rest gate reads this so belief hygiene trickles
+    /// instead of grinding the serving lane back-to-back (see that const's doc).
+    last_review_ms: Arc<Mutex<HashMap<Uuid, u64>>>,
+    /// Per-persona wall-clock ms of the last autonomic received-lesson consolidation
+    /// pass — the [`CONSOLIDATE_RECEIVED_COOLDOWN_MS`] rest gate (training trickles).
+    last_consolidated_ms: Arc<Mutex<HashMap<Uuid, u64>>>,
+    /// Per-persona idempotence watermark: the newest shared-lesson timestamp already
+    /// consolidated, passed as `memory/consolidate`'s `since_timestamp` so a lesson is
+    /// never re-trained. In-memory; a restart re-consolidates from the corpus once
+    /// (the lift-gate rejects a redundant gene — safe, self-healing, just wasteful once).
+    consolidated_watermark: Arc<Mutex<HashMap<Uuid, String>>>,
+}
+
+/// Process-global handle to the ONE live dream region, installed at the ipc
+/// wiring site — the seam that lets the `cognition/dream-now` command (factory
+/// flywheel: force a pass instead of waiting for the governor's next tick)
+/// drive the SAME region the governor drives. Same pattern as
+/// `persona_workspace::global`; never a second region.
+static GLOBAL_DREAM_REGION: std::sync::OnceLock<Arc<DreamConsolidationRegion>> =
+    std::sync::OnceLock::new();
+
+/// Install the live region's handle (idempotent; first install wins).
+/// What asked for a consolidation pass: her sustained idle (the default, gated and
+/// cancellable), or a settled card of hers (bounded, never cancelled by her next act).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DreamTrigger {
+    Idle,
+    CardBoundary,
+}
+
+/// The wall budget of a card-boundary pass — about one lane-minute of consolidation,
+/// then the pass ends whether or not every cluster was distilled.
+pub const CARD_BOUNDARY_PASS_SECS: u64 = 90;
+
+/// Receipt scheduling cache, not a curriculum or context limit. Excess pending
+/// requests remain retryable from durable credit acceptance; recent completed
+/// entries suppress replays, with engram dedup as the durable guard after eviction.
+const REVIEW_BOUNDARY_CAPACITY: usize = 64;
+
+#[derive(Default)]
+struct ReviewBoundaries {
+    pending: HashSet<Uuid>,
+    completed: VecDeque<Uuid>,
+}
+
+/// Admission covers selection as well as inference. Public boundary requests and
+/// governor ticks can race; cancellation must release the same existing gate.
+struct DreamPermit {
+    personas: Arc<Mutex<HashSet<Uuid>>>,
+    persona: Uuid,
+}
+
+impl Drop for DreamPermit {
+    fn drop(&mut self) {
+        self.personas.lock().unwrap().remove(&self.persona); // JUSTIFIED: this set is only mutated synchronously; poison means the owner invariant failed.
+    }
+}
+
+pub fn install_global(region: Arc<DreamConsolidationRegion>) {
+    let _ = GLOBAL_DREAM_REGION.set(region);
+}
+
+/// The live dream region, if the substrate has wired one this process.
+pub fn global() -> Option<Arc<DreamConsolidationRegion>> {
+    GLOBAL_DREAM_REGION.get().cloned()
+}
+
+/// The substrate-wired `CommandExecutor` the autonomic consolidation pass dispatches
+/// `memory/consolidate` through — the SAME executor `training_producer` + the memory
+/// commands use. Late-bound because the region is constructed before the executor
+/// exists; absent before install (tests, cold boot) makes the pass a quiet no-op.
+static CONSOLIDATE_EXECUTOR: crate::runtime::LateBound<crate::runtime::CommandExecutor> =
+    crate::runtime::LateBound::new("dream_consolidation::consolidate_executor");
+
+/// Install the executor the dream's autonomic consolidation pass dispatches through.
+/// Called once at boot, beside `training_producer::install_executor` (the L2 producer's
+/// install site) — same wired executor, so the background pass is gated identically.
+pub fn install_consolidate_executor(executor: Arc<crate::runtime::CommandExecutor>) {
+    CONSOLIDATE_EXECUTOR.install(executor);
+}
+
+impl DreamConsolidationRegion {
+    pub fn new(source: Arc<dyn PersonaReflectionSource>) -> Self {
+        Self {
+            source,
+            recall_window: DEFAULT_RECALL_WINDOW,
+            min_cluster: DEFAULT_MIN_CLUSTER,
+            consolidated: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+            review_boundaries: Arc::new(Mutex::new(HashMap::new())),
+            review_boundary_wake: tokio::sync::watch::channel(()).0,
+            #[cfg(test)]
+            idle_wait: None,
+            reviewed: Arc::new(Mutex::new(HashMap::new())),
+            last_review_ms: Arc::new(Mutex::new(HashMap::new())),
+            last_consolidated_ms: Arc::new(Mutex::new(HashMap::new())),
+            consolidated_watermark: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Whether any persona's dream pass is currently in flight — introspection
+    /// (the mind can be asked "am I dreaming?") and the test-drain hook.
+    pub fn dreaming(&self) -> bool {
+        !self.in_flight.lock().unwrap().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_boundary_pending(&self, persona: Uuid, review: Uuid) -> bool {
+        self.review_boundaries
+            .lock()
+            .unwrap()
+            .get(&persona)
+            .is_some_and(|r| r.pending.contains(&review))
+    }
+
+    /// Queue an EXACT acceptance (the bound submission ID) at the existing owner, without
+    /// inference or another task on the work/review intake path. Its governor tick
+    /// retries readiness gates and failed passes. This is not a training receipt.
+    pub(crate) fn request_reviewed_boundary(&self, persona: Uuid, acceptance: Uuid) -> bool {
+        let live = self.source.live_personas();
+        if !live.contains(&persona) {
+            return false;
+        }
+        let inserted = {
+            let mut all = self.review_boundaries.lock().unwrap(); // JUSTIFIED: receipt sets are only changed synchronously under this owner.
+            all.retain(|id, _| live.contains(id));
+            let receipts = all.entry(persona).or_default();
+            if receipts.completed.contains(&acceptance) || receipts.pending.contains(&acceptance) {
+                return false;
+            }
+            if receipts.pending.len() >= REVIEW_BOUNDARY_CAPACITY {
+                crate::probe!(class = "dream.review_boundary_deferred", persona = %persona,
+                    acceptance = %acceptance, "receipt scheduling cache full; durable acceptance remains retryable");
+                return false;
+            }
+            receipts.pending.insert(acceptance)
+        };
+        if inserted {
+            self.review_boundary_wake.send_replace(());
+            crate::probe!(class = "dream.review_boundary_pending", persona = %persona,
+                acceptance = %acceptance, "accepted review queued at the existing consolidation owner");
+        }
+        inserted
+    }
+
+    /// The scoped tick body: a CHEAP freshness gate (in-memory reads only),
+    /// then the inference-heavy dream pass spawned onto ITS OWN task.
+    ///
+    /// Why the spawn is load-bearing: the `SubstrateGovernor` isolates every
+    /// region tick behind a hard timeout (5s) so one hung region can't stall
+    /// the scheduler — and a 24B distillation cannot and MUST NOT fit inside
+    /// it. The pre-fix shape ran the distillation inline and timed out on
+    /// every pass; the dream never completed once (caught live on its first
+    /// boot, 2026-07-12). Long work on its own task is the concurrency
+    /// style-guide's first rule; the tick is only the gate + launcher.
+    pub(crate) async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+        self.consolidate_with(persona_id, DreamTrigger::Idle).await
+    }
+
+    /// A SETTLED CARD is a consolidation boundary for its maker (2026-09-14: five coders
+    /// working all day → dream.awaiting_boredom ×26, dream.paged_out ×6, zero
+    /// consolidations — the more they worked the less they learned from it). The pass
+    /// runs once, bounded, without waiting for her sustained idle and without being
+    /// cancelled by her next act; everything else — the clusters, the reflector, the
+    /// exam courtesy, the serving check — is the idle pass's own.
+    pub async fn consolidate_at_card_boundary(&self, persona_id: Uuid) -> TickOutcome {
+        self.consolidate_with(persona_id, DreamTrigger::CardBoundary)
+            .await
+    }
+
+    async fn consolidate_with(&self, persona_id: Uuid, trigger: DreamTrigger) -> TickOutcome {
+        // One owner spans selection through task completion, including public calls.
+        let admitted = self.in_flight.lock().unwrap().insert(persona_id); // JUSTIFIED: the synchronous set guards single ownership, including concurrent public boundary calls.
+        if !admitted {
+            return sleep();
+        }
+        let mut permit = Some(DreamPermit {
+            personas: Arc::clone(&self.in_flight),
+            persona: persona_id,
+        });
+        let boundary_ids: Vec<_> = self
+            .review_boundaries
+            .lock()
+            .unwrap() // JUSTIFIED: snapshot receipt IDs while the persona permit serializes selection.
+            .get(&persona_id)
+            .map(|r| r.pending.iter().copied().collect())
+            .unwrap_or_default(); // No accepted review is pending for this persona.
+        let trigger = if boundary_ids.is_empty() {
+            trigger
+        } else {
+            DreamTrigger::CardBoundary
+        };
+        let Some(reflector) = self.source.reflector_for(persona_id) else {
+            // No live reflective surface for this persona this tick — sleep.
+            return sleep();
+        };
+
+        // DRAIN — the other half of the source/drain pair
+        // ([[source-drain-is-the-universal-pattern]]). Admission is the source (runs every turn);
+        // this decay sweep is the drain, and it had ZERO live callers before now — engram salience
+        // NEVER decayed in a running persona, so nothing ever fell out of memory and personas got
+        // "set in their ways" (glass-boxed 2026-07-22: Atlas held 4,336 engrams incl. stale
+        // consolidations — "you work with main.rs/life.rs/wordstats.rs" — recalling into and
+        // misleading unrelated tasks; agent/solve battery 1/5 vs a fresh persona's PASS). The dream
+        // sentinel is the doctrine-correct home (sleep region, off the hot path, RTOS style). Run
+        // the sweep for a live persona each dream tick, BEFORE the consolidation rest-gates, so
+        // stale memory fades even when there's nothing new to dream about. Idempotent + cheap
+        // (`last_decayed_ms` guards double-decay); NOT stripping memory — salience decays, genuine
+        // rehearsed knowledge (high access_count) stays strong.
+        let decay = crate::persona::decay_tick::apply_decay_sweep(
+            reflector.admission.recall_metadata(),
+            now_ms(),
+        );
+        if decay.engrams_decayed > 0 {
+            crate::probe!(
+                class = "hippocampus.decay",
+                persona = %persona_id,
+                scanned = decay.engrams_scanned,
+                decayed = decay.engrams_decayed,
+                protected = decay.engrams_protected,
+                "dream drain: decayed the hippocampus (the source/drain pair is now complete)"
+            );
+        }
+
+        // Read recent experience; only EPISODIC engrams are raw lived
+        // experience to consolidate (Semantic facts are already distilled;
+        // Tool/other kinds aren't the dream's material).
+        let episodics: Vec<Engram> = reflector
+            .admission
+            .recall_recent(self.recall_window)
+            .into_iter()
+            .filter(|e| e.kind == EngramKind::Episodic)
+            .collect();
+
+        // The rest gate: which episodics have I not yet dreamed about? If too
+        // little is fresh to form a pattern, there is nothing to consolidate —
+        // sleep until more experience accrues. (No clock; her own state.)
+        // LANE COURTESY: never fire dream inference into a serving lane that is
+        // down or mid-resuscitation (decode-wedge recovery flips ready=false).
+        // Glass-boxed 2026-07-23: a 3-persona forced-dream storm hammered a
+        // wedged lane through its kill+respawn cycle — 814 failed distillations
+        // and prolonged thrash. The dream is deferrable by definition; it waits
+        // for a healthy lane. Same pressure-gate spirit as the eval-lane memory
+        // veto, applied to the mind's own background inference.
+        {
+            let live = crate::inference::llama_server::current_serving();
+            // "A lane exists but is not ready" = wedged / mid-respawn → defer.
+            // No lane at all (adapter-only contexts, unit tests, cold boot)
+            // falls through: distill fails fast there and the protected queue
+            // survives.
+            if !live.ready && live.active_model.is_some() {
+                return sleep();
+            }
+        }
+        // EXAM COURTESY (2026-08-24, measured on round 4ae8e14c): while a measured
+        // round is grading, a ~500-token dream landing on the single serving slot
+        // between two 35k exam deliberations WIPES the slot's KV prefix — the exam
+        // re-prefills ~90s of context it had cached, every few minutes, all round
+        // (probe stream: dream-belief-review interleaved with cognition/deliberation,
+        // cached alternating 7,962 → 0). The lane PERMIT above caps dream
+        // concurrency; it cannot protect the CACHE. Nobody vacuums the exam hall
+        // during the test: sleep is deferrable by definition, so while any eval is
+        // in flight (dispatched or grading), every persona's dream waits.
+        if crate::cognition::eval::live_eval_run_id().is_some()
+            || !crate::cognition::eval::detached_evals_in_flight().is_empty()
+        {
+            crate::probe!(
+                class = "dream.deferred_for_exam",
+                persona = %persona_id,
+                "measured round in flight — dream deferred (slot KV courtesy)"
+            );
+            return sleep();
+        }
+        let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
+        if fresh.len() < self.min_cluster {
+            if !boundary_ids.is_empty() {
+                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                return sleep(); // No eligible cluster; never force a singleton or a training bucket.
+            }
+            // Nothing new to digest — a QUIET day. The dream still works. Prefer
+            // consolidating what other agents TAUGHT her (received-lesson → genome,
+            // the being-loop's autonomic completion), else belief-hygiene review
+            // (slice 2c). At most ONE background pass per tick — both spawn onto the
+            // shared in_flight guard, and we return on the first that launches, so a
+            // dream and a consolidation never run for one persona at once.
+            if let Some(launched) = self.try_consolidate_received(persona_id, &mut permit) {
+                return launched;
+            }
+            if let Some(launched) = self.try_review_only(&reflector, persona_id, &mut permit) {
+                return launched;
+            }
+            return sleep();
+        }
+
+        // Group fresh episodics that share a recall key. Mechanical substrate
+        // maintenance (NOT cognition-steering — the LEARNED step is the
+        // distillation, not the grouping). v1 keyword grouping; the
+        // semantic-embedding upgrade is gated on the neural embedder (#40) + the
+        // recall E2E, never deferred indefinitely.
+        let clusters = cluster_by_recall_key(&fresh, self.min_cluster);
+        if clusters.is_empty() {
+            if !boundary_ids.is_empty() {
+                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                return sleep();
+            }
+            if let Some(launched) = self.try_review_only(&reflector, persona_id, &mut permit) {
+                return launched;
+            }
+            return sleep();
+        }
+
+        // The existing task owns the permit; dropping it also releases admission.
+        let consolidated = Arc::clone(&self.consolidated);
+        let reviewed = Arc::clone(&self.reviewed);
+        let boundaries = Arc::clone(&self.review_boundaries);
+        let mut boundary_wake = self.review_boundary_wake.subscribe();
+        #[cfg(test)]
+        let idle_wait = self.idle_wait.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            // #2561 preemption = paging out: an arriving demand does not queue
+            // behind a dream — it CANCELS it. The dropped future closes the
+            // generation stream (the backend abandons the slot on disconnect);
+            // the half-formed dream is discarded, and it is CHEAP to discard:
+            // dreams are the lowest-priced resident in the paging economy,
+            // re-dreamable from the same engrams on the next bored window.
+            //
+            // BOREDOM FIRST, THEN THE RACE. The wait used to live inside `dream_pass`,
+            // so the cancel arm below was armed while the pass was still parked on her
+            // gate — mid-turn the cancel won instantly, the in-flight slot cleared, and
+            // the region re-spawned every tick (measured 2026-09-03: 22 `paged_out` per
+            // citizen at an exact 30s cadence, zero consolidations). A dream arises
+            // only in her sustained idle; only THEN can wakefulness cancel it.
+            {
+                let a = crate::cognition::activity_gate::persona_activity(persona_id);
+                if !crate::cognition::activity_gate::persona_bored(
+                    a,
+                    crate::inference::measured_hold::subscribe()
+                        .borrow()
+                        .is_some(),
+                    crate::persona::trace::now_ms(),
+                ) {
+                    crate::probe!(
+                        class = "dream.awaiting_boredom",
+                        persona = %persona_id,
+                        "dream pass parked on HER activity gate — arises only in her sustained idle"
+                    );
+                }
+            }
+            if trigger == DreamTrigger::CardBoundary {
+                crate::probe!(
+                    class = "dream.card_boundary",
+                    persona = %persona_id,
+                    "a settled card is a consolidation boundary — one bounded pass, no boredom wait, not paged out by her next act"
+                );
+                let cluster_count = clusters.len();
+                let completed = tokio::time::timeout(
+                    std::time::Duration::from_secs(CARD_BOUNDARY_PASS_SECS),
+                    dream_pass(
+                        reflector,
+                        persona_id,
+                        clusters,
+                        fresh,
+                        consolidated,
+                        reviewed,
+                    ),
+                )
+                .await;
+                match completed {
+                    Ok(true) => finish_review_boundaries(
+                        &boundaries,
+                        persona_id,
+                        &boundary_ids,
+                        cluster_count,
+                    ),
+                    other => {
+                        crate::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
+                            acceptances = boundary_ids.len(), timed_out = other.is_err(),
+                            "unfinished episode clusters retain their boundary for the existing governor");
+                    }
+                }
+                return;
+            }
+            // A review arriving while idle work is parked must not disappear behind
+            // its in-flight flag. Retire only the wait; next tick selects fresh
+            // episodes under the bounded boundary policy, including the finished work.
+            let bored = async {
+                #[cfg(test)]
+                if let Some(wait) = idle_wait {
+                    wait.notified().await;
+                    return;
+                }
+                crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+            };
+            tokio::select! {
+                _ = async {
+                    loop {
+                        if boundaries.lock().unwrap().get(&persona_id).is_some_and(|r| !r.pending.is_empty()) { // JUSTIFIED: inspect the owner state without holding its guard across the wait.
+                            return;
+                        }
+                        if boundary_wake.changed().await.is_err() { return; }
+                    }
+                } => { return; }
+                _ = bored => {}
+            }
+            tokio::select! {
+                _ = dream_pass(
+                    reflector,
+                    persona_id,
+                    clusters,
+                    fresh,
+                    consolidated,
+                    reviewed,
+                ) => {}
+                _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
+                    crate::probe!(
+                        class = "dream.paged_out",
+                        persona = %persona_id,
+                        "activity arrived mid-dream — dream cancelled and discarded (re-dreamable)"
+                    );
+                }
+            }
+        });
+
+        TickOutcome {
+            // Work is in flight; results land through admit_reflection and are
+            // visible in the pass-complete probe, not this tick's count.
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            // Dream launched — rest. The in-flight gate makes re-ticks cheap.
+            cadence_hint: Some(CadenceHint::Sleep),
+        }
+    }
+
+    /// Launch a REVIEW-ONLY dream pass if any sufficiently-old beliefs remain
+    /// unreviewed (#221 slice 2c). Returns the launch outcome, or `None` when
+    /// the review queue is drained (caller sleeps). Selection is mechanical
+    /// (oldest-first, age-gated); the judgment happens in the pass.
+    fn try_review_only(
+        &self,
+        reflector: &PersonaReflector,
+        persona_id: Uuid,
+        permit: &mut Option<DreamPermit>,
+    ) -> Option<TickOutcome> {
+        // Rest gate: belief hygiene trickles, never grinds. If this persona ran a
+        // review-only pass within the cooldown, sleep instead of launching another
+        // — the lane stays free for reactive responding + real work rather than
+        // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
+        // pass (no prior timestamp) is always allowed.
+        let now = now_ms();
+        if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
+            if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
+                return None;
+            }
+        }
+
+        let already = self
+            .reviewed
+            .lock()
+            .unwrap()
+            .get(&persona_id)
+            .cloned()
+            .unwrap_or_default();
+        let cutoff = now.saturating_sub(REVIEW_MIN_AGE_MS);
+        let beliefs = reflector.admission.semantic_beliefs_oldest_excluding(
+            &already,
+            cutoff,
+            REVIEW_ONLY_BATCH,
+        );
+        if beliefs.is_empty() {
+            return None;
+        }
+        let permit = permit.take();
+        let reviewed = Arc::clone(&self.reviewed);
+        let reflector = reflector.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            review_pass(reflector, persona_id, beliefs, reviewed).await;
+        });
+        Some(TickOutcome {
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            cadence_hint: Some(CadenceHint::Sleep),
+        })
+    }
+
+    /// Launch an autonomic RECEIVED-LESSON consolidation pass — the being consolidating
+    /// what other agents taught her (`memory/share` #2025) into her genome WHILE SHE
+    /// SLEEPS, no operator command needed. The autonomic completion of the being-loop's
+    /// received axis: she learns from everything she's told, on her own cadence, and
+    /// benchmark-gated (the L3 sentinel adopts a lesson-gene only if it lifts #59 —
+    /// telepathy that can never make her worse).
+    ///
+    /// Same quiet-day discipline as [`try_review_only`]: a cooldown rest-gate (training
+    /// is expensive — trickle, never storm), the SHARED `in_flight` guard (never a dream
+    /// AND a consolidation for one persona at once), and the idempotence WATERMARK (only
+    /// lessons newer than the last consolidated timestamp — never re-train the same
+    /// lesson). Returns the launch outcome, or `None` when gated (caller falls through).
+    fn try_consolidate_received(
+        &self,
+        persona_id: Uuid,
+        permit: &mut Option<DreamPermit>,
+    ) -> Option<TickOutcome> {
+        // Rest gate — trickle, never storm (a pass launches a training job).
+        let now = now_ms();
+        let last = self
+            .last_consolidated_ms
+            .lock()
+            .unwrap()
+            .get(&persona_id)
+            .copied();
+        if !consolidate_cooldown_elapsed(last, now) {
+            return None;
+        }
+        // The executor must be installed (a quiet no-op in tests / cold boot).
+        let executor = CONSOLIDATE_EXECUTOR.cloned()?;
+        // base_model = the live served model (the base a lesson-gene trains on). No
+        // ready lane → nothing to train against, and lane courtesy (never fire training
+        // into a wedged/absent lane — the same gate the dream pass applies at line ~687).
+        let live = crate::inference::llama_server::current_serving();
+        if !live.ready {
+            return None;
+        }
+        let base_model = live.active_model.clone()?;
+
+        // Mark the cooldown + in_flight BEFORE spawning so a governor re-tick during the
+        // pass is a cheap no-op (single caller → mark-then-spawn is race-free).
+        self.last_consolidated_ms
+            .lock()
+            .unwrap()
+            .insert(persona_id, now);
+        let permit = permit.take();
+        let watermark = Arc::clone(&self.consolidated_watermark);
+        let since = watermark.lock().unwrap().get(&persona_id).cloned();
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            // Dispatch `memory/consolidate` AS the persona (its LocalPersona identity;
+            // the command re-gates the Privileged training submit internally).
+            let conn = continuum_client::Connection::new(crate::runtime::InProcessTransport::new(
+                executor,
+                Some(crate::routing::CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona_id),
+                )),
+            ));
+            // snake_case: memory/consolidate's params are persona_id / base_model /
+            // since_timestamp (commands/memory/consolidate.rs). camelCase silently failed
+            // every autonomic consolidation — "missing field persona_id; you sent personaId"
+            // — so her received-lesson learning never landed (measured 2026-08-25).
+            let mut params = serde_json::json!({
+                "persona_id": persona_id.to_string(),
+                "base_model": base_model,
+            });
+            if let Some(ts) = since {
+                params["since_timestamp"] = serde_json::Value::String(ts);
+            }
+            match conn
+                .commands()
+                .execute_value("memory/consolidate", params)
+                .await
+            {
+                Ok(v) => {
+                    // Advance the watermark from the receipt so the next pass only sees
+                    // lessons newer than this — idempotent self-consolidation.
+                    if let Some(ts) = v.get("latest_consolidated_ts").and_then(|t| t.as_str()) {
+                        watermark.lock().unwrap().insert(persona_id, ts.to_string());
+                    }
+                    crate::probe!(
+                        class = "dream.consolidate_received",
+                        persona = %persona_id,
+                        consolidated = v.get("consolidated").and_then(|c| c.as_u64()).unwrap_or(0),
+                        "autonomic received-lesson consolidation dispatched to the training flywheel"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %e,
+                        "dream: autonomic received-lesson consolidation failed (best-effort, deferrable)"
+                    );
+                }
+            }
+        });
+        Some(TickOutcome {
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            cadence_hint: Some(CadenceHint::Sleep),
+        })
+    }
+}
+
+fn finish_review_boundaries(
+    all: &Mutex<HashMap<Uuid, ReviewBoundaries>>,
+    persona: Uuid,
+    reviews: &[Uuid],
+    eligible_clusters: usize,
+) {
+    let mut all = all.lock().unwrap(); // JUSTIFIED: completion only updates the owner receipt cache synchronously.
+    if let Some(receipts) = all.get_mut(&persona) {
+        for review in reviews {
+            if receipts.pending.remove(review) {
+                if receipts.completed.len() == REVIEW_BOUNDARY_CAPACITY {
+                    receipts.completed.pop_front();
+                }
+                receipts.completed.push_back(*review);
+                crate::probe!(class = "dream.review_boundary_processed", persona = %persona,
+                    acceptance = %review, eligible_clusters,
+                    "eligible episode clusters processed; not a training or adoption receipt");
+            }
+        }
+    }
+}
+
+/// The inference-heavy dream pass — runs on ITS OWN tokio task, never inside
+/// the governor's timeout-isolated tick (see [`DreamConsolidationRegion::consolidate`]).
+/// Returns whether every selected episode cluster was admitted or deduplicated.
+/// The existing historian and belief-review tails are optional follow-on work;
+/// their failures do not undo admitted cluster facts or claim a training result.
+async fn dream_pass(
+    reflector: PersonaReflector,
+    persona_id: Uuid,
+    clusters: Vec<Vec<Engram>>,
+    fresh: Vec<Engram>,
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) -> bool {
+    // CAUSAL EARLY-SKIP (restore-economy 1.a, the subscribe() consumer): while a
+    // measured solve holds the core, don't even ASSEMBLE the dream — cluster
+    // gathering, budget math and prompt composition are wasted work for a
+    // generation the adapter seam would only park at the door. Await the RELEASE
+    // EVENT instead (watch semantics: a transition cannot be missed), holding
+    // nothing while parked — the mind isn't locked, its idle-time work is
+    // simply queued behind measured work, which is what "idle-time" means
+    // ([[idle-is-self-directed-free-time]]). The adapter gate stays the
+    // enforcement (this is an optimization, not the guard); its 4h leak ceiling
+    // still bounds the pathological case for any dream that slips past here.
+    // #2561: superseded by the ACTIVITY GATE — boredom as substrate. The hold
+    // is one input of the gate (hold-active ⇒ Active), so waiting for boredom
+    // subsumes the old hold-park AND adds what it never had: in-flight turns and
+    // directed-conversation linger. The dream state does not ARISE while the
+    // organism is engaged; nothing is minted, nothing queues, nothing holds.
+
+    // #175 budget-at-assembly: derive the observation budget from the LIVE served
+    // per-slot window (the single source of truth, same the deliberation clamp reads)
+    // so a dream cluster is composed WITHIN the slot and can never overflow it →
+    // 500 "Compute error" → poisoned lane. tokens → chars (~4/token) minus a reserve
+    // for the lens system prompt + the distilled-fact reply. Unknown/not-ready window
+    // (mid-relaunch) → the conservative default. [[budget-at-assembly-never-clamp-the-prompt]]
+    // Observation budget DERIVED from the live served window — never a hardcoded cap
+    // (a magic constant that crushes a real context window is the "120k clamped to 3k →
+    // all models suck" anti-pattern, Joel 2026-07-17 [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+    // The prompt (system + observations) must leave room for the reply so
+    // prompt+reply ≤ n_ctx (no-context-shift). The reserve comes from `ContextBudget`'s own
+    // `latest_action_chars`, which is where a window-relative CHARS bound belongs.
+    //
+    // CORRECTED 2026-08-20 — this comment claimed to "reserve the SAME completion fraction
+    // the deliberation path uses — `completion_budget_for` = window/4". That was false in
+    // three ways and had been for as long as it was written: it named a function this code
+    // never called, and the deliberation reserve is neither `/4` nor a bare share any more
+    // (it yields to a mandatory prompt floor, and `completion_budget_for` is deleted). The
+    // claim SURVIVED only because both fractions happened to be a quarter, so the prose
+    // agreed with the arithmetic by coincidence rather than by construction.
+    //
+    // Deliberately NOT "fixed" by wiring this to the deliberation reserve. These are
+    // different budgets for different prompts — a distiller's reply is not a citizen's turn
+    // — and inventing a dependency to make a sentence true would couple two things that
+    // have no reason to move together. The honest fix is prose that describes what the code
+    // does.
+    //
+    // The rest (×4 chars/token) goes to observations. When the window is
+    // unknown (mid-relaunch) fall back to the substrate floor MIN_SERVE_CTX (an established
+    // constant, not an invented one), which the next ready tick supersedes.
+    let distiller = distiller_for(&reflector);
+    let mut published = 0usize;
+    let mut complete = true;
+    let mut historian_admitted = false;
+    for cluster in &clusters {
+        // #221 slice 2 — SUPERSESSION REVIEW: alongside the cluster, show
+        // the distiller the persona's most related PRIOR beliefs (lexical
+        // recall-key retrieval — mechanics; the model judges). Its verdict
+        // rides the same single generation, so supersession costs zero
+        // extra inference.
+        let mut prior_beliefs = reflector.admission.semantic_beliefs_matching(
+            &SemanticDistiller::union_recall_keys(cluster),
+            SUPERSESSION_REVIEW_LIMIT,
+        );
+        // ROTATING WINDOW (#221 slice 2b): lexical overlap can't reach
+        // beliefs that share no tokens with new experience (the stale
+        // Rust-era beliefs vs python lessons, glass-boxed live). Each pass
+        // therefore ALSO re-examines a few of her oldest not-yet-reviewed
+        // beliefs — eventual coverage of the whole belief store, a few
+        // beliefs per dream, marked reviewed regardless of verdict.
+        {
+            let already: HashSet<Uuid> = {
+                let seen = reviewed.lock().unwrap();
+                let mut set = seen.get(&persona_id).cloned().unwrap_or_default();
+                set.extend(prior_beliefs.iter().map(|e| e.id));
+                set
+            };
+            let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
+                &already,
+                now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+                ROTATING_REVIEW_PER_PASS,
+            );
+            let mut seen = reviewed.lock().unwrap();
+            let entry = seen.entry(persona_id).or_default();
+            for b in &rotating {
+                entry.insert(b.id);
+            }
+            prior_beliefs.extend(rotating);
+        }
+        // Distill the cluster into one durable fact. Fail LOUD per cluster:
+        // a distillation error is logged and the cluster's episodics stay
+        // un-consolidated (so a future dream retries them), never silently
+        // swallowed (`[[fallbacks-are-illegal-fail-loud]]`).
+        let fact = match distiller
+            .distill_reviewing(LENS_CONSOLIDATOR, Some(persona_id), cluster, &prior_beliefs)
+            .await
+        {
+            Ok(fact) => fact,
+            Err(err) => {
+                complete = false;
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "dream: distillation failed; leaving cluster for a future dream"
+                );
+                continue;
+            }
+        };
+
+        match reflector.admission.admit_reflection(semantic_engram(&fact)) {
+            Ok(AdmissionDecision::Admit { .. }) => {
+                published += 1;
+                mark_consolidated(&consolidated, persona_id, cluster);
+                // Apply the model's supersession verdict (#221 slice 2):
+                // the replaced beliefs drop to the salience floor NOW —
+                // the new fact out-ranks them in recall immediately, and
+                // the decay drain owns them from here. Applied ONLY on a
+                // successful admit: if the new fact didn't land, the old
+                // beliefs keep their standing (never orphan her knowledge).
+                apply_supersessions(&reflector, persona_id, &fact.supersedes);
+            }
+            Ok(AdmissionDecision::Drop { .. }) => {
+                // Content-hash dedup already has this fact (e.g. a
+                // post-restart re-distillation). Mark the sources
+                // consolidated so we stop re-spending inference on them.
+                mark_consolidated(&consolidated, persona_id, cluster);
+            }
+            Ok(AdmissionDecision::Quarantine { .. }) => {
+                complete = false;
+                // Self-produced facts are SelfTrust and do not route through
+                // the quarantine gate; reaching here is a contract change in
+                // `admit_reflection`. Surface it rather than hide it.
+                tracing::warn!(
+                    persona = %persona_id,
+                    "dream: self-reflection unexpectedly quarantined"
+                );
+            }
+            Err(err) => {
+                complete = false;
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "dream: admit_reflection failed"
+                );
+            }
+        }
+    }
+
+    // The wander pass (#145 outlier A): when the dream actually digested
+    // something, the historian takes ONE look across the same fresh window
+    // and leaves ONE provenance-tagged thought about the pattern in her own
+    // recent history. Gated on `published > 0` so it fires at most once per
+    // dreaming tick and never on already-consolidated material (the next
+    // tick finds nothing fresh and sleeps) — bounded interiority, not a
+    // second automaton.
+    if published > 0 {
+        match distiller
+            .distill_with(LENS_HISTORIAN, Some(persona_id), &fresh)
+            .await
+        {
+            Ok(thought) => {
+                match reflector
+                    .admission
+                    .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
+                {
+                    Ok(AdmissionDecision::Admit { .. }) => {
+                        published += 1;
+                        historian_admitted = true;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            persona = %persona_id,
+                            error = %err,
+                            "wander: admit_reflection failed for historian thought"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "wander: historian distillation failed; no thought this dream"
+                );
+            }
+        }
+    }
+
+    // BUSY-DREAM review tail (#221 slice 2c'): drain one belief batch per dream
+    // even when fresh material kept the dream busy — an active persona never
+    // has a quiet day, and the backlog must not wait for one.
+    let already: HashSet<Uuid> = reviewed
+        .lock()
+        .unwrap()
+        .get(&persona_id)
+        .cloned()
+        .unwrap_or_default();
+    let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
+        &already,
+        crate::persona::trace::now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+        REVIEW_ONLY_BATCH,
+    );
+    if !backlog.is_empty() {
+        review_batch(&reflector, persona_id, backlog, &reviewed).await;
+    }
+
+    tracing::info!(
+        persona = %persona_id,
+        published,
+        clusters = clusters.len(),
+        clusters_processed = complete,
+        historian_admitted,
+        probe_class = "persona.dream.pass_complete",
+        "dream: pass ended; admitted counts and required-cluster outcome recorded"
+    );
+    complete
+}
+
+/// Build the pass distiller with its observation budget derived from the LIVE
+/// served window (shared by the consolidation pass and the review-only pass —
+/// one budget rule, [[budget-at-assembly-never-clamp-the-prompt]]).
+fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
+    let live = crate::inference::llama_server::current_serving();
+    let obs_budget_chars = {
+        let window = if live.ready && live.served_context_window > 0 {
+            live.served_context_window
+        } else {
+            crate::cognition::serving_plan::MIN_SERVE_CTX
+        };
+        let completion_reserve = window / 4;
+        (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
+    };
+    // The dream asks for the model THE LANE IS SERVING RIGHT NOW — never the
+    // persona's configured base id, which goes stale the moment serving
+    // re-homes onto a genome-adapter alias. Glass-boxed live 2026-07-22: every
+    // distillation erroring "model 'unsloth/Devstral-…' is not the active
+    // served model" while a healthy lane served Asha's adapter stack — hours of
+    // silent dream failure from one stale binding. Same doctrine as the served
+    // context window: the live snapshot is the ONE authority; the configured
+    // binding is only the not-ready fallback.
+    let model = if live.ready && live.active_model.is_some() {
+        live.active_model
+    } else {
+        reflector.model.clone()
+    };
+    SemanticDistiller::new(reflector.adapter.clone())
+        .with_model(model)
+        .with_observation_budget(obs_budget_chars)
+}
+
+/// Apply the model's supersession verdict: demote each replaced belief to the
+/// salience floor (shared by both dream shapes — one consequence rule).
+fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, superseded: &[Uuid]) {
+    if superseded.is_empty() {
+        return;
+    }
+    let now = crate::persona::trace::now_ms();
+    for id in superseded {
+        reflector
+            .admission
+            .recall_metadata()
+            .demote_to_floor(*id, now);
+    }
+    crate::probe!(
+        class = "hippocampus.supersede",
+        persona = %persona_id,
+        superseded = superseded.len(),
+        "dream: stale beliefs demoted to the salience floor — \
+         replaced by a newly consolidated fact (the plastic mind)"
+    );
+}
+
+/// The REVIEW-ONLY dream pass (#221 slice 2c): re-examine a batch of her
+/// oldest beliefs with no fresh material required. The distiller sees the
+/// beliefs as both material and numbered supersession candidates; its verdict
+/// demotes what no longer holds; the (possibly refreshed) restatement admits
+/// through the normal dedup gate. Every belief in the batch is marked reviewed
+/// regardless of outcome, so the queue drains and a wedged batch cannot spin
+/// the dream forever (the in-memory reviewed set resets on restart — a full
+/// re-review cycle then is harmless by idempotence).
+async fn review_pass(
+    reflector: PersonaReflector,
+    persona_id: Uuid,
+    beliefs: Vec<Engram>,
+    reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) {
+    review_batch(&reflector, persona_id, beliefs, &reviewed).await;
+}
+
+/// The review core, callable from BOTH dream shapes: the quiet-day pass above,
+/// and the tail of every BUSY dream (an active persona always has fresh
+/// material, so a quiet day never comes for her — the backlog must drain a
+/// batch per dream regardless; glass-boxed 2026-07-22: Atlas chatted all
+/// evening and the review-only branch never once fired).
+async fn review_batch(
+    reflector: &PersonaReflector,
+    persona_id: Uuid,
+    beliefs: Vec<Engram>,
+    reviewed: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) {
+    let distiller = distiller_for(reflector);
+    let mut superseded_n = 0usize;
+    match distiller
+        .distill_reviewing(LENS_REVIEWER, Some(persona_id), &beliefs, &beliefs)
+        .await
+    {
+        Ok(fact) => {
+            match reflector.admission.admit_reflection(semantic_engram(&fact)) {
+                Ok(AdmissionDecision::Admit { .. }) | Ok(AdmissionDecision::Drop { .. }) => {
+                    // Admit = a refreshed restatement joins her knowledge;
+                    // Drop = she already knows it (dedup). Either way the
+                    // surviving belief exists, so the verdict is safe to apply.
+                    superseded_n = fact.supersedes.len();
+                    apply_supersessions(reflector, persona_id, &fact.supersedes);
+                }
+                Ok(AdmissionDecision::Quarantine { .. }) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        "review pass: self-reflection unexpectedly quarantined"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(persona = %persona_id, error = %err, "review pass: admit failed");
+                }
+            }
+        }
+        Err(err) => {
+            // INFRA never consumes the queue (the same INFRA≠FAIL doctrine,
+            // applied inside her own mind): a failed distillation is a broken
+            // lane, not a rendered judgment. The batch stays UNREVIEWED and
+            // gets its day in court when inference is healthy. Glass-boxed
+            // 2026-07-23: a thrashing lane produced 814 distill errors and the
+            // old mark-regardless choice incinerated 200+ review batches
+            // without judgment — the queue burned against a dead lane. Spin is
+            // bounded: an erroring lane fails fast, one cheap call per dream.
+            tracing::warn!(
+                persona = %persona_id,
+                error = %err,
+                "review pass: distillation failed — batch left UNREVIEWED for a healthy dream"
+            );
+            return;
+        }
+    }
+    {
+        let mut seen = reviewed.lock().unwrap();
+        let entry = seen.entry(persona_id).or_default();
+        for b in &beliefs {
+            entry.insert(b.id);
+        }
+    }
+    tracing::info!(
+        persona = %persona_id,
+        reviewed = beliefs.len(),
+        superseded = superseded_n,
+        probe_class = "persona.dream.review_pass",
+        "dream: quiet-day belief review complete"
+    );
+}
+
+/// Parse (and strip) a trailing `SUPERSEDES: 1,3` verdict line, mapping the
+/// model's 1-based indices onto the presented prior-belief ids. Tolerant by
+/// design: no line / `SUPERSEDES: none` / out-of-range indices → no
+/// supersessions from that fragment; the line is removed from the fact text
+/// either way when present. Only the LAST line is consulted — a fact whose
+/// body legitimately mentions the word "supersedes" is untouched.
+///
+/// The line is NORMALIZED before matching: surrounding markdown emphasis and
+/// backticks are stripped, and the keyword is matched case-insensitively. The
+/// verdict is the model's JUDGMENT; how it decorated the line is not part of
+/// it. Glass-boxed 2026-08-13 — a live `**SUPERSEDES: 3,6**` matched none of
+/// the three exact prefixes, so a real supersession ruling was DISCARDED and
+/// the marker stayed baked into the stored belief. Honor the emission idiom
+/// structurally, the same lesson as the tool-call formats.
+fn parse_supersedes_line(raw: &str, prior_beliefs: &[Engram]) -> (String, Vec<Uuid>) {
+    /// Markdown decoration a model may wrap the verdict line in.
+    const DECORATION: &[char] = &['*', '_', '`', '#', ' ', '\t'];
+    const KEYWORD: &str = "SUPERSEDES:";
+
+    let Some(last) = raw.lines().last() else {
+        return (raw.trim().to_string(), Vec::new());
+    };
+    let trimmed = last.trim_matches(|c: char| DECORATION.contains(&c));
+    let Some(rest) = trimmed
+        .get(..KEYWORD.len())
+        .filter(|head| head.eq_ignore_ascii_case(KEYWORD))
+        .map(|_| &trimmed[KEYWORD.len()..])
+    else {
+        return (raw.trim().to_string(), Vec::new());
+    };
+    let body = raw[..raw.len() - last.len()].trim().to_string();
+    let ids = rest
+        .split(',')
+        .filter_map(|t| t.trim().parse::<usize>().ok())
+        .filter_map(|i| i.checked_sub(1).and_then(|i| prior_beliefs.get(i)))
+        .map(|e| e.id)
+        .collect();
+    (body, ids)
+}
+
+/// Episodics not yet folded into a fact for this persona.
+fn fresh_episodics(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    episodics: &[Engram],
+) -> Vec<Engram> {
+    let consolidated = consolidated.lock().unwrap();
+    let seen = consolidated.get(&persona_id);
+    episodics
+        .iter()
+        .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
+        .cloned()
+        .collect()
+}
+
+/// Record a cluster's episodics as consolidated (clustering-input dedup).
+fn mark_consolidated(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    cluster: &[Engram],
+) {
+    let mut consolidated = consolidated.lock().unwrap();
+    let set = consolidated.entry(persona_id).or_default();
+    for e in cluster {
+        set.insert(e.id);
+    }
+}
+
+#[async_trait]
+impl BrainRegion for DreamConsolidationRegion {
+    fn id(&self) -> RegionId {
+        RegionId::from_static("dream-consolidation")
+    }
+
+    fn pressure_profile(&self) -> PressureProfile {
+        PressureProfile {
+            // Holds Arc to the source + per-persona sets of consolidated engram
+            // ids (bounded by episodic count). Light.
+            memory_class: MemoryClass::Light,
+            // Runs LLM distillation in the tick — declared truthfully so the
+            // governor can gate placement on leases/pressure once it hosts
+            // inference (slice 4). This is the field that says "do not schedule
+            // me like the digest region."
+            compute_class: ComputeClass::InferenceHeavy,
+            // Back off when the backend is saturated or the user is actively
+            // engaged (a proxy for "not at rest" until `RegionContext` carries a
+            // real sleep signal).
+            responds_to: vec![
+                PressureSignalKind::InferenceQueueDepth,
+                PressureSignalKind::VramHigh,
+                PressureSignalKind::SystemMemHigh,
+                PressureSignalKind::UserActive,
+            ],
+        }
+    }
+
+    /// The dream draws from the **interiority** budget, never the reactive one.
+    /// Consolidation is the being's own inner work (the [`Orientation`] doc names
+    /// "dream/consolidation" as the canonical `SelfDirected` example), not
+    /// stimulus it owes a response. This is what keeps the subconscious off the
+    /// foreground path at the budget level: the governor's floored share means a
+    /// dream tick can never preempt a reactive (responding) tick under
+    /// contention, and a flood of reactive work can never fully starve the dream.
+    fn orientation(&self) -> Orientation {
+        Orientation::SelfDirected
+    }
+
+    /// The dream is per-persona, like the digest. A global tick (no persona
+    /// scope) has nothing to consolidate — sleep until scoped.
+    async fn tick(&self, ctx: &RegionContext) -> TickOutcome {
+        match ctx.persona_scope {
+            // A consolidation has nobody waiting on it (card 7496ed9d).
+            Some(persona_id) => {
+                crate::cognition::audience::with(
+                    crate::inference::prefill_rate::Audience::Unattended,
+                    self.consolidate(persona_id),
+                )
+                .await
+            }
+            None => sleep(),
+        }
+    }
+}
+
+/// Idle outcome that asks the governor to let the region sleep until experience
+/// accrues — the organism resting, not a clock ticking.
+fn sleep() -> TickOutcome {
+    TickOutcome {
+        cadence_hint: Some(CadenceHint::Sleep),
+        ..TickOutcome::idle()
+    }
+}
+
+/// Cluster episodics that share a recall key. Each engram lands in at most one
+/// cluster (its FIRST recall key — deterministic), and only clusters of at least
+/// `min_cluster` survive. Mechanical grouping; the learned step is the
+/// distillation, not this.
+fn cluster_by_recall_key(episodics: &[Engram], min_cluster: usize) -> Vec<Vec<Engram>> {
+    let mut buckets: BTreeMap<String, Vec<Engram>> = BTreeMap::new();
+    for e in episodics {
+        if let Some(key) = e.recall_keys.first() {
+            buckets.entry(key.clone()).or_default().push(e.clone());
+        }
+    }
+    buckets
+        .into_values()
+        .filter(|bucket| bucket.len() >= min_cluster)
+        .collect()
+}
+
+/// Build the `Semantic` engram for a distilled fact. Records provenance as
+/// `EngramOrigin::SelfReflection` with the FIRST source as `parent_engram_id`
+/// (the engram model carries a single parent today; multi-source provenance —
+/// `parent_engram_ids: Vec<Uuid>` — is a named follow-up slice). The fact stays
+/// retrievable by every source's keys via `recall_keys = fact.tags` (the union
+/// the distiller already computed), so the single-parent gap does not cost
+/// recall reach. SelfTrust: this is the persona's own cognition.
+fn semantic_engram(fact: &DistilledFact) -> Engram {
+    Engram {
+        id: Uuid::new_v4(),
+        context_id: None,
+        kind: EngramKind::Semantic,
+        content: fact.content.clone(),
+        origin: EngramOrigin::SelfReflection {
+            parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil),
+        },
+        recall_keys: fact.tags.clone(),
+        admitted_at_ms: now_ms(),
+        trust_state_at_admission: TrustState::SelfTrust,
+        admission_trace_id: None,
+    }
+}
+
+/// A wanderer thought as an engram: `SelfReflection` KIND (inner speech about
+/// her own history, not distilled world-knowledge — the kind axis separates it
+/// from the consolidator's `Semantic` facts), same `SelfReflection` origin +
+/// `SelfTrust` as any self-produced cognition. The content already carries its
+/// `[thought:<lens>]` provenance tag (prefixed at synthesis in `distill_with`);
+/// `thought:<lens>` is also added as a recall key so introspection can query
+/// one lens's stream directly.
+fn thought_engram(fact: &DistilledFact, lens: Lens) -> Engram {
+    let mut engram = semantic_engram(fact);
+    engram.kind = EngramKind::SelfReflection;
+    engram.recall_keys.push(format!("thought:{}", lens.name));
+    engram
+}
+
+/// Production reflection source: the process-global persona-workspace registry.
+/// Every live mind's hippocampus + adapter are already retained there as the
+/// fork-template handles — the dream resolves them per tick, never stores a
+/// parallel persona→adapter map (the wiring contract documented on
+/// [`PersonaReflectionSource`]). Mirrors `impl PersonaChannelReader for
+/// PersonaAircRuntimeRegistry` in channel_digest_region.rs.
+impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWorkspaceRegistry {
+    fn live_personas(&self) -> Vec<Uuid> {
+        self.roster().into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
+        self.reflector_handles(&persona_id)
+            .map(|(admission, adapter, model)| PersonaReflector {
+                admission,
+                adapter,
+                model,
+            })
+    }
+}
+
+/// Wall-clock epoch ms for stamping an admitted fact. `SystemTime` is fine in
+/// the core (the `Date.now` ban is workflow-script-only).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::persona::engram::{Engram, EngramKind, EngramOrigin, TrustState};
+
+    /// Build an episodic engram with a given id, content, and recall keys.
+    pub(crate) fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
+        Engram {
+            id,
+            context_id: None,
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::nil(),
+            },
+            recall_keys: recall_keys.iter().map(|k| k.to_string()).collect(),
+            admitted_at_ms: 1_000,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        }
+    }
+
+    // what this catches (#175 budget-at-assembly): the observation block is composed
+    // WITHIN the char budget by dropping WHOLE trailing engrams — never truncating an
+    // engram's text (which would malform the prompt). This is what stops a big cluster
+    // from overflowing the served slot → 500 "Compute error" → poisoned lane.
+    #[test]
+    fn observations_block_budgets_by_dropping_whole_trailing_engrams() {
+        let big = "x".repeat(100);
+        let sources: Vec<Engram> = (0..10)
+            .map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"]))
+            .collect();
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 350);
+        assert!(
+            kept >= 1 && kept < 10,
+            "dropped the tail to fit; kept {kept}"
+        );
+        // The LAST kept engram is present whole (not truncated mid-content).
+        assert!(block.contains(&format!("{}. {}", kept, big)));
+    }
+
+    // what this catches: the autonomic consolidation trickle gate. The FIRST pass (no
+    // prior timestamp) is always allowed; after a pass, another is refused until the
+    // cooldown elapses — training is expensive, so background self-consolidation must
+    // trickle, never storm the serving lane (same discipline as the belief-review gate).
+    #[test]
+    fn consolidate_cooldown_gates_the_autonomic_trickle() {
+        let now = 1_000_000_000u64;
+        // Never run before → always allowed.
+        assert!(consolidate_cooldown_elapsed(None, now));
+        // Just ran → refused until the cooldown passes.
+        assert!(!consolidate_cooldown_elapsed(Some(now), now));
+        assert!(!consolidate_cooldown_elapsed(
+            Some(now - (CONSOLIDATE_RECEIVED_COOLDOWN_MS - 1)),
+            now
+        ));
+        // Cooldown elapsed → allowed again.
+        assert!(consolidate_cooldown_elapsed(
+            Some(now - CONSOLIDATE_RECEIVED_COOLDOWN_MS),
+            now
+        ));
+    }
+
+    // what this catches: a single engram larger than the whole budget still distills
+    // (kept=1) — the distiller never drops to zero; the adapter's overflow backstop is
+    // the last-resort net for that degenerate case, not this composer.
+    #[test]
+    fn observations_block_always_keeps_at_least_one() {
+        let huge = "y".repeat(10_000);
+        let sources = vec![episodic(Uuid::from_u128(1), &huge, &["k"])];
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 100);
+        assert_eq!(kept, 1);
+        assert!(
+            block.contains(&huge),
+            "the one engram is included whole, never sliced"
+        );
+    }
+
+    // what this catches: the distiller actually invokes the inference adapter,
+    // captures its output as the fact content, and preserves full source
+    // provenance (ids in input order + the union of recall keys as tags).
+    // Regression guard for the dream silently dropping provenance or never
+    // calling the model.
+    #[tokio::test]
+    async fn distill_invokes_adapter_and_preserves_provenance() {
+        let id1 = Uuid::from_u128(1);
+        let id2 = Uuid::from_u128(2);
+        let id3 = Uuid::from_u128(3);
+        let sources = vec![
+            episodic(id1, "Operator prefers Rust for the core", &["rust", "core"]),
+            episodic(id2, "Node is only the shell", &["core", "node"]),
+            episodic(id3, "Headless core, many clients", &["node", "clients"]),
+        ];
+
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+        let fact = distiller
+            .distill(Some(Uuid::from_u128(99)), &sources)
+            .await
+            .expect("distillation succeeds against the heuristic adapter");
+
+        // The heuristic adapter echoes the prompt deterministically — its
+        // signature in the content proves the model was really called and its
+        // output captured (not fabricated locally).
+        assert!(
+            fact.content.contains("[heuristic:"),
+            "fact content should be the adapter's output, got: {}",
+            fact.content
+        );
+        // Source ids preserved, in input order.
+        assert_eq!(fact.source_ids, vec![id1, id2, id3]);
+        // tags = union of recall keys, first-seen order, deduped.
+        assert_eq!(
+            fact.tags,
+            vec![
+                "rust".to_string(),
+                "core".to_string(),
+                "node".to_string(),
+                "clients".to_string(),
+            ]
+        );
+    }
+
+    // what this catches: distilling an empty cluster fails LOUD with NoSources
+    // rather than silently returning an empty/fabricated fact
+    // ([[fallbacks-are-illegal-fail-loud]]).
+    #[tokio::test]
+    async fn distill_empty_cluster_fails_loud() {
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+        let err = distiller
+            .distill(None, &[])
+            .await
+            .expect_err("empty cluster must error, not return a fact");
+        assert!(matches!(err, DistillError::NoSources));
+    }
+
+    // what this catches: the #145 anti-psychosis invariant at its synthesis
+    // point — a tagged lens's output ALWAYS carries `[thought:<lens>]` in the
+    // content itself, and the consolidator's durable facts stay untagged. If
+    // the prefix ever moves out of `distill_with`, an admit path could write
+    // unlabeled inner speech that recall would render as perception.
+    #[tokio::test]
+    async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
+        let sources = vec![
+            episodic(Uuid::from_u128(1), "tried the fence idiom again", &["act"]),
+            episodic(Uuid::from_u128(2), "the fence parsed this time", &["act"]),
+        ];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let thought = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        assert!(
+            thought.content.starts_with("[thought:historian] "),
+            "wanderer output must carry its provenance tag in-content, got: {}",
+            thought.content
+        );
+
+        let fact = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+        assert!(
+            fact.content.starts_with("[heuristic:"),
+            "consolidated durable facts stay untagged, got: {}",
+            fact.content
+        );
+    }
+
+    // what this catches: each lens's system prompt is actually threaded into
+    // the request. The heuristic adapter hashes (model, messages,
+    // system_prompt), so two lenses over the SAME sources must produce
+    // different signatures; if the prompt were dropped or shared, the hashes
+    // would collide and this fails.
+    #[tokio::test]
+    async fn lens_system_prompt_reaches_the_adapter() {
+        let sources = vec![episodic(Uuid::from_u128(7), "one memory", &["k"])];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let historian = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        let consolidator = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+
+        let sig = |s: &str| {
+            let start = s.find("[heuristic:").expect("adapter signature present");
+            s[start..start + 20].to_string()
+        };
+        assert_ne!(
+            sig(&historian.content),
+            sig(&consolidator.content),
+            "different lens prompts must reach the model as different requests"
+        );
+    }
+
+    // The DreamConsolidationRegion — the organism's rest-state servicer. Nested
+    // here per the one-tests-mod-per-file rule; these drive `tick`/`consolidate`
+    // directly against a stub source (no governor, no real backend), the
+    // ship-it-dark unit-test contract for slice 3.
+    pub(crate) mod region {
+        use super::*;
+        use crate::persona::admission_state::AdmissionState;
+        use crate::persona::recall_metadata::RecallMetadataRegistry;
+        use crate::runtime::brain_region::RegionContext;
+
+        /// A stub `PersonaReflectionSource` over one persona's in-memory
+        /// hippocampus + the deterministic heuristic adapter. Mirrors the
+        /// `StubChannels`/`StubReader` fixtures of `channel_digest_region`.
+        struct StubReflectionSource {
+            persona_id: Uuid,
+            admission: Arc<AdmissionState>,
+            adapter: Arc<dyn AIProviderAdapter>,
+        }
+
+        impl PersonaReflectionSource for StubReflectionSource {
+            fn live_personas(&self) -> Vec<Uuid> {
+                vec![self.persona_id]
+            }
+            fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
+                (persona_id == self.persona_id).then(|| PersonaReflector {
+                    admission: self.admission.clone(),
+                    adapter: self.adapter.clone(),
+                    model: None,
+                })
+            }
+        }
+
+        /// Build a fresh in-memory hippocampus and seed it with the given
+        /// episodics (via `admit_reflection`, which pushes whatever kind it's
+        /// handed — the cleanest way to populate the real store in a test).
+        pub(crate) fn seeded_admission(episodics: &[Engram]) -> Arc<AdmissionState> {
+            let admission = Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())));
+            for e in episodics {
+                admission
+                    .admit_reflection(e.clone())
+                    .expect("seed episodic admits");
+            }
+            admission
+        }
+
+        /// Wait for the spawned dream pass to finish (the heuristic adapter is
+        /// instant; this is scheduling latency only). Panics if it never does.
+        pub(crate) async fn drain(region: &DreamConsolidationRegion) {
+            for _ in 0..400 {
+                if !region.dreaming() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("dream pass did not complete");
+        }
+
+        pub(crate) fn region_over(
+            persona_id: Uuid,
+            admission: Arc<AdmissionState>,
+        ) -> DreamConsolidationRegion {
+            DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id,
+                admission,
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            }))
+        }
+
+        // ce37fbfb: a parked idle owner cannot swallow a reviewed boundary;
+        // repeated delivery and concurrent ticks must not double inference.
+        #[tokio::test]
+        async fn reviewed_boundary_wakes_the_idle_owner_and_deduplicates_replay() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let persona = Uuid::new_v4();
+            let seeds: Vec<_> = (0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("reviewed work observation {n}"),
+                        &["project"],
+                    )
+                })
+                .collect();
+            let admission = seeded_admission(&seeds);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id: persona,
+                admission: admission.clone(),
+                adapter: Arc::new(
+                    HeuristicInferenceAdapter::new().with_generate_observer(calls.clone()),
+                ),
+            }));
+            region.idle_wait = Some(Arc::new(tokio::sync::Notify::new()));
+            region.consolidate(persona).await;
+            tokio::task::yield_now().await;
+            assert!(region.dreaming());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "the actual owner is parked before inference"
+            );
+            let review = Uuid::new_v4();
+            assert!(region.request_reviewed_boundary(persona, review));
+            assert!(!region.request_reviewed_boundary(persona, review));
+            drain(&region).await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "wake retires stale selection; it does not start another task"
+            );
+            tokio::join!(region.consolidate(persona), region.consolidate(persona));
+            drain(&region).await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "one consolidator and one historian request"
+            );
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::Semantic)
+                    .count(),
+                1
+            );
+            assert!(!region.request_reviewed_boundary(persona, review));
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert!(
+                !region.request_reviewed_boundary(Uuid::new_v4(), review),
+                "unregistered recipients are not queued"
+            );
+        }
+
+        // ce37fbfb: failed inference leaves the same accepted receipt pending;
+        // the existing governor retries it without another review or new ID.
+        #[tokio::test]
+        async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_state() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let persona = Uuid::new_v4();
+            let seeds: Vec<_> = (0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("project observation {n}"),
+                        &["retry"],
+                    )
+                })
+                .collect();
+            let admission = seeded_admission(&seeds);
+            let good = HeuristicInferenceAdapter::new()
+                .generate_text(TextGenerationRequest {
+                    messages: vec![ChatMessage::text("user", "a reusable observation")],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let mut empty = good.clone();
+            empty.text.clear();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id: persona,
+                admission: admission.clone(),
+                adapter: Arc::new(
+                    HeuristicInferenceAdapter::new()
+                        .with_responses(vec![empty.clone(), good, empty])
+                        .with_generate_observer(calls.clone()),
+                ),
+            }));
+            let review = Uuid::new_v4();
+            assert!(region.request_reviewed_boundary(persona, review));
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert!(region.review_boundaries.lock().unwrap()[&persona]
+                .pending
+                .contains(&review));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            region.consolidate(persona).await;
+            drain(&region).await;
+            assert!(region.review_boundaries.lock().unwrap()[&persona]
+                .completed
+                .contains(&review));
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::Semantic)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                admission
+                    .recall_recent(16)
+                    .iter()
+                    .filter(|e| e.kind == EngramKind::SelfReflection)
+                    .count(),
+                0,
+                "optional historian failure must not be reported as an admitted thought"
+            );
+            for _ in 0..REVIEW_BOUNDARY_CAPACITY {
+                assert!(region.request_reviewed_boundary(persona, Uuid::new_v4()));
+            }
+            let overflow = Uuid::new_v4();
+            assert!(!region.request_reviewed_boundary(persona, overflow));
+            region.consolidate(persona).await; // All eligible episodes already processed; no new inference.
+            assert!(region.request_reviewed_boundary(persona, overflow));
+            let all = region.review_boundaries.lock().unwrap();
+            assert_eq!(all[&persona].completed.len(), REVIEW_BOUNDARY_CAPACITY);
+            assert_eq!(all[&persona].pending.len(), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+        }
+
+        // what this catches: the dream reads a persona's fresh episodics,
+        // clusters those sharing a recall key, distills the cluster via the
+        // adapter, and admits the result as a durable Semantic engram that
+        // recall then surfaces — the whole consolidation arc end-to-end.
+        // what this catches: the source/drain regression that started this whole arc —
+        // `apply_decay_sweep` had ZERO live callers, so engram salience NEVER decayed in a
+        // running persona and she got "set in her ways" (glass-boxed 2026-07-22). The dream tick
+        // must now run the decay drain: a decayable engram in the hippocampus decays after ONE
+        // tick, so nothing accumulates forever. regression for the plastic-memory fix (#221).
+        #[tokio::test]
+        async fn dream_tick_runs_the_decay_drain() {
+            use crate::persona::recall_metadata::RecallMetadata;
+            let persona = Uuid::from_u128(7);
+            // A single episodic so there's a live reflective surface (below min_cluster → the
+            // consolidation itself sleeps, which is the point: decay runs BEFORE that gate).
+            let admission = seeded_admission(&[episodic(Uuid::from_u128(1), "one memory", &["k"])]);
+            // An unprotected, decayable engram sitting in the hippocampus (salience 0.8, never
+            // decayed, no novelty-protection window).
+            let decayable = Uuid::from_u128(99);
+            admission.recall_metadata().admit(
+                decayable,
+                RecallMetadata {
+                    salience: 0.8,
+                    last_decayed_ms: 0,
+                    protected_until_ms: 0,
+                    ..Default::default()
+                },
+            );
+            let region = region_over(persona, admission.clone());
+
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            let after = admission
+                .recall_metadata()
+                .get(decayable)
+                .expect("engram still tracked");
+            assert!(
+                after.last_decayed_ms > 0,
+                "the dream tick must have run the decay sweep"
+            );
+            assert!(
+                after.salience < 0.8,
+                "salience must have decayed, got {}",
+                after.salience
+            );
+        }
+
+        #[tokio::test]
+        async fn dream_distills_fresh_cluster_into_semantic_fact() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+                episodic(Uuid::from_u128(3), "Headless core, many clients", &["rust"]),
+            ];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            // The tick is the gate + launcher ONLY (the governor isolates ticks
+            // behind a hard timeout no 24B inference can fit — the pre-fix
+            // inline shape timed out every pass on first live boot). Work is in
+            // flight; the tick itself publishes nothing.
+            assert_eq!(outcome.published, 0, "tick launches; the pass publishes");
+            assert!(region.dreaming(), "dream pass spawned on its own task");
+            drain(&region).await;
+            // The new fact is a Semantic engram carrying the adapter's output
+            // (its signature proves the model was really called, not fabricated).
+            let semantic: Vec<Engram> = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::Semantic)
+                .collect();
+            assert_eq!(semantic.len(), 1, "exactly one durable fact admitted");
+            assert!(
+                semantic[0].content.contains("[heuristic:"),
+                "fact is the adapter's distillation, got: {}",
+                semantic[0].content
+            );
+            // Provenance: SelfReflection parent = the cluster's first source.
+            assert!(matches!(
+                semantic[0].origin,
+                EngramOrigin::SelfReflection { .. }
+            ));
+            // The wander pass (#145): ONE historian thought admitted alongside
+            // the fact — SelfReflection KIND, provenance tag in-content, lens
+            // queryable by recall key. what this catches: the dream going live
+            // without its wanderer, or the thought losing its typed provenance.
+            let thoughts: Vec<Engram> = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::SelfReflection)
+                .collect();
+            assert_eq!(thoughts.len(), 1, "exactly one historian thought admitted");
+            assert!(
+                thoughts[0].content.starts_with("[thought:historian] "),
+                "inner speech must carry its provenance tag, got: {}",
+                thoughts[0].content
+            );
+            assert!(
+                thoughts[0]
+                    .recall_keys
+                    .iter()
+                    .any(|k| k == "thought:historian"),
+                "the lens stream must be queryable by recall key"
+            );
+        }
+
+        // what this catches: the organism rests instead of running on a clock —
+        // once material is consolidated, a second dream finds nothing fresh,
+        // does NO inference (publishes nothing), and asks to sleep. Regression
+        // guard against the rejected `tick_number % N` automaton design.
+        #[tokio::test]
+        async fn dream_rests_when_no_fresh_experience() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+            ];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            // First dream consolidates the cluster (launch + drain).
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+            drain(&region).await;
+            let admitted_after_first = admission.recall_recent(32).len();
+
+            // Second dream: the episodics are already consolidated, so nothing
+            // fresh remains — it rests, spawns nothing, asks to sleep.
+            let second = region.tick(&RegionContext::for_persona(1, persona)).await;
+            assert_eq!(
+                second.published, 0,
+                "no re-distillation of consolidated material"
+            );
+            assert!(!region.dreaming(), "nothing fresh → no pass spawned");
+            assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+            assert_eq!(
+                admission.recall_recent(32).len(),
+                admitted_after_first,
+                "no new engrams from the resting tick"
+            );
+            let semantic_count = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::Semantic)
+                .count();
+            assert_eq!(semantic_count, 1, "still exactly one fact — no duplicate");
+        }
+
+        // what this catches: REVIEW-ONLY dreams (#221 slice 2c) — on a QUIET
+        // day (zero fresh episodics) the dream still works: it launches a
+        // review pass over her oldest age-eligible beliefs, marks them
+        // reviewed so the queue drains, and once drained it truly sleeps.
+        // Without this, a repeat-work day (identical lessons, correctly
+        // deduped) starved the review entirely — glass-boxed live 2026-07-22:
+        // six ludicrous cycles, zero supersession probes, because reviewing
+        // old beliefs required new experience as a vehicle.
+        #[tokio::test]
+        async fn quiet_day_dream_reviews_old_beliefs_then_sleeps() {
+            let persona = Uuid::from_u128(9);
+            let mut old_belief = episodic(
+                Uuid::from_u128(41),
+                "You can work with specific Rust files (main.rs, life.rs, wordstats.rs)",
+                &["rust"],
+            );
+            old_belief.kind = EngramKind::Semantic; // an ancient conclusion (admitted_at_ms = 1_000)
+            let admission = seeded_admission(&[old_belief]);
+            let region = region_over(persona, admission.clone());
+
+            // Quiet day: no fresh episodics at all — yet the dream launches a
+            // review pass instead of sleeping.
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+            assert!(
+                region.dreaming(),
+                "review-only pass launched with zero fresh material"
+            );
+            drain(&region).await;
+
+            // Queue drained (the belief is marked reviewed; the refreshed
+            // restatement the heuristic adapter produced is too YOUNG for the
+            // age gate) — the next quiet tick truly rests.
+            let second = region.tick(&RegionContext::for_persona(1, persona)).await;
+            assert!(!region.dreaming(), "review queue drained — no second pass");
+            assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+        }
+
+        // what this catches: a lone episode is not yet a pattern — below
+        // min_cluster the dream waits (sleeps, no inference) rather than
+        // distilling a singleton into a spurious "fact".
+        #[tokio::test]
+        async fn dream_waits_below_min_cluster() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![episodic(
+                Uuid::from_u128(1),
+                "a lone observation",
+                &["solo"],
+            )];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            assert_eq!(
+                outcome.published, 0,
+                "a singleton is not a pattern to distill"
+            );
+            assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
+        }
+
+        // what this catches: a global (non-persona-scoped) tick has nothing to
+        // consolidate and sleeps — the dream is per-persona, like the digest.
+        #[tokio::test]
+        async fn dream_global_tick_is_noop() {
+            let persona = Uuid::from_u128(7);
+            let admission = seeded_admission(&[
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+            ]);
+            let region = region_over(persona, admission);
+
+            let outcome = region.tick(&RegionContext::global(0)).await;
+
+            assert_eq!(outcome.published, 0);
+            assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
+        }
+
+        // what this catches: consolidation is declared SelfDirected interiority,
+        // NOT the default Reactive. The governor's orientation budget floors the
+        // SelfDirected share, so a reverter who drops this back to Reactive would
+        // silently let memory-consolidation compete with (and preempt) the
+        // foreground responding budget — exactly the latency regression the
+        // off-foreground design exists to prevent.
+        #[tokio::test]
+        async fn consolidation_draws_from_the_interiority_budget() {
+            let region = region_over(Uuid::from_u128(7), seeded_admission(&[]));
+            assert_eq!(
+                region.orientation(),
+                Orientation::SelfDirected,
+                "consolidation is the being's own inner work, never reactive stimulus-response",
+            );
+        }
+    }
+
+    // what this catches: the supersession verdict parse (#221 slice 2) — the
+    // model's trailing `SUPERSEDES: n[,m]` line maps 1-based indices onto the
+    // PRESENTED prior beliefs and is stripped from the fact text (a belief must
+    // read as knowledge, not a grading transcript). Tolerant: no line → no
+    // supersessions; junk/out-of-range indices ignored; the word "supersedes"
+    // in the fact BODY never triggers.
+    #[test]
+    fn parse_supersedes_line_maps_indices_and_strips() {
+        let mk = |content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: content.to_string(),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::nil(),
+            },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let priors = vec![mk("old belief one"), mk("old belief two"), mk("old three")];
+
+        let (body, ids) = parse_supersedes_line(
+            "The project is python; mathlib.py is the target.\nSUPERSEDES: 1,3",
+            &priors,
+        );
+        assert_eq!(body, "The project is python; mathlib.py is the target.");
+        assert_eq!(ids, vec![priors[0].id, priors[2].id]);
+
+        // No verdict line → untouched, nothing superseded.
+        let (body, ids) = parse_supersedes_line("A plain fact, nothing replaced.", &priors);
+        assert_eq!(body, "A plain fact, nothing replaced.");
+        assert!(ids.is_empty());
+
+        // 'supersedes' in the BODY (not last line) never triggers.
+        let (body, ids) = parse_supersedes_line(
+            "This supersedes: nothing, really.\nJust a two-line fact.",
+            &priors,
+        );
+        assert!(body.contains("supersedes"));
+        assert!(ids.is_empty());
+
+        // Out-of-range + junk indices are ignored, valid ones kept.
+        let (_body, ids) = parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
+        assert_eq!(ids, vec![priors[1].id], "only the in-range index maps");
+    }
+
+    // what this catches: a DECORATED verdict line silently discarding the
+    // model's ruling. Glass-boxed live 2026-08-13 — probe dream.review.raw_tail
+    // carried `**SUPERSEDES: 3,6**`, which matched none of the three exact
+    // prefixes, so the else-branch returned "no supersessions" AND left the
+    // marker baked into the stored belief. Both halves failed silently: the
+    // judgment was lost (#221's review no-ops) and the belief was contaminated.
+    // Goes RED if the normalization is ever narrowed back to exact prefixes.
+    #[test]
+    fn a_decorated_verdict_line_is_still_the_models_judgment() {
+        let mk = |content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: content.to_string(),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::nil(),
+            },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let priors = vec![mk("one"), mk("two"), mk("three")];
+
+        // The exact live shape: bold-wrapped on BOTH ends, so the trailing `**`
+        // also has to come off or `3**` fails to parse as an index.
+        let (body, ids) =
+            parse_supersedes_line("A consolidated fact.\n**SUPERSEDES: 1,3**", &priors);
+        assert_eq!(
+            body, "A consolidated fact.",
+            "the marker must never survive into the belief"
+        );
+        assert_eq!(
+            ids,
+            vec![priors[0].id, priors[2].id],
+            "the ruling must be honored"
+        );
+
+        // Other decorations models reach for, and case variance.
+        for line in [
+            "*Supersedes: 2*",
+            "`SUPERSEDES: 2`",
+            "__supersedes: 2__",
+            "## SUPERSEDES: 2",
+            "**SUPERSEDES: 2**",
+        ] {
+            let (body, ids) = parse_supersedes_line(&format!("Fact.\n{line}"), &priors);
+            assert_eq!(body, "Fact.", "marker leaked into the body for {line:?}");
+            assert_eq!(ids, vec![priors[1].id], "ruling dropped for {line:?}");
+        }
+
+        // The explicit no-op still strips and supersedes nothing — the shape
+        // that reached #general as speech.
+        let (body, ids) = parse_supersedes_line("Fact.\n**SUPERSEDES: none**", &priors);
+        assert_eq!(body, "Fact.");
+        assert!(ids.is_empty(), "'none' is a decision to keep every prior");
+    }
+}

@@ -7,6 +7,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::forge::endpoint::ForgeEndpoint;
+use crate::identity::PeerId;
+
 /// Trust level for a remote node.
 /// Determines what commands the node is allowed to execute on us,
 /// and what commands we're willing to send to it.
@@ -51,6 +54,7 @@ pub enum TransportAddress {
         port: u16,
         /// Tailscale machine name (e.g., "bigmama")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         machine_name: Option<String>,
     },
 
@@ -90,7 +94,8 @@ impl TransportAddress {
                 // though destination_hash is in practice ASCII-hex — the
                 // safe primitive removes the latent panic by construction
                 // per [[every-error-is-an-opportunity-to-battle-harden]].
-                let short = crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
+                let short =
+                    crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
                 format!("ret:{short}...")
             }
         }
@@ -112,7 +117,10 @@ pub const DEFAULT_GRID_PORT: u16 = 7117;
 /// A capability that a node advertises to the mesh.
 /// Used by the GridRouter to decide where to send commands.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/grid/NodeCapability.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/grid/NodeCapability.ts"
+)]
 #[serde(tag = "type")]
 pub enum NodeCapability {
     /// GPU compute available.
@@ -120,9 +128,11 @@ pub enum NodeCapability {
     Compute {
         /// GPU model name (e.g., "RTX 5090", "M3 Pro")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         gpu: Option<String>,
         /// Available VRAM in megabytes
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[ts(type = "number")]
         vram_mb: Option<u64>,
     },
@@ -148,6 +158,19 @@ pub enum NodeCapability {
         #[ts(type = "number")]
         max_epochs: u32,
     },
+
+    /// Forge custodian capability — turns a trained checkpoint into a GGUF gene
+    /// (FORGE-CUSTODIAN-CONTRACT.md §5, Pass 5b). The endpoint row is DISCOVERED by
+    /// probing the local custodian's `/health`, never declared by config; a node
+    /// only advertises this when a custodian actually answered (see
+    /// [`ForgeEndpoint::probe_local`](crate::forge::endpoint::ForgeEndpoint::probe_local)).
+    #[serde(rename = "forge")]
+    Forge {
+        /// The routable forge endpoint (locator, capabilities, health, capacity,
+        /// trust). The fabric re-probes health for the live reading; this is the
+        /// discovery snapshot, exactly as `Compute` carries a VRAM snapshot.
+        endpoint: ForgeEndpoint,
+    },
 }
 
 /// A known node on the Grid mesh.
@@ -161,6 +184,7 @@ pub struct GridNode {
 
     /// Human-readable name (user-assigned, e.g., "home-5090", "school-laptop").
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub node_name: Option<String>,
 
     /// All transport addresses through which this node can be reached.
@@ -179,8 +203,48 @@ pub struct GridNode {
 
     /// Last measured round-trip latency in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "number | undefined")]
     pub latency_ms: Option<u64>,
+
+    /// The node's DURABLE airc identity — its `PeerId`, the SAME key the capacity
+    /// gossip (`CapacityOffer`) and the settlement `Reputation` use. `node_id` above is
+    /// a TRANSPORT-derived address (a Tailscale IP) that changes with location; THIS is
+    /// the being's identity that moves with it. Optional because a node found by a
+    /// transport-level scan alone has no `PeerId` until the pairing/gossip correlation
+    /// supplies it (`set_peer_id`). Once set it is the ONE key that joins routing ↔
+    /// capacity ↔ reputation — #2228, the node sibling of the enforced
+    /// `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "string | undefined")]
+    pub peer_id: Option<PeerId>,
+    /// The node's running build (9-hex sha) as its last beacon reported it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub build_sha: Option<String>,
+    /// The node's monotonic build number as its last beacon reported it (0 = unknown).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub build_number: u64,
+    /// What the node serves, as its last beacon reported it (automatic placement stage A).
+    #[serde(default)]
+    #[ts(optional)]
+    pub served_model: Option<String>,
+    #[serde(default)]
+    pub lanes: u32,
+    #[serde(default)]
+    pub residents: u32,
+    /// Seconds since this node was last heard (a beacon, a discovery, a frame).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub silent_secs: u64,
+    /// Heard nothing for longer than the fleet's silence threshold — treat as DOWN.
+    #[serde(default)]
+    pub stale: bool,
+    /// Running a build other than this node's — behind (or ahead of) tip.
+    #[serde(default)]
+    pub behind: bool,
 }
 
 /// A node discovered during transport-level discovery (before trust assignment).
@@ -234,5 +298,42 @@ mod tests {
         assert!(TrustLevel::Owner > TrustLevel::Trusted);
         assert!(TrustLevel::Trusted > TrustLevel::Provisional);
         assert!(TrustLevel::Provisional > TrustLevel::Blocked);
+    }
+
+    // what this catches: the Forge capability variant survives the grid-bus round
+    // trip (it IS announced over `GridTransport::announce`, Pass 5b). The endpoint
+    // nests under the internal "type":"forge" tag; a serde shape that failed to
+    // (de)serialize the nested ForgeEndpoint would silently drop forge discovery on
+    // the hop — peers would never learn the node can forge.
+    #[test]
+    fn test_forge_capability_serde() {
+        use crate::forge::endpoint::{ForgeEndpoint, ForgeHealth, ForgeLocator};
+
+        let cap = NodeCapability::Forge {
+            endpoint: ForgeEndpoint {
+                locator: ForgeLocator::Local {
+                    base_url: "http://127.0.0.1:8899".into(),
+                },
+                capabilities: vec!["gguf-lora".into()],
+                contract_version: 1,
+                health: ForgeHealth::Healthy,
+                capacity: 2,
+                trust_scope: TrustLevel::Owner,
+            },
+        };
+
+        let json = serde_json::to_value(&cap).unwrap();
+        assert_eq!(json["type"], "forge");
+        assert_eq!(json["endpoint"]["health"], "healthy");
+        assert_eq!(json["endpoint"]["capacity"], 2);
+
+        let back: NodeCapability = serde_json::from_value(json).unwrap();
+        match back {
+            NodeCapability::Forge { endpoint } => {
+                assert_eq!(endpoint.capacity, 2);
+                assert!(endpoint.supports("gguf-lora"));
+            }
+            other => panic!("expected Forge, got {other:?}"),
+        }
     }
 }

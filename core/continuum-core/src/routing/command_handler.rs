@@ -62,19 +62,35 @@
 //! AircTransport's outbound path.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::{Body, PeerId, TranscriptEvent};
 use airc_lib::adapter::{AdapterError, ConsumerAdapter};
+use airc_lib::grid_auth::SignedCapabilityGrant;
 use airc_lib::Airc;
+use airc_protocol::headers_keys::{HEADER_AIRC_CAPABILITY_GRANT, HEADER_AIRC_CHANNEL_NAME};
 use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
+use super::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
 use super::{
     AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT,
     COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
 };
 use crate::runtime::{CommandExecutor, CommandResult};
+
+/// Current wall-clock epoch-ms (for grant expiry + replay checks). `unwrap_or(0)`
+/// only on a pre-1970 clock — which reads as "everything is expired", the
+/// fail-closed direction for a capability check.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Stable adapter name. Registered in the airc adapter registry so
 /// operators can introspect what's consuming command envelopes.
@@ -86,6 +102,13 @@ pub const HANDLER_NAME: &str = "continuum.command.handler";
 pub struct CommandRequestHandler {
     airc: Arc<Airc>,
     executor: Arc<CommandExecutor>,
+    /// Verifies a capability grant the caller presents (the contracted-grid path).
+    /// `None` → grants are ignored; a caller is gated purely by tier (the current
+    /// default). `Some` → a presented [`SignedCapabilityGrant`] is verified against
+    /// the owner key + this node's mesh + the AUTHENTICATED sender key, and its
+    /// conferred capabilities ride into the gate via
+    /// [`CallerIdentity::with_granted_capabilities`].
+    grant_authorizer: Option<Arc<GrantAuthorizer>>,
 }
 
 /// Parsed pieces of an incoming envelope. Pure data; the rest of
@@ -104,15 +127,51 @@ pub struct ParsedEnvelope {
     pub correlation_id: Uuid,
     /// The typed request body.
     pub request: AircCommandRequest,
+    /// The channel the request ARRIVED on (the envelope's `room_id`).
+    /// The reply must ride this exact channel: the requester awaits on the
+    /// room it asked in, and the responder's own current room may be a
+    /// different room entirely (operator CLI in #general vs citizens landed
+    /// in #academy — the 2026-08-27 grid-smoke 0/3 deadline class).
+    pub request_channel: airc_core::RoomId,
+    /// The request's stamped human channel name
+    /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
+    /// onto the reply for the blind-room heal.
+    pub request_channel_name: Option<String>,
+    /// A capability grant the caller PRESENTED on the envelope (base64
+    /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
+    /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
+    /// stays the one place the wire shape is read; verified later against the
+    /// authenticated sender key.
+    pub presented_grant: Option<SignedCapabilityGrant>,
 }
 
 impl CommandRequestHandler {
     /// Build a handler against an existing airc handle and the
-    /// substrate's CommandExecutor. Returns `Arc<Self>` because the
-    /// airc adapter registry stores adapters as
-    /// `Arc<dyn ConsumerAdapter>`.
+    /// substrate's CommandExecutor, with NO grant authorizer — a caller is gated
+    /// purely by tier (presented grants are ignored). Returns `Arc<Self>` because
+    /// the airc adapter registry stores adapters as `Arc<dyn ConsumerAdapter>`.
     pub fn new(airc: Arc<Airc>, executor: Arc<CommandExecutor>) -> Arc<Self> {
-        Arc::new(Self { airc, executor })
+        Arc::new(Self {
+            airc,
+            executor,
+            grant_authorizer: None,
+        })
+    }
+
+    /// Build a handler that VERIFIES presented capability grants (the
+    /// contracted-grid path). A caller presenting an owner-signed grant that
+    /// confers the command is authorized regardless of its tier ceiling; absent or
+    /// invalid grants fall back to tier gating.
+    pub fn with_grant_authorizer(
+        airc: Arc<Airc>,
+        executor: Arc<CommandExecutor>,
+        grant_authorizer: Arc<GrantAuthorizer>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            executor,
+            grant_authorizer: Some(grant_authorizer),
+        })
     }
 
     /// Parse a `TranscriptEvent` into the typed pieces the handler
@@ -159,7 +218,8 @@ impl CommandRequestHandler {
             Body::Json(v) => v.clone(),
             Body::Binary(_) => {
                 return Err(AdapterError::Consumer(
-                    "inbound command body was Binary; expected Json(AircCommandRequest)".to_string(),
+                    "inbound command body was Binary; expected Json(AircCommandRequest)"
+                        .to_string(),
                 ));
             }
         };
@@ -168,11 +228,35 @@ impl CommandRequestHandler {
             AdapterError::Consumer(format!("decode AircCommandRequest from body JSON: {e}"))
         })?;
 
+        // Optional capability grant the caller presents (base64 JSON). Absent is
+        // normal (tier-gated call). PRESENT-but-undecodable is a client error we
+        // surface LOUDLY (per [[no-fallbacks-ever]]) rather than silently dropping
+        // — the caller intended to present a grant; we won't pretend they didn't.
+        let presented_grant = match envelope.headers.get(HEADER_AIRC_CAPABILITY_GRANT) {
+            None => None,
+            Some(b64) => {
+                let bytes = STANDARD.decode(b64).map_err(|e| {
+                    AdapterError::Consumer(format!(
+                        "header {HEADER_AIRC_CAPABILITY_GRANT} is not valid base64: {e}"
+                    ))
+                })?;
+                let grant: SignedCapabilityGrant = serde_json::from_slice(&bytes).map_err(|e| {
+                    AdapterError::Consumer(format!(
+                        "header {HEADER_AIRC_CAPABILITY_GRANT} did not decode as a SignedCapabilityGrant: {e}"
+                    ))
+                })?;
+                Some(grant)
+            }
+        };
+
         Ok(ParsedEnvelope {
             caller_peer_id,
             reply_to,
             correlation_id,
             request,
+            request_channel: envelope.room_id,
+            request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
+            presented_grant,
         })
     }
 
@@ -184,17 +268,163 @@ impl CommandRequestHandler {
     /// just a `&CommandExecutor` — no Airc handle required — so the
     /// executor-side of the handler is exercisable without standing
     /// up real airc plumbing.
-    pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
-        Self::process_request_via(&self.executor, parsed).await
+    /// [`process_request`](Self::process_request), with the tokens of an `ai/generate`
+    /// on the wire AS THEY ARE PRODUCED — airc stream chunks (`airc.stream.*` headers,
+    /// `DeliveryClass::StreamChunk`, never a durable row) in the room the request
+    /// arrived in, `stream_id` = the request's correlation id, then the settled
+    /// response as the reply exactly as before.
+    ///
+    /// INFERENCE IS A STREAM, NOT A PROMISE. Awaiting the whole answer under one
+    /// deadline is how a working lane and a dead one looked identical for ten
+    /// minutes (2026-09-17: every remote turn in the Intel node's history died at
+    /// 600 s; the first one that was ever answered took 51 s in silence). With the
+    /// chunks on the wire the requester's liveness is the NEXT chunk, and it renders
+    /// as the answer forms. Same primitive the local persona turn rides into a room
+    /// (`service_loop`: `publish_stream_chunk`, coalesced every 250 ms), same
+    /// command path (ACL, interceptors, caller identity) — the only addition is the
+    /// `streamId` the command resolves to the sink registered here.
+    pub async fn process_request_streaming(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+        if parsed.request.path != STREAMED_GENERATE_PATH {
+            return self.process_request(parsed).await;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream_id = parsed.correlation_id;
+        let guard = crate::ai::stream_sinks::register(stream_id, tx);
+        let mut streamed = parsed.clone();
+        if let Some(obj) = streamed.request.params.as_object_mut() {
+            obj.insert(
+                crate::ai::stream_sinks::STREAM_ID_PARAM.to_string(),
+                serde_json::Value::String(stream_id.to_string()),
+            );
+        }
+        let publisher = StreamPublisher {
+            airc: Arc::clone(&self.airc),
+            room: parsed.request_channel,
+            stream_id,
+            // The seat's receipt instant: its own queue clock starts here, not on the
+            // requester's node (card c84d885a, S1 — the wait is measured where it forms).
+            received_at: std::time::Instant::now(),
+        };
+        let drain = tokio::spawn(publisher.drain(rx));
+        let response = self.process_request(&streamed).await;
+        // The sink's sender is dropped by the command (or by the guard, if the
+        // command never took it); the drain sees the close, flushes, marks the
+        // end, and only THEN does the settled reply go out — a requester never
+        // sees the reply before the last chunk.
+        drop(guard);
+        match drain.await {
+            Ok(published) => crate::probe!(
+                class = "airc.command.streamed",
+                path = %parsed.request.path,
+                correlation = %stream_id,
+                chunks = published,
+                "the answer's tokens rode the wire as they were produced; the settled reply follows"
+            ),
+            Err(e) => warn!(correlation = %stream_id, error = %e, "stream drain task failed"),
+        }
+        response
     }
 
-    /// Process a request against a borrowed `CommandExecutor` directly.
-    /// Same behavior as [`Self::process_request`] but constructable
-    /// without an `Arc<Airc>` — tests + the `LocalGridTransport`
-    /// fixture lease this.
+    pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+        // Verify any presented capability grant against the AUTHENTICATED sender
+        // key; on success its conferred capabilities ride into the gate. Absent /
+        // invalid grant → empty caps → pure tier gating (unchanged behavior).
+        let granted = self.verify_presented_grant(parsed).await;
+        let caller = CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
+        Self::dispatch_request(&self.executor, parsed, caller).await
+    }
+
+    /// Verify the grant the caller presented (if any) and return the capability
+    /// tags it confers — empty when there is no authorizer, no presented grant, or
+    /// the grant fails to authorize.
+    ///
+    /// The presenting key is `airc.peer_public_key(sender)` — the enrolled key from
+    /// the SAME registry that signature-verified the inbound envelope, so it is the
+    /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
+    /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
+    /// confers nothing; the caller then falls back to tier gating.
+    async fn verify_presented_grant(&self, parsed: &ParsedEnvelope) -> Vec<String> {
+        let (Some(authorizer), Some(grant)) = (
+            self.grant_authorizer.as_ref(),
+            parsed.presented_grant.as_ref(),
+        ) else {
+            return Vec::new();
+        };
+        let Some(presenting) = self.airc.peer_public_key(parsed.caller_peer_id) else {
+            warn!(
+                caller = %parsed.caller_peer_id.0,
+                "presented a capability grant but the sender is not enrolled — \
+                 cannot establish an authenticated presenting key; ignoring the grant"
+            );
+            return Vec::new();
+        };
+        match authorizer
+            .authorize_command(grant, &presenting, &parsed.request.path, now_ms())
+            .await
+        {
+            GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),
+            other => {
+                debug!(
+                    caller = %parsed.caller_peer_id.0,
+                    path = %parsed.request.path,
+                    outcome = ?other,
+                    "presented capability grant did not authorize; falling back to tier gate"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Process a request against a borrowed `CommandExecutor` directly, with NO
+    /// grant verification (the caller is the plain authenticated sender). Same
+    /// behavior as the pre-grant path — tests + the `LocalGridTransport` fixture
+    /// lease this without an `Arc<Airc>`. The grant-aware path is
+    /// [`process_request`](Self::process_request).
     pub async fn process_request_via(
         executor: &CommandExecutor,
         parsed: &ParsedEnvelope,
+    ) -> AircCommandResponse {
+        let caller = CallerIdentity::airc(parsed.caller_peer_id);
+        Self::dispatch_request(executor, parsed, caller).await
+    }
+
+    /// Dispatch the parsed request through the executor as `caller` (whose
+    /// `granted_capabilities` the gate honors). Shared by the grant-aware
+    /// [`process_request`](Self::process_request) and the plain
+    /// [`process_request_via`](Self::process_request_via).
+    async fn dispatch_request(
+        executor: &CommandExecutor,
+        parsed: &ParsedEnvelope,
+        caller: CallerIdentity,
+    ) -> AircCommandResponse {
+        // A generate that arrives over the wire is inference THIS seat performs for a
+        // mind hosted on ANOTHER node — leased-in demand. Held across the whole dispatch
+        // (receipt to settled reply; every inbound path converges here, streamed or not),
+        // it is the term the serving plan sizes its slot count to
+        // (`ServingDemand::leased_in`, card c84d885a). Before this guard the seat's plan
+        // saw only its own roster while it served three nodes' coders on one slot —
+        // lane wait p50 216 s, p90 1,387 s, max 7,058 s — and no receipt said why.
+        let _leased_in = (parsed.request.path == STREAMED_GENERATE_PATH)
+            .then(crate::cognition::resource_admission::LeasedInCall::enter);
+        Self::execute_command_request(executor, &parsed.request, caller).await
+    }
+
+    /// The single owner of "an [`AircCommandRequest`] + a [`CallerIdentity`] →
+    /// an [`AircCommandResponse`]". Decodes the envelope's routing intent
+    /// (`kind`/`env`), maps the path to a local [`CommandUri`], dispatches through
+    /// the executor as `caller` (whose tier + granted capabilities the gate
+    /// honors), and encodes the [`CommandResult`] back into the wire response.
+    ///
+    /// Every remote-ingress path funnels through here — the airc peer handler
+    /// ([`dispatch_request`](Self::dispatch_request)) AND the WS ingress
+    /// (`ipc::ws`) both call this so the wire-dispatch contract has ONE owner
+    /// ([[the-compression-principle]]). Callers differ only in how they
+    /// authenticate the `caller` (airc = signed sender; WS = Provisional TCP-tier
+    /// ceiling until a GH-auth handshake lands).
+    pub async fn execute_command_request(
+        executor: &CommandExecutor,
+        request: &AircCommandRequest,
+        caller: CallerIdentity,
     ) -> AircCommandResponse {
         // PR #1529 reviewer 2 BLOCK fix: the request envelope carries
         // `kind` (peer / room / broadcast) and `env` (the embodiment
@@ -211,7 +441,7 @@ impl CommandRequestHandler {
         // but no per-env service registration yet. Until then,
         // env-targeted calls hard-error so the caller knows the
         // semantics aren't wired.
-        if parsed.request.kind != continuum_airc_protocol::KIND_PEER {
+        if request.kind != continuum_airc_protocol::KIND_PEER {
             return AircCommandResponse::error(format!(
                 "remote dispatch kind={:?} not yet implemented — \
                  only kind=\"peer\" is wired. Room broadcast and \
@@ -219,10 +449,10 @@ impl CommandRequestHandler {
                  fan-out semantics (all-replies-collect vs first-reply-wins \
                  vs fire-and-forget). Per [[no-fallbacks-ever]] the \
                  handler refuses to silently substitute Local routing.",
-                parsed.request.kind
+                request.kind
             ));
         }
-        if let Some(env) = &parsed.request.env {
+        if let Some(env) = &request.env {
             return AircCommandResponse::error(format!(
                 "remote dispatch with env={:?} not yet implemented — \
                  the substrate has the EnvironmentId typed primitive \
@@ -234,15 +464,14 @@ impl CommandRequestHandler {
         }
 
         // The path the remote dispatched maps to a local URI. The
-        // local AuthPolicy gate sees the remote caller and decides
-        // whether to allow — the gate's verdict variants
-        // (Allowed / Forbidden / Deferred) propagate as the canonical
+        // local AuthPolicy gate sees the remote caller (including any verified
+        // granted capabilities) and decides whether to allow — the gate's verdict
+        // variants (Allowed / Forbidden / Deferred) propagate as the canonical
         // error string from execute_with_caller's Err arm.
-        let uri = CommandUri::local(&parsed.request.path);
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let uri = CommandUri::local(&request.path);
 
         match executor
-            .execute_with_caller(uri, parsed.request.params.clone(), Some(caller))
+            .execute_with_caller(uri, request.params.clone(), Some(caller))
             .await
         {
             Ok(CommandResult::Json(value)) => AircCommandResponse::ok(value),
@@ -270,9 +499,8 @@ impl CommandRequestHandler {
         parsed: &ParsedEnvelope,
         response: &AircCommandResponse,
     ) -> Result<(), AdapterError> {
-        let body_value = serde_json::to_value(response).map_err(|e| {
-            AdapterError::Consumer(format!("serialize AircCommandResponse: {e}"))
-        })?;
+        let body_value = serde_json::to_value(response)
+            .map_err(|e| AdapterError::Consumer(format!("serialize AircCommandResponse: {e}")))?;
         let body = Body::Json(body_value);
 
         let mut headers = airc_core::Headers::new();
@@ -285,12 +513,32 @@ impl CommandRequestHandler {
             COMMAND_RESPONSE_BODY_HINT.to_string(),
         );
 
+        // reply_in, NOT reply: the answer must ride the channel the request
+        // arrived on. The requester awaits on the room it asked in; this
+        // responder's current room can be a different room entirely (citizens
+        // land in #academy, an operator CLI asks in #general) — reply() sent
+        // the answer somewhere the requester never subscribed and every
+        // dispatch died at the command deadline (grid-smoke 0/3, 2026-08-27).
         self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+            .reply_in(
+                parsed.request_channel,
+                parsed.request_channel_name.as_deref(),
+                parsed.reply_to,
+                parsed.correlation_id,
+                headers,
+                body,
+            )
             .await
             .map_err(|e| AdapterError::Io(format!("airc reply: {e}")))?;
         Ok(())
     }
+}
+
+/// A command request is answered by exactly the peer it names. `All` and `Room`
+/// targets are not peer RPCs (the only dispatch kind wired today), so they are
+/// nobody's to answer either.
+pub(crate) fn addressed_to(target: &airc_core::MentionTarget, me: PeerId) -> bool {
+    matches!(target, airc_core::MentionTarget::Peer(p) if *p == me)
 }
 
 #[async_trait]
@@ -304,10 +552,241 @@ impl ConsumerAdapter for CommandRequestHandler {
     }
 
     async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
+        // ONLY THE ADDRESSED PEER ANSWERS. Every node in the room hears every
+        // command request; this handler answered all of them — so a peer-addressed
+        // `ai/generate` was answered by whoever heard it first, the SENDER included
+        // (measured 2026-09-06 03:30Z on the M5: a request to an unknown peer came
+        // back with this node's own serving state as "the remote peer's adapter").
+        // A request for another peer is not ours to answer; a request for nobody in
+        // particular is not a peer RPC (only kind=peer is wired) — both are ignored
+        // by name, never answered.
+        if !addressed_to(&envelope.target, self.airc.peer_id()) {
+            crate::probe!(
+                class = "airc.command.request_not_for_me",
+                target = ?envelope.target,
+                me = %self.airc.peer_id().0,
+                "command request addressed to another peer (or to nobody) — not answering"
+            );
+            return Ok(());
+        }
+        // THE ACCEPT PATH NAMES ITSELF (BigMama, 2026-09-06 22:0xZ): the only probe on
+        // inbound peer commands was the refusal, so a request that was ACCEPTED left no
+        // row and silence read as ambiguous. Now every accepted request says who was
+        // asked, by whom, and what — the receipt the grid's first hop was missing.
+        crate::probe!(
+            class = "airc.command.request_accepted",
+            target = ?envelope.target,
+            me = %self.airc.peer_id().0,
+            from = %envelope.peer_id.0,
+            "command request addressed to this citizen — executing"
+        );
         let parsed = Self::parse_envelope(&envelope)?;
-        let response = self.process_request(&parsed).await;
+        // THE ACCEPT PATH HAD NO PROBE. Only the refusal above emitted one, so a
+        // request that ARRIVED AND RAN was indistinguishable from one that was never
+        // sent — and on a node whose citizens generate continuously, a downstream
+        // inference row cannot be attributed to a peer without a join key. Measured
+        // 2026-09-06 22:04:21Z: a real cross-grid `ai/generate` reached this node
+        // addressed to a seat no citizen owned, bounced off the refusal probe, and
+        // the question "did anything ever land?" stayed unanswerable for a day
+        // because landing is silent. `correlation` is the join key: it is the same
+        // uuid the CALLER awaits on, so both sides of a grid turn can be matched.
+        crate::probe!(
+            class = "airc.command.accepted",
+            path = %parsed.request.path,
+            kind = %parsed.request.kind,
+            caller = %parsed.caller_peer_id.0,
+            me = %self.airc.peer_id().0,
+            correlation = %parsed.correlation_id,
+            "peer command request ACCEPTED — this node answers it"
+        );
+        let started = std::time::Instant::now();
+        // WORK SIZE, or elapsed_ms is uninterpretable. Measured 2026-09-06: nine
+        // successful cross-grid generations split cleanly bimodal — two at ~32s, six
+        // at 135-292s, nothing between — and the probe could not say whether the slow
+        // mode did MORE WORK or was merely slower, because it recorded duration and
+        // not size. I checked contention (concurrent local inferences per run) and it
+        // was REFUTED: the two fastest runs carried the HIGHEST concurrent load. With
+        // no size field there was no next hypothesis to test. A stopwatch with no
+        // odometer measures something, but it cannot explain anything.
+        //
+        // Serialized byte counts rather than tokens on purpose: this handler is
+        // path-agnostic (it dispatches ANY command), so it must not special-case
+        // `ai/generate`'s payload shape to reach a `usage` field. Bytes are a coarse
+        // proxy that stays correct for every path, including ones not written yet.
+        //
+        // COST GATE. The probe system's contract is a Noop default at ZERO hot-path
+        // cost, and this handler is the front door for EVERY cross-grid command, not
+        // just generations. Measuring by re-serializing is not free — the params are
+        // the largest thing in the request (a 10k-token prompt gets re-encoded purely
+        // to be measured, then dropped). `tracing::enabled!` is the same question the
+        // probe itself asks, so with no sink listening this costs a level check and
+        // nothing else. Raised in review of #3816 by the IntelMac: "we added a probe
+        // and the accept path got slower" is a bad way to learn this.
+        let measure = tracing::enabled!(tracing::Level::INFO);
+        let params_bytes = if measure {
+            serde_json::to_vec(&parsed.request.params)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0) // unwrap_or: the params ALREADY deserialized to get here, so re-serialization failing is not a real branch; 0 reads as "unmeasured", never as "empty request"
+        } else {
+            0
+        };
+        let response = self.process_request_streaming(&parsed).await;
+        // Carry the refusal TEXT, not just the fact of refusal. `outcome=error`
+        // with elapsed_ms=0 says a gate declined before any work happened but not
+        // WHICH gate — and the message is the whole diagnosis (kind/env refusal vs
+        // the AuthPolicy verdict vs an unknown path). Truncated: a gate string is
+        // a sentence, and an unbounded field in a hot probe is a log-flood risk.
+        let (outcome, detail, result_bytes) = match &response {
+            AircCommandResponse::Error { message } => (
+                "error",
+                message.chars().take(400).collect::<String>(),
+                0u64,
+            ),
+            AircCommandResponse::Ok { result } => (
+                "ok",
+                String::new(),
+                if measure {
+                    serde_json::to_vec(result).map(|v| v.len() as u64).unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
+                } else {
+                    0
+                },
+            ),
+        };
+        crate::probe!(
+            class = "airc.command.completed",
+            path = %parsed.request.path,
+            caller = %parsed.caller_peer_id.0,
+            me = %self.airc.peer_id().0,
+            correlation = %parsed.correlation_id,
+            outcome = %outcome,
+            detail = %detail,
+            params_bytes = params_bytes,
+            result_bytes = result_bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "peer command request answered"
+        );
         self.send_reply(&parsed, &response).await?;
         Ok(())
+    }
+}
+
+/// The one command whose answer is streamed on the wire.
+const STREAMED_GENERATE_PATH: &str = "ai/generate";
+
+/// Tokens are coalesced and flushed at most this often — the same cadence the local
+/// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
+const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Chunk kind for prefill progress — `{processed,total,cached}` as JSON text. Emitted
+/// BEFORE any token exists so a requester's liveness clock has something to reset on
+/// during the long silence a 40 KB prompt buys.
+pub const STREAM_KIND_PREFILL: &str = "inference.prefill";
+
+/// Publishes one generation's chunks into the request's room under its stream id.
+struct StreamPublisher {
+    airc: Arc<Airc>,
+    room: airc_core::RoomId,
+    stream_id: Uuid,
+    /// When this seat RECEIVED the request. The first prefill frame or token published
+    /// after it is the seat's own receipt-to-first-progress wait — the queue as the seat
+    /// experiences it, which is what it may honestly advertise on its beacon.
+    received_at: std::time::Instant,
+}
+
+impl StreamPublisher {
+    async fn publish(&self, seq: u64, kind: &str, text: String, is_final: bool) -> bool {
+        let mut headers = airc_core::Headers::new();
+        headers.insert(airc_lib::HEADER_STREAM_ID.into(), self.stream_id.to_string());
+        headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), seq.to_string());
+        headers.insert(airc_lib::HEADER_STREAM_KIND.into(), kind.to_string());
+        if is_final {
+            headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "true".to_string());
+        }
+        match self
+            .airc
+            .publish_with_delivery(
+                airc_lib::PublishTarget::RoomByName(self.room.as_uuid().to_string()),
+                airc_protocol::FrameKind::Event,
+                Body::text(text),
+                headers,
+                airc_bus::DeliveryClass::StreamChunk,
+            )
+            .await
+        {
+            Ok(_) => true,
+            Err(e) => {
+                warn!(correlation = %self.stream_id, seq, error = %e, "stream chunk publish failed");
+                false
+            }
+        }
+    }
+
+    /// Drain the command's sink onto the wire until it closes; returns chunks published.
+    async fn drain(
+        self,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
+    ) -> u64 {
+        use crate::ai::adapter::GenerationChunk;
+        let mut seq = 0u64;
+        let mut published = 0u64;
+        let mut token = String::new();
+        let mut reasoning = String::new();
+        let mut prefill: Option<String> = None;
+        let mut last_flush = std::time::Instant::now();
+        // Recorded once, at the FIRST progress the requester can see (prefill frame or
+        // token) — receipt-to-first-progress is the seat's queue, and only the first
+        // publish is that measurement; every later flush is generation.
+        let mut first_progress_recorded = false;
+        loop {
+            let next = tokio::time::timeout(STREAM_FLUSH_EVERY, rx.recv()).await;
+            let closed = matches!(next, Ok(None));
+            if let Ok(Some(chunk)) = next {
+                match chunk {
+                    GenerationChunk::Token(t) => token.push_str(&t),
+                    GenerationChunk::Reasoning(r) => reasoning.push_str(&r),
+                    GenerationChunk::Prefill { processed, total, cached } => {
+                        prefill = Some(
+                            serde_json::json!({ "processed": processed, "total": total, "cached": cached })
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
+                if !first_progress_recorded && (prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
+                    first_progress_recorded = true;
+                    crate::cognition::resource_admission::note_leased_in_first_progress_ms(
+                        self.received_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    );
+                }
+                if let Some(p) = prefill.take() {
+                    published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await as u64;
+                    seq += 1;
+                }
+                if !reasoning.is_empty() {
+                    let flushed = std::mem::take(&mut reasoning);
+                    published += self
+                        .publish(seq, airc_lib::STREAM_KIND_TEXT_REASONING, flushed, false)
+                        .await as u64;
+                    seq += 1;
+                }
+                if !token.is_empty() {
+                    let flushed = std::mem::take(&mut token);
+                    published += self
+                        .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, flushed, false)
+                        .await as u64;
+                    seq += 1;
+                }
+                last_flush = std::time::Instant::now();
+            }
+            if closed {
+                break;
+            }
+        }
+        published += self
+            .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, String::new(), true)
+            .await as u64;
+        published
     }
 }
 
@@ -359,6 +838,22 @@ mod tests {
         }
     }
 
+    // what this catches: the loopback — a peer-addressed request answered by whoever
+    // hears it (the sender included). Only the named peer answers; a broadcast target
+    // is nobody's to answer.
+    #[test]
+    fn only_the_addressed_peer_answers_a_command_request() {
+        let me = PeerId::new();
+        let other = PeerId::new();
+        assert!(addressed_to(&MentionTarget::Peer(me), me));
+        assert!(!addressed_to(&MentionTarget::Peer(other), me), "another peer's request is not ours");
+        assert!(!addressed_to(&MentionTarget::All, me), "a broadcast is not a peer RPC");
+        assert!(
+            !addressed_to(&MentionTarget::Room(airc_core::RoomId::from_uuid(Uuid::new_v4())), me),
+            "a room target is not a peer RPC"
+        );
+    }
+
     #[test]
     fn parse_envelope_extracts_caller_reply_correlation_and_request() {
         let sender = PeerId::new();
@@ -373,6 +868,79 @@ mod tests {
         assert_eq!(parsed.reply_to, reply_to);
         assert_eq!(parsed.correlation_id, correlation);
         assert_eq!(parsed.request, request);
+        // No capability-grant header → no presented grant (the tier-gated default).
+        assert!(parsed.presented_grant.is_none());
+    }
+
+    /// base64(JSON) of an owner-signed grant — the wire shape a caller presents in
+    /// [`HEADER_AIRC_CAPABILITY_GRANT`].
+    fn signed_grant_header(
+        owner: &airc_protocol::PeerKeypair,
+        grantee: PeerId,
+        grantee_pubkey: Vec<u8>,
+        caps: &[&str],
+    ) -> String {
+        use airc_lib::grid_auth::{CapabilityGrant, SignedCapabilityGrant};
+        use airc_lib::subscriptions::MeshIdentity;
+        let grant = CapabilityGrant {
+            grantee,
+            grantee_pubkey,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            granted_in: MeshIdentity::new("test-mesh"),
+            issued_at_ms: 1,
+            expires_at_ms: None,
+            epoch: 1,
+        };
+        let signed = SignedCapabilityGrant::sign(owner, grant).expect("sign grant");
+        STANDARD.encode(serde_json::to_vec(&signed).expect("serialize grant"))
+    }
+
+    // what this catches: parse_envelope DECODES a presented capability grant from
+    // the base64 HEADER_AIRC_CAPABILITY_GRANT into the typed SignedCapabilityGrant
+    // (the wire shape the verifier later checks). This is the one place the grant
+    // wire format is read.
+    #[test]
+    fn parse_envelope_extracts_presented_grant() {
+        let owner = airc_protocol::PeerKeypair::generate();
+        let grantee = PeerId::new();
+        let request = sample_request();
+        let mut envelope = make_envelope(grantee, PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.insert(
+            HEADER_AIRC_CAPABILITY_GRANT.to_string(),
+            signed_grant_header(&owner, grantee, vec![1, 2, 3], &["ai/generate"]),
+        );
+
+        let parsed = CommandRequestHandler::parse_envelope(&envelope).expect("parse succeeds");
+        let grant = parsed.presented_grant.expect("grant decoded");
+        assert_eq!(grant.grant.capabilities, vec!["ai/generate".to_string()]);
+        assert_eq!(grant.grant.grantee, grantee);
+    }
+
+    // what this catches: a PRESENT but undecodable grant header is surfaced LOUDLY
+    // (per [[no-fallbacks-ever]]) rather than silently dropped — the caller intended
+    // to present a grant; we don't pretend they didn't.
+    #[test]
+    fn parse_envelope_rejects_malformed_grant_header() {
+        let mut envelope = make_envelope(
+            PeerId::new(),
+            PeerId::new(),
+            Uuid::new_v4(),
+            &sample_request(),
+        );
+        envelope.headers.insert(
+            HEADER_AIRC_CAPABILITY_GRANT.to_string(),
+            "!!!not-base64!!!".to_string(),
+        );
+
+        let err = CommandRequestHandler::parse_envelope(&envelope)
+            .expect_err("malformed grant header should fail");
+        match err {
+            AdapterError::Consumer(msg) => assert!(
+                msg.contains(HEADER_AIRC_CAPABILITY_GRANT),
+                "error must name the grant header, got: {msg}"
+            ),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -425,11 +993,14 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = None;
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("missing body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("missing body should fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("no body"), "error must name missing body: {msg}");
+                assert!(
+                    msg.contains("no body"),
+                    "error must name missing body: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -444,8 +1015,8 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = Some(Body::Binary(vec![1, 2, 3]));
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("binary body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("binary body should fail");
         match err {
             AdapterError::Consumer(msg) => {
                 assert!(msg.contains("Binary"));
@@ -525,6 +1096,9 @@ mod tests {
             reply_to: PeerId::new(),
             correlation_id: Uuid::new_v4(),
             request,
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
+            presented_grant: None,
         }
     }
 
@@ -657,12 +1231,16 @@ mod tests {
                 env: None,
                 params: serde_json::Value::Null,
             },
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
+            presented_grant: None,
         };
 
         // The path doesn't resolve to a module, so execute_with_caller
-        // returns an error from the TS-bridge fallthrough. We don't
-        // care about that — the gate ran FIRST, recorded the caller,
-        // and that's the property under test.
+        // returns a typed CommandNotFound error per [[no-fallbacks-ever]]
+        // (task #219 removed the silent TS fallthrough). We don't care
+        // about that error here — the gate ran FIRST, recorded the
+        // caller, and that's the property under test.
         let _ = CommandRequestHandler::process_request_via(&executor, &parsed).await;
 
         let observed = captured.lock().unwrap().clone();
@@ -671,7 +1249,7 @@ mod tests {
              process_request_via failed to thread the caller through",
         );
         assert_eq!(
-            observed.peer_id, sender_peer_id.0,
+            observed.peer_id, sender_peer_id,
             "caller's peer_id must match the envelope sender — \
              closes the silent-privilege-escalation seam reviewer 2 flagged"
         );
@@ -681,6 +1259,70 @@ mod tests {
         );
     }
 
+    // what this catches (card c84d885a, 2026-09-18): a generate that arrives over the wire
+    // performing inference on this seat WITHOUT the seat counting it. The 5090 served three
+    // nodes' coders on one slot because nothing counted inbound generates as demand. The
+    // gauge must be held for the whole dispatch — the gate runs inside it, so a policy
+    // that reads the gauge at gate time sees the call — and ONLY for `ai/generate`: a
+    // peer's `work/list` is not inference and must not inflate a seat's slot count.
+    // Read relative to a baseline taken before, never as an absolute (the #1960 flake class).
+    #[tokio::test]
+    async fn an_inbound_generate_is_counted_as_leased_in_demand_for_the_whole_dispatch() {
+        use crate::cognition::resource_admission::leased_in_calls;
+        use crate::routing::{ClosurePolicy, RouteDecision};
+        use std::sync::{Arc as StdArc, Mutex};
+        let seen: StdArc<Mutex<Vec<(String, usize)>>> = StdArc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let policy = ClosurePolicy::new(
+            "record-leased-in-at-gate",
+            move |decision: &RouteDecision, _caller: Option<&crate::routing::CallerIdentity>| {
+                seen_clone
+                    .lock()
+                    .unwrap()
+                    .push((format!("{decision:?}"), leased_in_calls()));
+                crate::routing::Verdict::Allowed
+            },
+        );
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor =
+            crate::runtime::CommandExecutor::new(registry).with_policy(StdArc::new(policy));
+        let envelope = |path: &str| ParsedEnvelope {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircCommandRequest {
+                path: path.into(),
+                kind: "peer".into(),
+                env: None,
+                params: serde_json::Value::Null,
+            },
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
+            presented_grant: None,
+        };
+        let baseline = leased_in_calls();
+
+        // a generate: counted for the whole dispatch — the gate, which runs inside, sees it
+        let _ = CommandRequestHandler::process_request_via(&executor, &envelope("ai/generate")).await;
+        let at_gate = seen.lock().unwrap().last().map(|(_, n)| *n).expect("the gate ran");
+        assert!(
+            at_gate >= baseline + 1,
+            "an inbound generate must be counted while it runs: gate saw {at_gate}, baseline {baseline}"
+        );
+        assert_eq!(
+            leased_in_calls(),
+            baseline,
+            "…and released on exit — a finished generate is not standing demand"
+        );
+
+        // not a generate: a peer's work/list is not inference and must not count
+        let _ = CommandRequestHandler::process_request_via(&executor, &envelope("work/list")).await;
+        let at_gate = seen.lock().unwrap().last().map(|(_, n)| *n).expect("the gate ran");
+        assert_eq!(
+            at_gate, baseline,
+            "a non-generate peer command must not inflate the seat's slot count"
+        );
+    }
     /// Reviewer 1 nit: prove the handler refuses non-Json
     /// CommandResult shapes (Handle / Stream / Lambda) cleanly
     /// rather than silently coercing or panicking. Locks the
@@ -711,10 +1353,7 @@ mod tests {
                     tick_interval: None,
                 }
             }
-            async fn initialize(
-                &self,
-                _ctx: &crate::runtime::ModuleContext,
-            ) -> Result<(), String> {
+            async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
                 Ok(())
             }
             async fn handle_command(

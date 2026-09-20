@@ -11,7 +11,7 @@
 //!
 //! Buffers expire after a configurable TTL (default: 5 minutes).
 
-use crate::live::handle::Handle;
+use crate::runtime::handle::Handle;
 use crate::{clog_info, clog_warn};
 use parking_lot::RwLock;
 use std::collections::HashMap;

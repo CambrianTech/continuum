@@ -203,7 +203,19 @@ where
     /// Overwrite an existing row's data. Increments the BaseEntity
     /// version counter (optimistic concurrency control surface).
     pub async fn update(&self, id: Uuid, entity: &T) -> Result<(), OrmStoreError> {
-        let data = serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed)?;
+        self.update_fields(id, entity).await
+    }
+
+    /// Write a concrete typed subset of this entity's columns. This avoids
+    /// re-serializing an immutable payload when only linkage metadata changes.
+    /// The adapter still owns its read/write representation and version bump;
+    /// this is not a compare-and-swap or multi-row transaction.
+    pub(crate) async fn update_fields<P: Serialize>(
+        &self,
+        id: Uuid,
+        fields: &P,
+    ) -> Result<(), OrmStoreError> {
+        let data = serde_json::to_value(fields).map_err(OrmStoreError::SerializeFailed)?;
         let result = self
             .adapter
             .update(T::COLLECTION, &id.to_string(), data, true)
@@ -297,8 +309,6 @@ pub(crate) async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::adapter::AdapterConfig;
-    use crate::orm::sqlite::SqliteAdapter;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
     use serde::Deserialize;
 
@@ -378,6 +388,24 @@ mod tests {
     /// What this catches: find_by_id returns None for a missing id,
     /// not an error. Cleanly discriminating not-found from real
     /// failures is what every caller wants.
+    #[tokio::test]
+    async fn a_string_field_holding_json_text_round_trips_verbatim() {
+        // what this catches (2026-09-13, Atlas + Benchy): a String column whose text is
+        // JSON-shaped decoded as a map by a byte-sniffing reader — the entity refused
+        // it, find_all failed whole, and two citizens never seated. The store declares
+        // `label` as String, so the adapter must hand the text back untouched.
+        let (adapter, _tmp) = fresh_adapter().await;
+        let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
+        let id = Uuid::new_v4();
+        let looks_like_json = "{\"path\": \"sympy\"}";
+        store.save(id, &tiny(id, looks_like_json)).await.expect("save");
+        let by_id = store.find_by_id(id).await.expect("find_by_id").expect("present");
+        assert_eq!(by_id.label, looks_like_json, "find_by_id kept the text verbatim");
+        let all = store.find_all().await.expect("find_all decodes every row");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].1.label, looks_like_json, "find_all kept the text verbatim");
+    }
+
     #[tokio::test]
     async fn find_by_id_returns_none_for_missing_id() {
         let (adapter, _tmp) = super::fresh_adapter().await;

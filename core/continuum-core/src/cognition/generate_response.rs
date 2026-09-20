@@ -62,18 +62,25 @@ pub const UNKNOWN_MEMBERS: &str = "unknown members";
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 
 /// Routing sentinel for the best available local Qwen/llama.cpp runtime.
-const DEFAULT_GENERATE_PROVIDER: &str = "local";
+// The inference gateway is our OWN llama-server (the sole local inference path; Unsloth excised).
+// Was "local" (the in-process llama.cpp adapter) — now gated off, so routing the turn
+// to "local" + a hardcoded model id that the gateway doesn't serve would hard-fail
+// select(). The turn binds to the llama-server gateway + the discovered served model
+// via a handle. One source of truth for the gateway id: `llama_server::PROVIDER_ID`.
+const DEFAULT_GENERATE_PROVIDER: &str = crate::inference::llama_server::PROVIDER_ID;
 
-/// Default model when caller doesn't override.
-const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
+/// A model id for tests to pass explicitly — NOT a production default, and gated so it
+/// cannot become one. There is deliberately no default model: per the note on
+/// [`DEFAULT_GENERATE_PROVIDER`] above, the turn binds to whatever the gateway actually
+/// serves (discovered, via a handle), because a hardcoded id the gateway does not serve
+/// hard-fails `select()`. This constant only spares the request-shaping tests from
+/// repeating a literal.
+#[cfg(test)]
+const TEST_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
 
 /// Default sampling temperature: moderate
 /// creativity for natural-language responses.
 const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
-
-/// Default max tokens for short conversational responses; caller can
-/// raise for long-form.
-const DEFAULT_GENERATE_MAX_TOKENS: u32 = 150;
 
 /// Default timeout. Qwen local can be slow under load; this is the hard
 /// ceiling before `tokio::time::timeout` returns Err.
@@ -105,7 +112,7 @@ static GENERATE_RESPONSE_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
 
 /// IPC request: ask the cognition service to assemble a response-prompt
 /// and (in PR-2) run it through the local inference provider.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -132,6 +139,7 @@ pub struct GenerateResponseRequest {
     /// Hard cap on how long PR-2's async composer waits before
     /// returning timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
     /// Rust-owned admission policy for this generation. When omitted,
@@ -146,7 +154,7 @@ pub struct GenerateResponseRequest {
 /// Per-call local-generation admission policy. This is the contract a
 /// host uses to ask Rust for response-generation capacity instead of
 /// owning slots itself.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -273,12 +281,38 @@ pub async fn evaluate_response(
     request: GenerateResponseRequest,
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
     let start_ms = now_ms();
-    let model = request
-        .model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_GENERATE_MODEL.to_string());
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
     let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
+
+    // Bind this turn to the persona's ESTABLISHED inference handle (reused across
+    // turns, re-homed if lost — self-healing), bound to the model unsloth actually
+    // serves (discovered, NOT a hardcoded id that no longer matches the gateway).
+    // The handle is the seam that makes inference grid-routable + survive a node
+    // dropping. [[long-running-commands-are-handle-based]] [[compute-lease-boundary]]
+    let persona_uuid = uuid::Uuid::parse_str(&request.context.persona_id).map_err(|e| {
+        GenerateResponseError::Generation(format!(
+            "persona_id '{}' is not a UUID: {e}",
+            request.context.persona_id
+        ))
+    })?;
+    let sessions = crate::cognition::inference_session::global_inference_sessions();
+    let session = match sessions.persona_session(persona_uuid) {
+        Some(s) => s,
+        None => {
+            // unsloth serves one model today, so bind to the discovered served model
+            // regardless of any (possibly stale) request.model. Fit-selection over a
+            // multi-model gateway is the next slice. Fail loud if nothing serves.
+            let served = crate::cognition::inference_session::resolve_model(None)
+                .await
+                .map_err(|e| {
+                    GenerateResponseError::Generation(format!(
+                        "inference model resolve failed (unsloth gateway): {e:?}"
+                    ))
+                })?;
+            sessions.ensure_for_persona(persona_uuid, served)
+        }
+    };
+    let model = session.model.clone();
 
     let inference_request = build_response_generation_request(&request, model.clone(), start_ms);
 
@@ -379,10 +413,15 @@ pub fn build_response_generation_request(
         model: Some(model),
         provider: Some(DEFAULT_GENERATE_PROVIDER.to_string()),
         temperature: Some(request.temperature.unwrap_or(DEFAULT_GENERATE_TEMPERATURE)),
-        max_tokens: Some(request.max_tokens.unwrap_or(DEFAULT_GENERATE_MAX_TOKENS)),
+        // Pass the caller's ceiling through verbatim — `None` (the default) means the
+        // MODEL owns its length (the adapter forwards no cap). We never substitute a
+        // const of our own: a hardcoded floor truncated reasoning models mid-thought.
+        max_tokens: request.max_tokens,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -1160,22 +1199,23 @@ mod tests {
 
     /// What this catches: defaults — no overrides — produces a
     /// TextGenerationRequest with provider="local", model=Qwen-default,
-    /// temperature=0.7, max_tokens=150, response_format=Text,
-    /// purpose="cognition/generate-response", and persona/room
-    /// attribution carried from the context. Pins the wire shape so
-    /// downstream provider routing doesn't drift silently.
+    /// temperature=0.7, max_tokens=None (the model owns its length),
+    /// response_format=Text, purpose="cognition/generate-response", and
+    /// persona/room attribution carried from the context. Pins the wire
+    /// shape so downstream provider routing doesn't drift silently.
     #[test]
     fn generation_request_uses_documented_defaults() {
         let request = request_with_overrides(None, None, None, None);
         let inference =
-            build_response_generation_request(&request, DEFAULT_GENERATE_MODEL.to_string(), 0);
+            build_response_generation_request(&request, TEST_GENERATE_MODEL.to_string(), 0);
         assert_eq!(
             inference.provider.as_deref(),
             Some(DEFAULT_GENERATE_PROVIDER)
         );
-        assert_eq!(inference.model.as_deref(), Some(DEFAULT_GENERATE_MODEL));
+        assert_eq!(inference.model.as_deref(), Some(TEST_GENERATE_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_GENERATE_TEMPERATURE));
-        assert_eq!(inference.max_tokens, Some(DEFAULT_GENERATE_MAX_TOKENS));
+        // No override + no client default = the model owns its length.
+        assert_eq!(inference.max_tokens, None);
         assert_eq!(
             inference.purpose.as_deref(),
             Some("cognition/generate-response")
@@ -1210,7 +1250,7 @@ mod tests {
         let request = request_with_overrides(None, None, None, None);
         let inference = build_response_generation_request(
             &request,
-            DEFAULT_GENERATE_MODEL.to_string(),
+            TEST_GENERATE_MODEL.to_string(),
             1_700_000_000_000,
         );
         let identity = match &inference.messages.last().expect("identity present").content {
@@ -1243,8 +1283,10 @@ mod tests {
             request_id: "test".to_string(),
             content: None,
             tool_calls: None,
+            reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         }
     }
 

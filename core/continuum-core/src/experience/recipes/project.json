@@ -1,0 +1,39 @@
+{
+  "id": "2f6b1c0e-4c7a-4d0b-9a7e-5a1c3e9f7b21",
+  "version": 1,
+  "purpose": "project",
+  "regions": [
+    {
+      "name": "board",
+      "kind": "kanban",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "messages",
+      "kind": "chat",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "roster",
+      "kind": "roster",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "context",
+      "live": true
+    }
+  ],
+  "affordances": [],
+  "citizens": [],
+  "params": {
+    "repo": {
+      "default": "",
+      "doc": "Repository key this project builds (owner/name, from the checkout's git remote). Cards on this board name it; card rooms nest under this room."
+    }
+  }
+}

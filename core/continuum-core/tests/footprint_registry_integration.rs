@@ -43,7 +43,7 @@ fn qwen35_4b_target_path() -> PathBuf {
 #[ignore = "requires real qwen3.5-4b GGUF + 5-10s; run manually with --ignored --nocapture"]
 async fn llamacpp_adapter_reports_model_weights_to_global_registry() {
     // Need the model registry initialized so LlamaCppAdapter::new() can
-    // resolve the llamacpp-local row from config/models.toml.
+    // resolve the llamacpp-local row from the Rust catalog (catalog.rs).
     let _reg = continuum_core::model_registry::init_global()
         .expect("model_registry init for adapter construction");
 
@@ -172,24 +172,13 @@ async fn scheduler_reports_per_seq_kv_bytes_for_persona() {
             content: MessageContent::Text("Reply with just the word OK.".to_string()),
             name: None,
         }],
-        system_prompt: None,
         model: Some(adapter.default_model().to_string()),
         provider: Some("local".to_string()),
         temperature: Some(0.0),
         max_tokens: Some(8),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("kv-reporting-integration-test".to_string()),
         persona_id: Some(persona_id.to_string()),
+        ..Default::default()
     };
 
     eprintln!("[ftp-int] dispatching generate_text with persona_id={persona_id}");

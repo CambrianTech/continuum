@@ -1,0 +1,571 @@
+//! Per-persona command inbound pump — makes a persona a real
+//! command-callable peer on the airc grid.
+//!
+//! ## What this exists for
+//!
+//! PR #1560 + #1563 proved the cross-grid command WIRE works
+//! end-to-end IN TESTS — but the wiring was always manual: each test
+//! constructed a `CommandRequestHandler` + spawned a subscribe loop
+//! against the test's airc peer. Production never installed the
+//! handler anywhere.
+//!
+//! Production substrates today therefore SILENTLY ignore incoming
+//! `AircCommandRequest` envelopes. The wire-test green-light reads
+//! "we proved the substrate CAN respond"; what's missing is "the
+//! substrate actually IS responding."
+//!
+//! This module fills the install step. Per
+//! `[[personas-are-citizens-airc-is-identity-provider]]`: the
+//! substrate has no airc identity of its own — only personas do. So
+//! the pump lives ON THE PERSONA, attached to its `Arc<Airc>` handle.
+//! (Superseded in one respect on 2026-09-17: the NODE answers too —
+//! see [`spawn_node_pump`] — because capacity is offered and placement
+//! targets at node granularity, and inference addressed to the node's
+//! identity had no handler anywhere.)
+//! Every persona that boots gets one; when peer_b dispatches
+//! `airc://<persona-uuid>/ai/generate`, that persona's pump receives
+//! the envelope, hands it to a `CommandRequestHandler`, the handler
+//! dispatches via the substrate's global `CommandExecutor`, and the
+//! reply ships back automatically.
+//!
+//! ## Why a separate task from the persona's chat subscribe loop
+//!
+//! `airc_persona_conversation.rs::next_message` is the chat pump. It
+//! filters by `body.as_text()` — anything that isn't a text body is
+//! silently dropped. Command envelopes carry `Body::Json` so the
+//! chat pump never sees them.
+//!
+//! Two options for the command path:
+//!
+//! 1. **Extend the chat pump** to also dispatch command envelopes
+//!    inline. Couples two concerns into one loop; cognition / lag
+//!    behavior gets tangled.
+//! 2. **Spawn a second subscribe loop** on the same airc handle.
+//!    airc-lib's `subscribe()` is broadcast-shape (verified in PR
+//!    #1563 R3): every subscriber gets every event, no contention.
+//!
+//! Option 2 wins on separation of concerns + composability. The chat
+//! pump stays single-purpose; the command pump stays single-purpose;
+//! airc-lib does the fan-out.
+//!
+//! ## Lifecycle
+//!
+//! - Spawn at persona boot — same place the chat pump primes.
+//! - Hold the `JoinHandle`. On persona shutdown, abort the task and
+//!   await it so the airc subscribe drops cleanly.
+//! - Per `[[no-fallbacks-ever]]`: if the airc subscribe call FAILS
+//!   at spawn, the pump task surfaces the error LOUDLY via tracing
+//!   and exits. A persona that can't subscribe can't receive cross-
+//!   grid commands; we refuse to pretend it can.
+//!
+//! ## Doctrinal alignment
+//!
+//! - `[[headless-success-is-personas-talking-over-airc]]` — this IS
+//!   the install step. Without it, "personas as command-callable
+//!   peers" is a doctrine without a wire.
+//! - `[[personas-are-citizens-airc-is-identity-provider]]` — pump
+//!   binds to a persona's airc handle, not a substrate singleton.
+//! - `[[no-fallbacks-ever]]` — subscribe failure surfaces; command
+//!   dispatch failure surfaces; the pump never silently drops what
+//!   it's supposed to be carrying.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use airc_lib::adapter::ConsumerAdapter;
+use airc_lib::{Airc, AircError, FilteredEventStream};
+use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
+use futures::stream::StreamExt;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
+use uuid::Uuid;
+
+use crate::routing::epoch_watermark::{SqliteEpochWatermark, WatermarkError};
+use crate::routing::grid_capability::GrantAuthorizer;
+use crate::routing::CommandRequestHandler;
+use crate::runtime::command_executor::CommandExecutor;
+
+/// Why constructing a persona's [`GrantAuthorizer`] failed at boot. Distinct from
+/// [`AircError`] because the watermark store + owner-key resolution are continuum
+/// concerns, not airc ones.
+#[derive(Debug, thiserror::Error)]
+pub enum GrantAuthorizerBuildError {
+    /// This node's own enrolled public key is unavailable — it is self-enrolled at
+    /// `Airc::open`, so this should not happen; if it does we refuse to build a
+    /// verifier with no pinned issuer rather than trust the wrong key.
+    #[error("this node's own enrolled public key is unavailable — cannot pin the grant issuer")]
+    OwnerKeyUnavailable,
+    /// Could not resolve this node's local mesh identity (the expected mesh a grant
+    /// must be scoped to).
+    #[error("resolve local mesh identity: {0}")]
+    Mesh(#[source] AircError),
+    /// Could not open the durable epoch-watermark store (the anti-replay state).
+    #[error("open grant epoch watermark store: {0}")]
+    Watermark(#[source] WatermarkError),
+}
+
+/// Build this persona node's [`GrantAuthorizer`] — the verifier for capability
+/// grants visiting peers present. "This node is the owner": the trusted issuer key
+/// is the node's OWN enrolled ed25519 key (it self-signs the grants it hands out),
+/// the expected mesh is the node's own mesh, and the anti-replay watermark is a
+/// DURABLE SQLite store under the persona home (survives restart — the review hard
+/// gate). Provider≠owner (verifying grants the owner signed on a different box) is
+/// a later generalization needing pinned-issuer-key distribution.
+pub async fn build_grant_authorizer(
+    airc: &Arc<Airc>,
+    home: &Path,
+) -> Result<Arc<GrantAuthorizer>, GrantAuthorizerBuildError> {
+    let owner_pubkey = airc
+        .peer_public_key(airc.peer_id())
+        .ok_or(GrantAuthorizerBuildError::OwnerKeyUnavailable)?
+        .to_vec();
+    let mesh = airc
+        .mesh_identity()
+        .await
+        .map_err(GrantAuthorizerBuildError::Mesh)?;
+    let watermark = SqliteEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+        .map_err(GrantAuthorizerBuildError::Watermark)?;
+    Ok(Arc::new(GrantAuthorizer::with_watermark(
+        owner_pubkey,
+        mesh,
+        Arc::new(watermark),
+    )))
+}
+
+/// THE NODE'S OWN COMMAND PUMP (2026-09-17, cards ad96f5d1 / 7c72c0f0).
+///
+/// Capacity is ADVERTISED per node (`grid.capacity.offer` rides
+/// `airc/realtime-publish`, stamped with the daemon's scope identity),
+/// placement TARGETS per node (`model_override.json` `remote_peer` = that
+/// stamp; the transport addresses `MentionTarget::Peer(stamp)`), and
+/// inference was SERVED per persona only — the pumps below, each under her
+/// own peer id. Three layers each right, no join key: every `ai/generate`
+/// a remote-bound mind sent was refused by every citizen on the host,
+/// correctly, as not-for-me — 27 `airc.command.request_not_for_me` on the
+/// 5090 in one afternoon, `airc.command.accepted` 0, and
+/// `remote_lane.answered` 0 across the Intel node's whole retained history
+/// (Cormac). Cross-grid inference had never been addressable.
+///
+/// This attaches a handle under the MACHINE-ACCOUNT home's default identity
+/// — the keypair the singular daemon speaks as, the one the beacon is
+/// stamped with — and runs the same pump on it. A node's spare inference is a
+/// node-level service, answered at the granularity it is offered.
+/// Executes through the substrate's wired executor under the CALLER's
+/// identity (the envelope's), gated by the same grant authorizer the
+/// citizens use — the node lends its lane, never its seat.
+///
+/// Failure is loud and named; a node that cannot answer must not look
+/// like one that can (the beacon still goes out — the seat-side breaker
+/// and fall-home cover the gap, as they did before this existed).
+pub async fn spawn_node_pump(
+    airc_home: &Path,
+    daemon_socket: std::path::PathBuf,
+    executor: Arc<CommandExecutor>,
+    state_home: &Path,
+) -> Result<Uuid, NodePumpError> {
+    // The MACHINE-ACCOUNT home (`$HOME/.airc`), not the scope's: the singular daemon
+    // lives there and stamps everything it publishes — the beacon included — with
+    // THAT home's identity. Attaching at the continuum root gave a third identity
+    // (`9237e018` on the 5090's first boot of this code, beside the beacon's
+    // `e85a5bb3`) that nothing on the grid addresses.
+    let home = airc_lib::machine_account_home(airc_home);
+    let airc = Arc::new(
+        Airc::attach(home.as_path().to_path_buf(), daemon_socket)
+            .await
+            .map_err(NodePumpError::Attach)?,
+    );
+    let peer = airc.peer_id().as_uuid();
+    std::fs::create_dir_all(state_home).map_err(|e| NodePumpError::StateHome {
+        path: state_home.to_path_buf(),
+        source: e,
+    })?;
+    let grant_authorizer = build_grant_authorizer(&airc, state_home)
+        .await
+        .map_err(NodePumpError::GrantAuthorizer)?;
+    // The node never changes rooms on its own; the sender lives with the pump
+    // for the life of the process so the loop never reads "runtime dropped".
+    let (membership_tx, membership_rx) = watch::channel(0u64);
+    let pump = PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
+        .await
+        .map_err(NodePumpError::Subscribe)?;
+    NODE_PUMP
+        .set((pump, membership_tx))
+        .map_err(|_| NodePumpError::AlreadyInstalled)?;
+    crate::probe!(
+        class = "node.command_pump.online",
+        peer_id = %peer,
+        "the node answers cross-grid commands under its own identity — the one its capacity beacon is stamped with"
+    );
+    Ok(peer)
+}
+
+/// Whether the node pump TASK is running (liveness is the task, not the handle).
+pub fn node_pump_alive() -> bool {
+    NODE_PUMP.get().is_some_and(|(p, _)| p.is_alive())
+}
+
+static NODE_PUMP: std::sync::OnceLock<(PersonaCommandInboundPump, watch::Sender<u64>)> =
+    std::sync::OnceLock::new();
+
+#[derive(Debug, thiserror::Error)]
+pub enum NodePumpError {
+    #[error("attach the node's own airc identity: {0}")]
+    Attach(#[source] AircError),
+    #[error("node pump state home {path}: {source}")]
+    StateHome {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("node pump grant authorizer: {0}")]
+    GrantAuthorizer(#[source] GrantAuthorizerBuildError),
+    #[error("node pump subscribe: {0}")]
+    Subscribe(#[source] AircError),
+    #[error("the node command pump is already installed")]
+    AlreadyInstalled,
+}
+
+/// One persona's command inbound pump. Holds the JoinHandle so the
+/// owning `PersonaAircRuntime` can abort + await on shutdown.
+pub struct PersonaCommandInboundPump {
+    persona_id: Uuid,
+    handle: JoinHandle<()>,
+}
+
+impl PersonaCommandInboundPump {
+    /// Spawn the pump. The airc subscribe call happens SYNCHRONOUSLY
+    /// before the task spawns — so a subscribe failure surfaces at
+    /// the call site immediately (per `[[no-fallbacks-ever]]`) instead
+    /// of getting buried in a log line + a silent-task exit. The
+    /// caller (`PersonaAircRuntime::bootstrap` once #222 lands) can
+    /// fail the persona's bootstrap with the same error rather than
+    /// declaring the persona ready when it's actually unaddressable.
+    ///
+    /// Once `spawn()` returns `Ok`, the subscribe loop runs until
+    /// either:
+    ///   (a) the airc subscribe stream ends (daemon disconnect),
+    ///   (b) the JoinHandle is aborted by the caller.
+    ///
+    /// `airc` is the persona's airc handle. `executor` is the
+    /// substrate's command executor — typically the global handle
+    /// from `crate::runtime::command_executor::executor()`.
+    ///
+    /// Per R2 of PR #1567: returning `Result` here closes the
+    /// "loud-once" gap. The OLD shape logged `error!` and exited the
+    /// task; the operator's only feedback was one log line + a
+    /// persona that mysteriously stopped answering. The new shape
+    /// makes the failure unmissable.
+    pub async fn spawn(
+        persona_id: Uuid,
+        airc: Arc<Airc>,
+        executor: Arc<CommandExecutor>,
+        grant_authorizer: Arc<GrantAuthorizer>,
+        membership: watch::Receiver<u64>,
+    ) -> Result<Self, AircError> {
+        // Subscribe BEFORE spawning so failure surfaces at the call
+        // site. The stream moves into the spawned task; subsequent
+        // stream errors (lag, end-of-stream) are runtime concerns,
+        // not install-time concerns.
+        // Every room she is subscribed to, not just her default. A
+        // cross-grid command envelope is addressed to the PERSONA, so
+        // narrowing it by room made her un-callable from anywhere she
+        // was not currently parked — the same one-channel narrowing
+        // that made operator chat structurally invisible (task #64).
+        let stream = crate::persona::airc_citizen::subscribe_every_room(&airc).await?;
+        // The handler VERIFIES presented capability grants against the authorizer
+        // (built from this node's own key + mesh + durable watermark). A peer
+        // presenting an owner-signed grant gets the conferred command past its tier
+        // ceiling; absent/invalid grants fall back to tier gating.
+        let handler = CommandRequestHandler::with_grant_authorizer(
+            Arc::clone(&airc),
+            executor,
+            grant_authorizer,
+        );
+        // The pump is SUPERVISED on the persona: `run` re-opens its own stream
+        // and only returns when the runtime drops its epoch sender, so the one
+        // exit it cannot cover is a panic inside the task. The supervisor task
+        // is what `is_alive()` reads; it respawns `run` after a panic with a
+        // fresh stream and says so. Nothing outside the persona has to notice
+        // (the runtime is shared as `Arc<PersonaAircRuntime>`, so no reconciler
+        // could re-install it from outside without interior mutability —
+        // BigMama's review of #3814).
+        let handle = tokio::spawn(supervise(persona_id, airc, handler, stream, membership));
+        Ok(Self { persona_id, handle })
+    }
+
+    /// Persona this pump belongs to. Useful for telemetry +
+    /// debug-logging in the owning runtime.
+    pub fn persona_id(&self) -> Uuid {
+        self.persona_id
+    }
+
+    /// Whether the pump TASK is still running. `Some(pump)` on the runtime
+    /// used to mean "addressable"; measured 2026-09-06 on the M5 and the
+    /// 5090: four of five resident citizens held a `Some` whose task had
+    /// exited hours earlier. Liveness is the task, not the handle.
+    pub fn is_alive(&self) -> bool {
+        !self.handle.is_finished()
+    }
+
+    /// Abort the pump task and await its exit. Drop alone would
+    /// detach the task; callers that want clean shutdown should call
+    /// this. Idempotent — re-aborting an already-finished task is
+    /// a no-op.
+    pub async fn shutdown(self) {
+        self.handle.abort();
+        // Joining an aborted task yields a Cancelled JoinError; we
+        // don't care — the only failure path that matters here is
+        // "the task panic'd before abort", and the tokio runtime
+        // already surfaces panics via its own diagnostic channel.
+        let _ = self.handle.await;
+    }
+
+    /// Fire-and-forget abort. Used by `PersonaAircRuntime::drop`
+    /// (which is sync and can't await). The tokio runtime reaps the
+    /// aborted task asynchronously; the JoinError on the eventual
+    /// await would be Cancelled, which is the expected shape.
+    /// Callers that want clean shutdown WITH await should use
+    /// [`shutdown`] instead.
+    pub fn abort(&self) {
+        self.handle.abort();
+    }
+}
+
+/// Delay before the n-th consecutive re-open attempt: 1 s doubling to a
+/// 30 s cap. A daemon that is down stays down for a while; a stream that
+/// ended on a membership change is back in one hop.
+/// The channel set a subscribe would open on right now — the daemon's subscription
+/// set, as room ids. `None` when the daemon could not be asked (then a bump re-opens,
+/// the safe side).
+async fn subscribed_set(airc: &Airc) -> Option<std::collections::BTreeSet<Uuid>> {
+    let set = airc.subscription_set().await.ok()?;
+    Some(
+        set.all()
+            .map(|sub| sub.as_room().channel.as_uuid())
+            .collect(),
+    )
+}
+
+fn reopen_delay(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << attempt.min(5)).min(Duration::from_secs(30))
+}
+
+/// Why the pump is (re)opening its stream. Carried on the probe so a read
+/// can tell a daemon disconnect from a room join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    StreamEnded,
+    MembershipChanged,
+}
+
+async fn supervise(
+    persona_id: Uuid,
+    airc: Arc<Airc>,
+    handler: Arc<CommandRequestHandler>,
+    first_stream: FilteredEventStream,
+    membership: watch::Receiver<u64>,
+) {
+    let mut stream = Some(first_stream);
+    let mut respawns: u32 = 0;
+    loop {
+        let this_stream = match stream.take() {
+            Some(s) => s,
+            None => match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::probe!(
+                        class = "persona.command_pump.reopen_failed",
+                        persona_id = %persona_id,
+                        attempt = respawns,
+                        error = %e,
+                        "command pump could not re-subscribe after a panic; retrying"
+                    );
+                    tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                    continue;
+                }
+            },
+        };
+        let task = tokio::spawn(run(
+            persona_id,
+            Arc::clone(&airc),
+            Arc::clone(&handler),
+            this_stream,
+            membership.clone(),
+        ));
+        match task.await {
+            // `run` returns only when the runtime dropped its epoch sender.
+            Ok(()) => return,
+            Err(e) if e.is_panic() => {
+                respawns = respawns.saturating_add(1);
+                crate::probe!(
+                    class = "persona.command_pump.respawned_after_panic",
+                    persona_id = %persona_id,
+                    respawns = respawns,
+                    "command pump task panicked; respawning with a fresh stream"
+                );
+                tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+            }
+            // Cancelled: the supervisor itself was aborted (shutdown).
+            Err(_) => return,
+        }
+    }
+}
+
+async fn run(
+    persona_id: Uuid,
+    airc: Arc<Airc>,
+    handler: Arc<CommandRequestHandler>,
+    mut stream: FilteredEventStream,
+    mut membership: watch::Receiver<u64>,
+) {
+    let self_id = airc.peer_id();
+    crate::probe!(
+        class = "persona.command_pump.installed",
+        persona_id = %persona_id,
+        peer_id = %self_id.0,
+        "command inbound pump subscribed; the citizen is addressable"
+    );
+    // The stream ends whenever the daemon closes the subscription — a daemon
+    // restart, an update, or the citizen joining a room after she was seated.
+    // Before 2026-09-06 the loop simply returned here at `debug!` level: the
+    // citizen stayed resident, chatted and worked, and every request addressed
+    // to her was heard only by the operator seat and refused as not-his. Sahar
+    // on the 5090 and four of five citizens on the M5 were unaddressable for
+    // hours with nothing on any probe. The pump now re-opens on end AND on a
+    // membership move, with a bounded backoff, and says so each time.
+    let mut attempt: u32 = 0;
+    // The room set the live stream was opened on. A membership epoch bump whose set is
+    // unchanged (an idempotent join, a part of a room she never held) is NOT a reason
+    // to re-open: every re-open costs a daemon connection per channel, and the
+    // 2026-09-12 reseat storm turned 1,961 no-op bumps into 19,589 open sockets.
+    let mut opened_with = subscribed_set(&airc).await;
+    loop {
+        let reason = loop {
+            tokio::select! {
+                next = stream.next() => match next {
+                    Some(Ok(event)) => {
+                        attempt = 0;
+                        if event.peer_id == self_id {
+                            continue;
+                        }
+                        let hint = event
+                            .headers
+                            .get(HEADER_CONTINUUM_BODY_HINT)
+                            .map(|s| s.as_str());
+                        if hint != Some(COMMAND_REQUEST_BODY_HINT) {
+                            continue;
+                        }
+                        if let Err(e) = handler.on_envelope((*event).clone()).await {
+                            warn!(
+                                persona_id = %persona_id,
+                                error = %e,
+                                "PersonaCommandInboundPump: handler.on_envelope rejected an envelope"
+                            );
+                        }
+                    }
+                    Some(Err(lag)) => {
+                        crate::probe!(
+                            class = "persona.command_pump.lag",
+                            persona_id = %persona_id,
+                            lag = %lag,
+                            "subscribe lag on the command pump — requests inside the gap are lost"
+                        );
+                        continue;
+                    }
+                    None => break Reopen::StreamEnded,
+                },
+                changed = membership.changed() => match changed {
+                    Ok(()) => break Reopen::MembershipChanged,
+                    Err(_) => {
+                        // The runtime dropped its epoch sender: the citizen is
+                        // being torn down. Exit for real, and say so.
+                        crate::probe!(
+                            class = "persona.command_pump.ended",
+                            persona_id = %persona_id,
+                            reason = "runtime_dropped",
+                            "command pump exiting with its runtime"
+                        );
+                        return;
+                    }
+                },
+            }
+        };
+        if reason == Reopen::MembershipChanged {
+            let now = subscribed_set(&airc).await;
+            if now.is_some() && now == opened_with {
+                crate::probe!(
+                    class = "persona.command_pump.membership_unchanged",
+                    persona_id = %persona_id,
+                    rooms = opened_with.as_ref().map_or(0, |s| s.len()),
+                    "membership epoch moved but the room set did not — the stream stays open"
+                );
+                continue;
+            }
+        }
+        crate::probe!(
+            class = "persona.command_pump.ended",
+            persona_id = %persona_id,
+            reason = ?reason,
+            "command pump stream ended; re-opening"
+        );
+        loop {
+            let delay = reopen_delay(attempt);
+            tokio::time::sleep(delay).await;
+            // Joins arrive in bursts at boot (one per room). Every bump that
+            // landed during the sleep is folded into this one re-open.
+            let _ = membership.borrow_and_update();
+            match crate::persona::airc_citizen::subscribe_every_room(&airc).await {
+                Ok(next) => {
+                    stream = next;
+                    opened_with = subscribed_set(&airc).await;
+                    crate::probe!(
+                        class = "persona.command_pump.reopened",
+                        persona_id = %persona_id,
+                        reason = ?reason,
+                        attempt = attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        "command pump re-subscribed; the citizen is addressable again"
+                    );
+                    attempt = 0;
+                    break;
+                }
+                Err(e) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::probe!(
+                        class = "persona.command_pump.reopen_failed",
+                        persona_id = %persona_id,
+                        attempt = attempt,
+                        error = %e,
+                        "command pump could not re-subscribe; retrying"
+                    );
+                    debug!(
+                        persona_id = %persona_id,
+                        attempt,
+                        "PersonaCommandInboundPump: re-subscribe failed: {e}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the re-open schedule must be bounded on BOTH ends —
+    // a zero first delay would busy-loop against a daemon that is down (the
+    // exact shape the message pump's membership contract test pins), and an
+    // unbounded doubling would leave a citizen unaddressable for minutes after
+    // one transient failure. 1 s doubling, capped at 30 s.
+    #[test]
+    fn the_reopen_schedule_is_bounded_on_both_ends() {
+        assert_eq!(reopen_delay(0), Duration::from_secs(1));
+        assert_eq!(reopen_delay(1), Duration::from_secs(2));
+        assert_eq!(reopen_delay(4), Duration::from_secs(16));
+        assert_eq!(reopen_delay(5), Duration::from_secs(30));
+        assert_eq!(reopen_delay(40), Duration::from_secs(30));
+    }
+}

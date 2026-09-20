@@ -88,13 +88,62 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
 }
 
 /// Genders for deterministic identity-based selection.
-/// All catalog models are Male or Female — no Neutral models in the catalog.
-const IDENTITY_GENDERS: &[AvatarGender] = &[AvatarGender::Female, AvatarGender::Male];
+/// The genesis gender draw. Female/Male are the common cases; Neutral (they/them)
+/// is a real minority ([[procedural-persona-genesis]]) — weighted ~20% via a 2:2:1
+/// list so it's "not too uncommon" without dominating. A Neutral persona's
+/// presentation isn't constrained to masc/fem, so its avatar/voice are drawn from
+/// the FULL pool (any presentation is coherent with they/them).
+const IDENTITY_GENDERS: &[AvatarGender] = &[
+    AvatarGender::Female,
+    AvatarGender::Female,
+    AvatarGender::Male,
+    AvatarGender::Male,
+    AvatarGender::Neutral,
+];
 
 /// Deterministically derive a gender from a persona identity.
 /// Same persona always gets the same gender (Male or Female only).
 pub fn gender_from_identity(identity: &str) -> AvatarGender {
     *deterministic_pick(identity, IDENTITY_GENDERS, "gender")
+}
+
+/// Third-person pronouns, coherent with a persona's gender. The persona genesis
+/// draws gender first ([[procedural-persona-genesis]]); pronouns derive from it so
+/// they always agree with the avatar/voice/name. Binary today (the catalog is
+/// Male/Female); `they/them` is a universally-valid alias a persona may also use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PronounSet {
+    pub subject: &'static str,    // she / he
+    pub object: &'static str,     // her / him
+    pub possessive: &'static str, // her / his
+}
+
+impl PronounSet {
+    /// The canonical short form, e.g. "she/her".
+    pub fn short(&self) -> String {
+        format!("{}/{}", self.subject, self.object)
+    }
+}
+
+/// Derive gender-coherent pronouns.
+pub fn pronouns_for_gender(gender: AvatarGender) -> PronounSet {
+    match gender {
+        AvatarGender::Female => PronounSet {
+            subject: "she",
+            object: "her",
+            possessive: "her",
+        },
+        AvatarGender::Male => PronounSet {
+            subject: "he",
+            object: "him",
+            possessive: "his",
+        },
+        AvatarGender::Neutral => PronounSet {
+            subject: "they",
+            object: "them",
+            possessive: "their",
+        },
+    }
 }
 
 #[cfg(test)]
@@ -165,22 +214,30 @@ mod tests {
     }
 
     #[test]
-    fn test_gender_from_identity_covers_male_and_female() {
-        let mut seen = std::collections::HashSet::new();
-        for i in 0..100 {
+    fn test_gender_from_identity_covers_all_three_genders() {
+        // Neuter (they/them) is now a real minority in the draw ([[procedural-persona-genesis]]).
+        let mut counts: std::collections::HashMap<AvatarGender, usize> =
+            std::collections::HashMap::new();
+        for i in 0..1000 {
             let g = gender_from_identity(&format!("persona-{}", i));
-            assert!(
-                g == AvatarGender::Male || g == AvatarGender::Female,
-                "gender_from_identity should never return Neutral, got {:?}",
-                g
-            );
-            seen.insert(g);
+            *counts.entry(g).or_default() += 1;
         }
-        assert_eq!(
-            seen.len(),
-            2,
-            "Expected both Male and Female from 100 identities, got {:?}",
-            seen
+        // All three appear — Neutral is present, not absent.
+        assert!(
+            counts.contains_key(&AvatarGender::Female),
+            "no Female drawn"
+        );
+        assert!(counts.contains_key(&AvatarGender::Male), "no Male drawn");
+        assert!(
+            counts.contains_key(&AvatarGender::Neutral),
+            "no Neutral drawn — they/them must appear"
+        );
+        // Neutral is a MINORITY (weighted ~20%), never the plurality.
+        let neutral = counts[&AvatarGender::Neutral];
+        let female = counts[&AvatarGender::Female];
+        assert!(
+            neutral < female,
+            "Neutral ({neutral}) should be a minority vs Female ({female})"
         );
     }
 }

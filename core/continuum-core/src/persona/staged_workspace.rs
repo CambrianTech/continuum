@@ -1,0 +1,728 @@
+//! Which on-disk workspace does a citizen's claimed card point at?
+//!
+//! ONE answer, three callers. A staged benchmark instance is a real git checkout under
+//! `<home>/citizens/peers/<peer>/workspace/swe/<instance>`, written by `benchmark/swe-setup`
+//! at dispatch. Three places need to resolve it and, before this module, two of them each
+//! walked that directory themselves:
+//!
+//! - `persona/roster` — reports the staged list as the REUSE signal (dispatch found the
+//!   checkout and skipped cloning)
+//! - `modules/work.rs::dispatch_staged_swe_solve` — matches a claimed card to its instance
+//! - `persona/service_loop` — roots her HANDS at that instance for a work turn
+//!
+//! The third is why this module exists. A citizen working her claimed card must ACT IN THE
+//! REPO, and the layout knowledge that makes that possible was previously inline in a
+//! benchmark dispatcher — so the live path could not reuse it without importing the
+//! bypass it is meant to replace.
+//!
+//! ## The matching rule, and why it refuses rather than guesses
+//!
+//! A card matches an instance when the card's TITLE CONTAINS the instance directory name
+//! (`sympy__sympy-24152`). Dispatch writes the title, so the containment is by
+//! construction, not inference.
+//!
+//! Zero matches → `None`: an ordinary non-bench card, and her hands stay where they are.
+//! MORE than one match → `None` AND a probe: two staged instances whose names both appear
+//! in one title is a staging defect, and picking either would root her hands in a repo her
+//! card is not about — silently scoring a false zero against the other. Refusing is the
+//! honest outcome and the probe says which candidates collided.
+
+use std::path::PathBuf;
+
+/// Where a citizen's staged benchmark checkouts live.
+///
+/// Not configurable and not guessed: this mirrors exactly what `benchmark/swe-setup`
+/// writes. A single expression of the layout, so a change to staging cannot leave a reader
+/// looking in a directory the writer stopped using.
+pub fn staging_root(peer: &uuid::Uuid) -> Option<PathBuf> {
+    let home = crate::commands::benchmark::continuum_home().ok()?;
+    Some(
+        home.join("citizens")
+            .join("peers")
+            .join(peer.to_string())
+            .join("workspace")
+            .join("swe"),
+    )
+}
+
+/// Every benchmark instance actually staged in this citizen's workspace, name-sorted.
+///
+/// Counts only directories that carry a `.git` — a real checkout, not an empty shell left
+/// by an interrupted clone. Best effort by design: a missing home or unreadable directory
+/// yields an empty list, never an error, because every caller is answering "what is here
+/// right now" and none of them should fail because staging has not run yet.
+pub fn staged_instances(peer: &uuid::Uuid) -> Vec<String> {
+    let Some(root) = staging_root(peer) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().join(".git").exists())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Which staged instance a set of card titles points at — the full answer, including the
+/// two ways there isn't one.
+///
+/// Callers need to tell these apart. A work turn treats [`None`](CardWorkspace::None) as
+/// "an ordinary card, hands stay put" and [`Ambiguous`](CardWorkspace::Ambiguous) as a
+/// staging defect worth reporting; a claim dispatcher wants the instance NAME as well as
+/// the path (its era venv is keyed by it). An `Option<PathBuf>` erased both distinctions,
+/// which is why the second caller kept its own copy of the walk.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CardWorkspace {
+    /// Exactly one staged instance is named by these titles.
+    One { instance: String, path: PathBuf },
+    /// No staged instance is named — the ordinary, non-benchmark case.
+    None,
+    /// More than one. Never resolved: rooting at either would put hands in a repo the
+    /// other card is not about, and a diff taken there scores a false zero for the one
+    /// actually being worked.
+    Ambiguous { candidates: Vec<String> },
+}
+
+/// Resolve card titles against this citizen's staged checkouts.
+///
+/// `card_titles` is every title in play — resolution is over the WHOLE set rather than one
+/// card, because the question a work turn asks is "where are my hands supposed to be", and
+/// that has one answer for the turn. Two different held cards matching two different
+/// staged instances is the same ambiguity as one title matching two, and refuses
+/// identically.
+pub fn resolve_for_titles<'a, I>(peer: &uuid::Uuid, card_titles: I) -> CardWorkspace
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let staged = staged_instances(peer);
+    let titles: Vec<&str> = card_titles.into_iter().collect();
+    match select(&staged, &titles) {
+        Selection::One(instance) => match staging_root(peer) {
+            Some(root) => CardWorkspace::One {
+                path: root.join(&instance),
+                instance,
+            },
+            None => CardWorkspace::None,
+        },
+        Selection::None => CardWorkspace::None,
+        Selection::Ambiguous(candidates) => CardWorkspace::Ambiguous { candidates },
+    }
+}
+
+/// One citizen's staged copy of an instance, and whether her hands actually touched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCopy {
+    pub peer: uuid::Uuid,
+    pub path: PathBuf,
+    /// The checkout carries uncommitted changes — a real candidate patch lives here.
+    pub has_work: bool,
+    /// The newest modification among the files `git status` lists, ms since
+    /// the epoch — when two citizens both worked one instance (a card that
+    /// changed hands), the sweep grades the copy with the latest work instead
+    /// of refusing both (2026-09-07: astropy-13236 held Atlas's fix beside
+    /// Joaquin's earlier attempt). None when no work or unreadable.
+    pub work_mtime_ms: Option<u64>,
+}
+
+/// The COMMIT-DERIVED facts of a copy, held keyed by its git state. A commit can only
+/// arrive by a git write — `.git/HEAD`, `.git/index` or `.git/logs/HEAD` — so three stats
+/// name whether the two git subprocesses that read commits (`staged_base_of`,
+/// `newest_commit_above_base_ms`) have anything new to say. The WORKING-TREE half
+/// (`candidate_paths_changed`, `newest_work_mtime_ms`, `has_work`) is derived every call:
+/// an edit not yet `git add`ed writes none of those three files, and the restage guard and
+/// the sweep read `has_work` (Cormac's condition on #4258). Before this every persona turn
+/// holding a review card ran `read_dir` + up to three blocking `git` commands PER COPY
+/// (measured 2026-09-20, the worst re-derivation on the persona path; Joel: "find
+/// something once and pass it along"). `None` key = a copy whose git dir cannot be
+/// stated: recomputed.
+static COMMIT_FACTS: std::sync::LazyLock<dashmap::DashMap<PathBuf, (u128, CommitFacts)>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// What a copy's commits say: the base the staging checked out and the committer time
+/// of the newest commit above it. Changes only when git writes.
+#[derive(Clone, Debug)]
+struct CommitFacts {
+    base: Option<String>,
+    commit_above_base_ms: Option<u64>,
+}
+
+/// PURE over the filesystem: the freshness key of a copy's git state (three mtimes), or
+/// `None` when it cannot be stated.
+pub(crate) fn git_state_key(root: &std::path::Path) -> Option<u128> {
+    let mut key: u128 = 0;
+    for rel in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+        let m = std::fs::metadata(root.join(rel)).ok()?.modified().ok()?;
+        let ms = m.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+        key = key.wrapping_mul(1_000_003).wrapping_add(ms);
+    }
+    // The staged base is a commit fact too (`clone_at` writes it; a restage rewrites it),
+    // and writing it touches none of the three above — CI 2026-09-20: a rewritten base
+    // read the diff against the old one. Absent for a checkout older than the record.
+    let base_ms = std::fs::metadata(root.join(".git/continuum-base"))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0); // unwrap_or: no record = 0, a state of its own
+    Some(key.wrapping_mul(1_000_003).wrapping_add(base_ms))
+}
+
+/// The commit-derived facts of one copy: from the held record when its git state is
+/// unchanged, else derived (two git commands) and held.
+fn commit_facts_of(root: &std::path::Path) -> CommitFacts {
+    let key = git_state_key(root);
+    if let Some(k) = key {
+        if let Some(held) = COMMIT_FACTS.get(root) {
+            if held.0 == k {
+                return held.1.clone();
+            }
+        }
+    }
+    let base = staged_base_of(root);
+    let facts = CommitFacts {
+        commit_above_base_ms: base.as_deref().and_then(|b| newest_commit_above_base_ms(root, b)),
+        base,
+    };
+    if let Some(k) = key {
+        COMMIT_FACTS.insert(root.to_path_buf(), (k, facts.clone()));
+    }
+    facts
+}
+
+/// The facts of one copy: the held commit half plus the working-tree half read now.
+fn copy_facts(peer: uuid::Uuid, path: PathBuf) -> StagedCopy {
+    let commits = commit_facts_of(&path);
+    let changed = candidate_paths_changed_from(&path, commits.base.as_deref());
+    let work_mtime_ms = newest_evidence_ms(
+        newest_work_mtime_ms(&path, &changed),
+        commits.commit_above_base_ms,
+    );
+    StagedCopy { peer, path, has_work: work_mtime_ms.is_some(), work_mtime_ms }
+}
+
+/// Which citizen's copy of `instance` should be GRADED — the inverse of the per-peer
+/// question above, and the one the grade path needs.
+///
+/// # Why this exists (2026-08-18, and it nearly produced a false zero for a real pass)
+///
+/// The SAME instance is legitimately staged into more than one citizen's workspace:
+/// dispatch round-robins over the roster, so `astropy__astropy-14995` sat in BOTH Atlas's
+/// tree (dirty — a real fix, `M astropy/nddata/mixins/ndarithmetic.py`) and Asha's tree
+/// (clean — staged, never worked). Nothing at grade time said which copy was authoritative.
+/// Grading the clean one returned `patchBytes: 0, resolved: false` — a confident zero for
+/// work sitting ten directories away.
+///
+/// Deletion was never the risk; AMBIGUITY was. So the rule mirrors `resolve_for_titles`:
+/// exactly one WORKED copy resolves, and anything else refuses rather than guessing —
+/// because picking either of two worked copies scores one citizen's diff against the
+/// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
+/// outcome, and the caller names the candidates).
+pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(home.join("citizens").join("peers")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Some(peer) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| uuid::Uuid::parse_str(n).ok())
+        else {
+            continue;
+        };
+        let path = entry.path().join("workspace").join("swe").join(instance);
+        if !path.join(".git").exists() {
+            continue;
+        }
+        // WORK HERE IS THE CANDIDATE, NOTHING ELSE (2026-09-16). This reader feeds the
+        // grade: `git status --porcelain` counted every untracked file as "her hands
+        // touched it" — `?? repro_gfk_uuid.py`, `?? in`, a stray `django/` from a shell in
+        // the wrong directory — so a re-fired solve's scratch read as the NEWEST worked
+        // copy, the tiebreak graded it over an older copy holding a real +4/−2 edit, and
+        // the grader refused "no candidate patch" (django-11211, sympy-24443, the morning
+        // after the 09-16 reboots). The grader's reading of her work is the tracked diff
+        // against the staged base under `SOLUTION_PATH_EXCLUDES`; this reader asks git the
+        // same question, so "worked" here means exactly "gradeable" there. The PROTECTIVE
+        // reading — "does she carry anything a restage must not destroy" — is
+        // `work_mtime_of` and still counts every file; the two questions differ on purpose.
+        out.push(copy_facts(peer, path));
+    }
+    out.sort_by(|a, b| a.peer.cmp(&b.peer));
+    out
+}
+
+/// Which staged copy to grade: the decision, with the filesystem taken out of it.
+///
+/// Split from [`owners_of`] for the same reason [`select`] is split below — the RULE is
+/// tested against a table, not against a disk fixture that re-derives it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GradeTarget {
+    /// Exactly one copy carries work. Grade it.
+    One(PathBuf),
+    /// No copy carries work — an ABSENCE. Nothing to score; never a zero.
+    NoWork,
+    /// Two or more citizens hold worked copies. Refuse: grading either scores one
+    /// citizen's diff against the other's card.
+    Ambiguous(Vec<PathBuf>),
+}
+
+pub fn grade_target(copies: &[StagedCopy]) -> GradeTarget {
+    let worked: Vec<&StagedCopy> = copies.iter().filter(|c| c.has_work).collect();
+    match worked.as_slice() {
+        [one] => GradeTarget::One(one.path.clone()),
+        [] => GradeTarget::NoWork,
+        many => {
+            // Several citizens worked this instance. The newest work is the
+            // candidate — strictly newest and known; a tie or an unreadable
+            // mtime stays Ambiguous (never a guess between two real patches).
+            let mut known: Vec<&&StagedCopy> =
+                many.iter().filter(|c| c.work_mtime_ms.is_some()).collect();
+            known.sort_by_key(|c| std::cmp::Reverse(c.work_mtime_ms));
+            match known.as_slice() {
+                [newest, second, ..]
+                    if known.len() == many.len() && newest.work_mtime_ms > second.work_mtime_ms =>
+                {
+                    GradeTarget::One(newest.path.clone())
+                }
+                _ => GradeTarget::Ambiguous(many.iter().map(|c| c.path.clone()).collect()),
+            }
+        }
+    }
+}
+
+/// The newest work mtime (ms) of a checkout on disk, or None when it carries no work.
+/// WORK is any difference from the commit the staging checked out: uncommitted changes
+/// (`git status --porcelain`) OR commits above that base. 2026-09-12 21:30Z: a holder
+/// committed his fix (ledger: "commit d71b8d4f29 … working tree clean"), the porcelain read
+/// empty, `restages_pristine(Some(verdict), None)` re-cloned his tree on the next claim,
+/// and the sweep reopened the card as "left no artifact" — the substrate erased a resolve
+/// it had never graded. A clean tree above the base is the MOST finished shape of work.
+pub(crate) fn work_mtime_of(root: &std::path::Path) -> Option<u64> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    let porcelain = String::from_utf8_lossy(&out.stdout);
+    newest_evidence_ms(
+        newest_work_mtime_ms(root, &porcelain),
+        commit_facts_of(root).commit_above_base_ms,
+    )
+}
+
+/// The later of the two kinds of evidence, or `None` when neither exists — pure.
+pub(crate) fn newest_evidence_ms(uncommitted: Option<u64>, committed: Option<u64>) -> Option<u64> {
+    match (uncommitted, committed) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0).max(b.unwrap_or(0))), // unwrap_or: the absent side contributes nothing to the max
+    }
+}
+
+/// The commit the staging checked out — recorded by `clone_at` in `.git/continuum-base`;
+/// for a checkout that predates the record, the reflog's first `checkout:` target (the
+/// clone lands on the default branch, then staging moves HEAD to the base).
+pub(crate) fn staged_base_of(root: &std::path::Path) -> Option<String> {
+    if let Ok(s) = std::fs::read_to_string(root.join(".git").join("continuum-base")) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["reflog", "show", "--format=%H %gs"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .find(|l| l.contains(" checkout: moving from "))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string)
+}
+
+/// The committer time (ms) of the newest commit above the staged base, `None` when HEAD
+/// is the base (or the base is unknown, which reads as no committed work — the old rule).
+/// The tracked paths that differ from the staged base under the grader's exclude rules,
+/// rendered in the ` M path` shape `newest_work_mtime_ms` reads — one question to git,
+/// the same one `workspace_candidate_diff_from` asks, so "worked" and "gradeable" cannot
+/// drift. No recorded base (a checkout older than `clone_at`'s record) falls back to
+/// HEAD, which IS the base until she commits.
+fn candidate_paths_changed(root: &std::path::Path) -> String {
+    candidate_paths_changed_from(root, commit_facts_of(root).base.as_deref())
+}
+
+/// `candidate_paths_changed` against a base already known (the held commit facts).
+fn candidate_paths_changed_from(root: &std::path::Path, base: Option<&str>) -> String {
+    let base = base.unwrap_or("HEAD").to_string(); // unwrap_or: no record = the checkout sits at its base
+    let mut args: Vec<String> = vec![
+        "-C".into(),
+        root.to_string_lossy().into_owned(),
+        "diff".into(),
+        "--name-only".into(),
+        base,
+        "--".into(),
+        ".".into(),
+    ];
+    args.extend(
+        crate::commands::benchmark::SOLUTION_PATH_EXCLUDES
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    match std::process::Command::new("git").args(&args).output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!(" M {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // "git failed" and "no changes" must not be the same silent value: the copy holding
+        // the real edit could be the one whose diff cannot be read, and it would be passed
+        // over exactly like the scratch copy this reader exists to pass over (#4117 review).
+        // Still no work is guessed — but the failure is a row someone can find.
+        other => {
+            let why = match other {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => e.to_string(),
+            };
+            crate::probe!(
+                class = "benchmark.workspace.candidate_diff_unreadable",
+                workspace = %root.display(),
+                why = why.as_str(),
+                "could not read this copy's candidate diff — it reads as NO candidate, which may hide real work"
+            );
+            String::new()
+        }
+    }
+}
+
+fn newest_commit_above_base_ms(root: &std::path::Path, base: &str) -> Option<u64> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "-1", "--format=%ct", &format!("{base}..HEAD")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|s| s * 1000)
+}
+
+/// The newest mtime (ms) among the paths `git status --porcelain` lists.
+fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> {
+    porcelain
+        .lines()
+        .filter_map(|l| l.get(3..))
+        // A rename line reads `R  old -> new`; the file that exists is `new`.
+        .map(|rel| rel.rsplit(" -> ").next().unwrap_or(rel))  // unwrap_or: rsplit always yields at least the whole string
+        .map(|rel| rel.trim().trim_end_matches('/'))
+        // A deleted path has no file to stat; its parent directory's mtime moved
+        // when it went (a deletions-only patch must still have a known mtime —
+        // IntelMac's review of #3857).
+        .filter_map(|rel| {
+            let path = root.join(rel);
+            std::fs::metadata(&path)
+                .ok()
+                .or_else(|| path.parent().and_then(|p| std::fs::metadata(p).ok()))
+        })
+        .filter_map(|m| m.modified().ok())
+        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .max()
+}
+
+/// The matching rule alone, with the filesystem taken out of it.
+///
+/// Split from [`resolve_for_titles`] so the rule is TESTED rather than restated: the
+/// disk half needs a fixture, the decision does not, and a test that re-derives the
+/// containment check in its own body cannot fail when the real one changes.
+#[derive(Debug, PartialEq, Eq)]
+enum Selection {
+    One(String),
+    None,
+    Ambiguous(Vec<String>),
+}
+
+fn select(staged: &[String], titles: &[&str]) -> Selection {
+    let mut hits: Vec<&String> = staged
+        .iter()
+        .filter(|inst| titles.iter().any(|t| t.contains(inst.as_str())))
+        .collect();
+    hits.dedup();
+    match hits.as_slice() {
+        [one] => Selection::One((*one).clone()),
+        [] => Selection::None,
+        many => Selection::Ambiguous(many.iter().map(|s| (*s).clone()).collect()),
+    }
+}
+
+/// The workspace a claimed card points at, or `None` when there isn't exactly one — the
+/// projection a WORK TURN wants, which only needs "root here or leave her hands alone".
+///
+/// Ambiguity probes here rather than at [`resolve_for_titles`] because this is the caller
+/// that would silently score a false zero: it roots hands and a diff is taken afterwards.
+/// A dispatcher matching on the enum reports ambiguity in its own vocabulary instead.
+/// The workspace a citizen's held cards root her hands in, HELD keyed by (peer, the held
+/// titles, the staging root's mtime): the answer changes only when a card is claimed or
+/// released (the titles) or an instance is staged or swept (the root's mtime) — one stat
+/// per turn instead of a directory scan with a `.git` stat per entry.
+static HELD_WORKSPACE: std::sync::LazyLock<dashmap::DashMap<(uuid::Uuid, Vec<String>, u128), Option<PathBuf>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn staging_root_mtime_ms(peer: &uuid::Uuid) -> u128 {
+    staging_root(peer)
+        .and_then(|r| std::fs::metadata(r).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0) // unwrap_or: no staging root yet = key 0; the resolver answers None and that is held until a root appears (its mtime is then non-zero)
+}
+
+pub fn workspace_for_held_cards<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut titles: Vec<String> = card_titles.into_iter().map(str::to_string).collect();
+    titles.sort();
+    let key = (*peer, titles, staging_root_mtime_ms(peer));
+    if let Some(held) = HELD_WORKSPACE.get(&key) {
+        return held.clone();
+    }
+    let answer = workspace_for_titles_now(peer, key.1.iter().map(String::as_str));
+    // One entry per (peer, held set): a changed set or root replaces the old key.
+    HELD_WORKSPACE.retain(|k, _| k.0 != *peer);
+    HELD_WORKSPACE.insert(key, answer.clone());
+    answer
+}
+
+fn workspace_for_titles_now<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    match resolve_for_titles(peer, card_titles) {
+        CardWorkspace::One { path, .. } => Some(path),
+        CardWorkspace::None => None,
+        CardWorkspace::Ambiguous { candidates } => {
+            crate::probe!(
+                class = "persona.work.staged_ambiguous",
+                peer = %peer,
+                matches = candidates.len(),
+                candidates = candidates.join(","),
+                "held cards name MULTIPLE staged instances — refusing to guess which repo \
+                 her hands belong in; she works in her own workspace this turn"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // what this catches: a copy's git-derived facts are found ONCE and held keyed by its
+    // git state — the same three stats every turn, the three git subprocesses only when
+    // git wrote something. Regression for the per-turn `read_dir` + 3 × git on every
+    // persona turn (2026-09-20).
+    #[test]
+    fn a_copys_facts_are_held_until_its_git_state_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("copy");
+        std::fs::create_dir_all(root.join(".git").join("logs")).unwrap();
+        for f in [".git/HEAD", ".git/index", ".git/logs/HEAD"] {
+            std::fs::write(root.join(f), b"x").unwrap();
+        }
+        let k1 = super::git_state_key(&root).expect("statable");
+        assert_eq!(super::git_state_key(&root), Some(k1), "the same state keys the same");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/HEAD"), b"ref: refs/heads/other").unwrap();
+        let t = std::time::SystemTime::now();
+        std::fs::File::options().write(true).open(root.join(".git/HEAD")).unwrap().set_modified(t).unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k1), "a git write re-keys the copy");
+        let k2 = super::git_state_key(&root).expect("statable");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".git/continuum-base"), b"abc").unwrap();
+        assert_ne!(super::git_state_key(&root), Some(k2), "a rewritten staged base re-keys the copy (it is a commit fact)");
+        let bare = tmp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(super::git_state_key(&bare), None, "no git state → not held, always derived");
+    }
+
+    // what this catches (2026-09-12): a committed fix on a clean tree reading as "no work" —
+    // the staging re-cloned over it and the sweep reopened the card as "left no artifact".
+    #[test]
+    fn a_commit_above_the_staged_base_is_work_even_when_the_tree_is_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(root).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        let base = String::from_utf8(std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        std::fs::write(root.join(".git").join("continuum-base"), &base).unwrap();
+        assert_eq!(super::work_mtime_of(root), None, "a clean tree AT the base is no work");
+        std::fs::write(root.join("a.txt"), "fix\n").unwrap();
+        git(&["commit", "-q", "-am", "the fix"]);
+        assert!(super::work_mtime_of(root).is_some(), "a clean tree ABOVE the base is work");
+        assert_eq!(super::newest_evidence_ms(None, None), None);
+        // what this catches (2026-09-16, django-11211 / sympy-24443): the GRADER's reading of
+        // work is the candidate — a tracked diff against the base — never untracked scratch.
+        // A repro script and a __pycache__ dir are not a candidate; a tracked edit is.
+        std::fs::write(root.join(".git").join("continuum-base"), git_head(root)).unwrap();
+        std::fs::write(root.join("repro_gfk_uuid.py"), "print('repro')\n").unwrap();
+        std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+        std::fs::write(root.join("__pycache__").join("x.pyc"), "junk").unwrap();
+        assert_eq!(super::candidate_paths_changed(root), "", "untracked scratch is not a candidate");
+        assert!(super::work_mtime_of(root).is_some(), "…but it IS something a restage must not destroy");
+        // what this catches (Cormac's condition on #4258): an edit not yet `git add`ed writes
+        // none of .git/HEAD, .git/index, .git/logs/HEAD — the held COMMIT facts stay held
+        // (same key, same record), but the WORKING-TREE half is read every call, so the
+        // restage guard and the sweep see has_work flip without a git write.
+        let peer = uuid::Uuid::new_v4();
+        let key_before = super::git_state_key(root).expect("statable");
+        let held = super::commit_facts_of(root);
+        assert!(!super::copy_facts(peer, root.to_path_buf()).has_work, "no candidate yet");
+        std::fs::write(root.join("a.txt"), "edit\n").unwrap();
+        assert_eq!(super::candidate_paths_changed(root), " M a.txt", "a tracked edit is the candidate");
+        assert_eq!(super::git_state_key(root), Some(key_before), "an un-added edit is not a git write");
+        assert_eq!(super::commit_facts_of(root).base, held.base, "the commit half is still the held record");
+        assert!(super::copy_facts(peer, root.to_path_buf()).has_work, "…and the working-tree half sees the edit now");
+        assert_eq!(super::newest_evidence_ms(Some(5), Some(9)), Some(9));
+        assert_eq!(super::newest_evidence_ms(Some(5), None), Some(5));
+    }
+
+    use super::*;
+
+    fn git_head(root: &std::path::Path) -> String {
+        String::from_utf8(std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string()
+    }
+
+    fn staged(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    // what this catches: the containment rule is what binds a card to a repo, and it is
+    // by construction (dispatch writes the title from the instance). A title that names
+    // the instance resolves; an unrelated title does not, so an ordinary chat card never
+    // silently re-roots a citizen's hands into a benchmark checkout.
+    #[test]
+    fn a_title_naming_a_staged_instance_selects_it_and_others_do_not() {
+        let staged = staged(&["sympy__sympy-24152", "psf__requests-2148"]);
+        assert_eq!(
+            select(&staged, &["benchmark: sympy__sympy-24152 — fix the printer"]),
+            Selection::One("sympy__sympy-24152".to_string())
+        );
+        assert_eq!(
+            select(&staged, &["let's discuss the roadmap"]),
+            Selection::None,
+            "an ordinary card must never re-root her hands"
+        );
+    }
+
+    // what this catches: the ambiguity arm collapsing into a pick. Two staged instances
+    // named across the titles in play must REFUSE — rooting at either puts hands in a repo
+    // the other card is not about, and the diff taken there scores a false zero for the one
+    // actually being worked. Both callers depend on this staying distinguishable from
+    // "nothing staged": the work turn probes and leaves her hands alone, the claim
+    // dispatcher declines to fire a solve.
+    #[test]
+    fn titles_naming_two_staged_instances_refuse_rather_than_pick() {
+        let staged = staged(&["sympy__sympy-24152", "psf__requests-2148"]);
+        let both = select(
+            &staged,
+            &["bench: sympy__sympy-24152", "bench: psf__requests-2148"],
+        );
+        match both {
+            Selection::Ambiguous(c) => assert_eq!(c.len(), 2, "both candidates must be named"),
+            other => panic!("two matches must refuse, got {other:?}"),
+        }
+    }
+
+    // what this catches: nothing staged at all — the ordinary case for every non-benchmark
+    // citizen, which must resolve without the rule ever finding a hit.
+    #[test]
+    fn a_citizen_with_nothing_staged_selects_nothing() {
+        assert_eq!(select(&[], &["bench: sympy__sympy-24152"]), Selection::None);
+    }
+
+    // what this catches: a citizen with NO staged instances resolves to None without
+    // touching the filesystem layout at all — the ordinary case for every non-benchmark
+    // citizen, and the one that must stay free.
+    #[test]
+    fn a_citizen_with_nothing_staged_has_no_card_workspace() {
+        let peer = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"nothing-staged-fixture");
+        assert!(workspace_for_held_cards(&peer, ["benchmark: anything"]).is_none());
+    }
+
+    fn copy(name: &str, has_work: bool) -> StagedCopy {
+        StagedCopy {
+            peer: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()),
+            path: PathBuf::from(format!("/peers/{name}/workspace/swe/astropy__astropy-14995")),
+            has_work,
+            work_mtime_ms: None,
+        }
+    }
+
+    fn copy_at(name: &str, mtime_ms: u64) -> StagedCopy {
+        StagedCopy { work_mtime_ms: Some(mtime_ms), ..copy(name, true) }
+    }
+
+    // what this catches: two real patches on one instance (a card that changed
+    // hands) read as Ambiguous forever, so neither is ever graded. The newest
+    // known work is the candidate; a tie or an unknown mtime stays Ambiguous.
+    #[test]
+    fn two_worked_copies_grade_the_newest_and_a_tie_stays_ambiguous() {
+        let newest = grade_target(&[copy_at("kira", 1_000), copy_at("atlas", 2_000)]);
+        assert_eq!(newest, GradeTarget::One(PathBuf::from("/peers/atlas/workspace/swe/astropy__astropy-14995")));
+        assert!(matches!(grade_target(&[copy_at("kira", 2_000), copy_at("atlas", 2_000)]), GradeTarget::Ambiguous(_)));
+        assert!(matches!(grade_target(&[copy("kira", true), copy_at("atlas", 2_000)]), GradeTarget::Ambiguous(_)));
+    }
+
+    // what this catches: the false-zero generator. The SAME instance is legitimately staged
+    // into several citizens' workspaces (dispatch round-robins the roster). Measured live
+    // 2026-08-18: astropy-14995 sat in Atlas's tree DIRTY (a real fix) and Asha's tree CLEAN
+    // (staged, never worked). Grading the clean one returns resolved=false — a confident zero
+    // for work that existed ten directories away.
+    //
+    // The rule must therefore key on WORK, not on presence, and must refuse rather than pick
+    // when two citizens both worked it: grading either scores one citizen's diff against the
+    // other's card. Same posture as `select` above — ambiguity is reported, never resolved.
+    #[test]
+    fn the_worked_copy_is_graded_and_two_worked_copies_refuse() {
+        // one staged, unworked → an ABSENCE, never a zero
+        assert_eq!(grade_target(&[copy("asha", false)]), GradeTarget::NoWork);
+
+        // the live shape: two staged, exactly one worked → grade the worked one
+        let atlas = copy("atlas", true);
+        match grade_target(&[copy("asha", false), atlas.clone()]) {
+            GradeTarget::One(p) => assert_eq!(p, atlas.path, "the WORKED copy, not the first"),
+            other => panic!("expected the worked copy, got {other:?}"),
+        }
+
+        // two citizens both worked it → refuse, naming both
+        match grade_target(&[copy("atlas", true), copy("anwen", true)]) {
+            GradeTarget::Ambiguous(paths) => assert_eq!(paths.len(), 2),
+            other => panic!("two worked copies must never resolve, got {other:?}"),
+        }
+
+        // nothing staged at all → also an absence, not a panic
+        assert_eq!(grade_target(&[]), GradeTarget::NoWork);
+    }
+}

@@ -9,7 +9,10 @@ use ts_rs::TS;
 /// Model family hint for parser prioritization.
 /// When provided, the model-family-specific parser runs FIRST before generic fallbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/ModelFamily.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ModelFamily.ts"
+)]
 pub enum ModelFamily {
     /// DeepSeek v3, R1, Coder — Unicode fullwidth delimiters
     DeepSeek,
@@ -23,34 +26,6 @@ pub enum ModelFamily {
     Qwen,
     /// Fallback — try all formats in order
     Generic,
-}
-
-/// Detect model family from provider + model name strings.
-pub fn detect_model_family(provider: &str, model: &str) -> ModelFamily {
-    let p = provider.to_lowercase();
-    let m = model.to_lowercase();
-
-    // Provider-level matches
-    if p == "deepseek" || m.contains("deepseek") {
-        return ModelFamily::DeepSeek;
-    }
-
-    // Model name matches — check more specific names first
-    // (e.g. "hermes-3-llama-3.1" should match Hermes, not Llama)
-    if m.contains("hermes") {
-        return ModelFamily::Hermes;
-    }
-    if m.contains("qwen") {
-        return ModelFamily::Qwen;
-    }
-    if m.contains("mistral") || m.contains("mixtral") {
-        return ModelFamily::Mistral;
-    }
-    if m.contains("llama") {
-        return ModelFamily::Llama;
-    }
-
-    ModelFamily::Generic
 }
 
 /// Parse a model_family string hint into the enum.
@@ -178,34 +153,6 @@ mod tests {
         assert!(_ts.contains("tool_name"));
         assert!(_ts.contains("name_changed"));
         assert!(_ts.contains("param_corrections"));
-    }
-
-    #[test]
-    fn detect_model_family_from_provider() {
-        assert_eq!(
-            detect_model_family("deepseek", "deepseek-chat"),
-            ModelFamily::DeepSeek
-        );
-        assert_eq!(
-            detect_model_family("candle", "llama-3.1-8b"),
-            ModelFamily::Llama
-        );
-        assert_eq!(
-            detect_model_family("candle", "qwen2.5-coder-14b"),
-            ModelFamily::Qwen
-        );
-        assert_eq!(
-            detect_model_family("candle", "mistral-7b"),
-            ModelFamily::Mistral
-        );
-        assert_eq!(
-            detect_model_family("candle", "hermes-3-llama-3.1"),
-            ModelFamily::Hermes
-        );
-        assert_eq!(
-            detect_model_family("anthropic", "claude-3"),
-            ModelFamily::Generic
-        );
     }
 
     #[test]

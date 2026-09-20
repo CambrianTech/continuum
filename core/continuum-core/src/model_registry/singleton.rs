@@ -16,8 +16,7 @@
 //! A deferred `init_global` keeps that control.
 
 use super::catalog;
-use super::loader::{load_registry, Registry, RegistryError};
-use std::path::Path;
+use super::registry::{Registry, RegistryError};
 use std::sync::OnceLock;
 
 static GLOBAL: OnceLock<Registry> = OnceLock::new();
@@ -33,16 +32,6 @@ static GLOBAL: OnceLock<Registry> = OnceLock::new();
 /// ```
 pub fn init_global() -> Result<&'static Registry, RegistryError> {
     init_global_with(catalog::registry)
-}
-
-/// Legacy TOML initializer for parser tests and the short-lived migration
-/// window. Runtime boot must call [`init_global`], which uses the Rust
-/// catalog directly.
-pub fn init_global_from(
-    models: &Path,
-    providers: &Path,
-) -> Result<&'static Registry, RegistryError> {
-    init_global_with(|| load_registry(models, providers))
 }
 
 fn init_global_with(
@@ -98,13 +87,24 @@ mod tests {
         // that registry. That's still a valid state under our "first
         // caller wins" contract, so the assertion just has to hold
         // regardless of order.
-        let reg = init_global().expect("Rust catalog must load");
-        assert!(reg.models().count() > 0);
-        assert!(reg.providers().count() > 0);
-        // Canonical anchor: Claude Sonnet 4.5 must exist and have Vision.
-        let sonnet = reg
-            .model("claude-sonnet-4-5-20250929")
-            .expect("sonnet in registry");
-        assert!(sonnet.has(Capability::Vision));
+        //
+        // Run under a clean, serialized HOME (#72): if THIS is the first
+        // caller, `init_global()` resolves + hydrates local GGUFs from the HF
+        // cache under HOME, and reading the ambient HOME let a concurrent
+        // `with_test_home` leak a fake GGUF into this init. Sharing
+        // `with_test_home`'s lock + empty HOME serializes against every HOME
+        // mutation; the assertions here (Sonnet exists, has Vision) are
+        // hand-authored catalog facts that hold under any HOME.
+        let home = tempfile::tempdir().unwrap();
+        crate::model_registry::artifacts::with_test_home(home.path(), || {
+            let reg = init_global().expect("Rust catalog must load");
+            assert!(reg.models().count() > 0);
+            assert!(reg.providers().count() > 0);
+            // Canonical anchor: Claude Sonnet 4.5 must exist and have Vision.
+            let sonnet = reg
+                .model("claude-sonnet-4-5-20250929")
+                .expect("sonnet in registry");
+            assert!(sonnet.has(Capability::Vision));
+        });
     }
 }

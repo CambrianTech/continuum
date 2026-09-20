@@ -4,7 +4,7 @@
  * Where a provider runs its inference. Resolver consumes this to honor
  * `LocalOrCloudPolicy` without needing a hardcoded provider-id list.
  * Providers default to [`ProviderKind::Cloud`] so adding a new cloud
- * provider TOML row doesn't require an explicit `kind` line; local
+ * provider catalog row doesn't require an explicit `kind` line; local
  * providers MUST declare `kind = "local"` explicitly.
  */
 export type ProviderKind = "local" | "cloud";

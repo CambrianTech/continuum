@@ -15,6 +15,7 @@
 # (docs/infrastructure/PR891-E2E-VALIDATION.md).
 
 set -u  # unset vars are errors; deliberately NOT set -e (we want failures
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
         # to be caught + reported, not abort the whole run)
 
 # Resolve script dir so we can source the library regardless of cwd.
@@ -196,6 +197,68 @@ test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty() {
   return $rc
 }
 
+# Regression for card 873931f4: a clean deploy worktree must not inherit another
+# checkout's CMake owner, nor erase matching, unreadable or malformed evidence.
+# Exercise the actual shared CMake helper; no compiler or engine build is run.
+test_llama_cache_tracks_source_ownership() (
+  local temp_root scratch source_a source_b owner build helper
+  temp_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)" || return 1
+  scratch="$(mktemp -d "$temp_root/continuum-llama-cache.XXXXXX")" || return 1
+  scratch="$(cd "$scratch" && pwd -P)" || return 1
+  case "$scratch" in "$temp_root"/continuum-llama-cache.*) ;; *) return 1 ;; esac
+  trap 'rm -rf -- "$scratch"' EXIT
+  source_a="$scratch/source one"
+  source_b="$scratch/source two"
+  build="$scratch/llama-server-build"
+  helper="$SCRIPT_DIR/prepare-llama-build.cmake"
+  mkdir -p "$source_a" "$source_b" "$build" || return 1
+  touch "$source_a/CMakeLists.txt" "$source_b/CMakeLists.txt" || return 1
+  owner="$source_a"
+  if command -v cygpath >/dev/null 2>&1; then
+    # CMakeCache on Windows can use native separators and casing; callers can
+    # arrive through Git Bash or native PowerShell. Both name the same owner.
+    owner="$(cygpath -w "$source_a")"
+  fi
+
+  cmake "-DSOURCE_DIR=$source_a" "-DBUILD_DIR=$build" -P "$helper" || return 1
+  [ ! -e "$build/CMakeCache.txt" ] || return 1
+  printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s\n' "$owner" > "$build/CMakeCache.txt"
+  mkdir -p "$build/CMakeFiles"
+  touch "$build/CMakeFiles/preserve" "$build/preserve-output"
+  cmake "-DSOURCE_DIR=$source_a/../source one" "-DBUILD_DIR=$build" -P "$helper" || return 1
+  [ -f "$build/CMakeFiles/preserve" ] && [ -f "$build/CMakeCache.txt" ] || return 1
+
+  local out
+  out="$(cmake "-DSOURCE_DIR=$source_b" "-DBUILD_DIR=$build" -P "$helper" 2>&1)" || return 1
+  assert_contains 'source changed:' "$out" || return 1
+  [ ! -e "$build/CMakeCache.txt" ] && [ ! -e "$build/CMakeFiles" ] || return 1
+  [ -f "$build/preserve-output" ] || return 1
+
+  # Unknown ownership is a refusal, not an excuse to clear the cache.
+  printf 'NOT_AN_OWNER:BOOL=ON\n' > "$build/CMakeCache.txt"
+  mkdir -p "$build/CMakeFiles"
+  touch "$build/CMakeFiles/preserve"
+  if out="$(cmake "-DSOURCE_DIR=$source_b" "-DBUILD_DIR=$build" -P "$helper" 2>&1)"; then return 1; fi
+  assert_contains 'cannot identify the source owner' "$out" || return 1
+  [ -f "$build/CMakeCache.txt" ] && [ -f "$build/CMakeFiles/preserve" ] || return 1
+
+  # A path that cannot be read as a cache must remain intact too.
+  rm -- "$build/CMakeCache.txt" || return 1
+  mkdir "$build/CMakeCache.txt" || return 1
+  touch "$build/CMakeCache.txt/preserve"
+  if out="$(cmake "-DSOURCE_DIR=$source_b" "-DBUILD_DIR=$build" -P "$helper" 2>&1)"; then return 1; fi
+  assert_contains 'CMakeCache.txt' "$out" || return 1
+  [ -f "$build/CMakeCache.txt/preserve" ] && [ -f "$build/CMakeFiles/preserve" ] || return 1
+
+  # Even an explicitly supplied path cannot redirect removal into a source tree.
+  if out="$(cmake "-DSOURCE_DIR=$source_b" "-DBUILD_DIR=$source_a" -P "$helper" 2>&1)"; then return 1; fi
+  assert_contains 'unexpected llama-server build directory' "$out" || return 1
+  [ -f "$source_a/CMakeLists.txt" ]
+)
+
+# Permit a focused scratch-only test without executing installer tier tests.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
 # ── Runner ───────────────────────────────────────────────────
 echo ""
 echo "install-common.test.sh — smoke suite"
@@ -226,6 +289,7 @@ _run_test test_mod_docker_wsl_integration_skips_on_macos
 _run_test test_mod_tailscale_check_handles_missing
 _run_test test_mod_docker_check_fails_loud_when_missing
 _run_test test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty
+_run_test test_llama_cache_tracks_source_ownership
 
 echo ""
 echo "------------------------------------"

@@ -271,7 +271,6 @@ impl SelfTaskGenerator {
             let suggested_mode = if gap.domain == "code"
                 || gap.domain.contains("code")
                 || gap.domain.contains("typescript")
-                || gap.domain.contains("python")
                 || gap.domain.contains("rust")
             {
                 "coding"

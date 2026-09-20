@@ -53,12 +53,16 @@ use crate::cognition::adaptive_throughput::{
     ThroughputJob, ThroughputLaneBudget,
 };
 use crate::cognition::throughput_lease::ThroughputLease;
-use crate::genome::working_set::PersonaId;
+use crate::governor::classify_hardware;
+use crate::governor::types::TargetSilicon as GovernorSilicon;
+use crate::identity::PeerId;
 use crate::inference::footprint_registry::{FootprintKey, FootprintRegistry, ResourceType};
 use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
 use crate::inference::kv_quant::Residency;
 use crate::inference::lane::{Lane, LaneClass};
 use crate::inference::recipe_budget::TaskKind;
+use crate::inference_capability::hw_probe::probe_hardware_profile;
+use crate::paging::lease_revocation::disruption_rank;
 use crate::runtime::cell_shapes::HandleRef;
 
 /// Configuration the coordinator needs at construction.
@@ -80,23 +84,72 @@ pub struct CoordinatorConfig {
 }
 
 impl CoordinatorConfig {
-    /// Sensible default for a CPU-only / unified-memory host. The
-    /// "realistic floor" from the lanes-realistic doc:
-    /// - Local-generation budget for UnifiedMemory @ 4 concurrent lanes,
-    ///   total cost-units ~80K tokens (covers 3× chat + 1× spare).
-    /// - Default ~64 KB / token for FP16 KV.
-    pub fn realistic_floor_default() -> Self {
+    /// The realistic-floor lane budget retargeted to a specific silicon
+    /// class — the canonical config builder. Shape from the lanes-realistic
+    /// doc (4 concurrent lanes, ~80K cost-units, ~64 KB/token FP16 KV); only
+    /// the admission silicon varies. Real per-tier budgets arrive from the
+    /// governor's policy file in a later slice — this fixes the SILICON
+    /// label so the production default isn't anchored on the CPU/UMA floor.
+    pub fn for_silicon(silicon: TargetSilicon) -> Self {
         Self {
             lane_budgets: vec![ThroughputLaneBudget {
                 resource_class: ResourceClass::LocalGeneration,
-                target_silicon: TargetSilicon::UnifiedMemory,
+                target_silicon: silicon,
                 max_concurrency: 4,
                 max_cost_units: 80_000,
             }],
             bytes_per_token: 64 * 1024,
             lease_duration_ms: 30 * 60 * 1000, // 30 minutes
-            default_target_silicon: TargetSilicon::UnifiedMemory,
+            default_target_silicon: silicon,
         }
+    }
+
+    /// The "realistic floor" — UnifiedMemory budget. Kept for tests and for
+    /// constrained hosts that explicitly want the floor; NOT the production
+    /// default (see [`detected`](Self::detected)).
+    pub fn realistic_floor_default() -> Self {
+        Self::for_silicon(TargetSilicon::UnifiedMemory)
+    }
+
+    /// Hardware-detected config: probe the machine, classify its silicon,
+    /// and build a [`for_silicon`](Self::for_silicon) budget for it. On an
+    /// RTX 5090 this yields a `Gpu`-targeted coordinator; on Apple Silicon,
+    /// `UnifiedMemory`; on a GPU-less host, `Cpu`. This RETIRES the hardcoded
+    /// `UnifiedMemory` default — GPU-or-bust means the production default
+    /// follows the hardware, not a Mac/CPU floor.
+    ///
+    /// One-shot startup probe (a few file reads + per-backend FFI, per
+    /// `probe_hardware_profile`) — call once at boot, reuse the config.
+    pub fn detected() -> Self {
+        let class = classify_hardware(&probe_hardware_profile());
+        Self::for_silicon(coordinator_silicon_for(class.silicon))
+    }
+}
+
+/// Map the governor's hardware-detected [`GovernorSilicon`] to the
+/// coordinator's [`TargetSilicon`] admission class — the seam between the
+/// SubstrateGovernor's hardware classification (`classify_hardware`) and the
+/// lane scheduler.
+///
+/// `AppleM` → `UnifiedMemory` (Apple-silicon shared accelerator memory);
+/// every discrete/Metal GPU class (`NvidiaCuda` / `AmdRocm` / `IntelVulkan` /
+/// `MacIntelMetal`) → `Gpu`; `None` (no accelerator detected) → `Cpu`. `Cpu`
+/// is the HONEST classification, not a silent floor — a GPU-or-bust caller
+/// inspects the result and refuses rather than quietly serving CPU.
+///
+/// `MacIntelMetal` (Intel Mac with a Metal-addressable discrete/integrated
+/// GPU — task #52) maps to `Gpu`, NOT `UnifiedMemory`: it is a real GPU, but
+/// not Apple-silicon shared memory. Added when the governor gained the
+/// variant (#1624); this match is in the `--features metal` build path, so
+/// the no-metal Linux CI did not catch the non-exhaustive gap.
+pub fn coordinator_silicon_for(detected: GovernorSilicon) -> TargetSilicon {
+    match detected {
+        GovernorSilicon::AppleM => TargetSilicon::UnifiedMemory,
+        GovernorSilicon::NvidiaCuda
+        | GovernorSilicon::AmdRocm
+        | GovernorSilicon::IntelVulkan
+        | GovernorSilicon::MacIntelMetal => TargetSilicon::Gpu,
+        GovernorSilicon::None => TargetSilicon::Cpu,
     }
 }
 
@@ -107,7 +160,7 @@ impl CoordinatorConfig {
 /// whole request.
 #[derive(Clone)]
 pub struct OpenLaneRequest {
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     /// The adapter the session runs against. The coordinator
     /// doesn't touch the registry — caller passes the chosen
@@ -134,7 +187,7 @@ pub enum CoordinatorError {
     AdmissionDenied {
         reason: AdmissionDenyReason,
         task: TaskKind,
-        persona: PersonaId,
+        persona: PeerId,
     },
     LeaseAcquireFailed(String),
     HandleNotFound {
@@ -160,7 +213,11 @@ pub enum AdmissionDenyReason {
 impl std::fmt::Display for CoordinatorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoordinatorError::AdmissionDenied { reason, task, persona } => write!(
+            CoordinatorError::AdmissionDenied {
+                reason,
+                task,
+                persona,
+            } => write!(
                 f,
                 "coordinator: admission denied (reason: {reason:?}, task: {task:?}, persona: {})",
                 persona.as_uuid()
@@ -181,7 +238,7 @@ impl std::error::Error for CoordinatorError {}
 /// inspection commands per [[observability-is-half-the-architecture]].
 #[derive(Debug, Clone)]
 pub struct LaneInspection {
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     pub class: LaneClass,
     pub handle_id: Uuid,
@@ -203,7 +260,7 @@ pub enum LaneCaptureEvent {
     /// Open succeeded — admission passed, lease acquired, handle minted.
     LaneOpened {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         class: LaneClass,
         handle_id: Uuid,
@@ -215,7 +272,7 @@ pub enum LaneCaptureEvent {
     /// Open failed admission — admission planner denied.
     LaneAdmissionDenied {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         reason: AdmissionDenyReason,
         cost_units_requested: u32,
@@ -224,7 +281,7 @@ pub enum LaneCaptureEvent {
     /// Close — lane released, footprint freed, handle closed.
     LaneClosed {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         handle_id: Uuid,
         lease_id: String,
@@ -236,7 +293,7 @@ pub enum LaneCaptureEvent {
     /// lane was picked.
     LaneEvicted {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         class: LaneClass,
         handle_id: Uuid,
@@ -277,7 +334,7 @@ pub struct EvictionResult {
 #[derive(Debug, Clone)]
 pub struct EvictedLane {
     pub handle_id: Uuid,
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     pub class: LaneClass,
     pub bytes_freed: u64,
@@ -387,10 +444,7 @@ impl InferenceCoordinator {
     /// errors after the handle was already opened — that doesn't
     /// happen in the current code path because we open the handle
     /// LAST, but the invariant should hold even after Step 4.
-    pub fn open_lane(
-        &self,
-        req: OpenLaneRequest,
-    ) -> Result<HandleRef, CoordinatorError> {
+    pub fn open_lane(&self, req: OpenLaneRequest) -> Result<HandleRef, CoordinatorError> {
         let class = req
             .class_override
             .unwrap_or_else(|| LaneClass::default_for_task(req.task));
@@ -494,9 +548,7 @@ impl InferenceCoordinator {
             holder_id: req.persona.as_uuid().to_string(),
             cost_units,
             acquired_at_ms: req.now_ms,
-            expires_at_ms: req
-                .now_ms
-                .saturating_add(self.config.lease_duration_ms),
+            expires_at_ms: req.now_ms.saturating_add(self.config.lease_duration_ms),
             revocation_policy: class.revocation_policy(),
         };
         let key = FootprintKey::for_persona(
@@ -520,17 +572,17 @@ impl InferenceCoordinator {
         );
 
         // ── Step D: bind lane ────────────────────────────────────
-        let lane = Lane::new(req.persona, req.task, lease, handle.id, class);
+        let lane = Lane::new(req.persona, req.task, lease, handle.id.as_uuid(), class);
         let lease_id_for_event = lane.lease_id().to_string();
         let target_silicon_for_event = lane.lease().target_silicon;
-        self.lanes.insert(handle.id, lane);
+        self.lanes.insert(handle.id.as_uuid(), lane);
 
         self.capture_sink.record(LaneCaptureEvent::LaneOpened {
             captured_at_ms: req.now_ms,
             persona: req.persona,
             task: req.task,
             class,
-            handle_id: handle.id,
+            handle_id: handle.id.as_uuid(),
             lease_id: lease_id_for_event,
             cost_units,
             bytes_accounted: bytes,
@@ -543,12 +595,12 @@ impl InferenceCoordinator {
     /// handle. Idempotent — closing an already-closed handle is OK
     /// (returns Ok(false)).
     pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
-        let Some((_, lane)) = self.lanes.remove(&handle.id) else {
+        let Some((_, lane)) = self.lanes.remove(&handle.id.as_uuid()) else {
             self.capture_sink.record(LaneCaptureEvent::LaneClosed {
                 captured_at_ms: now_ms_for_capture(),
-                persona: PersonaId::new(Uuid::nil()),
+                persona: PeerId::from_uuid(Uuid::nil()),
                 task: TaskKind::Chat,
-                handle_id: handle.id,
+                handle_id: handle.id.as_uuid(),
                 lease_id: String::new(),
                 was_present: false,
             });
@@ -563,7 +615,7 @@ impl InferenceCoordinator {
             captured_at_ms: now_ms_for_capture(),
             persona,
             task,
-            handle_id: handle.id,
+            handle_id: handle.id.as_uuid(),
             lease_id,
             was_present: true,
         });
@@ -597,53 +649,58 @@ impl InferenceCoordinator {
     /// the conversation ends. Operator's escape valve: lease
     /// expiry — when a pinned lease expires (lease.expires_at_ms <
     /// now_ms), step 1 collects it like any other expired lease.
+    ///
+    /// The tier ordering above is NOT re-encoded here — it comes from the
+    /// single revocation-ladder definition,
+    /// [`disruption_rank`](crate::paging::lease_revocation::disruption_rank),
+    /// shared with `select_leases_to_revoke`. This method is one
+    /// *selection strategy* over that ladder (oldest-first, ungated,
+    /// lane-aware); the broker-style strategy is another.
     pub fn evict_under_pressure(&self, target_bytes: u64, now_ms: u64) -> EvictionResult {
         // Snapshot lane references so we don't hold DashMap entries
         // while we mutate. We need (handle_id, lease_acquired_at_ms,
-        // class, expired?, bytes_to_free).
+        // class, revocation rank, bytes_to_free).
+        //
+        // `rank` comes from the SINGLE revocation-ladder definition
+        // (`disruption_rank`) — NOT a parallel inline class→tier match.
+        // `disruption_rank` reads `lease.revocation_policy`, which
+        // `open_lane` sets from `LaneClass::revocation_policy()`, so the
+        // ranks are identical to the former inline tier() (expired=0,
+        // Hard=1, Graceful=2) while keeping the ladder defined once. An
+        // active `Pinned` lane returns `None` here and is filtered out
+        // entirely (the substrate contract: pressure never evicts it).
         struct EvictCandidate {
             handle_id: Uuid,
             acquired_at_ms: u64,
-            class: LaneClass,
-            expired: bool,
+            rank: u8,
             bytes: u64,
         }
         let bytes_per_token = self.config.bytes_per_token;
         let mut candidates: Vec<EvictCandidate> = self
             .lanes
             .iter()
-            .map(|entry| {
+            .filter_map(|entry| {
                 let lane = entry.value();
-                let expired = lane.is_expired(now_ms);
-                EvictCandidate {
+                // None = active Pinned (Realtime, unexpired) → never a
+                // pressure-eviction candidate. Expired leases of any
+                // policy rank 0 (their holder is gone).
+                let rank = disruption_rank(lane.lease(), now_ms)?;
+                Some(EvictCandidate {
                     handle_id: lane.handle_id(),
                     acquired_at_ms: lane.lease().acquired_at_ms,
-                    class: lane.class(),
-                    expired,
+                    rank,
                     bytes: (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token),
-                }
+                })
             })
             .collect();
 
-        // Three tiers, each sorted by acquired_at_ms ascending
-        // (oldest first). Pinned lanes are excluded entirely unless
-        // expired (in which case they go in tier 1).
+        // Least-disruptive first (rank ascending: expired → Hard →
+        // Graceful), and within a rank oldest-first by acquisition time —
+        // the coordinator's fairness choice (drain the longest-running
+        // lane of a class before younger ones).
         candidates.sort_by(|a, b| {
-            // Sort key: (tier_rank, acquired_at_ms).
-            // tier_rank: 0 = expired, 1 = Hard, 2 = Graceful, 3 = Pinned (excluded later)
-            fn tier(c: &EvictCandidate) -> u8 {
-                if c.expired {
-                    0
-                } else {
-                    match c.class {
-                        LaneClass::Background | LaneClass::Sentinel => 1,
-                        LaneClass::Interactive => 2,
-                        LaneClass::Realtime => 3,
-                    }
-                }
-            }
-            tier(a)
-                .cmp(&tier(b))
+            a.rank
+                .cmp(&b.rank)
                 .then(a.acquired_at_ms.cmp(&b.acquired_at_ms))
         });
 
@@ -653,16 +710,13 @@ impl InferenceCoordinator {
             if bytes_freed >= target_bytes {
                 break;
             }
-            // Pinned + not expired → skip (substrate contract).
-            if cand.class == LaneClass::Realtime && !cand.expired {
-                continue;
-            }
-            let reason = if cand.expired {
-                EvictionReason::LeaseExpired
-            } else if matches!(cand.class, LaneClass::Background | LaneClass::Sentinel) {
-                EvictionReason::PressureHard
-            } else {
-                EvictionReason::PressureGraceful
+            // Reason derives from the shared rank: 0 = expired lease
+            // reclaim, 1 = Hard (Background/Sentinel) under pressure,
+            // 2 = Graceful (Interactive) under pressure.
+            let reason = match cand.rank {
+                0 => EvictionReason::LeaseExpired,
+                1 => EvictionReason::PressureHard,
+                _ => EvictionReason::PressureGraceful,
             };
 
             // Snapshot the lane's persona + task + lease_id BEFORE
@@ -681,7 +735,7 @@ impl InferenceCoordinator {
             // can't fail unrecoverably; we don't propagate.
             let handle_ref = HandleRef {
                 owner: crate::inference::handle_store::HANDLE_OWNER.to_string(),
-                id: cand.handle_id,
+                id: cand.handle_id.into(),
                 type_tag: crate::inference::handle_store::HANDLE_TYPE_TAG.to_string(),
                 created_at_ms: lane.lease().acquired_at_ms,
             };
@@ -719,7 +773,7 @@ impl InferenceCoordinator {
     /// module's inspect command per
     /// [[observability-is-half-the-architecture]].
     pub fn inspect(&self, handle: &HandleRef) -> Option<LaneInspection> {
-        self.lanes.get(&handle.id).map(|entry| {
+        self.lanes.get(&handle.id.as_uuid()).map(|entry| {
             let lane = entry.value();
             let bytes = (lane.seed_kv_tokens() as u64).saturating_mul(self.config.bytes_per_token);
             LaneInspection {
@@ -741,7 +795,9 @@ impl InferenceCoordinator {
     /// Snapshot of one lane (clone) — used by tests + the handle
     /// module for delegation.
     pub fn lane_for_handle(&self, handle: &HandleRef) -> Option<Lane> {
-        self.lanes.get(&handle.id).map(|e| e.value().clone())
+        self.lanes
+            .get(&handle.id.as_uuid())
+            .map(|e| e.value().clone())
     }
 
     pub fn lane_count(&self) -> usize {
@@ -794,8 +850,7 @@ impl InferenceCoordinator {
             .iter()
             .map(|entry| {
                 let lane = entry.value();
-                let size_bytes =
-                    (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token);
+                let size_bytes = (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token);
                 crate::paging::pool::ResourcePoolEntry {
                     key: lane.handle_id().to_string(),
                     size_bytes,
@@ -845,8 +900,69 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
-    fn persona(id: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(id))
+    fn persona(id: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(id))
+    }
+
+    /// what this catches: the governor→coordinator silicon translation. A
+    /// discrete GPU (NvidiaCuda/AmdRocm/IntelVulkan) MUST map to `Gpu` (not
+    /// the UnifiedMemory floor) — that's the GPU-or-bust fix. AppleM →
+    /// UnifiedMemory; `None` → `Cpu` (honest, not a silent GPU pretense).
+    #[test]
+    fn governor_silicon_maps_discrete_gpu_to_gpu_not_floor() {
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::NvidiaCuda),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::AmdRocm),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::IntelVulkan),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::AppleM),
+            TargetSilicon::UnifiedMemory
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::None),
+            TargetSilicon::Cpu
+        );
+    }
+
+    /// what this catches: `for_silicon` sets BOTH the lane-budget silicon AND
+    /// the default to the SAME class — a mismatch would deny admission (the
+    /// planner looks up the budget by the lease's target_silicon). Pins that
+    /// a Gpu config targets Gpu end-to-end, not a stray UnifiedMemory.
+    #[test]
+    fn for_silicon_targets_one_silicon_end_to_end() {
+        let cfg = CoordinatorConfig::for_silicon(TargetSilicon::Gpu);
+        assert_eq!(cfg.default_target_silicon, TargetSilicon::Gpu);
+        assert_eq!(cfg.lane_budgets.len(), 1);
+        assert_eq!(cfg.lane_budgets[0].target_silicon, TargetSilicon::Gpu);
+        // realistic_floor_default is now just for_silicon(UnifiedMemory).
+        let floor = CoordinatorConfig::realistic_floor_default();
+        assert_eq!(floor.default_target_silicon, TargetSilicon::UnifiedMemory);
+        assert_eq!(
+            floor.lane_budgets[0].target_silicon,
+            TargetSilicon::UnifiedMemory
+        );
+    }
+
+    /// what this catches: `detected()` runs to completion without panicking
+    /// on the test host (the probe→classify→translate chain), and the result
+    /// it produces is self-consistent. The end-to-end consistency invariant
+    /// itself is owned by `for_silicon_targets_one_silicon_end_to_end`; this
+    /// is the smoke test that the real hardware-probe path doesn't blow up.
+    #[test]
+    fn detected_config_runs_without_panicking() {
+        let cfg = CoordinatorConfig::detected();
+        assert_eq!(
+            cfg.default_target_silicon,
+            cfg.lane_budgets[0].target_silicon
+        );
     }
 
     fn small_budget_config() -> CoordinatorConfig {
@@ -875,9 +991,11 @@ mod tests {
         InferenceCoordinator::new(footprint, handle_store, small_budget_config())
     }
 
-    fn open_chat(c: &InferenceCoordinator, persona_id: u128, now_ms: u64)
-        -> Result<HandleRef, CoordinatorError>
-    {
+    fn open_chat(
+        c: &InferenceCoordinator,
+        persona_id: u128,
+        now_ms: u64,
+    ) -> Result<HandleRef, CoordinatorError> {
         c.open_lane(OpenLaneRequest {
             persona: persona(persona_id),
             task: TaskKind::Chat,
@@ -908,7 +1026,7 @@ mod tests {
         assert_eq!(lane.persona(), persona(1));
         assert_eq!(lane.task(), TaskKind::Chat);
         assert_eq!(lane.class(), LaneClass::Interactive);
-        assert_eq!(lane.handle_id(), h.id);
+        assert_eq!(lane.handle_id(), h.id.as_uuid());
     }
 
     #[test]
@@ -944,16 +1062,18 @@ mod tests {
     fn admission_denies_when_cost_units_exceeded() {
         // Two CodingLarge (128K each) blows past 20K max_cost_units.
         let c = build_coordinator();
-        let _ = c.open_lane(OpenLaneRequest {
-            persona: persona(1),
-            task: TaskKind::CodingLarge,
-            adapter: Arc::new(HeuristicInferenceAdapter::new()),
-            model: None,
-            system_prompt: None,
-            active_adapters: None,
-            class_override: None,
-            now_ms: 1_000_000,
-        }).unwrap_err();
+        let _ = c
+            .open_lane(OpenLaneRequest {
+                persona: persona(1),
+                task: TaskKind::CodingLarge,
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                model: None,
+                system_prompt: None,
+                active_adapters: None,
+                class_override: None,
+                now_ms: 1_000_000,
+            })
+            .unwrap_err();
         // Even the FIRST CodingLarge fails because its cost_units
         // (128K) exceeds the lane's max_cost_units (20K).
         assert_eq!(c.lane_count(), 0);
@@ -1041,7 +1161,7 @@ mod tests {
         assert_eq!(inspection.persona, persona(7));
         assert_eq!(inspection.task, TaskKind::Chat);
         assert_eq!(inspection.class, LaneClass::Interactive);
-        assert_eq!(inspection.handle_id, h.id);
+        assert_eq!(inspection.handle_id, h.id.as_uuid());
         assert_eq!(inspection.seed_kv_tokens, 8 * 1024);
         assert_eq!(inspection.max_kv_tokens, 16 * 1024);
         assert_eq!(inspection.bytes_accounted, 8 * 1024); // small config bytes_per_token=1
@@ -1089,7 +1209,7 @@ mod tests {
                 assert_eq!(*p, persona(1));
                 assert_eq!(*task, TaskKind::Chat);
                 assert_eq!(*class, LaneClass::Interactive);
-                assert_eq!(*handle_id, h.id);
+                assert_eq!(*handle_id, h.id.as_uuid());
                 assert_eq!(*cost_units, 8 * 1024);
                 assert_eq!(*target_silicon, TargetSilicon::Cpu);
             }
@@ -1113,7 +1233,12 @@ mod tests {
         let events = sink.snapshot();
         assert_eq!(events.len(), 3); // 2 opened + 1 denied
         match &events[2] {
-            LaneCaptureEvent::LaneAdmissionDenied { reason, persona: p, task, .. } => {
+            LaneCaptureEvent::LaneAdmissionDenied {
+                reason,
+                persona: p,
+                task,
+                ..
+            } => {
                 assert_eq!(*reason, AdmissionDenyReason::ResourcePressure);
                 assert_eq!(*p, persona(3));
                 assert_eq!(*task, TaskKind::Chat);
@@ -1272,7 +1397,13 @@ mod tests {
         let c = build_eviction_coordinator();
         // 1 realtime (pinned), 1 background — evict 100MB of pressure.
         let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
         let result = c.evict_under_pressure(100_000_000, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
         assert_eq!(result.evicted[0].class, LaneClass::Background);
@@ -1287,9 +1418,22 @@ mod tests {
     fn evict_under_pressure_prefers_hard_then_graceful() {
         let c = build_eviction_coordinator();
         // 1 Interactive (Graceful) + 1 Background (Hard) + 1 Sentinel (Hard).
-        let _interactive = open_with_class(&c, 1, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
-        let _sentinel = open_with_class(&c, 3, TaskKind::SentinelEasy, LaneClass::Sentinel, 1_000_000);
+        let _interactive =
+            open_with_class(&c, 1, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
+        let _sentinel = open_with_class(
+            &c,
+            3,
+            TaskKind::SentinelEasy,
+            LaneClass::Sentinel,
+            1_000_000,
+        );
         // Evict just one lane's worth (small budget).
         let result = c.evict_under_pressure(1, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
@@ -1308,8 +1452,20 @@ mod tests {
     fn evict_under_pressure_picks_oldest_within_same_tier() {
         let c = build_eviction_coordinator();
         // Two Background lanes, different acquired_at_ms.
-        let _old = open_with_class(&c, 1, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
-        let _new = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 2_000_000);
+        let _old = open_with_class(
+            &c,
+            1,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
+        let _new = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            2_000_000,
+        );
         let result = c.evict_under_pressure(1, 3_000_000);
         assert_eq!(result.evicted.len(), 1);
         // Older lane (persona 1, acquired at 1M) gets evicted first.
@@ -1325,7 +1481,13 @@ mod tests {
         // Realtime opens at 1M with 5M lease → expires at 6M.
         let _realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
         // Background opens at 5M with 5M lease → expires at 10M.
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 5_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            5_000_000,
+        );
         // Evict at 7M: realtime expired, background still active.
         let result = c.evict_under_pressure(1, 7_000_000);
         assert_eq!(result.evicted.len(), 1);
@@ -1339,7 +1501,13 @@ mod tests {
         // 3 Background lanes, each 32K tokens = 32K bytes (with
         // bytes_per_token=1).
         for i in 1..=3 {
-            open_with_class(&c, i, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+            open_with_class(
+                &c,
+                i,
+                TaskKind::CodingSmall,
+                LaneClass::Background,
+                1_000_000,
+            );
         }
         // Target 33K bytes — enough for 2 lanes but not 3.
         let result = c.evict_under_pressure(33_000, 1_500_000);
@@ -1375,13 +1543,24 @@ mod tests {
         )
         .with_capture_sink(sink.clone());
         let _ = open_chat_now(&c, 1, 1_000_000); // Interactive (Graceful)
-        let _ = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000); // Hard
+        let _ = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        ); // Hard
         sink.drain(); // forget the LaneOpened events
         let _result = c.evict_under_pressure(1, 1_500_000);
         let events = sink.snapshot();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LaneCaptureEvent::LaneEvicted { reason, class, bytes_freed, .. } => {
+            LaneCaptureEvent::LaneEvicted {
+                reason,
+                class,
+                bytes_freed,
+                ..
+            } => {
                 assert_eq!(*reason, EvictionReason::PressureHard);
                 assert_eq!(*class, LaneClass::Background);
                 assert_eq!(*bytes_freed, 32 * 1024);
@@ -1422,7 +1601,13 @@ mod tests {
         let c = build_eviction_coordinator();
         let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
         let interactive = open_with_class(&c, 2, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
-        let _background = open_with_class(&c, 3, TaskKind::GameNpcIdle, LaneClass::Background, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            3,
+            TaskKind::GameNpcIdle,
+            LaneClass::Background,
+            1_000_000,
+        );
         let result = c.evict_under_pressure(4 * 1024, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
         assert_eq!(result.evicted[0].class, LaneClass::Background);

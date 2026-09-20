@@ -193,7 +193,12 @@ pub async fn dispatch_to_node(
     // 5 minute timeout for long operations (training, etc.)
     let response = tokio::time::timeout(Duration::from_secs(300), conn.recv_frame())
         .await
-        .map_err(|_| format!("Command '{remote_command}' on {} timed out (300s)", node.node_id))?
+        .map_err(|_| {
+            format!(
+                "Command '{remote_command}' on {} timed out (300s)",
+                node.node_id
+            )
+        })?
         .map_err(|e| format!("Recv from {} failed: {e}", node.node_id))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -299,6 +304,15 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
     let address = TransportAddress::tailscale(address_str, name.map(String::from));
     let node_id = address_str.to_string();
 
+    // The durable airc identity, if the caller knows it (#2228 — a NODE is an airc peer,
+    // the sibling of persona_id == peer_id). Optional: manual pairing by address alone
+    // won't carry it, and the gossip correlation supplies it later via set_peer_id.
+    let peer_id = params
+        .get("peerId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .map(crate::identity::PeerId::from_uuid);
+
     let node = GridNode {
         node_id: node_id.clone(),
         node_name: name.map(String::from),
@@ -307,6 +321,15 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         trust_level: trust,
         last_seen: frame::now_millis(),
         latency_ms: None,
+        peer_id,
+        build_sha: None,
+        build_number: 0,
+        served_model: None,
+        lanes: 0,
+        residents: 0,
+        silent_secs: 0,
+        stale: false,
+        behind: false,
     };
 
     state.registry.register_node(node);
@@ -315,6 +338,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
     Ok(CommandResult::Json(json!({
         "paired": true,
         "nodeId": node_id,
+        "peerId": peer_id.map(|p| p.to_string()),
         "trustLevel": trust_str,
         "capabilities": capabilities,
     })))
@@ -441,9 +465,22 @@ pub async fn handle_job_submit(
     .map_err(|e| format!("Failed to write alloy: {e}"))?;
 
     // Find alloy_executor.py
-    let executor = find_alloy_executor();
+    // The forge executor is the core's ONE remaining runtime Python dependency, and it
+    // lives in a SIBLING repo (`../sentinel-ai/scripts/alloy_executor.py`) that a fresh
+    // clone of this repo does not have. Not finding it used to return pid 0 and write
+    // `state: "queued"` — indistinguishable from a job legitimately waiting its turn, so
+    // `forge/start` reported SUCCESS for work that would never run, on every machine that
+    // had only cloned continuum. Fail loud and name what is missing.
+    // Tracked for excision to Rust by #52 / #99.
+    let exec_path = find_alloy_executor().ok_or_else(|| {
+        "forge/start cannot run: the alloy executor was not found. It is a Python script in \
+         the sibling sentinel-ai repo, which this clone does not have. Set ALLOY_EXECUTOR to \
+         its path, or clone sentinel-ai next to this repo. (The job was NOT queued — nothing \
+         would have run it.)"
+            .to_string()
+    })?;
 
-    let pid = if let Some(exec_path) = executor {
+    let pid = {
         // Start forge pipeline
         let log_file =
             std::fs::File::create(&log_path).map_err(|e| format!("Failed to create log: {e}"))?;
@@ -467,8 +504,6 @@ pub async fn handle_job_submit(
             .spawn()
             .map_err(|e| format!("Failed to start forge: {e}"))?;
         child.id()
-    } else {
-        0 // No executor found — job is queued but not started
     };
 
     let alloy_name = alloy
@@ -706,6 +741,37 @@ fn is_local_node(state: &Arc<GridState>, node_id: &str) -> bool {
 
 // ── Helper functions for job management ─────────────────────────────────
 
+/// `system_profiler`'s VRAM string ("1536 MB", "8 GB") in MEGABYTES.
+///
+/// READS the unit rather than assuming it. The previous code took the leading
+/// number and multiplied by 1024 unconditionally — correct for Apple Silicon,
+/// which reports GB, and wrong by exactly 1024x on an Intel Mac, which reports
+/// MB. Measured 2026-09-05: `spdisplays_vram_shared` = "1536 MB" on an Intel
+/// UHD 630 became `memoryTotalMb: 1572864`, so the weakest node on the grid
+/// advertised 1.5 TB of VRAM.
+///
+/// Direction of the error is why this is worth a named function: a capability
+/// report that OVERSTATES makes a node claim work it cannot do, and the failure
+/// lands far from the cause — a lane dying on a box that "had plenty of memory".
+/// Understating only costs throughput. So an unrecognised unit returns `None`
+/// (surfacing as 0 / unknown) rather than guessing a multiplier
+/// (`[[no-fallbacks-ever]]`): silence is honest, a guess is a confident lie.
+///
+/// Deliberately NOT `#[cfg(target_os = "macos")]` even though only the macOS
+/// arm calls it: the parsing is platform-independent, so leaving it compiled
+/// everywhere lets the Linux and Windows CI runners execute its tests too. A
+/// macOS-only unit would be verified by exactly one runner.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn vram_string_to_mb(s: &str) -> Option<u32> {
+    let mut parts = s.split_whitespace();
+    let value: u32 = parts.next()?.parse().ok()?;
+    match parts.next()?.to_ascii_uppercase().as_str() {
+        u if u.starts_with("GB") => value.checked_mul(1024),
+        u if u.starts_with("MB") => Some(value),
+        _ => None,
+    }
+}
+
 fn query_gpu_info() -> Value {
     // NVIDIA: Try WSL2 path first, then standard
     let nvidia_smi = if std::path::Path::new("/usr/lib/wsl/lib/nvidia-smi").exists() {
@@ -765,9 +831,7 @@ fn query_gpu_info() -> Value {
                             .get("spdisplays_vram_shared")
                             .or_else(|| gpu.get("spdisplays_vram"))
                             .and_then(|v| v.as_str())
-                            .and_then(|s| s.split_whitespace().next())
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .map(|gb| gb * 1024)
+                            .and_then(vram_string_to_mb)
                             .unwrap_or(0);
                         return json!({
                             "name": name,
@@ -1370,5 +1434,50 @@ pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<Comma
             "nodeName": node.node_name,
             "reason": reason,
         }))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// what this catches: a capability report that OVERSTATES what this node has.
+    ///
+    /// The producer took `system_profiler`'s leading number and multiplied by 1024
+    /// unconditionally — right for Apple Silicon (which reports GB), wrong by exactly
+    /// 1024x on an Intel Mac (which reports MB). Measured 2026-09-05: "1536 MB" on an
+    /// Intel UHD 630 was published as `memoryTotalMb: 1572864`, so the weakest node on
+    /// the grid advertised 1.5 TB of VRAM — more than every other GPU combined, from a
+    /// box that could not run a decode lane at all.
+    ///
+    /// Both units are asserted because fixing only the MB case by flipping the
+    /// multiplier would silently break every Apple Silicon node instead.
+    #[test]
+    fn vram_units_are_read_not_assumed() {
+        assert_eq!(
+            vram_string_to_mb("1536 MB"),
+            Some(1536),
+            "the Intel Mac case: MB must stay MB, not become 1572864"
+        );
+        assert_eq!(
+            vram_string_to_mb("8 GB"),
+            Some(8192),
+            "the Apple Silicon case: GB must still convert"
+        );
+    }
+
+    /// what this catches: guessing a multiplier for a unit we do not recognise.
+    ///
+    /// `None` surfaces as 0 / unknown, which UNDERSTATES. That asymmetry is the whole
+    /// point: understating costs throughput, overstating makes a node claim work it
+    /// cannot do and the failure lands far from the cause, on a box that "had plenty
+    /// of memory". Per `[[no-fallbacks-ever]]` — silence is honest, a guess is a
+    /// confident lie.
+    #[test]
+    fn an_unknown_unit_reports_nothing_rather_than_guessing() {
+        assert_eq!(vram_string_to_mb("1536"), None, "no unit is not an implied unit");
+        assert_eq!(vram_string_to_mb("4 TB"), None, "an unhandled unit must not be assumed");
+        assert_eq!(vram_string_to_mb(""), None);
+        assert_eq!(vram_string_to_mb("lots MB"), None, "a non-numeric value is not a size");
     }
 }

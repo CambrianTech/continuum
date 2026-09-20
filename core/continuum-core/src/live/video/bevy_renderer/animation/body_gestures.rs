@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
 use super::components::*;
+use super::ExternalPose;
 
 /// Cognitive gesture driver — selects and triggers gestures from cognitive state.
 pub(in crate::live::video::bevy_renderer) fn drive_cognitive_gestures(
@@ -65,14 +66,18 @@ pub(in crate::live::video::bevy_renderer) fn drive_cognitive_gestures(
 }
 
 /// Body gesture animation — drives bones through gesture poses.
+/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_body_gestures(
     time: Res<Time>,
-    mut query: Query<(
-        Entity,
-        &mut GestureAnimation,
-        &Skeleton,
-        Option<&AnimationConfig>,
-    )>,
+    mut query: Query<
+        (
+            Entity,
+            &mut GestureAnimation,
+            &Skeleton,
+            Option<&AnimationConfig>,
+        ),
+        Without<ExternalPose>,
+    >,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,
 ) {

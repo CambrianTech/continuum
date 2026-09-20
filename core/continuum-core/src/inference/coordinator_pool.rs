@@ -139,7 +139,7 @@ mod tests {
     use crate::cognition::adaptive_throughput::{
         ResourceClass, TargetSilicon, ThroughputLaneBudget,
     };
-    use crate::genome::working_set::PersonaId;
+    use crate::identity::PeerId;
     use crate::inference::coordinator::{CoordinatorConfig, OpenLaneRequest};
     use crate::inference::footprint_registry::FootprintRegistry;
     use crate::inference::handle_store::InferenceHandleStore;
@@ -147,8 +147,8 @@ mod tests {
     use crate::inference::recipe_budget::TaskKind;
     use uuid::Uuid;
 
-    fn persona(id: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(id))
+    fn persona(id: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(id))
     }
 
     fn build_coordinator() -> Arc<InferenceCoordinator> {
@@ -334,10 +334,16 @@ mod tests {
 
         assert_eq!(c.lane_count(), 2);
         let pressure_before = broker.global_pressure();
-        assert!(pressure_before > 1.0, "expected over-budget; got {pressure_before}");
+        assert!(
+            pressure_before > 1.0,
+            "expected over-budget; got {pressure_before}"
+        );
 
         let report = broker.relieve();
-        assert!(report.triggered, "broker should have acted on critical pressure");
+        assert!(
+            report.triggered,
+            "broker should have acted on critical pressure"
+        );
         assert!(
             report.bytes_freed >= 32 * 1024,
             "expected >= 32K freed; got {}",

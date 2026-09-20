@@ -259,6 +259,19 @@ impl From<EngramRecallMetadata> for (Uuid, RecallMetadata) {
 /// cognition-cache-hierarchy doc's meta-learning section.
 pub const SALIENCE_FLOOR: f32 = 0.05;
 
+/// Ceiling that RECALL-FREQUENCY alone can push a memory's salience to. Rehearsal
+/// (recall hits) strengthens a memory Hebbianly, but on its own it must NOT be able
+/// to pin one at the very top — glass-boxed 2026-07-14: a persona's stale, FALSE
+/// "workspace is empty" belief self-reinforced to ~0.98 purely by being re-surfaced
+/// (surface → uplift → higher salience → slower decay → surfaces again), overpowering
+/// live ground truth. Capping the recall asymptote below 1.0 reserves the top band
+/// for GENUINE importance (high admission salience, or an explicit permanent pin),
+/// so recall frequency can make a memory *prominent* but never *unassailable*. It
+/// only bites at high salience (the +0.1/hit cap dominates the first several hits, so
+/// early rehearsal is unchanged); the permanent-pin path (salience 1.0) is untouched.
+/// Tunable via a future `MemoryParameterAdapter`.
+pub const RECALL_UPLIFT_CEILING: f32 = 0.9;
+
 /// Sentinel value for `protected_until_ms` indicating permanent
 /// protection — these engrams never decay, regardless of access
 /// pattern or how long the substrate runs. Set via
@@ -325,10 +338,12 @@ impl RecallMetadataRegistry {
     /// salience to ~0 immediately.
     pub fn admit_with_defaults(&self, engram_id: Uuid) {
         let now = now_ms();
-        self.inner.entry(engram_id).or_insert_with(|| RecallMetadata {
-            last_decayed_ms: now,
-            ..RecallMetadata::default()
-        });
+        self.inner
+            .entry(engram_id)
+            .or_insert_with(|| RecallMetadata {
+                last_decayed_ms: now,
+                ..RecallMetadata::default()
+            });
     }
 
     /// Record a recall hit. Atomic increment of access_count +
@@ -345,10 +360,14 @@ impl RecallMetadataRegistry {
             .and_modify(|m| {
                 m.access_count = m.access_count.saturating_add(1);
                 m.last_accessed_ms = now_ms;
-                // Salience uplift: half the remaining headroom,
-                // capped at +0.1 per hit so a single recall doesn't
-                // saturate the score.
-                let headroom = 1.0 - m.salience;
+                // Salience uplift: half the remaining headroom, capped at +0.1 per
+                // hit so a single recall doesn't saturate the score. Headroom is
+                // measured toward RECALL_UPLIFT_CEILING (not 1.0): recall frequency
+                // strengthens a memory but can't self-reinforce it into the top band
+                // reserved for genuine importance / permanent pins — the fix for the
+                // stale-belief spiral. A memory ALREADY above the ceiling (high
+                // admission salience) keeps its value; recall simply adds nothing.
+                let headroom = (RECALL_UPLIFT_CEILING - m.salience).max(0.0);
                 let uplift = (headroom * 0.5).min(0.1);
                 m.salience = (m.salience + uplift).min(1.0);
             })
@@ -378,6 +397,24 @@ impl RecallMetadataRegistry {
     /// protection window (per the cognition-cache-hierarchy
     /// one-shot-protection rule). Also no-op if `last_decayed_ms`
     /// equals or exceeds `now_ms` (clock skew / racing tick).
+    /// SUPERSESSION demotion (#221 slice 2): the dream's distiller judged this
+    /// engram's belief replaced/contradicted by a newly consolidated fact, so
+    /// its recall standing drops to the floor IMMEDIATELY — no waiting out the
+    /// hours-scale half-life — and its protection window is cleared so nothing
+    /// shields it. The ROW survives (the floor is Joel's "memory drains but
+    /// does not disappear" guarantee); it simply stops out-ranking the belief
+    /// that superseded it in relevance×salience recall. The JUDGMENT that
+    /// triggers this is the model's, never a similarity threshold
+    /// ([[cognition-is-always-ml-never-heuristic]]); this method is only the
+    /// mechanical consequence.
+    pub fn demote_to_floor(&self, engram_id: Uuid, now_ms: u64) {
+        self.inner.entry(engram_id).and_modify(|m| {
+            m.salience = SALIENCE_FLOOR;
+            m.protected_until_ms = 0;
+            m.last_decayed_ms = now_ms;
+        });
+    }
+
     pub fn apply_decay(&self, engram_id: Uuid, now_ms: u64) {
         self.inner.entry(engram_id).and_modify(|m| {
             if m.is_protected(now_ms) {
@@ -462,6 +499,28 @@ impl RecallMetadataRegistry {
     pub fn evict(&self, engram_id: Uuid) -> Option<RecallMetadata> {
         self.inner.remove(&engram_id).map(|(_, m)| m)
     }
+
+    /// Snapshot every tracked `(engram_id, metadata)` pair — for an
+    /// eval-isolation checkpoint (`AdmissionState::checkpoint`). `RecallMetadata`
+    /// is `Copy`, so this is a flat clone of the registry's contents.
+    pub fn snapshot(&self) -> Vec<(Uuid, RecallMetadata)> {
+        self.inner
+            .iter()
+            .map(|entry| (*entry.key(), *entry.value()))
+            .collect()
+    }
+
+    /// Replace the registry's contents with a prior [`snapshot`](Self::snapshot)
+    /// — rewinds the recall sidecar to the checkpointed frame, dropping every
+    /// metadata row admitted since. Other subsystems share this registry via
+    /// `Arc`, so they observe the rewind consistently (the whole point of
+    /// rewinding in place rather than swapping the `AdmissionState`).
+    pub fn restore(&self, snapshot: Vec<(Uuid, RecallMetadata)>) {
+        self.inner.clear();
+        for (id, metadata) in snapshot {
+            self.inner.insert(id, metadata);
+        }
+    }
 }
 
 /// Helper for getting the current wallclock as ms since epoch.
@@ -542,13 +601,47 @@ mod tests {
         assert!(after_one.salience <= before.salience + 0.1 + f32::EPSILON);
 
         // Two more hits — salience keeps growing with diminishing
-        // returns, asymptoting toward 1.0.
+        // returns, asymptoting toward the recall ceiling (not 1.0).
         r.record_recall_hit(id, 1_001_000);
         r.record_recall_hit(id, 1_002_000);
         let after_three = r.get(id).unwrap();
         assert_eq!(after_three.access_count, 3);
         assert!(after_three.salience > after_one.salience);
         assert!(after_three.salience <= 1.0);
+    }
+
+    // what this catches: recall FREQUENCY alone must not self-reinforce a memory into
+    // the top band — the stale-belief spiral fix. Many hits asymptote to
+    // RECALL_UPLIFT_CEILING, never above; and a memory already above the ceiling
+    // (genuine importance) is neither lowered nor raised by recall. // regression:
+    // live 2026-07-14 "workspace is empty" pinned to ~0.98 by re-surfacing
+    #[test]
+    fn recall_uplift_caps_at_the_ceiling_not_one() {
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        r.admit_with_defaults(id); // starts at 0.5
+        for i in 0..50 {
+            r.record_recall_hit(id, 1_000_000 + i * 1000);
+        }
+        let s = r.get(id).unwrap().salience;
+        assert!(
+            s <= RECALL_UPLIFT_CEILING + f32::EPSILON,
+            "recall alone must not exceed the ceiling: {s}"
+        );
+        assert!(s > 0.85, "but it should still climb close to it: {s}");
+
+        // A memory admitted ABOVE the ceiling keeps its value — recall neither lifts
+        // nor lowers it (genuine importance owns the top band).
+        let hi = Uuid::new_v4();
+        let mut md = RecallMetadata::default();
+        md.salience = 0.97;
+        r.admit(hi, md);
+        r.record_recall_hit(hi, 2_000_000);
+        assert_eq!(
+            r.get(hi).unwrap().salience,
+            0.97,
+            "recall must not disturb an already-important memory"
+        );
     }
 
     #[test]
@@ -602,7 +695,10 @@ mod tests {
         // Try to decay during protection window. Should be no-op.
         r.apply_decay(id, 1_000_000);
         let after = r.get(id).unwrap();
-        assert_eq!(after.salience, 0.8, "protection window failed to prevent decay");
+        assert_eq!(
+            after.salience, 0.8,
+            "protection window failed to prevent decay"
+        );
     }
 
     #[test]
@@ -731,7 +827,10 @@ mod tests {
         let ridiculous_time_ms: u64 = 1_000_000 * 365 * 24 * 3_600_000;
         r.apply_decay(id, ridiculous_time_ms);
         let after_decay = r.get(id).unwrap();
-        assert_eq!(after_decay.salience, 1.0, "permanent pin must protect forever");
+        assert_eq!(
+            after_decay.salience, 1.0,
+            "permanent pin must protect forever"
+        );
         assert_eq!(after_decay.protected_until_ms, PERMANENT_PROTECTION);
     }
 
@@ -905,6 +1004,7 @@ mod tests {
             .expect("metadata store");
 
         let engram = Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: "anchor".to_string(),
@@ -962,6 +1062,35 @@ mod tests {
             after.is_none(),
             "ON DELETE CASCADE must wipe the recall-metadata row when its engram is deleted"
         );
+    }
 
+    // what this catches: the supersession demotion contract (#221 slice 2) — a
+    // demoted belief drops to the FLOOR immediately (not a gradual decay) and
+    // loses its protection window, but the ROW survives (the floor guarantee:
+    // memory drains, never disappears). If demote_to_floor ever left protection
+    // intact, a freshly-admitted stale belief would shrug off its own
+    // supersession for the whole protection window.
+    #[test]
+    fn demote_to_floor_floors_salience_and_clears_protection() {
+        let reg = RecallMetadataRegistry::new();
+        let id = Uuid::from_u128(7);
+        reg.admit(
+            id,
+            RecallMetadata {
+                salience: 0.9,
+                access_count: 3,
+                last_accessed_ms: 1_000,
+                protected_until_ms: u64::MAX, // even a protected belief demotes
+                last_decayed_ms: 1_000,
+            },
+        );
+        reg.demote_to_floor(id, 5_000);
+        let m = reg.get(id).expect("row survives demotion");
+        assert_eq!(m.salience, SALIENCE_FLOOR, "floored, not deleted");
+        assert_eq!(m.protected_until_ms, 0, "protection cleared");
+        assert_eq!(m.last_decayed_ms, 5_000, "decay clock reset at demotion");
+        // Unknown id: no panic, no phantom row.
+        reg.demote_to_floor(Uuid::from_u128(999), 5_000);
+        assert!(reg.get(Uuid::from_u128(999)).is_none());
     }
 }

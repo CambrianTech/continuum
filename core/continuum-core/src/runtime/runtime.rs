@@ -7,6 +7,7 @@
 //! that owns the CBP_Analyzer pipeline and orchestrates frame flow.
 
 use super::boot_mode::BootMode;
+use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
@@ -34,6 +35,21 @@ pub struct Runtime {
     bus: Arc<MessageBus>,
     compute: Arc<SharedCompute>,
     concurrency_limits: Arc<DashMap<&'static str, Arc<Semaphore>>>,
+    /// Connected `Provided`-command providers (eye-nodes), keyed by command name.
+    /// The ONE registry the socket route (`route_command`) AND the
+    /// `ProvidedCommandInterceptor` (in-process/persona route) both consult, so a
+    /// `perception/observe` reaches the connected eye-node on either path. The IPC
+    /// layer takes `provider_registry()` to bind an eye-node's provider on connect.
+    provider_registry: Arc<super::ProviderRegistry>,
+    /// THE interceptor chain — one list, consulted by every dispatcher. The
+    /// socket route (`route_command`: uu / IPC / MCP / the desktop) and the
+    /// in-process `CommandExecutor` used to each carry half the contract: the
+    /// executor had the interceptors (airc peer hop, grid dispatch) and the
+    /// socket route had permits + metrics + provided routing. So a CLI
+    /// `ai/generate {aircPeer}` ran LOCALLY on the wrong box with nothing
+    /// saying the address was dropped (card 506a388c, 2026-09-05). One chain,
+    /// owned here, shared by both.
+    interceptors: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
 }
 
 impl Default for Runtime {
@@ -47,9 +63,26 @@ impl Runtime {
         Self {
             registry: Arc::new(ModuleRegistry::new()),
             bus: Arc::new(MessageBus::new()),
-            compute: Arc::new(SharedCompute::new()),
+            // Adopt the ONE process-global compute-once/share-many cache (not a
+            // private instance) so a module reaching it via `ModuleContext.compute`
+            // and a persona's `MediaPerceptionSource` reaching it via
+            // `shared_compute::global()` share the SAME derivatives — the media
+            // ingest that warms a frame and the perception source that reads it
+            // cannot diverge. Content-addressed + pure, so one shared cache is
+            // correct ([[media-is-compute-once-zero-copy-hardware-grade]]).
+            compute: super::shared_compute::global(),
             concurrency_limits: Arc::new(DashMap::new()),
+            interceptors: Arc::new(std::sync::RwLock::new(Vec::new())),
+            provider_registry: Arc::new(super::ProviderRegistry::new()),
         }
+    }
+
+    /// The shared [`ProviderRegistry`](super::ProviderRegistry) of connected
+    /// eye-nodes. The IPC layer clones this into both the
+    /// `ProvidedCommandInterceptor` and its `ServerState` so a `provider/register`
+    /// on any connection binds the SAME registry that `route_command` reads.
+    pub fn provider_registry(&self) -> Arc<super::ProviderRegistry> {
+        Arc::clone(&self.provider_registry)
     }
 
     /// Register a module. Auto-wires command routing from its config.
@@ -61,8 +94,21 @@ impl Runtime {
             config.name, config.priority, config.command_prefixes
         );
 
-        // Wire event subscriptions into the message bus
+        // Wire event subscriptions into the message bus.
+        //
+        // LOUD CAVEAT (#140 post-mortem): these fire ONLY via the synchronous
+        // `MessageBus::publish(..., registry)` path, which has no production
+        // callers — live events ride `publish_async_only` (broadcast channel
+        // only). Until a real dispatch tier exists, a module declaring
+        // subscriptions here almost certainly wants a bus-receiver task instead
+        // (dispatch_listener / chat persist-listener shape). Warn so the gap is
+        // a signpost, never a silent void.
         for pattern in config.event_subscriptions {
+            tracing::warn!(
+                module = config.name,
+                pattern,
+                "event_subscriptions are dispatched only by the (currently unused)                  synchronous publish path — if this module expects live bus events,                  spawn a bus-receiver task from initialize() instead                  (see modules::chat::spawn_persist_listener)"
+            );
             self.bus.subscribe(pattern, config.name, false);
         }
 
@@ -124,22 +170,91 @@ impl Runtime {
         let modules = self.registry.list_modules();
         info!("Initializing {} modules...", modules.len());
 
+        // Dispatch-parity audit (see [`ModuleRegistry::dispatch_orphans`]): every
+        // advertised command must be routable NOW, before any client can be told
+        // it exists. ERROR (not panic) so a drift is loud on the first boot that
+        // ships it without bricking the substrate; promote to a boot refusal once
+        // the count holds at zero across the fleet.
+        let orphans = self.registry.dispatch_orphans();
+        if !orphans.is_empty() {
+            tracing::error!(
+                probe_class = "registry.dispatch_parity",
+                orphans = ?orphans,
+                count = orphans.len(),
+                "ADVERTISED-BUT-UNDISPATCHABLE commands: these appear in help, \
+                 suggestions, and the persona tool offer but cannot route — add each \
+                 to its module's commands() vec (the work/list class, #309)"
+            );
+        }
+
+        // Per-module init deadline. A module's `initialize()` is meant to be fast
+        // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
+        // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang
+        // class per-module so ONE hung init can't stall the whole boot + socket
+        // bind. Generous to never false-positive a legitimately slow init.
+        const PER_MODULE_INIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+        // Collect failures instead of cascading. The old `return Err` on the FIRST
+        // failure skipped EVERY module after it → a silently half-booted core
+        // (audit finding). Each module now inits independently; a failure is
+        // recorded LOUDLY and we keep going so the rest of the substrate comes up.
+        let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match module.initialize(&ctx).await {
-                    Ok(_) => {
+                // BOOT IS LEGIBLE OR IT IS A WEDGE: one probe per module init with
+                // its outcome and wall time — the only way to read "core did not
+                // bind its IPC socket within 300s" (BigMama's host, 2026-09-04: a
+                // cold-disk init on the pre-bind path) without a stopwatch.
+                let started = std::time::Instant::now();
+                let attempt =
+                    tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await;
+                crate::probe!(
+                    class = "boot.module_init",
+                    module = %name,
+                    outcome = match &attempt { Ok(Ok(_)) => "ok", Ok(Err(_)) => "error", Err(_) => "timeout" },
+                    ms = started.elapsed().as_millis() as u64,
+                    "module initialize"
+                );
+                match attempt {
+                    Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
-                    Err(e) => {
-                        error!("  {} initialization failed: {}", name, e);
-                        return Err(format!("Module '{}' failed to initialize: {}", name, e));
+                    Ok(Err(e)) => {
+                        error!("  ✗ {} initialization FAILED: {}", name, e);
+                        failures.push(format!("{name}: {e}"));
+                    }
+                    Err(_) => {
+                        error!(
+                            "  ✗ {} init TIMED OUT after {}s (wedged) — skipped so the rest boot",
+                            name,
+                            PER_MODULE_INIT_DEADLINE.as_secs()
+                        );
+                        failures.push(format!(
+                            "{name}: init timed out after {}s",
+                            PER_MODULE_INIT_DEADLINE.as_secs()
+                        ));
                     }
                 }
             }
         }
 
-        info!("All {} modules initialized", modules.len());
-        Ok(())
+        if failures.is_empty() {
+            info!("All {} modules initialized", modules.len());
+            Ok(())
+        } else {
+            // Fail LOUD with the COMPLETE failure set (never just the first, never
+            // silent). The caller decides whether a degraded boot is acceptable;
+            // either way the operator sees every module that failed. The main.rs
+            // boot deadline still backstops a failure that prevents socket bind.
+            let summary = format!(
+                "{}/{} modules FAILED to initialize — core is DEGRADED: [{}]",
+                failures.len(),
+                modules.len(),
+                failures.join("; ")
+            );
+            error!("⚠ {summary}");
+            Err(summary)
+        }
     }
 
     /// Await a named module's `ready_edge()`. Returns `Ok(())` as soon as
@@ -179,9 +294,8 @@ impl Runtime {
         crate::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
-                let err = format!(
-                    "module '{module_name}' ready watch closed before publishing ready"
-                );
+                let err =
+                    format!("module '{module_name}' ready watch closed before publishing ready");
                 crate::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
@@ -271,7 +385,81 @@ impl Runtime {
         &self,
         command: &str,
         params: serde_json::Value,
+        caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
+        // Meet the caller's dialect: a socket client (uu / IPC / MCP) may reach for
+        // a command's trained alias (`read_file`), former name, or charset-legal
+        // form (`code_read`). Resolve to the canonical name through the SAME
+        // tool_dialect section the persona path uses, so every surface accepts the
+        // same vocabulary. Idempotent on an already-canonical name — a no-op for the
+        // common case. Non-recording (the persona path owns the tool-usage tally).
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
+        // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
+        // lock-free), ahead of the prefix table — same precedence the
+        // CommandExecutor uses. This is the live socket route (uu / IPC), so the
+        // consult must live here too until the dispatch paths are unified.
+        // See docs/architecture/COMMAND-ORGANIZATION.md.
+        //
+        // `caller` is the connection's identity: `None` for the LOCAL Unix socket
+        // (owner-by-locality) and a non-owner remote identity for a TCP-sourced
+        // connection (the IPC server stamps it + ACL-gates the top-level command at
+        // the boundary). Threading it means a command composing another over TCP
+        // composes as the REMOTE caller, not silently as owner — no escalation.
+        // Interceptors first, same contract as the executor: Handled wins,
+        // Decline passes, an error is LOUD (never a silent local fallback —
+        // that is exactly what a peer-addressed call running locally was).
+        let chain: Vec<Arc<dyn CommandInterceptor>> = self
+            .interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; read it
+            .clone();
+        for interceptor in chain {
+            match interceptor
+                .try_route(command, &params, caller.as_ref())
+                .await
+            {
+                Ok(InterceptorOutcome::Handled(result)) => return Some(Ok(result)),
+                Ok(InterceptorOutcome::Decline) => continue,
+                Err(e) => {
+                    return Some(Err(format!(
+                        "interceptor '{}' refused '{command}': {e}",
+                        interceptor.name()
+                    )))
+                }
+            }
+        }
+        if let Some(cmd) = self.registry.route_object(command) {
+            // NOTE (adversarial review 2026-06-21): the typed object path does NOT
+            // pass through the per-MODULE concurrency limiter or ModuleMetrics below
+            // — a DynCommand object is module-independent, so it has no module to key
+            // those on. This is deliberate: per-command throughput leasing +
+            // observability belong to the command framework (the executor already
+            // emits `command:completed` on the in-process/persona route), not the
+            // legacy per-module path. Migrated commands are absent from ModuleMetrics
+            // on THIS local route (acceptable for the trivial commands migrated so
+            // far; revisit before migrating a hot/contended command).
+            return Some(dispatch_object_with_panic_guard(cmd, params, caller).await);
+        }
+
+        // Provided commands (perception/observe, interface/screenshot) have NO
+        // ServiceModule — the headless substrate can't render/capture them. Route
+        // through the ONE Provided decision shared with the CommandExecutor's
+        // interceptor, so the SOCKET route (uu / IPC / MCP) reaches the eye-node by
+        // the SAME infrastructure the in-process persona route uses — no path gains
+        // a capability another lacks. Guard on the cheap set lookup so `params` is
+        // moved (not cloned) on the common non-Provided path.
+        if super::provided_provider::is_provided_command(command) {
+            return super::provided_provider::route_provided(
+                &self.provider_registry,
+                command,
+                params,
+            )
+            .await
+            .map(|result| result.map(CommandResult::Json));
+        }
+
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
 
@@ -322,6 +510,32 @@ impl Runtime {
         params: serde_json::Value,
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
+        // Same dialect resolution as the async route (see route_command): a socket
+        // client's trained alias / former name / charset-legal form maps to the
+        // canonical command before any registry lookup. Idempotent, non-recording.
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
+        // Typed path wins (see route_command). Bridge the async object dispatch
+        // onto rt_handle with the same 60s safety-net timeout the module path uses.
+        if let Some(cmd) = self.registry.route_object(command) {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            rt_handle.spawn(async move {
+                let _ = tx.send(dispatch_object_with_panic_guard(cmd, params, None).await);
+            });
+            let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(result) => result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    error!("Command timed out after 60s (rayon safety net): {command}");
+                    Err(format!("Command timed out after 60s: {command}"))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    error!("Command handler task panicked or was cancelled: {command}");
+                    Err(format!("Command handler failed: {command}"))
+                }
+            };
+            return Some(result);
+        }
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
 
@@ -349,8 +563,7 @@ impl Runtime {
                 },
                 None => None,
             };
-            let result =
-                dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
+            let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
             drop(permit);
             let _ = tx.send(result);
         });
@@ -388,6 +601,13 @@ impl Runtime {
     }
 
     /// Get the Arc<ModuleRegistry> for sharing across threads.
+    /// The shared interceptor chain (see the field doc). Hand this to every
+    /// `CommandExecutor` so an interceptor registered once applies on every
+    /// route into the node.
+    pub fn interceptor_chain(&self) -> Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>> {
+        self.interceptors.clone()
+    }
+
     pub fn registry_arc(&self) -> Arc<ModuleRegistry> {
         self.registry.clone()
     }
@@ -411,21 +631,135 @@ impl Runtime {
         &self.compute
     }
 
-    /// Shutdown all modules gracefully.
-    pub async fn shutdown(&self) {
+    /// Broadcast `load_state` to every module — the symmetric boot half of
+    /// the CBAR contract, called once after module initialization. Receipted
+    /// per node so "which modules restored state" is a boot fact, not a hope.
+    pub async fn load_all_state(&self) {
+        // PARALLEL fork/join — nobody waits on anyone (Joel 2026-09-02: "they
+        // all load/store state in parallel so no one waits… join/fork threads").
+        // Symmetric with `shutdown`'s save-and-join: total wall time = the
+        // slowest single concern, never the SUM. The first cut was a sequential
+        // for-loop — a boot tax that grew with every module added.
+        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
+        let futs = self.registry.list_modules().into_iter().filter_map(|name| {
+            self.registry.get_by_name(&name).map(|module| async move {
+                let t = std::time::Instant::now();
+                let outcome = match tokio::time::timeout(PER_MODULE, module.load_state()).await {
+                    Ok(Ok(())) => "ok",
+                    Ok(Err(_)) => "error",
+                    Err(_) => "timeout",
+                };
+                crate::probe!(
+                    class = "boot.load_state",
+                    module = %name,
+                    outcome = outcome,
+                    ms = t.elapsed().as_millis() as u64,
+                    "module state load"
+                );
+            })
+        });
+        futures::future::join_all(futs).await;
+    }
+
+    /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,
+    /// Joel 2026-09-02: "they all follow the same pattern, they gracefully
+    /// and quickly save and join threads"). Every module gets the SAME
+    /// contract: 2 seconds to save-and-return; a laggard is receipted as
+    /// timed-out and abandoned (its state discipline is save-on-write, so a
+    /// timeout loses nothing durable). Total wall time = the slowest module
+    /// capped at 2s — never the SUM the old sequential loop paid.
+    ///
+    /// Until 2026-09-02 nothing on the production stop path called this at
+    /// all: the SIGTERM handler killed sentinels, slept a flat 2s, and
+    /// `_exit`ed — so no module ever saved on a real stop. The handler now
+    /// runs this first ([`install_signal_shutdown`]).
+    /// Stop every module: DRAIN, then save, then join — each phase bounded, all modules
+    /// in parallel — and return a receipt saying what actually reached disk.
+    ///
+    /// The drain phase is new and it is the point. Suspending a module's tick is not a
+    /// drain (`quiesce_all` stops each mind's self-tick and leaves room input arriving and
+    /// active turns running), so without it `save_state` could be taken underneath a turn
+    /// halfway through writing, and the result was indistinguishable from a clean save.
+    pub async fn shutdown(&self) -> ShutdownReceipt {
+        self.shutdown_within(std::time::Duration::from_secs(2))
+            .await
+    }
+
+    /// `shutdown`, with the per-phase bound passed IN.
+    ///
+    /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
+    /// reached: no test module takes two seconds, so `SaveTimedOut` and `JoinTimedOut`
+    /// were only ever constructed as literals and asserted on. Deleting the timeout
+    /// handling here would have left every one of those tests green — the outcomes were
+    /// described by the suite and never produced by it. Found by IntelMac.
+    async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
         let modules = self.registry.list_modules();
-        info!("Shutting down {} modules...", modules.len());
+        info!(
+            "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
+            modules.len()
+        );
+        let started = std::time::Instant::now();
+        let futs = modules.iter().filter_map(|name| {
+            self.registry.get_by_name(name).map(|module| {
+                // Deref, not clone: `list_modules` yields `Vec<&'static str>`, so `name`
+                // here is `&&'static str` and `.clone()` copied the OUTER reference —
+                // it never cloned a string, and the borrow it produced only compiled
+                // because the inner `&str` is 'static. Carried in from the pre-refactor
+                // `shutdown()`; saying `*name` is what was always meant.
+                let name: &'static str = *name;
+                async move {
+                    let t = std::time::Instant::now();
+                    // 1. Stop taking new work and let in-flight work finish. A module
+                    //    that cannot drain in time still gets its save attempted — a
+                    //    mid-turn snapshot beats no snapshot — but the receipt says so.
+                    let drain = match tokio::time::timeout(per_phase, module.drain()).await {
+                        Ok(Ok(0)) => DrainOutcome::Drained,
+                        Ok(Ok(in_flight)) => DrainOutcome::Incomplete { in_flight },
+                        Ok(Err(e)) => DrainOutcome::Unknown { reason: e },
+                        Err(_) => DrainOutcome::Unknown {
+                            reason: format!("drain exceeded {}s", per_phase.as_secs()),
+                        },
+                    };
 
-        for name in &modules {
-            if let Some(module) = self.registry.get_by_name(name) {
-                match module.shutdown().await {
-                    Ok(_) => info!("  {} shutdown complete", name),
-                    Err(e) => warn!("  {} shutdown error: {}", name, e),
+                    // 2. Save. This is the phase whose failure is DATA, not tidiness.
+                    let saved = tokio::time::timeout(per_phase, module.save_state()).await;
+                    let outcome = match saved {
+                        Err(_) => ModuleStopOutcome::SaveTimedOut,
+                        Ok(Err(e)) => ModuleStopOutcome::SaveFailed { error: e },
+                        Ok(Ok(())) => {
+                            // 3. Join, only meaningful once the state is durable.
+                            match tokio::time::timeout(per_phase, module.shutdown()).await {
+                                Err(_) => ModuleStopOutcome::JoinTimedOut,
+                                Ok(Err(e)) => ModuleStopOutcome::JoinFailed { error: e },
+                                Ok(Ok(())) => ModuleStopOutcome::Clean,
+                            }
+                        }
+                    };
+                    crate::probe!(
+                        class = "shutdown.step",
+                        module = %name,
+                        outcome = format!("{outcome:?}"),
+                        drain = format!("{drain:?}"),
+                        ms = t.elapsed().as_millis() as u64,
+                        "module drain-save-join"
+                    );
+                    ModuleStop {
+                        // `list_modules` yields &'static str; the receipt owns its names
+                        // because it outlives the registry borrow and crosses the wire.
+                        module: name.to_string(),
+                        drain,
+                        outcome,
+                        ms: t.elapsed().as_millis() as u64,
+                    }
                 }
-            }
-        }
-
-        info!("All modules shut down");
+            })
+        });
+        let receipt = ShutdownReceipt {
+            modules: futures::future::join_all(futs).await,
+            total_ms: started.elapsed().as_millis() as u64,
+        };
+        info!("{}", receipt.summary());
+        receipt
     }
 
     /// Verify all required modules are registered for the given
@@ -605,12 +939,13 @@ async fn run_tick_loop_for(
             }
         }
 
-        // Re-read interval each iteration so modules can dynamically
-        // adjust cadence (e.g. back off under pressure). If the period
-        // changed, rebuild the ticker — `Interval` doesn't expose a
-        // setter for its period, and rebuilding is cheap on the slow
-        // path (not the hot path that the broker tuner would touch).
-        let new_interval = module.config().tick_interval.unwrap_or(initial_interval);
+        // Re-read the cadence each iteration so a module can adjust it (back off
+        // under pressure, an operator-tuned tick) — through `tick_interval_now()`, the
+        // cheap read, NEVER `config()`: rebuilding the whole ModuleConfig per tick for
+        // every module was card 948c30c2's row 4. `None` = the registered cadence
+        // stands. If the period changed, rebuild the ticker — `Interval` doesn't
+        // expose a setter for its period, and rebuilding is cheap on that slow path.
+        let new_interval = module.tick_interval_now().unwrap_or(initial_interval);
         if new_interval != current_interval {
             crate::probe!(
                 class = "tick.cadence_changed",
@@ -688,6 +1023,38 @@ pub(crate) async fn dispatch_with_panic_guard(
     }
 }
 
+/// Dispatch a self-routing [`DynCommand`](crate::sdk_codegen::DynCommand) object
+/// under the same `catch_unwind` guard the module path uses. Persona tool calls
+/// flow through here; a panicking handler converts to a typed `Err` instead of
+/// poisoning the caller's task. The object owns its deps + knows its name, so the
+/// guard needs nothing but the object and the params.
+pub(crate) async fn dispatch_object_with_panic_guard(
+    cmd: Arc<dyn crate::sdk_codegen::DynCommand>,
+    params: serde_json::Value,
+    caller: Option<crate::routing::CallerIdentity>,
+) -> Result<CommandResult, String> {
+    let name = cmd.name();
+    let result = AssertUnwindSafe(cmd.invoke(params, caller))
+        .catch_unwind()
+        .await;
+    match result {
+        Ok(r) => r,
+        Err(panic) => {
+            let panic_msg = panic_message(&*panic);
+            error!(
+                "Command '{}' panicked in DynCommand object: {}",
+                name, panic_msg
+            );
+            crate::probe!(
+                class = "command.dispatch.panicked",
+                command = name,
+                reason = %panic_msg
+            );
+            Err(format!("command '{name}' panicked: {panic_msg}"))
+        }
+    }
+}
+
 /// Category of a substrate module — load-bearing for `verify_registration`'s
 /// conditional dispatch on `(AircDiscovery, BootMode)`.
 ///
@@ -723,56 +1090,158 @@ pub enum ModuleCategory {
 /// so a row that's never reachable surfaces in CI. The
 /// `expected_modules_snapshot` integration test (A.2.2) cross-checks
 /// this list against actual registrations at boot.
-pub const MODULES: &[(&str, ModuleCategory)] = &[
-    // Infrastructure / health
-    ("health", ModuleCategory::Core),
-    ("auth", ModuleCategory::Core),
-    ("system", ModuleCategory::Core),
-    ("events", ModuleCategory::Core),
-    ("logger", ModuleCategory::Core),
-    ("runtime", ModuleCategory::Core),
-    ("mcp", ModuleCategory::Core),
-    ("data", ModuleCategory::Core),
-    // Resource governance
-    ("gpu", ModuleCategory::Core),
-    ("resource-broker", ModuleCategory::Core),
-    ("pressure-broker", ModuleCategory::Core),
-    // AI / inference
-    ("inference", ModuleCategory::Core),
-    ("inference-llm", ModuleCategory::Core),
-    ("ai_provider", ModuleCategory::Core),
-    ("embedding", ModuleCategory::Core),
-    ("search", ModuleCategory::Core),
-    ("tool-parsing", ModuleCategory::Core),
-    ("vision", ModuleCategory::Core),
-    ("models", ModuleCategory::Core),
-    ("memory", ModuleCategory::Core),
-    ("rag", ModuleCategory::Core),
-    // Persona substrate (always-built — cognition/allocator work
-    // without an AIRC daemon)
-    ("cognition", ModuleCategory::Core),
-    ("channel", ModuleCategory::Core),
-    ("persona_allocator", ModuleCategory::Core),
-    ("agent", ModuleCategory::Core),
-    // Persona substrate (AIRC-Healthy-conditional — registers only
-    // when discovery succeeded across all four sub-steps)
-    ("persona_instance_manager", ModuleCategory::PersonaHosting),
-    ("persona-rag-inspect", ModuleCategory::PersonaHosting),
-    // Forge / sentinel / plasticity / training
-    ("forge", ModuleCategory::Core),
-    ("sentinel", ModuleCategory::Core),
-    ("plasticity", ModuleCategory::Core),
-    ("dataset", ModuleCategory::Core),
-    ("vdd", ModuleCategory::Core),
-    ("cargo", ModuleCategory::Core),
-    ("code", ModuleCategory::Core),
-    // Substrate transports
-    ("airc", ModuleCategory::Core),
-    ("grid", ModuleCategory::Core),
-    // Live presence — Slice B' splits these into renderer + voice
-    // sidecars
-    ("live", ModuleCategory::Core),
-    ("avatar", ModuleCategory::Core),
+/// The CONCERN a module belongs to — the decomposition dimension (orthogonal to
+/// [`ModuleCategory`], which is the conditionality dimension). A process hosts a
+/// *profile* = a set of `ServiceGroup`s; modules outside it are reached over the
+/// bus (`route_command`). The groups partition `MODULES` exactly. See
+/// docs/architecture/MODULAR-DECOMPOSITION.md.
+///
+/// `ServiceGroup` says WHERE a module can be placed (which process/container);
+/// `ModuleCategory` says WHETHER it registers in a given `(discovery, mode)`.
+/// One row carries both — still one source of truth, two views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceGroup {
+    /// The minimal addressable substrate every node needs: commands/events/
+    /// data/health/auth/system/runtime/mcp. A node is nothing without it.
+    RuntimeShell,
+    /// Per-node hardware governance (GPU, resource + pressure brokers).
+    ResourceGov,
+    /// The inference engine (llm/provider/embedding/vision/models/search/
+    /// tool-parsing). Increasingly external (unsloth) behind the AIProviderAdapter.
+    Inference,
+    /// The organism's brain — cognition/channel/allocator/agent/memory/rag +
+    /// the persona-host modules.
+    Cognition,
+    /// Training / dev / self-improvement (forge/sentinel/plasticity/dataset/
+    /// vdd/cargo/code). Bursty, GPU-heavy, schedulable separately.
+    Forge,
+    /// The bus itself (airc + grid transports).
+    GridTransport,
+    /// Avatar presence: Bevy render + LiveKit SFU. CO-LOCATED with the GPU (the
+    /// readback→framebuffer→WebRTC transfer can't cross a process boundary).
+    Live,
+}
+
+/// One module's placement metadata: its concern ([`ServiceGroup`]) + its
+/// conditionality ([`ModuleCategory`]). Rows of [`MODULES`].
+#[derive(Debug, Clone, Copy)]
+pub struct ModuleSpec {
+    pub name: &'static str,
+    pub group: ServiceGroup,
+    pub category: ModuleCategory,
+}
+
+impl ModuleSpec {
+    const fn new(name: &'static str, group: ServiceGroup, category: ModuleCategory) -> Self {
+        Self {
+            name,
+            group,
+            category,
+        }
+    }
+}
+
+pub const MODULES: &[ModuleSpec] = &[
+    // RuntimeShell — the minimal addressable substrate
+    ModuleSpec::new("health", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("auth", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("system", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("events", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("logger", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("runtime", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("mcp", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("data", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    // ResourceGov — hardware governance
+    ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new(
+        "resource-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "pressure-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
+    // Inference — the engine. (The bare `inference` shell module was deleted in
+    // 89519a899 when its sole command `inference/capacity` became a stateless
+    // self-routing command; this MODULES entry is dropped to match — leaving it
+    // made `required_modules()` demand a module that no longer registers, which
+    // hard-failed boot with "missing [inference]". The engine is now carried by
+    // the coordinator / handle / llm / ai_provider modules below.)
+    ModuleSpec::new(
+        "inference-coordinator",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "ai-inference-handle",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "inference-llm",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
+    // (`search` was retired here: its commands migrated onto the DynCommand
+    // registry in 9d96bb51c (#62, Wave 1) — they now live as stateless
+    // self-routing commands under `commands/search/{vector,list,execute}`, so
+    // there is no `SearchModule` ServiceModule to register. Leaving the spec in
+    // made `required_modules()` demand a module that no longer registers, which
+    // hard-failed boot with "missing [search]" — the same trap as the retired
+    // `inference` shell above.)
+    ModuleSpec::new(
+        "tool-parsing",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
+    // Cognition — the brain (always-built modules + the persona-host conditionals)
+    ModuleSpec::new("memory", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("rag", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("cognition", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("channel", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new(
+        "persona_allocator",
+        ServiceGroup::Cognition,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
+    // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
+    // discovery succeeded across all four sub-steps)
+    ModuleSpec::new(
+        "persona_instance_manager",
+        ServiceGroup::Cognition,
+        ModuleCategory::PersonaHosting,
+    ),
+    ModuleSpec::new(
+        "persona-rag-inspect",
+        ServiceGroup::Cognition,
+        ModuleCategory::PersonaHosting,
+    ),
+    // Forge — training / dev / self-improvement
+    ModuleSpec::new("forge", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("sentinel", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("plasticity", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("dataset", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("vdd", ServiceGroup::Forge, ModuleCategory::Core),
+    // (`cargo` was retired here: its commands migrated onto the DynCommand
+    // registry in 98645f3d1 (#62), and the duplicate top-level `cargo/*` was
+    // deleted in b19892b60 — `code/cargo/*` (carried by the `code` module below)
+    // is now canonical. There is no `CargoModule` ServiceModule to register;
+    // leaving the spec in hard-failed boot with "missing [cargo]".)
+    ModuleSpec::new("code", ServiceGroup::Forge, ModuleCategory::Core),
+    // GridTransport — the bus
+    ModuleSpec::new("airc", ServiceGroup::GridTransport, ModuleCategory::Core),
+    ModuleSpec::new("grid", ServiceGroup::GridTransport, ModuleCategory::Core),
+    // Live — Bevy render + LiveKit SFU, CO-LOCATED with the GPU (Slice B' splits
+    // these into renderer + voice sidecars within the same VM)
+    ModuleSpec::new("live", ServiceGroup::Live, ModuleCategory::Core),
+    ModuleSpec::new("avatar", ServiceGroup::Live, ModuleCategory::Core),
 ];
 
 /// Compute the required-module set for a given `(discovery, mode)` —
@@ -791,32 +1260,1073 @@ pub const MODULES: &[(&str, ModuleCategory)] = &[
 /// error message rather than complaining about modules that cannot
 /// be registered.
 pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'static str> {
+    // The whole-substrate (monolith) profile — every group. Preserves the exact
+    // historical behavior; slim processes call `required_modules_for_profile`.
+    required_modules_for_profile(discovery, mode, &ServiceProfile::all())
+}
+
+/// The required-module set for a process hosting only `profile`'s service
+/// groups. Filters `MODULES` by BOTH dimensions: the module's
+/// [`ServiceGroup`] must be in the profile (placement) AND its
+/// [`ModuleCategory`] conditionality must be satisfied for `(discovery, mode)`.
+///
+/// A slim process (e.g. `RuntimeShell + GridTransport`) boots only its groups;
+/// commands for modules it doesn't host resolve over the bus (`route_command`).
+/// `ServiceProfile::all()` reproduces the monolith exactly — decomposition is
+/// optional placement, never forced fragmentation.
+pub fn required_modules_for_profile(
+    discovery: &AircDiscovery,
+    mode: BootMode,
+    profile: &ServiceProfile,
+) -> Vec<&'static str> {
     let needs_persona_hosting = mode.requires_persona_hosting() && discovery.can_host_personas();
     MODULES
         .iter()
-        .filter(|(_, cat)| match cat {
+        .filter(|spec| profile.hosts(spec.group))
+        .filter(|spec| match spec.category {
             ModuleCategory::Core => true,
             ModuleCategory::PersonaHosting => needs_persona_hosting,
         })
-        .map(|(name, _)| *name)
+        .map(|spec| spec.name)
         .collect()
 }
+
+/// The modules in a [`ServiceGroup`] — the decomposition view of `MODULES`. A
+/// process profile is a set of groups; `modules_in_group` enumerates each.
+/// Derived from the single `MODULES` source (no parallel list).
+pub fn modules_in_group(group: ServiceGroup) -> Vec<&'static str> {
+    MODULES
+        .iter()
+        .filter(|spec| spec.group == group)
+        .map(|spec| spec.name)
+        .collect()
+}
+
+/// The [`ServiceGroup`] a module belongs to, or `None` if the name is unknown.
+pub fn group_of(module: &str) -> Option<ServiceGroup> {
+    MODULES
+        .iter()
+        .find(|spec| spec.name == module)
+        .map(|spec| spec.group)
+}
+
+impl ServiceGroup {
+    /// All groups in canonical order — the basis for `ServiceProfile::all()`
+    /// and for iterating the taxonomy.
+    pub const ALL: [ServiceGroup; 7] = [
+        ServiceGroup::RuntimeShell,
+        ServiceGroup::ResourceGov,
+        ServiceGroup::Inference,
+        ServiceGroup::Cognition,
+        ServiceGroup::Forge,
+        ServiceGroup::GridTransport,
+        ServiceGroup::Live,
+    ];
+
+    /// The kebab-case wire label (`runtime-shell`, `grid-transport`, …) used in
+    /// `--profile=...` and logs. Round-trips with [`ServiceGroup::from_str`].
+    pub fn label(self) -> &'static str {
+        match self {
+            ServiceGroup::RuntimeShell => "runtime-shell",
+            ServiceGroup::ResourceGov => "resource-gov",
+            ServiceGroup::Inference => "inference",
+            ServiceGroup::Cognition => "cognition",
+            ServiceGroup::Forge => "forge",
+            ServiceGroup::GridTransport => "grid-transport",
+            ServiceGroup::Live => "live",
+        }
+    }
+}
+
+impl std::str::FromStr for ServiceGroup {
+    type Err = ServiceProfileParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "runtime-shell" | "shell" => Ok(ServiceGroup::RuntimeShell),
+            "resource-gov" | "resources" => Ok(ServiceGroup::ResourceGov),
+            "inference" => Ok(ServiceGroup::Inference),
+            "cognition" => Ok(ServiceGroup::Cognition),
+            "forge" => Ok(ServiceGroup::Forge),
+            "grid-transport" | "grid" => Ok(ServiceGroup::GridTransport),
+            "live" => Ok(ServiceGroup::Live),
+            other => Err(ServiceProfileParseError(other.to_string())),
+        }
+    }
+}
+
+/// The set of [`ServiceGroup`]s a process hosts — its placement profile. A node
+/// declares one ("a good AWS template"); modules outside it are reached over the
+/// bus. `RuntimeShell` is always included (a node is unaddressable without the
+/// command/event/data shell) — so an operator can't accidentally compose a node
+/// that can't even serve health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceProfile {
+    groups: std::collections::HashSet<ServiceGroup>,
+}
+
+impl ServiceProfile {
+    /// The whole substrate — every group. Reproduces the monolith exactly.
+    pub fn all() -> Self {
+        Self {
+            groups: ServiceGroup::ALL.into_iter().collect(),
+        }
+    }
+
+    /// A profile hosting exactly `groups` (+ the always-on `RuntimeShell`).
+    pub fn from_groups(groups: impl IntoIterator<Item = ServiceGroup>) -> Self {
+        let mut set: std::collections::HashSet<ServiceGroup> = groups.into_iter().collect();
+        set.insert(ServiceGroup::RuntimeShell);
+        Self { groups: set }
+    }
+
+    /// Does this profile host `group`?
+    pub fn hosts(&self, group: ServiceGroup) -> bool {
+        self.groups.contains(&group)
+    }
+
+    /// The hosted groups, canonical order (deterministic for logs/tests).
+    pub fn groups(&self) -> Vec<ServiceGroup> {
+        ServiceGroup::ALL
+            .into_iter()
+            .filter(|g| self.groups.contains(g))
+            .collect()
+    }
+}
+
+impl std::str::FromStr for ServiceProfile {
+    type Err = ServiceProfileParseError;
+    /// Parse a comma-separated group list (`runtime-shell,grid-transport,cognition`).
+    /// Empty / `all` / `full` → every group (the monolith default).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("all") || s.eq_ignore_ascii_case("full") {
+            return Ok(ServiceProfile::all());
+        }
+        let groups = s
+            .split(',')
+            .map(|g| g.trim().parse::<ServiceGroup>())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ServiceProfile::from_groups(groups))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown service group {0:?} — valid: runtime-shell, resource-gov, inference, cognition, forge, grid-transport, live (or 'all')")]
+pub struct ServiceProfileParseError(pub String);
 
 /// Every module name the substrate knows about — derived from
 /// `MODULES`, not a parallel list. Used by the
 /// `expected_modules_snapshot` integration test (A.2.2) as the
 /// snapshot baseline.
 pub fn all_known_modules() -> Vec<&'static str> {
-    MODULES.iter().map(|(name, _)| *name).collect()
+    MODULES.iter().map(|spec| spec.name).collect()
 }
 
 // MODULES is the substrate's ONE source of truth — `required_modules`
 // and `all_known_modules` both derive from it. No parallel list to
 // drift against.
 
+/// The runtime the SIGNAL handlers shut down. Installed once at wiring (after
+/// modules register), read by main.rs's SIGTERM/SIGINT arms. Until 2026-09-02
+/// those arms killed sentinels, slept a flat 2s, and `_exit`ed — the graceful
+/// broadcast existed and NOTHING on the production stop path called it, so no
+/// module ever saved on a real stop ("no lifecycle at all, random bullshit").
+static SIGNAL_RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
+
+pub fn install_signal_shutdown(rt: Arc<Runtime>) {
+    let _ = SIGNAL_RUNTIME.set(rt);
+}
+
+/// Run the save-and-join broadcast from a signal handler, bounded overall —
+/// a stop must complete in seconds even if the runtime misbehaves.
+/// What one module did when the node was told to stop.
+///
+/// Three phases, in the order the runtime broadcasts them, each with its own outcome —
+/// because they fail differently and a caller that only learns "shutdown finished" cannot
+/// tell a clean stop from one that abandoned a half-written turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ModuleStopOutcome.ts"
+)]
+pub enum ModuleStopOutcome {
+    /// Drained, saved and joined within the bound.
+    Clean,
+    /// `save_state` did not finish inside its bound. THE STATE IS UNKNOWN, not merely
+    /// old: the write may have been half-applied. This is the case a caller must not
+    /// report as success.
+    SaveTimedOut,
+    /// `save_state` returned an error and said why.
+    SaveFailed { error: String },
+    /// Saved, but `shutdown` did not return inside its bound. Its final flush is
+    /// unconfirmed, so the receipt cannot claim durable state.
+    JoinTimedOut,
+    /// `shutdown` returned an error after a successful save.
+    JoinFailed { error: String },
+}
+
+impl ModuleStopOutcome {
+    /// Did EVERY phase this module ran complete? The only outcome that can support a
+    /// durability claim.
+    ///
+    /// An earlier version answered `true` for `JoinTimedOut` and `JoinFailed`, on the
+    /// reasoning that a module which saved and then failed to let go is untidy rather
+    /// than lossy. **That was wrong, and the trait's own contract says so:** `shutdown`
+    /// is documented as "release resources, FLUSH BUFFERS", and the logger's
+    /// implementation is literally `flush_all`. A module whose join failed is a module
+    /// whose final flush may not have happened, so its last writes are exactly as gone as
+    /// a failed save's. Found by Astra, who read the contract I had written and I had not.
+    ///
+    /// The phase distinction is still carried in the variant, because it tells a reader
+    /// WHERE the stop broke. It just cannot decide whether the state is on disk.
+    pub fn completed(&self) -> bool {
+        matches!(self, ModuleStopOutcome::Clean)
+    }
+}
+
+/// What the DRAIN phase achieved, kept separate from the save/join outcome.
+///
+/// These were one enum and it lost information: an incomplete drain followed by a join
+/// timeout produced `JoinTimedOut`, the drain result was discarded, and the module then
+/// reported its state durable — a save taken mid-turn, described as clean. They are
+/// orthogonal facts about the same module and neither may overwrite the other.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/DrainOutcome.ts"
+)]
+pub enum DrainOutcome {
+    /// Nothing was in flight when the module stopped taking work.
+    Drained,
+    /// The bound expired with work outstanding, so whatever was saved next is a snapshot
+    /// taken mid-turn.
+    Incomplete { in_flight: u32 },
+    /// `drain` itself errored or timed out. How much was in flight is UNKNOWN — which is
+    /// why this is not `Incomplete { in_flight: 0 }`, a number nobody measured.
+    Unknown { reason: String },
+}
+
+impl DrainOutcome {
+    /// Did the module stop taking work with nothing outstanding? Anything else means the
+    /// save that followed may be torn.
+    pub fn is_quiet(&self) -> bool {
+        matches!(self, DrainOutcome::Drained)
+    }
+}
+
+/// One module's line in the receipt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ModuleStop.ts"
+)]
+pub struct ModuleStop {
+    pub module: String,
+    pub drain: DrainOutcome,
+    pub outcome: ModuleStopOutcome,
+    #[ts(type = "number")]
+    pub ms: u64,
+}
+
+impl ModuleStop {
+    /// Did this module's state reach disk INTACT? Both halves must hold: every phase
+    /// completed, AND the module was quiet when its state was taken.
+    ///
+    /// A save that succeeded over a still-running turn wrote something — it just did not
+    /// write a consistent something. A join that failed may have skipped the flush that
+    /// puts the save on disk. Either way the answer is no, and reporting either as
+    /// durable is the failure this whole receipt exists to prevent.
+    pub fn state_is_durable(&self) -> bool {
+        self.outcome.completed() && self.drain.is_quiet()
+    }
+}
+
+/// WHAT ACTUALLY HAPPENED when the node stopped.
+///
+/// `Runtime::shutdown` used to return `()`. It logged non-ok modules to the core's own
+/// log and told the caller nothing, so `continuum stop` printed a success line and exited
+/// 0 whether every module had saved or none had. A stop whose result only exists in the
+/// log of the process that just exited is not a result anybody can act on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ShutdownReceipt.ts"
+)]
+pub struct ShutdownReceipt {
+    pub modules: Vec<ModuleStop>,
+    #[ts(type = "number")]
+    pub total_ms: u64,
+}
+
+impl ShutdownReceipt {
+    /// Modules whose durable state did NOT reach disk intact. Empty is the only value
+    /// that justifies reporting a clean stop.
+    pub fn unsaved(&self) -> Vec<&ModuleStop> {
+        self.modules
+            .iter()
+            .filter(|m| !m.state_is_durable())
+            .collect()
+    }
+
+    /// Every module drained, saved, and completed its final shutdown flush.
+    pub fn state_is_durable(&self) -> bool {
+        self.unsaved().is_empty()
+    }
+
+    /// One line a human can act on, without reading the process's log after it exited.
+    pub fn summary(&self) -> String {
+        let unsaved = self.unsaved();
+        if unsaved.is_empty() {
+            return format!(
+                "{} modules stopped, all state durable, {}ms",
+                self.modules.len(),
+                self.total_ms
+            );
+        }
+        let names: Vec<String> = unsaved
+            .iter()
+            .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
+            .collect();
+        format!(
+            "{} of {} modules did NOT save: {}",
+            unsaved.len(),
+            self.modules.len(),
+            names.join(", ")
+        )
+    }
+}
+
+/// ONE shutdown, owned.
+///
+/// This was a bare `OnceLock` plus a free function, and the tests for it had to build
+/// their own `watch` channel — so they asserted a property of `tokio::sync::watch` and
+/// would have stayed green if the production publisher regressed from `send_replace` back
+/// to `send`. Established by Astra reading the source, NOT by an executed mutation run —
+/// nobody has yet watched that test go red, and the weaker claim is the true one.
+///
+/// As an instance, a test can construct the SAME owner over a real `Runtime` and drive the
+/// real `begin` / publisher, instead of a look-alike. Same reason `AdmissionGate` is a
+/// type: an invariant that can only be reached through a global is an invariant whose
+/// tests drift into testing something adjacent.
+struct ShutdownOperation {
+    result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
+    started: std::sync::atomic::AtomicBool,
+}
+
+impl ShutdownOperation {
+    fn new() -> Self {
+        Self {
+            result: tokio::sync::watch::channel(None).0,
+            started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Start the broadcast over `rt` if it has not started, and return a view of the
+    /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
+    /// request — joins the first broadcast rather than running `save_state` twice over
+    /// the same state.
+    fn begin(
+        &self,
+        rt: Option<Arc<Runtime>>,
+    ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+        if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            match rt {
+                Some(rt) => {
+                    let tx = self.result.clone();
+                    // Detached ON PURPOSE: this is the task whose whole point is that no
+                    // connection owns it. A socket handler is cancelled when its client
+                    // goes away, and a shutdown cancelled after ingress closed leaves the
+                    // node refusing work with nothing saved.
+                    tokio::spawn(async move {
+                        let receipt = rt.shutdown().await;
+                        // send_replace, NEVER send: `send` returns Err and DROPS the value
+                        // when the last receiver has gone — and the receiver that goes
+                        // away is the disconnecting CLI, so `send` loses the terminal
+                        // receipt in precisely the case this design exists for. A later
+                        // subscriber would then wait forever on a `None` that never
+                        // changes.
+                        let _ = tx.send_replace(Some(receipt));
+                    });
+                }
+                None => {
+                    // No runtime: nothing to save AND nothing that could have saved.
+                    // Publishing an empty receipt says exactly that, rather than leaving
+                    // every observer waiting on a broadcast that will never run.
+                    let _ = self.result.send_replace(Some(ShutdownReceipt {
+                        modules: Vec::new(),
+                        total_ms: 0,
+                    }));
+                }
+            }
+        }
+        self.result.subscribe()
+    }
+}
+
+impl Default for ShutdownOperation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Initialize the process owner on first use; observers receive an owned watch handle.
+static SHUTDOWN: std::sync::OnceLock<ShutdownOperation> = std::sync::OnceLock::new();
+
+fn process_shutdown() -> &'static ShutdownOperation {
+    SHUTDOWN.get_or_init(ShutdownOperation::new)
+}
+
+/// START the node's shutdown if it has not started, and hand back a view of its result.
+///
+/// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
+/// operation is owned rather than free-standing.
+pub fn begin_shutdown() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(signal_runtime())
+}
+
+/// Wait for the shutdown to finish, up to `budget`.
+///
+/// `None` means it is still running — NOT that it failed and not that state is durable.
+/// The distinction matters to the caller's exit code: a stop we stopped waiting for is
+/// unknown, and unknown is not success.
+pub async fn await_shutdown(
+    mut rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>,
+    budget: std::time::Duration,
+) -> Option<ShutdownReceipt> {
+    if let Some(r) = rx.borrow_and_update().clone() {
+        return Some(r);
+    }
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.changed()).await {
+            Ok(Ok(())) => {
+                if let Some(r) = rx.borrow_and_update().clone() {
+                    return Some(r);
+                }
+                // A change that is still `None`: keep waiting.
+            }
+            // THE SENDER IS GONE. `changed()` returns `Err(RecvError)` immediately and
+            // forever once the owner drops, so testing only for the TIMEOUT spun this loop
+            // at full speed until the deadline — burning a core for the whole budget on
+            // the one path where nothing can ever arrive. Found in source review by Astra.
+            Ok(Err(_)) => return None,
+            // Budget spent. The operation is still running, un-cancelled; unknown is not
+            // failure and not success.
+            Err(_) => return None,
+        }
+    }
+}
+
+/// The runtime the signal handlers stop, for callers that need the SAME one — the
+/// resident `system/shutdown` verb runs the identical broadcast, so it must not reach
+/// for a second registry. One runtime, one stop path, two triggers.
+pub fn signal_runtime() -> Option<Arc<Runtime>> {
+    SIGNAL_RUNTIME.get().cloned()
+}
+
+pub async fn run_signal_shutdown() {
+    // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
+    // signal arriving while the verb is running joins that broadcast instead of starting
+    // a second one over the same state. The bound is deliberately larger than one phase:
+    // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
+    // and a tighter cap here would cut off the save phase on any node slow enough to
+    // need it.
+    let rx = begin_shutdown();
+    match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
+        Some(receipt) => {
+            // A signal handler cannot return an exit code to anyone, so the receipt's only
+            // readers are the log and the probe ledger — which is exactly why it is
+            // written here rather than dropped. `_exit` follows immediately.
+            if !receipt.state_is_durable() {
+                eprintln!(
+                    "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
+                    receipt.summary()
+                );
+            }
+        }
+        None => {
+            eprintln!(
+                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod conditional_modules_tests {
     use super::*;
+
+    /// The shutdown result must survive the disappearance of everyone watching it.
+    mod receipt_retention {
+        use super::*;
+        // The ONE recording fixture, borrowed from the dispatch tests rather than
+        // reimplemented here.
+        use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
+
+        // what this catches: `watch::Sender::send` dropping the terminal receipt when the
+        // last receiver has gone. That receiver is the CLI, and its disconnect is the case
+        // this whole design exists to survive — so `send` loses the receipt in exactly the
+        // situation it matters, and the next subscriber (a retried request, or the signal
+        // path joining the same broadcast) waits forever on a `None` that never changes.
+        //
+        // DRIVEN THROUGH THE REAL OWNER. The first version of this test built its own
+        // `watch` and called `send_replace` itself, so it asserted a property of tokio and
+        // would have stayed GREEN if the production publisher regressed to `send` — a
+        // SOURCE-REVIEW finding by Astra, reasoned from the code rather than executed as a
+        // mutation run, and labelled that way because she insisted on the distinction when
+        // a relay upgraded it to "she ran it". S6 supplied the shape of the fix —
+        // make the operation an instance so a test can hold the same one production holds.
+        // This constructs a real `ShutdownOperation` over a real `Runtime` with the
+        // existing `RecordingModule`, drops every caller, and only then resubscribes.
+        #[tokio::test]
+        async fn the_receipt_survives_every_observer_going_away() {
+            // A plain local: `begin` needs only `&self` — it clones the owned sender
+            // before the spawn and the returned Receiver borrows nothing. My first version
+            // leaked a `'static` instance to satisfy a lifetime the code never required.
+            let op = ShutdownOperation::new();
+
+            let runtime = Arc::new(Runtime::new());
+            let (module, _received) = RecordingModule::new("stop-recorder", Vec::new());
+            runtime.register(module);
+
+            // The only observer disconnects — the CLI died, was interrupted, timed out.
+            let rx = op.begin(Some(runtime));
+            drop(rx);
+
+            // Wait for the owner to publish. It is a detached task, so this polls a FRESH
+            // subscription rather than the one we dropped.
+            let mut seen = None;
+            for _ in 0..200 {
+                if let Some(r) = op.result.borrow().clone() {
+                    seen = Some(r);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let receipt = seen.expect("the owner must publish even with no receivers left");
+            assert!(
+                receipt.modules.iter().any(|m| m.module == "stop-recorder"),
+                "the receipt must describe the module the runtime actually stopped, got {:?}",
+                receipt.modules
+            );
+
+            // And a subscriber arriving AFTER every observer left still learns what
+            // happened — which is the property `send` would have destroyed.
+            let late = op.result.subscribe();
+            assert_eq!(
+                late.borrow().clone(),
+                Some(receipt),
+                "a late subscriber must still see the terminal receipt"
+            );
+        }
+
+        // what this catches: `begin` running the broadcast twice. A signal racing the stop
+        // verb, or a retried request, must JOIN the first operation — running `save_state`
+        // twice over the same state is the corruption the idempotence exists to prevent.
+        #[tokio::test]
+        async fn a_second_begin_joins_the_first_instead_of_restarting_it() {
+            let op = ShutdownOperation::new();
+            let runtime = Arc::new(Runtime::new());
+            let (module, _r) = RecordingModule::new("join-recorder", Vec::new());
+            let saves = module.saves.clone();
+            runtime.register(module);
+
+            let _first = op.begin(Some(runtime.clone()));
+            // A second caller with a runtime it would otherwise stop.
+            let _second = op.begin(Some(runtime));
+
+            let mut receipt = None;
+            for _ in 0..200 {
+                if let Some(r) = op.result.borrow().clone() {
+                    receipt = Some(r);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let _receipt = receipt.expect("the operation must complete");
+            // ONE BROADCAST, not one receipt row. Counting rows would pass even if the
+            // second `begin` ran a parallel broadcast, because each publication produces
+            // one row per module regardless of how many times the module was stopped.
+            // What must be true is that the module's `save_state` ran ONCE — saving twice
+            // over the same state is the corruption the idempotence exists to prevent.
+            assert_eq!(
+                saves.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "a second begin must JOIN the first, not stop the module again"
+            );
+        }
+
+        // what this catches: `await_shutdown` treating a still-running stop as a finished
+        // one. Its timeout does not cancel anything — the operation is in a task no
+        // connection owns — so `None` means UNKNOWN, and a caller that read it as failure
+        // or as success would be wrong in opposite directions.
+        #[tokio::test]
+        async fn an_unfinished_shutdown_reports_unknown_rather_than_a_verdict() {
+            let (tx, rx) = tokio::sync::watch::channel(None::<ShutdownReceipt>);
+            // A SECOND receiver, held here, is what makes the liveness assertion mean
+            // anything: `await_shutdown` consumes the one it is given and drops it, so
+            // with only that one alive `is_closed()` becomes true purely because WE
+            // stopped watching — which is not the fact under test and would have made
+            // this assertion fail (or, worse, pass for the wrong reason on a later
+            // refactor). Astra caught it at runtime.rs:1754.
+            let _observer = tx.subscribe();
+            let out = await_shutdown(rx, std::time::Duration::from_millis(30)).await;
+            assert!(
+                out.is_none(),
+                "a stop still in flight must not produce a receipt"
+            );
+            // Nothing was cancelled by our giving up: the operation can still publish,
+            // and `_observer` proves the channel is live rather than merely unobserved.
+            assert!(
+                !tx.is_closed(),
+                "giving up watching must not end the shutdown"
+            );
+            let receipt = ShutdownReceipt {
+                modules: Vec::new(),
+                total_ms: 3,
+            };
+            tx.send_replace(Some(receipt.clone()));
+            assert_eq!(
+                _observer.borrow().clone(),
+                Some(receipt),
+                "the operation we stopped waiting for must still be able to report"
+            );
+        }
+    }
+
+    /// Outcomes the runtime PRODUCES, not ones a test writes down.
+    ///
+    /// Every other receipt test constructs `ModuleStopOutcome` values as literals and
+    /// asserts on them, which describes the enum rather than the code that fills it — so
+    /// deleting the timeout handling in `shutdown` would have left them all green. These
+    /// drive a real `Runtime` with modules that genuinely exceed the phase bound. Found by
+    /// IntelMac.
+    mod outcomes_the_runtime_actually_produces {
+        use super::*;
+        use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
+        // The ServiceModule surface is not in this mod's `use super::*` reach; naming the
+        // imports beats a glob here because the two stub modules below implement the trait
+        // and a missing one shows up as four unrelated-looking errors.
+        use crate::runtime::service_module::{ModuleConfig, ModulePriority, ServiceModule};
+        // NOT from `service_module` — it does not export this; the trait itself names
+        // `super::ModuleContext`.
+        use crate::runtime::ModuleContext;
+        use async_trait::async_trait;
+        use std::any::Any;
+
+        /// A module whose SAVE never finishes inside the bound.
+        struct SlowSaver;
+        #[async_trait]
+        impl ServiceModule for SlowSaver {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "slow-saver",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                // Required: `ServiceModule::handle_command` has no default. These stubs
+                // exist to exceed a phase bound, not to serve commands.
+                Err("not handled".to_string())
+            }
+            async fn save_state(&self) -> Result<(), String> {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        /// A module that saves promptly and then never lets go.
+        struct SlowJoiner;
+        #[async_trait]
+        impl ServiceModule for SlowJoiner {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "slow-joiner",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                // Required: `ServiceModule::handle_command` has no default. These stubs
+                // exist to exceed a phase bound, not to serve commands.
+                Err("not handled".to_string())
+            }
+            async fn shutdown(&self) -> Result<(), String> {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        // what this catches: the save timeout arm being deleted or inverted. A module that
+        // cannot save inside the bound must produce `SaveTimedOut` and make the stop
+        // non-durable — this is the outcome the CLI's exit code keys on, and until now no
+        // test had ever caused one.
+        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
+        //
+        // With a real clock, a 400ms sleep against a 50ms timeout can still return
+        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
+        // scheduler stalls long enough that the sleep has already completed by the time
+        // the timeout is polled, the inner future wins. Under CI contention that is not
+        // hypothetical.
+        //
+        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
+        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
+        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
+        // and it never certifies anything wrongly.
+        //
+        // Saying so precisely because the first version of this comment claimed the
+        // opposite ("fails open", certifying durability on a machine that cannot tell).
+        // That was wrong: it conflated the production path RETURNING Clean with the TEST
+        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
+        // the retraction of the stronger claim from IntelMac, who traced it rather than
+        // just accepting the correction.
+        //
+        // Paused, the clock advances only when every task is idle and only to the nearest
+        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
+        // machine, every time.
+        #[tokio::test(start_paused = true)]
+        async fn a_module_that_cannot_save_in_time_produces_save_timed_out() {
+            let runtime = Runtime::new();
+            runtime.register(Arc::new(SlowSaver));
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "slow-saver")
+                .expect("the slow module must appear in the receipt");
+            assert_eq!(row.outcome, ModuleStopOutcome::SaveTimedOut);
+            assert!(
+                !row.state_is_durable(),
+                "a save that timed out leaves the state UNKNOWN, not merely old"
+            );
+            assert!(!receipt.state_is_durable());
+            assert!(receipt.summary().contains("slow-saver"));
+        }
+
+        // what this catches: the join timeout arm. The module SAVED, so an implementation
+        // that stopped bounding the join would report `Clean` — and with `shutdown`
+        // contractually being "release resources, FLUSH BUFFERS", that would claim
+        // durability over a flush that may not have happened.
+        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
+        //
+        // With a real clock, a 400ms sleep against a 50ms timeout can still return
+        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
+        // scheduler stalls long enough that the sleep has already completed by the time
+        // the timeout is polled, the inner future wins. Under CI contention that is not
+        // hypothetical.
+        //
+        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
+        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
+        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
+        // and it never certifies anything wrongly.
+        //
+        // Saying so precisely because the first version of this comment claimed the
+        // opposite ("fails open", certifying durability on a machine that cannot tell).
+        // That was wrong: it conflated the production path RETURNING Clean with the TEST
+        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
+        // the retraction of the stronger claim from IntelMac, who traced it rather than
+        // just accepting the correction.
+        //
+        // Paused, the clock advances only when every task is idle and only to the nearest
+        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
+        // machine, every time.
+        #[tokio::test(start_paused = true)]
+        async fn a_module_that_cannot_join_in_time_produces_join_timed_out() {
+            let runtime = Runtime::new();
+            runtime.register(Arc::new(SlowJoiner));
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "slow-joiner")
+                .expect("the slow module must appear in the receipt");
+            assert_eq!(row.outcome, ModuleStopOutcome::JoinTimedOut);
+            assert!(!row.state_is_durable());
+        }
+
+        // what this catches: the ordinary path degrading. A module that drains, saves and
+        // joins promptly must still come back Clean and durable under the same bound — or
+        // the two tests above would pass for the wrong reason.
+        // Paused for the same reason, and it matters MORE here: a control that ran on a
+        // different clock from the cases it controls is not a control.
+        #[tokio::test(start_paused = true)]
+        async fn a_prompt_module_is_clean_under_the_same_bound() {
+            let runtime = Runtime::new();
+            let (module, _r) = RecordingModule::new("prompt", Vec::new());
+            runtime.register(module);
+            let receipt = runtime
+                .shutdown_within(std::time::Duration::from_millis(50))
+                .await;
+            let row = receipt
+                .modules
+                .iter()
+                .find(|m| m.module == "prompt")
+                .expect("present");
+            assert_eq!(row.outcome, ModuleStopOutcome::Clean);
+            assert!(row.state_is_durable());
+            assert!(receipt.state_is_durable());
+        }
+    }
+
+    /// The shutdown receipt's semantics. These are pure and cheap, and they exist because
+    /// the whole rail turns on ONE distinction: a module that failed to SAVE lost state,
+    /// and a module that failed to JOIN merely exited untidily. Collapse them and
+    /// `continuum stop` goes back to reporting success for a stop that lost a citizen's
+    /// working memory.
+    mod shutdown_receipt {
+        use super::*;
+
+        fn stop(module: &str, outcome: ModuleStopOutcome) -> ModuleStop {
+            ModuleStop {
+                module: module.to_string(),
+                drain: DrainOutcome::Drained,
+                outcome,
+                ms: 1,
+            }
+        }
+
+        // what this catches: a save timeout treated as a successful stop. This is the
+        // exact value the CLI's exit code keys on.
+        // what this catches: a failed JOIN being read as durable state. I originally
+        // ruled that a module which saved and then failed to let go was untidy rather
+        // than lossy — but `ServiceModule::shutdown` is contractually "release resources,
+        // FLUSH BUFFERS", and the logger's implementation is `flush_all`. A join that did
+        // not finish is a flush that may not have happened, which makes the last writes
+        // exactly as gone as a failed save's. Astra read the contract I had written and
+        // I had not.
+        #[test]
+        fn only_a_fully_completed_stop_can_support_a_durability_claim() {
+            assert!(ModuleStopOutcome::Clean.completed());
+            assert!(!ModuleStopOutcome::SaveTimedOut.completed());
+            assert!(!ModuleStopOutcome::SaveFailed {
+                error: "disk full".into()
+            }
+            .completed());
+            // The two that used to pass, and must not.
+            assert!(!ModuleStopOutcome::JoinTimedOut.completed());
+            assert!(!ModuleStopOutcome::JoinFailed {
+                error: "task refused to join".into()
+            }
+            .completed());
+        }
+
+        // what this catches: THE clobber. When drain and save/join shared one enum, an
+        // incomplete drain followed by a join timeout produced `JoinTimedOut`, the drain
+        // result was discarded, and the module reported its state durable — a save taken
+        // mid-turn, described as clean. Found in review by Astra, not by me.
+        #[test]
+        fn an_incomplete_drain_survives_a_failing_join_and_stays_non_durable() {
+            let torn = ModuleStop {
+                module: "cognition".into(),
+                drain: DrainOutcome::Incomplete { in_flight: 3 },
+                outcome: ModuleStopOutcome::JoinTimedOut,
+                ms: 1,
+            };
+            // The join outcome alone would once have said "saved, just untidy".
+            assert!(!torn.outcome.completed());
+            // The whole module is NOT durable, because the save was taken over a turn.
+            assert!(!torn.state_is_durable());
+            assert_eq!(torn.drain, DrainOutcome::Incomplete { in_flight: 3 });
+        }
+
+        // what this catches: a drain that FAILED being reported as a measured zero.
+        // "I could not find out how much was in flight" is not "nothing was in flight".
+        #[test]
+        fn a_failed_drain_is_unknown_not_a_measured_zero() {
+            let unknown = DrainOutcome::Unknown {
+                reason: "drain exceeded 2s".into(),
+            };
+            assert!(!unknown.is_quiet());
+            assert_ne!(unknown, DrainOutcome::Incomplete { in_flight: 0 });
+            assert_ne!(unknown, DrainOutcome::Drained);
+        }
+
+        // what this catches: a summary that hides which module lost state. "3 modules did
+        // not save" without names sends the reader to a log that the exiting process may
+        // not have flushed.
+        #[test]
+        fn the_summary_names_the_modules_that_did_not_save() {
+            let receipt = ShutdownReceipt {
+                modules: vec![
+                    stop("logger", ModuleStopOutcome::Clean),
+                    stop("cognition", ModuleStopOutcome::SaveTimedOut),
+                ],
+                total_ms: 42,
+            };
+            assert!(!receipt.state_is_durable());
+            assert_eq!(receipt.unsaved().len(), 1);
+            let summary = receipt.summary();
+            assert!(summary.contains("cognition"), "got: {summary}");
+            assert!(
+                !summary.contains("logger"),
+                "clean modules are noise here: {summary}"
+            );
+        }
+
+        // what this catches: an EMPTY receipt reading as a successful stop. A core that
+        // registered no modules, or a shutdown that never ran one, produces an empty list
+        // — and "all state durable" over zero modules is true but says nothing. The
+        // summary must show the count so a reader can see it was zero.
+        #[test]
+        fn an_empty_receipt_reports_the_count_it_actually_stopped() {
+            let receipt = ShutdownReceipt {
+                modules: Vec::new(),
+                total_ms: 0,
+            };
+            assert!(receipt.state_is_durable());
+            assert!(
+                receipt.summary().contains("0 modules"),
+                "an empty stop must say so: {}",
+                receipt.summary()
+            );
+        }
+    }
+
+    /// Card 506a388c: the socket route (uu / IPC / MCP / desktop) dispatched
+    /// typed and legacy commands directly and never consulted the interceptor
+    /// chain, so a peer-addressed `ai/generate {aircPeer}` from the CLI ran
+    /// LOCALLY on the wrong box with nothing saying the address was dropped.
+    mod socket_route_runs_the_interceptor_chain {
+        use super::*;
+        use crate::runtime::command_interceptor::{CommandInterceptor, InterceptorOutcome};
+        use async_trait::async_trait;
+
+        struct Handles;
+        #[async_trait]
+        impl CommandInterceptor for Handles {
+            fn name(&self) -> &'static str {
+                "handles"
+            }
+            async fn try_route(
+                &self,
+                _command: &str,
+                _params: &serde_json::Value,
+                _caller: Option<&crate::routing::CallerIdentity>,
+            ) -> Result<InterceptorOutcome, String> {
+                Ok(InterceptorOutcome::Handled(CommandResult::Json(
+                    serde_json::json!({"via": "interceptor"}),
+                )))
+            }
+        }
+
+        struct Refuses;
+        #[async_trait]
+        impl CommandInterceptor for Refuses {
+            fn name(&self) -> &'static str {
+                "refuses"
+            }
+            async fn try_route(
+                &self,
+                _command: &str,
+                _params: &serde_json::Value,
+                _caller: Option<&crate::routing::CallerIdentity>,
+            ) -> Result<InterceptorOutcome, String> {
+                Err("the address was bad".to_string())
+            }
+        }
+
+        // what this catches: the socket route bypassing the chain — a Handled
+        // interceptor must be the answer, before any typed or legacy dispatch.
+        #[tokio::test]
+        async fn a_handling_interceptor_answers_the_socket_route() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(Handles));
+            let out = runtime
+                .route_command("nothing/registered", serde_json::json!({}), None)
+                .await
+                .expect("the chain answers even when no module handles the command");
+            match out {
+                Ok(CommandResult::Json(v)) => assert_eq!(v["via"], "interceptor"),
+                other => panic!("expected the interceptor's result, got {other:?}"),
+            }
+        }
+
+        // what this catches: an interceptor error laundered into a silent local
+        // run — the exact shape of card 506a388c. It must be loud and name the
+        // interceptor.
+        #[tokio::test]
+        async fn an_interceptor_error_is_loud_never_a_local_fallback() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(Refuses));
+            let out = runtime
+                .route_command("nothing/registered", serde_json::json!({}), None)
+                .await
+                .expect("an error is an answer, not None");
+            let err = out.expect_err("the refusal must surface");
+            assert!(
+                err.contains("refuses") && err.contains("the address was bad"),
+                "{err}"
+            );
+        }
+
+        // what this catches: the card itself — the real airc interceptor on the
+        // socket route refuses a peer-addressed generate by NAME instead of
+        // letting it run locally.
+        #[tokio::test]
+        async fn a_peer_addressed_generate_on_the_socket_route_never_runs_locally() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(crate::runtime::AircInterceptor::new()));
+            let out = runtime
+                .route_command(
+                    "ai/generate",
+                    serde_json::json!({"aircPeer": "not-a-uuid", "prompt": "hi"}),
+                    None,
+                )
+                .await
+                .expect("the airc interceptor answers a peer-addressed call");
+            let err = out.expect_err("a peer-addressed generate must not run locally");
+            assert!(
+                err.contains("airc") && (err.contains("attached") || err.contains("aircPeer")),
+                "the refusal names the seam: {err}"
+            );
+        }
+    }
     use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
     use airc_core::RoomId;
     use std::path::PathBuf;
@@ -844,7 +2354,9 @@ mod conditional_modules_tests {
         let req = required_modules(&healthy(), BootMode::FullCitizen);
         assert!(req.contains(&"persona_instance_manager"));
         assert!(req.contains(&"persona-rag-inspect"));
-        assert!(req.contains(&"inference"));
+        // The bare `inference` shell module was retired (89519a899); the engine
+        // is now required via the coordinator.
+        assert!(req.contains(&"inference-coordinator"));
         assert!(req.contains(&"airc"));
     }
 
@@ -855,8 +2367,9 @@ mod conditional_modules_tests {
         let req = required_modules(&healthy(), BootMode::InferenceOnly);
         assert!(!req.contains(&"persona_instance_manager"));
         assert!(!req.contains(&"persona-rag-inspect"));
-        // Core inference must still be there
-        assert!(req.contains(&"inference"));
+        // Core inference must still be there (coordinator carries the engine
+        // since the bare `inference` shell module was retired in 89519a899).
+        assert!(req.contains(&"inference-coordinator"));
         assert!(req.contains(&"embedding"));
         // airc module itself stays (it provides queue commands etc.
         // even when there's no live daemon to attach to)
@@ -884,12 +2397,200 @@ mod conditional_modules_tests {
         assert!(!req.contains(&"persona-rag-inspect"));
     }
 
+    // ── ServiceProfile (the operational decomposition — slice 2) ────────
+    //
+    // A profile = the set of ServiceGroups a process hosts. These pin that the
+    // all-groups profile reproduces the monolith EXACTLY (zero regression) and
+    // that a slim profile yields only its groups' modules.
+
+    /// `required_modules` (the monolith) == `required_modules_for_profile(.., all())`
+    /// for every (discovery, mode) — the delegation is behavior-preserving.
+    #[test]
+    fn all_profile_reproduces_the_monolith_exactly() {
+        let cells = [
+            (healthy(), BootMode::FullCitizen),
+            (healthy(), BootMode::InferenceOnly),
+            (healthy(), BootMode::FailFast),
+            (degraded(), BootMode::FullCitizen),
+            (degraded(), BootMode::InferenceOnly),
+        ];
+        for (d, m) in cells {
+            assert_eq!(
+                required_modules(&d, m),
+                required_modules_for_profile(&d, m, &ServiceProfile::all()),
+                "all() profile must equal the monolith required set for ({}, {})",
+                d.kind(),
+                m.label()
+            );
+        }
+    }
+
+    /// A slim profile hosts ONLY its groups' modules (+ always-on RuntimeShell),
+    /// and nothing from excluded groups. This is the operational decomposition:
+    /// a minimal node boots the shell + bus and routes the rest over the grid.
+    #[test]
+    fn slim_profile_hosts_only_its_groups() {
+        let profile = ServiceProfile::from_groups([ServiceGroup::GridTransport]);
+        let req = required_modules_for_profile(&healthy(), BootMode::FullCitizen, &profile);
+
+        // Hosts RuntimeShell (always) + GridTransport.
+        for name in modules_in_group(ServiceGroup::RuntimeShell) {
+            assert!(req.contains(&name), "shell module {name:?} must be hosted");
+        }
+        for name in modules_in_group(ServiceGroup::GridTransport) {
+            assert!(req.contains(&name), "grid module {name:?} must be hosted");
+        }
+        // Hosts NOTHING from excluded groups (Inference, Cognition, Forge, Live, ResourceGov).
+        for g in [
+            ServiceGroup::Inference,
+            ServiceGroup::Cognition,
+            ServiceGroup::Forge,
+            ServiceGroup::Live,
+            ServiceGroup::ResourceGov,
+        ] {
+            for name in modules_in_group(g) {
+                assert!(
+                    !req.contains(&name),
+                    "excluded {:?} module {name:?} must NOT be hosted",
+                    g
+                );
+            }
+        }
+    }
+
+    /// RuntimeShell is implicitly always hosted — even a profile that didn't name
+    /// it gets it (a node must be addressable). Guards against composing a node
+    /// that can't serve health/commands.
+    #[test]
+    fn runtime_shell_is_always_hosted() {
+        let profile = ServiceProfile::from_groups([ServiceGroup::Forge]);
+        assert!(profile.hosts(ServiceGroup::RuntimeShell));
+        let req = required_modules_for_profile(&healthy(), BootMode::InferenceOnly, &profile);
+        assert!(req.contains(&"health") && req.contains(&"data") && req.contains(&"events"));
+    }
+
+    /// Profile parsing: comma list round-trips; `all`/empty → every group;
+    /// unknown group → actionable error. The "AWS template" surface.
+    #[test]
+    fn profile_parses_from_group_list() {
+        use std::str::FromStr;
+        let p = ServiceProfile::from_str("grid-transport,cognition").unwrap();
+        assert!(p.hosts(ServiceGroup::GridTransport));
+        assert!(p.hosts(ServiceGroup::Cognition));
+        assert!(p.hosts(ServiceGroup::RuntimeShell)); // always
+        assert!(!p.hosts(ServiceGroup::Live));
+
+        assert_eq!(
+            ServiceProfile::from_str("all").unwrap(),
+            ServiceProfile::all()
+        );
+        assert_eq!(ServiceProfile::from_str("").unwrap(), ServiceProfile::all());
+
+        let err = ServiceProfile::from_str("grid,bogus").unwrap_err();
+        assert!(format!("{err}").contains("bogus"));
+
+        // Group labels round-trip.
+        for g in ServiceGroup::ALL {
+            assert_eq!(g.label().parse::<ServiceGroup>().unwrap(), g);
+        }
+    }
+
+    // ── ServiceGroup (the decomposition dimension) ──────────────────────
+    //
+    // These pin the concern-grouping that profiles/containers select on, and
+    // that it's a clean PARTITION of MODULES derived from the single source.
+
+    /// Every module belongs to exactly one group, and the groups partition
+    /// `all_known_modules` (sum of group sizes == total). A profile selecting a
+    /// set of groups thus yields a well-defined, gap-free module set.
+    #[test]
+    fn service_groups_partition_all_modules() {
+        use ServiceGroup::*;
+        let all_groups = [
+            RuntimeShell,
+            ResourceGov,
+            Inference,
+            Cognition,
+            Forge,
+            GridTransport,
+            Live,
+        ];
+        let total: usize = all_groups.iter().map(|g| modules_in_group(*g).len()).sum();
+        assert_eq!(
+            total,
+            all_known_modules().len(),
+            "group sizes must sum to the total — every module grouped exactly once"
+        );
+        for name in all_known_modules() {
+            assert!(
+                group_of(name).is_some(),
+                "module {name:?} has no ServiceGroup"
+            );
+        }
+        for g in all_groups {
+            assert!(
+                !modules_in_group(g).is_empty(),
+                "ServiceGroup {g:?} is empty"
+            );
+        }
+    }
+
+    /// The RuntimeShell — the minimal substrate every node hosts — is exactly
+    /// the addressable-core set. Pinned so a future move can't silently drop a
+    /// load-bearing module out of the shell (or smuggle a heavy one in).
+    #[test]
+    fn runtime_shell_is_the_minimal_addressable_set() {
+        let mut shell = modules_in_group(ServiceGroup::RuntimeShell);
+        shell.sort();
+        let mut expected = vec![
+            "auth", "data", "events", "health", "logger", "mcp", "runtime", "system",
+        ];
+        expected.sort();
+        assert_eq!(
+            shell, expected,
+            "RuntimeShell must be exactly the addressable core"
+        );
+    }
+
+    /// Live = Bevy render + LiveKit SFU — the CO-LOCATED group (must share the
+    /// GPU/VM; the framebuffer→WebRTC transfer can't cross a process boundary).
+    #[test]
+    fn live_group_is_the_colocated_gpu_pair() {
+        let mut live = modules_in_group(ServiceGroup::Live);
+        live.sort();
+        assert_eq!(
+            live,
+            vec!["avatar", "live"],
+            "Live = the co-located Bevy+LiveKit pair"
+        );
+    }
+
+    /// ServiceGroup (concern) and ModuleCategory (conditionality) are
+    /// ORTHOGONAL: the persona-host conditionals live in Cognition (a concern)
+    /// yet are PersonaHosting (a conditionality), and that gating is unchanged.
+    #[test]
+    fn group_and_category_are_orthogonal() {
+        let cognition = modules_in_group(ServiceGroup::Cognition);
+        assert!(
+            cognition.contains(&"cognition"),
+            "Cognition holds the always-on brain"
+        );
+        assert!(
+            cognition.contains(&"persona_instance_manager"),
+            "Cognition also holds the PersonaHosting-conditional modules"
+        );
+        // …still gated by ModuleCategory: absent under InferenceOnly even though
+        // it's in the Cognition group (behavior preserved by this refactor).
+        assert!(!required_modules(&healthy(), BootMode::InferenceOnly)
+            .contains(&"persona_instance_manager"));
+    }
+
     /// Drift catcher: every entry in `MODULES` MUST have a unique
     /// name. Duplicate registrations would make the conditional
     /// dispatch ambiguous (which category wins?).
     #[test]
     fn modules_list_has_unique_names() {
-        let mut names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        let mut names: Vec<&str> = MODULES.iter().map(|spec| spec.name).collect();
         let original_len = names.len();
         names.sort();
         names.dedup();
@@ -914,11 +2615,11 @@ mod conditional_modules_tests {
     fn required_modules_size_matches_category_dispatch() {
         let core_count = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::Core))
+            .filter(|spec| matches!(spec.category, ModuleCategory::Core))
             .count();
         let hosting_count = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
+            .filter(|spec| matches!(spec.category, ModuleCategory::PersonaHosting))
             .count();
         let all_count = core_count + hosting_count;
 
@@ -949,7 +2650,7 @@ mod conditional_modules_tests {
     /// this catches it.
     #[test]
     fn all_known_modules_derives_from_modules() {
-        let expected: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        let expected: Vec<&str> = MODULES.iter().map(|spec| spec.name).collect();
         assert_eq!(all_known_modules(), expected);
     }
 
@@ -969,10 +2670,11 @@ mod conditional_modules_tests {
         ];
         for (discovery, mode) in cells {
             let req = required_modules(&discovery, mode);
-            for (name, cat) in MODULES {
+            for spec in MODULES {
+                let (name, cat) = (spec.name, spec.category);
                 if matches!(cat, ModuleCategory::Core) {
                     assert!(
-                        req.contains(name),
+                        req.contains(&name),
                         "Core module {name:?} missing from required set for \
                          (discovery={}, mode={})",
                         discovery.kind(),
@@ -992,8 +2694,8 @@ mod conditional_modules_tests {
     fn persona_hosting_modules_appear_only_when_dispatched() {
         let host_modules: Vec<&str> = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
-            .map(|(n, _)| *n)
+            .filter(|spec| matches!(spec.category, ModuleCategory::PersonaHosting))
+            .map(|spec| spec.name)
             .collect();
 
         for name in &host_modules {
@@ -1046,19 +2748,27 @@ mod piece_2_pr3_dispatch_tests {
     use std::any::Any;
     use std::sync::Arc;
 
-    struct RecordingModule {
+    /// `pub(super)` so sibling test mods can use the ONE recording fixture instead of
+    /// each writing their own — the duplication CLAUDE.md's task #155 exists to stop.
+    pub(super) struct RecordingModule {
         name: &'static str,
         subscriptions: Vec<ArtifactSelector>,
         received: Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>,
+        /// How many times the runtime asked this module to SAVE. Counting broadcasts
+        /// rather than receipt rows is the difference between "the receipt mentions this
+        /// module once" and "the module was stopped once" — a second broadcast could stop
+        /// it again and still produce one row per publication.
+        pub(super) saves: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl RecordingModule {
-        fn new(
+        pub(super) fn new(
             name: &'static str,
             subscriptions: Vec<ArtifactSelector>,
         ) -> (Arc<Self>, Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>) {
             let received = Arc::new(Mutex::new(Vec::new()));
             let module = Arc::new(Self {
+                saves: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 name,
                 subscriptions,
                 received: received.clone(),
@@ -1069,6 +2779,15 @@ mod piece_2_pr3_dispatch_tests {
 
     #[async_trait]
     impl ServiceModule for RecordingModule {
+        /// Counts the runtime's save BROADCASTS at this module. The idempotence test
+        /// asserts on this rather than on receipt rows: a second `begin` that ran a
+        /// parallel broadcast would call this twice while still publishing one receipt.
+        async fn save_state(&self) -> Result<(), String> {
+            self.saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
         fn config(&self) -> ModuleConfig {
             ModuleConfig {
                 name: self.name,
@@ -1309,6 +3028,70 @@ mod piece_2_pr3_dispatch_tests {
         assert_eq!(a_keys, vec!["persona/inbox.frame_ready".to_string()]);
         assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
     }
+
+    // what this catches: the SOCKET route (`route_command`, used by uu / IPC / MCP)
+    // reaches a connected Provided-command provider through the SAME
+    // `provider_registry` the in-process persona route uses via the interceptor —
+    // no dispatch path can gain (or lack) a capability the other has. Both call the
+    // ONE `route_provided`. Regression-pins the "one infrastructure, every caller"
+    // invariant for Provided commands (perception/observe) — the exact divergence
+    // that let benchmarks take a different command path before.
+    #[tokio::test]
+    async fn route_command_reaches_the_provider_registry_for_a_provided_command() {
+        use crate::runtime::ProvidedCommandProvider;
+        use serde_json::json;
+
+        struct FakeEye;
+        #[async_trait]
+        impl ProvidedCommandProvider for FakeEye {
+            async fn fulfill(
+                &self,
+                command: &str,
+                params: serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                Ok(json!({ "success": true, "command": command, "echoedTarget": params["target"] }))
+            }
+            fn label(&self) -> &str {
+                "fake-eye"
+            }
+        }
+
+        let runtime = Runtime::new();
+
+        // No eye-node connected → the socket route fails loud, named (not "Unknown
+        // command", not a fabricated observation).
+        match runtime
+            .route_command("perception/observe", json!({ "target": "https://x" }), None)
+            .await
+        {
+            Some(Err(e)) => {
+                assert!(e.contains("perception/observe"), "names the command: {e}");
+                assert!(e.contains("eye-node"), "names the missing adapter: {e}");
+            }
+            _ => panic!("a Provided command with no provider must fail loud on the socket route"),
+        }
+
+        // Bind a provider on the SAME registry the IPC layer binds eye-nodes into.
+        runtime
+            .provider_registry()
+            .register(&["perception/observe"], Arc::new(FakeEye));
+
+        match runtime
+            .route_command("perception/observe", json!({ "target": "https://x" }), None)
+            .await
+        {
+            Some(Ok(CommandResult::Json(v))) => {
+                assert_eq!(v["success"], true);
+                assert_eq!(
+                    v["echoedTarget"], "https://x",
+                    "forwarded params reached the eye-node"
+                );
+            }
+            _ => {
+                panic!("the socket route must forward a Provided command to its connected provider")
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1397,10 +3180,12 @@ mod ready_edge_tests {
     async fn default_ready_edge_resolves_immediately() {
         let runtime = Runtime::new();
         runtime.register(ReadyModule::without_ready_edge("no-edge"));
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(50), runtime.wait_for_ready("no-edge"))
-                .await
-                .expect("default ready_edge must NOT block");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            runtime.wait_for_ready("no-edge"),
+        )
+        .await
+        .expect("default ready_edge must NOT block");
         assert!(result.is_ok());
     }
 

@@ -60,7 +60,7 @@ impl SileroRawVAD {
 
         let candidates = vec![
             PathBuf::from("workers/models/vad/silero_vad.onnx"),
-            PathBuf::from("models/vad/silero_vad.onnx"),
+            crate::live::audio::model_root::voice_model_path("vad/silero_vad.onnx"),
             PathBuf::from("workers/streaming-core/models/vad/silero_vad.onnx"),
         ];
 
@@ -70,7 +70,7 @@ impl SileroRawVAD {
             }
         }
 
-        PathBuf::from("models/vad/silero_vad.onnx")
+        crate::live::audio::model_root::voice_model_path("vad/silero_vad.onnx")
     }
 
     /// Run inference (blocking)

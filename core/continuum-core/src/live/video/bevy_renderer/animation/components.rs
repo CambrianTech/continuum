@@ -38,6 +38,29 @@ impl MorphTargets {
         self.blink.is_some() || (self.blink_left.is_some() && self.blink_right.is_some())
     }
 
+    /// Resolve a canonical morph channel name (see `pose::morph`) to its
+    /// discovered blend-shape index. `None` = this mesh has no such morph.
+    /// This is the ONE name↔field map for morphs; `pose.rs`'s
+    /// `every_canonical_name_resolves` test guards it against drift.
+    pub fn resolve(&self, name: &str) -> Option<usize> {
+        match name {
+            "mouthOpen" => self.mouth_open,
+            "blink" => self.blink,
+            "blinkLeft" => self.blink_left,
+            "blinkRight" => self.blink_right,
+            "happy" => self.happy,
+            "sad" => self.sad,
+            "angry" => self.angry,
+            "surprised" => self.surprised,
+            "relaxed" => self.relaxed,
+            "lookUp" => self.look_up,
+            "lookDown" => self.look_down,
+            "lookLeft" => self.look_left,
+            "lookRight" => self.look_right,
+            _ => None,
+        }
+    }
+
     pub fn has_gaze(&self) -> bool {
         self.look_up.is_some()
             || self.look_down.is_some()
@@ -84,6 +107,31 @@ impl From<&BoneInfo> for BoneRef {
             entity: info.entity,
             rest_translation: info.rest_translation,
             rest_rotation: info.rest_rotation,
+        }
+    }
+}
+
+impl Skeleton {
+    /// Resolve a canonical VRM humanoid bone name (see `pose::bone`) to its
+    /// discovered `BoneRef`. `None` = this avatar's skeleton lacks that bone.
+    /// This is the ONE name↔field map for bones; `pose.rs`'s
+    /// `every_canonical_name_resolves` test guards it against drift.
+    pub fn bone(&self, name: &str) -> Option<&BoneRef> {
+        match name {
+            "head" => self.head.as_ref(),
+            "neck" => self.neck.as_ref(),
+            "spine" => self.spine.as_ref(),
+            "leftShoulder" => self.left_shoulder.as_ref(),
+            "rightShoulder" => self.right_shoulder.as_ref(),
+            "leftUpperArm" => self.left_upper_arm.as_ref(),
+            "rightUpperArm" => self.right_upper_arm.as_ref(),
+            "leftLowerArm" => self.left_lower_arm.as_ref(),
+            "rightLowerArm" => self.right_lower_arm.as_ref(),
+            "leftEye" => self.left_eye.as_ref(),
+            "rightEye" => self.right_eye.as_ref(),
+            "leftHand" => self.left_hand.as_ref(),
+            "rightHand" => self.right_hand.as_ref(),
+            _ => None,
         }
     }
 }

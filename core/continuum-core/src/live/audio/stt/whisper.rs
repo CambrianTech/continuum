@@ -56,7 +56,7 @@ impl WhisperSTT {
 
     /// Search directories for model files
     fn model_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![PathBuf::from("models/whisper")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("whisper")];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("whisper"));
         }
@@ -129,7 +129,7 @@ impl WhisperSTT {
         clog_warn!("  https://huggingface.co/ggerganov/whisper.cpp/tree/main");
         clog_warn!("  Recommended: ggml-large-v3-turbo.bin (best speed/quality)");
         clog_warn!("  Place in: models/whisper/");
-        PathBuf::from("models/whisper/ggml-large-v3-turbo.bin")
+        crate::live::audio::model_root::voice_model_path("whisper/ggml-large-v3-turbo.bin")
     }
 
     /// Synchronous transcription using pre-allocated state (runs on blocking thread)

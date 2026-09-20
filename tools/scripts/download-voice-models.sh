@@ -218,7 +218,7 @@ fi
 
 # Orpheus TTS (3B, LoRA-trainable — auto-download Q4_K_M quantized)
 # Model: Llama-3B fine-tuned for expressive speech with emotion tags
-# GGUF via Candle for inference, Unsloth for LoRA training
+# GGUF via Candle for inference; LoRA-trainable for expressive-speech adapters
 # 3 files needed: GGUF model (~2.4GB), tokenizer, SNAC audio codec decoder
 ORPHEUS_DIR="$MODELS_DIR/orpheus"
 ORPHEUS_GGUF="$ORPHEUS_DIR/orpheus-3b-0.1-ft-q4_k_m.gguf"

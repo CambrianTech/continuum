@@ -91,6 +91,16 @@ macro_rules! log_debug {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            if $crate::modules::logger::log_sink_ready() {
+                $crate::logging::write_log_direct($category, "DEBUG", $component, &format!($($arg)*));
+            }
         }
     };
 }
@@ -106,6 +116,16 @@ macro_rules! log_info {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            if $crate::modules::logger::log_sink_ready() {
+                $crate::logging::write_log_direct($category, "INFO", $component, &format!($($arg)*));
+            }
         }
     };
 }
@@ -121,6 +141,16 @@ macro_rules! log_warn {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            if $crate::modules::logger::log_sink_ready() {
+                $crate::logging::write_log_direct($category, "WARN", $component, &format!($($arg)*));
+            }
         }
     };
 }
@@ -136,6 +166,16 @@ macro_rules! log_error {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            if $crate::modules::logger::log_sink_ready() {
+                $crate::logging::write_log_direct($category, "ERROR", $component, &format!($($arg)*));
+            }
         }
     };
 }
@@ -171,8 +211,8 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "modules/data"
     } else if path.starts_with("modules::embedding") {
         "modules/embedding"
-    } else if path.starts_with("modules::search") {
-        "modules/search"
+    } else if path.starts_with("commands::search") {
+        "commands/search"
     } else if path.starts_with("modules::logger") {
         "modules/logger"
     } else if path.starts_with("modules::live") {
@@ -256,10 +296,12 @@ pub fn write_log_direct(category: &str, level: &str, component: &str, message: &
 #[macro_export]
 macro_rules! clog_info {
     ($($arg:tt)*) => {{
-        let category = $crate::logging::module_path_to_category(module_path!());
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct(category, "INFO", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let category = $crate::logging::module_path_to_category(module_path!());
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct(category, "INFO", component, &message);
+        }
     }};
 }
 
@@ -267,10 +309,12 @@ macro_rules! clog_info {
 #[macro_export]
 macro_rules! clog_warn {
     ($($arg:tt)*) => {{
-        let category = $crate::logging::module_path_to_category(module_path!());
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct(category, "WARN", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let category = $crate::logging::module_path_to_category(module_path!());
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct(category, "WARN", component, &message);
+        }
     }};
 }
 
@@ -278,10 +322,12 @@ macro_rules! clog_warn {
 #[macro_export]
 macro_rules! clog_error {
     ($($arg:tt)*) => {{
-        let category = $crate::logging::module_path_to_category(module_path!());
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct(category, "ERROR", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let category = $crate::logging::module_path_to_category(module_path!());
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct(category, "ERROR", component, &message);
+        }
     }};
 }
 
@@ -289,10 +335,12 @@ macro_rules! clog_error {
 #[macro_export]
 macro_rules! clog_debug {
     ($($arg:tt)*) => {{
-        let category = $crate::logging::module_path_to_category(module_path!());
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct(category, "DEBUG", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let category = $crate::logging::module_path_to_category(module_path!());
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct(category, "DEBUG", component, &message);
+        }
     }};
 }
 
@@ -300,24 +348,32 @@ macro_rules! clog_debug {
 #[macro_export]
 macro_rules! clog_to {
     ($category:expr, info, $($arg:tt)*) => {{
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct($category, "INFO", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct($category, "INFO", component, &message);
+        }
     }};
     ($category:expr, warn, $($arg:tt)*) => {{
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct($category, "WARN", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct($category, "WARN", component, &message);
+        }
     }};
     ($category:expr, error, $($arg:tt)*) => {{
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct($category, "ERROR", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct($category, "ERROR", component, &message);
+        }
     }};
     ($category:expr, debug, $($arg:tt)*) => {{
-        let component = $crate::logging::extract_component(module_path!());
-        let message = format!($($arg)*);
-        $crate::logging::write_log_direct($category, "DEBUG", component, &message);
+        if $crate::modules::logger::log_sink_ready() {
+            let component = $crate::logging::extract_component(module_path!());
+            let message = format!($($arg)*);
+            $crate::logging::write_log_direct($category, "DEBUG", component, &message);
+        }
     }};
 }
 

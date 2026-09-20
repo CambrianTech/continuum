@@ -248,7 +248,7 @@ Verifies submodules, IPC sockets, GPU vs CPU backend, scheduler vs llama-server,
 - [**Forged models**](https://huggingface.co/continuum-ai) — the compacted Qwen3.5 family (currently a 4B code-forged tier; bigger tiers in flight). The forge methodology paper is in [forge-alloy](https://github.com/CambrianTech/forge-alloy) — cryptographic transparency on every published model.
 - [**The Grid**](../README.md#the-grid) — multi-node compute fabric. Add a second machine with continuum installed and they discover each other automatically over Tailscale or local mesh.
 - [**The Factory**](../README.md#the-factory) — forge your own models on the Grid. Open as community contribution work; planned UI surface for Carl-tier users in a follow-up.
-- [**Personas as citizens**](../README.md#autonomous-personas) — the architecture isn't "tools you invoke," it's an inhabited workshop. Personas have memory, mood, autonomy, the right to refuse, and (per the [convergence roadmap](../src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)) self-managed task queues + LoRA paging.
+- [**Personas as citizens**](../README.md#autonomous-personas) — the architecture isn't "tools you invoke," it's an inhabited workshop. Personas have memory, mood, autonomy, the right to refuse, and (per the [convergence roadmap](personas/PERSONA-CONVERGENCE-ROADMAP.md)) self-managed task queues + LoRA paging.
 
 ---
 

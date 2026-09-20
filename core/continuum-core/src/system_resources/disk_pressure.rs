@@ -66,6 +66,7 @@
 //! - Sweep policy under pressure (Critical → delete oldest cargo
 //!   incremental, oldest probe JSONL files, etc.).
 
+use async_trait::async_trait;
 use serde::Serialize;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -75,6 +76,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use ts_rs::TS;
 
+use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
 use crate::{clog_info, clog_warn};
 
 // =============================================================================
@@ -85,11 +87,16 @@ use crate::{clog_info, clog_warn};
 /// Bulk-write subsystems (model download, fixture archive, probe JSONL
 /// spool) should check this before allocating large chunks. Same shape
 /// as `is_memory_gate_closed`.
-static DISK_GATE_CLOSED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DISK_GATE_CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Global atomic level — updated every poll. Lock-free reads anywhere.
 static CURRENT_DISK_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The last published snapshot, for the command surface (`system/resources`). A
+/// brief `RwLock` written once per 30 s poll and read on demand — never across an
+/// await.
+static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<DiskPressureSnapshot>> =
+    parking_lot::RwLock::new(None);
 
 /// Check if the disk gate is closed (critical pressure sustained).
 /// Subsystems should refuse new bulk writes when this returns true.
@@ -127,6 +134,13 @@ pub enum DiskPressureLevel {
     High,
     /// > 95 %. Emergency: refuse new bulk writes; broker evicts aggressively.
     Critical,
+    /// The monitor CANNOT SEE: no mounted volume was found at all. A typed absence
+    /// — never derived from a zero-sized reading. Until 2026-09-19 the no-volume
+    /// branch announced "UNKNOWN" in a probe and then handed on `(0, 0)`, so the
+    /// number said Normal while the words said unknown (Cormac + a027688a's review
+    /// of #4185). Ordered last so `level >= High` treats it as hot: an unseen disk
+    /// is not a disk with room.
+    Unknown,
 }
 
 impl DiskPressureLevel {
@@ -148,6 +162,7 @@ impl DiskPressureLevel {
             Self::Warning => 1,
             Self::High => 2,
             Self::Critical => 3,
+            Self::Unknown => 4,
         }
     }
 }
@@ -159,6 +174,7 @@ impl std::fmt::Display for DiskPressureLevel {
             Self::Warning => write!(f, "warning"),
             Self::High => write!(f, "high"),
             Self::Critical => write!(f, "critical"),
+            Self::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -169,7 +185,10 @@ impl std::fmt::Display for DiskPressureLevel {
 
 /// One path's self-reported disk usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/DiskPathReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/DiskPathReport.ts"
+)]
 pub struct DiskPathReport {
     /// Identifier (e.g., "cargo-target", "continuum-cache", "model-registry").
     pub name: String,
@@ -227,6 +246,12 @@ pub struct DiskPressureSnapshot {
     pub timestamp_ms: u64,
     /// Consecutive polls at this level (hysteresis input).
     pub consecutive_at_level: u32,
+    /// WHICH volume the numbers describe: `home` (the volume holding the substrate's
+    /// home — the normal case), `hottest_volume` (no volume holds the home; the numbers
+    /// are the most-pressured mounted volume's — a real reading, conservatively
+    /// chosen, named as a fallback), or `none` (no mounted volume at all; level is
+    /// `Unknown` and the byte fields are meaningless).
+    pub volume_source: String,
 }
 
 impl Default for DiskPressureSnapshot {
@@ -240,6 +265,7 @@ impl Default for DiskPressureSnapshot {
             paths: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
+            volume_source: "none".to_string(),
         }
     }
 }
@@ -255,13 +281,50 @@ struct ReporterEntry {
     disabled: bool,
 }
 
+/// One reporter call's classified outcome, carried from the off-lock fan-out
+/// phase back to the brief fold-lock phase where the fault counters live. The
+/// reporter's name + count are resolved during the fold (so the warning text
+/// always reflects the post-increment count), keeping this enum data-only.
+enum ReporterCallOutcome {
+    Report(DiskPathReport),
+    /// Reporter body panicked (caught inside `spawn_blocking`).
+    Panicked,
+    /// `spawn_blocking` itself failed to join (runtime-level, not a body panic).
+    JoinError(String),
+    /// Reporter exceeded the 100 ms call budget.
+    TimedOut,
+}
+
+/// Loop-private mutable state, owned by the daemon and mutated only on its own
+/// tick. Held behind a brief `parking_lot::Mutex` (never across an await) so the
+/// `Daemon::tick(&self)` contract can reach it — the same lock→compute→drop→
+/// async→fold shape every daemon on the base shares. Nothing else contends this
+/// lock: subscribers read the published snapshot through the channel, and
+/// `add_reporter` hands new reporters in via the mpsc, not by locking here.
+struct DiskTickState {
+    disks: sysinfo::Disks,
+    reporters: Vec<ReporterEntry>,
+    reporter_rx: tokio::sync::mpsc::UnboundedReceiver<Arc<dyn DiskReporter>>,
+    prev_level: DiskPressureLevel,
+    consecutive_at_level: u32,
+    log_counter: u64,
+    first_snapshot_published: bool,
+}
+
 /// Independent disk-pressure monitoring system.
 ///
-/// Construct via [`DiskPressureMonitor::start`]; the constructor spawns
-/// the monitor task and returns an `Arc<Self>` holding the public API.
-/// The task runs until the process exits.
+/// Construct via [`DiskPressureMonitor::start`]; the constructor spawns the
+/// monitor on the shared [`Daemon`] runner ([`spawn_daemon`]) and returns an
+/// `Arc<Self>` holding the public API. The task runs until the process exits,
+/// with each tick isolated by the runner's per-tick `catch_unwind` — a stray
+/// panic in one poll loses that poll, never the whole monitor.
 pub struct DiskPressureMonitor {
-    rx: watch::Receiver<DiskPressureSnapshot>,
+    /// The embedded publish channel — the base's watch + derived gate in one.
+    /// Gating lives in the global `DISK_GATE_CLOSED` static (sustained-Critical,
+    /// read cross-module by bulk-write subsystems), so this channel is
+    /// [`ungated`](DaemonChannel::ungated) — the base does not force its gate on
+    /// a daemon whose gate semantics live elsewhere.
+    channel: DaemonChannel<DiskPressureSnapshot>,
     /// Ready edge — flips `false → true` exactly once when the first
     /// snapshot is published, same shape as
     /// [`ServiceModule::ready_edge`](crate::runtime::ServiceModule::ready_edge).
@@ -275,6 +338,8 @@ pub struct DiskPressureMonitor {
     reporters: parking_lot::RwLock<Vec<Arc<dyn DiskReporter>>>,
     /// Channel for sending new reporters to the loop task.
     reporter_tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn DiskReporter>>,
+    /// Loop-private tick state — see [`DiskTickState`].
+    state: parking_lot::Mutex<DiskTickState>,
 }
 
 /// Poll interval — every 30 s. Disk pressure changes slowly; faster
@@ -288,30 +353,101 @@ const QUARANTINE_AFTER: u32 = 3;
 /// Reporter call budget — 100 ms hard ceiling per call.
 const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Root mount point we measure disk pressure against. On macOS and
-/// Linux this is `/`; other mounts (network shares, secondary volumes)
-/// are deliberately ignored — the pressure we care about is "is the
-/// substrate's home filesystem about to fill".
-const ROOT_MOUNT: &str = "/";
+/// THE VOLUME WE MEASURE IS THE ONE THAT HOLDS THE SUBSTRATE'S HOME — resolved
+/// through the drive adapter ([`crate::capacity::system_profile::drive_holding`]),
+/// never named. Until 2026-09-18 this file held `const ROOT_MOUNT = "/"` and
+/// matched every mount point against it by string equality. On Windows no mount is
+/// `/` (`C:\`), so the lookup found nothing, read `(0, 0)`, computed pressure 0.0,
+/// and the level stayed `Normal` on every Windows host for as long as the monitor
+/// existed: the 5090 filled its 1.9 TB volume to 0 bytes free with the broker never
+/// asked to relieve a byte, the cargo-target pool sitting "within budget", and the
+/// core's own checkpoints dying with os error 112. Two of this codebase's own laws in
+/// one constant: a platform that chooses differently, silently, and an absence
+/// rendered as a positive fact — `(0, 0)` reads as "fine". Now: no drive holds the
+/// home = `disk.pressure.unmeasured`, said on every blind poll, never a zero.
+
+/// Which volume a reading describes — see [`DiskPressureSnapshot::volume_source`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolumeSource {
+    Home,
+    HottestVolume,
+    None,
+}
+
+impl VolumeSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Home => "home",
+            Self::HottestVolume => "hottest_volume",
+            Self::None => "none",
+        }
+    }
+}
+
+/// One poll's volume reading, PURE over the mount list so the absence cases are
+/// pinned by a test without sysinfo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VolumeReading {
+    total: u64,
+    available: u64,
+    source: VolumeSource,
+    /// `Some(Unknown)` only when there is no volume to measure at all.
+    level_override: Option<DiskPressureLevel>,
+}
+
+/// THE reading for this poll: the volume holding the home; else the hottest mounted
+/// volume (a real number, conservatively chosen, named as a fallback); else a typed
+/// Unknown. Never `(0, 0)` presented as a measurement — that read as pressure 0.0 =
+/// Normal, which is the lie #4185 was written to end and then re-committed in its
+/// own no-match arm (2026-09-19).
+fn volume_reading(
+    drives: &[crate::capacity::system_profile::DriveInfo],
+    home: &std::path::Path,
+) -> VolumeReading {
+    if let Some(d) = crate::capacity::system_profile::drive_holding(drives, home)
+        .filter(|d| d.total_bytes > 0)
+    {
+        return VolumeReading {
+            total: d.total_bytes,
+            available: d.available_bytes,
+            source: VolumeSource::Home,
+            level_override: None,
+        };
+    }
+    let hottest = drives
+        .iter()
+        .filter(|d| d.total_bytes > 0)
+        .max_by(|a, b| {
+            let pa = 1.0 - a.available_bytes as f64 / a.total_bytes as f64;
+            let pb = 1.0 - b.available_bytes as f64 / b.total_bytes as f64;
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: a NaN pressure (total 0 is filtered above) ranks as equal, never panics the poll
+        });
+    match hottest {
+        Some(d) => VolumeReading {
+            total: d.total_bytes,
+            available: d.available_bytes,
+            source: VolumeSource::HottestVolume,
+            level_override: None,
+        },
+        None => VolumeReading {
+            total: 0,
+            available: 0,
+            source: VolumeSource::None,
+            level_override: Some(DiskPressureLevel::Unknown),
+        },
+    }
+}
 
 impl DiskPressureMonitor {
-    /// Spawn the monitor on its own tokio task. Returns the handle.
+    /// Spawn the monitor on the shared [`Daemon`] runner. Returns the handle.
     pub fn start(reporters: Vec<Arc<dyn DiskReporter>>) -> Arc<Self> {
-        let (tx, rx) = watch::channel(DiskPressureSnapshot::default());
         let (ready_tx, _ready_rx) = watch::channel(false);
         let current_pressure = Arc::new(AtomicU64::new(0));
         let (reporter_tx, reporter_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let monitor = Arc::new(Self {
-            rx,
-            ready_tx: ready_tx.clone(),
-            current_pressure: current_pressure.clone(),
-            reporters: parking_lot::RwLock::new(reporters.clone()),
-            reporter_tx,
-        });
-
         let entries: Vec<ReporterEntry> = reporters
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|r| ReporterEntry {
                 reporter: r,
                 consecutive_panics: 0,
@@ -319,31 +455,40 @@ impl DiskPressureMonitor {
             })
             .collect();
 
-        // Spawn the loop with catch_unwind so a panic outside reporter
-        // code doesn't silently kill the task.
-        {
-            use futures::FutureExt;
-            tokio::spawn(async move {
-                let result = AssertUnwindSafe(Self::run_loop(
-                    tx,
-                    ready_tx,
-                    current_pressure,
-                    entries,
-                    reporter_rx,
-                ))
-                .catch_unwind()
-                .await;
+        let monitor = Arc::new(Self {
+            channel: DaemonChannel::ungated(DiskPressureSnapshot::default()),
+            ready_tx,
+            current_pressure,
+            reporters: parking_lot::RwLock::new(reporters),
+            reporter_tx,
+            state: parking_lot::Mutex::new(DiskTickState {
+                disks: sysinfo::Disks::new_with_refreshed_list(),
+                reporters: entries,
+                reporter_rx,
+                prev_level: DiskPressureLevel::Normal,
+                consecutive_at_level: 0,
+                log_counter: 0,
+                first_snapshot_published: false,
+            }),
+        });
 
-                if let Err(e) = result {
-                    clog_warn!(
-                        "💾 DiskPressureMonitor task panicked (monitor stopped): {:?}",
-                        e
-                    );
-                }
-            });
-        }
+        clog_info!(
+            "💾 DiskPressureMonitor started (interval={:?}, reporters={})",
+            POLL_INTERVAL,
+            monitor.reporters.read().len()
+        );
 
+        // The shared runner owns the interval + per-tick catch_unwind. We don't
+        // hold the returned handle — subscribers reach the channel through us.
+        let _ = spawn_daemon(monitor.clone());
         monitor
+    }
+
+    /// The last published snapshot, process-wide — what `system/resources` shows
+    /// beside cpu/memory/gpu. `None` before the first poll: "not measured yet", never
+    /// a zero-sized volume.
+    pub fn current_snapshot() -> Option<DiskPressureSnapshot> {
+        CURRENT_DISK_SNAPSHOT.read().clone()
     }
 
     /// Lock-free current level. Updated every poll.
@@ -352,6 +497,7 @@ impl DiskPressureMonitor {
             1 => DiskPressureLevel::Warning,
             2 => DiskPressureLevel::High,
             3 => DiskPressureLevel::Critical,
+            4 => DiskPressureLevel::Unknown,
             _ => DiskPressureLevel::Normal,
         }
     }
@@ -366,7 +512,7 @@ impl DiskPressureMonitor {
     /// Subscribe to snapshot changes. The receiver gets notified
     /// whenever a new snapshot is published.
     pub fn subscribe(&self) -> watch::Receiver<DiskPressureSnapshot> {
-        self.rx.clone()
+        self.channel.handle().subscribe()
     }
 
     /// Subscribe to the ready edge — flips `false → true` exactly once
@@ -383,50 +529,24 @@ impl DiskPressureMonitor {
 
     /// Latest snapshot (cheap clone from the watch channel).
     pub fn current(&self) -> DiskPressureSnapshot {
-        self.rx.borrow().clone()
+        self.channel.snapshot()
     }
 
-    /// The monitor loop body. Runs until process exit. Each tick body
-    /// is `catch_unwind`'d via the outer wrapper (see `start`); inner
-    /// reporter calls have their own `catch_unwind` + timeout
-    /// quarantine path.
-    async fn run_loop(
-        tx: watch::Sender<DiskPressureSnapshot>,
-        ready_tx: watch::Sender<bool>,
-        pressure_atomic: Arc<AtomicU64>,
-        mut reporters: Vec<ReporterEntry>,
-        mut reporter_rx: tokio::sync::mpsc::UnboundedReceiver<Arc<dyn DiskReporter>>,
-    ) {
-        use sysinfo::Disks;
-
-        // `tokio::time::interval` (not sleep loop) so cadence doesn't
-        // drift under load. `Skip` collapses missed ticks instead of
-        // stacking them — fine for periodic refresh.
-        let mut ticker = tokio::time::interval(POLL_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Skip the first immediate tick — give the substrate a moment
-        // to warm up before publishing the first snapshot.
-        ticker.tick().await;
-
-        let mut disks = Disks::new_with_refreshed_list();
-        let mut prev_level = DiskPressureLevel::Normal;
-        let mut consecutive_at_level: u32 = 0;
-        let mut log_counter: u64 = 0;
-        let mut first_snapshot_published = false;
-
-        clog_info!(
-            "💾 DiskPressureMonitor started (interval={:?}, reporters={})",
-            POLL_INTERVAL,
-            reporters.len()
-        );
-
-        loop {
-            ticker.tick().await;
+    /// One poll cycle — the [`Daemon::tick`] body. Structured in the canonical
+    /// daemon shape: a brief lock to ingest + plan (drain new reporters, refresh
+    /// disks, compute pressure/level/hysteresis, snapshot the live reporters),
+    /// the async reporter fan-out OFF the lock, then a brief lock to fold the
+    /// fault counters + build the snapshot. The state lock is never held across
+    /// an await; `self.channel.publish` happens last, lock-free.
+    async fn poll(&self) {
+        // --- Phase 1: brief lock — ingest + plan. ---
+        let (total, available, used, pressure, level, consecutive_at_level, live, volume_source) = {
+            let mut st = self.state.lock();
 
             // Drain dynamically-added reporters.
-            while let Ok(new_reporter) = reporter_rx.try_recv() {
+            while let Ok(new_reporter) = st.reporter_rx.try_recv() {
                 let name = new_reporter.name();
-                reporters.push(ReporterEntry {
+                st.reporters.push(ReporterEntry {
                     reporter: new_reporter,
                     consecutive_panics: 0,
                     disabled: false,
@@ -434,65 +554,130 @@ impl DiskPressureMonitor {
                 clog_info!(
                     "💾 Disk reporter '{}' registered dynamically (total: {})",
                     name,
-                    reporters.len()
+                    st.reporters.len()
                 );
             }
 
-            // Refresh disk stats. sysinfo caches mount-point state, so
-            // this is cheap once warmed.
-            disks.refresh(true);
-
-            let (total, available) = disks
+            // Refresh disk stats. sysinfo caches mount-point state, so this is
+            // cheap once warmed. The lock is uncontended (only this task locks
+            // it), so even a momentarily slow stat can't stall a reader.
+            st.disks.refresh(true);
+            let home = crate::modules::persona_instance_manager::resolve_continuum_root();
+            let drives: Vec<crate::capacity::system_profile::DriveInfo> = st
+                .disks
                 .iter()
-                .find(|d| d.mount_point().to_string_lossy() == ROOT_MOUNT)
-                .map(|d| (d.total_space(), d.available_space()))
-                .unwrap_or((0, 0));
+                .map(|d| crate::capacity::system_profile::DriveInfo {
+                    mount: d.mount_point().to_path_buf(),
+                    total_bytes: d.total_space(),
+                    available_bytes: d.available_space(),
+                    role: crate::capacity::system_profile::DriveRole::System,
+                })
+                .collect();
+            let reading = volume_reading(&drives, &home);
+            match reading.source {
+                VolumeSource::Home => {}
+                VolumeSource::HottestVolume => crate::probe!(
+                    class = "disk.pressure.unmeasured_home",
+                    home = %home.display(),
+                    mounts = drives.len() as u64,
+                    fallback_total = reading.total,
+                    fallback_available = reading.available,
+                    "no mounted volume holds the substrate's home — reporting the HOTTEST mounted volume, named as a fallback, never a zero"
+                ),
+                VolumeSource::None => crate::probe!(
+                    class = "disk.pressure.unmeasured",
+                    home = %home.display(),
+                    "no mounted volume at all — disk pressure is UNKNOWN (typed), not Normal"
+                ),
+            }
+            let volume_source = reading.source.label();
+            let (total, available) = (reading.total, reading.available);
             let used = total.saturating_sub(available);
             let pressure = if total > 0 {
                 used as f64 / total as f64
             } else {
                 0.0
             };
-            let level = DiskPressureLevel::from_pressure(pressure);
+            let level = reading.level_override.unwrap_or_else(|| DiskPressureLevel::from_pressure(pressure)); // unwrap_or_else: a measured volume derives its level from pressure; only "no volume at all" overrides to Unknown
 
-            // Atomic publish.
-            pressure_atomic.store(pressure.to_bits(), Ordering::Relaxed);
+            // Atomic publish — lock-free reads from anywhere.
+            self.current_pressure
+                .store(pressure.to_bits(), Ordering::Relaxed);
             CURRENT_DISK_LEVEL.store(level.to_u8(), Ordering::Relaxed);
 
             // Hysteresis.
-            if level == prev_level {
-                consecutive_at_level = consecutive_at_level.saturating_add(1);
+            if level == st.prev_level {
+                st.consecutive_at_level = st.consecutive_at_level.saturating_add(1);
             } else {
-                consecutive_at_level = 1;
-                prev_level = level;
+                st.consecutive_at_level = 1;
+                st.prev_level = level;
             }
+            let consecutive_at_level = st.consecutive_at_level;
 
-            // Collect path reports with panic isolation + timeout. Same
-            // shape as memory_pressure.rs's reporter loop.
-            let mut path_reports = Vec::with_capacity(reporters.len());
-            for entry in &mut reporters {
-                if entry.disabled {
-                    continue;
-                }
-                let reporter = entry.reporter.clone();
-                let handle = tokio::task::spawn_blocking(move || {
-                    std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()))
-                });
+            // Snapshot the live (non-quarantined) reporters by index so the fold
+            // phase can update their fault counters back in place. Indices are
+            // stable within a tick — only this single task mutates the vec, and
+            // ticks never overlap.
+            let live: Vec<(usize, Arc<dyn DiskReporter>)> = st
+                .reporters
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.disabled)
+                .map(|(i, e)| (i, e.reporter.clone()))
+                .collect();
 
-                match tokio::time::timeout(REPORTER_TIMEOUT, handle).await {
-                    Ok(Ok(Ok(report))) => {
+            (
+                total,
+                available,
+                used,
+                pressure,
+                level,
+                consecutive_at_level,
+                live,
+                volume_source,
+            )
+        };
+
+        // --- Phase 2: off-lock fan-out — each reporter on the blocking pool
+        // with a 100 ms budget + panic isolation. `report()` is a sync stat that
+        // may block, so it runs on `spawn_blocking` (not an inline future), and
+        // its panic is caught inside the blocking closure — the right isolation
+        // for a sync reporter, distinct from the inline `guarded()` path. ---
+        let mut results: Vec<(usize, ReporterCallOutcome)> = Vec::with_capacity(live.len());
+        for (idx, reporter) in live {
+            let handle = tokio::task::spawn_blocking(move || {
+                std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()))
+            });
+            let outcome = match tokio::time::timeout(REPORTER_TIMEOUT, handle).await {
+                Ok(Ok(Ok(report))) => ReporterCallOutcome::Report(report),
+                Ok(Ok(Err(_panic))) => ReporterCallOutcome::Panicked,
+                Ok(Err(join_err)) => ReporterCallOutcome::JoinError(format!("{join_err:?}")),
+                Err(_elapsed) => ReporterCallOutcome::TimedOut,
+            };
+            results.push((idx, outcome));
+        }
+
+        // --- Phase 3: brief lock — fold outcomes into counters, build snapshot,
+        // log, decide the ready edge. ---
+        let (snapshot, fire_ready) = {
+            let mut st = self.state.lock();
+
+            let mut path_reports = Vec::with_capacity(results.len());
+            for (idx, outcome) in results {
+                let entry = &mut st.reporters[idx];
+                let name = entry.reporter.name();
+                match outcome {
+                    ReporterCallOutcome::Report(report) => {
                         entry.consecutive_panics = 0;
                         path_reports.push(report);
                     }
-                    Ok(Ok(Err(panic))) => {
+                    ReporterCallOutcome::Panicked => {
                         entry.consecutive_panics += 1;
-                        let name = entry.reporter.name();
                         clog_warn!(
-                            "💾 DiskReporter '{}' panicked ({}/{}): {:?}",
+                            "💾 DiskReporter '{}' panicked ({}/{})",
                             name,
                             entry.consecutive_panics,
-                            QUARANTINE_AFTER,
-                            panic
+                            QUARANTINE_AFTER
                         );
                         if entry.consecutive_panics >= QUARANTINE_AFTER {
                             clog_warn!(
@@ -503,17 +688,11 @@ impl DiskPressureMonitor {
                             entry.disabled = true;
                         }
                     }
-                    Ok(Err(join_err)) => {
-                        let name = entry.reporter.name();
-                        clog_warn!(
-                            "💾 DiskReporter '{}' spawn_blocking failed: {:?}",
-                            name,
-                            join_err
-                        );
+                    ReporterCallOutcome::JoinError(e) => {
+                        clog_warn!("💾 DiskReporter '{}' spawn_blocking failed: {}", name, e);
                     }
-                    Err(_elapsed) => {
+                    ReporterCallOutcome::TimedOut => {
                         entry.consecutive_panics += 1;
-                        let name = entry.reporter.name();
                         clog_warn!(
                             "💾 DiskReporter '{}' timed out (>100ms) ({}/{})",
                             name,
@@ -532,7 +711,9 @@ impl DiskPressureMonitor {
                 }
             }
 
-            // Disk gate — close on sustained Critical (3+ polls = 90 s).
+            // Disk gate — close on sustained Critical (3+ polls = 90 s). Lives in
+            // the cross-module `DISK_GATE_CLOSED` static (not the channel gate),
+            // because bulk-write subsystems read it through `is_disk_gate_closed`.
             if level == DiskPressureLevel::Critical && consecutive_at_level >= 3 {
                 if !is_disk_gate_closed() {
                     close_disk_gate();
@@ -547,14 +728,12 @@ impl DiskPressureMonitor {
                 clog_info!("💾 Disk gate re-opened — pressure eased to {}", level);
             }
 
-            // Build and publish snapshot. Tracking timestamp via SystemTime
-            // (not Date.now-equivalent) so the value is real even in
-            // resume / replay contexts.
+            // Build the snapshot. Timestamp via SystemTime (not a Date.now
+            // equivalent) so the value is real even in resume / replay contexts.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-
             let snapshot = DiskPressureSnapshot {
                 level,
                 pressure,
@@ -564,14 +743,15 @@ impl DiskPressureMonitor {
                 paths: path_reports,
                 timestamp_ms: now_ms,
                 consecutive_at_level,
+                volume_source: volume_source.to_string(),
             };
 
             // Periodic logging — quiet under Normal, louder under stress.
-            log_counter += 1;
+            st.log_counter += 1;
             let should_log = match level {
-                DiskPressureLevel::Normal => log_counter.is_multiple_of(10),
-                DiskPressureLevel::Warning => log_counter.is_multiple_of(3),
-                DiskPressureLevel::High | DiskPressureLevel::Critical => true,
+                DiskPressureLevel::Normal => st.log_counter.is_multiple_of(10),
+                DiskPressureLevel::Warning => st.log_counter.is_multiple_of(3),
+                DiskPressureLevel::High | DiskPressureLevel::Critical | DiskPressureLevel::Unknown => true,
             };
             if should_log {
                 let total_gb = total / (1024 * 1024 * 1024);
@@ -596,18 +776,49 @@ impl DiskPressureMonitor {
                 );
             }
 
-            // Publish snapshot. watch::Sender::send overwrites; readers
-            // never block the writer.
-            let _ = tx.send(snapshot);
-
-            // Fire the ready edge exactly once after the first snapshot
-            // lands. Late subscribers see `true` via borrow_and_update.
-            if !first_snapshot_published {
-                let _ = ready_tx.send(true);
-                first_snapshot_published = true;
-                crate::probe!(class = "ready.observed", module = "disk-pressure-monitor");
+            // Fire the ready edge exactly once — AFTER the snapshot publishes
+            // (below), so a subscriber woken by the edge reads real data, never
+            // the default. We only decide it here while holding the state lock.
+            let fire_ready = !st.first_snapshot_published;
+            if fire_ready {
+                st.first_snapshot_published = true;
             }
+
+            (snapshot, fire_ready)
+        };
+
+        // Publish lock-free. The channel overwrites; readers never block us. The
+        // process-wide copy is what `system/resources` reads: until 2026-09-18 the
+        // disk had NO field on any command surface, so a monitor reading (0, 0) for
+        // months was invisible from every seat — the absence had nowhere to show.
+        *CURRENT_DISK_SNAPSHOT.write() = Some(snapshot.clone());
+        self.channel.publish(snapshot);
+
+        if fire_ready {
+            let _ = self.ready_tx.send(true);
+            crate::probe!(class = "ready.observed", module = "disk-pressure-monitor");
         }
+    }
+}
+
+#[async_trait]
+impl Daemon for DiskPressureMonitor {
+    type Snapshot = DiskPressureSnapshot;
+
+    fn name(&self) -> &'static str {
+        "disk-pressure"
+    }
+
+    fn cadence(&self) -> Duration {
+        POLL_INTERVAL
+    }
+
+    fn channel(&self) -> &DaemonChannel<DiskPressureSnapshot> {
+        &self.channel
+    }
+
+    async fn tick(&self) {
+        self.poll().await;
     }
 }
 
@@ -680,6 +891,37 @@ mod tests {
     //! gate once a synthetic mount-point fake exists.
     use super::*;
 
+    // what this catches (2026-09-19, Cormac + a027688a on #4185): the no-match arm
+    // said UNKNOWN and handed on (0, 0) → pressure 0.0 → Normal. Now: the home's
+    // volume when one holds it; else the HOTTEST mounted volume, named as a fallback;
+    // else a typed Unknown — never a zero that reads as room.
+    #[test]
+    fn a_monitor_that_cannot_see_says_unknown_never_normal() {
+        use crate::capacity::system_profile::{DriveInfo, DriveRole};
+        let drive = |mount: &str, total: u64, avail: u64| DriveInfo {
+            mount: std::path::PathBuf::from(mount),
+            total_bytes: total,
+            available_bytes: avail,
+            role: DriveRole::System,
+        };
+        let drives = [drive("/", 1_000, 900), drive("/Volumes/hot", 1_000, 20)];
+        let home_on_root = volume_reading(&drives, std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(home_on_root.source, VolumeSource::Home);
+        assert_eq!((home_on_root.total, home_on_root.available), (1_000, 900));
+        // No volume holds the home (a path no mount prefixes): the hottest volume, named.
+        let nowhere = [drive("/Volumes/a", 1_000, 900), drive("/Volumes/hot", 1_000, 20)];
+        let fallback = volume_reading(&nowhere, std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(fallback.source, VolumeSource::HottestVolume);
+        assert_eq!(fallback.available, 20, "the most-pressured volume, not the first");
+        assert_eq!(fallback.level_override, None);
+        // No volumes at all: typed Unknown, and Unknown is ordered as HOT.
+        let none = volume_reading(&[], std::path::Path::new("/home/x/.continuum"));
+        assert_eq!(none.source, VolumeSource::None);
+        assert_eq!(none.level_override, Some(DiskPressureLevel::Unknown));
+        assert!(DiskPressureLevel::Unknown > DiskPressureLevel::Critical);
+        assert_eq!(DiskPressureLevel::Unknown.to_string(), "unknown");
+    }
+
     #[test]
     fn pressure_tiers_match_substrate_doctrine() {
         assert_eq!(
@@ -723,14 +965,20 @@ mod tests {
         // contract — if someone reorders the variants and breaks the
         // u8 assignment, this test catches it.
         CURRENT_DISK_LEVEL.store(0, Ordering::Relaxed);
-        assert_eq!(DiskPressureMonitor::current_level(), DiskPressureLevel::Normal);
+        assert_eq!(
+            DiskPressureMonitor::current_level(),
+            DiskPressureLevel::Normal
+        );
         CURRENT_DISK_LEVEL.store(1, Ordering::Relaxed);
         assert_eq!(
             DiskPressureMonitor::current_level(),
             DiskPressureLevel::Warning
         );
         CURRENT_DISK_LEVEL.store(2, Ordering::Relaxed);
-        assert_eq!(DiskPressureMonitor::current_level(), DiskPressureLevel::High);
+        assert_eq!(
+            DiskPressureMonitor::current_level(),
+            DiskPressureLevel::High
+        );
         CURRENT_DISK_LEVEL.store(3, Ordering::Relaxed);
         assert_eq!(
             DiskPressureMonitor::current_level(),

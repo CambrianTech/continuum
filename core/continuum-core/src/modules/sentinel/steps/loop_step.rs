@@ -241,6 +241,7 @@ mod tests {
             registry,
             bus: Some(bus),
             steps_log_path: None,
+            executor: None,
         }
     }
 

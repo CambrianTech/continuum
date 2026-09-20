@@ -125,7 +125,7 @@ mod tests {
         // Set CWD to jtag root so model paths resolve
         let original_cwd = std::env::current_dir().unwrap();
         let candidates = [
-            std::path::PathBuf::from("models/kokoro"),
+            crate::live::audio::model_root::voice_model_path("kokoro"),
             std::path::PathBuf::from("../../models/kokoro"),
         ];
         if let Some(models_dir) = candidates.into_iter().find(|p| p.is_dir()) {

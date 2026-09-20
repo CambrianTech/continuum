@@ -28,8 +28,16 @@
 //! - When the time comes to port, add the impl module in the pattern
 //!   already laid here — no caller-code changes
 
+pub mod command_executor;
+pub mod spill;
 pub mod types;
 
+/// Realistic 50-persona load/profiling harness (real CodeModule, real payloads).
+/// Gated `stress-tests` per the test doctrine; compiled only for profiling runs.
+#[cfg(all(test, feature = "stress-tests"))]
+mod load_harness;
+
+pub use command_executor::CommandToolExecutor;
 pub use types::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite, ToolError,
     ToolExecutionContext, ToolInvocation, ToolOutcome,
@@ -68,6 +76,17 @@ pub trait ToolExecutor: Send + Sync {
         context: &ToolExecutionContext,
         max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError>;
+
+    /// The core `CommandExecutor` behind these hands, if any. A live persona's executor
+    /// returns `Some` — enabling fire-and-poll `dispatch_background` for long-running
+    /// commands and `message_bus()` for the async-dispatch listener that folds their
+    /// results back into working memory ([[persona-async-dispatch-channel]]). Harnesses and
+    /// mocks return the default `None` and simply run every command synchronously.
+    fn command_executor(
+        &self,
+    ) -> Option<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>> {
+        None
+    }
 
     /// Parse tool calls from a raw AI response string (XML-fallback path
     /// for models that don't emit native tool_use blocks). Returns

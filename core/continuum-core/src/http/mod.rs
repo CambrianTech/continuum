@@ -30,6 +30,8 @@
 //! - Runs as tokio task, shared across all sentinels
 //! - Port stored in SERVER_PORT for IPC query
 
+pub mod desktop;
+
 pub mod anthropic_compat;
 
 use anthropic_compat::{
@@ -175,7 +177,10 @@ async fn messages_handler(
         })?;
 
     // Log request sizes for debugging
-    let context_window = adapter.capabilities().max_context_window;
+    let context_window = adapter
+        .capabilities()
+        .max_context_window
+        .map_or_else(|| "undeclared".to_string(), |w| w.to_string());
     let system_chars = req.system.as_ref().map(|s| s.as_text().len()).unwrap_or(0);
     let msg_chars: usize = req.messages.iter().map(|m| m.content.as_text().len()).sum();
     let tools_count = req.tools.as_ref().map(|t| t.len()).unwrap_or(0);
@@ -214,6 +219,8 @@ async fn messages_handler(
         top_p: req.top_p,
         top_k: req.top_k,
         repeat_penalty: req.repeat_penalty,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: req.stop_sequences.clone(),
         tools: None, // Tool calls handled by Claude Code, not the local model
         tool_choice: None,

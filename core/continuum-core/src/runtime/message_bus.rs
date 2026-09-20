@@ -44,10 +44,16 @@ struct ArtifactSubscription {
 }
 
 /// Event payload sent through the bus.
+///
+/// `payload` is `Arc`-shared (2026-08-23 serialization audit): tokio's
+/// broadcast clones the event into EVERY receiver — ~19 production holders —
+/// plus the recent-events archive, so a by-value `Value` paid ~20 full tree
+/// copies per publish (a 100 KB tool-result event cost ~2 MB of copying).
+/// With the Arc, every clone is a refcount bump; consumers read `&*payload`.
 #[derive(Debug, Clone)]
 pub struct BusEvent {
     pub name: String,
-    pub payload: serde_json::Value,
+    pub payload: std::sync::Arc<serde_json::Value>,
 }
 
 /// Timestamped event for the recent event buffer.
@@ -95,6 +101,8 @@ impl Default for MessageBus {
         Self::new()
     }
 }
+
+static GLOBAL_BUS: std::sync::OnceLock<std::sync::Arc<MessageBus>> = std::sync::OnceLock::new();
 
 impl MessageBus {
     /// Minimum interval between events with the same prefix.
@@ -164,10 +172,34 @@ impl MessageBus {
         });
     }
 
+    /// Publish THE runtime bus process-globally (first writer wins — the boot path).
+    /// Same precedent as `PersonaAircRuntimeRegistry::set_global`: host-independent
+    /// bodies (the detached cognition/eval emitting `eval:progress`) publish without
+    /// a threaded handle. Read with [`MessageBus::global`].
+    pub fn set_global(bus: std::sync::Arc<MessageBus>) {
+        let _ = GLOBAL_BUS.set(bus);
+    }
+
+    /// The process-global runtime bus, if boot has published it (None in bare unit
+    /// tests — callers treat that as "no subscribers", never an error).
+    pub fn global() -> Option<std::sync::Arc<MessageBus>> {
+        GLOBAL_BUS.get().cloned()
+    }
+
     /// Subscribe to events matching a glob pattern.
     ///
-    /// synchronous=true: handle_event() called inline during publish (real-time tier)
-    /// synchronous=false: event queued for async delivery (deferred tier)
+    /// synchronous=true: handle_event() called inline during `publish(..., registry)`.
+    ///
+    /// REALITY CHECK (#140 post-mortem, 2026-07-16): there is NO deferred tier.
+    /// synchronous=false subscriptions are stored but never delivered — and
+    /// `publish(..., registry)` (the only dispatching publisher) has no production
+    /// callers today; live events flow through `publish_async_only`, which feeds
+    /// ONLY the broadcast channel. A module that needs async bus events must run a
+    /// bus-receiver task (`bus.receiver()` + `tokio::spawn` from `initialize`) —
+    /// see `cognition::dispatch_listener::spawn` and
+    /// `modules::chat::spawn_persist_listener` for the canonical shape. This doc
+    /// used to promise "queued for async delivery (deferred tier)", which nearly
+    /// shipped a silently-dead transcript writer.
     pub fn subscribe(&self, pattern: &str, module_name: &'static str, synchronous: bool) {
         let sub = Subscription {
             pattern: pattern.to_string(),
@@ -289,7 +321,7 @@ impl MessageBus {
         // Deferred tier: broadcast for async consumers
         let event = BusEvent {
             name: event_name.to_string(),
-            payload,
+            payload: std::sync::Arc::new(payload),
         };
         self.record_recent(&event);
         // Ignore send error (no receivers is fine)
@@ -307,6 +339,8 @@ impl MessageBus {
             || event_name.starts_with("command:")  // RTOS doctrine — every dispatch's completion event reaches the persona loop (see PERSONA-AS-DEVELOPER-GAP.md §P3)
             || event_name.starts_with("presence:")
             || event_name.starts_with("tool:")
+            || event_name.starts_with("airc:bridge:")  // !continuum directive/reply control events — must not coalesce-drop (directive & reply share the airc:bridge prefix; coalescing would drop a reply emitted right after its directive)
+            || event_name == "persona:act"  // act RECEIPTS (#243): a batch fires several back-to-back and each is a distinct transcript row — coalescing would silently drop all but the first. Deliberately exact (persona:vitals stays coalesced; it is periodic and tolerant)
             || event_name.contains("chat_messages")  // data:chat_messages:created must not be coalesced
             || event_name.contains("chat_rooms"); // room events are real-time too
 
@@ -325,7 +359,7 @@ impl MessageBus {
 
         let event = BusEvent {
             name: event_name.to_string(),
-            payload,
+            payload: std::sync::Arc::new(payload),
         };
         self.record_recent(&event);
         let _ = self.sender.send(event);

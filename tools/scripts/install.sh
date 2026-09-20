@@ -1,14 +1,27 @@
 #!/bin/bash
-# Continuum Tower Install — One command to get a tower running.
+# Continuum — FROM-SOURCE developer/self-host build.
 #
-# Usage:
+# ┌───────────────────────────────────────────────────────────────────────┐
+# │  MOST USERS DO NOT RUN THIS. To just *use* Continuum, run the one-      │
+# │  command installer (pre-built Docker images, no compiler needed):      │
+# │    • Windows:      irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
+# │    • Linux/macOS:  curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/install.sh | bash
+# │  (the github.io URLs these replaced 404 — Pages is not published; verified 2026-08-07)
+# │  On Windows that handles WSL2 + Docker + GPU for you — no shell choice. │
+# └───────────────────────────────────────────────────────────────────────┘
+#
+# This script is the FROM-SOURCE path: compiles continuum-core + workers and
+# installs the full dev toolchain. Use it only if you are building/hacking on
+# Continuum itself.
+#
+# Usage (must be a real Linux userland — WSL2/Ubuntu, native Linux, or macOS;
+# NOT Git Bash/MSYS, which has no apt/toolchain and is rejected up front):
 #   git clone https://github.com/CambrianTech/continuum.git
-#   cd continuum/src
-#   bash scripts/install.sh
+#   cd continuum && bash tools/scripts/install.sh
 #
-# Works on: macOS (Apple Silicon), Ubuntu/Debian (x86_64), WSL2
-# Installs: Node.js, Rust, Python venv (with ML packages if GPU detected), system deps
-# Idempotent: safe to run multiple times (skips what's already installed)
+# Installs: Node.js, Rust (pinned via rust-toolchain.toml), Python venv (+ ML
+#   packages and the CUDA toolkit when a GPU is detected), system deps.
+# Idempotent: safe to re-run (skips what's already installed).
 
 set -eo pipefail
 
@@ -38,6 +51,25 @@ echo ""
 PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
+# Fail fast on an unsupported host shell. The from-source dev install needs a
+# real Linux userland (apt + the build toolchain). Git Bash / MSYS / Cygwin are
+# Windows shells with no package manager, so the Node/npm/Rust steps would
+# cascade into "command not found" — better to stop with a clear redirect.
+case "$PLATFORM" in
+  windows-shell)
+    echo -e "  ${RED}✗ This is Git Bash / MSYS on Windows — not a Linux environment.${NC}"
+    echo -e "  ${YELLOW}Continuum's from-source install needs WSL2 Ubuntu. Either:${NC}"
+    echo -e "  ${YELLOW}  • open WSL ('wsl') and run this from your WSL checkout, OR${NC}"
+    echo -e "  ${YELLOW}  • use the Docker-first Windows installer: install.ps1${NC}"
+    exit 1
+    ;;
+  unknown)
+    echo -e "  ${RED}✗ Unsupported platform ($(uname -s)). This installer supports${NC}"
+    echo -e "  ${YELLOW}  WSL2/Linux and macOS. On Windows use WSL2 or install.ps1.${NC}"
+    exit 1
+    ;;
+esac
+
 # ============================================================================
 # Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
 # ============================================================================
@@ -50,6 +82,12 @@ echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 # them safe no-ops where they don't apply.
 mod_submodules_init
 mod_docker_wsl_integration
+
+# Cold storage: auto-detect a large drive and route models + build cache there
+# (migrating what's on the home fs) BEFORE any cargo build, so the build uses the
+# relocated CARGO_TARGET_DIR. No-op on single-drive machines. Reconfigurable via
+# ~/.continuum/config.env. (Windows twin: Mod-ColdStorage in win-modules.ps1.)
+mod_cold_storage
 
 # ============================================================================
 # GPU detection
@@ -91,9 +129,14 @@ detect_gpu() {
     [ -f /usr/lib/wsl/lib/nvidia-smi ] && smi_path="/usr/lib/wsl/lib/nvidia-smi"
     local vram=$($smi_path --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
     echo -e "  GPU:      ${GREEN}${GPU_NAME} (CUDA, ${vram}MiB VRAM)${NC}"
-    # Check for nvcc (CUDA compiler — needed for training, not inference)
-    if ! command -v nvcc &>/dev/null; then
-      echo -e "  CUDA:     ${YELLOW}nvcc not found — inference works, training needs CUDA toolkit${NC}"
+    # nvcc (CUDA compiler) is REQUIRED to build `--features cuda` — candle-kernels
+    # + cudarc compile GPU kernels at build time. `install_cuda_toolkit` (below)
+    # provisions it when missing/too-old. A Blackwell GPU (sm_120, e.g. RTX 5090)
+    # needs CUDA >= 12.8; without nvcc the build falls back to CPU.
+    if command -v nvcc &>/dev/null; then
+      echo -e "  CUDA:     ${GREEN}nvcc $(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9.]+' | head -1) present${NC}"
+    else
+      echo -e "  CUDA:     ${YELLOW}nvcc not found — will install CUDA toolkit (required for GPU inference)${NC}"
     fi
   elif $HAS_METAL; then
     echo -e "  GPU:      ${GREEN}${GPU_NAME}${NC}"
@@ -106,10 +149,71 @@ detect_gpu
 echo ""
 
 # ============================================================================
+# CUDA toolkit (nvcc) — provisioned as a detected prerequisite
+# ============================================================================
+# Modern-app behavior: a CUDA GPU is useless for GPU inference without nvcc
+# (the build needs it to compile candle-kernels/cudarc), so if one is present
+# and the toolkit is missing or below the Blackwell floor, install it. Fully
+# idempotent — a re-run/update skips when a recent-enough toolkit exists.
+install_cuda_toolkit() {
+  $HAS_CUDA || return 0
+  case "$PLATFORM" in linux|wsl) ;; *) return 0 ;; esac
+
+  # Blackwell (sm_120 / RTX 5090) needs >= 12.8; 12.9 is the newest 12.x with
+  # broad cudarc/candle support. Bump TARGET as the toolchain validates newer.
+  local MIN="12.8" TARGET="12-9"
+  if command -v nvcc &>/dev/null; then
+    local cur=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$cur" ] && [ "$(printf '%s\n%s\n' "$MIN" "$cur" | sort -V | head -1)" = "$MIN" ]; then
+      echo -e "  ${GREEN}✅ CUDA toolkit $cur already present (>= $MIN) — skipping${NC}"
+      return 0
+    fi
+    echo -e "  ${YELLOW}nvcc ${cur:-unknown} is below the Blackwell floor $MIN — upgrading${NC}"
+  fi
+
+  # Tiered sudo — same one-prompt contract as install_system_deps.
+  local SUDO="" CAN_SUDO=true
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""
+  elif sudo -n true 2>/dev/null; then SUDO="sudo"
+  elif [ -t 0 ]; then SUDO="sudo"
+  else CAN_SUDO=false; fi
+  if ! $CAN_SUDO; then
+    echo -e "  ${RED}CUDA toolkit needed but no terminal for sudo. Re-run in a terminal:${NC}"
+    echo -e "  ${YELLOW}  bash tools/scripts/install.sh${NC}"
+    return 0
+  fi
+  ensure_sudo_warmed
+
+  # NVIDIA CUDA apt repo. wsl-ubuntu for WSL2 (the GPU driver is the Windows
+  # host driver passed through — NEVER install a Linux driver under WSL);
+  # ubuntu2404 for native Linux. sbsa for aarch64.
+  local distro="ubuntu2404"
+  [ "$PLATFORM" = "wsl" ] && distro="wsl-ubuntu"
+  local cuda_arch="x86_64"
+  [ "$(uname -m)" = "aarch64" ] && cuda_arch="sbsa"
+  local keyring="/tmp/cuda-keyring.deb"
+  echo -e "  Installing CUDA toolkit ${TARGET//-/.} (~3GB) from NVIDIA ${distro} repo..."
+  if curl -fsSL -o "$keyring" \
+      "https://developer.download.nvidia.com/compute/cuda/repos/${distro}/${cuda_arch}/cuda-keyring_1.1-1_all.deb"; then
+    $SUDO dpkg -i "$keyring" >/dev/null 2>&1
+    rm -f "$keyring"
+    $SUDO apt-get update -qq
+    if $SUDO apt-get install -y "cuda-toolkit-${TARGET}"; then
+      echo -e "  ${GREEN}✅ CUDA toolkit installed -> /usr/local/cuda-${TARGET//-/.}/bin/nvcc${NC}"
+      echo -e "  ${YELLOW}     (cargo-features.sh adds /usr/local/cuda/bin to PATH for --features cuda)${NC}"
+    else
+      echo -e "  ${YELLOW}⚠️ CUDA toolkit install failed — GPU inference falls back to CPU until resolved${NC}"
+    fi
+  else
+    echo -e "  ${YELLOW}⚠️ Could not fetch NVIDIA cuda-keyring — skipping CUDA toolkit (CPU fallback)${NC}"
+  fi
+}
+
+# ============================================================================
 # Step 1: System dependencies
 # ============================================================================
 
-echo -e "${YELLOW}[1/8] System dependencies${NC}"
+echo -e "${YELLOW}[1/9] System dependencies${NC}"
 
 install_system_deps() {
   case "$PLATFORM" in
@@ -241,6 +345,10 @@ install_system_deps() {
 
 install_system_deps
 
+# Provision the CUDA toolkit if a CUDA GPU was detected (no-op otherwise,
+# idempotent on re-run). Runs after system deps so apt + curl are ready.
+install_cuda_toolkit
+
 # CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full build.
 # Still installs all infrastructure (Node, Rust, Python, Postgres, LiveKit, Tailscale)
 # but skips the build step (npm install, tsc, cargo build).
@@ -255,7 +363,7 @@ fi
 # Step 2: Node.js
 # ============================================================================
 
-echo -e "${YELLOW}[2/8] Node.js${NC}"
+echo -e "${YELLOW}[2/9] Node.js${NC}"
 
 install_node() {
   if command -v node &>/dev/null; then
@@ -280,6 +388,15 @@ install_node() {
       nvm use 22
       ;;
   esac
+  # Verify the install actually put node on PATH — don't claim success on a
+  # bare "node: command not found" (e.g. nvm sourced into a subshell that
+  # didn't persist, or an unsupported shell). Fail loud and actionable.
+  if ! command -v node &>/dev/null; then
+    echo -e "  ${RED}✗ Node.js install ran but 'node' is still not on PATH.${NC}"
+    echo -e "  ${YELLOW}  Open a new shell (or 'source ~/.nvm/nvm.sh') and re-run,${NC}"
+    echo -e "  ${YELLOW}  or install Node 22 via your platform's package manager.${NC}"
+    exit 1
+  fi
   echo -e "  ${GREEN}✅ Node.js $(node --version) installed${NC}"
 }
 
@@ -289,7 +406,7 @@ install_node
 # Step 3: Rust
 # ============================================================================
 
-echo -e "${YELLOW}[3/8] Rust${NC}"
+echo -e "${YELLOW}[3/9] Rust${NC}"
 
 install_rust() {
   if command -v rustc &>/dev/null; then
@@ -310,7 +427,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Step 4: Python ML environment (if GPU detected)
 # ============================================================================
 
-echo -e "${YELLOW}[4/8] Python ML environment${NC}"
+echo -e "${YELLOW}[4/9] Python ML environment${NC}"
 
 VENV_DIR="$HOME/.continuum/venv"
 
@@ -363,26 +480,43 @@ fi
 # ============================================================================
 
 if [ "$SKIP_BUILD" = "0" ]; then
-  echo -e "${YELLOW}[5/8] Building Continuum${NC}"
+  echo -e "${YELLOW}[5/9] Building Continuum${NC}"
+
+  # Preflight: the build needs npm. Without this check, a missing npm only
+  # surfaces as "npm: command not found" swallowed by the `| tail` pipe, and
+  # the install appears to continue. Stop loud and actionable instead.
+  if ! command -v npm &>/dev/null; then
+    echo -e "  ${RED}✗ npm not found — cannot build. Node.js/npm must be installed${NC}"
+    echo -e "  ${YELLOW}  and on PATH (the [2/8] Node.js step provides them on a${NC}"
+    echo -e "  ${YELLOW}  supported platform). Open a fresh shell and re-run.${NC}"
+    exit 1
+  fi
 
   echo -e "  Installing npm dependencies..."
   npm install --silent 2>&1 | tail -3
+  # PIPESTATUS[0] is npm's real exit code (the pipe's own status is tail's).
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo -e "  ${RED}✗ npm install failed${NC}"
+    exit 1
+  fi
 
-  echo -e "  Building TypeScript..."
-  npm run build:ts 2>&1 | tail -1
+  # The old `build:ts` / `build:cli` scripts left with the retired Node shell
+  # (moved to legacy/src, #1840) — they no longer exist in the root package.json.
+  # Calling them under `set -eo pipefail` made `npm run` exit non-zero ("Missing
+  # script") and ABORTED the whole native install (install-audit FATAL). The
+  # current TS deliverables are the client SDK + web app; build them BEST-EFFORT
+  # in an `if` (so a client-build failure can never abort a headless-core install —
+  # the Rust core below is the deliverable). The `if` condition also shields the
+  # pipeline from `set -e`.
+  echo -e "  Building clients (SDK + web, best-effort)..."
+  if npm run build:clients 2>&1 | tail -3; then
+    echo -e "  ${GREEN}✅ clients built${NC}"
+  else
+    echo -e "  ${YELLOW}⚠  client build skipped/failed — headless core install continues${NC}"
+  fi
 
-  # Build the CLI bundle too. Without it, src/jtag falls back to
-  # `tsx` resolution which can't resolve tsconfig path aliases (e.g.,
-  # @system/core/types/SystemScopes) at runtime — fast post-clone
-  # invocations of jtag fail with ERR_MODULE_NOT_FOUND. Bundle path
-  # is what every production invocation should use. Caught 2026-05-02
-  # via PR #1012 chat.log artifact: carl-install-smoke chat-probe
-  # was failing this exact way on every CI run.
-  echo -e "  Building CLI bundle..."
-  npm run build:cli 2>&1 | tail -1
-
-  echo -e "  Building Rust workers..."
-  bash scripts/setup-rust.sh 2>&1 | tail -5
+  echo -e "  Building Rust core + workers..."
+  bash "$SCRIPT_DIR/setup-rust.sh" 2>&1 | tail -5
 fi
 
 # ============================================================================
@@ -403,7 +537,7 @@ mkdir -p "$CONFIG_DIR/bin"
 # PostgreSQL
 # ============================================================================
 
-echo -e "${YELLOW}[6/8] PostgreSQL${NC}"
+echo -e "${YELLOW}[6/9] PostgreSQL${NC}"
 
 install_postgres() {
   # macOS: keg-only postgres may not be in PATH — find it
@@ -480,7 +614,7 @@ install_postgres
 # LiveKit SFU server (voice/video calls)
 # ============================================================================
 
-echo -e "${YELLOW}[7/8] LiveKit SFU${NC}"
+echo -e "${YELLOW}[7/9] LiveKit SFU${NC}"
 
 install_livekit() {
   if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
@@ -500,10 +634,23 @@ install_livekit() {
 install_livekit
 
 # ============================================================================
+# Inference + LoRA-training engine — NATIVE, no separate install (Unsloth excised)
+# ============================================================================
+#
+# Continuum OWNS its inference + genome-forge stack: the core spawns its own
+# llama-server (built from the vendored llama.cpp submodule) to serve models over
+# an OpenAI-compatible /v1, and forges LoRA genes natively via mlx_lm on Apple
+# Silicon. Nothing to install here — the engine comes up WITH the core. (The mlx
+# trainer wants a Python venv with mlx-lm; the core provisions
+# ~/.continuum/genome/venv lazily on the first forge/train.)
+echo -e "${YELLOW}[8/9] Inference + training engine${NC}"
+echo -e "  ${GREEN}✅ native — llama-server (serving) + mlx_lm (forge) come up with the core${NC}"
+
+# ============================================================================
 # Tailscale mesh VPN (multi-tower networking)
 # ============================================================================
 
-echo -e "${YELLOW}[8/8] Tailscale (grid mode only)${NC}"
+echo -e "${YELLOW}[9/9] Tailscale (grid mode only)${NC}"
 
 # Tailscale is OPTIONAL — it's the substrate for grid (multi-machine) mode
 # where peers reach each other for forge/inference distribution. Single-
@@ -594,8 +741,8 @@ if command -v tailscale &>/dev/null; then
   echo -e "  Tailscale: ${ts_ip}"
 fi
 echo ""
-echo -e "  ${YELLOW}Start:${NC}  cd src && npm start"
-echo -e "  ${YELLOW}Test:${NC}   ./jtag ping"
+echo -e "  ${YELLOW}Start:${NC}  npm start"
+echo -e "  ${YELLOW}Test:${NC}   continuum ping"
 echo -e "  ${YELLOW}Config:${NC} $CONFIG_FILE"
 echo ""
 

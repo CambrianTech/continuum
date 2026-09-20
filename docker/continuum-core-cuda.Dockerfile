@@ -21,7 +21,7 @@
 FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS chef
 
 # Rust + build-time system libs. Unlike the CPU variant which uses
-# rust:1.89-bookworm (Debian base with a lot of -dev libs pre-installed),
+# rust:1.95-bookworm (Debian base with a lot of -dev libs pre-installed),
 # this CUDA builder image is nvidia/cuda:...ubuntu22.04 — a minimal
 # Ubuntu with just the CUDA toolchain. We need every -dev we rely on.
 #
@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev clang build-essential git \
     libglib2.0-dev libasound2-dev libva-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95
 ENV PATH=/root/.cargo/bin:$PATH
 RUN cargo install cargo-chef --locked
 WORKDIR /app
@@ -78,13 +78,10 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # 2. NOW copy the real source. mtime is fresh; cargo will rebuild for real.
 COPY . .
 
-# entity_schemas.json lives outside the workers build context (at
-# src/shared/generated/). The Rust code includes it via relative path
-# from modules/entity_schemas.rs that escapes the build context.
-# Resolved include_str! path from continuum-core/src/modules/ is
-# ../../../../shared/generated/ which lands at /shared/generated/
-# from WORKDIR /app. CI must pass `build-contexts: shared-generated=./src/shared/generated`.
-COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
+# entity_schemas.json is embedded at compile time by modules/entity_schemas.rs via
+# include_str!("../../../../protocol/typescript/entity_schemas.json") — a source-
+# relative path the `COPY . .` above already provides (the file is checked in). No
+# `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
 # Model registry SSOT used by candle_adapter.rs include_str!:
 # ../../../../shared/models.json resolves to /shared/models.json here.

@@ -15,10 +15,14 @@
 //!   reads `~/.continuum/personas/<name>/seed.json` + attaches via
 //!   `airc_lib::Airc::attach_as`. Tests use a stub.
 //! - `PersonaRagInspectModule` — ServiceModule. Holds an
-//!   Arc<dyn PersonaResolver>. Handles the
-//!   `persona/rag-inspect` command. Translates wire-shape params
-//!   into a `RagInspectionRequest`, calls
-//!   `inspect_persona_rag`, materializes the response.
+//!   `Arc<dyn PersonaResolver>` and contributes the typed
+//!   `persona/rag-inspect` [`ActionCommand`](crate::sdk_codegen::ActionCommand)
+//!   via [`commands`](PersonaRagInspectModule::commands) (dep-holding — it
+//!   captures the resolver). The command body is the free fn
+//!   [`inspect_persona`]: translate wire-shape params into a
+//!   `RagInspectionRequest`, call `inspect_persona_rag_with_inference`,
+//!   materialize the response. `handle_command` survives only as a fail-loud
+//!   safety net until Registry A is retired wholesale (Wave Z, #63).
 //!
 //! ### Doctrine alignment
 //!
@@ -43,9 +47,8 @@ use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::rag_inspect::{
     inspect_persona_rag_with_inference, RagInspection, RagInspectionRequest,
 };
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
+use crate::sdk_codegen::DynCommand;
 
 // ── Command name ──────────────────────────────────────────────────
 
@@ -87,24 +90,30 @@ pub trait PersonaResolver: Send + Sync {
 /// library `defaults_for`. Optional knobs let callers vary the
 /// inspection profile (tighter window, deeper fetch, capture
 /// trace).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/RagInspectParams.ts"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct RagInspectParams {
+    /// Which persona's RAG pipeline to introspect — her name or id (full or the
+    /// short form shown in rosters).
     pub persona: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_floor: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_max: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_fetch_limit: Option<u32>,
     /// Optional absolute path for the JSONL capture trace. When set,
@@ -117,6 +126,7 @@ pub struct RagInspectParams {
     /// reasons against. Default: substrate's current wall-clock.
     /// Set this for deterministic replay tests.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub now_ms: Option<u64>,
     /// When true, chain through inference: assemble delivered items
@@ -370,30 +380,30 @@ impl ServiceModule for PersonaRagInspectModule {
         }
     }
 
-    async fn initialize(
-        &self,
-        _ctx: &crate::runtime::ModuleContext,
-    ) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
-        match command {
-            COMMAND_RAG_INSPECT => {
-                let req = CommandRequest::<RagInspectParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_RAG_INSPECT}: invalid params: {e}"))?;
-                let result = self.inspect(req.params).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-            other => Err(format!(
-                "persona-rag-inspect: unknown command '{other}' \
-                 (known: {COMMAND_RAG_INSPECT})"
-            )),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // `persona/rag-inspect` is a migrated, typed `ActionCommand` that routes via
+        // `route_object` (dep-holding — it captures this module's resolver; see
+        // `crate::commands::persona::rag_inspect`). Reaching this legacy path means a
+        // descriptor failed to register — fail loud naming the command rather than
+        // silently re-handling. (Retired wholesale when Registry A's trait default
+        // becomes fail-loud — #63.)
+        Err(format!(
+            "'{command}' is a migrated, typed persona command ({COMMAND_RAG_INSPECT}) \
+             — it must route via the object registry (route_object), not the legacy \
+             handle_command path. Reaching here means its descriptor failed to register."
+        ))
+    }
+
+    /// The migrated `persona/rag-inspect` command as a typed self-routing object on
+    /// the ONE registry. Dep-holding: it captures this module's resolver so its
+    /// `CommandSpec` descriptor flows into `command_registry()` → the persona tool
+    /// surface + grid ACL.
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        crate::commands::persona::rag_inspect::command_objects(self.resolver.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -401,54 +411,57 @@ impl ServiceModule for PersonaRagInspectModule {
     }
 }
 
-impl PersonaRagInspectModule {
-    async fn inspect(&self, params: RagInspectParams) -> Result<RagInspectResult, String> {
-        if params.persona.trim().is_empty() {
-            return Err(format!(
-                "{COMMAND_RAG_INSPECT}: persona name is required (got empty string)"
-            ));
-        }
-        let resolution = self
-            .resolver
-            .resolve(&params.persona)
-            .await
-            .map_err(|e| format!("{COMMAND_RAG_INSPECT}: resolve persona '{}': {e}", params.persona))?;
-
-        let now_ms = params.now_ms.unwrap_or_else(now_ms_default);
-        let mut request = RagInspectionRequest::defaults_for(
-            resolution.persona_id,
-            params.persona.clone(),
-            now_ms,
-        );
-        if let Some(cw) = params.context_window {
-            request.context_window = cw;
-        }
-        if let Some(floor) = params.airc_floor {
-            request.airc_floor = floor;
-        }
-        if let Some(max) = params.airc_max {
-            request.airc_max = max;
-        }
-        if let Some(fetch) = params.airc_fetch_limit {
-            request.airc_fetch_limit = fetch as usize;
-        }
-        if let Some(p) = params.trace_path {
-            request.trace_path = Some(PathBuf::from(p));
-        }
-
-        // Chain through inference when the caller asks AND the
-        // resolver supplied an adapter. Either being false → RAG-only.
-        let inference_probe = if params.chain_inference.unwrap_or(false) {
-            resolution.inference_adapter.clone()
-        } else {
-            None
-        };
-        let inspection =
-            inspect_persona_rag_with_inference(&request, resolution.airc_reader, inference_probe)
-                .await
-                .map_err(|e| format!("{COMMAND_RAG_INSPECT}: {e}"))?;
-        Ok(RagInspectResult::from_library(inspection))
+/// Introspect a persona's RAG pipeline: resolve the name → build the inspection
+/// request → run the (optionally inference-chained) library probe → flatten to the
+/// wire shape. The `persona/rag-inspect` command body; a free fn so the typed
+/// command and the module's tests share ONE implementation.
+pub(crate) async fn inspect_persona(
+    resolver: &Arc<dyn PersonaResolver>,
+    params: RagInspectParams,
+) -> Result<RagInspectResult, String> {
+    if params.persona.trim().is_empty() {
+        return Err(format!(
+            "{COMMAND_RAG_INSPECT}: persona name is required (got empty string)"
+        ));
     }
+    let resolution = resolver.resolve(&params.persona).await.map_err(|e| {
+        format!(
+            "{COMMAND_RAG_INSPECT}: resolve persona '{}': {e}",
+            params.persona
+        )
+    })?;
+
+    let now_ms = params.now_ms.unwrap_or_else(now_ms_default);
+    let mut request =
+        RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
+    if let Some(cw) = params.context_window {
+        request.context_window = cw;
+    }
+    if let Some(floor) = params.airc_floor {
+        request.airc_floor = floor;
+    }
+    if let Some(max) = params.airc_max {
+        request.airc_max = max;
+    }
+    if let Some(fetch) = params.airc_fetch_limit {
+        request.airc_fetch_limit = fetch as usize;
+    }
+    if let Some(p) = params.trace_path {
+        request.trace_path = Some(PathBuf::from(p));
+    }
+
+    // Chain through inference when the caller asks AND the resolver supplied an
+    // adapter. Either being false → RAG-only.
+    let inference_probe = if params.chain_inference.unwrap_or(false) {
+        resolution.inference_adapter.clone()
+    } else {
+        None
+    };
+    let inspection =
+        inspect_persona_rag_with_inference(&request, resolution.airc_reader, inference_probe)
+            .await
+            .map_err(|e| format!("{COMMAND_RAG_INSPECT}: {e}"))?;
+    Ok(RagInspectResult::from_library(inspection))
 }
 
 fn now_ms_default() -> u64 {
@@ -462,7 +475,9 @@ fn now_ms_default() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::persona::rag_inspect::PersonaRagInspect;
     use crate::persona::airc_source::AircTranscriptReader;
+    use crate::sdk_codegen::{ActionCommand, Ctx};
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent,
         TranscriptKind,
@@ -492,20 +507,33 @@ mod tests {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
-            Ok(self.events.lock().unwrap().iter().take(limit).cloned().collect())
+            Ok(self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
+
+    /// All events in these tests share ONE room. A real airc channel has a single
+    /// room_id, and the digest is room-scoped (filters events to the room derived
+    /// from the transcript, slice-2 #43). A per-event random room would model
+    /// nothing real and silently drop all-but-the-last event from the window.
+    static TEST_ROOM: std::sync::LazyLock<RoomId> = std::sync::LazyLock::new(RoomId::new);
 
     fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> TranscriptEvent {
         TranscriptEvent {
             event_id: EventId::new(),
-            room_id: RoomId::new(),
+            room_id: *TEST_ROOM,
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms,
             lamport,
-            target: MentionTarget::Room(RoomId::new()),
+            target: MentionTarget::Room(*TEST_ROOM),
             headers: Headers::default(),
             body: text.map(Body::text),
             attachment: None,
@@ -551,7 +579,7 @@ mod tests {
             reader,
             valid_names: vec!["Paige".to_string(), "Pax".to_string()],
             inference_adapter: Some(
-                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>
             ),
         });
         PersonaRagInspectModule::new(resolver)
@@ -570,12 +598,14 @@ mod tests {
     #[tokio::test]
     async fn empty_persona_name_returns_typed_error() {
         let m = module_with(vec![]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "".to_string(),
                 ..Default::default()
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("persona name is required"));
@@ -584,12 +614,14 @@ mod tests {
     #[tokio::test]
     async fn unknown_persona_surfaces_resolver_error() {
         let m = module_with(vec![]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Unknown".to_string(),
                 ..Default::default()
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found in stub resolver"));
     }
@@ -597,14 +629,16 @@ mod tests {
     #[tokio::test]
     async fn known_persona_with_empty_room_returns_zero_items_but_satisfied_allocation() {
         let m = module_with(vec![]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.persona_name, "Paige");
         assert_eq!(result.persona_id, persona_uuid());
         // Allocator gives the airc source its full max (default 20k);
@@ -623,14 +657,16 @@ mod tests {
             make_event(Some("hello world"), 1, 900_000),
             make_event(Some("second message"), 2, 950_000),
         ]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.deliveries[0].items.len(), 2);
         let first = &result.deliveries[0].items[0];
         assert_eq!(first.content_preview, "hello world");
@@ -643,47 +679,58 @@ mod tests {
     #[tokio::test]
     async fn context_window_override_threads_through() {
         let m = module_with(vec![make_event(Some("hi"), 1, 990_000)]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Pax".to_string(),
                 context_window: Some(8_192),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.context_window, 8_192);
     }
 
+    // what this catches: the migrated typed command routes plain params (no envelope)
+    // through the shared inspect logic and returns the typed output — the object on the
+    // ONE registry produces the same delivery a `Commands.execute('persona/rag-inspect')`
+    // caller sees.
     #[tokio::test]
-    async fn handle_command_routes_canonical_command_to_inspect() {
+    async fn typed_command_routes_params_to_inspect() {
         let m = module_with(vec![make_event(Some("hi"), 1, 990_000)]);
-        let envelope = serde_json::to_value(CommandRequest::new(RagInspectParams {
-            persona: "Paige".to_string(),
-            now_ms: Some(1_000_000),
-            ..Default::default()
-        }))
-        .unwrap();
-        let result = m.handle_command(COMMAND_RAG_INSPECT, envelope).await.unwrap();
-        let json = match result {
-            CommandResult::Json(v) => v,
-            other => panic!("expected Json, got {other:?}"),
+        let cmd = PersonaRagInspect {
+            resolver: m.resolver.clone(),
         };
-        // CommandResponse flattens success + payload fields.
-        assert_eq!(json.get("success").unwrap(), &Value::Bool(true));
-        assert_eq!(json.get("personaName").unwrap(), "Paige");
-        let deliveries = json.get("deliveries").unwrap().as_array().unwrap();
-        assert_eq!(deliveries.len(), 1);
+        let out = cmd
+            .run(
+                &Ctx::default(),
+                RagInspectParams {
+                    persona: "Paige".to_string(),
+                    now_ms: Some(1_000_000),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.persona_name, "Paige");
+        assert_eq!(out.deliveries.len(), 1);
     }
 
+    // what this catches: the legacy handle_command path is retired — the migrated
+    // command fails loud naming itself, never silently re-handles on the old path. A
+    // regression that re-adds an inline arm (forking a command off the typed object) is
+    // caught here.
     #[tokio::test]
-    async fn handle_command_unknown_returns_loud_error() {
+    async fn legacy_handle_command_fails_loud() {
         let m = module_with(vec![]);
-        let result = m
-            .handle_command("persona/something-bogus", Value::Null)
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown command"));
+        let err = m
+            .handle_command(COMMAND_RAG_INSPECT, Value::Null)
+            .await
+            .expect_err("migrated command must fail loud on the legacy path");
+        assert!(err.contains("migrated"), "got {err}");
+        assert!(err.contains(COMMAND_RAG_INSPECT), "got {err}");
     }
 
     // ── chained inference probe (task #104) ────────────────────
@@ -693,14 +740,16 @@ mod tests {
         // chain_inference omitted/false → no model_response in result
         // (even when the resolver could supply an adapter).
         let m = module_with_inference(vec![make_event(Some("hi"), 1, 999_000)]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert!(result.model_response.is_none());
     }
 
@@ -710,15 +759,17 @@ mod tests {
             make_event(Some("first message"), 1, 999_000),
             make_event(Some("second message"), 2, 999_500),
         ]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         let mr = result.model_response.expect("expected model_response");
         assert_eq!(mr.adapter_id, "heuristic");
         assert!(mr.response_text.starts_with("[heuristic:"));
@@ -733,47 +784,44 @@ mod tests {
         // chain_inference=true but resolver returns no adapter — the
         // inspection silently degrades to RAG-only (no model_response).
         let m = module_with(vec![make_event(Some("hi"), 1, 999_000)]);
-        let result = m
-            .inspect(RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         // Resolver returned None for inference_adapter; chain skipped.
         assert!(result.model_response.is_none());
     }
 
+    // what this catches: chaining inference through the migrated typed command captures
+    // the model response on the typed output — the object surface answers "would I
+    // respond as it requests at this step?" in one call, same as the chained inspect.
     #[tokio::test]
-    async fn chained_path_through_command_surface_returns_model_response_in_wire_shape() {
+    async fn typed_command_chains_inference_into_model_response() {
         let m = module_with_inference(vec![make_event(Some("ping"), 1, 999_000)]);
-        let envelope = serde_json::to_value(CommandRequest::new(RagInspectParams {
-            persona: "Paige".to_string(),
-            now_ms: Some(1_000_000),
-            chain_inference: Some(true),
-            ..Default::default()
-        }))
-        .unwrap();
-        let result = m.handle_command(COMMAND_RAG_INSPECT, envelope).await.unwrap();
-        let json = match result {
-            CommandResult::Json(v) => v,
-            other => panic!("expected Json, got {other:?}"),
+        let cmd = PersonaRagInspect {
+            resolver: m.resolver.clone(),
         };
-        // CommandResponse flattens; model_response should appear at
-        // the top level with camelCase field name.
-        let mr = json
-            .get("modelResponse")
-            .expect("modelResponse field missing")
-            .as_object()
-            .expect("modelResponse should be an object");
-        assert_eq!(mr.get("adapterId").unwrap(), "heuristic");
-        assert!(mr
-            .get("responseText")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .starts_with("[heuristic:"));
+        let out = cmd
+            .run(
+                &Ctx::default(),
+                RagInspectParams {
+                    persona: "Paige".to_string(),
+                    now_ms: Some(1_000_000),
+                    chain_inference: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mr = out.model_response.expect("model_response present");
+        assert_eq!(mr.adapter_id, "heuristic");
+        assert!(mr.response_text.starts_with("[heuristic:"));
     }
 }

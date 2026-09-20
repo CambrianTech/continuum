@@ -43,7 +43,8 @@ async fn test_call_manager_uses_orchestrator() {
     // Join call
     let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
     let mut transcription_rx = join.transcription_rx;
 
     // NOTE: We cannot fully test transcription → orchestrator flow without:
@@ -99,7 +100,8 @@ async fn test_orchestrator_registered_before_call() {
     // Join call with the same session ID
     let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Manually test orchestrator with utterance
     let utterance = continuum_core::live::UtteranceEvent {
@@ -147,7 +149,8 @@ async fn test_multiple_participants_orchestrator_filtering() {
     // Join call
     let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Simulate AI 1 speaking (should only notify AI 2)
     let utterance = continuum_core::live::UtteranceEvent {
@@ -282,7 +285,8 @@ async fn test_concurrent_calls_different_sessions() {
                 "Human User",
                 false,
             )
-            .await;
+            .await
+            .expect("join_call must succeed");
         handles.push(join.handle);
     }
 

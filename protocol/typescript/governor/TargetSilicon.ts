@@ -5,4 +5,4 @@
  * typed + named — no silent "guess where we are" per the no_silent_fallback
  * rule the rest of the substrate honors.
  */
-export type TargetSilicon = "apple-m" | "nvidia-cuda" | "amd-rocm" | "intel-vulkan" | "none";
+export type TargetSilicon = "apple-m" | "mac-intel-metal" | "nvidia-cuda" | "amd-rocm" | "intel-vulkan" | "none";

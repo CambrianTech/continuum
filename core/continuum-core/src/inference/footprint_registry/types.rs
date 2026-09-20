@@ -146,6 +146,24 @@ pub struct EvictionPlan {
     pub estimated_cost_micros: u64,
 }
 
+/// Realized outcome of a pressure-driven lease-revocation pass
+/// (`FootprintRegistry::revoke_leases_for`). The pressure-driven sibling
+/// of the clock-driven `expire_leases`: where that reclaims leases whose
+/// clock ran out, this reclaims leases the *pressure policy* chose to
+/// revoke (expired → Hard → Graceful, gated by tier).
+///
+/// `revoked` lists the `(lease_id, bytes)` actually released, ordered
+/// least-disruptive first. `bytes_freed` is their sum — the footprint
+/// returned to the pool for a subsequent `cheapest_eviction_for` pass. An
+/// empty `revoked` with `bytes_freed == 0` means the demand was zero (a
+/// no-op pass), never "policy couldn't act" — that case is `None` from
+/// `revoke_leases_for`, which the caller must treat as "escalate".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseRevocationOutcome {
+    pub revoked: Vec<(String, u64)>,
+    pub bytes_freed: u64,
+}
+
 /// Health report from `sanity_check`. `Healthy` = registry total within
 /// `drift_pct_threshold` of the monitor's process_bytes; `Drifted` =
 /// something allocates without reporting (bug to chase).

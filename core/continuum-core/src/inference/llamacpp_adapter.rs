@@ -35,12 +35,14 @@
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::ai::types::{
-    FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo, ResponseFormat,
-    TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+    EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason, HealthState, HealthStatus,
+    MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
+    UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use crate::inference_capability::enforce_residency;
+use crate::model_registry::Capability;
 use crate::runtime;
 use async_trait::async_trait;
 use llama::FlashAttn;
@@ -54,9 +56,21 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
+/// The embed lane's identity on the resource board — the `consumer_id` on both
+/// its per-call VRAM leases and its standing reservation floor.
+pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
+
+/// The embed lane's working VRAM: the bounded Metal embedding context (~1.2 GiB
+/// compute buffer + ~224 MiB KV) plus headroom. ONE constant, two uses: the
+/// per-call lease in [`create_embedding`], and the standing FLOOR the embedder
+/// reserves on the board at resolve so serving's plan can never grow into it
+/// (#225 — measured 2026-08-08: the grown window left 604 MiB governed-available
+/// against this 1792 MiB need, and embedding went fully dead on the box).
+pub const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024;
+
 /// Overlay live runtime metadata (throughput) on top of the registry's
 /// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
-/// because that's the GGUF's ground truth — the TOML value is the intent,
+/// because that's the GGUF's ground truth — the catalog value is the intent,
 /// the GGUF metadata is what the runtime actually loaded. If they drift,
 /// we trust the model, not the config.
 fn model_info_with_runtime(
@@ -313,7 +327,7 @@ impl LlamaCppAdapter {
     /// multiple llamacpp-local entries (text + vision) needs a way to
     /// say which one this adapter instance serves.
     ///
-    /// The `model_id` MUST match a row in `config/models.toml` so the
+    /// The `model_id` MUST match a row in the Rust catalog (catalog.rs) so the
     /// adapter can look up that model's chat_template, mmproj_path,
     /// stop_sequences, and capabilities. A mismatch produces silently
     /// wrong output (wrong chat template → garbled response).
@@ -496,17 +510,20 @@ impl LlamaCppAdapter {
         let active_kv = self
             .kv_quant_policy
             .for_residency(crate::inference::kv_quant::Residency::Active);
-        // Pull the multimodal projector path from the registry if this
-        // model declares one. The registry is the source of truth for
-        // per-model configuration (mmproj alongside chat_template,
-        // stop_sequences, capabilities). When set, the backend's
-        // generate_with_image route lazily loads the MtmdContext from it.
-        // When absent, generate_with_image returns a clear error rather
-        // than silently bridging to text — vision-capable callers should
-        // surface that as a config issue, not a degraded experience.
-        let mmproj_path = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(&self.default_model))
-            .and_then(|m| m.mmproj_local_path.clone());
+        // Resolve the multimodal projector via the ONE registry resolver — the
+        // single source of truth for "where is this model's mmproj" (declared
+        // local path first, else the projector sitting beside the GGUF in the
+        // HF cache snapshot, existence-checked). Reading the raw
+        // `mmproj_local_path` field here would miss the self-provisioned sibling
+        // and skip the existence check; `resolve_mmproj_for_model` is what
+        // `llama-server` uses too, so both serving paths agree. When set, the
+        // backend's generate_with_image route lazily loads the MtmdContext from
+        // it; when None, generate_with_image returns a clear error rather than
+        // silently bridging to text — a config issue, not a degraded experience.
+        let mmproj_path = crate::model_registry::try_global().and_then(|reg| {
+            reg.model(&self.default_model)
+                .and_then(crate::model_registry::artifacts::resolve_mmproj_for_model)
+        });
         // CONTINUUM_TIER is set by install.sh's hardware probe (commit
         // 7b3b8e086) — when the install detects a Mac Intel + discrete
         // AMD or integrated Intel UHD host, it exports
@@ -541,9 +558,7 @@ impl LlamaCppAdapter {
         // instead of silent quality loss.
         let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
         let effective_n_seq_max = if requested_n_seq_max > 1 {
-            match crate::inference::batching_probe::probe_gguf_batching_safety(
-                &self.model_path,
-            ) {
+            match crate::inference::batching_probe::probe_gguf_batching_safety(&self.model_path) {
                 Ok(verdict) => {
                     let clamped = verdict.clamp_n_seq_max(requested_n_seq_max);
                     if clamped < requested_n_seq_max {
@@ -599,7 +614,7 @@ impl LlamaCppAdapter {
             // persona prompts without ballooning memory (graph nodes
             // scale with n_ubatch but at ~4 KiB per node × 942 nodes ×
             // 4 multiplier we're talking ~15 MiB per scheduler — trivial).
-            // Future: derive from `models.toml` row per [[orm-everything-
+            // Future: derive from the Rust catalog (catalog.rs) row per [[orm-everything-
             // not-hand-edited-files]] so each model declares its own
             // realistic batch ceiling.
             n_ubatch: self.n_ubatch_override.unwrap_or(512),
@@ -674,29 +689,25 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .as_ref()
             .map(|b| b.n_ctx_train())
             .unwrap_or(0);
-        AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: true,
-            supports_vision: false,
-            supports_streaming: true,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
-            is_local: true,
-            max_context_window: max_ctx,
-
-            // Arc 1: llama.cpp tools are prompt-driven (no native protocol);
-            // structured output via GBNF grammar-constrained sampling, which
-            // IS native to llama.cpp. Vision-in handled by mmproj adapter
-            // when loaded; not declared here at the text-LLM layer.
-            // Audio bridged via STT (whisper) / TTS in the substrate.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::JsonInPrompt,
-            structured_output_protocol:
-                crate::ai::adapter::StructuredOutputProtocol::GrammarConstrained,
-            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
-            max_output_tokens: 4096,
-        }
+        // llama.cpp does text + chat + streaming, native (prompt-driven) tool
+        // calls, and embeddings (--embedding mode). Vision is handled by the
+        // mmproj adapter when loaded, not declared at this text-LLM layer;
+        // audio is bridged via STT (whisper) / TTS in the substrate.
+        // Tools are prompt-driven (no native protocol); structured output via
+        // GBNF grammar-constrained sampling, which IS native to llama.cpp.
+        AdapterCapabilities::builder()
+            .capabilities([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+                Capability::Embedding,
+            ])
+            .local()
+            .context_window(max_ctx)
+            .max_output_tokens(4096)
+            .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {
@@ -754,6 +765,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -793,9 +806,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Resolution order, no fallback:
         //   1. GGUF metadata `tokenizer.chat_template` (forge bake should
         //      put it here).
-        //   2. models.toml `chat_template` field (memento's registry —
+        //   2. the Rust catalog (catalog.rs) `chat_template` field (memento's registry —
         //      authoritative when GGUF is silent).
-        // No in-code constant. Adding a new model = TOML row, never an
+        // No in-code constant. Adding a new model = catalog row, never an
         // adapter edit. If both sources are absent, render_chat passes
         // None to llama.cpp which is its own loud failure (chatml default
         // doesn't match qwen3.5's special tokens — output corruption).
@@ -987,23 +1000,59 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .persona_id
             .as_deref()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        // Genome paging: the adapter contract carries the genes to apply as
+        // `(name, path, scale)`. We page each in (idempotent) and hand the
+        // resolved `(id, scale)` list to the scheduler, which applies it
+        // context-level before decode. Empty in the common base case.
+        let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
+            .active_adapters
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|a| {
+                        (
+                            a.name.clone(),
+                            std::path::PathBuf::from(&a.path),
+                            a.scale as f32,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             // RTOS timing probe: this is the actual LLM forward pass —
             // by far the dominant cost (95%+ on LCD tier per
             // 2026-06-06 baseline). `time_probe!` wraps the JoinHandle
             // future cleanly across the `.await`.
-            crate::time_probe!("inference.forward.text", tokio::task::spawn_blocking(move || {
-                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-                backend_for_blocking.generate_for_persona(
-                    persona_id,
-                    &prompt_for_blocking,
-                    max_tokens,
-                    sampling_for_closure,
-                    &stop_refs,
-                    &[],
-                )
-            }))
+            let genes_for_closure = requested_genes;
+            crate::time_probe!(
+                "inference.forward.text",
+                tokio::task::spawn_blocking(move || {
+                    let stop_refs: Vec<&str> =
+                        stop_for_closure.iter().map(|s| s.as_str()).collect();
+                    // Page in each requested gene (idempotent) before generation.
+                    // A missing/unreadable adapter file is a hard error — never
+                    // silently run the base model in its place (Rule 2).
+                    for (id, path, _) in &genes_for_closure {
+                        backend_for_blocking.ensure_adapter(id, path)?;
+                    }
+                    let active_loras: Vec<(String, f32)> = genes_for_closure
+                        .iter()
+                        .map(|(id, _, scale)| (id.clone(), *scale))
+                        .collect();
+                    backend_for_blocking.generate_for_persona(
+                        persona_id,
+                        &prompt_for_blocking,
+                        max_tokens,
+                        sampling_for_closure,
+                        &stop_refs,
+                        &active_loras,
+                    )
+                })
+            )
             .map_err(|e| format!("generate task panicked: {e}"))?
         } else {
             // Multimodal path: bypass the scheduler — media tokens have
@@ -1013,6 +1062,21 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // (one marker each in order) but our backend signatures take
             // one bytes blob. Hard-error rather than silently dropping
             // extras — clearer signal upstream.
+            // Genes on the multimodal bypass path are not yet supported (the
+            // mtmd single-flight path doesn't route through the scheduler that
+            // applies set_loras). Fail loud rather than silently dropping the
+            // requested adapter (Rule 2).
+            if !requested_genes.is_empty() {
+                let names: Vec<&str> = requested_genes
+                    .iter()
+                    .map(|(id, _, _)| id.as_str())
+                    .collect();
+                return Err(format!(
+                    "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \
+                     on the multimodal bypass path (v1). Genes apply only on the text scheduler \
+                     path; send the gene-bearing request without media."
+                ));
+            }
             if collected_media.len() > 1 {
                 let kinds: Vec<String> = collected_media
                     .iter()
@@ -1031,25 +1095,29 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
             // operators can `jq` text-only vs mtmd cost distinctly.
-            crate::time_probe!("inference.forward.multimodal", tokio::task::spawn_blocking(move || {
-                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-                match kind {
-                    llama::MediaKind::Image => backend_for_blocking.generate_with_image(
-                        &prompt_for_blocking,
-                        &media_bytes,
-                        max_tokens,
-                        sampling_for_closure,
-                        &stop_refs,
-                    ),
-                    llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
-                        &prompt_for_blocking,
-                        &media_bytes,
-                        max_tokens,
-                        sampling_for_closure,
-                        &stop_refs,
-                    ),
-                }
-            }))
+            crate::time_probe!(
+                "inference.forward.multimodal",
+                tokio::task::spawn_blocking(move || {
+                    let stop_refs: Vec<&str> =
+                        stop_for_closure.iter().map(|s| s.as_str()).collect();
+                    match kind {
+                        llama::MediaKind::Image => backend_for_blocking.generate_with_image(
+                            &prompt_for_blocking,
+                            &media_bytes,
+                            max_tokens,
+                            sampling_for_closure,
+                            &stop_refs,
+                        ),
+                        llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
+                            &prompt_for_blocking,
+                            &media_bytes,
+                            max_tokens,
+                            sampling_for_closure,
+                            &stop_refs,
+                        ),
+                    }
+                })
+            )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
         let (text, tokens) = result?;
@@ -1069,6 +1137,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // events is the latency dashboard. `text_len` lets the
         // operator catch the silent-truncation class of bug where
         // the model stops short of EOS.
+        // Real tokens on the served lane = proof of life for the health heartbeat, which
+        // otherwise probes for a slot it cannot get while this very work holds them all.
+        if tokens > 0 {
+            crate::inference::llama_server::note_real_decode();
+        }
         crate::probe!(
             class = "inference.generate.exit",
             model = backend.model_id(),
@@ -1101,8 +1174,159 @@ impl AIProviderAdapter for LlamaCppAdapter {
             request_id: format!("llamacpp-{}", chrono::Utc::now().timestamp_millis()),
             content: None,
             tool_calls: None,
+            // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
+            // it would emit inline `<think>` in `text` too — apply
+            // `crate::ai::openai_adapter::extract_reasoning` here to separate it.
+            // Not Asha's path today (she routes through the unsloth/openai adapter).
+            reasoning: None,
             routing: None,
             error: None,
+            timing: None,
+        })
+    }
+
+    /// Embeddings via the backend's dedicated embedding-mode context. The loaded
+    /// model determines the vector space — for grid-comparable vectors this
+    /// adapter must have loaded the canonical Qwen3-Embedding-0.6B (the
+    /// `NeuralEmbeddingProvider` is responsible for loading it). `backend.embed`
+    /// is a blocking forward pass, so it runs on `spawn_blocking`, off the async
+    /// executor (the same bridge as `generate_text`'s forward).
+    async fn create_embedding(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, String> {
+        let backend = self.ensure_loaded()?;
+        let model_id = backend.model_id().to_string();
+        let texts: Vec<String> = match request.input {
+            EmbeddingInput::Single(s) => vec![s],
+            EmbeddingInput::Multiple(v) => v,
+        };
+        let zero_usage = UsageMetrics {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            estimated_cost: None,
+        };
+        if texts.is_empty() {
+            return Ok(EmbeddingResponse {
+                embeddings: Vec::new(),
+                model: model_id,
+                provider: LLAMACPP_PROVIDER_ID.to_string(),
+                usage: zero_usage,
+                response_time_ms: 0,
+            });
+        }
+        let start = Instant::now();
+
+        // ── Governed GPU admission (mirrors cognition/eval.rs::acquire_eval_lane_slot) ──
+        // The embedding forward pass allocates a bounded Metal context (a 2048-token
+        // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
+        // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
+        // back and competed with the serving lane for VRAM; under pressure the Metal
+        // command buffer OOM'd and the decode returned an ALL-ZERO vector — the
+        // "degenerate embedding" that silently broke semantic recall. Lease the VRAM
+        // from the ResourceGovernor FIRST: granted ⇒ the bytes are reserved for the
+        // life of the guard and the decode has room to succeed; refused ⇒ fail LOUD
+        // here instead of allocating a doomed context that emits garbage. Embeddings
+        // are GPU-only ([[gpu-is-non-negotiable-every-component-no-cpu-fallback]]), so
+        // unlike the eval lane there is NO CPU spill — the honest degrade is a named
+        // refusal the caller ([`NeuralEmbeddingProvider::embed`]) already surfaces as
+        // "no signal", never a zero vector.
+        //
+        // Const, not env-tunable — substrate policy lives in code (concurrency guide).
+        // Only the per-call CONTEXT is leased here; the embed lane's standing FLOOR on
+        // the board (so serving can never grow into this slice — Joel 2026-08-08: "the
+        // budgeter just has all its parts figure it out") is claimed at embedder
+        // resolve via [`crate::resources::ResourceDaemon::reserve`], from the same
+        // module-level constants below.
+        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
+        let _vram_lease = {
+            use crate::resources::{
+                LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
+            };
+            match ResourceDaemon::global() {
+                Some(daemon) => {
+                    let req = LeaseRequest {
+                        consumer_id: EMBED_LANE_CONSUMER_ID.to_string(),
+                        kind: ResourceKind::Vram,
+                        bytes: EMBED_LANE_VRAM_BYTES,
+                        // A bounded, sub-second forward pass is not yanked mid-embed;
+                        // the guard returns the bytes the instant it finishes.
+                        ttl_ms: EMBED_LANE_LEASE_TTL_MS,
+                        reclaim_policy: ReclaimPolicy::Pinned,
+                    };
+                    // ONE bounded retry on a capacity refusal (never a loop —
+                    // [[brittleness-is-the-highest-priority-work-there-is]]): with
+                    // the standing floor reserved at resolve, a refusal here means
+                    // a TRANSIENT over-commit (a lane mid-relaunch, a burst), and
+                    // relief lands within a governor tick. The second refusal is
+                    // the honest failure.
+                    let mut refused: Option<u64> = None;
+                    let mut granted = None;
+                    for attempt in 0..2u8 {
+                        match daemon.acquire_guarded(&req) {
+                            Ok(guard) => {
+                                crate::probe!(
+                                    class = "embed.vram.leased",
+                                    consumer = EMBED_LANE_CONSUMER_ID,
+                                    bytes = EMBED_LANE_VRAM_BYTES,
+                                    texts = texts.len(),
+                                    retried = (attempt > 0),
+                                    "embedding lane acquired a governed VRAM lease"
+                                );
+                                granted = Some(guard);
+                                break;
+                            }
+                            Err(LeaseError::InsufficientCapacity { available, .. }) => {
+                                crate::probe!(
+                                    class = "embed.vram.refused",
+                                    requested = EMBED_LANE_VRAM_BYTES,
+                                    available = available,
+                                    attempt = attempt,
+                                    "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
+                                );
+                                refused = Some(available);
+                                if attempt == 0 {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                }
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
+                                ));
+                            }
+                        }
+                    }
+                    match granted {
+                        Some(guard) => Some(guard),
+                        None => {
+                            let available = refused.unwrap_or(0);
+                            return Err(format!(
+                                "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
+                                 Refusing to allocate an OOM-doomed embedding context (it would decode to \
+                                 degenerate zeros). Free VRAM (tier down serving) and retry.",
+                                EMBED_LANE_VRAM_BYTES / (1024 * 1024),
+                                available / (1024 * 1024),
+                            ));
+                        }
+                    }
+                }
+                // Ungoverned node (no ResourceDaemon::global()): behavior unchanged —
+                // the backend's own new_context allocation is the only gate, as before.
+                None => None,
+            }
+        };
+
+        let embeddings = tokio::task::spawn_blocking(move || backend.embed(&texts))
+            .await
+            .map_err(|e| format!("embedding task join failed: {e}"))??;
+        // `_vram_lease` drops here → the VRAM is returned to the governor's board.
+        Ok(EmbeddingResponse {
+            embeddings,
+            model: model_id,
+            provider: LLAMACPP_PROVIDER_ID.to_string(),
+            usage: zero_usage,
+            response_time_ms: start.elapsed().as_millis() as u64,
         })
     }
 
@@ -1127,10 +1351,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        // Identity + capabilities come from the registry (config/models.toml).
+        // Identity + capabilities come from the registry (the Rust catalog (catalog.rs)).
         // Runtime overlay (context_window from GGUF metadata, tokens/sec
         // from last measurement) only applies if the backend is loaded;
-        // otherwise we return the TOML-declared view and let the first
+        // otherwise we return the catalog-declared view and let the first
         // generate_text call refresh the numbers.
         let base = models_for_provider_via_registry(LLAMACPP_PROVIDER_ID);
         let backend_guard = self.backend.read();
@@ -1193,8 +1417,7 @@ mod tests {
     use crate::model_registry::Model;
     use std::collections::BTreeSet;
 
-    fn lcd_compat_profile()
-    -> crate::persona::inference_profile::PersonaInferenceProfile {
+    fn lcd_compat_profile() -> crate::persona::inference_profile::PersonaInferenceProfile {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
         use uuid::Uuid;
@@ -1202,9 +1425,7 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Paige".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            gguf_local_path: Some(PathBuf::from(
-                "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            )),
+            gguf_local_path: Some(PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")),
             tier_category: HwTierCategory::Compat,
             tier_id: "mac_intel_metal_discrete".to_string(),
             context_length: 2048,
@@ -1226,9 +1447,10 @@ mod tests {
     fn for_persona_populates_all_overrides_from_profile() {
         let profile = lcd_compat_profile();
         let adapter = LlamaCppAdapter::for_persona(&profile).expect("build adapter");
-        assert_eq!(adapter.model_path, PathBuf::from(
-            "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf"
-        ));
+        assert_eq!(
+            adapter.model_path,
+            PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")
+        );
         assert_eq!(adapter.default_model, profile.model_id);
         assert_eq!(adapter.context_length_override, Some(2048));
         assert_eq!(adapter.n_seq_max_override, Some(1));
@@ -1264,12 +1486,10 @@ mod tests {
     /// They're the escape hatch; production paths use `for_persona`.
     #[test]
     fn with_n_ubatch_and_n_gpu_layers_setters() {
-        let adapter = LlamaCppAdapter::with_model_id(
-            PathBuf::from("/tmp/x.gguf"),
-            "model".to_string(),
-        )
-        .with_n_ubatch(1024)
-        .with_n_gpu_layers(20);
+        let adapter =
+            LlamaCppAdapter::with_model_id(PathBuf::from("/tmp/x.gguf"), "model".to_string())
+                .with_n_ubatch(1024)
+                .with_n_gpu_layers(20);
         assert_eq!(adapter.n_ubatch_override, Some(1024));
         assert_eq!(adapter.n_gpu_layers_override, Some(20));
     }
@@ -1289,6 +1509,8 @@ mod tests {
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -1304,6 +1526,8 @@ mod tests {
 
     fn synthetic_llamacpp_local_model(id: &str, gguf_path: Option<PathBuf>) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.into(),
             name: None,
             provider: LLAMACPP_PROVIDER_ID.into(),
@@ -1315,11 +1539,16 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: gguf_path,
             mmproj_local_path: None,
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
+            parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
+            persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         }
     }
 
@@ -1453,5 +1682,106 @@ mod tests {
             }
             Err(err) => panic!("expected Ok with resolved path; got {err:?}"),
         }
+    }
+
+    /// what this catches: that the OWNED in-process page-in (`ensure_adapter`
+    /// → scheduler `set_loras` before decode, committed d763da1b7) actually
+    /// LOADS a GGUF-lora produced by our own conversion path
+    /// (`forge::lora_convert::mlx_to_gguf_lora`) against the real dense base
+    /// and CHANGES the generated text vs the bare base. This is the last
+    /// unproven link in the owned genome loop: train (mlx_lm) → transpose
+    /// (Rust) → GGUF-lora (owned) → PAGE-IN (this). Greedy decode (temp 0) on
+    /// both arms so any output difference is the gene, not sampling noise.
+    ///
+    /// `#[ignore]` — loads a ~5.8 GB base + runs two forward passes; needs the
+    /// metal/accelerate build and the on-disk artifacts. Run explicitly:
+    ///   cargo test -p continuum-core --features metal,accelerate \
+    ///     --lib owned_gene_page_in_changes_output -- --ignored --nocapture
+    /// Override paths via CONTINUUM_BASE_GGUF / CONTINUUM_GENE_GGUF.
+    #[tokio::test]
+    #[ignore]
+    async fn owned_gene_page_in_changes_output() {
+        use crate::ai::adapter::AIProviderAdapter;
+        use crate::ai::types::ActiveAdapterRequest;
+
+        let home = std::env::var("HOME").expect("HOME");
+        let env_or = |k: &str, d: String| std::env::var(k).unwrap_or(d);
+        let base = PathBuf::from(env_or(
+            "CONTINUUM_BASE_GGUF",
+            format!("{home}/.continuum/models/qwen2.5-coder-3b-instruct-f16.gguf"),
+        ));
+        let gene = env_or(
+            "CONTINUUM_GENE_GGUF",
+            format!("{home}/.continuum/forge/gguf-lora/coder-3b-dense.gguf"),
+        );
+        assert!(base.exists(), "base GGUF missing at {base:?}");
+        assert!(
+            std::path::Path::new(&gene).exists(),
+            "gene GGUF-lora missing at {gene}"
+        );
+
+        // A code-write prompt from the gym's wheelhouse — the gene was trained
+        // on the coder curriculum, so its influence should surface here.
+        let prompt = "Write a Rust function `fn is_palindrome(s: &str) -> bool` \
+            that ignores case and non-alphanumeric characters. Reply with only the code.";
+        let make_req = |adapters: Option<Vec<ActiveAdapterRequest>>| TextGenerationRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text(prompt.to_string()),
+                name: None,
+            }],
+            system_prompt: None,
+            model: None,
+            provider: None,
+            temperature: Some(0.0), // greedy — isolate the gene from sampling
+            max_tokens: Some(256),
+            top_p: None,
+            top_k: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            response_format: Some(ResponseFormat::Text),
+            active_adapters: adapters,
+            request_id: None,
+            user_id: None,
+            room_id: None,
+            purpose: None,
+            persona_id: Some(uuid::Uuid::nil().to_string()),
+        };
+
+        // context_length MUST be set explicitly — the scheduler refuses the
+        // GGUF's n_ctx_train (262144) fallback (would crush Metal KV alloc).
+        let adapter =
+            LlamaCppAdapter::with_model_id(base.clone(), "qwen2.5-coder-3b-instruct".to_string())
+                .with_context_length(2048);
+
+        let out_base = adapter
+            .generate_text(make_req(None))
+            .await
+            .expect("base generation failed")
+            .text;
+        let out_gene = adapter
+            .generate_text(make_req(Some(vec![ActiveAdapterRequest {
+                name: "coder-3b-dense".to_string(),
+                path: gene.clone(),
+                domain: "code".to_string(),
+                scale: 1.0,
+            }])))
+            .await
+            .expect("gene generation failed")
+            .text;
+
+        println!("=== BASE ===\n{out_base}\n=== GENE ===\n{out_gene}\n=== END ===");
+        assert!(!out_base.trim().is_empty(), "base produced empty output");
+        assert!(!out_gene.trim().is_empty(), "gene produced empty output");
+        // The gene MUST change greedy output — identical text means set_loras
+        // silently no-op'd (the exact failure the owned page-in must not have).
+        assert_ne!(
+            out_base, out_gene,
+            "gene paged in but output is byte-identical to base — set_loras did not apply"
+        );
     }
 }

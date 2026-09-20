@@ -123,21 +123,29 @@ impl ServiceModule for PressureBrokerModule {
         Ok(())
     }
 
-    /// Return a typed `BrokerSnapshot` describing global pressure, tier,
-    /// per-pool state, and lifetime eviction counters. Single probe per
-    /// call — cheap (pressure reads are atomic loads + a max over the
-    /// pool list; no eviction is fired). Same shape ts-rs exports to
-    /// `protocol/typescript/paging/BrokerSnapshot.ts`, so the TS mixin can
-    /// consume it without a manual remap layer.
+    /// Contribute the dep-holding `system/pressure-broker-state` verb over this
+    /// module's live `Arc<PressureBroker>`. The typed command (commands/system/
+    /// pressure_broker_state.rs) returns the same `BrokerSnapshot` the legacy arm did.
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        vec![Arc::new(
+            crate::commands::system::pressure_broker_state::SystemPressureBrokerState {
+                broker: self.broker.clone(),
+            },
+        )]
+    }
+
+    /// The broker-state verb is migrated to the typed registry (commands/system/
+    /// pressure_broker_state.rs); it routes via `route_object` against the runtime
+    /// object this module contributes in `commands()`. Reaching this arm means the
+    /// typed path failed to register — fail loud naming the migration rather than
+    /// silently re-handling.
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         match command {
-            SYSTEM_PRESSURE_BROKER_STATE => {
-                let snapshot = self.broker.snapshot();
-                let json = serde_json::to_value(&snapshot).map_err(|e| {
-                    format!("pressure-broker: failed to serialize BrokerSnapshot: {e}")
-                })?;
-                Ok(CommandResult::Json(json))
-            }
+            SYSTEM_PRESSURE_BROKER_STATE => Err(format!(
+                "'{SYSTEM_PRESSURE_BROKER_STATE}' is migrated to the typed registry \
+                 (commands/system/pressure_broker_state.rs) — it must route via \
+                 route_object, not the legacy handle_command path"
+            )),
             other => Err(format!(
                 "pressure-broker: unknown command '{other}' (handled: {SYSTEM_PRESSURE_BROKER_STATE})"
             )),
@@ -413,42 +421,33 @@ mod tests {
         );
     }
 
+    // what this catches: the broker-state verb is migrated to the typed registry
+    // (#62), so the legacy handle_command arm must FAIL LOUD naming the migration —
+    // never silently re-serialize a snapshot. A regression that re-adds the inline
+    // handler (forking the snapshot away from the typed command) is caught here. The
+    // snapshot wire-contract assertion now lives in the command file's own test.
     #[tokio::test]
-    async fn handle_command_returns_typed_snapshot_for_routed_command() {
-        // The IPC handler must return a `BrokerSnapshot` JSON payload
-        // with the expected camelCase keys ts-rs emitted — anything
-        // else means the wire contract drifted and the TS mixin would
-        // get stringly-typed garbage.
+    async fn migrated_arm_fails_loud() {
         let module = PressureBrokerModule::new();
-        let result = module
+        let err = module
             .handle_command(SYSTEM_PRESSURE_BROKER_STATE, Value::Null)
-            .await;
+            .await
+            .expect_err("migrated arm must fail loud");
+        assert!(err.contains("migrated"), "got {err}");
+        assert!(err.contains(SYSTEM_PRESSURE_BROKER_STATE), "got {err}");
+    }
+
+    // what this catches: the module contributes the dep-holding broker-state verb
+    // (bound to its live broker) to the kernel object map. A regression that drops the
+    // `commands()` override — leaving the persona/CLI surface without the pressure
+    // probe — is caught.
+    #[test]
+    fn contributes_the_typed_broker_state_command() {
+        let module = PressureBrokerModule::new();
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
         assert!(
-            result.is_ok(),
-            "broker-state should succeed; got: {:?}",
-            result
-        );
-        let CommandResult::Json(json) = result.unwrap() else {
-            panic!("expected Json result");
-        };
-        // Every BrokerSnapshot field, camelCase, must be present so
-        // the TS side can structurally match without optional-chain
-        // checks every key.
-        assert!(json["globalPressure"].is_number(), "globalPressure missing");
-        assert!(json["globalTier"].is_string(), "globalTier missing");
-        assert!(json["pools"].is_array(), "pools missing");
-        assert!(json["evictionsFired"].is_number(), "evictionsFired missing");
-        assert!(
-            json["bytesFreedTotal"].is_number(),
-            "bytesFreedTotal missing"
-        );
-        // globalTier is the PressureTier enum serialized lowercase —
-        // pin the contract so a future serde rename doesn't silently
-        // change the wire format.
-        let tier = json["globalTier"].as_str().unwrap();
-        assert!(
-            matches!(tier, "normal" | "warning" | "high" | "critical"),
-            "globalTier must be one of normal|warning|high|critical; got: {tier}"
+            names.contains(&SYSTEM_PRESSURE_BROKER_STATE),
+            "got {names:?}"
         );
     }
 

@@ -68,6 +68,13 @@ pub struct ConsolidatedMemory {
     pub id: Uuid,
     pub persona_id: Uuid,
     pub session_id: Uuid,
+    /// The room/conversation this memory belongs to (the contextId — the
+    /// third ID tier). Durable memory is keyed by (persona, context), NOT by
+    /// session: a session dies on reconnect but the persona must still recall
+    /// this room's memory. Sourced from the originating `Thought.context_id`.
+    /// `None` when the source thought carried no room (rare). See
+    /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 4.
+    pub context_id: Option<Uuid>,
     /// Coerced down to a finite vocabulary at the corpus boundary;
     /// the adapter picks the best-fit type for each emitted memory.
     pub memory_type: MemoryType,

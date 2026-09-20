@@ -62,5 +62,5 @@ pub mod sys {
 
 mod mtmd;
 mod safe;
-pub use mtmd::{MediaKind, MtmdContext};
+pub use mtmd::{MediaKind, MtmdContext, MtmdEvalParams};
 pub use safe::*;

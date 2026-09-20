@@ -88,16 +88,25 @@ mod tests {
     #[test]
     fn contains_matches_case_insensitively() {
         assert!(contains_ascii_case_insensitive("Hello World", "hello"));
-        assert!(contains_ascii_case_insensitive("HELLO WORLD", "hello world"));
+        assert!(contains_ascii_case_insensitive(
+            "HELLO WORLD",
+            "hello world"
+        ));
         // Non-alpha bytes (@) must match literally — alphabetic chars after
         // can still case-fold.
-        assert!(contains_ascii_case_insensitive("Yo @HELPER are you", "@helper"));
+        assert!(contains_ascii_case_insensitive(
+            "Yo @HELPER are you",
+            "@helper"
+        ));
     }
 
     #[test]
     fn contains_rejects_when_needle_absent() {
         assert!(!contains_ascii_case_insensitive("hello world", "goodbye"));
-        assert!(!contains_ascii_case_insensitive("short", "much longer needle"));
+        assert!(!contains_ascii_case_insensitive(
+            "short",
+            "much longer needle"
+        ));
         // Needle has '@' but haystack doesn't.
         assert!(!contains_ascii_case_insensitive("HEY HELPER", "@helper"));
     }
@@ -114,9 +123,15 @@ mod tests {
         // byte (0xa9) is outside alpha-fold range so compares literally
         // and won't match 'e' (0x65).
         assert!(!contains_ascii_case_insensitive("hé", "he"));
-        assert!(!contains_ascii_case_insensitive("\u{1F44B} hello", "\u{1F44B} world"));
+        assert!(!contains_ascii_case_insensitive(
+            "\u{1F44B} hello",
+            "\u{1F44B} world"
+        ));
         // ASCII substring inside unicode-rich content still matches.
-        assert!(contains_ascii_case_insensitive("\u{1F44B} Helper AI", "helper ai"));
+        assert!(contains_ascii_case_insensitive(
+            "\u{1F44B} Helper AI",
+            "helper ai"
+        ));
     }
 
     // ─── starts_with_ascii_case_insensitive ─────────────────────────────
@@ -130,8 +145,14 @@ mod tests {
     #[test]
     fn starts_with_matches_case_insensitively() {
         assert!(starts_with_ascii_case_insensitive("HELLO world", "hello"));
-        assert!(starts_with_ascii_case_insensitive("Teacher AI, explain", "teacher ai"));
-        assert!(starts_with_ascii_case_insensitive("Teacher AI: explain", "teacher ai"));
+        assert!(starts_with_ascii_case_insensitive(
+            "Teacher AI, explain",
+            "teacher ai"
+        ));
+        assert!(starts_with_ascii_case_insensitive(
+            "Teacher AI: explain",
+            "teacher ai"
+        ));
     }
 
     #[test]
@@ -155,6 +176,9 @@ mod tests {
     fn starts_with_non_ascii_does_not_false_match_ascii() {
         assert!(!starts_with_ascii_case_insensitive("\u{1F44B} hi", "hello"));
         // ASCII prefix on unicode content works as expected.
-        assert!(starts_with_ascii_case_insensitive("hello \u{1F44B}", "hello"));
+        assert!(starts_with_ascii_case_insensitive(
+            "hello \u{1F44B}",
+            "hello"
+        ));
     }
 }

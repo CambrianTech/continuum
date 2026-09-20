@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
-use super::super::frame::{FrameType, GridFrame, GridPayload};
+use super::super::frame::{GridFrame, GridPayload};
 use crate::runtime;
 
 /// Default UDP port for grid event streaming.

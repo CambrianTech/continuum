@@ -55,7 +55,20 @@ use crate::persona::rag_capture::{
 /// result. Replay against the trace gets the full content; the
 /// inspection result is for "look at what the persona would see right
 /// now" mechanic-shop summarization.
+// context-budget-exempt: preview width for the human-facing rag-inspect command output;
+// never text sent to a model
 pub const CONTENT_PREVIEW_CHARS: usize = 200;
+
+/// Assumed window for [`RagInspectionRequest::defaults_for`] — the
+/// DIAGNOSTIC path only, where no inference profile is in hand and the
+/// `persona/rag-inspect` caller can override `context_window` explicitly.
+/// This is NOT a serving decision and never reaches a live turn: live
+/// turns go through [`RagInspectionRequest::for_persona`] with the
+/// profile's real `context_length` (#46/#50 law — the window comes from
+/// the adapter, never a per-tier cap).
+// context-budget-exempt: inspection-command default only, caller-overridable;
+// live turns derive the window from the persona's inference profile
+pub const DEFAULT_INSPECT_WINDOW: u32 = 32_768;
 
 /// Tunable inputs for one inspection. Defaults via `defaults_for`
 /// match the `mid-local (32k)` profile the demo binary uses — a
@@ -83,30 +96,19 @@ pub struct RagInspectionRequest {
 }
 
 impl RagInspectionRequest {
-    /// Sensible defaults for "show me what this persona would see
-    /// right now at a typical 32k context model." Caller can mutate
-    /// any field after this. Prefer [`Self::for_persona`] when you
-    /// already have a [`PersonaInferenceProfile`] in hand — that
+    /// Diagnostic defaults for "show me what this persona would see
+    /// right now" when NO inference profile is in hand — the
+    /// `persona/rag-inspect` command path, where the caller can
+    /// override `context_window` explicitly. Same derivation as
+    /// [`Self::for_persona`], seeded with [`DEFAULT_INSPECT_WINDOW`].
+    /// Prefer [`Self::for_persona`] when a profile IS in hand — that
     /// path threads the profile's actual context_length through so
     /// the RAG layer never asks for more tokens than the adapter
-    /// can decode.
+    /// can decode. (TODO #46/#50 family: `PersonaResolution` should
+    /// carry the persona's live profile so the inspect command stops
+    /// needing an assumed window at all.)
     pub fn defaults_for(persona_id: Uuid, persona_name: String, now_ms: u64) -> Self {
-        Self {
-            persona_id,
-            persona_name,
-            context_window: 32_768,
-            reserved: ReservedTokens {
-                system: 400,
-                completion: 4_000,
-            },
-            airc_floor: 500,
-            airc_max: 20_000,
-            airc_priority: 10,
-            airc_required: true,
-            airc_fetch_limit: 100,
-            now_ms,
-            trace_path: None,
-        }
+        Self::for_window(persona_id, persona_name, now_ms, DEFAULT_INSPECT_WINDOW)
     }
 
     /// Derive the inspection request from the persona's inference
@@ -117,42 +119,34 @@ impl RagInspectionRequest {
     /// from this struct instead of copying fields or holding
     /// duplicate constants.
     ///
-    /// The derivation:
     /// - `context_window` = `profile.context_length` (no overflow
     ///   risk — the RAG layer can never ask for more than the
     ///   adapter was loaded with).
-    /// - `airc_max` = at most 60% of the runtime context, AND at
-    ///   most what's left after the system + completion reserve.
-    ///   The 60% factor mirrors the `defaults_for` ratio
-    ///   (20_000 / 32_768 ≈ 0.61) so the relative budget shape
-    ///   stays consistent across tier-clamped contexts.
-    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
     pub fn for_persona(
         persona_id: Uuid,
         persona_name: String,
         now_ms: u64,
         profile: &crate::persona::inference_profile::PersonaInferenceProfile,
     ) -> Self {
-        let context_window = profile.context_length;
-        // Reserved tokens scale with context window per
-        // [[intent-driven-api-not-hot-patches]]: a 2048-window persona
-        // can't reserve 4000 for completion (negative headroom → all
-        // sources get 0 → cognition fires with no RAG content → LLM
-        // defaults to grammar-shortest "will_respond=false" attractor).
-        // The cognition call caps output at 512 tokens; system prompt
-        // is ~200 tokens. We scale both as a percentage of the window
-        // so a Compat-tier 2048 persona AND an M-series 32768 persona
-        // both get sensibly-sized reservations.
-        //
-        // system: 10% of window, clamped [128, 512]
-        // completion: 25% of window, clamped [256, 4_000]
-        let reserved = ReservedTokens {
-            system: (context_window / 10).clamp(128, 512),
-            completion: (context_window / 4).clamp(256, 4_000),
-        };
-        let headroom = context_window
-            .saturating_sub(reserved.system + reserved.completion)
-            .max(512);
+        Self::for_window(persona_id, persona_name, now_ms, profile.context_length)
+    }
+
+    /// THE derivation both constructors share (#424 — `defaults_for`
+    /// previously hand-copied a flat `{system: 400, completion: 4_000,
+    /// airc_max: 20_000}` shape that had already drifted from this one).
+    ///
+    /// - reservation + headroom: [`ReservedTokens::scaled_for_window`].
+    /// - `airc_max` = at most 60% of the window, AND at most the
+    ///   post-reservation headroom.
+    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
+    pub fn for_window(
+        persona_id: Uuid,
+        persona_name: String,
+        now_ms: u64,
+        context_window: u32,
+    ) -> Self {
+        let reserved = ReservedTokens::scaled_for_window(context_window);
+        let headroom = reserved.headroom_within(context_window);
         // Default budget: ~60% of the context window for room
         // history, clamped to headroom. This is a CONSERVATIVE
         // FALLBACK — the substrate's real budgeter (TODO: routed
@@ -190,12 +184,9 @@ impl RagInspectionRequest {
     /// hands one reference, derivation reads what it needs.
     /// Prefer this over [`Self::for_persona`] in any new code that
     /// already holds a `&PersonaContext`.
-    pub fn for_ctx(
-        ctx: &crate::persona::supervisor::PersonaContext,
-        now_ms: u64,
-    ) -> Self {
+    pub fn for_ctx(ctx: &crate::persona::supervisor::PersonaContext, now_ms: u64) -> Self {
         Self::for_persona(
-            ctx.identity.persona_id,
+            ctx.identity.peer_id.as_uuid(),
             ctx.identity.agent_name.clone(),
             now_ms,
             &ctx.profile,
@@ -453,14 +444,9 @@ pub async fn inspect_persona_rag_with_inference(
 
     // Chain through inference if the caller supplied an adapter.
     let model_response = match inference_probe {
-        Some(adapter) => Some(
-            run_inference_probe(
-                adapter,
-                &request.persona_name,
-                &delivery.items,
-            )
-            .await?,
-        ),
+        Some(adapter) => {
+            Some(run_inference_probe(adapter, &request.persona_name, &delivery.items).await?)
+        }
         None => None,
     };
 
@@ -509,9 +495,7 @@ async fn run_inference_probe(
     persona_name: &str,
     items: &[crate::persona::rag_budget::RagItem],
 ) -> Result<ModelResponseInspection, String> {
-    use crate::ai::types::{
-        ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest,
-    };
+    use crate::ai::types::{ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest};
     let adapter_id = adapter.provider_id().to_string();
     let model = adapter.default_model().to_string();
 
@@ -551,22 +535,18 @@ async fn run_inference_probe(
         model: Some(model.clone()),
         provider: None,
         temperature: None,
-        // Cognition output budget. THIS IS A CONSERVATIVE FALLBACK —
-        // the real substrate budgeter (TODO: derive from model
-        // characteristics on the Context per
-        // [[context-is-the-client-airc-token-is-identity]] and
-        // [[intent-driven-api-not-hot-patches]]) should compute
-        // this from the persona's role, the model's typical
-        // response distribution, and the conversation context.
-        // Capable models on capable hardware (5090 + frontier
-        // class) can chatter at length; LCD-tier models on CPU
-        // will self-limit. Do not pin to a tighter value just to
-        // make Intel Mac faster — that handicaps every other
-        // peer on the grid.
-        max_tokens: Some(512),
+        // The MODEL owns its generation length — the adapter forwards no
+        // ceiling when None (unsloth/llama.cpp run to the model's own stop
+        // token). The old 512 "conservative fallback" was exactly the
+        // LCD-tier clamp this comment warned against: it truncated qwen3.5
+        // mid-`<think>` → empty reply. Capable models self-pace; we never
+        // pin a tighter value here.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -634,14 +614,13 @@ async fn run_inference_probe(
         "rag_inspect raw model output (pre-parse) — diagnostic for [[no-if-statements-use-llms-for-cognition]] cognition contract"
     );
 
-    let (will_respond, response_text) =
-        parse_decide_and_respond(&response.text).map_err(|e| {
-            format!(
-                "model emitted unparseable JSON for persona_decide_and_respond: {e}\n\
+    let (will_respond, response_text) = parse_decide_and_respond(&response.text).map_err(|e| {
+        format!(
+            "model emitted unparseable JSON for persona_decide_and_respond: {e}\n\
                  raw response: {raw}",
-                raw = response.text
-            )
-        })?;
+            raw = response.text
+        )
+    })?;
 
     Ok(ModelResponseInspection {
         adapter_id,
@@ -661,8 +640,8 @@ async fn run_inference_probe(
 /// any missing field or wrong type errors visibly — the substrate
 /// doesn't silently default a decision the model didn't make.
 fn parse_decide_and_respond(raw: &str) -> Result<(bool, String), String> {
-    let v: serde_json::Value = serde_json::from_str(raw.trim())
-        .map_err(|e| format!("JSON parse: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(raw.trim()).map_err(|e| format!("JSON parse: {e}"))?;
     let will_respond = v
         .get("will_respond")
         .and_then(|x| x.as_bool())
@@ -675,10 +654,7 @@ fn parse_decide_and_respond(raw: &str) -> Result<(bool, String), String> {
     Ok((will_respond, response))
 }
 
-fn render_prompt_text(
-    system_prompt: &str,
-    messages: &[crate::ai::types::ChatMessage],
-) -> String {
+fn render_prompt_text(system_prompt: &str, messages: &[crate::ai::types::ChatMessage]) -> String {
     use crate::ai::types::MessageContent;
     let mut out = String::new();
     out.push_str("System: ");
@@ -706,7 +682,10 @@ fn render_prompt_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
+    use airc_core::{
+        Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent,
+        TranscriptKind,
+    };
     use airc_lib::AircError;
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -740,16 +719,22 @@ mod tests {
         }
     }
 
+    /// All events in these tests share ONE room. A real airc channel has a single
+    /// room_id, and the digest is room-scoped (filters events to the room derived
+    /// from the transcript, slice-2 #43). A per-event random room would model
+    /// nothing real and silently drop all-but-the-last event from the window.
+    static TEST_ROOM: std::sync::LazyLock<RoomId> = std::sync::LazyLock::new(RoomId::new);
+
     fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> TranscriptEvent {
         TranscriptEvent {
             event_id: EventId::new(),
-            room_id: RoomId::new(),
+            room_id: *TEST_ROOM,
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms,
             lamport,
-            target: MentionTarget::Room(RoomId::new()),
+            target: MentionTarget::Room(*TEST_ROOM),
             headers: Headers::default(),
             body: text.map(Body::text),
             attachment: None,
@@ -759,7 +744,8 @@ mod tests {
     }
 
     fn request(now_ms: u64) -> RagInspectionRequest {
-        let mut req = RagInspectionRequest::defaults_for(persona(), "TestPersona".to_string(), now_ms);
+        let mut req =
+            RagInspectionRequest::defaults_for(persona(), "TestPersona".to_string(), now_ms);
         // Tiny-local profile from the demo binary — reserves stay
         // small so the tests assert behavior against a 4k context.
         req.context_window = 4_096;
@@ -777,7 +763,9 @@ mod tests {
     #[tokio::test]
     async fn empty_transcript_yields_empty_delivery() {
         let reader = Arc::new(StubReader::new(vec![]));
-        let result = inspect_persona_rag(&request(1_000_000), reader).await.unwrap();
+        let result = inspect_persona_rag(&request(1_000_000), reader)
+            .await
+            .unwrap();
         assert_eq!(result.persona_id, persona());
         assert_eq!(result.persona_name, "TestPersona");
         assert_eq!(result.context_window, 4_096);
@@ -792,7 +780,9 @@ mod tests {
     #[tokio::test]
     async fn allocation_reports_satisfied_state_for_required_source_with_room() {
         let reader = Arc::new(StubReader::new(vec![]));
-        let result = inspect_persona_rag(&request(1_000_000), reader).await.unwrap();
+        let result = inspect_persona_rag(&request(1_000_000), reader)
+            .await
+            .unwrap();
         // 4096 - 200 system - 800 completion = 3096 available; airc gets max=2000 → Satisfied
         assert!(!result.allocation.escalation_needed);
         let airc_a = &result.allocation.allocations[0];
@@ -804,14 +794,22 @@ mod tests {
     async fn inspected_items_carry_score_age_and_peer_prefix() {
         let now_ms = 2_000_000u64;
         let event_ms = 1_995_000u64; // 5 seconds ago
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("hello world"), 42, event_ms)]));
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("hello world"),
+            42,
+            event_ms,
+        )]));
         let result = inspect_persona_rag(&request(now_ms), reader).await.unwrap();
         let items = &result.deliveries[0].items;
         assert_eq!(items.len(), 1);
         let it = &items[0];
         assert_eq!(it.index, 0);
         assert_eq!(it.content_preview, "hello world");
-        assert!((it.score - 1.0).abs() < 1e-9, "first item scores 1.0, got {}", it.score);
+        assert!(
+            (it.score - 1.0).abs() < 1e-9,
+            "first item scores 1.0, got {}",
+            it.score
+        );
         assert_eq!(it.lamport, 42);
         assert_eq!(it.age_s, 5);
         assert_eq!(it.peer_id_prefix.len(), 8);
@@ -828,12 +826,23 @@ mod tests {
         let result = inspect_persona_rag(&req, reader).await.unwrap();
         let it = &result.deliveries[0].items[0];
         assert_eq!(it.content_preview.chars().count(), CONTENT_PREVIEW_CHARS);
-        assert!(it.tokens >= 250, "1000 chars should cost ~250 tokens, got {}", it.tokens);
+        assert!(
+            it.tokens >= 250,
+            "1000 chars should cost ~250 tokens, got {}",
+            it.tokens
+        );
     }
 
+    // what this catches: under the slice-2 #43 digest contract the window is
+    // bounded by budget alone — pack_digest walks newest-first and TRUNCATES
+    // when the budget is exhausted; there is NO continuation cursor (the digest
+    // IS the window — more history is a scrollback command, not a budget page).
+    // A regression that re-introduced a continuation cursor, or that stopped
+    // truncating, would break this.
     #[tokio::test]
-    async fn continuation_flag_set_when_budget_overflows() {
-        // 4 items × ~2 tokens each, but tight budget that forces continuation
+    async fn tight_budget_truncates_the_window_with_no_continuation_cursor() {
+        // 4 items × ~2 tokens each ("ddddd" = 5 chars → chars/4 + 1 = 2 tokens),
+        // budget of 4 tokens fits only the 2 newest.
         let reader = Arc::new(StubReader::new(vec![
             make_event(Some("aaaaa"), 1, 1_000_000),
             make_event(Some("bbbbb"), 2, 1_000_000),
@@ -845,15 +854,24 @@ mod tests {
         req.airc_max = 4;
         let result = inspect_persona_rag(&req, reader).await.unwrap();
         let d = &result.deliveries[0];
-        assert!(d.has_continuation, "tight budget should leave continuation");
-        assert!(d.items.len() < 4, "not all items should fit");
+        assert!(d.items.len() < 4, "tight budget truncates the window");
+        assert!(
+            !d.has_continuation,
+            "the digest carries no continuation cursor by design"
+        );
     }
 
     #[tokio::test]
     async fn reader_failure_surfaces_as_empty_delivery_not_panic() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("oops"), 1, 1_000_000)]));
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("oops"),
+            1,
+            1_000_000,
+        )]));
         reader.set_fail(true);
-        let result = inspect_persona_rag(&request(1_000_000), reader).await.unwrap();
+        let result = inspect_persona_rag(&request(1_000_000), reader)
+            .await
+            .unwrap();
         assert!(result.deliveries[0].items.is_empty());
         // No panic — substrate-is-a-good-citizen
     }
@@ -862,7 +880,11 @@ mod tests {
     async fn trace_path_writes_jsonl_lines() {
         let dir = tempfile::tempdir().unwrap();
         let trace = dir.path().join("inspect.jsonl");
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("traced"), 1, 1_000_000)]));
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("traced"),
+            1,
+            1_000_000,
+        )]));
         let mut req = request(1_000_000);
         req.trace_path = Some(trace.clone());
         let result = inspect_persona_rag(&req, reader).await.unwrap();
@@ -870,7 +892,10 @@ mod tests {
         let body = std::fs::read_to_string(&trace).unwrap();
         // Expect at least TurnStart, BudgetAllocated, SourceDelivered, TurnEnd
         let line_count = body.lines().count();
-        assert!(line_count >= 4, "expected ≥4 capture events, got {line_count}");
+        assert!(
+            line_count >= 4,
+            "expected ≥4 capture events, got {line_count}"
+        );
         assert!(body.contains("turn_start"));
         assert!(body.contains("budget_allocated"));
         assert!(body.contains("source_delivered"));
@@ -879,7 +904,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_trace_path_uses_noop_sink() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("untraced"), 1, 1_000_000)]));
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("untraced"),
+            1,
+            1_000_000,
+        )]));
         let req = request(1_000_000);
         assert!(req.trace_path.is_none());
         let result = inspect_persona_rag(&req, reader).await.unwrap();
@@ -894,8 +923,14 @@ mod tests {
         // rejects cross-persona ctx. We construct the request for
         // persona A; the source is built around persona A; we
         // verify the items come from A's view — defense in depth.
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("for A"), 1, 1_000_000)]));
-        let result = inspect_persona_rag(&request(1_000_000), reader).await.unwrap();
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("for A"),
+            1,
+            1_000_000,
+        )]));
+        let result = inspect_persona_rag(&request(1_000_000), reader)
+            .await
+            .unwrap();
         assert_eq!(result.persona_id, persona());
         assert_eq!(result.deliveries[0].items.len(), 1);
     }
@@ -920,13 +955,9 @@ mod tests {
         ]));
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
-        let result = inspect_persona_rag_with_inference(
-            &request(1_000_000),
-            reader,
-            Some(adapter),
-        )
-        .await
-        .unwrap();
+        let result = inspect_persona_rag_with_inference(&request(1_000_000), reader, Some(adapter))
+            .await
+            .unwrap();
         let mr = result.model_response.expect("expected model_response");
         assert_eq!(mr.adapter_id, HEURISTIC_PROVIDER_ID);
         assert!(mr.response_text.starts_with("[heuristic:"));
@@ -944,14 +975,12 @@ mod tests {
         let reader = Arc::new(StubReader::new(vec![]));
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
-        let result = inspect_persona_rag_with_inference(
-            &request(1_000_000),
-            reader,
-            Some(adapter),
-        )
-        .await
-        .unwrap();
-        let mr = result.model_response.expect("expected model_response even with no items");
+        let result = inspect_persona_rag_with_inference(&request(1_000_000), reader, Some(adapter))
+            .await
+            .unwrap();
+        let mr = result
+            .model_response
+            .expect("expected model_response even with no items");
         // The heuristic adapter saw an empty messages list → "(no
         // user text in prompt)" marker response per its contract.
         assert!(mr.response_text.contains("(no user text in prompt)"));
@@ -960,18 +989,16 @@ mod tests {
     #[tokio::test]
     async fn chained_path_prompt_text_carries_system_and_messages() {
         use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-        let reader = Arc::new(StubReader::new(vec![
-            make_event(Some("greetings persona"), 1, 999_000),
-        ]));
+        let reader = Arc::new(StubReader::new(vec![make_event(
+            Some("greetings persona"),
+            1,
+            999_000,
+        )]));
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
-        let result = inspect_persona_rag_with_inference(
-            &request(1_000_000),
-            reader,
-            Some(adapter),
-        )
-        .await
-        .unwrap();
+        let result = inspect_persona_rag_with_inference(&request(1_000_000), reader, Some(adapter))
+            .await
+            .unwrap();
         let prompt = result.model_response.unwrap().prompt_text;
         assert!(prompt.contains("You are TestPersona"));
         assert!(prompt.contains("greetings persona"));

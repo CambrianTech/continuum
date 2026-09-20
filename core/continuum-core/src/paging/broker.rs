@@ -74,7 +74,10 @@ fn evict_amount_for(pool: &dyn ResourcePool) -> u64 {
 /// — operators can pattern-match without stringly-typed comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../protocol/typescript/paging/PressureTier.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/paging/PressureTier.ts"
+)]
 pub enum PressureTier {
     /// All pools comfortably under their budgets.
     Normal,
@@ -407,24 +410,6 @@ impl PressureBroker {
             evictions_fired: *self.evictions_fired.lock(),
             bytes_freed_total: *self.bytes_freed.lock(),
         }
-    }
-
-    /// Spawn a tokio task that calls `relieve()` on `tick_interval`.
-    /// Returns the JoinHandle so the caller can abort on shutdown.
-    /// Idempotent at the call site — caller decides if/when to spawn.
-    pub fn spawn_tick(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let interval = self.config.tick_interval;
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            // Skip the immediate first tick — let pools warm up before
-            // we start measuring + acting.
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let _report = self.relieve();
-                // Future: emit IPC event or log when triggered=true.
-            }
-        })
     }
 }
 

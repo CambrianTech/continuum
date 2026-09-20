@@ -1,0 +1,75 @@
+# Install-manifest projection-drift guard.
+#
+# Why this exists: install-manifest.toml is the ONE source of truth for the
+# install toolchain (urls, versions, sha256, redist components, build flags).
+# PowerShell 5.1 has no TOML parser, so instead of parsing at runtime the
+# `manifest-gen` bin projects the manifest to per-platform data files the
+# runners SOURCE: tools/scripts/generated/manifest.{windows.ps1,macos.sh,linux.sh}.
+# Those generated files are committed and consumed by win-modules.ps1 / the bash
+# runner.
+#
+# The failure this guards: an author edits install-manifest.toml (bumps cmake,
+# adds a cuda component) but forgets to regenerate + commit the projections. The
+# runners then install stale values silently — the exact drift the generator was
+# built to eliminate. Same class as the ts-rs binding-drift guard; same fix shape.
+#
+# The gate: `manifest-gen --check` regenerates in memory and diffs the on-disk
+# projections, exiting 1 (loud) on any mismatch — so a stale or hand-edited
+# generated file fails the PR. (This is M5 pin 2 from the airc design.)
+name: install-manifest Projection Drift Guard
+
+on:
+  pull_request:
+    paths:
+      - 'tools/scripts/install-manifest.toml'
+      - 'tools/scripts/generated/**'
+      - 'tools/manifest-gen/**'
+      - '.github/workflows/manifest-projection-drift-guard.yml'
+  push:
+    branches: [canary, main]
+
+concurrency:
+  group: manifest-drift-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  manifest-drift:
+    name: install-manifest projection drift detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cargo --version
+
+      # manifest-gen's dep surface is tiny (serde + toml) — no libclang/cmake/etc.
+      # A lightweight cargo cache keyed to this crate keeps the check fast.
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: manifest-gen
+          cache-on-failure: true
+
+      # The gate. --check regenerates the projections in memory and diffs them
+      # against what's committed; exit 1 on any drift. The generator's own error
+      # names the fix (cargo run -p manifest-gen).
+      - name: Verify generated projections in sync with install-manifest.toml
+        run: |
+          if ! cargo run -q -p manifest-gen -- --check; then
+            echo "::error::install-manifest projection drift detected."
+            echo "tools/scripts/install-manifest.toml was edited but the generated"
+            echo "per-platform projections (tools/scripts/generated/) were not"
+            echo "regenerated + committed. The install runners would use stale values."
+            echo ""
+            echo "Fix: regenerate locally, then commit the generated files:"
+            echo "  cargo run -p manifest-gen"
+            echo "  git add tools/scripts/generated/"
+            echo "  git commit --amend --no-edit   # or a follow-up commit"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "✓ generated projections are in sync with install-manifest.toml"

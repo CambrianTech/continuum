@@ -238,7 +238,10 @@ mod tests {
 
         let stats = apply_decay_sweep(&r, 5_000_000);
         assert_eq!(stats.engrams_scanned, 3);
-        assert_eq!(stats.engrams_decayed, 1, "only `decayable` should have decayed");
+        assert_eq!(
+            stats.engrams_decayed, 1,
+            "only `decayable` should have decayed"
+        );
         assert_eq!(stats.engrams_protected, 1);
         assert_eq!(stats.engrams_no_op, 1);
         assert_eq!(stats.engrams_disappeared, 0);

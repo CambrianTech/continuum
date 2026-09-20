@@ -21,7 +21,7 @@
 //!
 //! Source-of-truth ordering for model data: this module reads Models from
 //! the typed registry (`crate::model_registry`). It does NOT itself read
-//! `models.toml` or `models.json` — the registry already loaded both.
+//! the Rust catalog (catalog.rs) — the registry already loaded it.
 
 //! # Module layout (continuum#1208)
 //!
@@ -72,7 +72,7 @@ fn derive_target_silicon(
 /// 3. `context_window_min` — model's window ≥ requirement
 /// 4. `provider_policy` — Local/Cloud filter, keyed on the provider's
 ///    [`ProviderKind`] (no hardcoded provider-id list — providers declare
-///    their own residency in `providers.toml`)
+///    their own residency in the Rust catalog (catalog.rs))
 /// 5. `silicon_residency` — after the best candidate is ranked and its
 ///    target silicon derived, reject if the silicon violates the caller's
 ///    residency requirement. Enforces the alpha bar's no-silent-CPU
@@ -272,6 +272,8 @@ mod tests {
         caps: &[Capability],
     ) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.into(),
             name: None,
             provider: provider.into(),
@@ -283,11 +285,16 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: None,
             mmproj_local_path: None,
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
+            parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
+            persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         }
     }
 
@@ -301,6 +308,7 @@ mod tests {
             auth: AuthKind::None,
             model_prefixes: vec![],
             kind,
+            capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         }
     }
 
@@ -814,7 +822,7 @@ mod tests {
 
     #[test]
     fn current_registry_state_fails_alpha_bar_naming_the_forge_gap() {
-        // The current test registry mirrors today's models.toml: qwen3.5-4b
+        // The current test registry mirrors today's the Rust catalog (catalog.rs): qwen3.5-4b
         // has Chat+ToolUse but no Vision/Audio. qwen2-vl-7b has Chat+Vision
         // but no Audio. gpt-4o has the full sensory bundle but is CLOUD.
         // No LOCAL multimodal base = the forge gap PR #1072 names. This

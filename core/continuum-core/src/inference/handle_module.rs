@@ -16,12 +16,14 @@
 //!
 //! ### Adapter resolution
 //!
-//! The `open` handler resolves the requested provider via the
-//! shared `AdapterRegistry` (the same registry that `inference/llm/
-//! request` uses). The handle store doesn't touch the registry —
-//! the module is the bridge between "I want provider X" (the
-//! caller's view) and "I have an Arc<dyn AIProviderAdapter>" (the
-//! store's contract).
+//! The `open` handler resolves the requested provider from the
+//! module's local adapter map first (adapters explicitly registered
+//! on this instance), then falls back to the shared `AdapterRegistry`
+//! (the same registry that `inference/llm/request` uses — the
+//! system-wide source of truth where production adapters live). The
+//! handle store doesn't touch the registry — the module is the bridge
+//! between "I want provider X" (the caller's view) and "I have an
+//! Arc<dyn AIProviderAdapter>" (the store's contract).
 //!
 //! ### Doctrine alignment
 //!
@@ -49,19 +51,15 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse};
-use crate::genome::working_set::PersonaId;
-use crate::inference::coordinator::{
-    CoordinatorError, InferenceCoordinator, OpenLaneRequest,
-};
+use crate::identity::PeerId;
+use crate::inference::coordinator::{CoordinatorError, InferenceCoordinator, OpenLaneRequest};
 use crate::inference::handle_store::{
     InferenceHandleStore, OpenSessionRequest, HANDLE_OWNER, HANDLE_TYPE_TAG,
 };
 use crate::inference::lane::LaneClass;
 use crate::inference::recipe_budget::TaskKind;
 use crate::runtime::cell_shapes::HandleRef;
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandRequest, CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 // ── Command name constants ─────────────────────────────────────────
 
@@ -69,6 +67,17 @@ pub const COMMAND_OPEN: &str = "ai/inference/open";
 pub const COMMAND_GENERATE: &str = "ai/inference/generate";
 pub const COMMAND_CLOSE: &str = "ai/inference/close";
 pub const COMMAND_INSPECT: &str = "ai/inference/inspect";
+
+// ── SDK command-surface declarations ──────────────────────────────
+//
+// These four commands are ENVELOPED: the handler parses
+// `CommandRequest::<P>::from_value` and returns
+// `CommandResponse::ok(T).into_command_result()` (see `handle_command` below).
+// The CommandSpec declarations (registered at the bottom of this file, after the
+// types) carry `WireShape::Enveloped`, so the generator wraps them as
+// `CommandRequest<P>` → `CommandResponse<T>` — faithful to that wire, including
+// the flattened `handle` (`open` mints it; `generate`/`close`/`inspect` consume
+// it). This is the envelope modeling the earlier deferral was waiting on.
 
 // ── Typed params ───────────────────────────────────────────────────
 
@@ -101,6 +110,7 @@ pub struct OpenParams {
     /// this handle MUST carry a matching persona_id. Defense in
     /// depth at the inference layer.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
     /// What the persona is doing — drives the lane's KV budget +
@@ -212,7 +222,6 @@ pub struct InspectResult {
     #[ts(type = "number")]
     pub active_adapter_count: u32,
     // ── Lane fields (populated when the module is coordinator-wired) ──
-
     /// The persona's task class for this lane. None = non-coordinator
     /// mode (handle store only).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,15 +237,18 @@ pub struct InspectResult {
     pub seed_kv_tokens: Option<u32>,
     /// Max KV tokens the lane is allowed to grow to.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_kv_tokens: Option<u32>,
     /// Bytes accounted in FootprintRegistry for this lane.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub bytes_accounted: Option<u64>,
     /// Lease expiration wall-clock — observers track approaching
     /// expiry to renew or close.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lease_expires_at_ms: Option<u64>,
     /// True when the lease is `Pinned` (Realtime) and the pressure
@@ -244,6 +256,135 @@ pub struct InspectResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub is_pinned: Option<bool>,
+}
+
+// ── CommandSpec registrations (sdk_codegen) ────────────────────────
+//
+// All four are Enveloped (verified against `handle_command`). `open` mints a
+// handle; `generate`/`close`/`inspect` consume one — the handle rides the
+// CommandRequest/CommandResponse envelope, which is exactly what the
+// `Enveloped` wire shape models. GenerateResult is `TextGenerationResponse`.
+
+/// `ai/inference/open` — open an inference session, returns a handle. Enveloped.
+pub struct OpenCommand;
+impl crate::sdk_codegen::CommandSpec for OpenCommand {
+    const NAME: &'static str = COMMAND_OPEN;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: open a raw inference session handle. You do NOT need this \
+         for normal work — your own replies already run through inference; use code/*, \
+         chat/*, data/*, and work/* for tasks. (Handle-lifecycle plumbing.)";
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = OpenParams;
+    type Result = OpenResult;
+}
+crate::register_command!(OpenCommand);
+
+/// `ai/inference/generate` — generate against an open session (consumes handle).
+pub struct GenerateCommand;
+impl crate::sdk_codegen::CommandSpec for GenerateCommand {
+    const NAME: &'static str = COMMAND_GENERATE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: generate text against an open inference handle. NOT a task \
+         tool — to answer, just answer. (Handle-lifecycle plumbing.)";
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = GenerateParams;
+    type Result = GenerateResult;
+}
+crate::register_command!(GenerateCommand);
+
+/// `ai/inference/close` — close an open session (consumes handle). Enveloped.
+pub struct CloseCommand;
+impl crate::sdk_codegen::CommandSpec for CloseCommand {
+    const NAME: &'static str = COMMAND_CLOSE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: close an open inference handle. Not needed for normal work. \
+         (Handle-lifecycle plumbing.)";
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = CloseParams;
+    type Result = CloseResult;
+}
+crate::register_command!(CloseCommand);
+
+/// `ai/inference/inspect` — inspect an open session (consumes handle). Enveloped.
+pub struct InspectCommand;
+impl crate::sdk_codegen::CommandSpec for InspectCommand {
+    const NAME: &'static str = COMMAND_INSPECT;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: inspect an open inference handle's state. Diagnostic \
+         plumbing, not a task tool.";
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = InspectParams;
+    type Result = InspectResult;
+}
+crate::register_command!(InspectCommand);
+
+// ── Typed handlers (the authoring trait) ───────────────────────────
+//
+// Each command is now ONE typed `execute`: typed params in, typed output out,
+// `?` for errors, `ctx.handle()?` for the envelope handle — no from_value, no
+// manual CommandRequest/CommandResponse, no match-on-name, no try/catch. The
+// framework's `dispatch` (driven by each command's WireShape) owns all of that.
+// The handlers borrow the module so they reach its shared state (the handle
+// store + adapter map). This is the shape every one of the ~260 commands takes.
+
+use crate::sdk_codegen::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+
+struct OpenHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for OpenHandler<'_> {
+    type Spec = OpenCommand;
+    async fn execute(
+        &self,
+        _ctx: &Ctx,
+        p: OpenParams,
+    ) -> Result<Outcome<OpenResult>, CommandError> {
+        let (handle, payload) = self.0.open(p).await?;
+        Ok(Outcome::with_handle(payload, handle)) // mint — framework places it on the envelope
+    }
+}
+
+struct GenerateHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for GenerateHandler<'_> {
+    type Spec = GenerateCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        p: GenerateParams,
+    ) -> Result<Outcome<GenerateResult>, CommandError> {
+        let handle = ctx.handle()?; // consume — typed accessor, loud if absent
+        Ok(self.0.generate(handle, p.request).await?.into())
+    }
+}
+
+struct CloseHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for CloseHandler<'_> {
+    type Spec = CloseCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        _p: CloseParams,
+    ) -> Result<Outcome<CloseResult>, CommandError> {
+        Ok(self.0.close(ctx.handle()?).await?.into())
+    }
+}
+
+struct InspectHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for InspectHandler<'_> {
+    type Spec = InspectCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        _p: InspectParams,
+    ) -> Result<Outcome<InspectResult>, CommandError> {
+        Ok(self.0.inspect(ctx.handle()?).await?.into())
+    }
 }
 
 // ── Module ─────────────────────────────────────────────────────────
@@ -257,10 +398,11 @@ pub struct InspectResult {
 /// which made sharing references awkward. Task #162 fixed that —
 /// the registry now stores `Arc<dyn AIProviderAdapter>` natively
 /// and exposes `get_arc(provider_id)` for callers that need to
-/// hold the reference past the read-lock scope. The handle store
-/// could now read from the registry via `get_arc`; today it keeps a
-/// local adapter map for compatibility with the wiring sites that
-/// pre-dated #162. Migrating to `get_arc` is a follow-up cleanup.
+/// hold the reference past the read-lock scope. `open` now resolves
+/// through `get_arc` as a fallback (local map first, then the shared
+/// registry), so providers registered anywhere in the system are
+/// reachable; the local map remains for adapters explicitly registered
+/// on this module (tests + wiring sites that pre-dated #162).
 ///
 /// A future refactor (after task #109 lands) can fold this into a
 /// unified Arc-based registry; for now keeping the two surfaces
@@ -336,54 +478,21 @@ impl ServiceModule for InferenceHandleModule {
         }
     }
 
-    async fn initialize(
-        &self,
-        _ctx: &crate::runtime::ModuleContext,
-    ) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        // Each arm is one line: build the typed handler (borrowing self for shared
+        // state) and hand it to the framework dispatch, which parses the envelope,
+        // runs the handler's typed `execute`, shapes the reply per WireShape, and
+        // maps errors to the refusal channel. All the per-command boilerplate that
+        // used to live here now lives in the framework, once.
         match command {
-            COMMAND_OPEN => {
-                let req = CommandRequest::<OpenParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_OPEN}: invalid params: {e}"))?;
-                let (handle, payload) = self.open(req.params).await?;
-                CommandResponse::ok(payload)
-                    .with_handle_ref(handle)
-                    .into_command_result()
-            }
-            COMMAND_GENERATE => {
-                let req = CommandRequest::<GenerateParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_GENERATE}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_GENERATE}: missing required `handle` field on envelope")
-                })?;
-                let result = self.generate(handle, req.params.request).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-            COMMAND_CLOSE => {
-                let req = CommandRequest::<CloseParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_CLOSE}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_CLOSE}: missing required `handle` field on envelope")
-                })?;
-                let result = self.close(handle).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-            COMMAND_INSPECT => {
-                let req = CommandRequest::<InspectParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_INSPECT}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_INSPECT}: missing required `handle` field on envelope")
-                })?;
-                let result = self.inspect(handle).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
+            COMMAND_OPEN => dispatch(&OpenHandler(self), params).await,
+            COMMAND_GENERATE => dispatch(&GenerateHandler(self), params).await,
+            COMMAND_CLOSE => dispatch(&CloseHandler(self), params).await,
+            COMMAND_INSPECT => dispatch(&InspectHandler(self), params).await,
             other => Err(format!(
                 "ai-inference-handle: unknown command '{other}' \
                  (known: {COMMAND_OPEN}, {COMMAND_GENERATE}, {COMMAND_CLOSE}, {COMMAND_INSPECT})"
@@ -398,21 +507,46 @@ impl ServiceModule for InferenceHandleModule {
 
 impl InferenceHandleModule {
     async fn open(&self, params: OpenParams) -> Result<(HandleRef, OpenResult), String> {
-        let adapter = self
+        // Resolve the adapter: the module's local map first (adapters
+        // explicitly registered on this instance — tests + pre-#162 wiring
+        // sites), then the shared `AdapterRegistry` (the system-wide source
+        // of truth where production adapters live, per #162's `get_arc`).
+        // The local lookup is resolved into an OWNED Option in its own
+        // statement so the DashMap `Ref` is dropped before the async
+        // registry read — never a lock held across an `await`
+        // (CONCURRENCY-STYLE-GUIDE forbidden move #7).
+        let local_adapter = self
             .providers
             .get(&params.provider)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| {
-                let available: Vec<String> =
-                    self.providers.iter().map(|e| e.key().clone()).collect();
-                format!(
-                    "{COMMAND_OPEN}: provider '{}' not registered (available: {:?})",
-                    params.provider, available
-                )
-            })?;
+            .map(|entry| entry.value().clone());
+        let adapter = match local_adapter {
+            Some(adapter) => adapter,
+            None => {
+                // Async read guard scoped to this single statement; the
+                // returned `Arc` is owned, so the guard drops at the `;`.
+                // (`open_lane` below is synchronous, so no await follows the
+                // read anyway — the guard is held across nothing.)
+                let from_registry = crate::modules::ai_provider::global_registry()
+                    .read()
+                    .await
+                    .get_arc(&params.provider);
+                match from_registry {
+                    Some(adapter) => adapter,
+                    None => {
+                        let available: Vec<String> =
+                            self.providers.iter().map(|e| e.key().clone()).collect();
+                        return Err(format!(
+                            "{COMMAND_OPEN}: provider '{}' not registered on this module \
+                             (local: {available:?}) nor in the shared AdapterRegistry",
+                            params.provider
+                        ));
+                    }
+                }
+            }
+        };
 
         if let Some(coordinator) = &self.coordinator {
-            let persona = PersonaId::new(params.persona_id.unwrap_or_else(Uuid::new_v4));
+            let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4));
             let task = params.task.unwrap_or(TaskKind::Chat);
             let now_ms = now_ms_default();
             let lane_req = OpenLaneRequest {
@@ -558,6 +692,8 @@ mod tests {
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -581,7 +717,10 @@ mod tests {
         module
     }
 
-    fn module_with_coordinator() -> InferenceHandleModule {
+    /// A coordinator-backed module with an EMPTY local adapter map — used
+    /// to exercise the shared-registry fallback in `open`. `module_with_
+    /// coordinator` layers a local heuristic registration on top.
+    fn bare_coordinator_module() -> InferenceHandleModule {
         use crate::cognition::adaptive_throughput::{
             ResourceClass, TargetSilicon, ThroughputLaneBudget,
         };
@@ -601,7 +740,11 @@ mod tests {
             default_target_silicon: TargetSilicon::UnifiedMemory,
         };
         let coordinator = Arc::new(InferenceCoordinator::new(footprint, store, config));
-        let module = InferenceHandleModule::with_coordinator(coordinator);
+        InferenceHandleModule::with_coordinator(coordinator)
+    }
+
+    fn module_with_coordinator() -> InferenceHandleModule {
+        let module = bare_coordinator_module();
         module.register_adapter(
             HEURISTIC_PROVIDER_ID,
             Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
@@ -642,6 +785,35 @@ mod tests {
         assert_eq!(handle.get("owner").unwrap(), HANDLE_OWNER);
         assert_eq!(handle.get("type_tag").unwrap(), HANDLE_TYPE_TAG);
         assert_eq!(response.get("provider").unwrap(), HEURISTIC_PROVIDER_ID);
+    }
+
+    /// What this catches: `open` falls back to the shared `AdapterRegistry`
+    /// when the provider is absent from the module's local map — the
+    /// realization that lets production opens resolve adapters registered
+    /// elsewhere in the system (#162 `get_arc`). The module here registers
+    /// NOTHING locally; the adapter lives only in the global registry.
+    /// Without the fallback this open would 404.
+    #[tokio::test]
+    async fn open_resolves_via_shared_registry_when_absent_from_local_map() {
+        // Register the heuristic adapter in the SHARED registry only.
+        // get_arc(HEURISTIC_PROVIDER_ID) is robust to a prior test having
+        // already registered it — either way it resolves to Some.
+        crate::modules::ai_provider::global_registry()
+            .write()
+            .await
+            .register(
+                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+                0,
+            );
+        let m = bare_coordinator_module();
+        let (_handle, opened) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("open must resolve the provider via the shared AdapterRegistry fallback");
+        assert_eq!(opened.provider, HEURISTIC_PROVIDER_ID);
     }
 
     #[tokio::test]
@@ -780,14 +952,8 @@ mod tests {
         let handle = opened_handle.clone();
         // Generate twice — same handle, two responses (increments
         // generation_count to 2).
-        let r1 = m
-            .generate(handle.clone(), empty_request())
-            .await
-            .unwrap();
-        let r2 = m
-            .generate(handle.clone(), empty_request())
-            .await
-            .unwrap();
+        let r1 = m.generate(handle.clone(), empty_request()).await.unwrap();
+        let r2 = m.generate(handle.clone(), empty_request()).await.unwrap();
         // Same prompt → same response (determinism contract).
         assert_eq!(r1.text, r2.text);
         // Inspect sees 2 generations.

@@ -7,15 +7,23 @@
 //! everywhere.
 
 pub mod airc_ipc;
+pub mod attach;
 pub mod command;
 pub mod connection;
 pub mod error;
 pub mod event;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod mock;
+pub mod session;
 pub mod transport;
 
 pub use airc_ipc::AircIpcTransport;
+pub use attach::{attach_local_substrate, SubstrateAttachment};
 pub use command::CommandClient;
 pub use connection::Connection;
 pub use error::ClientError;
 pub use event::EventSubscriber;
-pub use transport::Transport;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use mock::MockTransport;
+pub use session::SessionIdentity;
+pub use transport::{ServeHandler, Transport};

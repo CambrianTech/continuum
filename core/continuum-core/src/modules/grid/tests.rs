@@ -17,16 +17,21 @@ mod tailscale_transport_integration {
     use std::sync::Arc;
 
     /// Find a free port by binding to port 0.
-    async fn free_port() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
+    /// Bind-to-0 then ask the transport what the OS assigned — the probe-then-
+    /// rebind `free_port()` this replaces was a TOCTOU race: a port measured free
+    /// can be taken before the transport re-binds it (CI 2026-08-23, `Address
+    /// already in use` on a busy runner). regression for PR #2389's flake.
+    async fn started_server() -> (Arc<TailscaleTransport>, u16) {
+        let server = Arc::new(TailscaleTransport::new(0));
+        server.start_with_ip("127.0.0.1").await.unwrap();
+        let port = server.bound_port();
+        assert_ne!(port, 0, "bind must adopt the OS-assigned port");
+        (server, port)
     }
 
     #[tokio::test]
     async fn test_tcp_connect_and_send_frame() {
-        let port = free_port().await;
-        let server = Arc::new(TailscaleTransport::new(port));
-        server.start_with_ip("127.0.0.1").await.unwrap();
+        let (server, port) = started_server().await;
 
         // Spawn server accept loop
         let server_clone = server.clone();
@@ -89,9 +94,7 @@ mod tailscale_transport_integration {
 
     #[tokio::test]
     async fn test_multiple_frames_on_same_connection() {
-        let port = free_port().await;
-        let server = Arc::new(TailscaleTransport::new(port));
-        server.start_with_ip("127.0.0.1").await.unwrap();
+        let (server, port) = started_server().await;
 
         let server_clone = server.clone();
         let server_task = tokio::spawn(async move {
@@ -140,9 +143,7 @@ mod tailscale_transport_integration {
 
     #[tokio::test]
     async fn test_large_frame_payload() {
-        let port = free_port().await;
-        let server = Arc::new(TailscaleTransport::new(port));
-        server.start_with_ip("127.0.0.1").await.unwrap();
+        let (server, port) = started_server().await;
 
         let server_clone = server.clone();
         let server_task = tokio::spawn(async move {
@@ -187,9 +188,7 @@ mod tailscale_transport_integration {
 
     #[tokio::test]
     async fn test_event_frame_roundtrip() {
-        let port = free_port().await;
-        let server = Arc::new(TailscaleTransport::new(port));
-        server.start_with_ip("127.0.0.1").await.unwrap();
+        let (server, port) = started_server().await;
 
         let server_clone = server.clone();
         let server_task = tokio::spawn(async move {
@@ -259,9 +258,7 @@ mod tailscale_transport_integration {
 
     #[tokio::test]
     async fn test_multiple_clients_to_same_server() {
-        let port = free_port().await;
-        let server = Arc::new(TailscaleTransport::new(port));
-        server.start_with_ip("127.0.0.1").await.unwrap();
+        let (server, port) = started_server().await;
 
         // Spawn server that accepts 3 connections
         let server_clone = server.clone();
@@ -419,6 +416,15 @@ mod registry_integration {
                 trust_level: TrustLevel::Owner,
                 last_seen: 1000000,
                 latency_ms: Some(47),
+                peer_id: None,
+                build_sha: None,
+                build_number: 0,
+                served_model: None,
+                lanes: 0,
+                residents: 0,
+                silent_secs: 0,
+                stale: false,
+                behind: false,
             });
             registry.save_to_disk().unwrap();
         }
@@ -453,6 +459,15 @@ mod registry_integration {
             trust_level: TrustLevel::Trusted,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         // Storage node
@@ -466,6 +481,15 @@ mod registry_integration {
             trust_level: TrustLevel::Trusted,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         let compute_nodes = registry.nodes_with_capability("compute");
@@ -495,6 +519,15 @@ mod registry_integration {
             trust_level: TrustLevel::Blocked,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         assert_eq!(
@@ -529,6 +562,15 @@ mod registry_integration {
             trust_level: TrustLevel::Blocked,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         assert!(registry.get("removeme").is_some());
@@ -626,6 +668,15 @@ mod router_integration {
                 .unwrap()
                 .as_millis() as u64,
             latency_ms: Some(47),
+            peer_id: None,
+            build_sha: None,
+            build_number: 0,
+            served_model: None,
+            lanes: 0,
+            residents: 0,
+            silent_secs: 0,
+            stale: false,
+            behind: false,
         });
 
         // Router: Mac with no GPU

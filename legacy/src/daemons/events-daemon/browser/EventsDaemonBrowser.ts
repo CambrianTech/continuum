@@ -1,0 +1,100 @@
+/**
+ * Events Daemon - Browser Implementation
+ * 
+ * Handles cross-context event bridging in browser environment
+ * and bridges JTAG events to DOM events for widget consumption
+ */
+
+import { EventsDaemon } from '../shared/EventsDaemon';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
+import { Events } from '../../../system/core/shared/Events';
+import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
+import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
+import { domInterestRegistry } from '../../../widgets/shared/services/DOMInterestRegistry';
+
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
+
+// EventBridge metadata structure for better type safety
+interface EventBridgeMetadata {
+  __JTAG_BRIDGED__?: boolean;
+  __JTAG_ORIGINAL_CONTEXT__?: string;
+  __JTAG_BRIDGE_TIMESTAMP__?: string;
+  __JTAG_BRIDGE_HOP_COUNT__?: number;
+  message?: unknown;
+}
+
+export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscriptionProvider {
+  protected eventManager = new EventManager();
+  private subscriptionManager = new EventSubscriptionManager();
+
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
+  }
+
+  /**
+   * Get subscription manager for unified event subscriptions
+   * Exposed to JTAGClient.daemons.events interface
+   */
+  public getSubscriptionManager(): EventSubscriptionManager {
+    return this.subscriptionManager;
+  }
+
+  /**
+   * Check if anything has registered DOM interest for this event name.
+   * Checks both:
+   * - Events.domInterest (populated by Events.subscribe() in browser)
+   * - domInterestRegistry (populated by BaseWidget/WidgetEventServiceBrowser — daemon-free)
+   * Uses prefix matching: 'data:chat_messages' matches 'data:chat_messages:created'.
+   */
+  private hasDOMInterest(eventName: string): boolean {
+    // Direct match in either registry
+    if (Events.domInterest.has(eventName)) return true;
+    if (domInterestRegistry.has(eventName)) return true;
+
+    // Prefix match against both registries
+    for (const interest of Events.domInterest) {
+      if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
+    }
+    for (const interest of domInterestRegistry.eventNames()) {
+      if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Handle local event bridging — deliver cross-context events to browser subscribers.
+   *
+   * Two delivery mechanisms:
+   * 1. Events.checkWildcardSubscriptions — triggers wildcard/elegant/exact-match callbacks
+   * 2. DOM CustomEvent — triggers document.addEventListener callbacks (from Events.subscribe)
+   */
+  protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
+    // 1. Trigger pattern-matched subscriptions (wildcard, elegant, exact-match)
+    try {
+      Events.checkWildcardSubscriptions(eventName, eventData);
+    } catch (error) {
+      console.error('Failed to check wildcard subscriptions:', error);
+    }
+
+    // 2. DOM dispatch — ONLY if a widget registered interest for this event namespace
+    if (this.hasDOMInterest(eventName)) {
+      if (typeof globalThis !== 'undefined' && 'document' in globalThis) {
+        const domEvent = new CustomEvent(eventName, { detail: eventData });
+        (globalThis as typeof globalThis & { document: Document }).document.dispatchEvent(domEvent);
+      }
+    }
+  }
+
+  /**
+   * Emit a generic entity event to trigger DOM events for widgets
+   * Architecture-compliant: Works with any BaseEntity, not specific types
+   */
+  public emitEntityEvent<T extends BaseEntity>(eventName: string, entity: T): void {
+    this.eventManager.events.emit(eventName, { entity });
+    verbose() && console.log(`🔄 EventsDaemonBrowser: Emitted ${eventName} event for ${entity.collection}/${entity.id}`);
+  }
+}

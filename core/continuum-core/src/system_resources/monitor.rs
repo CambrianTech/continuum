@@ -10,12 +10,14 @@
 //! The TypeScript ResourcePressureWatcher calls refresh() on its adaptive
 //! polling interval — same pattern as GpuPressureWatcher polling gpuPressure().
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sysinfo::{ProcessesToUpdate, System};
 use ts_rs::TS;
+
+use crate::gpu::monitor::{GpuMonitor, GpuSnapshot};
 
 // =============================================================================
 // Types (ts-rs exported)
@@ -39,7 +41,10 @@ pub struct CpuStats {
 
 /// Memory statistics snapshot.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/MemoryStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/MemoryStats.ts"
+)]
 pub struct MemoryStats {
     /// Total physical RAM in bytes
     #[ts(type = "number")]
@@ -62,7 +67,10 @@ pub struct MemoryStats {
 
 /// A single process's resource usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/TopProcess.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/TopProcess.ts"
+)]
 pub struct TopProcess {
     /// Process ID
     pub pid: u32,
@@ -77,7 +85,10 @@ pub struct TopProcess {
 
 /// Top processes by resource usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/ProcessStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ProcessStats.ts"
+)]
 pub struct ProcessStats {
     /// Top N processes by CPU usage
     pub top_by_cpu: Vec<TopProcess>,
@@ -96,6 +107,19 @@ pub struct SystemResourceSnapshot {
     pub cpu: CpuStats,
     /// Memory statistics
     pub memory: MemoryStats,
+    /// Live GPU device stats (device-wide `used = total_bytes - free_bytes`,
+    /// the same system-wide framing as cpu/memory). `None` on a host with no
+    /// live `GpuMonitor` attached — sourced from the ONE already-detected
+    /// monitor (`gpu::monitor::detect()`), never a second probe. The Positron
+    /// SYS gauge reads this next to cpu+mem.
+    #[ts(optional)]
+    pub gpu: Option<GpuSnapshot>,
+    /// The volume holding the substrate's home — pressure tier, bytes, and every
+    /// tracked cache class the disk reporters weighed. `None` only before the disk
+    /// monitor's first poll. Added 2026-09-18: the 5090 sat at 0 bytes free reading
+    /// `Normal` and no command surface could have shown it.
+    #[ts(optional)]
+    pub disk: Option<super::DiskPressureSnapshot>,
     /// Top processes (optional, only when requested)
     #[ts(optional)]
     pub processes: Option<ProcessStats>,
@@ -125,6 +149,12 @@ struct MonitorInner {
     cpu: CpuStats,
     /// Cached memory stats
     memory: MemoryStats,
+    /// The ONE already-detected live GPU monitor, injected via
+    /// [`SystemResourceMonitor::attach_gpu_monitor`] at the IPC boot site.
+    /// `snapshot()` on it reads cached atomics (no nvidia-smi on the hot
+    /// path). `None` until attached (e.g. the `system/*` command scaffolds
+    /// and tests that build a bare monitor).
+    gpu: Option<Arc<dyn GpuMonitor>>,
     /// Last refresh timestamp
     last_refresh_ms: u64,
     /// Whether processes have been refreshed at least once (needed for CPU delta baseline)
@@ -171,10 +201,34 @@ impl SystemResourceMonitor {
                 system,
                 cpu,
                 memory,
+                gpu: None,
                 last_refresh_ms: now_ms(),
                 processes_baselined: false,
             }),
         }
+    }
+
+    /// Attach the ONE already-detected live GPU monitor so every snapshot
+    /// carries device-wide GPU stats next to cpu+mem. Called once at the IPC
+    /// boot site with the SAME `Arc<dyn GpuMonitor>` that feeds the resource
+    /// governor — never a second `gpu::monitor::detect()` (which would spawn a
+    /// second nvidia-smi sampling daemon). No-op-safe to call more than once;
+    /// last attachment wins.
+    pub fn attach_gpu_monitor(&self, monitor: Arc<dyn GpuMonitor>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.gpu = Some(monitor);
+        }
+    }
+
+    /// The attached GPU's memory topology — `Unified` (one pool: what the engine
+    /// holds on-device IS host RAM) or `Discrete` (VRAM is its own pool: weights and
+    /// KV on the card cost host RAM nothing). `None` when no GPU is attached (CPU
+    /// serving: everything is host-resident, the unified arithmetic applies).
+    pub fn gpu_memory_mode(&self) -> Option<crate::gpu::monitor::MemoryMode> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.gpu.as_ref().map(|g| g.memory_mode()))
     }
 
     /// Refresh all readings. Call this from the TypeScript watcher on each poll.
@@ -197,6 +251,8 @@ impl SystemResourceMonitor {
             SystemResourceSnapshot {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
+                gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: None,
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -244,6 +300,8 @@ impl SystemResourceMonitor {
             SystemResourceSnapshot {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
+                gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: Some(processes),
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -288,6 +346,8 @@ impl SystemResourceMonitor {
             SystemResourceSnapshot {
                 cpu: inner.cpu.clone(),
                 memory: inner.memory.clone(),
+                gpu: inner.gpu.as_ref().map(|m| m.snapshot()),
+                disk: super::DiskPressureMonitor::current_snapshot(),
                 processes: None,
                 timestamp_ms: inner.last_refresh_ms,
                 uptime_seconds: System::uptime(),
@@ -309,6 +369,8 @@ impl SystemResourceMonitor {
                     swap_total_bytes: 0,
                     swap_used_bytes: 0,
                 },
+                gpu: None,
+                disk: None,
                 processes: None,
                 timestamp_ms: 0,
                 uptime_seconds: 0,

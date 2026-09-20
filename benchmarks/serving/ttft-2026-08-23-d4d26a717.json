@@ -1,0 +1,30 @@
+{
+  "streams": 215,
+  "window_start_ms": 1787457452840,
+  "window_end_ms": 1787468191060,
+  "ttft_s": {
+    "median": 1.25,
+    "p95": 25.04,
+    "worst": 66.94
+  },
+  "kv_reuse": {
+    "aggregate_pct": 33.9,
+    "median_stream_pct": 7.4,
+    "tokens_total": 1530825,
+    "tokens_from_cache": 519655
+  },
+  "ingest_tok_per_s": {
+    "median": 664,
+    "p95": 868.0
+  },
+  "zero_reuse_equivalent_ttft_s": {
+    "median": 1.39,
+    "worst": 80.84
+  },
+  "prompt_tokens": {
+    "median": 1121,
+    "max": 38208
+  },
+  "git_serving_build": "d4d26a717",
+  "note": "TRUE single-build window (deploy-verified 22:57 -> next deploy 01:57 local): hard-rs Take 3 (6/8 recorded) + Atlas SWE round + fluid-sim Take 1; 4 lanes @ 74k... CHECK: window may still be the 163k plan for part; conditions=multi-workload contention, M5 64GB, Ornith-1.5-35B-A3B Q4_K_M"
+}

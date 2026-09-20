@@ -26,6 +26,15 @@ roomId?: string,
  */
 afterMessageId?: string, 
 /**
+ * Anchor message for BACKWARD pagination — the scroll-back cursor.
+ * When set, return the `limit` messages strictly BEFORE this
+ * message's timestamp (still delivered in chronological order).
+ * The endless-scroll loop: render the live tail, then keep passing
+ * the OLDEST id on screen to page history out of durable storage.
+ * Mutually exclusive with `after_message_id`.
+ */
+beforeMessageId?: string, 
+/**
  * Max number of messages to return. Defaults to 50 if the caller
  * omits it.
  */

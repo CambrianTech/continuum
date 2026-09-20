@@ -1,28 +1,47 @@
-//! CommandExecutor — Universal command execution for ALL continuum-core processes
+//! CommandExecutor — universal command execution for substrate-internal callers
 //!
-//! This is the foundational primitive that allows ANY spawned task (sentinels,
-//! background jobs, etc.) to execute ANY command in the system, regardless of
-//! whether it's implemented in Rust or TypeScript.
+//! Foundational primitive that lets any spawned task (sentinels, persona
+//! loops, background jobs) dispatch any command in the substrate. The
+//! implicit dispatch chain is **Rust-only** per `[[no-fallbacks-ever]]`
+//! (task #219). Commands that have no Rust handler produce a typed
+//! `CommandNotFound` error — there is no silent fallthrough to a TS
+//! host.
 //!
 //! Usage:
 //! ```rust
-//! // Works for Rust modules
+//! // Implicit dispatch — Rust modules + interceptors only.
+//! // Unknown commands return Err("no Rust module handles command: ...").
 //! runtime::execute_command_json("health-check", json!({})).await?;
 //!
-//! // Works for TypeScript commands (via CommandRouterServer)
-//! runtime::execute_command_json("screenshot", json!({"querySelector": "body"})).await?;
-//!
-//! // Sentinel doesn't know or care where command is implemented
+//! // Explicit TS-bridge dispatch — for the ~6 documented TS-only call
+//! // sites that knowingly target a TypeScript handler.
+//! // executor.execute_ts_json("ai/agent", params).await?;
 //! ```
 //!
 //! Architecture:
-//! - Rust modules: Routed directly through ModuleRegistry
-//! - TypeScript commands: Routed via Unix socket to CommandRouterServer
-//!   (socket: /tmp/jtag-command-router.sock)
+//! - Implicit chain: interceptors (airc, grid, ...) → Rust module
+//!   registry → typed `CommandNotFound` error. Substrate-internal.
+//! - Explicit TS bridge: `execute_ts` / `execute_ts_json` public
+//!   methods over Unix socket `/tmp/jtag-command-router.sock`. Used
+//!   only by the documented TS-only call sites (sentinel steps, grid
+//!   connection retry, ai_provider cloud-adapter fallthrough).
+//!
+//! Per `[[rust-is-the-core-node-is-the-shell]]`: substrate dispatch
+//! ends at the Rust registry. TS is an explicit-API destination, not
+//! a silent dependency.
 
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+// The TS CommandRouterServer is reached over a Unix-domain socket. On Windows
+// there is no Unix socket; alias to TcpStream so the TS-bridge path compiles
+// unchanged. `connect()` to the filesystem-path socket then fails gracefully at
+// runtime. BEHAVIORAL GAP: the explicit TS-bridge (`execute_ts*`) is
+// unavailable on Windows until a TCP endpoint is wired; the Rust dispatch chain
+// (the primary path) is unaffected.
+#[cfg(windows)]
+use tokio::net::TcpStream as UnixStream;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tracing::Instrument;
 
@@ -57,20 +76,33 @@ const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 ///    `command_prefixes` include this command. If found, the module's
 ///    `handle_command` runs locally.
 ///
-/// 3. **TypeScript via Unix socket**. If no Rust module owns the
-///    command, fall through to the existing `CommandRouterServer` IPC
-///    bridge. This preserves backwards compatibility with every
-///    TS-implemented command in `src/commands/`.
+/// 3. **No silent TS fallthrough.** If no Rust module owns the command,
+///    `execute_inner` returns a typed `Err` naming the missing command.
+///    Per `[[no-fallbacks-ever]]` + `[[rust-is-the-core-node-is-the-shell]]`:
+///    a substrate that silently routes unmigrated commands to a TS
+///    bridge appears "broken in headless mode" the day someone forgets
+///    to bring up `CommandRouterServer`, when the real bug was the
+///    silent dependency. Callers that EXPLICITLY want the TS bridge
+///    use [`Self::execute_ts`] / [`Self::execute_ts_json`] — those
+///    public methods stay live for the handful of remaining TS-only
+///    call sites (sentinel steps, grid retry, ai_provider TS
+///    fallthrough for unmigrated cloud adapters). The implicit chain
+///    is Rust-only.
 ///
 /// The chain is the same primitive for every transport: local Rust,
-/// remote Rust over grid, remote Rust over airc, TS over IPC. Adding a
-/// transport is adding an interceptor; no kernel changes needed.
+/// remote Rust over grid, remote Rust over airc. Adding a transport is
+/// adding an interceptor; no kernel changes needed. Adding a "fallback
+/// to other transports" is forbidden.
 pub struct CommandExecutor {
     /// Rust module registry (for Rust-implemented commands).
     registry: Arc<ModuleRegistry>,
     /// Interceptor chain. Tried in insertion order BEFORE local
     /// dispatch. First interceptor to return Handled wins.
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
+    ///
+    /// SHARED with the runtime's socket route (`Runtime::interceptor_chain`) so a
+    /// registered interceptor applies on every route into the node, not only
+    /// in-process calls (card 506a388c).
+    interceptors: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
     /// Optional message bus. When wired, every `execute()` emits a
     /// `command:completed` event after the dispatch settles
     /// (success or error). `None` in test fixtures + back-compat
@@ -106,7 +138,7 @@ impl CommandExecutor {
     pub fn new(registry: Arc<ModuleRegistry>) -> Self {
         Self {
             registry,
-            interceptors: Vec::new(),
+            interceptors: Arc::new(std::sync::RwLock::new(Vec::new())),
             bus: None,
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
@@ -140,8 +172,22 @@ impl CommandExecutor {
     ///
     /// Default global wire order (in `init_executor`): `[airc, grid]`.
     /// Tests and one-off bin tools can build their own chain.
-    pub fn with_interceptor(mut self, interceptor: Arc<dyn CommandInterceptor>) -> Self {
-        self.interceptors.push(interceptor);
+    pub fn with_interceptor(self, interceptor: Arc<dyn CommandInterceptor>) -> Self {
+        self.interceptors
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; keep appending
+            .push(interceptor);
+        self
+    }
+
+    /// Share ONE interceptor chain with the runtime's socket route
+    /// ([`super::Runtime::interceptor_chain`]) — the compression that ends the
+    /// "half the contract on each dispatcher" split (card 506a388c).
+    pub fn with_interceptor_chain(
+        mut self,
+        chain: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
+    ) -> Self {
+        self.interceptors = chain;
         self
     }
 
@@ -162,7 +208,10 @@ impl CommandExecutor {
     /// path. Useful for asserting the wire order in tests and for the
     /// `kernel/health` command to surface the chain depth.
     pub fn interceptor_count(&self) -> usize {
-        self.interceptors.len()
+        self.interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; count it
+            .len()
     }
 
     /// Whether the executor has a message bus wired (and will emit
@@ -170,6 +219,19 @@ impl CommandExecutor {
     /// use it to verify wiring.
     pub fn has_message_bus(&self) -> bool {
         self.bus.is_some()
+    }
+
+    /// The wired message bus, if any. The Events primitive the executor
+    /// composes with Commands at dispatch. Ingress-adjacent subscribers
+    /// that need the live event stream (e.g. the positron chat
+    /// projection in `ipc::positron_source`, which subscribes to
+    /// `chat:*`/`presence:*` and stores the projected view into the
+    /// thin-client `Substrate`) take a clone through this accessor
+    /// rather than reaching into the kernel's internals. `None` when no
+    /// bus is wired (headless test executors) — callers fail loud on
+    /// their own precondition rather than this defaulting a bus.
+    pub fn message_bus(&self) -> Option<Arc<MessageBus>> {
+        self.bus.clone()
     }
 
     /// Execute ANY command — walks the dispatch chain documented on the
@@ -220,8 +282,38 @@ impl CommandExecutor {
             command.path(),
             &outcome,
             start.elapsed().as_millis() as u64,
+            None, // synchronous: the caller holds the return value
         );
         outcome
+    }
+
+    /// Fire a command in the BACKGROUND: return a handle (UUID) immediately, run the
+    /// dispatch on a spawned task, and on completion emit `command:completed` carrying the
+    /// handle AND the result. A subscriber — e.g. a persona that sent a sentinel, a
+    /// compile, or a debugger away — matches the completion by handle and folds the outcome
+    /// in when it lands, never blocking the turn. This is the fire-and-poll shape (#86): the
+    /// caller does not await the work. The handle is reusable in a follow-up command
+    /// (cancel/query/attach), which is why it's a plain UUID ([[commands-are-agency-algs-are-pathways]]).
+    pub fn dispatch_background(
+        self: &std::sync::Arc<Self>,
+        command: impl Into<CommandUri>,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> uuid::Uuid {
+        let handle = uuid::Uuid::new_v4();
+        let command: CommandUri = command.into();
+        let this = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
+            this.emit_command_completed(
+                command.path(),
+                &outcome,
+                start.elapsed().as_millis() as u64,
+                Some(handle),
+            );
+        });
+        handle
     }
 
     /// Routing decision on a [`CommandUri`]. Local URIs go through the
@@ -329,7 +421,12 @@ impl CommandExecutor {
         // 1. Walk the interceptor chain. First Handle wins. Decline
         //    moves on. Err propagates immediately — no silent
         //    fallthrough, per the trait contract.
-        for interceptor in &self.interceptors {
+        let chain: Vec<Arc<dyn CommandInterceptor>> = self
+            .interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; read it
+            .clone();
+        for interceptor in &chain {
             match interceptor.try_route(command, &params, caller).await {
                 Ok(InterceptorOutcome::Handled(result)) => {
                     log.debug(&format!(
@@ -352,7 +449,24 @@ impl CommandExecutor {
             }
         }
 
-        // 2. Try the local Rust module registry.
+        // 2. Typed path wins: a registered DynCommand object routes DIRECTLY —
+        //    O(1) lock-free map lookup, no prefix scan, no per-module match arm.
+        //    A migrated command lives here and beats its module's legacy
+        //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
+        if let Some(cmd) = self.registry.route_object(command) {
+            log.debug(&format!(
+                "Routing '{}' to DynCommand object (typed path)",
+                command
+            ));
+            // Thread the gated caller into the command's Ctx — the SAME identity
+            // the policy gate just saw (persona / cross-grid airc sender), so the
+            // handler can gate/scope/compose by identity.
+            return super::runtime::dispatch_object_with_panic_guard(cmd, params, caller.cloned())
+                .await;
+        }
+
+        // 3. Fallback: prefix-routed local Rust module registry (un-migrated
+        //    commands still flow through the module's handle_command match).
         if let Some((module, cmd)) = self.registry.route_command(command) {
             log.debug(&format!("Routing '{}' to local Rust module", command));
             let module_name = module.config().name;
@@ -364,13 +478,32 @@ impl CommandExecutor {
                 .await;
         }
 
-        // 3. Fall through to TypeScript via Unix socket.
-        log.debug(&format!(
-            "Routing '{}' to TypeScript via CommandRouterServer",
-            command
+        // 4. No DynCommand object and no Rust module owns this command.
+        //    Refuse to silently route to the TS bridge — that path was the
+        //    [[no-fallbacks-ever]] violation flagged as task #219. A
+        //    substrate that silently routes unmigrated commands to
+        //    `CommandRouterServer` appears "broken in headless mode"
+        //    the day the operator forgets to bring up the TS host,
+        //    when the real bug was the silent dependency. Surface a
+        //    typed `CommandNotFound` error naming the command + the
+        //    explicit escape hatch.
+        //
+        //    Callers that KNOW their command is TS-only use
+        //    `execute_ts_json` (or `execute_ts`) directly — those
+        //    public methods stay live for the documented TS-only
+        //    call sites.
+        log.warn(&format!(
+            "no Rust module handles command '{command}' — refusing silent TS fallthrough"
         ));
-        let json = self.execute_ts_command(command, params).await?;
-        Ok(CommandResult::Json(json))
+        Err(format!(
+            "no Rust module handles command: '{command}'. \
+             The implicit TS-bridge fallthrough is disabled per \
+             [[no-fallbacks-ever]]. If this command is intentionally \
+             implemented in TypeScript, the caller must invoke \
+             `CommandExecutor::execute_ts_json` (or `execute_ts`) \
+             explicitly. If this command should be in Rust, register a \
+             `ServiceModule` whose `command_prefixes` covers it."
+        ))
     }
 
     /// Publish a `command:completed` event on the bus (when wired).
@@ -381,15 +514,24 @@ impl CommandExecutor {
         command: &str,
         outcome: &Result<CommandResult, String>,
         duration_ms: u64,
+        handle: Option<uuid::Uuid>,
     ) {
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
+        // The result rides the event ONLY for a tracked background dispatch (handle set),
+        // so the dispatcher learns the outcome from the event itself — no second call. Sync
+        // commands stay thin: the caller already holds the return value.
+        let result = handle
+            .and(outcome.as_ref().ok())
+            .and_then(|r| r.to_json_value().ok());
         let event = CommandCompletedEvent {
             command_name: command.to_string(),
             duration_ms,
             success: outcome.is_ok(),
             error: outcome.as_ref().err().cloned(),
+            handle,
+            result,
         };
         match serde_json::to_value(&event) {
             Ok(payload) => bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),
@@ -530,135 +672,45 @@ impl CommandExecutor {
     }
 }
 
-// Global executor instance - initialized once at startup
-static GLOBAL_EXECUTOR: std::sync::OnceLock<Arc<CommandExecutor>> = std::sync::OnceLock::new();
-
-/// Initialize the global command executor with no interceptors.
-///
-/// Back-compat shim around [`init_executor_with_interceptors`] for
-/// callers that don't have transports to wire. Prefer the
-/// `_with_interceptors` form in production startup so commands can
-/// transparently route to remote peers via grid / airc / future
-/// transports.
-pub fn init_executor(registry: Arc<ModuleRegistry>) {
-    init_executor_with_interceptors(registry, Vec::new());
-}
-
-/// Initialize the global command executor with a wired interceptor
-/// chain.
-///
-/// Production startup (`ipc::start_server`) calls this with
-/// `[AircInterceptor, GridInterceptor]` so capability-based routing
-/// and explicit airc-targeted commands work transparently from any
-/// caller. The chain order is policy: the earlier an interceptor
-/// sits, the higher its priority (airc beats grid because explicit
-/// peer targets shouldn't be overridden by grid's capability heuristic).
-///
-/// Idempotent: only the first call wins (per the underlying
-/// `OnceLock`). A subsequent call is silently a no-op — useful for
-/// test fixtures that may try to init multiple times but should
-/// preserve the production wiring.
-pub fn init_executor_with_interceptors(
-    registry: Arc<ModuleRegistry>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-) {
-    init_executor_full(registry, interceptors, None);
-}
-
-/// Initialize the global executor with interceptors AND a wired
-/// message bus, so every dispatch emits a `command:completed` event.
-///
-/// Production startup should prefer this form — the event stream is
-/// what lets the persona autonomous loop stay reactive (per RTOS
-/// doctrine) instead of poll-blocking on `code/shell/watch` style
-/// surfaces. See
-/// [docs/planning/PERSONA-AS-DEVELOPER-GAP.md](../../../../../docs/planning/PERSONA-AS-DEVELOPER-GAP.md)
-/// Priority 3.
-pub fn init_executor_with_bus_and_interceptors(
-    registry: Arc<ModuleRegistry>,
-    bus: Arc<MessageBus>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-) {
-    init_executor_full(registry, interceptors, Some(bus));
-}
-
-/// Internal: full init taking optional bus. Single OnceLock-set call
-/// path so production + back-compat paths share one source of truth.
-fn init_executor_full(
-    registry: Arc<ModuleRegistry>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-    bus: Option<Arc<MessageBus>>,
-) {
-    let log = super::logger("command-executor");
-    let interceptor_count = interceptors.len();
-    let has_bus = bus.is_some();
-    let mut executor = CommandExecutor::new(registry);
-    for interceptor in interceptors {
-        executor = executor.with_interceptor(interceptor);
-    }
-    if let Some(b) = bus {
-        executor = executor.with_message_bus(b);
-    }
-    let _ = GLOBAL_EXECUTOR.set(Arc::new(executor));
-    log.info(&format!(
-        "Initialized with {} interceptor(s), bus={} (TS bridge: {})",
-        interceptor_count, has_bus, TS_COMMAND_SOCKET
-    ));
-}
-
-/// Get the global command executor
-/// Panics if not initialized - this is intentional, executor MUST be initialized at startup
-pub fn executor() -> Arc<CommandExecutor> {
-    GLOBAL_EXECUTOR
-        .get()
-        .expect("CommandExecutor not initialized - call init_executor() at startup")
-        .clone()
-}
-
-/// Execute a command from anywhere, returning CommandResult
-///
-/// Usage:
-/// ```ignore
-/// use crate::runtime::command_executor;
-/// use crate::routing::CommandUri;
-///
-/// let result = command_executor::execute(
-///     CommandUri::local("code/edit"),
-///     params,
-/// ).await?;
-/// ```
-pub async fn execute(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<CommandResult, String> {
-    executor().execute(command, params).await
-}
-
-/// Execute a command and extract JSON result (convenience for most use cases)
-pub async fn execute_json(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<Value, String> {
-    executor().execute_json(command, params).await
-}
-
-/// Execute a command ONLY via TypeScript, bypassing Rust registry.
-/// Use when a Rust module needs to forward to a TypeScript command
-/// that shares the same prefix (e.g., ai_provider forwarding ai/agent).
-pub async fn execute_ts(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<CommandResult, String> {
-    executor().execute_ts(command, params).await
-}
-
-/// Execute via TypeScript only and extract JSON (convenience)
-pub async fn execute_ts_json(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<Value, String> {
-    executor().execute_ts_json(command, params).await
-}
+// GLOBAL_EXECUTOR + init_executor* + executor() + execute_command* +
+// execute_ts* free functions were deleted in task #224 — the
+// substrate refactor that eliminated the OnceLock + panicking
+// accessor pattern. Modules that need to dispatch commands now hold
+// an `Arc<CommandExecutor>` explicitly, installed at construction or
+// via `install_executor()` after the executor is built.
+//
+// The dispatch entry points still exist as METHODS on `CommandExecutor`
+// itself (`execute`, `execute_json`, `execute_ts`, `execute_ts_json`)
+// — see the impl block above. Production code calls
+// `self.executor.execute(...)` directly on its stored Arc instead of
+// the deleted free helpers.
+//
+// Why removed:
+//   - The global `OnceLock<Arc<CommandExecutor>>` made "is X
+//     initialized before Y" an unsolvable-by-types property. Today's
+//     PR #1568 round-1 BLOCK was caused by exactly this: eager
+//     `executor()` lookup at PIM construction panicked because
+//     `init_executor` ran 265 lines later in start_server.
+//   - `[[no-fallbacks-ever]]`: the panic accessor swapped for the
+//     correct shape, where the type system enforces "if you have
+//     `Arc<CommandExecutor>`, the executor exists."
+//   - `[[headless-success-is-personas-talking-over-airc]]`: the
+//     deleted `execute_ts*` free helpers were the silent-fallback
+//     into the legacy TS bridge for unmigrated commands. The
+//     `CommandExecutor::execute_ts*` methods remain (the bridge
+//     itself isn't dead yet) but every call site is now an explicit
+//     `executor.execute_ts(...)` — a legible smell that task #219's
+//     follow-up slices can pick off one command at a time.
+//
+// Construction pattern (see ipc/mod.rs::start_server):
+//   1. Build `Arc<ModuleRegistry>`
+//   2. Register every ServiceModule that DOESN'T need the executor
+//   3. Build `Arc<CommandExecutor>` with the registry + interceptors
+//   4. Register modules that need the executor, threading the Arc
+//      into their constructor (or call `install_executor()` on
+//      already-registered modules)
+//
+// Pure dependency injection. No global. No panic-if-uninitialized.
 
 #[cfg(test)]
 mod tests {
@@ -689,8 +741,8 @@ mod tests {
     #[test]
     fn with_interceptor_grows_chain_in_insertion_order() {
         let registry = Arc::new(ModuleRegistry::new());
-        let executor = CommandExecutor::new(registry)
-            .with_interceptor(Arc::new(AircInterceptor::new()));
+        let executor =
+            CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
         assert_eq!(
             executor.interceptor_count(),
             1,
@@ -746,6 +798,110 @@ mod tests {
         fn name(&self) -> &'static str {
             "always-handle"
         }
+    }
+
+    // what this catches: the TYPED PATH end-to-end through the REAL executor —
+    // `ping` (migrated to a DynCommand object via ActionCommand) dispatches all the
+    // way through CommandExecutor::execute, which consults the registry's object map
+    // (step 2) BEFORE any prefix routing, and returns the bare PingResult. This is
+    // the integration proof that the per-module match arm is gone for ping and the
+    // self-routing object map serves it. Pure headless Rust — no Node, no socket,
+    // no npm start.
+    #[tokio::test]
+    async fn ping_dispatches_through_executor_via_typed_object_path() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(crate::modules::health::HealthModule::new()));
+        let executor = CommandExecutor::new(registry);
+
+        let result = executor
+            .execute("ping", serde_json::json!({}))
+            .await
+            .expect("ping dispatches through the executor");
+        match result {
+            CommandResult::Json(v) => {
+                assert_eq!(v["ok"], true, "ping returned the bare PingResult");
+                assert!(
+                    v.get("success").is_none(),
+                    "Bare wire — no envelope wrapping on the typed path"
+                );
+            }
+            other => panic!("expected Json, got {other:?}"),
+        }
+    }
+
+    // what this catches: NO ESCALATION THROUGH COMPOSITION, via a REAL composing
+    // handler (not just the gate). `Composer` is an ActionCommand whose `run`
+    // composes a sub-command with `ctx.caller.clone()` — exactly the pattern a
+    // dep-holding command uses. Invoked as the local owner the sub-call passes the
+    // gate; invoked as an airc/Provisional caller the propagated identity is gated,
+    // so it CANNOT reach the Owner-only `data/delete`. This pins that identity flows
+    // through composition (and, by the same mechanism, across the grid), never
+    // escalating — the guarantee the COMMAND-ORGANIZATION doc claims.
+    #[tokio::test]
+    async fn composing_handler_propagates_ctx_caller_no_escalation() {
+        use crate::routing::{CallerIdentity, GridTrustAuthPolicy};
+        use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
+
+        #[derive(
+            Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
+        )]
+        struct NoParams {}
+        #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
+        struct Out {
+            forbidden: bool,
+        }
+
+        // A command that COMPOSES another, propagating its own caller (ctx.caller).
+        struct Composer {
+            exec: Arc<CommandExecutor>,
+        }
+        #[async_trait]
+        impl ActionCommand for Composer {
+            const NAME: &'static str = "test/composer";
+            type Params = NoParams;
+            type Output = Out;
+            async fn run(&self, ctx: &Ctx, _p: NoParams) -> Result<Out, CommandError> {
+                let r = self
+                    .exec
+                    .execute_with_caller(
+                        "data/delete",
+                        Value::Object(Default::default()),
+                        ctx.caller.clone(),
+                    )
+                    .await;
+                Ok(Out {
+                    forbidden: r
+                        .as_ref()
+                        .err()
+                        .map(|e| e.contains("forbidden"))
+                        .unwrap_or(false),
+                })
+            }
+        }
+
+        let registry = Arc::new(ModuleRegistry::new());
+        let exec = Arc::new(
+            CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())),
+        );
+        let composer = Composer { exec: exec.clone() };
+
+        // Composed as the local owner (ctx.caller None) → sub-call NOT gate-forbidden.
+        let owner = composer.run(&Ctx::default(), NoParams {}).await.unwrap();
+        assert!(
+            !owner.forbidden,
+            "owner composing data/delete is not forbidden"
+        );
+
+        // Composed as an airc/Provisional caller → identity propagated → FORBIDDEN.
+        let airc_ctx = Ctx {
+            caller: Some(CallerIdentity::airc(crate::identity::PeerId::new())),
+            ..Default::default()
+        };
+        let escalated = composer.run(&airc_ctx, NoParams {}).await.unwrap();
+        assert!(
+            escalated.forbidden,
+            "airc composing data/delete must be forbidden — handler propagated ctx.caller, no escalation"
+        );
     }
 
     #[tokio::test]
@@ -806,37 +962,40 @@ mod tests {
     #[tokio::test]
     async fn airc_interceptor_declines_when_no_airc_target_params() {
         // The airc interceptor at the head of the chain must NOT block
-        // existing local-Rust or TS commands that don't carry airc
-        // routing params. This is the back-compat guarantee that lets
-        // the airc interceptor be safely installed at init_executor.
+        // existing local-Rust commands that don't carry airc routing
+        // params. This is the back-compat guarantee that lets the airc
+        // interceptor be safely installed at init_executor.
         //
         // Without a registered Rust module for "test/cmd", the executor
-        // will fall through past the airc interceptor (Decline) past the
-        // registry (no match) and try to connect to the TS bridge,
-        // which fails in tests because the socket doesn't exist. That
-        // failure is expected: the test is asserting the airc
-        // interceptor did NOT short-circuit, NOT that TS dispatch works.
+        // walks the interceptor chain (airc Declines because no
+        // aircPeer in params), then the registry (no match), then
+        // returns CommandNotFound per [[no-fallbacks-ever]] (task #219).
+        // The test is asserting the airc interceptor did NOT
+        // short-circuit — the failure source MUST be the registry miss,
+        // NOT the airc interceptor.
         let registry = Arc::new(ModuleRegistry::new());
         let executor =
             CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
 
         let result = executor
-            .execute(
-                "test/cmd",
-                serde_json::json!({ "ordinaryParam": "value" }),
-            )
+            .execute("test/cmd", serde_json::json!({ "ordinaryParam": "value" }))
             .await;
 
-        // We expect the TS bridge connection to fail (no socket in tests).
-        // The IMPORTANT assertion is that the failure came from the TS
-        // bridge, NOT from the airc interceptor — proving the airc
-        // interceptor declined cleanly and the chain fell through.
-        let err = result.expect_err("TS bridge will fail in tests; that's OK");
+        // Failure must be the CommandNotFound shape (no Rust module),
+        // not the airc interceptor short-circuiting. The substring
+        // "no Rust module handles command" is the contract we depend on
+        // — if the airc interceptor had wrongly intercepted, the error
+        // would mention "airc" instead.
+        let err = result.expect_err("command has no Rust handler; expect typed error");
         assert!(
-            !err.contains("airc"),
-            "error must come from TS bridge fallthrough, not from airc \
-             interceptor — otherwise the airc interceptor incorrectly \
-             intercepted a non-airc command. err: {err}"
+            err.contains("no Rust module handles command"),
+            "error must come from registry miss (the no-fallbacks surface), \
+             not from airc interceptor. err: {err}"
+        );
+        assert!(
+            !err.contains("aircPeer") && !err.contains("airc interceptor"),
+            "error must NOT mention airc routing — proves the airc \
+             interceptor declined cleanly. err: {err}"
         );
     }
 
@@ -868,6 +1027,57 @@ mod tests {
         assert!(
             err.contains("peer-id"),
             "error must echo the target so the caller can correlate logs: {err}"
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // No-fallbacks contract (task #219)
+    // ════════════════════════════════════════════════════════════════
+
+    // what this catches: a command not handled by any interceptor and
+    // not registered in the Rust module registry returns a typed
+    // `CommandNotFound`-shaped error per [[no-fallbacks-ever]]. Pre-
+    // PR #1585 the executor silently routed to the TS bridge on
+    // `/tmp/jtag-command-router.sock`, which in headless mode
+    // surfaced as a cryptic "Failed to connect" error and in
+    // hybrid-host mode silently delegated to TS — both breaking the
+    // mental model. The fix: refuse the implicit fallthrough,
+    // surface a typed error that names the missing command and the
+    // explicit escape hatch (`execute_ts_json`).
+    #[tokio::test]
+    async fn unknown_command_returns_typed_no_fallback_error_not_ts_attempt() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry);
+
+        let err = executor
+            .execute("totally/made-up/command", Value::Null)
+            .await
+            .expect_err("unknown command must produce a typed error");
+
+        // Must NOT mention the TS socket or "CommandRouterServer" —
+        // those strings would prove the implicit fallthrough was
+        // still alive. Substring assertions over exact-string
+        // matches so we don't pin too tightly on phrasing.
+        assert!(
+            !err.contains("CommandRouterServer"),
+            "error must NOT attempt the TS fallthrough: {err}"
+        );
+        assert!(
+            !err.contains("/tmp/jtag-command-router.sock"),
+            "error must NOT mention the TS socket path: {err}"
+        );
+
+        // MUST name the missing command so operators know what to
+        // migrate or remove.
+        assert!(
+            err.contains("totally/made-up/command"),
+            "error must name the missing command: {err}"
+        );
+        // MUST point at the explicit escape hatch so a caller that
+        // genuinely meant to hit TS knows what method to call.
+        assert!(
+            err.contains("execute_ts_json") || err.contains("execute_ts"),
+            "error must point at the explicit TS-bridge API: {err}"
         );
     }
 
@@ -913,10 +1123,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -951,7 +1158,7 @@ mod tests {
         })
         .await
         .expect("expected a command:completed event within 2s");
-        serde_json::from_value(recv.payload).expect("event payload must parse")
+        serde_json::from_value((*recv.payload).clone()).expect("event payload must parse")
     }
 
     #[tokio::test]
@@ -983,6 +1190,49 @@ mod tests {
             event.duration_ms < 500,
             "trivial dispatch should be fast: {} ms",
             event.duration_ms
+        );
+        // A synchronous dispatch stays thin: no handle, no result on the event (the caller
+        // already holds the return value).
+        assert_eq!(
+            event.handle, None,
+            "sync command carries no dispatch handle"
+        );
+        assert_eq!(
+            event.result, None,
+            "sync command's result is not duplicated onto the event"
+        );
+    }
+
+    // what this catches: dispatch_background returns a handle IMMEDIATELY (fire-and-poll)
+    // and its completion event carries BOTH the handle and the result — so a subscriber
+    // (a persona that sent a sentinel away) matches the completion to its dispatch and
+    // folds the outcome in without a second call. This is the producer for the WM async
+    // recency channel.
+    #[tokio::test]
+    async fn dispatch_background_completion_carries_handle_and_result() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(CannedModule {
+            canned: Ok(serde_json::json!({ "built": true, "warnings": 0 })),
+        }));
+        let bus = Arc::new(MessageBus::new());
+        let mut rx = bus.receiver();
+        let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
+
+        // Fire in the background — returns a handle immediately, does not await the work.
+        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), None);
+
+        let event = next_command_completed(&mut rx).await;
+        assert_eq!(event.command_name, "canned/ping");
+        assert!(event.success);
+        assert_eq!(
+            event.handle,
+            Some(handle),
+            "completion carries the dispatch handle"
+        );
+        assert_eq!(
+            event.result,
+            Some(serde_json::json!({ "built": true, "warnings": 0 })),
+            "completion carries the result — no second call needed"
         );
     }
 
@@ -1025,19 +1275,18 @@ mod tests {
         assert!(!executor.has_message_bus(), "no bus wired");
 
         // Must succeed; no events emitted (nothing to subscribe to).
-        let r = executor
-            .execute("canned/ping", serde_json::json!({}))
-            .await;
+        let r = executor.execute("canned/ping", serde_json::json!({})).await;
         assert!(r.is_ok());
     }
 
     #[tokio::test]
-    async fn ts_bridge_failure_still_emits_completed_event() {
-        // When all 3 dispatch tiers fail (no interceptor handled,
-        // no Rust module registered, TS socket missing in tests) —
-        // the event should still emit with success=false + the TS
-        // connection error. Telemetry must cover every dispatch
-        // path's terminal state.
+    async fn no_rust_module_failure_still_emits_completed_event() {
+        // When all dispatch tiers fail (no interceptor handled, no
+        // Rust module registered, no implicit fallthrough per task
+        // #219) — the event should still emit with success=false +
+        // the typed CommandNotFound error. Telemetry must cover
+        // every dispatch path's terminal state, including the new
+        // no-fallback surface.
         let registry = Arc::new(ModuleRegistry::new());
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
@@ -1046,8 +1295,10 @@ mod tests {
         let err = executor
             .execute("nonexistent/command", serde_json::json!({}))
             .await
-            .expect_err("TS socket missing in tests");
-        // Don't assert specific TS error text; just confirm it's an Err.
+            .expect_err("unknown command produces typed error");
+        // Don't pin specific error text here; just confirm it's an
+        // Err. The dedicated `unknown_command_returns_typed_no_fallback_error_not_ts_attempt`
+        // test pins the exact contract.
         let _ = err;
 
         let event = next_command_completed(&mut rx).await;
@@ -1055,7 +1306,7 @@ mod tests {
         assert!(!event.success);
         assert!(
             event.error.is_some(),
-            "TS bridge failure path must populate error: {event:?}"
+            "no-fallback failure path must populate error: {event:?}"
         );
     }
 
@@ -1097,7 +1348,7 @@ mod tests {
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(event)) if event.name == COMMAND_COMPLETED_TOPIC => {
                     let parsed: CommandCompletedEvent =
-                        serde_json::from_value(event.payload).expect("payload parses");
+                        serde_json::from_value((*event.payload).clone()).expect("payload parses");
                     events.push(parsed);
                 }
                 Ok(Ok(_)) => continue, // unrelated event topic — skip
@@ -1216,17 +1467,19 @@ mod tests {
         let captured_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let captured_path_clone = captured_path.clone();
 
-        let transport = ClosureTransport::new("test-peer-transport", move |decision, _params| {
-            match &decision {
-                RouteDecision::Peer { path, .. } => {
-                    *captured_path_clone.lock().unwrap() = Some(path.clone());
-                    Ok(CommandResult::Json(serde_json::json!({
-                        "routed-through": "test-peer-transport",
-                    })))
-                }
-                other => panic!("expected Peer, got {other:?}"),
-            }
-        });
+        let transport =
+            ClosureTransport::new(
+                "test-peer-transport",
+                move |decision, _params| match &decision {
+                    RouteDecision::Peer { path, .. } => {
+                        *captured_path_clone.lock().unwrap() = Some(path.clone());
+                        Ok(CommandResult::Json(serde_json::json!({
+                            "routed-through": "test-peer-transport",
+                        })))
+                    }
+                    other => panic!("expected Peer, got {other:?}"),
+                },
+            );
 
         let registry = Arc::new(ModuleRegistry::new());
         let executor = CommandExecutor::new(registry).with_remote_transport(Arc::new(transport));

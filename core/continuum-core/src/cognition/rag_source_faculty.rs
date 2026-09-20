@@ -1,0 +1,1067 @@
+//! RagSourceFaculty — lifts ANY [`RagSource`] into a perception-tier [`Faculty`].
+//!
+//! ## Why this bridge exists (the elegance call)
+//!
+//! Before the Workspace brain, all grounding flowed through ONE pipeline: the
+//! [`RagSource`] trait (`deliver → RagDelivery`, budget-aware, paginated) — the
+//! roster (#1650), the room doctrine (#1651), the airc transcript, the engram
+//! store. The Workspace introduced a SECOND pipeline: the [`Faculty`] trait
+//! (`contribute → Contribution`, salience-scored, staged into attention). The
+//! gating cutover routes the participation [`Decision`] through the Workspace —
+//! so any grounding that is a `RagSource` but NOT a `Faculty` silently falls out
+//! of the live decision path. Roster + doctrine grounding, just landed, would go
+//! dark the moment the switch flips.
+//!
+//! Re-implementing each source as a bespoke faculty would be the slop move: a
+//! second place that reads airc presence, a second place that reads the doctrine
+//! — drift waiting to happen (the compression principle forbids it). Instead this
+//! is ONE adapter that lifts the WHOLE `RagSource` ecosystem into the Workspace:
+//! every reviewed source becomes a faculty for free, with no second source of
+//! truth. It is also the concrete first step of "broadcast == RAG context" (kill
+//! parallel allocators) — the two pipelines meet here at the seam.
+//!
+//! ## Migration tool, not permanent architecture
+//!
+//! The grid converged (M5/IntelMac/BigMama, 2026-06-17) on: `RagSource` answers
+//! **how to fetch grounding** (IO, budget, pagination, provenance); `Faculty`
+//! answers **how grounding competes for attention** (salience, phase, the bounded
+//! workspace). They are distinct concerns and coexist today — but the *end state*
+//! is full convergence: every source becomes a native `Faculty` whose
+//! `contribute()` returns its own salience, and this bridge is the **migration
+//! scaffolding** that ships grounding into the Workspace NOW (unblocking the
+//! gating cutover) without a big-bang rewrite. Deletion of `RagSource` is GATED
+//! on (a) every source honoring its salience floor as a native faculty and (b)
+//! `WorkspaceCaptureSink`/replay reaching parity with the mature
+//! `RagCaptureSink` + `Recording/ReplayRagSource` observability — never before.
+//! Recall is already converged: `RecallFaculty` is a *native* faculty (not a
+//! bridged `EngramSource`) because it closes the bidirectional rehearsal loop the
+//! one-way `RagSource` path never did.
+//!
+//! ## Salience POLICY — standing-framing vs retrieved (the load-bearing guard)
+//!
+//! A flat lift is a latent bug (BigMama): roster + doctrine are **standing
+//! framing** — always-present structural context, like the system prompt — and
+//! must NOT lose a budget fight to a high-cosine memory, or the persona forgets
+//! the room's own rules mid-turn. Engram + conversation are **retrieved** — they
+//! SHOULD compete on relevance. So the bridge carries a [`SaliencePolicy`]:
+//! standing-framing bids at a high floor the top-k arbiter never truncates;
+//! retrieved bids moderate and competes. The classification lives at the ASSEMBLY
+//! layer (who builds the cycle), NOT in `RagSource` — the source stays
+//! salience-free, no new coupling. In the converged end-state this policy is just
+//! what each native faculty's `contribute()` returns.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use uuid::Uuid;
+
+use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
+use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+
+/// Per-source grounding ceiling as a FRACTION of the LIVE served window — the
+/// per-source budget must SCALE with the window, never a baked constant (task
+/// #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]). A source
+/// fills up to this ceiling then self-truncates; the window-sized prompt packer
+/// downstream is the real bound, and standing framing carries a high salience floor
+/// so it is never the first thing dropped. So the ceiling should be GENEROUS: let
+/// the workspace map show its full layout, the work board show every card, the wall
+/// show the whole plan — "be more verbose as the budget allows" (Joel 2026-07-13).
+///
+/// The old fixed 4096 was the exact anti-pattern: it forced the board + map + roster
+/// + doctrine + wall to each squeeze into ~4k tokens whether the served window was
+/// 16k or 128k — starving a big model of the very grounding it could hold, and
+/// (worse) over-spending on a tiny 2k window. Sizing at `window / 4` gives ~4096 at
+/// the common 16k served window (preserving the tuned value that let each source
+/// breathe), grows so a 128k model holds its full board/map/roster, and shrinks
+/// honestly on a tight window — the packer still keeps the TOTAL ≤ window.
+// context-budget-exempt: a DENOMINATOR — this is already the window-relative pattern this test exists to enforce
+const GROUNDING_WINDOW_FRACTION: u32 = 4;
+
+/// The per-source grounding ceiling for a given LIVE served window. Floored at the
+/// substrate serving floor's share ([`MIN_SERVE_CTX`]/[`GROUNDING_WINDOW_FRACTION`])
+/// so a faculty built without a window (tests) still gets a sane ceiling derived
+/// from a substrate constant, never a fresh magic number.
+pub fn grounding_budget_for(served_window: u32) -> u32 {
+    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    (served_window / GROUNDING_WINDOW_FRACTION).max(MIN_SERVE_CTX / GROUNDING_WINDOW_FRACTION)
+}
+
+/// Salience floor for **standing framing** (roster, doctrine) — always-present
+/// structural context, like the system prompt. High enough that the top-k arbiter
+/// never truncates it under attention pressure: a persona must not forget the
+/// room's own rules because a high-cosine memory out-bid the doctrine this tick.
+/// NOT a caste/`@`-gate — it is "this framing always applies."
+const STANDING_FRAMING_SALIENCE: f32 = 0.9;
+
+/// Salience for **retrieved** grounding (engram, conversation) — turn-specific,
+/// SHOULD compete on relevance. Moderate so a strongly-relevant hit can rise and
+/// a weak one can be crowded out. (Native retrieval faculties like `RecallFaculty`
+/// already self-score by relevance; this is the bridge's bootstrap for retrieved
+/// sources that don't yet.)
+const RETRIEVED_SALIENCE: f32 = 0.5;
+
+/// How a bridged source's grounding competes for attention. Classified at the
+/// ASSEMBLY layer (whoever builds the cycle), never inside `RagSource` — the
+/// source stays salience-free (BigMama's separation-of-concerns). In the
+/// converged end-state this becomes what each native faculty's `contribute()`
+/// returns; here it is the bridge's bootstrap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SaliencePolicy {
+    /// Always-present structural context (roster, doctrine) — bids at the
+    /// [`STANDING_FRAMING_SALIENCE`] floor so attention pressure can't evict it.
+    StandingFraming,
+    /// Turn-specific grounding (engram, conversation) — bids at
+    /// [`RETRIEVED_SALIENCE`] and competes on relevance.
+    Retrieved,
+    /// Explicit fixed salience (tests / tuning / a learned signal).
+    Fixed(f32),
+}
+
+impl SaliencePolicy {
+    /// The salience a source under this policy bids.
+    fn salience(self) -> f32 {
+        match self {
+            SaliencePolicy::StandingFraming => STANDING_FRAMING_SALIENCE,
+            SaliencePolicy::Retrieved => RETRIEVED_SALIENCE,
+            SaliencePolicy::Fixed(s) => s.clamp(0.0, 1.0),
+        }
+    }
+}
+
+/// Wall-clock seam — injectable so tests are deterministic. ms since unix epoch,
+/// matching the `now_ms()` convention across cognition (and `RecallFaculty`).
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+fn wall_clock() -> Clock {
+    Arc::new(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    })
+}
+
+/// Adapts an [`Arc<dyn RagSource>`] to the [`Faculty`] trait. Perception tier
+/// (`reacts_to_broadcast() == false`): it bids the source's delivery as context
+/// in phase 1, so the deliberation faculty conditions on it in phase 2. The
+/// faculty's identity IS the source's identity (`FacultyId::Custom(source_id)`) —
+/// one name, one source of truth, traceable straight back to the source in every
+/// workspace trace.
+pub struct RagSourceFaculty {
+    persona_id: Uuid,
+    source: Arc<dyn RagSource>,
+    faculty_id: FacultyId,
+    salience: f32,
+    /// `true` for [`SaliencePolicy::StandingFraming`] sources (roster, doctrine,
+    /// map) — propagated onto the [`Contribution`] so the deliberation serializer
+    /// hoists this grounding into the cacheable KV-prefix region (standing framing
+    /// is "like the system prompt"; it belongs adjacent to it). Volatile retrieved
+    /// sources stay `false` and serialize last, nearest the generation point.
+    stable: bool,
+    /// Importance survives moving volatile grounding out of the system prefix.
+    standing_grounding: bool,
+    budget: u32,
+    clock: Clock,
+    /// `true` when the assembler registered this grounding as
+    /// [`Deferrability::ColdStartCritical`] — meaning its absence is a WRONG turn,
+    /// not merely an unenriched one. Only these are held to the loudness contract
+    /// below; a defer-tolerant source is ALLOWED to be quietly absent.
+    ///
+    /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
+    cold_start_critical: bool,
+    /// Consecutive ticks this source has delivered NOTHING, PER ROOM. See
+    /// [`Self::note_absence`] for why a counter exists at all.
+    ///
+    /// KEYED BY ROOM, because a grounding source answers for whatever room the
+    /// turn is in (`Workspace::room_id`). A single counter was the first version
+    /// and @Astra caught it on review of #3903: content in room B would have
+    /// closed — and reported the length of — room A's absence, and a citizen
+    /// alternating between a room that grounds and one that does not would have
+    /// produced a meaningless streak mixing both.
+    ///
+    /// Bounded by the rooms this persona actually takes turns in.
+    empty_streak: Mutex<super::bounded_room_ledger::BoundedRoomLedger<Uuid, u32>>,
+}
+
+impl RagSourceFaculty {
+    /// Wrap `source` as a perception faculty for `persona_id` under a
+    /// [`SaliencePolicy`] (standing-framing vs retrieved). The `FacultyId` is
+    /// derived from `source.source_id()` so the faculty and the source can never
+    /// disagree about their identity.
+    pub fn new(persona_id: Uuid, source: Arc<dyn RagSource>, policy: SaliencePolicy) -> Self {
+        let faculty_id = FacultyId::Custom(source.source_id().to_string());
+        Self {
+            persona_id,
+            source,
+            faculty_id,
+            salience: policy.salience(),
+            // Standing framing is session-stable by default; retrieved grounding
+            // is volatile. `with_volatile_content` overrides for framing whose
+            // BYTES mutate per turn (active-work, room-wall — convicted by
+            // debug/prompt-reuse 2026-08-22): importance keeps the floor,
+            // placement follows content stability.
+            stable: matches!(policy, SaliencePolicy::StandingFraming),
+            standing_grounding: matches!(policy, SaliencePolicy::StandingFraming),
+            // Floor default (derived from the substrate serving floor, not a magic
+            // number). Production overrides via `with_budget(grounding_budget_for(
+            // cfg.context_window))` so the ceiling tracks the LIVE served window.
+            budget: grounding_budget_for(crate::cognition::serving_plan::MIN_SERVE_CTX),
+            clock: wall_clock(),
+            // Not cold-start-critical until the assembler says so. The safe
+            // direction for a LOUDNESS contract is the opposite of the safe
+            // direction for a SCHEDULING one: over-declaring here would put every
+            // source's ordinary silence in the ledger, which is how a real signal
+            // gets buried ([[bounded-window-eviction-bug-class]]).
+            cold_start_critical: false,
+            empty_streak: Mutex::new(super::bounded_room_ledger::BoundedRoomLedger::new(
+                super::bounded_room_ledger::ROOMS_TRACKED,
+            )),
+        }
+    }
+
+    /// Declare that this grounding's absence is WRONG, not merely unenriched —
+    /// mirroring [`Deferrability::ColdStartCritical`] at the assembly layer.
+    ///
+    /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
+    pub fn cold_start_critical(mut self, critical: bool) -> Self {
+        self.cold_start_critical = critical;
+        self
+    }
+
+    /// Override the resolved salience directly (e.g. a learned signal) — escape
+    /// hatch past the policy default.
+    pub fn with_salience(mut self, salience: f32) -> Self {
+        self.salience = salience.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Override the per-tick token budget handed to the source.
+    pub fn with_budget(mut self, budget: u32) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Framing whose content mutates per turn: demote OUT of the stable tier
+    /// while keeping the StandingFraming salience floor (see `stable` field doc).
+    pub fn with_volatile_content(mut self, volatile: bool) -> Self {
+        if volatile {
+            self.stable = false;
+        }
+        self
+    }
+
+    /// Inject a deterministic clock (tests / replay).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Record that this source delivered NOTHING this tick, and say so when it is
+    /// a source whose absence is wrong.
+    ///
+    /// ## Why this exists (#3873)
+    ///
+    /// `room-doctrine` — the PARTICIPATION GATE, the lone source deliberately kept
+    /// synchronous because a cold-start `None` would let a persona speak in a room
+    /// it shouldn't — bid **0 times in 873 consecutive ticks over 11.7 h**, and
+    /// nothing anywhere noticed. `evicted=[]` on all 873 rows, so attention never
+    /// removed it: it simply never offered. The census that found it was looking
+    /// for something else.
+    ///
+    /// It was invisible because the abstain below is CORRECT and SILENT, and
+    /// because a second live path (`compose_for_turn`) carried the same content,
+    /// so the citizens were fine. A dead registration with a working spare stays
+    /// dead until the day the spare breaks too — which is exactly what happened to
+    /// the roster, whose spare was the SAME broken `Arc` (#3862, 662 abstains, a
+    /// citizen standing in a room seeing nobody).
+    ///
+    /// The whole point of the ColdStartCritical tier is that its absence is a
+    /// WRONG turn. So its absence must not be silent.
+    ///
+    /// ## Why a streak, and why powers of two
+    ///
+    /// A probe on EVERY empty tick would be 873 rows for one fact, and the fact
+    /// that matters is not "empty now" but "empty CONTINUOUSLY". Firing on the
+    /// 1st, 2nd, 4th, 8th … consecutive miss costs ~log2(n) rows — 10 rows across
+    /// those 873 ticks — and keeps both ends legible: the onset is in the ledger
+    /// immediately, and the duration is in the ledger without drowning it.
+    ///
+    /// Returns the streak length WHEN IT REPORTED, so the decision to report is
+    /// testable without standing up a tracing subscriber to watch for the probe.
+    fn note_absence(&self, room: Uuid) -> Option<u32> {
+        if !self.cold_start_critical {
+            return None;
+        }
+        let streak = {
+            // diagnostics-only bookkeeping; a poisoned lock must not take
+            // cognition down to protect a counter. No await is held here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            let c = g.entry_or(room, 0);
+            *c += 1;
+            *c
+        };
+        if streak.is_power_of_two() {
+            crate::probe!(
+                class = "rag.coldstart.absent",
+                source = self.source.source_id(),
+                persona_id = %self.persona_id,
+                room = %room,
+                consecutive_empty = streak,
+                "ColdStartCritical grounding delivered NOTHING and did not bid —                  this tier's absence is a WRONG turn, not an unenriched one. This                  faculty is generic over every RagSource and cannot say WHY: only                  the source knows, and only if it reports at all. Where one does                  (room-doctrine emits rag.doctrine.outcome), that row reflects its                  LAST EVALUATION, which need not be this tick — a cached delivery                  never reaches the source."
+            );
+            return Some(streak);
+        }
+        None
+    }
+
+    /// How long THIS room's current absence streak is. Test-visible so the live
+    /// `contribute` path can be asserted without reaching into the map.
+    #[cfg(test)]
+    fn streak_in(&self, room: Uuid) -> u32 {
+        self.empty_streak
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only, same as note_absence
+            .get(&room)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Record that this source delivered content, closing any absence streak.
+    ///
+    /// The restore row is not decoration: an absence with no end in the ledger is
+    /// indistinguishable from an absence still running when the census was taken,
+    /// and the streak length is the only place the DURATION is written down.
+    ///
+    /// Returns the closed streak's length when it reported one (same reason as
+    /// [`Self::note_absence`]).
+    fn note_presence(&self, room: Uuid) -> Option<u32> {
+        if !self.cold_start_critical {
+            return None;
+        }
+        let streak = {
+            // same contract as note_absence: recover the guard, never panic here.
+            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            // `None` here is BOTH "never absent" and "evicted", and that is
+            // deliberate: announcing a recovery for a record that was merely
+            // dropped would be the same lie this whole change is about.
+            g.take(&room).unwrap_or(0)
+        };
+        if streak > 0 {
+            crate::probe!(
+                class = "rag.coldstart.restored",
+                source = self.source.source_id(),
+                persona_id = %self.persona_id,
+                room = %room,
+                was_empty_for = streak,
+                "ColdStartCritical grounding is bidding again"
+            );
+            return Some(streak);
+        }
+        None
+    }
+}
+
+#[async_trait]
+impl Faculty for RagSourceFaculty {
+    fn id(&self) -> FacultyId {
+        self.faculty_id.clone()
+    }
+
+    // Perception tier (default): grounding bids in phase 1 over the raw
+    // world-state, so the deliberation faculty reads it from the broadcast in
+    // phase 2. The grounding sources (roster, doctrine) read airc/substrate
+    // state, not the burst, so the bridge does not pass the world_state as a
+    // query; a future query-conditioned source would extend RagContext, not this
+    // seam.
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let now = (self.clock)();
+        // Thread the turn's CONTEXT (the WHERE axis — `Workspace::room_id`, the
+        // tick's contextId) into the delivery context, so room-scoped sources
+        // ground THE TURN'S room, never wherever they happened to be bound at
+        // build time. This is what keeps room A's kanban/roster/doctrine out of
+        // a turn in room B — and out of a synthetic context like the eval fork's
+        // nil room (the exam-bleed bug: stale board imperatives injected into a
+        // coding exam derailed agentically-trained models; glass-boxed live,
+        // Hermes-8B OURS 38% < RAW 52%). A nil room is deliberately threaded as
+        // Some(nil): it IS a context — one that is no room — so every room-bound
+        // source honestly mismatches and abstains. [[identity-context-session-three-axes]]
+        let ctx = RagContext::for_persona_in_room(self.persona_id, now, ws.room_id);
+        let delivery = self
+            .source
+            .deliver(&ctx, self.budget, ResolutionPreference::Raw)
+            .await;
+
+        // Empty delivery → abstain (the source had nothing, or degraded to empty
+        // per the good-citizen doctrine). No empty bid clutters the workspace.
+        if delivery.items.is_empty() {
+            let _ = self.note_absence(ws.room_id);
+            return None;
+        }
+        let _ = self.note_presence(ws.room_id);
+
+        // One context block per source: concatenate the delivered atomic units.
+        // The deliberation faculty renders this under a `[<source_id>]` header.
+        //
+        // The join is the RENDERING, not the loss of structure — the units ride
+        // along on the contribution as `parts` (below), so a block too large for
+        // the prompt budget can still contribute its leading units instead of
+        // vanishing whole. Flattening and DISCARDING the list is what made the
+        // work board structurally invisible: measured 2026-08-06, `room-kanban`
+        // was kept 0 / dropped 495 times, a median 5,364-token all-or-nothing
+        // offer against a median 55-token budget, while its first two units
+        // (~200 tokens) carried every fact a citizen needed to find work.
+        let units: Vec<String> = delivery.items.iter().map(|i| i.content.clone()).collect();
+        let content = units.join("\n");
+        let reasoning = format!(
+            "grounding from '{}' — {} item(s), {} tokens",
+            self.source.source_id(),
+            delivery.items.len(),
+            delivery.tokens_used
+        );
+
+        let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
+            .with_parts(units)
+            .with_expand_command(self.source.expand_command());
+        let c = if self.standing_grounding {
+            c.standing_grounding()
+        } else {
+            c
+        };
+        // Volatile-content grounding rides the TRAILING-turn mechanism (#205),
+        // never the system message. The volatile tier of the system context
+        // block was a half-measure: demoted out of the cacheable stable head,
+        // but still rendered BEFORE the entire conversation — so a kanban
+        // claim-flap or a workspace-map change (her own write!) re-prefilled
+        // every conversation token after it. Measured 2026-08-23 from her own
+        // captures on the MirrorCode round: workspace-map content changed
+        // act-over-act and live KV reuse pinned at 18-33% while acts paid
+        // ~35-45k re-prefill (~2 min) each. As a trailing turn the same churn
+        // costs exactly its own tokens.
+        Some(if self.stable {
+            c.session_stable()
+        } else {
+            c.trailing()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persona::rag_budget::{
+        ContinuationCursor, RagDelivery, RagItem, ResolutionPreference,
+    };
+    use std::sync::Mutex;
+
+    fn persona() -> Uuid {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000aaa").unwrap()
+    }
+
+    /// A stub RagSource that returns canned items and records the persona_id it
+    /// was delivered for (to prove the bridge passes scope through).
+    struct StubSource {
+        id: &'static str,
+        items: Vec<RagItem>,
+        seen_persona: Mutex<Option<Uuid>>,
+    }
+
+    impl StubSource {
+        fn new(id: &'static str, contents: &[&str]) -> Self {
+            let items = contents
+                .iter()
+                .map(|c| RagItem {
+                    content: c.to_string(),
+                    tokens: ((c.len() / 4) as u32).saturating_add(1),
+                    metadata: serde_json::json!({}),
+                })
+                .collect();
+            Self {
+                id,
+                items,
+                seen_persona: Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RagSource for StubSource {
+        fn source_id(&self) -> &'static str {
+            self.id
+        }
+
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
+
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
+        async fn deliver(
+            &self,
+            ctx: &RagContext,
+            _budget: u32,
+            resolution: ResolutionPreference,
+        ) -> RagDelivery {
+            *self.seen_persona.lock().unwrap() = Some(ctx.persona_id);
+            let tokens_used = self.items.iter().map(|i| i.tokens).sum();
+            RagDelivery {
+                source_id: self.id.to_string(),
+                items: self.items.clone(),
+                tokens_used,
+                continuation: None,
+                resolution_used: resolution,
+            }
+        }
+        async fn deliver_continuation(
+            &self,
+            _ctx: &RagContext,
+            _cursor: ContinuationCursor,
+            _budget: u32,
+        ) -> Option<RagDelivery> {
+            None
+        }
+    }
+
+    mod coldstart_absence_is_loud {
+        use super::*;
+
+        fn room() -> Uuid {
+            Uuid::parse_str("00000000-0000-0000-0000-0000000b0b0b").unwrap()
+        }
+
+        fn critical(source: Arc<StubSource>) -> RagSourceFaculty {
+            RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming)
+                .cold_start_critical(true)
+                .with_clock(Arc::new(|| 1_000))
+        }
+
+        // what this catches: regression for #3873 — `room-doctrine`, the
+        // ColdStartCritical participation gate, delivered nothing on 873
+        // consecutive ticks and NOTHING said so, because an empty delivery
+        // abstains silently and a second live path carried the same content. The
+        // tier whose absence is a WRONG turn must not be able to be quietly
+        // absent. Powers of two: 1,2,4,8 report; 3,5,6,7 do not.
+        #[tokio::test]
+        async fn a_cold_start_critical_source_reports_its_absence_on_a_log2_schedule() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let reported: Vec<Option<u32>> = (0..8).map(|_| faculty.note_absence(room())).collect();
+
+            assert_eq!(
+                reported,
+                vec![
+                    Some(1),
+                    Some(2),
+                    None,
+                    Some(4),
+                    None,
+                    None,
+                    None,
+                    Some(8)
+                ],
+                "the onset must be in the ledger immediately and the duration must                  keep arriving, without one fact costing 873 rows"
+            );
+        }
+
+        // what this catches: the guard above must not fire for sources that are
+        // ALLOWED to be quietly absent. A defer-tolerant source's first-tick miss
+        // is by design (wall, kanban, active-work, media-perception), and putting
+        // their ordinary silence in the ledger is how the one row that matters
+        // gets evicted from the window someone is reading
+        // ([[bounded-window-eviction-bug-class]]).
+        #[tokio::test]
+        async fn a_defer_tolerant_source_stays_silent_when_absent() {
+            let faculty = RagSourceFaculty::new(
+                persona(),
+                Arc::new(StubSource::new("room-wall", &[])),
+                SaliencePolicy::StandingFraming,
+            )
+            .with_clock(Arc::new(|| 1_000));
+            let reported: Vec<Option<u32>> = (0..8).map(|_| faculty.note_absence(room())).collect();
+            assert!(
+                reported.iter().all(|r| r.is_none()),
+                "cold_start_critical defaults to false; only the assembler's                  declaration opts a source into the loudness contract"
+            );
+        }
+
+        // what this catches: regression for @Astra's #3903 review finding 2 — one
+        // counter for a source that answers for whatever room the turn is in
+        // meant CONTENT IN ROOM B CLOSED AND REPORTED ROOM A'S ABSENCE, and a
+        // citizen alternating between a grounding room and a bare one produced a
+        // streak that mixed both and meant nothing.
+        //
+        // NON-DEGENERACY: two different rooms, driven to different streak
+        // lengths, asserted different — with one counter this cannot hold.
+        #[tokio::test]
+        async fn one_room_s_absence_streak_never_answers_for_another() {
+            let a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
+            let b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
+            assert_ne!(a, b, "non-degeneracy: two DIFFERENT rooms");
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+
+            for _ in 0..3 {
+                faculty.note_absence(a);
+            }
+            faculty.note_absence(b);
+            assert_eq!(faculty.streak_in(a), 3);
+            assert_eq!(faculty.streak_in(b), 1);
+            assert_ne!(
+                faculty.streak_in(a),
+                faculty.streak_in(b),
+                "non-degeneracy: with a single counter these would be equal and                  the test could not fail"
+            );
+
+            // Content in B closes B's streak and says B's length — never A's.
+            assert_eq!(
+                faculty.note_presence(b),
+                Some(1),
+                "the recovery row must carry the length of THIS room's absence"
+            );
+            assert_eq!(
+                faculty.streak_in(a),
+                3,
+                "and room A's absence must still be running, untouched"
+            );
+            assert_eq!(
+                faculty.note_presence(a),
+                Some(3),
+                "A's own recovery still reports A's own length"
+            );
+        }
+
+        // what this catches: an absence with no END in the ledger is
+        // indistinguishable from one still running when the census was taken —
+        // which is precisely the reading that made #3873 look like a permanent
+        // dead gate. The recovery row carries the streak length, and it is the
+        // only place the DURATION is written down.
+        #[tokio::test]
+        async fn recovery_closes_the_streak_and_reports_how_long_it_ran() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            for _ in 0..5 {
+                faculty.note_absence(room());
+            }
+            assert_eq!(
+                faculty.note_presence(room()),
+                Some(5),
+                "the restore row must carry the length of the absence it ended"
+            );
+            assert_eq!(
+                faculty.note_presence(room()),
+                None,
+                "a source that was never absent has no recovery to announce"
+            );
+            assert_eq!(
+                faculty.note_absence(room()),
+                Some(1),
+                "and the next absence starts a NEW streak, not a continuation"
+            );
+        }
+
+        // what this catches: @Astra's #3903 re-review — per-room keys fixed the
+        // cross-talk but left BOTH diagnostic maps retaining every room the
+        // persona ever answered in, which per-task rooms make unbounded. The
+        // second half of her requirement is the subtle one: EVICTION MUST NOT BE
+        // REPORTED AS RECOVERY. A dropped record is not an absence that ended.
+        #[tokio::test]
+        async fn an_evicted_room_is_forgotten_without_announcing_a_recovery() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            faculty.note_absence(victim);
+            assert_eq!(faculty.streak_in(victim), 1);
+
+            // Push past the bound with distinct rooms. `from_u128` starting at 2
+            // keeps every id different from the victim's.
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+
+            assert_eq!(
+                faculty.streak_in(victim),
+                0,
+                "the oldest room's diagnostics are dropped once the bound is                  exceeded — that is the leak this closes"
+            );
+            assert_eq!(
+                faculty.note_presence(victim),
+                None,
+                "and its return to content must announce NOTHING. A recovery row                  here would claim an absence ended when the record was merely                  evicted — inventing history is the failure this PR exists to stop"
+            );
+            // Non-degeneracy: a room still inside the bound DOES report, so the
+            // assertion above cannot be passing because recovery never fires.
+            let live =
+                Uuid::from_u128(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 1);
+            assert_eq!(
+                faculty.note_presence(live),
+                Some(1),
+                "a retained room still reports its real streak"
+            );
+        }
+
+        // what this catches: revisiting an evicted room starts a NEW streak from
+        // 1 rather than resurrecting the old count — the diagnostic must not
+        // carry a number it cannot justify.
+        #[tokio::test]
+        async fn revisiting_an_evicted_room_starts_a_fresh_streak() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let victim = Uuid::from_u128(1);
+            for _ in 0..5 {
+                faculty.note_absence(victim);
+            }
+            assert_eq!(faculty.streak_in(victim), 5);
+
+            for n in 2..(crate::cognition::bounded_room_ledger::ROOMS_TRACKED as u128 + 2) {
+                faculty.note_absence(Uuid::from_u128(n));
+            }
+            assert_eq!(faculty.streak_in(victim), 0, "evicted");
+
+            assert_eq!(
+                faculty.note_absence(victim),
+                Some(1),
+                "the revisit reports a streak of ONE, not the five it can no                  longer prove"
+            );
+        }
+
+        // what this catches: the accounting has to run through the real
+        // `contribute` path, not only through the helpers. An empty source still
+        // abstains (behaviour unchanged — no empty bid clutters the workspace)
+        // and a non-empty one still bids; the loudness rides alongside both.
+        #[tokio::test]
+        async fn contribute_still_abstains_on_empty_and_bids_on_content() {
+            let silent = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            assert!(
+                silent
+                    .contribute(&Workspace::new("anything"))
+                    .await
+                    .is_none(),
+                "an empty delivery must not become an empty bid"
+            );
+            assert_eq!(
+                silent.streak_in(Workspace::new("anything").room_id),
+                1,
+                "and the abstain must have been counted on the live path"
+            );
+
+            let speaking = critical(Arc::new(StubSource::new(
+                "room-doctrine",
+                &["This room is for coordination."],
+            )));
+            assert!(
+                speaking
+                    .contribute(&Workspace::new("anything"))
+                    .await
+                    .is_some(),
+                "a source with content still bids"
+            );
+            assert_eq!(
+                speaking.streak_in(Workspace::new("anything").room_id),
+                0,
+                "and a bidding source carries no absence"
+            );
+        }
+    }
+
+    // what this catches: ANY RagSource is lifted into a perception-tier context
+    // Contribution — the delivery's items become the bid content, the faculty id
+    // is the source id, and it carries no Decision (grounding is context, never a
+    // verdict). This is the regression fix: roster/doctrine reach the decider.
+    #[tokio::test]
+    async fn lifts_a_rag_source_into_a_context_bid() {
+        let source = Arc::new(StubSource::new(
+            "room-roster",
+            &["Aria [persona]", "win-claude [claude] — Busy"],
+        ));
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming)
+            .with_clock(Arc::new(|| 1_000));
+
+        assert!(
+            !faculty.reacts_to_broadcast(),
+            "grounding is perception tier — it bids in phase 1, before deliberation"
+        );
+        assert_eq!(faculty.id(), FacultyId::Custom("room-roster".to_string()));
+
+        let c = faculty
+            .contribute(&Workspace::new("who's around?"))
+            .await
+            .expect("a non-empty source must bid");
+        assert_eq!(c.faculty, FacultyId::Custom("room-roster".to_string()));
+        assert!(
+            c.decision.is_none(),
+            "grounding is context, never a verdict"
+        );
+        assert!(c.content.contains("Aria [persona]"));
+        assert!(c.content.contains("win-claude [claude] — Busy"));
+        assert!(c.salience > 0.0);
+        assert!(
+            c.standing_grounding,
+            "the assembler contract reaches the prompt budget"
+        );
+    }
+
+    // what this catches: the KV routing contract (2026-08-23). A session-stable
+    // source's bid lands in the cacheable system prefix (stable, not trailing);
+    // a volatile-content source's bid rides as a TRAILING conversation turn —
+    // never the system message, where its churn (kanban claim-flaps, her own
+    // writes mutating the workspace map) re-prefilled every conversation token
+    // after it (live KV reuse pinned at 18-33% on the MirrorCode round).
+    #[tokio::test]
+    async fn volatile_content_grounding_is_trailing_and_stable_grounding_is_not() {
+        let stable = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("room-roster", &["Aria [persona]"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1_000));
+        let c = stable
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty source bids");
+        assert!(c.stable, "standing framing stays in the cacheable prefix");
+        assert!(c.standing_grounding);
+        assert!(!c.trailing, "stable grounding must not double as trailing");
+
+        let volatile = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("workspace-map", &["src/ lib/ tests/"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_volatile_content(true)
+        .with_clock(Arc::new(|| 1_000));
+        let c = volatile
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty source bids");
+        assert!(!c.stable, "volatile content leaves the stable tier");
+        assert!(
+            c.standing_grounding,
+            "moving KV placement must not erase importance"
+        );
+        assert!(
+            c.trailing,
+            "volatile grounding rides a trailing turn — churn costs its own tokens, \
+             never the conversation's"
+        );
+        let retrieved = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("recall", &["a retrieved memory"])),
+            SaliencePolicy::Retrieved,
+        );
+        let c = retrieved
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty retrieved source bids");
+        assert!(
+            !c.standing_grounding,
+            "retrieval remains optional enrichment"
+        );
+    }
+
+    // what this catches: an empty delivery → abstain (None), not an empty bid.
+    // A degraded/absent source (good-citizen empty delivery) simply does not
+    // clutter the workspace.
+    #[tokio::test]
+    async fn empty_delivery_abstains() {
+        let source = Arc::new(StubSource::new("room-doctrine", &[]));
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming);
+        assert!(faculty
+            .contribute(&Workspace::new("anything?"))
+            .await
+            .is_none());
+    }
+
+    // what this catches: the bridge passes the faculty's persona scope through to
+    // the source (so the source's persona-scoping / defense-in-depth check sees
+    // the right citizen).
+    #[tokio::test]
+    async fn passes_persona_scope_to_the_source() {
+        let source = Arc::new(StubSource::new("room-doctrine", &["coordination room"]));
+        let probe = source.clone();
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::Retrieved);
+        let _ = faculty.contribute(&Workspace::new("burst")).await;
+        assert_eq!(
+            *probe.seen_persona.lock().unwrap(),
+            Some(persona()),
+            "the source must be delivered for the faculty's persona"
+        );
+    }
+
+    // what this catches: the whole point — bridged grounding reaches the
+    // deliberation faculty through the staged cycle. A doctrine bid in phase 1 is
+    // in the assembled broadcast the decider reads in phase 2.
+    #[tokio::test]
+    async fn bridged_grounding_reaches_the_broadcast() {
+        use crate::cognition::workspace::{
+            Contribution, Decision, SalienceArbiter, WorkspaceCycle,
+        };
+
+        // A deliberation faculty that proves it saw the bridged doctrine.
+        struct SeesDoctrine;
+        #[async_trait]
+        impl crate::cognition::workspace::Faculty for SeesDoctrine {
+            fn id(&self) -> FacultyId {
+                FacultyId::Deliberation
+            }
+            fn reacts_to_broadcast(&self) -> bool {
+                true
+            }
+            async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+                let doctrine = ws
+                    .broadcast
+                    .iter()
+                    .find(|c| c.faculty == FacultyId::Custom("room-doctrine".to_string()));
+                match doctrine {
+                    Some(d) => Some(Contribution::verdict(
+                        Decision::Speak {
+                            text: format!("noted the room is: {}", d.content),
+                        },
+                        0.9,
+                        "conditioned on the bridged doctrine grounding",
+                    )),
+                    None => Some(Contribution::verdict(
+                        Decision::pass(),
+                        0.4,
+                        "no doctrine in the broadcast",
+                    )),
+                }
+            }
+        }
+
+        let doctrine_source = Arc::new(StubSource::new(
+            "room-doctrine",
+            &["a coordination room — respond sparingly"],
+        ));
+        let faculties: Vec<Arc<dyn crate::cognition::workspace::Faculty>> = vec![
+            Arc::new(
+                RagSourceFaculty::new(persona(), doctrine_source, SaliencePolicy::StandingFraming)
+                    .with_clock(Arc::new(|| 1)),
+            ),
+            Arc::new(SeesDoctrine),
+        ];
+        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 6)
+            .run("is anyone going to merge this?")
+            .await;
+
+        match ws.decision() {
+            Some(Decision::Speak { text }) => assert!(
+                text.contains("respond sparingly"),
+                "the decider must condition on the bridged doctrine grounding, got: {text}"
+            ),
+            other => panic!("expected a doctrine-grounded Speak, got {other:?}"),
+        }
+    }
+
+    // what this catches: the salience POLICY — standing framing (roster/doctrine)
+    // bids HIGHER than retrieved grounding, so the floor exists. This is the
+    // load-bearing guard: it is what keeps a high-cosine memory from out-bidding
+    // the room's own rules. Fixed escape-hatch is honored verbatim.
+    #[tokio::test]
+    async fn standing_framing_outbids_retrieved() {
+        let framing = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("room-doctrine", &["respond sparingly"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1));
+        let retrieved = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("conversation", &["someone said hi"])),
+            SaliencePolicy::Retrieved,
+        )
+        .with_clock(Arc::new(|| 1));
+
+        let f = framing.contribute(&Workspace::new("q")).await.unwrap();
+        let r = retrieved.contribute(&Workspace::new("q")).await.unwrap();
+        assert!(
+            f.salience > r.salience,
+            "standing framing must out-bid retrieved (floor): framing={} retrieved={}",
+            f.salience,
+            r.salience
+        );
+
+        // The Fixed escape-hatch is passed through verbatim (after clamp).
+        let fixed = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("x", &["y"])),
+            SaliencePolicy::Fixed(0.42),
+        )
+        .with_clock(Arc::new(|| 1));
+        let c = fixed.contribute(&Workspace::new("q")).await.unwrap();
+        assert!((c.salience - 0.42).abs() < 1e-6);
+    }
+
+    // what this catches: THE CANARY — standing framing keeps a non-zero presence
+    // in the assembled context_broadcast even when a RETRIEVED bid out-saliences
+    // it. At the default workspace capacity the floor is what guarantees the
+    // persona never "forgets the room's rules mid-turn" because a relevant memory
+    // crowded the doctrine out. (Hard-capacity-pressure exemption — making
+    // standing framing truncation-proof regardless of capacity — is the
+    // convergence follow-up; this asserts the realistic-capacity guarantee the
+    // bridge ships with.)
+    #[tokio::test]
+    async fn standing_framing_present_even_when_outsalienced() {
+        use crate::cognition::workspace::{
+            Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink,
+            WorkspaceCycle, WorkspaceTrace,
+        };
+
+        // A retrieved-tier faculty that bids ABOVE the standing-framing floor
+        // (a very relevant memory) — the adversarial case for the canary.
+        struct HotRetrieval;
+        #[async_trait]
+        impl crate::cognition::workspace::Faculty for HotRetrieval {
+            fn id(&self) -> FId {
+                FId::Recall
+            }
+            async fn contribute(&self, _ws: &Ws) -> Option<Contribution> {
+                Some(Contribution::context(
+                    FId::Recall,
+                    "a highly relevant recalled memory",
+                    0.99,
+                    "hot cosine hit",
+                ))
+            }
+        }
+
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        impl WorkspaceCaptureSink for Sink {
+            fn record(&self, t: &WorkspaceTrace) {
+                self.0.lock().unwrap().push(t.clone());
+            }
+        }
+
+        let doctrine = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new(
+                "room-doctrine",
+                &["coordination room — respond sparingly"],
+            )),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1));
+
+        let sink = Arc::new(Sink::default());
+        let faculties: Vec<Arc<dyn crate::cognition::workspace::Faculty>> =
+            vec![Arc::new(doctrine), Arc::new(HotRetrieval)];
+        let _ = WorkspaceCycle::new(
+            faculties,
+            Arc::new(SalienceArbiter),
+            DEFAULT_CAPACITY_FOR_TEST,
+        )
+        .with_capture(sink.clone())
+        .run("anything urgent?")
+        .await;
+
+        let traces = sink.0.lock().unwrap();
+        let ctx = &traces[0].context_broadcast;
+        assert!(
+            ctx.iter()
+                .any(|c| c.faculty == FId::Custom("room-doctrine".to_string())),
+            "standing-framing doctrine must remain in context_broadcast even when a \
+             retrieved bid out-saliences it — else the persona forgets the room's rules"
+        );
+    }
+
+    /// The production default capacity (mirror of persona_workspace's constant) so
+    /// the canary tests the realistic configuration, not a contrived one.
+    const DEFAULT_CAPACITY_FOR_TEST: usize = 6;
+}

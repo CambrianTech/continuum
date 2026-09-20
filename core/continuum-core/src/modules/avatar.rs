@@ -10,7 +10,6 @@ use crate::live::avatar::render_loop::allocate_bevy_slot;
 use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::log_info;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -29,59 +28,34 @@ impl AvatarModule {
         Self
     }
 
-    async fn snapshot(&self, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-        let identity = p.str("identity")?.to_string();
-        let width = p.u32_opt("width").unwrap_or(480);
-        let height = p.u32_opt("height").unwrap_or(480);
-
-        // Check if snapshot already exists on disk
-        let avatar_dir = dirs::home_dir()
-            .ok_or("Cannot determine home directory")?
-            .join(".continuum")
-            .join("avatars");
-
-        let png_path = avatar_dir.join(format!("{identity}.png"));
-        let force = p.bool_or("force", false);
-
-        if png_path.exists() && !force {
-            log_info!(
-                "module",
-                "avatar",
-                "Avatar snapshot already exists for '{}', returning cached",
-                identity
-            );
-            return Ok(CommandResult::Json(serde_json::json!({
-                "path": format!("/avatars/{identity}.png"),
-                "cached": true,
-            })));
-        }
-
-        // Run the blocking Bevy slot allocation + frame capture on a dedicated thread
-        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            Self::capture_snapshot(&identity, width, height, &avatar_dir)
-        })
-        .await
-        .map_err(|e| format!("Snapshot task panicked: {e}"))?;
-
-        let relative_path = result?;
-
-        Ok(CommandResult::Json(serde_json::json!({
-            "path": relative_path,
-            "cached": false,
-        })))
-    }
-
     /// Blocking snapshot capture — runs on spawn_blocking thread.
-    fn capture_snapshot(
+    ///
+    /// `pub(crate)`: both the `avatar/snapshot` command body (in `commands/avatar.rs`)
+    /// and the module's `tick()` auto-refresh drive it. The Bevy-render domain logic
+    /// stays here in the module; the command orchestrates the cache check + threading.
+    pub(crate) fn capture_snapshot(
         identity: &str,
         width: u32,
         height: u32,
         avatar_dir: &std::path::Path,
+        // #174: the persona's PINNED VRM path (durable, sticky). `Some` → render THIS
+        // model directly, bypassing the roster-dependent selection that thrashes to a
+        // default when the in-memory gender roster is cold. `None` → deterministic
+        // selection (correct when warm).
+        pinned_vrm: Option<std::path::PathBuf>,
+        // Glass box (#172): optional expression/pose to render instead of the idle
+        // neutral face; `out_stem` is the state-suffixed output filename (no `.png`).
+        expression: Option<crate::live::video::bevy_renderer::Emotion>,
+        pose: Option<crate::live::video::bevy_renderer::Gesture>,
+        // Mouth openness weight 0.0..1.0 (viseme/lip-sync glass box). None → resting.
+        mouth: Option<f32>,
+        out_stem: &str,
     ) -> Result<String, String> {
-        // Select avatar model for this identity
-        let model = select_avatar_by_identity(identity);
-        let vrm_path = avatar_model_path(model.filename);
+        // Pinned VRM wins (sticky, #174); else fall back to the deterministic selection.
+        let vrm_path = match pinned_vrm {
+            Some(p) => p,
+            None => avatar_model_path(select_avatar_by_identity(identity).filename),
+        };
 
         if !vrm_path.exists() {
             return Err(format!("VRM model not found: {}", vrm_path.display()));
@@ -111,29 +85,56 @@ impl AvatarModule {
         // Allocate a Bevy render slot
         let allocation = allocate_bevy_slot(config)?;
 
-        // Wait for model to load and render clean frames.
-        // Skip initial frames (loading/black), then grab a good one.
-        let mut best_frame = None;
+        // Phase 1 — warm up. A COLD VRM load emits no frames until the model is parsed
+        // and the scene is instantiated (SceneInstanceReady) — observed ~15s on a 21MB
+        // VRM before the first healthy frame, then a warmup. 30s covers cold load +
+        // warmup; the result is cached so this wait is paid once per (avatar, state).
+        // Capture NOTHING here — just drain until the avatar is clearly loaded, so the
+        // expression/pose in phase 2 has a spawned entity to land on.
         let mut frames_received = 0u32;
-        let max_wait = std::time::Duration::from_secs(5);
+        let max_wait = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
-
         while start.elapsed() < max_wait {
-            // Drain all available frames, keeping the latest
-            while let Ok(frame) = allocation.frame_rx.try_recv() {
+            while let Ok(_frame) = allocation.frame_rx.try_recv() {
                 frames_received += 1;
-                // Skip first ~30 frames (model loading, initial black)
-                if frames_received > 30 {
-                    best_frame = Some(frame);
-                }
             }
-
-            // If we have a good frame after the skip window, we're done
-            if best_frame.is_some() && frames_received > 40 {
+            if frames_received > 40 {
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
 
-            // Wait for next frame notification
+        // Phase 2 — glass box (#172): apply the requested expression/pose to the now-
+        // loaded avatar. Issued AFTER warmup because SetEmotion/SetGesture target a
+        // spawned entity — before load it would be dropped (mirrors avatar_emote.rs).
+        // No-op for a neutral snapshot (both None).
+        let has_state = expression.is_some() || pose.is_some() || mouth.is_some();
+        if has_state {
+            let system = crate::live::video::bevy_renderer::get_or_init();
+            if let Some(e) = expression {
+                system.set_emotion_by_identity(identity, e, 1.0, 300);
+            }
+            if let Some(g) = pose {
+                system.set_gesture_by_identity(identity, g, 1500);
+            }
+            if let Some(m) = mouth {
+                system.set_mouth_weight_by_identity(identity, m.clamp(0.0, 1.0));
+            }
+        }
+
+        // Phase 3 — capture the latest frame after a settle window (longer when a
+        // ~300ms morph transition was applied, so the expression is fully on).
+        let settle = std::time::Duration::from_millis(if has_state { 1200 } else { 200 });
+        let settle_start = std::time::Instant::now();
+        let mut best_frame = None;
+        while start.elapsed() < max_wait {
+            while let Ok(frame) = allocation.frame_rx.try_recv() {
+                frames_received += 1;
+                best_frame = Some(frame);
+            }
+            if best_frame.is_some() && settle_start.elapsed() >= settle {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -192,7 +193,7 @@ impl AvatarModule {
         std::fs::create_dir_all(avatar_dir)
             .map_err(|e| format!("Failed to create avatar directory: {e}"))?;
 
-        let png_path = avatar_dir.join(format!("{identity}.png"));
+        let png_path = avatar_dir.join(format!("{out_stem}.png"));
         img.save(&png_path)
             .map_err(|e| format!("Failed to save PNG: {e}"))?;
 
@@ -208,7 +209,7 @@ impl AvatarModule {
 
         // SlotGuard drops here via RAII, releasing the Bevy slot back to the pool
 
-        Ok(format!("/avatars/{identity}.png"))
+        Ok(format!("/avatars/{out_stem}.png"))
     }
 }
 
@@ -239,11 +240,14 @@ impl ServiceModule for AvatarModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "avatar/snapshot" => self.snapshot(params).await,
-            _ => Err(format!("Unknown avatar command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // `avatar/snapshot` is migrated to the typed registry
+        // (`commands/avatar.rs`); the module retains only its tick-driven
+        // auto-refresh. Fail loud — no silent legacy fallback.
+        Err(format!(
+            "avatar command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
     }
 
     async fn handle_event(&self, _event_name: &str, _payload: Value) -> Result<(), String> {
@@ -329,8 +333,11 @@ impl ServiceModule for AvatarModule {
         let identity = &needs_refresh[0];
         let id = identity.clone();
         let dir = avatar_dir.clone();
-        let result =
-            tokio::task::spawn_blocking(move || Self::capture_snapshot(&id, 480, 480, &dir)).await;
+        // Auto-refresh renders the NEUTRAL profile under `<identity>.png` (no state).
+        let result = tokio::task::spawn_blocking(move || {
+            Self::capture_snapshot(&id, 480, 480, &dir, None, None, None, None, &id)
+        })
+        .await;
 
         match result {
             Ok(Ok(path)) => {
@@ -374,5 +381,17 @@ mod tests {
         let config = module.config();
         assert_eq!(config.name, "avatar");
         assert_eq!(config.command_prefixes, &["avatar/"]);
+    }
+
+    // what this catches: avatar/snapshot is migrated to the typed registry, so the
+    // legacy handle_command must fail loud (no silent fallback) for any command name.
+    #[tokio::test]
+    async fn legacy_handle_command_fails_loud() {
+        let module = AvatarModule::new();
+        let err = module
+            .handle_command("avatar/snapshot", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("migrated to the typed registry"));
     }
 }

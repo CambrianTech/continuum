@@ -20,18 +20,17 @@
 
 use crate::ai::{
     adapter::{AIProviderAdapter, InferenceDevice},
-    AdapterRegistry, AnthropicAdapter, ChatMessage, MessageContent, OpenAICompatibleAdapter,
-    RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest,
+    TextGenerationResponse,
 };
-use crate::logging::TimingGuard;
 use crate::runtime::{
-    CommandResult, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority, ServiceModule,
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
+    ServiceModule,
 };
 use crate::secrets::get_secret;
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -53,6 +52,30 @@ const DMR_TICK_INTERVAL: Duration = Duration::from_secs(5);
 /// 6 = 30 seconds, which is the threshold the resource architecture
 /// uses for "loud failure, never silent."
 const DMR_DOWN_WARN_THRESHOLD_TICKS: u64 = 6;
+
+/// Inline wait at boot for the serving snapshot to report a READY model before
+/// registering the gateway adapter on the spot. Sized for the warm path — a
+/// core restart over an already-resident model, or an adoption of a healthy
+/// server — where the daemon's snapshot is ready within a couple of ticks, so
+/// boot reports `✓ inference` cleanly with zero window where `select()` misses
+/// the gateway. Deliberately SHORT: a cold large GGUF will not finish loading
+/// in this window, and we do NOT want boot to block on it — that case hands off
+/// to the reactive watcher below ([[fallbacks-are-illegal-fail-loud]], task #71).
+// MEASURED 2026-09-04 on all three hosts (M5 8.1 s, 5090 host 10.1 s, Intel 8.0 s
+// of ai_provider init): on a cold boot the local server is NEVER ready inside
+// this window — the serving daemon launches it AFTER module init — so the wait
+// was a fixed ~8 s tax on the PRE-BIND path of every boot on every machine,
+// and the gateway registered through the reactive watcher anyway. Zero = "is
+// it ready right now" (a surviving server on a warm reboot still takes the fast
+// path); the cold boot hands off to the watcher immediately. A citizen's first
+// select can miss the gateway for the watcher's few hundred ms — she boots,
+// catches up, and grounds for far longer than that before her first turn.
+const GATEWAY_FAST_PATH_WAIT: Duration = Duration::ZERO;
+
+// (GATEWAY_REACTIVE_CAP retired with the one-shot watcher: the persistent
+// gateway-sync task, card ed3661c4, follows the serving snapshot for the life
+// of the process — there is no wait to cap; a wedged serving plan stays the
+// serving daemon's loud failure to own.)
 
 /// One DMR endpoint discovered by `probe_dmr`. The base_url is None for
 /// localhost — the adapter's default constructor already points at
@@ -87,6 +110,45 @@ pub struct AIProviderModule {
     /// 30-second threshold. Atomic so the tick (`&self`) updates it
     /// without taking a write lock on the module.
     dmr_consecutive_down_ticks: Arc<AtomicU64>,
+    /// Substrate-wide command executor — installed by `start_server` after
+    /// the executor is built. Used by the TS fallthrough for unmigrated
+    /// `ai/*` commands (task #224 replaced the deleted free helper).
+    executor: LateBound<crate::runtime::CommandExecutor>,
+}
+
+/// Largest context this host can safely serve for `model`: its trained window, capped by what
+/// the GOVERNED memory budget can hold at this model's real KV bytes/token. The replacement for
+/// the old `KV_SAFE_CONTEXT_CEILING` placeholder — same authority `plan_serving` and the eval
+/// lane size against, never a raw probe and never a constant.
+///
+/// Returns the trained window unchanged when the host is ungoverned or the model can't be sized:
+/// an unknown budget must not become an invented ceiling.
+fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
+    let trained = model.context_window;
+    let Some(fp) = crate::modules::serving_daemon::footprint_for(model) else {
+        return trained;
+    };
+    if fp.kv_per_token == 0 {
+        return trained;
+    }
+    let Some(budget) = crate::resources::ResourceDaemon::global()
+        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .filter(|b| *b > 0)
+    else {
+        return trained;
+    };
+    let Some(kv_budget) = budget
+        .checked_sub(fp.weights_bytes)
+        .and_then(|b| b.checked_sub(fp.compute_buffer_per_lane()))
+    else {
+        // Weights alone exceed the budget — the serving planner refuses this model anyway;
+        // don't also invent a window here.
+        return trained;
+    };
+    let fits = (kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32;
+    trained
+        .min(fits)
+        .max(crate::cognition::serving_plan::MIN_SERVE_CTX)
 }
 
 impl AIProviderModule {
@@ -96,6 +158,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
+            executor: LateBound::new("ai-provider::executor"),
         }
     }
 
@@ -108,6 +171,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
+            executor: LateBound::new("ai-provider::executor"),
         }
     }
 
@@ -184,7 +248,7 @@ impl AIProviderModule {
 ///
 /// Hoisted out of both `ai/generate` and the convenience `generate_text` so
 /// the two paths report the same diagnosis.
-fn select_failure_message(
+pub(crate) fn select_failure_message(
     registry: &AdapterRegistry,
     requested_provider: Option<&str>,
     requested_model: Option<&str>,
@@ -209,15 +273,153 @@ fn select_failure_message(
             available
         );
     }
-    format!(
-        "Requested provider/model not available (provider={:?}, model={:?}). Available: {:?}",
-        requested_provider, requested_model, available
-    )
+    // A refusal the caller can ACT on. `available` is provider ids; a caller
+    // who named a model (or nothing) needs the model ids the lanes actually
+    // serve, or they are stuck guessing — the weak-node consumer case, where
+    // the caller has no local registry at all (card a466fdd4).
+    let served: Vec<String> = registry
+        .served_models()
+        .into_iter()
+        .map(|(provider, model)| format!("{provider}={model}"))
+        .collect();
+    match (requested_provider, requested_model) {
+        // "local" is the best-local-GPU sentinel, not an adapter id: DMR IS
+        // registered here (the branch above handled the down case), so the
+        // honest diagnosis is "no local adapter serves that model".
+        (Some("local"), model) => format!(
+            "No local adapter can serve model {model:?}. \
+             Served models (provider=model): {served:?}. \
+             Pass `model` as one of those, or `provider` as one of {available:?}."
+        ),
+        (Some(provider), _) => format!(
+            "Provider {provider:?} is not available (model={requested_model:?}). \
+             Available providers: {available:?}; served models (provider=model): {served:?}."
+        ),
+        (None, Some(model)) => format!(
+            "Model {model:?} is not served by any available provider. \
+             Served models (provider=model): {served:?}. \
+             Pass `model` as one of those, or `provider` as one of {available:?}."
+        ),
+        (None, None) => format!(
+            "No provider or model specified — the substrate never picks one for you. \
+             Pass `provider` as one of {available:?}, or `model` as one of the served \
+             models (provider=model): {served:?}."
+        ),
+    }
+}
+
+/// Build + initialize the llama-server gateway adapter pointed at a ready
+/// serving snapshot's `base_url`. ONE construction site shared by the inline
+/// fast-path and the reactive watcher (compression — the adapter is wired the
+/// same way whether it registers at boot or seconds later). Returns the
+/// initialized adapter ready to register, or a Display error on init failure.
+async fn build_gateway_adapter(
+    base_url: String,
+    active_model: Option<&str>,
+) -> Result<OpenAICompatibleAdapter, String> {
+    let mut a = OpenAICompatibleAdapter::from_registry(crate::inference::llama_server::PROVIDER_ID)
+        .with_runtime_base_url(base_url);
+    a.initialize().await.map_err(|e| e.to_string())?;
+    // The snapshot's active_model ALWAYS selects, whatever /v1/models claimed —
+    // the daemon's reconcile verified it against the live process; the catalog
+    // is derived and can misname the model (Windows alias-mangling put the GGUF
+    // path in data[].id and select() refused a healthy lane, 5090 2026-07-24).
+    if let Some(model) = active_model {
+        a.ensure_runtime_model(model);
+    }
+    Ok(a)
 }
 
 // Re-open the AIProviderModule impl block so the rest of the methods
 // (parse_request, response_to_json, etc.) stay where they were.
 impl AIProviderModule {
+    /// The persistent gateway-sync task (card ed3661c4). Follows the serving
+    /// daemon's `watch` snapshot for the LIFE of the process: whenever a READY
+    /// snapshot's `(base_url, active_model)` differs from what the registry
+    /// currently advertises, rebuild the gateway adapter against the live
+    /// server (fresh `/v1/models` catalog) and REPLACE the registration.
+    /// `initial` seeds the already-registered pair from the boot fast-path so
+    /// a warm boot doesn't churn one redundant re-register.
+    ///
+    /// Failure shape: a build/init error while ready (server mid-warm) retries
+    /// on a short interval — bounded work, no lock held across waits, and the
+    /// registry keeps its previous (possibly stale) entry until the rebuild
+    /// succeeds, at which point it is atomically swapped under the write lock.
+    fn spawn_gateway_sync(
+        registry_arc: Arc<RwLock<AdapterRegistry>>,
+        initial: Option<(String, Option<String>)>,
+    ) {
+        tokio::spawn(async move {
+            use crate::runtime::boot_status::{boot_status, BootStatusKind};
+            const RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+            // The daemon installs the watch at its own init; poll briefly
+            // until it exists (boot ordering, not a failure state).
+            let mut rx = loop {
+                match crate::inference::llama_server::serving_state_receiver() {
+                    Some(rx) => break rx,
+                    None => tokio::time::sleep(RETRY).await,
+                }
+            };
+            let mut synced = initial;
+            let mut announced_first = synced.is_some();
+            loop {
+                let snap = rx.borrow_and_update().clone();
+                if snap.ready {
+                    let want = (snap.base_url.clone(), snap.active_model.clone());
+                    if synced.as_ref() != Some(&want) {
+                        match build_gateway_adapter(want.0.clone(), want.1.as_deref()).await {
+                            Ok(a) => {
+                                let mut reg = registry_arc.write().await;
+                                // Replace, never append: deregister sweeps the
+                                // base key AND any #N collision duplicates.
+                                reg.deregister(crate::inference::llama_server::PROVIDER_ID);
+                                reg.register(Arc::new(a), 9);
+                                drop(reg);
+                                let short = want
+                                    .1
+                                    .as_deref()
+                                    .map(|m| m.rsplit('/').next().unwrap_or(m))
+                                    .unwrap_or("(unknown)");
+                                if !announced_first {
+                                    announced_first = true;
+                                    boot_status(
+                                        "inference",
+                                        BootStatusKind::Ok,
+                                        &format!(
+                                            "inference gateway registered (sync) — serving {short} @ {}",
+                                            want.0
+                                        ),
+                                    );
+                                } else {
+                                    crate::probe!(
+                                        class = "ai.gateway_resync",
+                                        base_url = want.0.as_str(),
+                                        model = short,
+                                        "gateway adapter re-synced to the live serving snapshot",
+                                    );
+                                }
+                                synced = Some(want);
+                            }
+                            Err(e) => {
+                                crate::probe!(
+                                    class = "ai.gateway_resync_retry",
+                                    base_url = want.0.as_str(),
+                                    error = e.as_str(),
+                                    "gateway rebuild against ready snapshot failed — retrying",
+                                );
+                                tokio::time::sleep(RETRY).await;
+                                continue; // re-read the snapshot and retry
+                            }
+                        }
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    break; // daemon dropped its sender — process shutdown
+                }
+            }
+        });
+    }
+
     /// Get logger (panics if called before initialize)
     fn log(&self) -> &ModuleLogger {
         self.log
@@ -281,7 +483,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 0),
-                Err(e) => self.log().warn(&format!("DeepSeek initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("DeepSeek initialize failed: {e} — not registered")),
             }
         }
 
@@ -290,7 +494,9 @@ impl AIProviderModule {
             let mut a = AnthropicAdapter::new();
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 1),
-                Err(e) => self.log().warn(&format!("Anthropic initialize failed: {e} — not registered")),
+                Err(e) => self.log().warn(&format!(
+                    "Anthropic initialize failed: {e} — not registered"
+                )),
             }
         }
 
@@ -299,7 +505,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("openai");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 2),
-                Err(e) => self.log().warn(&format!("OpenAI initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("OpenAI initialize failed: {e} — not registered")),
             }
         }
 
@@ -308,7 +516,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("groq");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 3),
-                Err(e) => self.log().warn(&format!("Groq initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Groq initialize failed: {e} — not registered")),
             }
         }
 
@@ -317,7 +527,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("together");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 4),
-                Err(e) => self.log().warn(&format!("Together initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Together initialize failed: {e} — not registered")),
             }
         }
 
@@ -326,7 +538,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("fireworks");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 5),
-                Err(e) => self.log().warn(&format!("Fireworks initialize failed: {e} — not registered")),
+                Err(e) => self.log().warn(&format!(
+                    "Fireworks initialize failed: {e} — not registered"
+                )),
             }
         }
 
@@ -335,7 +549,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("xai");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 6),
-                Err(e) => self.log().warn(&format!("XAI initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("XAI initialize failed: {e} — not registered")),
             }
         }
 
@@ -344,8 +560,88 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("google");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 7),
-                Err(e) => self.log().warn(&format!("Google initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Google initialize failed: {e} — not registered")),
             }
+        }
+
+        if get_secret("MISTRAL_API_KEY").is_some() {
+            self.log().info("Registering Mistral adapter");
+            let mut a = OpenAICompatibleAdapter::from_registry("mistral");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 8),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Mistral initialize failed: {e} — not registered")),
+            }
+        }
+
+        // llama-server — the local OpenAI-compatible serving gateway. Registered
+        // when the serving daemon has a READY model (Contract A), NOT on the
+        // presence of an API key: it's a local endpoint with no credential. Its
+        // base_url comes from the daemon's reconciled snapshot (the single source
+        // of truth for where the gateway lives), and its live /v1/models catalog
+        // decides which models it serves. Additive priority for now — making the
+        // gateway the *preferred* route is a separate routing-policy change.
+        // No served model → no registration → the boot-status block below fails
+        // loud (no local fallback), per the no-fallback rule.
+        // Gateway registration is REACTIVE, not one-shot (task #71). A cold large
+        // GGUF can take longer than any fixed boot bound to finish warming its slot
+        // graphs; the old `await_ready_serving(DEFAULT_SERVING_WAIT)` here timed out
+        // and NEVER registered, leaving the core permanently gatewayless even though
+        // the daemon brought the model up moments later. Now: a SHORT inline wait
+        // registers on the spot for the warm-restart / adoption case; if the model
+        // is still loading, a detached watcher registers the instant the daemon's
+        // snapshot reports ready — however long the cold load takes. This is NOT a
+        // fallback: there is still exactly one inference path (the gateway); it
+        // simply registers when its backend is actually ready. The serving daemon
+        // remains the loud-failure owner if it can never bring a model up, and an
+        // inference call arriving before registration fails loud at `select()` (no
+        // stand-in). [[fallbacks-are-illegal-fail-loud]]
+        let mut gateway_registered = false;
+        let mut gateway_pending = false;
+        let mut gateway_synced: Option<(String, Option<String>)> = None;
+        if let Some(snap) =
+            crate::inference::llama_server::await_ready_serving(GATEWAY_FAST_PATH_WAIT).await
+        {
+            self.log().info("Registering llama-server gateway adapter");
+            match build_gateway_adapter(snap.base_url.clone(), snap.active_model.as_deref()).await {
+                Ok(a) => {
+                    // Idempotent registration (the 5090 #2 mystery, 2026-07-25):
+                    // EVERY gateway registration site deregister-sweeps first, so
+                    // no path ordering can ever mint a collision-suffixed twin —
+                    // whichever fired first, last-writer replaces.
+                    registry.deregister(crate::inference::llama_server::PROVIDER_ID);
+                    registry.register(Arc::new(a), 9);
+                    gateway_registered = true;
+                    gateway_synced = Some((snap.base_url, snap.active_model));
+                }
+                Err(e) => self.log().warn(&format!(
+                    "llama-server initialize failed: {e} — not registered"
+                )),
+            }
+        }
+        // Persistent gateway SYNC (card ed3661c4): the adapter must TRACK the
+        // daemon's ServingSnapshot, never cache it. The one-shot reactive
+        // watcher this replaces registered at first-ready and went away — so a
+        // model swap, a relaunch onto a scanned port (the 5090 stale-server
+        // repro, 2026-07-24), or a window regrow left the gateway advertising a
+        // DEAD server's catalog and select() honestly refusing the model that
+        // WAS serving. Now one detached task follows the watch forever: on any
+        // (base_url, active_model) change while ready it rebuilds the adapter
+        // against the LIVE server (fresh /v1/models catalog) and REPLACES the
+        // registration (deregister sweeps `#N` duplicates — never a second
+        // entry). This also retires the task-#71 registration race: the sync
+        // task IS the reactive registrar, for the first ready and every one
+        // after. Same bug class as the frozen-window clamp: a stale cache of a
+        // live value; the fix is the same — one live source, followed.
+        Self::spawn_gateway_sync(self.registry.clone(), gateway_synced);
+        if !gateway_registered {
+            // Model still cold-loading; the persistent sync task spawned above
+            // registers the instant the daemon's snapshot reports ready —
+            // however long the cold load takes — and keeps it synced forever.
+            gateway_pending = true;
         }
 
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
@@ -375,7 +671,15 @@ impl AIProviderModule {
         // iteration order which is non-deterministic — caused a bug
         // where qwen3.5 got registered twice and qwen2-vl was skipped.
         // Now we iterate ALL rows uniformly.
-        if let Some(reg_arc) = crate::model_registry::try_global() {
+        // NO silent local-inference fallback. Our OWN llama-server is THE inference
+        // path (Unsloth excised); it serves our forged GGUF over /v1. The in-process
+        // llama.cpp adapter is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1) so the core never
+        // registers a local backend by default and never silently REVERTS to local when
+        // the gateway is absent — a missing gateway fails loud at select(), it does not
+        // get papered over with local inference ([[no-fallbacks-ever]]).
+        let local_llama_opt_in =
+            crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() == Some("1");
+        if let Some(reg_arc) = crate::model_registry::try_global().filter(|_| local_llama_opt_in) {
             for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
                 let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
                     self.log().info(&format!(
@@ -399,44 +703,63 @@ impl AIProviderModule {
                 // returns a clean error when mmproj is absent — we log
                 // the gap upfront so install scripts catch it before
                 // a real user hits "model declares Vision but mmproj
-                // missing" at request time.
+                // missing" at request time. Resolve via the ONE resolver
+                // (declared path OR the projector beside the GGUF in the
+                // HF cache), so a self-provisioned sibling reads as present
+                // and we don't false-warn on a model that will serve fine.
                 let needs_mmproj = model_meta.has(crate::model_registry::types::Capability::Vision)
                     || model_meta.has(crate::model_registry::types::Capability::AudioInput);
-                if needs_mmproj {
-                    match &model_meta.mmproj_local_path {
-                        None => self.log().info(&format!(
-                            "Adapter `{}` declares Vision/AudioInput but TOML has no \
-                             mmproj_local_path — multimodal calls will hard-error. \
-                             Add `mmproj_local_path = \"...\"` to the row.",
-                            model_meta.id
-                        )),
-                        Some(p) if !p.exists() => self.log().info(&format!(
-                            "Adapter `{}` declares Vision/AudioInput but mmproj file \
-                             missing at {} — multimodal calls will hard-error. \
-                             Install must pull this artifact alongside the GGUF.",
-                            model_meta.id,
-                            p.display()
-                        )),
-                        Some(_) => {} // present + on disk, good
-                    }
+                if needs_mmproj
+                    && crate::model_registry::artifacts::resolve_mmproj_for_model(model_meta)
+                        .is_none()
+                {
+                    self.log().info(&format!(
+                        "Adapter `{}` declares Vision/AudioInput but no mmproj projector \
+                         resolves — none declared, and none sits beside the GGUF in the HF \
+                         cache. Multimodal calls will hard-error. Pull the model's `*-GGUF` \
+                         repo (its projector ships alongside the GGUF) or add \
+                         `mmproj_local_path` to the row.",
+                        model_meta.id
+                    ));
                 }
                 self.log().info(&format!(
                     "Registering in-process llama.cpp adapter for model `{}`",
                     model_meta.id
                 ));
-                // Clamp to 32768 tokens. Models like qwen3.5-4b advertise
-                // n_ctx_train=262144, which would allocate a multi-GB F16
-                // KV cache per seq on load and reliably fail first-decode
-                // with `llama_decode returned -3` on any Mac that can't
-                // fit ~50GB of scratch. 32768 matches DMR's default and
-                // comfortably exceeds every persona RAG we currently
-                // build. Raise after footprint_registry reports real KV
-                // bytes and we have telemetry proving headroom.
+                // Serve at min(model's trained context, a conservative
+                // device-independent KV ceiling). The trained context comes
+                // from the Model row (`context_window`, hydrated from the
+                // GGUF `context_length` header) — never a per-model constant
+                // baked in here. A model advertising a very large trained
+                // window would otherwise allocate a multi-GB F16 KV cache
+                // per seq on load and reliably fail first-decode with
+                // `llama_decode returned -3` on any device that can't fit
+                // tens of GB of scratch, so we cap it; a model whose trained
+                // window is already below the ceiling serves at its real
+                // value rather than a fictitious larger one.
+                //
+                // The cap is now THE REAL BUDGET, not a placeholder. It used to be
+                // `const KV_SAFE_CONTEXT_CEILING: u32 = 32_768`, whose own comment said it
+                // was standing in "until task #79 lands: available VRAM (via the
+                // ResourceGovernor lease) divided by THIS model's KV bytes/token". #79
+                // landed — `footprint_for` gives the per-model KV rate and
+                // `governed_host_budget` gives the leased budget — and the placeholder was
+                // never removed, so every locally-registered GGUF kept serving cognition at
+                // 32k no matter what the machine or the model could hold. A placeholder
+                // that outlives its own stated precondition is just a clamp.
+                // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+                //
+                // Degrades honestly: an ungoverned host, or a model whose GGUF can't be
+                // sized, serves at the model's own trained window — never a fresh invented
+                // ceiling. Over-allocation is what this guards (a huge trained window would
+                // allocate multi-GB F16 KV per seq and fail first-decode with
+                // `llama_decode returned -3`), and the governed budget guards it correctly.
+                let effective_context = kv_safe_context(&model_meta);
                 let adapter_base = crate::inference::LlamaCppAdapter::with_model_id(
                     gguf_path.clone(),
                     model_meta.id.clone(),
                 )
-                .with_context_length(32768);
+                .with_context_length(effective_context);
 
                 // Probe the GGUF architecture at registration time and
                 // enable multi-seq continuous batching when safe (per
@@ -555,6 +878,40 @@ impl AIProviderModule {
             }
         }
 
+        // DwarfStar (ds4) sidecar — the V4-Flash deliberator lane (#306).
+        // Same probe-then-register shape as DMR: an OPERATOR-managed local
+        // OpenAI-compatible endpoint we consume, never spawn (#179 interop
+        // doctrine). Registered at priority 2 — below in-process llama.cpp
+        // (0) and DMR (1): ds4 only wins for the models it exclusively
+        // claims (deepseek-v4 prefix), so it can never shadow a lane. If
+        // the sidecar isn't up at boot it simply isn't registered; watchdog
+        // parity (re-register when it appears, deregister when it dies)
+        // follows once the lifecycle is governed.
+        let ds4_up = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:8901".parse().unwrap(),
+            Duration::from_secs(1),
+        )
+        .is_ok();
+        if ds4_up {
+            self.log()
+                .info("Registering DwarfStar (ds4) sidecar adapter (localhost:8901)");
+            let mut ds4 = Box::new(OpenAICompatibleAdapter::from_registry("ds4"))
+                as Box<dyn AIProviderAdapter>;
+            if let Err(e) = ds4.initialize().await {
+                self.log().warn(&format!(
+                    "ds4 adapter initialize failed: {e} — not registered"
+                ));
+            } else {
+                registry.register(Arc::from(ds4), 2);
+            }
+        } else {
+            self.log().info(
+                "ds4 sidecar not reachable on localhost:8901 — deepseek-v4-flash \
+                 unavailable this boot (launch ds4-server and reboot, or wait for \
+                 watchdog parity)",
+            );
+        }
+
         // Candle is NOT registered in the AI provider's inference registry.
         // Candle is a TRAINING framework (LoRA fine-tuning, autodiff, safetensors).
         // It does not belong in the same registry as inference providers.
@@ -585,95 +942,82 @@ impl AIProviderModule {
                 .warn("No providers available! Add API keys to ~/.continuum/config.env");
         }
 
+        // Intentional boot assertion: announce the ACTIVE inference path so a silent
+        // fallback can NEVER go unnoticed again ("we didn't even know it wasn't
+        // serving"). Registration only means key-present + adapter-configured — it
+        // does NOT mean a model is being SERVED. So we READ the serving daemon's
+        // published ServingSnapshot (the same `watch` seam personas bind on in
+        // supervisor slice 2) rather than issuing our own /v1/models probe:
+        // subscribers READ the snapshot, they do NOT each probe. The daemon owns
+        // serving health; this block owns "is there a served model for the gateway
+        // path". A missing/empty/unready serving plan surfaces LOUD, never falsely
+        // reported ✓. [[fallbacks-are-illegal-fail-loud]]
+        {
+            use crate::runtime::boot_status::{boot_status, BootStatusKind};
+            let local_note = if local_llama_opt_in {
+                " (+ CONTINUUM_LOCAL_LLAMA opt-in ALSO active)"
+            } else {
+                " — sole inference path"
+            };
+            if gateway_pending {
+                // The model is still cold-loading; the reactive watcher spawned
+                // above will register the gateway the instant the daemon reports
+                // ready (and emit its own ✓/✗ then). This boot line is honest about
+                // the in-progress state — NOT a false ✓, NOT a premature ✗.
+                boot_status(
+                    "inference",
+                    BootStatusKind::Degraded,
+                    "serving model still loading — inference gateway will register REACTIVELY when \
+                     the daemon reports ready (task #71). The gateway is the sole inference path; \
+                     calls before it registers fail loud at select(). No local fallback.",
+                );
+            } else if !gateway_registered {
+                boot_status(
+                    "inference",
+                    BootStatusKind::Failed,
+                    "inference gateway NOT registered — the serving daemon brought up NO ready model \
+                     within the readiness bound. Inference gateway REQUIRED; no local fallback.",
+                );
+            } else {
+                // Read the daemon's reconciled snapshot (bounded wait for its first
+                // reconcile so a boot race still resolves). One source of truth for
+                // "what is served" — no redundant HTTP probe of our own.
+                match crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await
+                {
+                    Some(snap) => {
+                        let model = snap.active_model.as_deref().unwrap_or("(unknown)");
+                        let short = model.rsplit('/').next().unwrap_or(model);
+                        boot_status(
+                            "inference",
+                            if local_llama_opt_in {
+                                BootStatusKind::Degraded
+                            } else {
+                                BootStatusKind::Ok
+                            },
+                            &format!(
+                                "inference gateway @ {base} — serving {short}{local_note}",
+                                base = snap.base_url
+                            ),
+                        );
+                    }
+                    None => boot_status(
+                        "inference",
+                        BootStatusKind::Failed,
+                        &format!(
+                            "serving daemon brought up NO ready model within {secs}s — load one \
+                             (UNSLOTH_MODEL / unsloth Studio) or check the serving plan. \
+                             Inference gateway REQUIRED; no local fallback.{local_note}",
+                            secs = crate::inference::llama_server::DEFAULT_SERVING_WAIT.as_secs()
+                        ),
+                    ),
+                }
+            }
+        }
+
         Ok(())
-    }
-
-    /// Parse TextGenerationRequest from JSON params
-    fn parse_request(&self, params: &Value) -> Result<TextGenerationRequest, String> {
-        let p = Params::new(params);
-
-        // Parse messages (array) or simple prompt (string)
-        let messages: Vec<ChatMessage> = if let Some(msgs) = p.value("messages") {
-            serde_json::from_value(msgs.clone())
-                .map_err(|e| format!("Failed to parse messages: {}", e))?
-        } else if let Some(prompt) = p.str_opt("prompt") {
-            vec![ChatMessage {
-                role: "user".to_string(),
-                content: MessageContent::Text(prompt.to_string()),
-                name: None,
-            }]
-        } else {
-            return Err("Missing messages or prompt".to_string());
-        };
-
-        if messages.is_empty() {
-            return Err("Messages cannot be empty".to_string());
-        }
-
-        Ok(TextGenerationRequest {
-            messages,
-            system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
-            model: p.str_opt("model").map(String::from),
-            provider: p.str_opt("provider").map(String::from),
-            temperature: p.f32_opt("temperature"),
-            max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
-            top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
-            top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-            repeat_penalty: p
-                .f32_opt("repeat_penalty")
-                .or_else(|| p.f32_opt("repeatPenalty")),
-            stop_sequences: p
-                .json_opt("stop_sequences")
-                .or_else(|| p.json_opt("stopSequences")),
-            tools: p.json_opt("tools"),
-            tool_choice: p.json_opt("tool_choice"),
-            response_format: None,
-            active_adapters: p.json_opt("activeAdapters"),
-            request_id: p.string_opt_alias("request_id", "requestId"),
-            user_id: p.string_opt_alias("user_id", "userId"),
-            room_id: p.string_opt_alias("room_id", "roomId"),
-            purpose: p.str_opt("purpose").map(String::from),
-            // Caller-provided persona attribution. TS sends `personaId`
-            // (camelCase) per Continuum convention; snake_case alias
-            // accepted for symmetry with the sibling fields.
-            persona_id: p.string_opt_alias("persona_id", "personaId"),
-        })
-    }
-
-    /// Convert response to JSON Value
-    fn response_to_json(&self, response: &TextGenerationResponse) -> Value {
-        let mut result = json!({
-            "success": true,
-            "text": response.text,
-            "finishReason": format!("{}", response.finish_reason),
-            "model": response.model,
-            "provider": response.provider,
-            "usage": {
-                "inputTokens": response.usage.input_tokens,
-                "outputTokens": response.usage.output_tokens,
-                "totalTokens": response.usage.total_tokens,
-                "estimatedCost": response.usage.estimated_cost
-            },
-            "responseTimeMs": response.response_time_ms,
-            "requestId": response.request_id
-        });
-
-        // Add content blocks if present
-        if let Some(content) = &response.content {
-            result["content"] = serde_json::to_value(content).unwrap_or(json!([]));
-        }
-
-        // Add tool calls if present
-        if let Some(tool_calls) = &response.tool_calls {
-            result["toolCalls"] = serde_json::to_value(tool_calls).unwrap_or(json!([]));
-        }
-
-        // Add routing info if present
-        if let Some(routing) = &response.routing {
-            result["routing"] = serde_json::to_value(routing).unwrap_or(json!({}));
-        }
-
-        result
     }
 }
 
@@ -829,241 +1173,40 @@ impl ServiceModule for AIProviderModule {
         Ok(())
     }
 
+    /// The migrated read-only `ai/*` introspection commands as typed self-routing
+    /// objects on the ONE registry. Each shares this module's `AdapterRegistry`;
+    /// the executor routes their names straight here (winning over the legacy
+    /// `ai/` prefix arm), and their `CommandSpec` descriptors flow into
+    /// `command_registry()` → the persona tool surface + grid ACL. The
+    /// `ai/generate` inference seam and the `_ => execute_ts` legacy TS-forward
+    /// remain in `handle_command` (separate concerns). See
+    /// [`crate::commands::ai`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::ai::command_objects(self.registry.clone())
+    }
+
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "ai/generate" => {
-                let _timer = TimingGuard::new("module", "ai_generate");
-
-                // Parse request
-                let request = self.parse_request(&params)?;
-
-                // Get registry
-                let registry = self.registry.read().await;
-
-                // Select adapter
-                let (provider_id, adapter) = registry
-                    .select(
-                        request.provider.as_deref(),
-                        request.model.as_deref(),
-                        InferenceDevice::default(),
-                    )
-                    .ok_or_else(|| {
-                        select_failure_message(
-                            &registry,
-                            request.provider.as_deref(),
-                            request.model.as_deref(),
-                        )
-                    })?;
-
-                self.log().info(&format!(
-                    "Using {} adapter for model {:?}",
-                    provider_id, request.model
-                ));
-
-                // Generate text
-                let mut response = adapter.generate_text(request).await?;
-
-                // Add routing info (preserve adapters_applied from adapter response)
-                let prior_routing = response.routing.take();
-                response.routing = Some(RoutingInfo {
-                    provider: provider_id.to_string(),
-                    is_local: adapter.capabilities().is_local,
-                    routing_reason: prior_routing
-                        .as_ref()
-                        .map(|r| r.routing_reason.clone())
-                        .unwrap_or_else(|| "adapter_selected".to_string()),
-                    adapters_applied: prior_routing
-                        .as_ref()
-                        .map(|r| r.adapters_applied.clone())
-                        .unwrap_or_default(),
-                    model_mapped: None,
-                    model_requested: prior_routing.and_then(|r| r.model_requested),
-                });
-
-                Ok(CommandResult::Json(self.response_to_json(&response)))
-            }
-
-            "ai/providers/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                // Get all provider info
-                let mut providers_info = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let caps = adapter.capabilities();
-                        providers_info.push(json!({
-                            "id": id,
-                            "name": adapter.name(),
-                            "defaultModel": adapter.default_model(),
-                            "capabilities": {
-                                "textGeneration": caps.supports_text_generation,
-                                "chat": caps.supports_chat,
-                                "toolUse": caps.supports_tool_use,
-                                "vision": caps.supports_vision,
-                                "streaming": caps.supports_streaming,
-                                "embeddings": caps.supports_embeddings,
-                                "isLocal": caps.is_local,
-                                "maxContextWindow": caps.max_context_window
-                            }
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "available": available,
-                    "providers": providers_info,
-                    "count": available.len()
-                })))
-            }
-
-            // Return ModelInfo for a specific provider+model.
-            // Called once at persona boot — PRG caches and passes the struct.
-            // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
-            "ai/model-info" => {
-                let p = Params::new(&params);
-                let provider = p.str_opt("provider");
-                let model = p.str_opt("model");
-
-                let registry = self.registry.read().await;
-                let (provider_id, adapter) = registry
-                    .select(provider, model, InferenceDevice::default())
-                    .ok_or("No adapter available for requested provider/model")?;
-
-                let models = adapter.get_available_models().await;
-                let model_name = model.unwrap_or(adapter.default_model());
-
-                // Find exact model or return default
-                let info = models
-                    .iter()
-                    .find(|m| {
-                        m.id.to_lowercase().contains(&model_name.to_lowercase())
-                            || model_name.to_lowercase().contains(&m.id.to_lowercase())
-                    })
-                    .or_else(|| models.first());
-
-                match info {
-                    Some(model_info) => Ok(CommandResult::Json(json!({
-                        "success": true,
-                        "provider": provider_id,
-                        "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
-                    }))),
-                    None => Ok(CommandResult::Json(json!({
-                        "success": false,
-                        "error": format!("No model info available for {}/{}", provider_id, model_name)
-                    }))),
-                }
-            }
-
-            "ai/providers/health" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut health_results = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let health = adapter.health_check().await;
-                        health_results.push(json!({
-                            "provider": id,
-                            "name": adapter.name(),
-                            "status": format!("{:?}", health.status).to_lowercase(),
-                            "apiAvailable": health.api_available,
-                            "responseTimeMs": health.response_time_ms,
-                            "message": health.message
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "providers": health_results
-                })))
-            }
-
-            "ai/models/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut all_models = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let models = adapter.get_available_models().await;
-                        for model in models {
-                            all_models.push(serde_json::to_value(&model).unwrap_or(json!({})));
-                        }
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "models": all_models,
-                    "count": all_models.len()
-                })))
-            }
-
-            "ai/lora/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut all_adapters = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let lora_adapters = adapter.list_lora_adapters();
-                        for lora in lora_adapters {
-                            all_adapters.push(json!({
-                                "provider": id,
-                                "adapterId": lora.adapter_id,
-                                "path": lora.path,
-                                "scale": lora.scale,
-                                "loaded": lora.loaded,
-                                "active": lora.active
-                            }));
-                        }
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "adapters": all_adapters,
-                    "count": all_adapters.len()
-                })))
-            }
-
-            "ai/lora/capabilities" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut capabilities = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let caps = adapter.lora_capabilities();
-                        capabilities.push(json!({
-                            "provider": id,
-                            "capabilities": format!("{:?}", caps)
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "providers": capabilities
-                })))
-            }
-
-            _ => {
-                // Forward unknown ai/* commands directly to TypeScript via Unix socket.
-                // MUST use execute_ts (not execute) to bypass Rust registry — otherwise
-                // the registry matches "ai/" prefix back to this module → infinite recursion.
-                use crate::runtime::command_executor;
-                let log = crate::runtime::logger("ai_provider");
-                log.info(&format!(
-                    "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
-                    command
-                ));
-                command_executor::execute_ts(command, params).await
-            }
+        // All typed `ai/*` commands (generate + introspection) now self-route through
+        // the registry via `commands()`. Anything still arriving here is an unmigrated
+        // `ai/*` name: forward it directly to TypeScript over the Unix socket.
+        // MUST use execute_ts (not execute) to bypass the Rust registry — otherwise the
+        // `ai/` prefix matches back to this module → infinite recursion. (This legacy
+        // TS-forward retires in Wave Z.)
+        let log = crate::runtime::logger("ai_provider");
+        log.info(&format!(
+            "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
+            command
+        ));
+        match self.executor.get() {
+            Some(exec) => exec.execute_ts(command, params).await,
+            None => Err(
+                "AIProviderModule: CommandExecutor not installed; cannot forward to TS".to_string(),
+            ),
         }
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1105,18 +1248,93 @@ pub async fn generate_text(
 
     let mut response = adapter.generate_text(request).await?;
 
-    // Add routing info
-    response.routing = Some(RoutingInfo {
-        provider: provider_id.to_string(),
-        is_local: adapter.capabilities().is_local,
-        routing_reason: "generate_text_call".to_string(),
-        adapters_applied: vec![],
-        model_mapped: None,
-        model_requested: response
-            .routing
-            .as_ref()
-            .and_then(|r| r.model_requested.clone()),
-    });
-
+    RoutingInfo::stamp(
+        &mut response.routing,
+        provider_id,
+        adapter.capabilities().is_local,
+        "generate_text_call",
+    );
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+
+    // what this catches: the refusal for an unknown/omitted model must name the
+    // model ids the registry actually serves, not just provider ids — a grid
+    // consumer with no local registry was refused with a list it could not act
+    // on (card a466fdd4, IntelMac → 5090, 2026-09-04).
+    #[test]
+    fn select_failure_message_names_served_models_for_model_and_no_specifier() {
+        let heuristic = HeuristicInferenceAdapter::new();
+        let provider = heuristic.provider_id().to_string();
+        let model = heuristic.default_model().to_string();
+        let mut registry = AdapterRegistry::new();
+        registry.register(Arc::new(heuristic), 0);
+
+        let by_model = select_failure_message(&registry, None, Some("no-such-model"));
+        assert!(by_model.contains("no-such-model"), "{by_model}");
+        assert!(
+            by_model.contains(&format!("{provider}={model}")),
+            "{by_model}"
+        );
+
+        let unspecified = select_failure_message(&registry, None, None);
+        assert!(unspecified.contains("never picks one"), "{unspecified}");
+        assert!(
+            unspecified.contains(&format!("{provider}={model}")),
+            "{unspecified}"
+        );
+
+        let bad_provider = select_failure_message(&registry, Some("ghost"), None);
+        assert!(bad_provider.contains("\"ghost\""), "{bad_provider}");
+        assert!(bad_provider.contains(&provider), "{bad_provider}");
+    }
+
+    // what this catches: a gateway adapter's catalog `default_model` is a
+    // DERIVED value that can misname the live lane (5090 2026-07-24); once the
+    // daemon has verified what the lane serves (`ensure_runtime_model`), the
+    // refusal must point callers at THAT id, never the catalog placeholder —
+    // otherwise the "actionable" refusal sends them into a second refusal
+    // (#3696 review finding #1).
+    #[test]
+    fn served_models_prefers_verified_runtime_ids_over_catalog_default() {
+        // Built from a plain config, not `from_registry`: the model registry
+        // singleton is a boot-path concern, and this test is about the
+        // adapter's own runtime set vs its declared default.
+        let gateway =
+            OpenAICompatibleAdapter::new(crate::ai::openai_adapter::OpenAICompatibleConfig {
+                provider_id: crate::inference::llama_server::PROVIDER_ID.into(),
+                name: "llama-server (test)".into(),
+                base_url: "http://127.0.0.1:0".into(),
+                api_key_env: None,
+                default_model: "catalog-default".into(),
+                capabilities: std::collections::BTreeSet::new(),
+                models: Vec::new(),
+                model_prefixes: Vec::new(),
+                requires_auth: false,
+                tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+                thinking: crate::ai::openai_adapter::ThinkingMode::Default,
+                single_resident_model: false,
+                dynamic_model_catalog: false,
+                llamacpp_sampling_extensions: false,
+            });
+        let catalog_default = gateway.default_model().to_string();
+        assert_eq!(gateway.served_model_ids(), vec![catalog_default.clone()]);
+
+        gateway.ensure_runtime_model("ornith-ai/Ornith-1.5-35B-A3B-GGUF");
+        assert_eq!(
+            gateway.served_model_ids(),
+            vec!["ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string()],
+            "verified runtime set must replace the catalog default"
+        );
+
+        let mut registry = AdapterRegistry::new();
+        registry.register(Arc::new(gateway), 0);
+        let msg = select_failure_message(&registry, None, Some("nope"));
+        assert!(msg.contains("=ornith-ai/Ornith-1.5-35B-A3B-GGUF"), "{msg}");
+        assert!(!msg.contains(&format!("={catalog_default}")), "{msg}");
+    }
 }

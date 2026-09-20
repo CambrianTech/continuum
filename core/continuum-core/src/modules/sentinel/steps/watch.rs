@@ -205,6 +205,7 @@ mod tests {
             registry,
             bus: Some(bus),
             steps_log_path: None,
+            executor: None,
         }
     }
 
@@ -344,6 +345,7 @@ mod tests {
             registry: &registry,
             bus: None,
             steps_log_path: None,
+            executor: None,
         };
         let mut ctx = test_ctx();
 

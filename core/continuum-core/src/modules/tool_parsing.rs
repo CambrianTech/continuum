@@ -1,19 +1,21 @@
-//! ToolParsingModule — stateless tool call parsing + correction IPC.
+//! ToolParsingModule — tool-call parsing + name-codec.
 //!
-//! Commands:
-//! - `tool-parsing/parse`: Parse response text -> tool calls + cleaned text
-//! - `tool-parsing/correct`: Correct a single tool call (name + params)
-//! - `tool-parsing/register-tools`: Register tool names for codec
-//! - `tool-parsing/decode-name`: Decode a model-produced tool name
-//! - `tool-parsing/encode-name`: Encode a tool name for API transmission
+//! All five verbs are migrated to the typed [`DynCommand`](crate::sdk_codegen::DynCommand)
+//! registry under `commands/tool_parsing/` (task #62):
+//! - `tool-parsing/parse` / `tool-parsing/correct` — stateless (self-register).
+//! - `tool-parsing/register-tools` / `tool-parsing/decode-name` /
+//!   `tool-parsing/encode-name` — dep-holding over this module's shared
+//!   [`ToolNameCodec`], contributed via [`commands()`](ToolParsingModule::commands).
+//!
+//! The module retains only the shared codec state; its legacy `handle_command`
+//! arms now fail loud, directing callers to the typed `route_object` path.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::tool_parsing::{self, ToolNameCodec};
-use crate::utils::params::Params;
+use crate::sdk_codegen::DynCommand;
+use crate::tool_parsing::ToolNameCodec;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct ToolParsingModule {
@@ -52,73 +54,28 @@ impl ServiceModule for ToolParsingModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
+    /// Expose the dep-holding codec verbs (register-tools / decode-name /
+    /// encode-name) over this module's shared [`ToolNameCodec`]. The stateless
+    /// `parse` / `correct` verbs are NOT here — they self-register.
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        crate::commands::tool_parsing::command_objects(self.codec.clone())
+    }
 
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // All five verbs are migrated to the typed registry (commands/tool_parsing/).
+        // The codec verbs route via `route_object` against THIS module's shared codec
+        // (contributed by `commands()`); parse/correct are stateless and self-register.
         match command {
-            "tool-parsing/parse" => {
-                let response_text = p.str("response_text")?;
-                let model_family = p.str_opt("model_family");
-                let result =
-                    tool_parsing::parse_and_correct_with_family(response_text, model_family);
-                CommandResult::json(&result)
-            }
-
-            "tool-parsing/correct" => {
-                let tool_name = p.str("tool_name")?;
-                let parameters: HashMap<String, String> = match params.get("parameters") {
-                    Some(Value::Object(map)) => map
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                match v {
-                                    Value::String(s) => s.clone(),
-                                    _ => v.to_string(),
-                                },
-                            )
-                        })
-                        .collect(),
-                    _ => HashMap::new(),
-                };
-                let corrected = tool_parsing::correction::correct_tool_call(tool_name, &parameters);
-                CommandResult::json(&corrected)
-            }
-
-            "tool-parsing/register-tools" => {
-                let tools: Vec<String> = match params.get("tools") {
-                    Some(Value::Array(arr)) => arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect(),
-                    _ => return Err("Missing 'tools' array".to_string()),
-                };
-                let count = tools.len();
-                self.codec.register_all(&tools);
-                Ok(CommandResult::Json(serde_json::json!({
-                    "registered": count,
-                    "total": self.codec.count(),
-                })))
-            }
-
-            "tool-parsing/decode-name" => {
-                let raw = p.str("name")?;
-                let decoded = self.codec.decode(raw);
-                Ok(CommandResult::Json(serde_json::json!({
-                    "decoded": decoded,
-                    "changed": decoded != raw,
-                })))
-            }
-
-            "tool-parsing/encode-name" => {
-                let name = p.str("name")?;
-                let encoded = self.codec.encode(name);
-                Ok(CommandResult::Json(serde_json::json!({
-                    "encoded": encoded,
-                })))
-            }
-
-            _ => Err(format!("Unknown command: {command}")),
+            "tool-parsing/parse"
+            | "tool-parsing/correct"
+            | "tool-parsing/register-tools"
+            | "tool-parsing/decode-name"
+            | "tool-parsing/encode-name" => Err(format!(
+                "'{command}' is migrated to the typed registry \
+                 (commands/tool_parsing/) — it must route via route_object, \
+                 not the legacy handle_command path"
+            )),
+            _ => Err(format!("unknown tool-parsing command: {command}")),
         }
     }
 
@@ -131,128 +88,45 @@ impl ServiceModule for ToolParsingModule {
 mod tests {
     use super::*;
 
+    // what this catches: every migrated verb now fails loud through the legacy
+    // path, naming itself + pointing at the typed registry (no silent success that
+    // would mask a routing regression). The behavioral tests live in the command
+    // files (commands/tool_parsing/*).
     #[tokio::test]
-    async fn test_parse_command() {
+    async fn migrated_arms_fail_loud() {
         let module = ToolParsingModule::new();
-        let params = serde_json::json!({
-            "response_text": "<tool_use><tool_name>code/search</tool_name><parameters><query>test</query></parameters></tool_use>"
-        });
-        let result = module.handle_command("tool-parsing/parse", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let calls = json["tool_calls"].as_array().unwrap();
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0]["tool_name"], "code/search");
-            // query -> pattern (correction)
-            assert!(calls[0]["parameters"]["pattern"].is_string());
+        for command in [
+            "tool-parsing/parse",
+            "tool-parsing/correct",
+            "tool-parsing/register-tools",
+            "tool-parsing/decode-name",
+            "tool-parsing/encode-name",
+        ] {
+            let err = module
+                .handle_command(command, Value::Null)
+                .await
+                .expect_err("migrated arm must fail loud");
+            assert!(err.contains("migrated"), "for {command}: {err}");
+            assert!(err.contains(command), "for {command}: {err}");
         }
     }
 
-    #[tokio::test]
-    async fn test_correct_command() {
+    // what this catches: the module contributes the three dep-holding codec verbs
+    // to the typed object map (sharing its one codec). A regression that drops the
+    // `commands()` override — leaving them unroutable — is caught.
+    #[test]
+    fn contributes_the_typed_codec_commands() {
         let module = ToolParsingModule::new();
-        let params = serde_json::json!({
-            "tool_name": "workspace/tree",
-            "parameters": { "directory": "./src" }
-        });
-        let result = module.handle_command("tool-parsing/correct", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["tool_name"], "code/tree");
-            assert_eq!(json["name_changed"], true);
-            assert_eq!(json["parameters"]["path"], "./src");
-        }
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"tool-parsing/register-tools"));
+        assert!(names.contains(&"tool-parsing/decode-name"));
+        assert!(names.contains(&"tool-parsing/encode-name"));
     }
 
+    // what this catches: an unmigrated/unknown verb still errors (not a panic, not
+    // a silent ok).
     #[tokio::test]
-    async fn test_register_and_decode() {
-        let module = ToolParsingModule::new();
-
-        // Register tools
-        let reg_params = serde_json::json!({
-            "tools": ["code/write", "code/read", "collaboration/chat/send"]
-        });
-        let reg_result = module
-            .handle_command("tool-parsing/register-tools", reg_params)
-            .await;
-        assert!(reg_result.is_ok());
-        if let Ok(CommandResult::Json(json)) = reg_result {
-            assert_eq!(json["registered"], 3);
-            assert_eq!(json["total"], 3);
-        }
-
-        // Decode encoded name
-        let dec_params = serde_json::json!({ "name": "code_write" });
-        let dec_result = module
-            .handle_command("tool-parsing/decode-name", dec_params)
-            .await;
-        assert!(dec_result.is_ok());
-        if let Ok(CommandResult::Json(json)) = dec_result {
-            assert_eq!(json["decoded"], "code/write");
-            assert_eq!(json["changed"], true);
-        }
-
-        // Decode with prefix
-        let prefix_params = serde_json::json!({ "name": "$FUNCTIONS.code_write" });
-        let prefix_result = module
-            .handle_command("tool-parsing/decode-name", prefix_params)
-            .await;
-        assert!(prefix_result.is_ok());
-        if let Ok(CommandResult::Json(json)) = prefix_result {
-            assert_eq!(json["decoded"], "code/write");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_encode_command() {
-        let module = ToolParsingModule::new();
-        let params = serde_json::json!({ "name": "collaboration/chat/send" });
-        let result = module
-            .handle_command("tool-parsing/encode-name", params)
-            .await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["encoded"], "collaboration_chat_send");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_parse_with_model_family() {
-        let module = ToolParsingModule::new();
-        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
-        let params = serde_json::json!({
-            "response_text": text,
-            "model_family": "hermes"
-        });
-        let result = module.handle_command("tool-parsing/parse", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let calls = json["tool_calls"].as_array().unwrap();
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0]["format"], "hermes");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_parse_deepseek_via_ipc() {
-        let module = ToolParsingModule::new();
-        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"test.ts\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
-        let params = serde_json::json!({
-            "response_text": text,
-            "model_family": "deepseek"
-        });
-        let result = module.handle_command("tool-parsing/parse", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let calls = json["tool_calls"].as_array().unwrap();
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0]["tool_name"], "code/read");
-            assert_eq!(calls[0]["format"], "deepseek");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_unknown_command() {
+    async fn unknown_command_errors() {
         let module = ToolParsingModule::new();
         let result = module
             .handle_command("tool-parsing/nope", Value::Null)

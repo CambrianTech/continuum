@@ -37,7 +37,7 @@
 //! remedy (inspect, repair, or delete to mint fresh), and the
 //! provider moves on to the next persona directory.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -62,7 +62,15 @@ pub struct ResumeOrMintProvider {
     min_personas: usize,
     /// Counter of fresh personas yielded.
     minted_count: usize,
+    /// The grid's answer to "is a team already seated elsewhere?" — the one-roster
+    /// rule (`grid_roster_memory`). `None` = no view wired (tests, single-node
+    /// builds): the floor stands.
+    grid_view: Option<GridView>,
+    /// The deferral is said once per draw (rewind resets it), not once per slot.
+    deferral_said: bool,
 }
+
+type GridView = std::sync::Arc<dyn Fn() -> Option<crate::persona::grid_roster_memory::GridRosterFact> + Send + Sync>;
 
 impl ResumeOrMintProvider {
     /// Construct by scanning `<continuum_root>/personas/` for existing
@@ -84,7 +92,18 @@ impl ResumeOrMintProvider {
         continuum_root: &Path,
         min_personas: usize,
     ) -> Result<Self, PersonaIdentityError> {
-        let personas_dir = continuum_root.join("personas");
+        // Scan the CANONICAL citizen layout (`<root>/citizens/personas/`) — the
+        // same parent `citizen_home_path` writes homes under — NOT the pre-Slice-4
+        // `<root>/personas/` this used to join. The old literal never matched where
+        // the runtime actually persists homes, so it found nothing and minted a
+        // stranger every boot instead of resuming — breaking persona persistence /
+        // self-determination (a persona's identity.key + engrams.sqlite were on
+        // disk but unseen). `citizens_kind_dir` is the single source of truth, so
+        // the read path can't drift from the write path again.
+        let personas_dir = crate::context::citizens_kind_dir(
+            continuum_root,
+            crate::identity::IdentityKind::Persona,
+        );
         let resumed = scan_personas_dir(&personas_dir).await?;
         tracing::info!(
             personas_dir = %personas_dir.display(),
@@ -97,7 +116,50 @@ impl ResumeOrMintProvider {
             resumed_cursor: 0,
             min_personas,
             minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
         })
+    }
+
+    /// Wire the grid's view of teams seated elsewhere. With it, an EMPTY node that
+    /// hears a team mints none (its resumed citizens still seat); without it the
+    /// mint floor stands as configured.
+    pub fn with_grid_view(mut self, view: GridView) -> Self {
+        self.grid_view = Some(view);
+        self
+    }
+
+    /// The mint floor NOW: the configured floor, or zero while the grid already
+    /// seats a team elsewhere (returned alongside, for the receipt).
+    fn mint_floor(&self) -> (usize, Option<crate::persona::grid_roster_memory::GridRosterFact>) {
+        match self.grid_view.as_ref().and_then(|v| v()) {
+            Some(team) => (0, Some(team)),
+            None => (self.min_personas, None),
+        }
+    }
+
+    /// How many identities this provider WILL yield: every resumed citizen on
+    /// disk, floored by the mint floor. The spawner's plan must be sized to
+    /// THIS number, not to the floor alone — before #432, `plan.len()` came
+    /// from `CONTINUUM_PERSONA_FLOOR` while the provider held every resumed
+    /// seed, so with 5 seeds and floor=1 only the alphabetically-first citizen
+    /// came online and the rest sat on disk, silently unhosted. The floor
+    /// stays a MINT floor (how many to create when the disk is emptier than
+    /// it); it must never CAP how many existing citizens resume.
+    pub fn identities_available(&self) -> usize {
+        self.resumed.len().max(self.mint_floor().0)
+    }
+
+    /// Start the draw over. The provider is built ONCE at boot and every hosting
+    /// attempt draws from it; an attempt that walks the whole list and then fails
+    /// (2026-09-12 02:42Z: the daemon was mid-restart, five spawns failed after the
+    /// draw) left the cursor at the end, and the next 700 attempts read "identity
+    /// provider exhausted at slot 0" from a directory holding twelve citizens. A retry
+    /// that cannot succeed is not a retry. Nothing was hosted, so nothing is double-drawn.
+    pub fn rewind(&mut self) {
+        self.resumed_cursor = 0;
+        self.minted_count = 0;
+        self.deferral_said = false;
     }
 }
 
@@ -117,12 +179,29 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
             return Ok(Some(intent));
         }
 
-        // Phase 2: floor-mint up to min_personas total.
+        // Phase 2: floor-mint up to the mint floor — the configured floor, or ZERO
+        // while a team is already seated elsewhere on the grid (the one-roster rule,
+        // card b3b922c0): this node offers lanes instead of minting a second team.
         let total_yielded = self.resumed.len() + self.minted_count;
-        if total_yielded < self.min_personas {
+        let (floor, team_elsewhere) = self.mint_floor();
+        if total_yielded < floor {
             let intent = mint_fresh_intent();
             self.minted_count += 1;
             return Ok(Some(intent));
+        }
+        if let Some(team) = team_elsewhere {
+            if total_yielded < self.min_personas && !self.deferral_said {
+                self.deferral_said = true;
+                crate::probe!(
+                    class = "persona.host.mint_deferred_to_grid",
+                    residents_elsewhere = u64::from(team.residents),
+                    peers_elsewhere = team.peers as u64,
+                    heard_at_ms = team.heard_at_ms,
+                    resumed = self.resumed.len() as u64,
+                    mint_floor = self.min_personas as u64,
+                    "a team is already seated on the grid — this node mints none and offers lanes"
+                );
+            }
         }
 
         // Phase 3: exhausted.
@@ -158,7 +237,9 @@ pub(crate) fn now_ms() -> u64 {
 ///
 /// Missing personas dir returns empty Vec — that's the "first boot"
 /// path and not an error.
-async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
+async fn scan_personas_dir(
+    personas_dir: &Path,
+) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
     let mut entries = match tokio::fs::read_dir(personas_dir).await {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -183,12 +264,15 @@ async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityInt
     // alphabetically so behavior is reproducible. Reviewer-defect-
     // driven (continuum #1507 finding 7).
     let mut dir_entries: Vec<std::path::PathBuf> = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|source| {
-        PersonaIdentityError::HomeScanFailed {
-            path: personas_dir.to_path_buf(),
-            source,
-        }
-    })? {
+    while let Some(entry) =
+        entries
+            .next_entry()
+            .await
+            .map_err(|source| PersonaIdentityError::HomeScanFailed {
+                path: personas_dir.to_path_buf(),
+                source,
+            })?
+    {
         if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
             // Each direct child of personas/ should be a persona
             // directory; non-dir entries (stray file, .DS_Store, etc.)
@@ -234,6 +318,38 @@ async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityInt
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a hosting retry drawing from a cursor a failed attempt left
+    // at the end — the 2026-09-12 boot that read "exhausted at slot 0" 700 times with
+    // twelve citizens on disk. After a rewind the provider yields the same identities
+    // again, resumed first, then the mint floor.
+    #[tokio::test]
+    async fn a_rewound_provider_yields_its_identities_again() {
+        let mut p = ResumeOrMintProvider {
+            resumed: vec![mint_fresh_intent(), mint_fresh_intent()],
+            resumed_cursor: 0,
+            min_personas: 3,
+            minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
+        };
+        let mut first = Vec::new();
+        while let Some(i) = p.next_persona().await.expect("draw") {
+            first.push(i.agent_name.clone());
+        }
+        assert_eq!(first.len(), 3, "two resumed + one minted to the floor");
+        assert!(p.next_persona().await.expect("draw").is_none(), "exhausted after a full draw");
+        p.rewind();
+        let again: Vec<String> = {
+            let mut v = Vec::new();
+            while let Some(i) = p.next_persona().await.expect("draw") {
+                v.push(i.agent_name.clone());
+            }
+            v
+        };
+        assert_eq!(again.len(), 3);
+        assert_eq!(&again[..2], &first[..2], "resumed identities come back in order");
+    }
+
     use super::*;
     use tempfile::TempDir;
 
@@ -254,12 +370,19 @@ mod tests {
     #[tokio::test]
     async fn resumes_existing_persona_from_seed() {
         let temp = TempDir::new().unwrap();
-        let personas_dir = temp.path().join("personas").join("Pax");
+        // Mirror PRODUCTION layout via the same helper the resumer uses, so this
+        // test exercises the real scan path (the bug was the resumer reading a
+        // different literal than the writer — a hardcoded `personas/` here would
+        // re-introduce exactly that blind spot).
+        let personas_dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+                .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&seed_path, &seed).await.unwrap();
 
@@ -276,15 +399,62 @@ mod tests {
         assert!(exhausted.is_none());
     }
 
+    // what this catches (#432): the floor ORPHANING resumed citizens. The
+    // spawner's plan must be sized to identities_available() — every resumed
+    // seed on disk, floored by the mint floor — not to the floor alone. Before
+    // this, 5 seeds + floor=1 meant one hosted citizen and four sitting on
+    // disk, silently unhosted forever.
+    #[tokio::test]
+    async fn identities_available_counts_every_resumed_seed_above_the_floor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Empty disk: the mint floor is the whole population.
+        let empty = ResumeOrMintProvider::new(temp.path(), 2)
+            .await
+            .expect("provider");
+        assert_eq!(empty.identities_available(), 2);
+
+        // Three seeds on disk with floor=1: every resumed citizen gets a slot.
+        // Same production layout + writer helper as the other resume tests.
+        let dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+        for i in 0..3u32 {
+            let name = format!("Citizen{i}");
+            let seed = PersonaSeedFile::V1 {
+                persona_id: Uuid::from_u128(0x432_0000 + u128::from(i)),
+                agent_name: name.clone(),
+                created_at_ms: 1_717_200_000_000,
+                avatar_vrm: None,
+            };
+            write_seed_atomic(&dir.join(&name).join("seed.json"), &seed)
+                .await
+                .expect("write seed");
+        }
+        let provider = ResumeOrMintProvider::new(temp.path(), 1)
+            .await
+            .expect("provider");
+        assert_eq!(
+            provider.identities_available(),
+            3,
+            "floor must MINT, never CAP: all resumed citizens count"
+        );
+    }
+
     #[tokio::test]
     async fn resumes_one_plus_mints_to_floor() {
         let temp = TempDir::new().unwrap();
-        let personas_dir = temp.path().join("personas").join("Pax");
+        // Mirror PRODUCTION layout via the same helper the resumer uses, so this
+        // test exercises the real scan path (the bug was the resumer reading a
+        // different literal than the writer — a hardcoded `personas/` here would
+        // re-introduce exactly that blind spot).
+        let personas_dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+                .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::new_v4(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&seed_path, &seed).await.unwrap();
 
@@ -303,16 +473,20 @@ mod tests {
     #[tokio::test]
     async fn corrupted_seed_is_skipped_not_fatal() {
         let temp = TempDir::new().unwrap();
+        // Canonical citizen layout (same helper production scans).
+        let citizens =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         // Good persona.
-        let good = temp.path().join("personas").join("Pax").join("seed.json");
+        let good = citizens.join("Pax").join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::new_v4(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&good, &seed).await.unwrap();
         // Corrupted persona.
-        let bad_dir = temp.path().join("personas").join("Broken");
+        let bad_dir = citizens.join("Broken");
         tokio::fs::create_dir_all(&bad_dir).await.unwrap();
         tokio::fs::write(bad_dir.join("seed.json"), b"definitely not json")
             .await
@@ -323,7 +497,10 @@ mod tests {
         let first = provider.next_persona().await.unwrap().unwrap();
         assert_eq!(first.agent_name, "Pax");
         let exhausted = provider.next_persona().await.unwrap();
-        assert!(exhausted.is_none(), "broken seed should not have been yielded");
+        assert!(
+            exhausted.is_none(),
+            "broken seed should not have been yielded"
+        );
     }
 
     #[tokio::test]
@@ -342,5 +519,37 @@ mod tests {
         let intent = mint_fresh_intent();
         let derived = agent_name_from_identity(&intent.persona_id.to_string());
         assert_eq!(intent.agent_name, derived);
+    }
+
+    // what this catches: the one-roster rule at the provider — an EMPTY node that hears a
+    // team seated elsewhere yields nothing (plan sized to zero, no mint), a node WITH
+    // homes still resumes every one of them and mints no top-up, and with no team
+    // elsewhere the configured floor mints as before.
+    #[tokio::test]
+    async fn an_empty_node_that_hears_a_team_mints_none_and_resumed_homes_still_seat() {
+        use crate::persona::grid_roster_memory::GridRosterFact;
+        let team: GridView = std::sync::Arc::new(|| Some(GridRosterFact { peers: 1, residents: 16, heard_at_ms: 1 }));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut empty = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(team.clone());
+        assert_eq!(empty.identities_available(), 0, "the plan is sized to what will be yielded: nothing");
+        assert!(empty.next_persona().await.unwrap().is_none(), "no mint while a team is seated elsewhere");
+
+        let dir = crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+        for id in ["9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7", "1c1d7cc2-7b4a-4f2e-9f7a-1c1d7cc27b4a"] {
+            let pid = Uuid::parse_str(id).unwrap();
+            let seed = PersonaSeedFile::V1 { persona_id: pid, agent_name: format!("R{}", &id[..2]), created_at_ms: 1, avatar_vrm: None };
+            let seed_path = dir.join(id).join("seed.json");
+            tokio::fs::create_dir_all(seed_path.parent().unwrap()).await.unwrap();
+            write_seed_atomic(&seed_path, &seed).await.unwrap();
+        }
+        let mut homed = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(team);
+        assert_eq!(homed.identities_available(), 2, "every home on disk seats; the top-up mint is deferred");
+        assert!(homed.next_persona().await.unwrap().is_some());
+        assert!(homed.next_persona().await.unwrap().is_some());
+        assert!(homed.next_persona().await.unwrap().is_none());
+
+        let alone: GridView = std::sync::Arc::new(|| None);
+        let lone = ResumeOrMintProvider::new(temp.path(), 3).await.expect("provider").with_grid_view(alone);
+        assert_eq!(lone.identities_available(), 3, "nobody elsewhere: the floor mints as before");
     }
 }

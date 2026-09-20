@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Instant;
 
+use crate::model_registry::Capability;
 use crate::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
@@ -34,11 +35,11 @@ pub struct AnthropicAdapter {
     initialized: bool,
     /// Resolved from registry at construction. Held as `String` so
     /// `default_model()` can return `&str`. No hardcoded CLAUDE_* const
-    /// — the ID lives in `config/models.toml`, this is the cached view.
+    /// — the ID lives in the Rust catalog (catalog.rs), this is the cached view.
     default_model: String,
     /// Cheapest Anthropic model by `cost_input_per_1k`, used for the
     /// auth-probe health check. Picked at construction rather than
-    /// hardcoded so a TOML edit that adds a cheaper model
+    /// hardcoded so a catalog edit that adds a cheaper model
     /// (Claude 4.0 Haiku?) takes effect without code changes.
     health_check_model: String,
 }
@@ -57,7 +58,7 @@ impl AnthropicAdapter {
         let default_model = reg
             .provider("anthropic")
             .and_then(|p| p.default_model.clone())
-            .expect("anthropic provider has no default_model in config/providers.toml");
+            .expect("anthropic provider has no default_model in the Rust catalog (catalog.rs)");
         let health_check_model = reg
             .models_for_provider("anthropic")
             .min_by(|a, b| {
@@ -241,7 +242,7 @@ struct AnthropicUsage {
 }
 
 // Model IDs
-// Model identity lives in config/models.toml + config/providers.toml.
+// Model identity lives in the Rust catalog (catalog.rs).
 // Adapter caches resolved ids in `self.default_model` + `self.health_check_model`
 // at construction. Any code that needs a Claude id reads it via the
 // registry, not via a constant here.
@@ -257,31 +258,23 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: true,
-            supports_vision: true,
-            supports_streaming: true,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
-            is_local: false,
-            max_context_window: 200000,
-
-            // Arc 1: Anthropic ships native function calling (tool_use blocks)
-            // + native JSON Schema enforcement. Vision-in native; audio bridged.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling,
-            structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::JsonSchema,
-            modalities: crate::ai::adapter::ModalitySet {
-                text_in: true,
-                text_out: true,
-                vision_in: true,
-                audio_in: false,
-                audio_out: false,
-            },
-            max_output_tokens: 8192,
-        }
+        // Anthropic: native function calling (tool_use blocks) + native JSON
+        // Schema enforcement, streaming, and vision-in. Audio is bridged
+        // (STT/TTS) since it's absent from the set. Embeddings/image-gen not
+        // offered by this API.
+        AdapterCapabilities::builder()
+            .capabilities([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ])
+            .remote()
+            .context_window(200_000)
+            .max_output_tokens(8_192)
+            .protocols(crate::ai::adapter::NativeProtocols::FunctionCalling)
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {
@@ -328,11 +321,31 @@ impl AIProviderAdapter for AnthropicAdapter {
         let (messages, msg_system) = self.format_messages(&request.messages);
         let system_prompt = request.system_prompt.as_deref().or(msg_system.as_deref());
 
+        // Anthropic's Messages API REQUIRES max_tokens — it cannot be omitted. When
+        // the caller leaves it unset (`None` = "the model owns its length"), derive
+        // the ceiling from the model's reported capability rather than inventing a
+        // magic inline number. The capability is the single authority on this model's
+        // real output limit; the adapter just reads it.
+        let Some(max_tokens) = request
+            .max_tokens
+            .or_else(|| self.capabilities().max_output_tokens)
+        else {
+            // Undeclared is now representable (it used to silently inherit a 2048 floor), so
+            // handle it honestly: this provider's API cannot proceed without the number, and
+            // inventing one is the exact defect that floor was. Fail loud.
+            return Err(
+                "Anthropic requires max_tokens and this adapter declares no \
+                        max_output_tokens capability — declare it via \
+                        AdapterCapabilities::builder().max_output_tokens(n)"
+                    .to_string(),
+            );
+        };
+
         // Build request body
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens.unwrap_or(1024),
+            "max_tokens": max_tokens,
             "temperature": request.temperature.unwrap_or(0.7)
         });
 
@@ -469,8 +482,13 @@ impl AIProviderAdapter for AnthropicAdapter {
             } else {
                 Some(tool_calls)
             },
+            // TODO: Anthropic extended-thinking blocks could populate this; until
+            // that's wired, Claude reasoning isn't separated here (it doesn't leak —
+            // Claude doesn't emit inline <think> in text).
+            reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         })
     }
 
@@ -543,7 +561,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        // Source of truth lives in config/models.toml. Registry projects
+        // Source of truth lives in the Rust catalog (catalog.rs). Registry projects
         // each model_registry::Model to the legacy ai::ModelInfo shape
         // via the From impl in registry_bridge.
         super::registry_bridge::models_for_provider_via_registry("anthropic")
@@ -556,11 +574,19 @@ impl AIProviderAdapter for AnthropicAdapter {
 
 impl AnthropicAdapter {
     fn calculate_cost(&self, input_tokens: u32, output_tokens: u32, model: &str) -> f64 {
-        let (input_cost, output_cost) = match model {
-            m if m.contains("sonnet") => (0.003, 0.015),
-            m if m.contains("opus") => (0.015, 0.075),
-            m if m.contains("haiku") => (0.00025, 0.00125),
-            _ => (0.003, 0.015), // Default to Sonnet pricing
+        // Per-model cost is a registry FACT (#70) — read it, never re-guess it
+        // from the name, and never silently default an unknown model to Sonnet
+        // pricing (that was a fallback masking a misconfig). An unmodeled id
+        // genuinely has no cost estimate; report 0 and name it, loudly.
+        let (input_cost, output_cost) = match crate::model_registry::global().model(model) {
+            Some(m) => (m.cost_input_per_1k as f64, m.cost_output_per_1k as f64),
+            None => {
+                crate::clog_warn!(
+                    "calculate_cost: model '{model}' not in registry — \
+                     no cost fields to read; reporting 0 (telemetry only, not dispatch)"
+                );
+                (0.0, 0.0)
+            }
         };
 
         (input_tokens as f64 / 1000.0) * input_cost + (output_tokens as f64 / 1000.0) * output_cost

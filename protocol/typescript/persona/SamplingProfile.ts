@@ -21,9 +21,22 @@ topK: number,
  */
 topP: number, 
 /**
- * Repeat penalty. 1.0 = off; typical 1.05–1.15 for chat.
+ * Repeat penalty. 1.0 = off; typical 1.05–1.15 for chat. Windowed
+ * over the last `repeat_last_n` tokens.
  */
 repeatPenalty: number, 
+/**
+ * Window (trailing tokens) `repeat_penalty` scans. Widened past
+ * llama.cpp's default 64 so a loop whose span exceeds 64 tokens is
+ * still caught (#181). 0 = disabled.
+ */
+repeatLastN: number, 
+/**
+ * Unwindowed repetition guard — penalizes a token by its whole-
+ * sequence frequency, catching gap-separated loops the windowed
+ * penalty misses (#181). 0.0 = off. llama.cpp-family gateways only.
+ */
+frequencyPenalty: number, 
 /**
  * Maximum tokens to generate per response. Derived from role's
  * `max_response_chars` divided by approximate chars-per-token

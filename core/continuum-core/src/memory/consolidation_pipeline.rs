@@ -54,12 +54,27 @@ pub fn to_corpus_memory(memory: &ConsolidatedMemory) -> CorpusMemory {
             }
             .to_string(),
             content: memory.content.clone(),
-            context: serde_json::json!({
-                "sessionId": memory.session_id.to_string(),
-                "synthesizedFrom": memory.synthesized_from.iter()
-                    .map(|u| u.to_string())
-                    .collect::<Vec<_>>(),
-            }),
+            // Tag the memory with its ROOM (contextId) — what recall scores on
+            // (recall.rs reads "roomId"). Previously this emitted only
+            // "sessionId", so the room bonus NEVER matched and memory lost its
+            // room affinity on reconnect. Emit the canonical "contextId" plus the
+            // "roomId" key recall reads today; keep sessionId as labelled session
+            // metadata (NOT a context substitute). Omit the room keys entirely
+            // when there's no context rather than writing nil.
+            context: {
+                let mut ctx = serde_json::json!({
+                    "sessionId": memory.session_id.to_string(),
+                    "synthesizedFrom": memory.synthesized_from.iter()
+                        .map(|u| u.to_string())
+                        .collect::<Vec<_>>(),
+                });
+                if let Some(context_id) = memory.context_id {
+                    let id = context_id.to_string();
+                    ctx["contextId"] = serde_json::json!(id);
+                    ctx["roomId"] = serde_json::json!(id);
+                }
+                ctx
+            },
             timestamp: ms_to_rfc3339(memory.timestamp_ms),
             importance: memory.importance,
             access_count: 0,
@@ -69,6 +84,8 @@ pub fn to_corpus_memory(memory: &ConsolidatedMemory) -> CorpusMemory {
             last_accessed_at: None,
             layer: None,
             relevance_score: None,
+            origin_node: None,
+            origin_seq: None,
         },
         embedding: None,
     }
@@ -96,7 +113,7 @@ pub async fn run_consolidation_pass(
     for memory in &result.memories {
         let corpus_memory = to_corpus_memory(memory);
         manager
-            .append_memory(&memory.persona_id.to_string(), corpus_memory)
+            .append_memory(&memory.persona_id.to_string().into(), corpus_memory)
             .map_err(|e| format!("append_memory failed for {}: {}", memory.id, e.0))?;
     }
 
@@ -121,8 +138,9 @@ fn ms_to_rfc3339(ms: u64) -> String {
 mod tests {
     use super::*;
     use crate::memory::consolidation_adapter::{MemoryType, Thought};
-    use crate::memory::embedding::{EmbeddingError, EmbeddingProvider};
+    use crate::memory::embedding::EmbeddingProvider;
     use crate::memory::raw_adapter::RawMemoryAdapter;
+    use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -133,18 +151,16 @@ mod tests {
     /// when a caller explicitly requests semantic recall), so this
     /// stub is enough to satisfy the type constraint.
     struct StubEmbedder;
+    #[async_trait]
     impl EmbeddingProvider for StubEmbedder {
-        fn name(&self) -> &str {
+        fn id(&self) -> &str {
             "stub"
         }
-        fn dimensions(&self) -> usize {
+        fn dim(&self) -> usize {
             8
         }
-        fn embed(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
-            Ok(vec![0.0; 8])
-        }
-        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-            Ok(texts.iter().map(|_| vec![0.0; 8]).collect())
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            vec![0.0; 8]
         }
     }
 
@@ -153,7 +169,7 @@ mod tests {
         // Load an empty corpus so append_memory has a corpus to write into.
         // load_corpus returns LoadCorpusResponse (not Result) — it either
         // succeeds or records the failure in-band.
-        let _ = manager.load_corpus(persona_id, Vec::new(), Vec::new());
+        let _ = manager.load_corpus(&persona_id.into(), Vec::new(), Vec::new());
         manager
     }
 
@@ -282,10 +298,12 @@ mod tests {
         // `MemoryType::Decision => "decision"` with
         // `MemoryType::Decision => "observation"` → memory_type
         // assertion fails. Reverted.
+        let room = Uuid::from_u128(0xC0);
         let m = ConsolidatedMemory {
             id: Uuid::from_u128(100),
             persona_id: Uuid::from_u128(42),
             session_id: Uuid::from_u128(7),
+            context_id: Some(room),
             memory_type: MemoryType::Decision,
             content: "chose path A".to_string(),
             importance: 0.9,
@@ -298,6 +316,19 @@ mod tests {
         let cm = to_corpus_memory(&m);
         assert_eq!(cm.record.memory_type, "decision");
         assert_eq!(cm.record.content, "chose path A");
+        // what this catches: the memory carries its ROOM under the key recall
+        // scores on ("roomId") + the canonical "contextId". Regression here =
+        // recall's room bonus silently never matches and memory loses room
+        // affinity on reconnect (it used to emit only "sessionId").
+        assert_eq!(
+            cm.record.context["roomId"].as_str(),
+            Some(room.to_string().as_str()),
+            "memory must carry its room under the key recall reads"
+        );
+        assert_eq!(
+            cm.record.context["contextId"].as_str(),
+            Some(room.to_string().as_str())
+        );
         assert_eq!(cm.record.importance, 0.9);
         assert_eq!(cm.record.tags, vec!["code".to_string()]);
         assert_eq!(cm.record.source.as_deref(), Some("consolidation"));

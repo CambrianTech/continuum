@@ -13,6 +13,8 @@ use candle_core::quantized::{GgmlDType, QTensor};
 use candle_core::{DType, Device, Tensor};
 use safetensors::SafeTensors;
 
+use crate::model_registry::ModelArchConfig;
+
 use super::types::*;
 
 /// Map our GgufQuantType enum to candle's GgmlDType.
@@ -118,8 +120,14 @@ fn quantize_tensor(
         .map_err(|e| format!("quantize to {:?}: {e}", ggml_dtype))
 }
 
-/// Build GGUF metadata for a compressed model.
-fn build_metadata(recipe: &CompressionRecipe, arch: &str) -> Vec<(String, Value)> {
+/// Build GGUF metadata for a compressed model. Architecture dims (context length,
+/// embedding/hidden size, feed-forward length) come from the sourced `ModelArchConfig`,
+/// not hardcoded — the output header must describe the model that was actually written.
+fn build_metadata(
+    recipe: &CompressionRecipe,
+    arch: &str,
+    arch_config: &ModelArchConfig,
+) -> Vec<(String, Value)> {
     let first_layer = recipe.topology.layers.first();
     let q_heads = first_layer.map(|l| l.num_heads).unwrap_or(0);
     let kv_heads = first_layer.map(|l| l.num_kv_heads).unwrap_or(0);
@@ -134,8 +142,18 @@ fn build_metadata(recipe: &CompressionRecipe, arch: &str) -> Vec<(String, Value)
             format!("{arch}.block_count"),
             Value::U32(recipe.topology.layers.len() as u32),
         ),
-        (format!("{arch}.context_length"), Value::U32(32768)),
-        (format!("{arch}.embedding_length"), Value::U32(5120)), // TODO: from arch config
+        (
+            format!("{arch}.context_length"),
+            Value::U32(arch_config.context_length as u32),
+        ),
+        (
+            format!("{arch}.embedding_length"),
+            Value::U32(arch_config.hidden_size as u32),
+        ),
+        (
+            format!("{arch}.feed_forward_length"),
+            Value::U32(arch_config.intermediate_size as u32),
+        ),
         (
             format!("{arch}.attention.head_count"),
             Value::U32(q_heads as u32),
@@ -208,6 +226,7 @@ pub fn write_compressed_gguf(
     recipe: &CompressionRecipe,
     output_path: &Path,
     arch: &str,
+    arch_config: &ModelArchConfig,
 ) -> Result<(), String> {
     let log = crate::runtime::logger("plasticity");
     log.info(&format!(
@@ -296,7 +315,7 @@ pub fn write_compressed_gguf(
     ));
 
     // Build metadata
-    let metadata = build_metadata(recipe, arch);
+    let metadata = build_metadata(recipe, arch, arch_config);
     let metadata_refs: Vec<(&str, &Value)> =
         metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
 

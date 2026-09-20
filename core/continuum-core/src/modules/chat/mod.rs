@@ -44,16 +44,17 @@
 //! pattern from `MODULE-ARCHITECTURE.md` §5: commands call commands;
 //! modules don't know about each other beyond the command surface.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::runtime::{
-    command_executor::{self, CommandExecutor},
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
+    command_executor::CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority,
+    ServiceModule,
 };
+use crate::sdk_codegen::DynCommand;
 
 pub mod types;
 
@@ -80,113 +81,154 @@ const CHAT_DATA_HANDLE: &str = "main";
 /// `RwLock` choice over `Mutex` is purely for read-side concurrency
 /// when multiple commands fire concurrently.
 pub struct ChatModule {
-    /// Optional executor override. `None` in production — reads default
-    /// to `command_executor::executor()` (the kernel-global).
-    /// `Some(...)` in tests so each test can spin up its own registry
-    /// without trampling the global `OnceLock`.
-    executor_override: RwLock<Option<Arc<CommandExecutor>>>,
+    /// Substrate-wide command executor. Installed by `start_server`
+    /// via `install_executor` (the same path every other module uses).
+    /// `with_executor` lets tests inject a custom chain without
+    /// installing into the global registry.
+    executor_slot: Arc<LateBound<CommandExecutor>>,
+}
+
+/// Which wire leg a send takes after the data row is written. ONE leg per
+/// line: the transcript is a log, and two rows for one utterance is a defect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireLeg {
+    /// Publish the chat-transcript envelope through `airc/realtime-publish`
+    /// (the relay peer authors it; the sender rides `continuum.source_id`).
+    Envelope,
+    /// The caller speaks the line through the sender's own airc runtime
+    /// (`publish_text_in_room`) — authored by the real peer, and the ONLY row.
+    CallerSpeaks,
 }
 
 impl ChatModule {
-    /// Construct a chat module that uses the kernel-global executor.
-    /// This is the production constructor — register the resulting
-    /// module at runtime startup with `Arc::new(ChatModule::new())`.
+    /// Construct a chat module. The executor is installed later by
+    /// `start_server` via `ServiceModule::install_executor` (task #224).
     pub fn new() -> Self {
         Self {
-            executor_override: RwLock::new(None),
+            executor_slot: Arc::new(LateBound::new("chat::executor")),
         }
     }
 
     /// Test-only constructor — inject an explicit executor instance so
     /// the test owns its dispatch chain (commonly a registry with a
     /// stub DataModule). Lets the chat module's tests exercise the
-    /// real cross-module call path without standing up the global
-    /// `OnceLock`.
+    /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
-        Self {
-            executor_override: RwLock::new(Some(executor)),
-        }
+        let executor_slot = Arc::new(LateBound::new("chat::executor"));
+        executor_slot.install(executor);
+        Self { executor_slot }
     }
 
-    /// Resolve the executor for the current call. Tests get the
-    /// injected one; production gets the kernel-global.
-    fn executor(&self) -> Arc<CommandExecutor> {
-        if let Some(ex) = self
-            .executor_override
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            return ex;
-        }
-        command_executor::executor()
+    /// Rebuild a chat module over an EXISTING late-bound executor slot.
+    /// A `ChatModule` is stateless apart from that slot, so the typed
+    /// `chat/*` [`ActionCommand`](crate::sdk_codegen::ActionCommand)s
+    /// capture the slot at `commands()` time and reconstruct the module
+    /// per call to reach the canonical [`poll`](Self::poll) /
+    /// [`send`](Self::send) implementation — there is ONE body, shared by
+    /// the command surface and the module's own tests. The slot is an
+    /// `Arc`, so this is a pointer clone, and it stays the SAME slot
+    /// `start_server` installs the executor into.
+    pub(crate) fn from_slot(executor_slot: Arc<LateBound<CommandExecutor>>) -> Self {
+        Self { executor_slot }
+    }
+
+    /// Resolve the executor for the current call. Returns a loud,
+    /// contract-naming error if the executor was never installed — a
+    /// boot-ordering bug (`start_server` must call
+    /// `install_executor_on_all` BEFORE any chat command dispatches).
+    /// Per [[no-fallbacks-ever]] the message still names the contract
+    /// so the operator sees the real problem — but the blast radius is
+    /// THIS request, not the whole core: a command that races boot
+    /// fails loudly to its caller instead of `.expect()`-panicking the
+    /// process and taking every other module down with it
+    /// (#201 boot-race / #26 faculties degrade, never panic).
+    fn executor(&self) -> Result<Arc<CommandExecutor>, String> {
+        self.executor_slot.cloned().ok_or_else(|| {
+            "ChatModule: CommandExecutor not installed — \
+             start_server must call install_executor_on_all \
+             before any chat command can dispatch (task #224)"
+                .to_string()
+        })
+    }
+
+    /// Resolve a pagination anchor to its stored `timestamp` (the field
+    /// both cursor directions filter on) via `data/query` (limit 1,
+    /// filter on id). Fails loud when the anchor doesn't exist — silently
+    /// returning unfiltered history would hand the caller the wrong page.
+    async fn anchor_timestamp(&self, anchor_id: Uuid) -> Result<String, String> {
+        let anchor_query = json!({
+            "dbPath": "main",
+            "collection": CHAT_MESSAGES_COLLECTION,
+            "filter": { "id": { "$eq": anchor_id.to_string() } },
+            "limit": 1,
+        });
+
+        let anchor_result = self
+            .executor()?
+            .execute_json("data/query", anchor_query)
+            .await
+            .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
+
+        extract_first_record_field(&anchor_result, "timestamp").ok_or_else(|| {
+            // Matches the TS impl's "Message not found" path.
+            format!("chat/poll: anchor message not found: {anchor_id}")
+        })
     }
 
     /// `chat/poll` — return recent messages, optionally filtered by
-    /// room or anchored after a specific message id.
+    /// room and anchored to a pagination cursor in EITHER direction.
     ///
     /// Implementation strategy (mirrors the TS `ChatPollServerCommand`
     /// behavior):
     ///
     /// 1. If `after_message_id` is set: look up that message's
     ///    timestamp via `data/query` (limit 1, filter on id), use it as
-    ///    a `$gt` filter on the main query.
+    ///    a `$gt` filter on the main query. If `before_message_id` is
+    ///    set (the scroll-back cursor): same lookup, used as a `$lt`
+    ///    filter — the `limit` messages immediately preceding the anchor.
     /// 2. Apply optional `room_id` filter.
     /// 3. Sort `asc` when polling after an anchor (chronological), else
-    ///    `desc` (latest-N).
+    ///    `desc` (latest-N / the page just before the anchor).
     /// 4. Query via `data/query` against the `chat_messages` collection.
     /// 5. Normalize back to chronological order for display regardless
     ///    of query direction.
     pub async fn poll(&self, params: ChatPollParams) -> Result<ChatPollResult, String> {
-        let executor = self.executor();
+        let executor = self.executor()?;
         let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
 
-        // ── Phase 1: resolve the anchor timestamp if the caller
-        //   pinned `after_message_id`. The data module returns the
-        //   message record; we extract its `timestamp` field for the
-        //   downstream `$gt` filter.
-        let after_timestamp = if let Some(anchor_id) = params.after_message_id {
-            let anchor_query = json!({
-                "dbPath": "main",
-                "collection": CHAT_MESSAGES_COLLECTION,
-                "filter": { "id": { "$eq": anchor_id.to_string() } },
-                "limit": 1,
-            });
+        // The two anchors are opposite scroll directions — both at once
+        // has no coherent ordering. Fail loud, never guess.
+        if params.after_message_id.is_some() && params.before_message_id.is_some() {
+            return Err(
+                "chat/poll: afterMessageId and beforeMessageId are mutually exclusive — \
+                 page one direction at a time"
+                    .to_string(),
+            );
+        }
 
-            let anchor_result = executor
-                .execute_json("data/query", anchor_query)
-                .await
-                .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
-
-            let timestamp = extract_first_record_field(&anchor_result, "timestamp");
-            match timestamp {
-                Some(ts) => Some(ts),
-                None => {
-                    // Anchor not found — surface a typed error rather
-                    // than silently returning all messages. Matches
-                    // the TS impl's "Message not found" path.
-                    return Err(format!(
-                        "chat/poll: anchor message not found: {}",
-                        anchor_id
-                    ));
-                }
-            }
-        } else {
-            None
+        // ── Phase 1: resolve the anchor timestamp if the caller pinned
+        //   a cursor (either direction) — the `$gt`/`$lt` bound below.
+        let after_timestamp = match params.after_message_id {
+            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
+            None => None,
+        };
+        let before_timestamp = match params.before_message_id {
+            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
+            None => None,
         };
 
         // ── Phase 2: build the main query. Filter on room +/- anchor
         //   timestamp; sort direction follows whether we have an anchor.
         let mut filter = serde_json::Map::new();
         if let Some(room_id) = params.room_id {
-            filter.insert(
-                "roomId".to_string(),
-                json!({ "$eq": room_id.to_string() }),
-            );
+            filter.insert("roomId".to_string(), json!({ "$eq": room_id.to_string() }));
         }
         if let Some(ts) = after_timestamp.clone() {
             filter.insert("timestamp".to_string(), json!({ "$gt": ts }));
+        }
+        if let Some(ts) = before_timestamp.clone() {
+            filter.insert("timestamp".to_string(), json!({ "$lt": ts }));
         }
 
         let sort_direction = if params.after_message_id.is_some() {
@@ -229,6 +271,7 @@ impl ChatModule {
             count: sorted.len(),
             messages: sorted,
             after_message_id: params.after_message_id,
+            before_message_id: params.before_message_id,
         })
     }
 
@@ -272,7 +315,37 @@ impl ChatModule {
     /// could be the dedup id) but the design conversation is its
     /// own scope.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
-        let executor = self.executor();
+        self.send_with_wire(params, WireLeg::Envelope).await
+    }
+
+    /// `send` with the wire leg chosen by the caller. A caller that will SPEAK
+    /// the line through the sender's own airc runtime (`chat/send` for a
+    /// citizen, the operator self-peer, the agent peer) passes
+    /// [`WireLeg::CallerSpeaks`]: the envelope leg is skipped, because both legs
+    /// land in the daemon transcript and every citizen's window then read the
+    /// operator twice (measured 2026-09-03: two rows, same sender, same
+    /// timestamp; Kira's grounding held the line as items 8 AND 9). The data row
+    /// is written either way — it is the ground truth the web's own poll reads.
+    pub async fn send_with_wire(
+        &self,
+        params: ChatSendParams,
+        wire: WireLeg,
+    ) -> Result<ChatSendResult, String> {
+        let (message_id, now_ms) = self.persist(&params).await?;
+        match wire {
+            WireLeg::Envelope => self.broadcast_envelope(message_id, &params, now_ms).await,
+            WireLeg::CallerSpeaks => Ok(ChatSendResult {
+                message_id,
+                event_id: None,
+                warning: None,
+            }),
+        }
+    }
+
+    /// Step 1 of a send: persist the message row (ground truth). Returns the
+    /// minted message id and the timestamp the row carries.
+    async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
+        let executor = self.executor()?;
         let message_id = Uuid::new_v4();
         let now_ms = now_ms();
         let now_iso = now_iso(now_ms);
@@ -328,6 +401,20 @@ impl ChatModule {
                 "chat/send: data/create returned success=false: {inner}"
             ));
         }
+        Ok((message_id, now_ms))
+    }
+
+    /// Step 2 of a send: the ENVELOPE wire leg — the chat transcript schema
+    /// published as an airc realtime envelope through `airc/realtime-publish`
+    /// (best-effort; a miss is named in `warning`, never silent). Public so
+    /// `chat/send` can fall back to it when the sender's own say fails.
+    pub async fn broadcast_envelope(
+        &self,
+        message_id: Uuid,
+        params: &ChatSendParams,
+        now_ms: u64,
+    ) -> Result<ChatSendResult, String> {
+        let executor = self.executor()?;
 
         // ── Step 2: broadcast (best-effort) ─────────────────────────
         //
@@ -392,12 +479,213 @@ impl ChatModule {
             }),
         }
     }
+
+    /// Persist one `chat:posted` projection into the durable chat store (#140).
+    ///
+    /// The projection is the ONE seam every room line crosses — a persona's
+    /// `say()` and a human/web `chat/send` alike — so persisting here makes the
+    /// transcript durable for BOTH speakers with one writer. Idempotent by id:
+    /// a human line was already stored by `send()` under the same `messageId`
+    /// (the envelope carries it through the projection), so the second write
+    /// reports `success=false` (unique id) and is skipped with a probe — an
+    /// EXPECTED duplicate, never an error. A persona line's id is airc's
+    /// `event_id` (stable across replay), so restarts can't double-store either.
+    pub async fn persist_posted(&self, payload: Value) -> Result<(), String> {
+        let executor = self.executor()?;
+        let field = |k: &str| -> Result<String, String> {
+            payload
+                .get(k)
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or_else(|| format!("chat:posted payload missing `{k}`: {payload}"))
+        };
+        let message_id = field("messageId")?;
+        let room_id = field("roomId")?;
+        let sender_id = field("senderId")?;
+        let content = field("content")?;
+        let occurred_at_ms = payload
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("chat:posted payload missing `timestamp`: {payload}"))?;
+        let iso = now_iso(occurred_at_ms);
+
+        // Same ChatMessageEntity shape `send()` writes — one entity, two writers
+        // converging on one row id. `metadata.source: "user"` for both: personas
+        // are citizens (users), not system lines; WHO spoke is `senderId`.
+        let entity_data = json!({
+            "id": message_id,
+            "roomId": room_id,
+            "senderId": sender_id,
+            "timestamp": iso,
+            "content": { "text": content },
+            "replyToId": null,
+            "metadata": { "source": "user" },
+            "status": "sent",
+        });
+        let create_params = json!({
+            "dbPath": CHAT_DATA_HANDLE,
+            "collection": CHAT_MESSAGES_COLLECTION,
+            "id": message_id,
+            "data": entity_data,
+        });
+        let result = executor
+            .execute_json("data/create", create_params)
+            .await
+            .map_err(|e| format!("chat:posted persist: data/create failed: {e}"))?;
+        if result.get("success").and_then(Value::as_bool) != Some(true) {
+            // Almost always the send()-already-stored duplicate (same id). Keep it
+            // visible-but-calm: one probe line, never a hard error — a projector
+            // that errors on every human message would drown real faults.
+            let detail = result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("success=false");
+            crate::probe!(
+                class = "chat.persist.skipped",
+                message_id = message_id.as_str(),
+                detail = detail,
+                "chat:posted row not written (duplicate id or store refusal)"
+            );
+        }
+        Ok(())
+    }
+
+    /// #265: seed the repetition-perception speech rings from the durable
+    /// transcript at boot. The rings (`record_room_speech` /
+    /// `record_own_speech`) are in-process statics, so a reboot wipes them at
+    /// the exact moment they're most needed — the post-boot wake round, where
+    /// every persona re-emits its greeting 2+ times with the repetition and
+    /// [settled] facts blind (observed live 2026-07-30, twice). The durable
+    /// store (#140) already holds the history; this replays the latest
+    /// `RING_HYDRATION_SCAN` lines (chronological, all rooms — each ring keeps
+    /// only its own bounded tail) so the facts have priors from the first tick.
+    ///
+    /// Waits boundedly for the executor slot — this runs from the persist
+    /// listener spawned in `initialize`, which can race
+    /// `install_executor_on_all` (the #201 ordering); a missing executor here
+    /// is a not-yet, not a bug, so we poll the slot instead of panicking.
+    pub async fn hydrate_speech_rings(&self) -> Result<(), String> {
+        const RING_HYDRATION_SCAN: usize = 200;
+        const EXECUTOR_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+        const EXECUTOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+        let deadline = std::time::Instant::now() + EXECUTOR_WAIT;
+        while self.executor_slot.cloned().is_none() {
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "executor not installed within boot window — rings start cold".to_string(),
+                );
+            }
+            tokio::time::sleep(EXECUTOR_POLL).await;
+        }
+
+        let result = self
+            .poll(ChatPollParams {
+                room_id: None,
+                after_message_id: None,
+                before_message_id: None,
+                limit: Some(RING_HYDRATION_SCAN),
+            })
+            .await?;
+
+        let mut seeded = 0usize;
+        for msg in &result.messages {
+            // Stored ChatMessageEntity shape (see `persist_posted`): roomId,
+            // senderId, content.text. Malformed rows are skipped, not fatal —
+            // hydration is best-effort priors, never a boot gate.
+            let room = msg
+                .get("roomId")
+                .and_then(Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let text = msg
+                .get("content")
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str);
+            let (Some(room), Some(text)) = (room, text) else {
+                continue;
+            };
+            let speech_sender = msg
+                .get("senderId")
+                .and_then(Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            crate::cognition::deliberation_budget::record_room_speech(room, speech_sender, text);
+            if let Some(sender) = msg
+                .get("senderId")
+                .and_then(Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                crate::cognition::deliberation_budget::record_own_speech(
+                    crate::identity::PeerId::from_uuid(sender),
+                    room,
+                    text,
+                );
+            }
+            seeded += 1;
+        }
+        crate::probe!(
+            class = "speech.rings.hydrated",
+            seeded = seeded,
+            scanned = result.count,
+            "repetition-fact rings seeded from durable transcript (#265)"
+        );
+        Ok(())
+    }
 }
 
 impl Default for ChatModule {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Spawn the durable-transcript writer (#140): a bus-receiver task (same shape as
+/// `cognition::dispatch_listener::spawn`) that persists every `chat:posted` projection —
+/// the ONE seam a persona's `say()` and a human/web `chat/send` both cross — into the
+/// chat store via [`ChatModule::persist_posted`]. This is a receiver task rather than a
+/// module `event_subscription` because `chat:posted` is published with
+/// `publish_async_only`, which feeds only the broadcast channel; module subscriptions
+/// are dispatched exclusively by the synchronous `publish(..., registry)` path.
+///
+/// Spawned from `ChatModule::initialize` on the ModuleContext's runtime HANDLE —
+/// registration runs on a non-tokio thread, and a bare `tokio::spawn` there panics the
+/// boot ("no reactor running", observed live 2026-07-16). Idempotent per process:
+/// initialize runs once per module.
+pub fn spawn_persist_listener(
+    handle: &tokio::runtime::Handle,
+    bus: Arc<crate::runtime::message_bus::MessageBus>,
+    module: Arc<ChatModule>,
+) {
+    let mut rx = bus.receiver();
+    handle.spawn(async move {
+        // #265: seed the repetition-fact speech rings from the durable
+        // transcript BEFORE consuming live events — a reboot wipes the
+        // in-process rings exactly when the wake-greeting round needs them.
+        // The subscription above is already live, so no line is missed while
+        // we hydrate; a hydration failure degrades to cold rings, loudly.
+        if let Err(error) = module.hydrate_speech_rings().await {
+            tracing::warn!(
+                error,
+                "speech-ring hydration failed — repetition facts start cold this boot (#265)"
+            );
+        }
+        loop {
+            let event = match rx.recv().await {
+                Ok(e) => e,
+                // Lagged (slow consumer) — keep going; a persisted line missed under lag
+                // is recoverable on the next send, and the store is not the wire.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+            if event.name != crate::ipc::positron_source::CHAT_POSTED {
+                continue;
+            }
+            if let Err(error) = module.persist_posted((*event.payload).clone()).await { // persist consumes an owned Value; one copy at the boundary
+                // Loud but non-fatal: one malformed payload must not kill the
+                // transcript writer for the rest of the process lifetime.
+                tracing::warn!(error, "chat:posted persist failed (#140)");
+            }
+        }
+    });
 }
 
 // ── time helpers ─────────────────────────────────────────────────────
@@ -408,7 +696,7 @@ impl Default for ChatModule {
 // `createdAtMs` from the same `send()` call agree by construction
 // (rather than risking a tiny skew between two separate reads).
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -440,10 +728,15 @@ impl ServiceModule for ChatModule {
             // legacy path that TS commands still use today and will
             // keep working through this module while consumers migrate.
             command_prefixes: &["chat/", "collaboration/chat/"],
-            // Chat doesn't subscribe to events directly. Substrate
-            // events (chat publish/receive) live on the airc module's
-            // subscriptions; the chat module reaches the substrate by
-            // calling airc commands, not by listening on its own.
+            // Chat doesn't use module event_subscriptions. The durable-
+            // transcript writer (#140) rides `spawn_persist_listener` (a bus
+            // receiver task, same shape as cognition::dispatch_listener)
+            // because `chat:posted` is published via `publish_async_only`,
+            // which feeds ONLY the broadcast channel — module subscriptions
+            // are dispatched exclusively by the synchronous `publish(...,
+            // registry)` path, so a subscription here would be dead wiring
+            // (verified against message_bus.rs before wiring; the
+            // "deferred tier" its docs mention is not built).
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -451,48 +744,53 @@ impl ServiceModule for ChatModule {
         }
     }
 
-    async fn initialize(
-        &self,
-        _ctx: &crate::runtime::ModuleContext,
-    ) -> Result<(), String> {
+    async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        // #140: the durable-transcript writer — persists every `chat:posted`
+        // projection (persona say + human chat/send, the one seam both cross).
+        // Spawned here (inside the runtime) rather than at registration, which
+        // runs on a non-tokio thread. `from_slot` shares this module's
+        // late-bound executor, filled by install_executor_on_all before any
+        // event can arrive from a live room.
+        spawn_persist_listener(
+            &ctx.runtime,
+            ctx.bus.clone(),
+            Arc::new(ChatModule::from_slot(self.executor_slot.clone())),
+        );
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        let _ = params;
         match command {
-            // ── Migrated commands ───────────────────────────────────
+            // ── Migrated to the typed object registry ───────────────
             //
-            // Every arm follows the same three-line pattern:
-            //   1. parse the envelope
-            //   2. run the typed handler
-            //   3. materialize the typed response
-
-            "chat/poll" | "collaboration/chat/poll" => {
-                let req = CommandRequest::<ChatPollParams>::from_value(params)?;
-                let result = self.poll(req.params).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-
-            "chat/send" | "collaboration/chat/send" => {
-                let req = CommandRequest::<ChatSendParams>::from_value(params)?;
-                let result = self.send(req.params).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
+            // `chat/poll` + `chat/send` are now typed self-routing
+            // `ActionCommand`s (see `crate::commands::chat`) that route
+            // via `route_object` — the module contributes them through
+            // `commands()`, capturing this module's shared executor slot.
+            // Reaching this legacy path means a descriptor failed to
+            // register; fail loud naming the canonical command rather
+            // than silently re-handling. (Retired wholesale when
+            // Registry A's trait default becomes fail-loud — #63.)
+            "chat/poll" | "collaboration/chat/poll" | "chat/send"
+            | "collaboration/chat/send" => Err(format!(
+                "'{command}' is a migrated, typed chat command (chat/poll, chat/send) — it \
+                 must route via the object registry (route_object), not the legacy \
+                 handle_command path. Reaching here means its descriptor failed to register."
+            )),
 
             // ── Staged migration stubs ──────────────────────────────
             //
-            // The remaining commands still own their TS
-            // implementations until their own follow-up PRs land. The
-            // kernel router currently sees `chat/` claim these names
-            // (per `command_prefixes` above) but the handler returns
-            // a typed error so consumers know to keep using the TS
-            // path until migration completes. The back-compat
-            // `collaboration/chat/*` strings reach the same TS impl
-            // through the existing CommandRouterServer bridge.
+            // The remaining commands still own their TS implementations
+            // until their own follow-up PRs land. The kernel router
+            // currently sees `chat/` claim these names (per
+            // `command_prefixes` above) so the chat module's handler
+            // returns a typed error with the upstream TS command name —
+            // callers that need this surface go through the explicit
+            // `CommandExecutor::execute_ts_json` API per
+            // [[no-fallbacks-ever]] (task #219). The implicit dispatch
+            // chain no longer crosses the bridge silently; the chat
+            // module owns the prefix and emits a deterministic error.
             //
             // When each migration PR lands, swap the stub arm for a
             // real handler using the envelope pattern above.
@@ -510,6 +808,26 @@ impl ServiceModule for ChatModule {
                 "{other}: not handled by chat module — known commands are chat/poll, chat/send, chat/analyze (stub), chat/export (stub)"
             )),
         }
+    }
+
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        // `LateBound::install` silently no-ops when the slot is already
+        // filled, so a `with_executor()`-injected test executor is never
+        // clobbered — the original install wins, same contract as before.
+        self.executor_slot.install(executor);
+    }
+
+    /// The migrated `chat/poll` + `chat/send` commands as typed
+    /// self-routing objects on the ONE registry. Both capture this
+    /// module's shared late-bound executor slot (they reach `data/*` +
+    /// `airc/*` through it at run time) and delegate to the canonical
+    /// [`ChatModule::poll`] / [`ChatModule::send`] bodies. Their
+    /// `CommandSpec` descriptors flow into `command_registry()` → the
+    /// persona tool surface + grid ACL. (`chat/analyze` + `chat/export`
+    /// still own their TS implementations until their own follow-up PRs
+    /// — they are NOT contributed here.)
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        crate::commands::chat::command_objects(self.executor_slot.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -626,10 +944,7 @@ mod tests {
             }
         }
 
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
 
@@ -647,6 +962,133 @@ mod tests {
     }
 
     // ── config + dispatch ────────────────────────────────────────────
+
+    // what this catches: #140/#177 — the durable-transcript writer. A projected
+    // chat:posted line (a persona's spoken reply — the shape that was an
+    // airc+positron-only ghost, invisible to chat/poll, LIGHTHOUSE diagnosis
+    // 2026-07-16) must land in the chat store as a ChatMessageEntity row under the
+    // projection's messageId, with the logical sender and ISO timestamp. If this
+    // write disappears, persona speech stops surviving the process again.
+    #[tokio::test]
+    async fn chat_posted_event_persists_a_persona_line_into_the_store() {
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let data = StubDataModule::new(move |command, params| {
+            assert_eq!(command, "data/create", "persist path must write, not query");
+            seen_in.lock().unwrap().push(params);
+            Ok(json!({ "success": true }))
+        });
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+
+        let message_id = Uuid::new_v4();
+        let sender = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        chat.persist_posted(json!({
+            "messageId": message_id,
+            "roomId": room,
+            "senderId": sender,
+            "content": "I see the word LIGHTHOUSE in the room.",
+            "timestamp": 1_784_227_923_000u64,
+        }))
+        .await
+        .expect("persist path succeeds");
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "exactly one durable write per projected line"
+        );
+        let p = &calls[0];
+        assert_eq!(p["collection"], CHAT_MESSAGES_COLLECTION);
+        assert_eq!(p["id"], message_id.to_string());
+        assert_eq!(
+            p["data"]["senderId"],
+            sender.to_string(),
+            "logical speaker attributed"
+        );
+        assert_eq!(
+            p["data"]["content"]["text"],
+            "I see the word LIGHTHOUSE in the room."
+        );
+        assert!(
+            p["data"]["timestamp"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("2026-"),
+            "airc occurred_at_ms rendered as the ISO timestamp the entity carries: {}",
+            p["data"]["timestamp"]
+        );
+    }
+
+    // what this catches: idempotence of the two-writer convergence. A HUMAN line is
+    // stored by send() first and then arrives again via its own projection under the
+    // SAME messageId — the store refuses the duplicate (success=false) and the
+    // projector must treat that as the expected no-op, never an error (an erroring
+    // projector would fire on every human message and drown real faults).
+    #[tokio::test]
+    async fn duplicate_projection_of_a_sent_message_is_a_calm_no_op() {
+        let data = StubDataModule::new(move |command, _params| {
+            assert_eq!(command, "data/create");
+            Ok(json!({ "success": false, "error": "unique constraint: id exists" }))
+        });
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        chat.persist_posted(json!({
+            "messageId": Uuid::new_v4(),
+            "roomId": Uuid::new_v4(),
+            "senderId": Uuid::new_v4(),
+            "content": "already stored by send()",
+            "timestamp": 1_784_227_923_000u64,
+        }))
+        .await
+        .expect("a duplicate row is an EXPECTED no-op, not an error");
+    }
+
+    // what this catches: THE WIRING, not just the logic (the dead-subscription trap this
+    // slice nearly shipped). `chat:posted` is published via `publish_async_only`, which
+    // NEVER dispatches module event_subscriptions — so the durable-transcript writer must
+    // be a live bus-receiver task. This publishes through the exact same call the
+    // projector uses and asserts the row write actually happens. If someone "simplifies"
+    // the listener back into event_subscriptions, this goes red instead of persona speech
+    // silently going ghost again.
+    #[tokio::test]
+    async fn persist_listener_receives_async_published_chat_posted() {
+        use std::time::Duration;
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let data = StubDataModule::new(move |command, params| {
+            assert_eq!(command, "data/create");
+            seen_in.lock().unwrap().push(params);
+            Ok(json!({ "success": true }))
+        });
+        let chat = Arc::new(chat_with_stubs(vec![Arc::new(data)]));
+        let bus = Arc::new(crate::runtime::message_bus::MessageBus::new());
+        // receiver created before publish; the tokio::test runtime is the handle
+        spawn_persist_listener(&tokio::runtime::Handle::current(), bus.clone(), chat);
+
+        bus.publish_async_only(
+            crate::ipc::positron_source::CHAT_POSTED,
+            json!({
+                "messageId": Uuid::new_v4(),
+                "roomId": Uuid::new_v4(),
+                "senderId": Uuid::new_v4(),
+                "content": "spoken by a persona",
+                "timestamp": 1_784_227_923_000u64,
+            }),
+        );
+
+        for _ in 0..100 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "the listener must persist the async-published room line"
+        );
+    }
 
     #[test]
     fn config_advertises_both_command_prefixes() {
@@ -711,9 +1153,9 @@ mod tests {
 
     #[tokio::test]
     async fn poll_returns_empty_result_when_data_module_returns_no_messages() {
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_p| {
-            json!({ "success": true, "data": [] })
-        }))]);
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(
+            |_p| json!({ "success": true, "data": [] }),
+        ))]);
 
         let result = chat
             .poll(ChatPollParams::default())
@@ -722,6 +1164,24 @@ mod tests {
         assert_eq!(result.count, 0);
         assert!(result.messages.is_empty());
         assert!(result.after_message_id.is_none());
+    }
+
+    // what this catches: #201 boot-race — a chat command that arrives BEFORE
+    // install_executor_on_all runs fails LOUD to its caller (naming the contract),
+    // instead of .expect()-panicking the whole core and taking every other module
+    // down with it. Regression for the .expect() → Result conversion in executor().
+    #[tokio::test]
+    async fn command_before_executor_installed_fails_loud_not_panics() {
+        let chat = ChatModule::new(); // executor slot deliberately NOT installed
+        let err = chat
+            .poll(ChatPollParams::default())
+            .await
+            .expect_err("poll before install_executor_on_all must fail, not panic");
+        assert!(err.contains("not installed"), "loud contract error, got: {err}");
+        assert!(
+            err.contains("install_executor_on_all"),
+            "error names the contract so the operator sees the real problem: {err}"
+        );
     }
 
     // ── chat/poll: latest-N path (no anchor) ──────────────────────────
@@ -826,6 +1286,77 @@ mod tests {
         assert_eq!(result.after_message_id, Some(anchor_id));
     }
 
+    // ── chat/poll: before_message_id path (the scroll-back cursor) ────
+
+    // what this catches: the endless-scroll page — `beforeMessageId` must
+    // resolve the anchor's timestamp, filter `$lt` (strictly OLDER), and
+    // query DESC (the page immediately preceding the anchor, not the
+    // oldest N in history). A regression here turns scroll-back into
+    // either a forward page or a jump to the beginning of time.
+    #[tokio::test]
+    async fn poll_with_before_anchor_filters_lt_and_queries_desc() {
+        let anchor_id = Uuid::new_v4();
+        let anchor_str = anchor_id.to_string();
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |params| {
+            let filter = &params["filter"];
+
+            // Anchor lookup: filter on `id`, limit 1.
+            if let Some(id_filter) = filter.get("id") {
+                assert_eq!(id_filter["$eq"], anchor_str);
+                return json!({
+                    "success": true,
+                    "data": [{
+                        "id": anchor_str,
+                        "data": { "id": anchor_str, "timestamp": "2026-05-30T12:00:00Z" }
+                    }]
+                });
+            }
+
+            // Main query: `$lt` bound from the anchor's timestamp, DESC.
+            assert_eq!(filter["timestamp"]["$lt"], "2026-05-30T12:00:00Z");
+            assert_eq!(params["sort"][0]["direction"], "desc");
+            json!({
+                "success": true,
+                "data": [
+                    { "id": "old-2", "data": { "id": "old-2", "timestamp": "2026-05-30T11:59:00Z" } },
+                    { "id": "old-1", "data": { "id": "old-1", "timestamp": "2026-05-30T11:58:00Z" } }
+                ]
+            })
+        }))]);
+
+        let result = chat
+            .poll(ChatPollParams {
+                before_message_id: Some(anchor_id),
+                ..Default::default()
+            })
+            .await
+            .expect("before-anchor poll must succeed when the anchor exists");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.before_message_id, Some(anchor_id));
+        // Chronological normalization holds for the backward page too.
+        assert_eq!(result.messages[0]["id"], "old-1");
+        assert_eq!(result.messages[1]["id"], "old-2");
+    }
+
+    // what this catches: the two cursors are opposite scroll directions —
+    // accepting both would silently produce an incoherent page. Must
+    // fail loud, and must fail BEFORE any storage round-trip.
+    #[tokio::test]
+    async fn poll_rejects_both_cursor_directions_at_once() {
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_| {
+            panic!("mutually-exclusive cursors must be rejected before any data/query");
+        }))]);
+        let err = chat
+            .poll(ChatPollParams {
+                after_message_id: Some(Uuid::new_v4()),
+                before_message_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            })
+            .await
+            .expect_err("both cursors at once must be rejected");
+        assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
     // ── chat/poll: missing anchor fails loud ──────────────────────────
 
     #[tokio::test]
@@ -853,48 +1384,81 @@ mod tests {
         );
     }
 
-    // ── chat/poll: handler-level envelope wiring ──────────────────────
+    // ── chat/poll + chat/send: the typed object registry path ─────────
+    //
+    // These commands now route via `route_object` as typed
+    // `ActionCommand`s (`crate::commands::chat`), NOT the legacy
+    // `handle_command` envelope. The tests below prove the module
+    // contributes exactly those two objects, that invoking one reaches
+    // the shared executor slot and runs the canonical `ChatModule::poll`
+    // body, and that the retired legacy arms fail loud.
+
+    #[test]
+    fn commands_contributes_poll_and_send_objects() {
+        // what this catches: a regression that drops a command from the
+        // module's `commands()` (so it never reaches `command_registry()`,
+        // the persona tool surface, or the ACL) — or renames its wire key
+        // away from the canonical `chat/poll` / `chat/send`.
+        let names: Vec<&str> = ChatModule::new()
+            .commands()
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        assert!(names.contains(&"chat/poll"), "missing chat/poll: {names:?}");
+        assert!(names.contains(&"chat/send"), "missing chat/send: {names:?}");
+        assert_eq!(
+            names.len(),
+            2,
+            "chat contributes exactly poll + send: {names:?}"
+        );
+    }
 
     #[tokio::test]
-    async fn handle_command_routes_chat_poll_through_typed_envelope() {
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_p| {
-            json!({ "success": true, "data": [] })
-        }))]);
+    async fn typed_chat_poll_object_invokes_over_shared_slot() {
+        // what this catches: the typed `chat/poll` object must resolve the
+        // module's shared late-bound executor (via `from_slot`) and delegate
+        // to the canonical `ChatModule::poll` body — a regression that broke
+        // the shared slot (empty executor) or the delegation would fail here.
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(
+            |_p| json!({ "success": true, "data": [] }),
+        ))]);
+        let poll = chat
+            .commands()
+            .into_iter()
+            .find(|c| c.name() == "chat/poll")
+            .expect("chat/poll object must be contributed");
 
-        let raw = json!({
-            "limit": 7,
-        });
-        let result = chat
-            .handle_command("chat/poll", raw)
+        let result = poll
+            .invoke(json!({ "limit": 7 }), None)
             .await
-            .expect("typed dispatch must succeed");
-
+            .expect("typed chat/poll must succeed");
         let CommandResult::Json(value) = result else {
             panic!("chat/poll must return CommandResult::Json");
         };
-        assert_eq!(value["success"], true);
         assert_eq!(value["count"], 0);
         assert!(value["messages"].is_array());
     }
 
     #[tokio::test]
-    async fn handle_command_accepts_legacy_collaboration_prefix() {
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_p| {
-            json!({ "success": true, "data": [] })
-        }))]);
-
-        // The legacy `collaboration/chat/poll` path must route to the
-        // same handler — that's the back-compat contract that lets TS
-        // consumers keep their existing wire calls working through the
-        // migration window.
-        let result = chat
-            .handle_command("collaboration/chat/poll", json!({}))
-            .await
-            .expect("legacy prefix must work");
-        let CommandResult::Json(value) = result else {
-            panic!("must return Json variant");
-        };
-        assert_eq!(value["success"], true);
+    async fn legacy_chat_arms_fail_loud() {
+        // what this catches: the legacy `handle_command` path for the
+        // migrated verbs must fail loud naming the command (never silently
+        // re-handle), so a descriptor that failed to register surfaces
+        // instead of a second implementation forking off the typed object.
+        let chat = ChatModule::new();
+        for command in [
+            "chat/poll",
+            "collaboration/chat/poll",
+            "chat/send",
+            "collaboration/chat/send",
+        ] {
+            let err = chat
+                .handle_command(command, json!({}))
+                .await
+                .expect_err("migrated chat arm must fail loud");
+            assert!(err.contains("migrated"), "got {err}");
+            assert!(err.contains(command), "got {err}");
+        }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -955,10 +1519,7 @@ mod tests {
             }
         }
 
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
 
@@ -1013,7 +1574,10 @@ mod tests {
     async fn send_happy_path_returns_message_id_and_event_id() {
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|cmd, _p| {
-                assert_eq!(cmd, "data/create", "happy path only writes (no other data ops)");
+                assert_eq!(
+                    cmd, "data/create",
+                    "happy path only writes (no other data ops)"
+                );
                 Ok(json!({ "success": true }))
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-happy-001"))),
@@ -1026,7 +1590,10 @@ mod tests {
 
         // Both surfaces' ids are present: message stored locally AND
         // airc event id returned for broadcast correlation.
-        assert!(!result.message_id.is_nil(), "message_id must be a real UUID");
+        assert!(
+            !result.message_id.is_nil(),
+            "message_id must be a real UUID"
+        );
         assert_eq!(
             result.event_id.as_deref(),
             Some("evt-happy-001"),
@@ -1043,7 +1610,9 @@ mod tests {
     #[tokio::test]
     async fn send_with_airc_failure_returns_warning_and_null_event_id() {
         let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
+            Arc::new(StubDataModule::new(|_cmd, _p| {
+                Ok(json!({ "success": true }))
+            })),
             Arc::new(StubAircModule::err(
                 "airc daemon socket unreachable: ENOENT",
             )),
@@ -1241,10 +1810,14 @@ mod tests {
             .clone()
             .expect("data/create must have been called");
 
-        assert_eq!(create["dbPath"], "main", "writes go to the main adapter handle");
+        assert_eq!(
+            create["dbPath"], "main",
+            "writes go to the main adapter handle"
+        );
         assert_eq!(create["collection"], "chat_messages");
         assert_eq!(
-            create["id"], result.message_id.to_string(),
+            create["id"],
+            result.message_id.to_string(),
             "create.id matches the returned message_id"
         );
 
@@ -1264,10 +1837,7 @@ mod tests {
             "timestamp is an ISO-8601 string (matches TS ChatMessageEntity)"
         );
         assert!(
-            entity["timestamp"]
-                .as_str()
-                .unwrap()
-                .ends_with('Z'),
+            entity["timestamp"].as_str().unwrap().ends_with('Z'),
             "timestamp is UTC"
         );
     }
@@ -1287,7 +1857,9 @@ mod tests {
         let observer = observed_publish.clone();
 
         let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
+            Arc::new(StubDataModule::new(|_cmd, _p| {
+                Ok(json!({ "success": true }))
+            })),
             Arc::new(StubAircModule::with(move |params| {
                 *observer.lock().unwrap() = Some(params);
                 Ok(airc_ok_response("evt-envelope-001"))
@@ -1346,61 +1918,10 @@ mod tests {
         );
     }
 
-    // ── End-to-end through handle_command ────────────────────────────
-
-    #[tokio::test]
-    async fn handle_command_routes_chat_send_through_typed_envelope() {
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-dispatch-001"))),
-        ]);
-
-        let raw = json!({
-            "roomId": Uuid::new_v4().to_string(),
-            "senderId": Uuid::new_v4().to_string(),
-            "text": "via handle_command",
-        });
-        let result = chat
-            .handle_command("chat/send", raw)
-            .await
-            .expect("typed dispatch must succeed");
-
-        let CommandResult::Json(value) = result else {
-            panic!("chat/send must return CommandResult::Json");
-        };
-        assert_eq!(value["success"], true);
-        assert!(
-            value["messageId"].as_str().is_some(),
-            "messageId at top level (flattened from ChatSendResult)"
-        );
-        assert_eq!(value["eventId"], "evt-dispatch-001");
-        assert!(
-            value.get("warning").is_none(),
-            "no warning on happy path: {value}"
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_command_chat_send_accepts_legacy_collaboration_prefix() {
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-legacy-001"))),
-        ]);
-
-        let raw = json!({
-            "roomId": Uuid::new_v4().to_string(),
-            "senderId": Uuid::new_v4().to_string(),
-            "text": "via legacy prefix",
-        });
-        let result = chat
-            .handle_command("collaboration/chat/send", raw)
-            .await
-            .expect("legacy prefix must work for chat/send too");
-        let CommandResult::Json(value) = result else {
-            panic!("must return Json variant");
-        };
-        assert_eq!(value["success"], true);
-    }
+    // The `chat/send` typed-object path (module `commands()` contribution,
+    // shared-slot invocation, legacy fail-loud) is proven alongside `chat/poll`
+    // in the "typed object registry path" block above — both verbs share the
+    // same `command_objects` family and the same `handle_command` fail-loud arm.
 
     // ════════════════════════════════════════════════════════════════
     // Multi-persona concurrency stress tests — gated behind the
@@ -1423,350 +1944,414 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-    //
-    // # Runtime flavor
-    //
-    // Every concurrency test runs on `flavor = "multi_thread",
-    // worker_threads = 4` so the tasks actually preempt each other on
-    // distinct OS threads rather than cooperatively interleaving on
-    // one. Single-threaded tokio would silently serialize the test
-    // and pass even if the substrate had a data race.
+        //
+        // # Runtime flavor
+        //
+        // Every concurrency test runs on `flavor = "multi_thread",
+        // worker_threads = 4` so the tasks actually preempt each other on
+        // distinct OS threads rather than cooperatively interleaving on
+        // one. Single-threaded tokio would silently serialize the test
+        // and pass even if the substrate had a data race.
 
-    use std::collections::HashMap;
-    use std::sync::Mutex as StdMutex;
+        use std::collections::HashMap;
+        use std::sync::Mutex as StdMutex;
 
-    /// `chat/send` under N concurrent persona threads, all sharing the
-    /// same `ChatModule` instance through the same executor:
-    /// - every send must complete (no panics, no lost work)
-    /// - every send must return a DISTINCT `message_id` (no UUID
-    ///   collision; no shared mutable state holding the id)
-    /// - every send's `message_id` must appear in the data layer
-    ///   exactly once (no duplicate writes, no phantom writes)
-    /// - the SET of stored ids must equal the SET of returned ids
-    ///   (no lost writes)
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn send_under_concurrent_load_stores_all_messages_with_distinct_ids() {
-        const PARALLEL: usize = 50;
+        /// `chat/send` under N concurrent persona threads, all sharing the
+        /// same `ChatModule` instance through the same executor:
+        /// - every send must complete (no panics, no lost work)
+        /// - every send must return a DISTINCT `message_id` (no UUID
+        ///   collision; no shared mutable state holding the id)
+        /// - every send's `message_id` must appear in the data layer
+        ///   exactly once (no duplicate writes, no phantom writes)
+        /// - the SET of stored ids must equal the SET of returned ids
+        ///   (no lost writes)
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn send_under_concurrent_load_stores_all_messages_with_distinct_ids() {
+            const PARALLEL: usize = 50;
 
-        let writes: Arc<StdMutex<Vec<Uuid>>> = Arc::new(StdMutex::new(Vec::new()));
-        let writes_tracker = writes.clone();
+            let writes: Arc<StdMutex<Vec<Uuid>>> = Arc::new(StdMutex::new(Vec::new()));
+            let writes_tracker = writes.clone();
 
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(move |cmd, params| {
-                if cmd == "data/create" {
-                    let id_str = params["id"]
-                        .as_str()
-                        .expect("data/create must carry an id");
-                    let id = Uuid::parse_str(id_str).expect("id must be a UUID");
-                    writes_tracker.lock().unwrap().push(id);
-                }
-                Ok(json!({ "success": true }))
-            })),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-conc-001"))),
-        ]);
-        let chat = Arc::new(chat);
+            let chat = chat_with_stubs(vec![
+                Arc::new(StubDataModule::new(move |cmd, params| {
+                    if cmd == "data/create" {
+                        let id_str = params["id"].as_str().expect("data/create must carry an id");
+                        let id = Uuid::parse_str(id_str).expect("id must be a UUID");
+                        writes_tracker.lock().unwrap().push(id);
+                    }
+                    Ok(json!({ "success": true }))
+                })),
+                Arc::new(StubAircModule::ok(airc_ok_response("evt-conc-001"))),
+            ]);
+            let chat = Arc::new(chat);
 
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let chat = chat.clone();
-            tasks.push(tokio::spawn(async move {
-                chat.send(ChatSendParams {
-                    room_id: Uuid::new_v4(),
-                    sender_id: Uuid::new_v4(),
-                    text: format!("concurrent message {i}"),
-                    reply_to_id: None,
-                })
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
+                let chat = chat.clone();
+                tasks.push(tokio::spawn(async move {
+                    chat.send(ChatSendParams {
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        text: format!("concurrent message {i}"),
+                        reply_to_id: None,
+                    })
+                    .await
+                    .expect("send must succeed")
+                }));
+            }
+
+            let results: Vec<ChatSendResult> = futures::future::join_all(tasks)
                 .await
-                .expect("send must succeed")
-            }));
-        }
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
 
-        let results: Vec<ChatSendResult> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
+            // Every send completed.
+            assert_eq!(
+                results.len(),
+                PARALLEL,
+                "every concurrent send task must complete"
+            );
 
-        // Every send completed.
-        assert_eq!(
-            results.len(),
-            PARALLEL,
-            "every concurrent send task must complete"
-        );
+            // Every send wrote.
+            assert_eq!(
+                writes.lock().unwrap().len(),
+                PARALLEL,
+                "every concurrent send must have called data/create exactly once"
+            );
 
-        // Every send wrote.
-        assert_eq!(
-            writes.lock().unwrap().len(),
-            PARALLEL,
-            "every concurrent send must have called data/create exactly once"
-        );
-
-        // Returned ids are all distinct.
-        let mut returned_ids: Vec<Uuid> = results.iter().map(|r| r.message_id).collect();
-        returned_ids.sort();
-        let count_before_dedup = returned_ids.len();
-        returned_ids.dedup();
-        assert_eq!(
+            // Returned ids are all distinct.
+            let mut returned_ids: Vec<Uuid> = results.iter().map(|r| r.message_id).collect();
+            returned_ids.sort();
+            let count_before_dedup = returned_ids.len();
+            returned_ids.dedup();
+            assert_eq!(
             returned_ids.len(),
             count_before_dedup,
             "concurrent sends must produce distinct message_ids (UUID collision OR shared mutable state)"
         );
 
-        // Stored ids == Returned ids. No lost writes, no phantom writes.
-        let mut stored = writes.lock().unwrap().clone();
-        stored.sort();
-        assert_eq!(
+            // Stored ids == Returned ids. No lost writes, no phantom writes.
+            let mut stored = writes.lock().unwrap().clone();
+            stored.sort();
+            assert_eq!(
             stored, returned_ids,
             "stored ids must equal returned ids — no message gets persisted that the caller doesn't know about, no returned id is missing from the store"
         );
-    }
-
-    /// Per-call ordering invariant under concurrency: even when N
-    /// concurrent calls interleave globally, EACH call's own
-    /// `data/create` must precede its own `airc/realtime-publish`. The
-    /// dual-write design's bad-divergence safety net depends on this.
-    ///
-    /// Strategy: tag every observation with the `message_id` (== the
-    /// stored entity id == the airc inline message id). Group by id;
-    /// assert per-call ordering.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn send_preserves_per_call_ordering_under_concurrent_load() {
-        const PARALLEL: usize = 25;
-
-        let log: Arc<StdMutex<Vec<(Uuid, &'static str)>>> =
-            Arc::new(StdMutex::new(Vec::new()));
-        let data_log = log.clone();
-        let airc_log = log.clone();
-
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(move |cmd, params| {
-                if cmd == "data/create" {
-                    let id_str = params["id"].as_str().unwrap();
-                    let id = Uuid::parse_str(id_str).unwrap();
-                    data_log.lock().unwrap().push((id, "data/create"));
-                }
-                Ok(json!({ "success": true }))
-            })),
-            Arc::new(StubAircModule::with(move |params| {
-                let inline_id = params["envelope"]["payload"]["payload"]["inline"]["messageId"]
-                    .as_str()
-                    .expect("envelope must carry the message id");
-                let id = Uuid::parse_str(inline_id).unwrap();
-                airc_log
-                    .lock()
-                    .unwrap()
-                    .push((id, "airc/realtime-publish"));
-                Ok(airc_ok_response("evt-order-conc"))
-            })),
-        ]);
-        let chat = Arc::new(chat);
-
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let chat = chat.clone();
-            tasks.push(tokio::spawn(
-                async move { chat.send(sample_send_params()).await },
-            ));
-        }
-        futures::future::join_all(tasks).await;
-
-        // Walk the global log, group event indices by message_id.
-        let observed = log.lock().unwrap().clone();
-        let mut per_call: HashMap<Uuid, Vec<(usize, &'static str)>> = HashMap::new();
-        for (idx, (id, event)) in observed.iter().enumerate() {
-            per_call.entry(*id).or_default().push((idx, *event));
         }
 
-        assert_eq!(
-            per_call.len(),
-            PARALLEL,
-            "every concurrent call must contribute its own correlation id (no aliasing)"
-        );
+        /// Per-call ordering invariant under concurrency: even when N
+        /// concurrent calls interleave globally, EACH call's own
+        /// `data/create` must precede its own `airc/realtime-publish`. The
+        /// dual-write design's bad-divergence safety net depends on this.
+        ///
+        /// Strategy: tag every observation with the `message_id` (== the
+        /// stored entity id == the airc inline message id). Group by id;
+        /// assert per-call ordering.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn send_preserves_per_call_ordering_under_concurrent_load() {
+            const PARALLEL: usize = 25;
 
-        for (id, events) in per_call {
+            let log: Arc<StdMutex<Vec<(Uuid, &'static str)>>> = Arc::new(StdMutex::new(Vec::new()));
+            let data_log = log.clone();
+            let airc_log = log.clone();
+
+            let chat = chat_with_stubs(vec![
+                Arc::new(StubDataModule::new(move |cmd, params| {
+                    if cmd == "data/create" {
+                        let id_str = params["id"].as_str().unwrap();
+                        let id = Uuid::parse_str(id_str).unwrap();
+                        data_log.lock().unwrap().push((id, "data/create"));
+                    }
+                    Ok(json!({ "success": true }))
+                })),
+                Arc::new(StubAircModule::with(move |params| {
+                    let inline_id = params["envelope"]["payload"]["payload"]["inline"]["messageId"]
+                        .as_str()
+                        .expect("envelope must carry the message id");
+                    let id = Uuid::parse_str(inline_id).unwrap();
+                    airc_log.lock().unwrap().push((id, "airc/realtime-publish"));
+                    Ok(airc_ok_response("evt-order-conc"))
+                })),
+            ]);
+            let chat = Arc::new(chat);
+
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let chat = chat.clone();
+                tasks.push(tokio::spawn(async move {
+                    chat.send(sample_send_params()).await
+                }));
+            }
+            futures::future::join_all(tasks).await;
+
+            // Walk the global log, group event indices by message_id.
+            let observed = log.lock().unwrap().clone();
+            let mut per_call: HashMap<Uuid, Vec<(usize, &'static str)>> = HashMap::new();
+            for (idx, (id, event)) in observed.iter().enumerate() {
+                per_call.entry(*id).or_default().push((idx, *event));
+            }
+
             assert_eq!(
-                events.len(),
-                2,
-                "each call must produce exactly 2 events (data + airc) for id={id}"
+                per_call.len(),
+                PARALLEL,
+                "every concurrent call must contribute its own correlation id (no aliasing)"
             );
-            // Sort by the GLOBAL log index so we know the call-internal
-            // order rather than insertion order into the per-call vec.
-            let mut sorted = events.clone();
-            sorted.sort_by_key(|(idx, _)| *idx);
-            assert_eq!(
+
+            for (id, events) in per_call {
+                assert_eq!(
+                    events.len(),
+                    2,
+                    "each call must produce exactly 2 events (data + airc) for id={id}"
+                );
+                // Sort by the GLOBAL log index so we know the call-internal
+                // order rather than insertion order into the per-call vec.
+                let mut sorted = events.clone();
+                sorted.sort_by_key(|(idx, _)| *idx);
+                assert_eq!(
                 sorted[0].1, "data/create",
                 "per-call ordering: data MUST come before airc for id={id}, observed={sorted:?}"
             );
-            assert_eq!(
-                sorted[1].1, "airc/realtime-publish",
-                "per-call ordering: airc MUST come after data for id={id}, observed={sorted:?}"
-            );
-        }
-    }
-
-    /// Mixed outcomes under concurrent load: half the calls have airc
-    /// fail, half succeed. Each call's result must reflect ITS OWN
-    /// outcome — no cross-contamination between concurrent calls.
-    ///
-    /// The airc stub branches on a flag embedded in the message text
-    /// so it can decide per-call. Critical invariant: the warning
-    /// string for a failed call must reference THIS call's
-    /// `message_id`, not a sibling concurrent call's id.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn send_isolates_mixed_outcomes_under_concurrent_load() {
-        const PARALLEL: usize = 30;
-
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| {
-                Ok(json!({ "success": true }))
-            })),
-            Arc::new(StubAircModule::with(|params| {
-                // Drive the airc outcome from the inline message text.
-                let text = params["envelope"]["payload"]["payload"]["inline"]["text"]
-                    .as_str()
-                    .unwrap();
-                if text.contains("FAIL") {
-                    Err(format!("simulated airc failure for: {text}"))
-                } else {
-                    Ok(airc_ok_response("evt-mixed-ok"))
-                }
-            })),
-        ]);
-        let chat = Arc::new(chat);
-
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let chat = chat.clone();
-            let text = if i % 2 == 0 {
-                format!("OK call {i}")
-            } else {
-                format!("FAIL call {i}")
-            };
-            let label = text.clone();
-            tasks.push(tokio::spawn(async move {
-                let result = chat
-                    .send(ChatSendParams {
-                        room_id: Uuid::new_v4(),
-                        sender_id: Uuid::new_v4(),
-                        text,
-                        reply_to_id: None,
-                    })
-                    .await
-                    .expect("send must succeed (degraded success counts)");
-                (label, result)
-            }));
-        }
-        let results: Vec<(String, ChatSendResult)> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        let (mut ok_count, mut fail_count) = (0usize, 0usize);
-        for (label, result) in &results {
-            if label.contains("FAIL") {
-                fail_count += 1;
-                assert!(
-                    result.event_id.is_none(),
-                    "{label}: airc failed → event_id must be None"
+                assert_eq!(
+                    sorted[1].1, "airc/realtime-publish",
+                    "per-call ordering: airc MUST come after data for id={id}, observed={sorted:?}"
                 );
-                let warning = result
-                    .warning
-                    .as_ref()
-                    .expect(&format!("{label}: airc failed → warning must be set"));
-                // Cross-contamination check: the warning's message_id
-                // must match THIS call's result.message_id (not a
-                // sibling call's id that ran concurrently).
-                assert!(
+            }
+        }
+
+        /// Mixed outcomes under concurrent load: half the calls have airc
+        /// fail, half succeed. Each call's result must reflect ITS OWN
+        /// outcome — no cross-contamination between concurrent calls.
+        ///
+        /// The airc stub branches on a flag embedded in the message text
+        /// so it can decide per-call. Critical invariant: the warning
+        /// string for a failed call must reference THIS call's
+        /// `message_id`, not a sibling concurrent call's id.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn send_isolates_mixed_outcomes_under_concurrent_load() {
+            const PARALLEL: usize = 30;
+
+            let chat = chat_with_stubs(vec![
+                Arc::new(StubDataModule::new(|_cmd, _p| {
+                    Ok(json!({ "success": true }))
+                })),
+                Arc::new(StubAircModule::with(|params| {
+                    // Drive the airc outcome from the inline message text.
+                    let text = params["envelope"]["payload"]["payload"]["inline"]["text"]
+                        .as_str()
+                        .unwrap();
+                    if text.contains("FAIL") {
+                        Err(format!("simulated airc failure for: {text}"))
+                    } else {
+                        Ok(airc_ok_response("evt-mixed-ok"))
+                    }
+                })),
+            ]);
+            let chat = Arc::new(chat);
+
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
+                let chat = chat.clone();
+                let text = if i % 2 == 0 {
+                    format!("OK call {i}")
+                } else {
+                    format!("FAIL call {i}")
+                };
+                let label = text.clone();
+                tasks.push(tokio::spawn(async move {
+                    let result = chat
+                        .send(ChatSendParams {
+                            room_id: Uuid::new_v4(),
+                            sender_id: Uuid::new_v4(),
+                            text,
+                            reply_to_id: None,
+                        })
+                        .await
+                        .expect("send must succeed (degraded success counts)");
+                    (label, result)
+                }));
+            }
+            let results: Vec<(String, ChatSendResult)> = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            let (mut ok_count, mut fail_count) = (0usize, 0usize);
+            for (label, result) in &results {
+                if label.contains("FAIL") {
+                    fail_count += 1;
+                    assert!(
+                        result.event_id.is_none(),
+                        "{label}: airc failed → event_id must be None"
+                    );
+                    let warning = result
+                        .warning
+                        .as_ref()
+                        .expect(&format!("{label}: airc failed → warning must be set"));
+                    // Cross-contamination check: the warning's message_id
+                    // must match THIS call's result.message_id (not a
+                    // sibling call's id that ran concurrently).
+                    assert!(
                     warning.contains(&result.message_id.to_string()),
                     "{label}: warning must name THIS call's message_id ({}), not a sibling's. warning={}",
                     result.message_id, warning
                 );
-                // The underlying airc error must surface unchanged.
-                assert!(
-                    warning.contains(label.as_str()),
-                    "{label}: warning must surface the airc-side error text, got: {warning}"
-                );
-            } else {
-                ok_count += 1;
-                assert!(
-                    result.event_id.is_some(),
-                    "{label}: airc ok → event_id must be Some"
-                );
-                assert!(
-                    result.warning.is_none(),
-                    "{label}: airc ok → warning must be None"
-                );
+                    // The underlying airc error must surface unchanged.
+                    assert!(
+                        warning.contains(label.as_str()),
+                        "{label}: warning must surface the airc-side error text, got: {warning}"
+                    );
+                } else {
+                    ok_count += 1;
+                    assert!(
+                        result.event_id.is_some(),
+                        "{label}: airc ok → event_id must be Some"
+                    );
+                    assert!(
+                        result.warning.is_none(),
+                        "{label}: airc ok → warning must be None"
+                    );
+                }
             }
-        }
-        assert_eq!(ok_count, PARALLEL / 2, "half the calls should succeed");
-        assert_eq!(
-            fail_count,
-            PARALLEL / 2,
-            "half the calls should report degraded success"
-        );
-    }
-
-    /// `chat/poll` under N concurrent persona threads, each polling a
-    /// DIFFERENT room: every task must get back its OWN room's
-    /// messages, never a sibling task's. The stub echoes the
-    /// requested `roomId` so we can prove the result didn't get
-    /// swapped between concurrent calls.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn poll_isolates_results_under_concurrent_load() {
-        const PARALLEL: usize = 30;
-
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|params| {
-            // Echo the requested roomId back in the synthetic result so
-            // the caller can prove its own input flowed through.
-            let echoed = params["filter"]["roomId"]["$eq"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            json!({
-                "success": true,
-                "data": [
-                    {
-                        "id": "echo",
-                        "data": {
-                            "id": "echo",
-                            "roomId": echoed,
-                            "timestamp": "2026-05-30T00:00:00Z",
-                            "content": { "text": "echoed" },
-                        }
-                    }
-                ],
-            })
-        }))]);
-        let chat = Arc::new(chat);
-
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let chat = chat.clone();
-            let my_room = Uuid::new_v4();
-            tasks.push(tokio::spawn(async move {
-                let result = chat
-                    .poll(ChatPollParams {
-                        room_id: Some(my_room),
-                        ..Default::default()
-                    })
-                    .await
-                    .expect("poll must succeed");
-                (my_room, result)
-            }));
-        }
-        let results = futures::future::join_all(tasks).await;
-
-        for r in results {
-            let (my_room, poll_result) = r.expect("task must not panic");
-            assert_eq!(poll_result.count, 1, "each task gets one echoed message");
-            let echoed = poll_result.messages[0]["roomId"].as_str().unwrap();
+            assert_eq!(ok_count, PARALLEL / 2, "half the calls should succeed");
             assert_eq!(
+                fail_count,
+                PARALLEL / 2,
+                "half the calls should report degraded success"
+            );
+        }
+
+        /// `chat/poll` under N concurrent persona threads, each polling a
+        /// DIFFERENT room: every task must get back its OWN room's
+        /// messages, never a sibling task's. The stub echoes the
+        /// requested `roomId` so we can prove the result didn't get
+        /// swapped between concurrent calls.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn poll_isolates_results_under_concurrent_load() {
+            const PARALLEL: usize = 30;
+
+            let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|params| {
+                // Echo the requested roomId back in the synthetic result so
+                // the caller can prove its own input flowed through.
+                let echoed = params["filter"]["roomId"]["$eq"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                json!({
+                    "success": true,
+                    "data": [
+                        {
+                            "id": "echo",
+                            "data": {
+                                "id": "echo",
+                                "roomId": echoed,
+                                "timestamp": "2026-05-30T00:00:00Z",
+                                "content": { "text": "echoed" },
+                            }
+                        }
+                    ],
+                })
+            }))]);
+            let chat = Arc::new(chat);
+
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let chat = chat.clone();
+                let my_room = Uuid::new_v4();
+                tasks.push(tokio::spawn(async move {
+                    let result = chat
+                        .poll(ChatPollParams {
+                            room_id: Some(my_room),
+                            ..Default::default()
+                        })
+                        .await
+                        .expect("poll must succeed");
+                    (my_room, result)
+                }));
+            }
+            let results = futures::future::join_all(tasks).await;
+
+            for r in results {
+                let (my_room, poll_result) = r.expect("task must not panic");
+                assert_eq!(poll_result.count, 1, "each task gets one echoed message");
+                let echoed = poll_result.messages[0]["roomId"].as_str().unwrap();
+                assert_eq!(
                 echoed,
                 my_room.to_string(),
                 "each task MUST get back its OWN room's result; no cross-talk between concurrent polls"
             );
+            }
         }
-    }
     } // end mod stress
+
+    // ── #265: ring hydration from the durable transcript ─────────────
+
+    #[tokio::test]
+    async fn hydrate_speech_rings_seeds_room_and_own_rings_from_durable_store() {
+        // what this catches: reboot wipes the in-process speech rings, so the
+        // repetition/[settled] facts are blind exactly during the post-boot
+        // wake-greeting round (observed live 2026-07-30 — every persona
+        // re-greeted 2+ times, facts silent). Hydration must replay the
+        // durable transcript into BOTH the per-room and per-sender rings.
+        // Fresh UUIDs per run: the rings are process-global, so unique keys
+        // keep this isolated under full-suite parallelism (the #7 lesson).
+        let room = Uuid::new_v4();
+        let persona = Uuid::new_v4();
+        let room_s = room.to_string();
+        let persona_s = persona.to_string();
+
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |_p| {
+            // Store returns DESC (latest-first); poll normalizes chronological.
+            json!({
+                "success": true,
+                "data": [
+                    { "id": "m2", "data": { "id": "m2", "roomId": room_s, "senderId": persona_s,
+                        "timestamp": "2026-07-30T12:00:01Z",
+                        "content": { "text": "Hello everyone! I'm Benchy, back on the grid." } } },
+                    { "id": "m1", "data": { "id": "m1", "roomId": room_s, "senderId": persona_s,
+                        "timestamp": "2026-07-30T12:00:00Z",
+                        "content": { "text": "the wordstats tests are green, posting output" } } }
+                ]
+            })
+        }))]);
+
+        chat.hydrate_speech_rings()
+            .await
+            .expect("hydration over a healthy store must succeed");
+
+        let room_ring = crate::cognition::deliberation_budget::recent_room_speech(room);
+        assert_eq!(
+            room_ring.len(),
+            2,
+            "both durable lines must land in the room ring"
+        );
+        assert!(
+            room_ring[1].contains("back on the grid"),
+            "chronological order: the newest line is last (ring tail)"
+        );
+
+        let own_ring = crate::cognition::deliberation_budget::recent_own_speech(
+            crate::identity::PeerId::from_uuid(persona),
+            room,
+        );
+        assert_eq!(
+            own_ring.len(),
+            2,
+            "the sender's own-speech ring must carry her durable lines — this is \
+             what lets own_repetition/inbound_restates fire on a post-boot re-greeting"
+        );
+        // …and they must be filed under the room they were SAID in: hydration that
+        // dumped every line into one undifferentiated ring would re-create the
+        // cross-room repetition fact (a citizen entering a fresh room told she is
+        // "circling" about utterances from elsewhere).
+        assert!(
+            crate::cognition::deliberation_budget::recent_own_speech(
+                crate::identity::PeerId::from_uuid(persona),
+                uuid::Uuid::new_v4(),
+            )
+            .is_empty(),
+            "hydration must key by room — a room she never spoke in reads as silent"
+        );
+    }
 }

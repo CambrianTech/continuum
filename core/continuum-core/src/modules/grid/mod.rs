@@ -70,6 +70,11 @@ pub struct GridState {
     pub(crate) grid_dir: PathBuf,
     pub(crate) runtime_registry: Mutex<Option<Arc<crate::runtime::ModuleRegistry>>>,
     pub(crate) bus: Mutex<Option<Arc<crate::runtime::MessageBus>>>,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built. Inbound grid requests for commands
+    /// that no Rust module owns fall through to `executor.execute_ts_json`
+    /// (task #224 replaced the deleted free-function helper).
+    pub(crate) executor: Mutex<Option<Arc<crate::runtime::CommandExecutor>>>,
     /// This node's capabilities (GPU, storage, inference, training).
     /// Populated at init from constructor params, enriched after GpuModule responds.
     pub(crate) local_capabilities: RwLock<Vec<NodeCapability>>,
@@ -112,6 +117,7 @@ impl GridModule {
                 grid_dir,
                 runtime_registry: Mutex::new(None),
                 bus: Mutex::new(None),
+                executor: Mutex::new(None),
                 local_capabilities: RwLock::new(caps),
             }),
         }
@@ -219,6 +225,30 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // Enrich with a local forge custodian if one is reachable (Contract C §5,
+        // Pass 5b). Capability is OBSERVED — we probe the custodian's /health and
+        // only advertise forge when it answered. No custodian ⇒ no forge cap (an
+        // honest absence, not a fallback). Bounded so a hung port can't stall grid
+        // bringup; forge is optional infra. The fabric re-probes for live health.
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::forge::endpoint::ForgeEndpoint::probe_local(),
+        )
+        .await
+        {
+            Ok(Some(endpoint)) => {
+                let mut caps = self.state.local_capabilities.write().await;
+                caps.retain(|c| !matches!(c, NodeCapability::Forge { .. }));
+                eprintln!(
+                    "[grid] Local capabilities: forge custodian reachable ({:?}, {} slots)",
+                    endpoint.health, endpoint.capacity
+                );
+                caps.push(NodeCapability::Forge { endpoint });
+            }
+            Ok(None) => {} // no local custodian — correctly advertise no forge cap
+            Err(_) => eprintln!("[grid] Local forge custodian probe timed out — not advertised"),
+        }
+
         for transport in &self.state.transports {
             match transport.start().await {
                 Ok(()) => {
@@ -309,6 +339,130 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // #2228: fold the auto-discovered gossip peers into the registry by their DURABLE
+        // identity. The capacity beacon already self-registers each peer in the global ledger
+        // (PeerId-keyed, live capacity); this CONSUMES that correlation so a beaconing peer
+        // becomes a routable node with its `peer_id` set — the grid figures out node identities
+        // automatically, no manual `grid/pair`. Trust stays default (discovery ≠ authorization,
+        // #38), so the node is visible to pricing but not sent work until trusted.
+        // FLEET DRIFT IS A RECEIPT (2026-09-14): every beacon names its build; the
+        // fold flags silence and drift ONCE per transition — a probe and one line in
+        // the org room — so "a node ran a nine-day-old core" is said by the substrate,
+        // not noticed by whoever happens to be reading.
+        for (peer_uuid, offer, heard_at_ms) in crate::capacity::gossip::global_ledger().heard_offers_with_age() {
+            self.state.registry.note_peer_beacon(
+                &crate::identity::PeerId::from_uuid(peer_uuid),
+                crate::capacity::gossip::build_hex(offer.build),
+                offer.build_number,
+                offer.served_model.clone(),
+                offer.lanes,
+                offer.residents,
+                heard_at_ms,
+            );
+        }
+        let transitions = self.state.registry.fold_liveness(
+            crate::modules::grid::frame::now_millis(),
+            FLEET_SILENT_AFTER_MS,
+            env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
+        );
+        // PLACEMENT FOLLOWS THE FLEET (2026-09-14): remote-bound minds fall home when
+        // their seat goes dark and return when it beacons again — the two hand moves of
+        // 2026-09-07, now the substrate's, once per tick, receipted in the org room.
+        {
+            let now = crate::modules::grid::frame::now_millis();
+            // Foreign offers only: a node hears its own beacon back under every scope it
+            // speaks in, each with its own transport id — the operator id alone once
+            // missed the M5's project-scope self and it spilled minds to itself
+            // (card 2500d2f1); `is_this_node` is the one resolver over every id it wears.
+            let peers: Vec<crate::persona::placement_switch::PeerOffer> = crate::capacity::gossip::global_ledger()
+                .foreign_offers_with_age()
+                .into_iter()
+                .filter(|(p, _, _)| !crate::persona::self_peer::is_this_node(*p))
+                .map(|(peer, offer, heard_at_ms)| crate::persona::placement_switch::PeerOffer {
+                    peer,
+                    served_model: offer.served_model.clone(),
+                    lanes: offer.lanes,
+                    residents: offer.residents,
+                    beacon_age_ms: now.saturating_sub(heard_at_ms),
+                    free_slots_live: offer.free_slots_live,
+                    lane_wait_p50_ms: offer.lane_wait_p50_ms,
+                    lane_wait_samples: offer.lane_wait_samples,
+                    // 0 = an older core's beacon: unknown width, not a refusal.
+                    served_context_window: (offer.served_context_window > 0).then_some(offer.served_context_window),
+                })
+                .collect();
+            let serving = crate::inference::llama_server::current_serving();
+            let rank_of = |id: &str| -> Option<u8> {
+                crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
+            };
+            // What one of this node's turns needs of a lane: the residents' typical prompt
+            // with headroom, read once per pass; None until a turn has been sent.
+            let residents: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .map(|r| r.live_personas())
+                .unwrap_or_default(); // unwrap_or_default: no registry = no residents = no requirement yet
+            let requirement = crate::cognition::working_set::global()
+                .sent_median_of(&residents)
+                .map(crate::cognition::serving_plan::prompt_floor_of);
+            let local = crate::persona::placement_switch::LocalShape {
+                requirement,
+                lane_wait_p50_ms: {
+                    let (p50, samples) = crate::cognition::resource_admission::local_lane_wait_p50_ms();
+                    (samples > 0).then_some(p50)
+                },
+                resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .map(|r| r.live_personas().len() as u32)
+                    .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents = nothing to place
+                lanes: serving.lanes,
+                rank: serving
+                    .active_model
+                    .as_deref()
+                    .and_then(rank_of)
+                    .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+            };
+            for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
+                say_in_org_room(&line).await;
+            }
+        }
+        for t in transitions {
+            crate::probe!(
+                class = "fleet.node.transition",
+                node = %t.node,
+                change = t.kind.as_str(),
+                silent_secs = t.silent_secs,
+                build = %t.build_sha.clone().unwrap_or_else(|| "?".into()), // JUSTIFIED unwrap_or_else: "?" = this node never beaconed a build, a legible absence in the probe
+                "fleet liveness changed for a node"
+            );
+            let line = match t.kind {
+                registry::FleetChange::WentStale => format!("[fleet] {} has been silent {} h — treat as DOWN until it beacons again", t.node, t.silent_secs / 3600),
+                registry::FleetChange::BackFresh => format!("[fleet] {} is back (heard {} s ago)", t.node, t.silent_secs),
+                registry::FleetChange::FellBehind => format!("[fleet] {} runs build {} (#{}) while this node runs {} (#{}) — behind; `continuum reboot` there", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+                // The PEER's build, never this node's: the old line printed the local sha
+                // after "caught up to", and a peer read it as "the M5 runs my local-only
+                // commit" (Cormac, 2026-09-15 — an hour of two nodes chasing a leak that
+                // was a pronoun).
+                registry::FleetChange::CaughtUp => format!("[fleet] {} caught up: runs build {} (#{}) — this node runs {} (#{})", t.node, t.build_sha.clone().unwrap_or_else(|| "?".into()), t.build_number, env!("CONTINUUM_BUILD_GIT_SHA"), env!("CONTINUUM_BUILD_NUMBER")), // JUSTIFIED unwrap_or_else: "?" for a build never beaconed
+            };
+            say_in_org_room(&line).await;
+        }
+
+        for (peer_uuid, offer) in crate::capacity::gossip::global_ledger().heard_offers() {
+            // A RAM-only beacon (gpu_total_bytes 0) is a CPU node: no Compute
+            // capability, never a fabricated 1 MiB of VRAM (card deb26770).
+            let vram_mb = (offer.gpu_total_bytes > 0).then(|| offer.gpu_total_bytes / (1024 * 1024));
+            if self
+                .state
+                .registry
+                .ensure_peer_node(crate::identity::PeerId::from_uuid(peer_uuid), vram_mb)
+            {
+                crate::probe!(
+                    class = "grid.peer.autocorrelated",
+                    peer = %peer_uuid,
+                    vram_mb = vram_mb,
+                    "auto-registered a beaconing grid peer by its durable PeerId (#2228)",
+                );
+            }
+        }
+
         // Background probe: check which nodes are actually reachable.
         // Spawned so it doesn't block IPC command handling.
         let registry = Arc::clone(&self.state.registry);
@@ -376,7 +530,85 @@ impl ServiceModule for GridModule {
         commands::schemas()
     }
 
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        // Mutex::lock blocks briefly; called once at boot, never on hot path.
+        if let Ok(mut guard) = self.state.executor.try_lock() {
+            *guard = Some(executor);
+        } else {
+            // Should not happen — install_executor is called exactly once during start_server
+            // before any inbound command lands. If we ever contend here, surface the lost
+            // executor install loudly.
+            tracing::error!("GridModule::install_executor lost mutex contention at boot");
+        }
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Six hours without a beacon, a discovery or a frame = the node is treated as down.
+const FLEET_SILENT_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// One line into the org room (the git-remote-derived base the operator peer
+/// subscribes at boot), as the operator. No operator online or no org room = the
+/// probe alone carries the transition; never a panic, never a retry loop.
+pub(crate) async fn say_in_org_room(line: &str) {
+    // EVERY leg that can lose the line names itself (card 11b66313): this used to
+    // return silently three ways, and the org room was derived from the core process's
+    // cwd — a supervised core (launchd: ~/.continuum; the Windows S4U task) has no
+    // checkout there, so two nodes judged their hour for weeks and never said it. The
+    // org room is now the tracked checkout's fact (`persona::org_room`), one resolver
+    // shared with the operator peer's project-tree subscription.
+    let Some(airc) = crate::persona::operator_peer::operator_airc() else {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            leg = "no_operator_airc",
+            "the line could not be said in the org room — no operator airc runtime yet"
+        );
+        return;
+    };
+    let org = match crate::persona::org_room::org_channel() {
+        Ok(org) => org,
+        Err(absence) => {
+            crate::probe!(
+                class = "fleet.node.line_not_posted",
+                leg = "no_org_room",
+                why = %absence,
+                "the line could not be said in the org room — no org room names this node"
+            );
+            return;
+        }
+    };
+    let set = match airc.subscription_set().await {
+        Ok(set) => set,
+        Err(e) => {
+            crate::probe!(
+                class = "fleet.node.line_not_posted",
+                leg = "subscriptions_unreadable",
+                org = %org.as_str(),
+                error = %e.to_string(),
+                "the line could not be said in the org room — the subscription set is unreadable"
+            );
+            return;
+        }
+    };
+    let Some(room) = set.all().map(|sub| sub.as_room()).find(|r| r.name == org.as_str()) else {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            leg = "not_subscribed",
+            org = %org.as_str(),
+            "the line could not be said in the org room — the operator peer is not subscribed to it"
+        );
+        return;
+    };
+    if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room.channel.as_uuid(), line).await {
+        crate::probe!(
+            class = "fleet.node.line_not_posted",
+            leg = "publish",
+            org = %org.as_str(),
+            error = %e.to_string(),
+            "the line could not be said in the org room — the publish failed; the probe stands"
+        );
     }
 }

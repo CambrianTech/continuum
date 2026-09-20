@@ -29,6 +29,12 @@
 **"How do PersonaUsers learn and evolve?"**
 -> Read [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md)
 
+**"How is the monolith decomposed into composable services/containers?"**
+-> Read [MODULAR-DECOMPOSITION.md](../architecture/MODULAR-DECOMPOSITION.md) — service profiles over the existing BootMode/ModuleCategory seam ("a good AWS template"), co-location constraints (Bevy+LiveKit+GPU), per-service health/restart/independent-test, container layout
+
+**"How does Continuum leverage unsloth for inference + training?"**
+-> Read [UNSLOTH-INTEGRATION.md](../architecture/UNSLOTH-INTEGRATION.md) — three headless brain seams (MCP, OpenAI-compatible, inference backend), UIs stay separate, media capability negotiation, grid-leased compute
+
 **"Which daemon should I use for X?"**
 -> Read [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md)
 
@@ -88,6 +94,8 @@
 ---
 
 ## 📋 **IMPLEMENTATION ROADMAP**
+
+- **[UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL](UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL.md)** — the one scalar the substrate never reads: how likely a mind's current belief is wrong. Where it comes from (act surprise, the world's disagreement, the card's evidence ledger), who reads it (act budget, per-turn tier borrow over the grid, governor, pager, review gate, dreams, curriculum), and a five-step build order with a receipt each. 2026-09-12.
 
 ### **Phase 1: Foundation (COMPLETE)** ✅
 - [x] PersonaUser with JTAGClient

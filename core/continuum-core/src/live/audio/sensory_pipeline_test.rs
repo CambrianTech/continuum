@@ -379,7 +379,6 @@ mod tests {
     #[test]
     fn test_audio_mixing_all_noise_types() {
         let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
-        let duration = AUDIO_SAMPLE_RATE as usize; // 1 second
         let speech = gen.generate_sentence(3);
 
         let noise_types = vec![
@@ -424,13 +423,6 @@ mod tests {
     /// Test RGBA → I420 conversion (used by bridge for LiveKit publishing).
     #[test]
     fn test_rgba_to_i420_known_colors() {
-        // Pure red pixel
-        let rgba = vec![
-            255u8, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-        ];
-        let width = 2u32;
-        let height = 2u32;
-
         // Y for red: ((66*255 + 129*0 + 25*0 + 128) >> 8) + 16 = 81
         // U for red: ((-38*255 - 74*0 + 112*0 + 128) >> 8) + 128 = 90
         // V for red: ((112*255 - 94*0 - 18*0 + 128) >> 8) + 128 = 240

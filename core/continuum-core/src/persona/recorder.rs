@@ -378,7 +378,7 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
         Some(d) => d,
-        None => return, // HOME unset; treat as opted-out, no warning spam
+        None => return, // No home directory is available to this embedding.
     };
     let fname = filename_for(&input.persona.display_name, input.message_id);
     persist_json_payload(&dir, &fname, &payload);
@@ -422,16 +422,60 @@ fn persist_json_payload<T: Serialize>(dir: &Path, fname: &str, payload: &T) {
     trim_fifo(dir);
 }
 
+// Test-only per-thread overrides (#7). The recorder's tests used to mutate
+// process-global HOME/DISABLE env under a private lock — but that lock only
+// serialized RECORDER tests; every other test in the parallel suite that read
+// HOME (or triggered a recorder write) raced the swap window, and a parallel
+// write landing in the swapped tempdir broke this file's `len == 1` assertion.
+// A thread-local override is parallel-safe by construction: `record_turn` runs
+// on the caller's thread, so each test sees exactly its own root and the
+// process environment is never touched.
+#[cfg(test)]
+thread_local! {
+    static TEST_DISABLED: std::cell::RefCell<Option<bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn disabled() -> bool {
+    #[cfg(test)]
+    if let Some(v) = TEST_DISABLED.with(|d| *d.borrow()) {
+        return v;
+    }
     std::env::var(DISABLE_ENV)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false)
 }
 
-fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(relative))
+/// Shared fixture policy for live capture and its readers. Explicit HOME keeps
+/// its existing override semantics; native hosts need not inherit a shell HOME.
+pub(crate) fn fixture_dir(relative: &str) -> Option<PathBuf> {
+    crate::paths::home_dir().map(|h| h.join(relative))
+}
+
+/// Reuses the recorder's per-thread fixture isolation for capture/read tests.
+/// No process-wide HOME or disable flag is changed, including during unwinding.
+#[cfg(test)]
+pub(crate) struct EnvRestore {
+    _home: crate::paths::NativeHomeOverride,
+    disabled: Option<bool>,
+}
+
+#[cfg(test)]
+impl EnvRestore {
+    pub(crate) fn install(home: &Path, disabled: Option<&str>) -> Self {
+        Self {
+            _home: crate::paths::NativeHomeOverride::install(home),
+            disabled: TEST_DISABLED
+                .with(|d| d.replace(Some(matches!(disabled, Some("1" | "true" | "TRUE"))))),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        TEST_DISABLED.with(|d| *d.borrow_mut() = self.disabled.take());
+    }
 }
 
 /// Filename: `<persona>-<msgid_prefix>-<ts>-rust.json`. The `-rust`
@@ -519,7 +563,6 @@ mod tests {
     use crate::persona::response::PersonaResponse;
     use crate::persona::{InboxMessage, Modality, PersonaTurnFrame, SenderType};
     use std::collections::HashSet;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
 
     fn fake_input() -> RespondInput {
@@ -540,6 +583,8 @@ mod tests {
             message_media: vec![],
             capabilities: HashSet::new(),
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         }
     }
 
@@ -562,7 +607,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id,
                 sender_id: Uuid::new_v4(),
-                sender_name: "Joel".to_string(),
+                sender_name: "Operator".to_string(),
                 sender_type: SenderType::Human,
                 content: "what changed?".to_string(),
                 timestamp: 10_000,
@@ -600,53 +645,6 @@ mod tests {
         PersonaTurnFrame::from_inbox_frame(frame)
             .replay_record()
             .expect("fixture frame is non-empty")
-    }
-
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("recorder env test lock poisoned")
-    }
-
-    struct EnvRestore {
-        home: Option<String>,
-        disabled: Option<String>,
-    }
-
-    impl EnvRestore {
-        fn install(home: &std::path::Path, disabled: Option<&str>) -> Self {
-            let restore = Self {
-                home: std::env::var("HOME").ok(),
-                disabled: std::env::var(DISABLE_ENV).ok(),
-            };
-            // Environment mutation is process-global. Tests using this helper
-            // hold `env_lock()`, so no other recorder env test runs concurrently.
-            unsafe {
-                std::env::set_var("HOME", home);
-                match disabled {
-                    Some(v) => std::env::set_var(DISABLE_ENV, v),
-                    None => std::env::remove_var(DISABLE_ENV),
-                }
-            }
-            restore
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            // See EnvRestore::install for the synchronization guarantee.
-            unsafe {
-                match &self.home {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match &self.disabled {
-                    Some(v) => std::env::set_var(DISABLE_ENV, v),
-                    None => std::env::remove_var(DISABLE_ENV),
-                }
-            }
-        }
     }
 
     /// What this catches: filename includes persona name (whitespace
@@ -725,7 +723,6 @@ mod tests {
     /// write, request echo, response, and trace in one artifact.
     #[test]
     fn record_turn_writes_fixture_json_under_home() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();
@@ -755,7 +752,6 @@ mod tests {
     /// writes, and the Rust recorder honors that without asking TS to help.
     #[test]
     fn record_turn_respects_disable_env() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), Some("true"));
 
@@ -772,7 +768,6 @@ mod tests {
     #[test]
     fn record_failed_turn_writes_error_with_partial_trace() {
         use crate::persona::trace::SEAM_ANALYZE;
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();
@@ -816,7 +811,6 @@ mod tests {
     /// and deterministic RAG seed in one parseable artifact.
     #[test]
     fn record_turn_frame_replay_writes_fixture_json_under_home() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let record = fake_turn_frame_replay_record();
@@ -829,8 +823,12 @@ mod tests {
             .map(|e| e.expect("fixture entry").path())
             .collect();
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].to_string_lossy().contains("/frame-"));
-        assert!(entries[0].to_string_lossy().ends_with("-rust.json"));
+        let filename = entries[0]
+            .file_name()
+            .expect("fixture filename")
+            .to_string_lossy();
+        assert!(filename.starts_with("frame-"));
+        assert!(filename.ends_with("-rust.json"));
 
         let body = std::fs::read_to_string(&entries[0]).expect("fixture json readable");
         let json: serde_json::Value = serde_json::from_str(&body).expect("fixture json parses");
@@ -841,11 +839,11 @@ mod tests {
         assert_eq!(json["inboxFrame"]["metrics"]["messagesDrained"], 2);
         assert_eq!(
             json["consolidatedInbox"]["transcript"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
         assert_eq!(
             json["ragSeed"]["queryText"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
     }
 
@@ -854,7 +852,6 @@ mod tests {
     /// without branching in the caller.
     #[test]
     fn record_turn_frame_replay_respects_disable_env() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), Some("true"));
 
@@ -869,7 +866,6 @@ mod tests {
     /// duplicate derived fields validate against the raw inbox frame.
     #[test]
     fn load_turn_frame_replay_fixture_accepts_recorder_output() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let record = fake_turn_frame_replay_record();

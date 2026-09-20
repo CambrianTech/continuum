@@ -189,10 +189,17 @@ Done."#;
     fn parse_time_is_measured() {
         let text = "<tool_use><tool_name>code/read</tool_name><parameters><filePath>x.ts</filePath></parameters></tool_use>";
         let result = parse_and_correct(text);
-        // Should complete in microseconds
+        // what this catches: the instrumentation going dead or garbage — the field
+        // must carry a sane measurement. Deliberately NOT a perf bound in either
+        // direction: the old `< 10_000us` form was a performance SLA on whatever
+        // hardware runs the test and flaked on a contended CI runner 2026-08-22 (a
+        // scheduler stall is not a parser regression), while `> 0` would flake on
+        // fast machines (sub-µs parses round to 0). The 10s ceiling only catches an
+        // uninitialized/garbage u64; perf regressions belong to a bench harness
+        // with a baseline, not a unit test's stopwatch.
         assert!(
-            result.parse_time_us < 10_000,
-            "Parse should be sub-10ms, was {}us",
+            result.parse_time_us < 10_000_000,
+            "parse_time_us carries garbage, not a measurement: {}",
             result.parse_time_us
         );
     }

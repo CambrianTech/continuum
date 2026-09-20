@@ -1,14 +1,13 @@
-//! PersonaAllocatorModule — IPC command for hardware-aware persona allocation.
+//! PersonaAllocatorModule — owns the shared [`GpuMemoryManager`] for
+//! hardware-aware persona allocation.
 //!
-//! Commands:
-//! - `persona/allocate`: Given available API keys, returns optimal persona allocations
-//!   based on detected GPU hardware and VRAM budget.
-//!
-//! This is the single source of truth for "which personas should exist on this machine."
-//! TypeScript calls this at seed time AND at runtime (when API keys are added/removed).
+//! The command surface (`persona/allocate`, `persona/catalog`) is migrated to the
+//! typed registry (`commands/persona/allocate.rs`, `commands/persona/catalog.rs`).
+//! This module exists to hand the live GPU manager to the dep-holding
+//! `persona/allocate` command via `commands()`. The allocation algorithm + catalog
+//! loader are pure domain functions in [`crate::persona::allocator`].
 
 use crate::gpu::GpuMemoryManager;
-use crate::persona::{allocate_personas, load_catalog};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -43,38 +42,24 @@ impl ServiceModule for PersonaAllocatorModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "persona/allocate" => {
-                // Extract available API key names from params
-                let api_keys: Vec<String> = params
-                    .get("availableApiKeys")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // `persona/allocate` + `persona/catalog` are migrated to the typed registry
+        // (`commands/persona/{allocate,catalog}.rs`). Fail loud — no silent fallback.
+        Err(format!(
+            "persona allocator command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
+    }
 
-                let catalog = load_catalog();
-                let result = allocate_personas(&self.gpu_manager, &api_keys, &catalog);
-
-                let json = serde_json::to_value(&result)
-                    .map_err(|e| format!("Failed to serialize allocation result: {e}"))?;
-                Ok(CommandResult::Json(json))
-            }
-
-            "persona/catalog" => {
-                // Return the raw catalog (for UI display)
-                let catalog = load_catalog();
-                let json = serde_json::to_value(&catalog)
-                    .map_err(|e| format!("Failed to serialize catalog: {e}"))?;
-                Ok(CommandResult::Json(json))
-            }
-
-            _ => Err(format!("Unknown persona command: {command}")),
-        }
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        // Hand the live, shared GPU manager to the dep-holding `persona/allocate`
+        // command so its allocation reads the SAME detected hardware the module owns.
+        // `persona/catalog` is stateless and self-registers — not listed here.
+        vec![Arc::new(
+            crate::commands::persona::allocate::PersonaAllocate {
+                gpu_manager: self.gpu_manager.clone(),
+            },
+        )]
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -91,52 +76,30 @@ mod tests {
         PersonaAllocatorModule::new(manager)
     }
 
+    // what this catches: the allocation behavior (no-keys + present-key) now lives in
+    // the typed command (`commands/persona/allocate.rs`); the legacy handle_command is
+    // migrated, so for any command name it must fail loud — never silently fall back.
     #[tokio::test]
-    async fn test_allocate_no_keys() {
+    async fn legacy_handle_command_fails_loud() {
         let module = test_module();
-        let params = serde_json::json!({ "availableApiKeys": [] });
-        let result = module.handle_command("persona/allocate", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert!(json["allocations"].is_array());
-            assert!(json["summary"].is_array());
-            assert!(json["gpuName"].is_string());
-            assert!(json["localModel"].is_string());
-        }
+        let err = module
+            .handle_command("persona/allocate", serde_json::json!({}))
+            .await
+            .expect_err("legacy handler must fail loud after migration");
+        assert!(
+            err.contains("migrated to the typed registry"),
+            "error must name the migration: {err}"
+        );
     }
 
-    #[tokio::test]
-    async fn test_allocate_with_keys() {
+    // what this catches: the module contributes the dep-holding `persona/allocate`
+    // command, sharing its OWN GpuMemoryManager (so allocation reads the same detected
+    // hardware). A regression that drops the contribution — or constructs a fresh
+    // manager — is caught. `persona/catalog` is stateless and self-registers.
+    #[test]
+    fn contributes_persona_allocate_command() {
         let module = test_module();
-        let params = serde_json::json!({
-            "availableApiKeys": ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
-        });
-        let result = module.handle_command("persona/allocate", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let allocations = json["allocations"].as_array().unwrap();
-            // Should have Anthropic personas
-            assert!(allocations
-                .iter()
-                .any(|a| { a["apiKeyEnv"].as_str() == Some("ANTHROPIC_API_KEY") }));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_catalog() {
-        let module = test_module();
-        let result = module.handle_command("persona/catalog", Value::Null).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let entries = json.as_array().unwrap();
-            assert!(!entries.is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_unknown_command() {
-        let module = test_module();
-        let result = module.handle_command("persona/unknown", Value::Null).await;
-        assert!(result.is_err());
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["persona/allocate"]);
     }
 }

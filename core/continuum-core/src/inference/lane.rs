@@ -24,7 +24,7 @@
 //!   Graceful / Hard) that the pressure broker honors.
 //! - [`crate::inference::recipe_budget::TaskKind`] — the canonical
 //!   per-task seed budget table.
-//! - [`crate::genome::working_set::PersonaId`] — the substrate's
+//! - [`crate::identity::PeerId`] — the substrate's
 //!   persona identity type.
 //! - [`HandleRef`] — the inference handle the caller threads
 //!   through `ai/inference/{open,generate,close}`.
@@ -51,7 +51,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
-use crate::genome::working_set::PersonaId;
+use crate::identity::PeerId;
 use crate::inference::recipe_budget::TaskKind;
 
 /// One persona's budgeted inference slot, served by the shared
@@ -62,7 +62,7 @@ use crate::inference::recipe_budget::TaskKind;
 /// keeps the coordinator the only mutator of the lease state.
 #[derive(Debug, Clone)]
 pub struct Lane {
-    persona: PersonaId,
+    persona: PeerId,
     task: TaskKind,
     lease: ThroughputLease,
     /// Bound HandleRef's UUID. The coordinator's
@@ -115,9 +115,7 @@ impl LaneClass {
         match self {
             LaneClass::Realtime => ThroughputLeaseRevocationPolicy::Pinned,
             LaneClass::Interactive => ThroughputLeaseRevocationPolicy::Graceful,
-            LaneClass::Background | LaneClass::Sentinel => {
-                ThroughputLeaseRevocationPolicy::Hard
-            }
+            LaneClass::Background | LaneClass::Sentinel => ThroughputLeaseRevocationPolicy::Hard,
         }
     }
 
@@ -150,7 +148,7 @@ impl Lane {
     /// `FootprintRegistry::acquire_lease` path before calling here
     /// — Lane itself doesn't touch the registry.
     pub fn new(
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         lease: ThroughputLease,
         handle_id: Uuid,
@@ -165,7 +163,7 @@ impl Lane {
         }
     }
 
-    pub fn persona(&self) -> PersonaId {
+    pub fn persona(&self) -> PeerId {
         self.persona
     }
     pub fn task(&self) -> TaskKind {
@@ -224,8 +222,8 @@ mod tests {
     use super::*;
     use crate::cognition::{ResourceClass, TargetSilicon};
 
-    fn persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(0xAAAA))
+    fn persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(0xAAAA))
     }
 
     fn make_lease(policy: ThroughputLeaseRevocationPolicy) -> ThroughputLease {
@@ -286,13 +284,22 @@ mod tests {
 
     #[test]
     fn voice_and_video_default_to_realtime() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::VoiceChat), LaneClass::Realtime);
-        assert_eq!(LaneClass::default_for_task(TaskKind::VideoChat), LaneClass::Realtime);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::VoiceChat),
+            LaneClass::Realtime
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::VideoChat),
+            LaneClass::Realtime
+        );
     }
 
     #[test]
     fn chat_and_npc_engaged_default_to_interactive() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::Chat), LaneClass::Interactive);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::Chat),
+            LaneClass::Interactive
+        );
         assert_eq!(
             LaneClass::default_for_task(TaskKind::GameNpcEngaged),
             LaneClass::Interactive
@@ -301,16 +308,34 @@ mod tests {
 
     #[test]
     fn coding_npc_idle_and_academy_default_to_background() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::CodingSmall), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::CodingLarge), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::GameNpcIdle), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::AcademyStudent), LaneClass::Background);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::CodingSmall),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::CodingLarge),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::GameNpcIdle),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::AcademyStudent),
+            LaneClass::Background
+        );
     }
 
     #[test]
     fn sentinel_tasks_default_to_sentinel_class() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::SentinelEasy), LaneClass::Sentinel);
-        assert_eq!(LaneClass::default_for_task(TaskKind::SentinelHard), LaneClass::Sentinel);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::SentinelEasy),
+            LaneClass::Sentinel
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::SentinelHard),
+            LaneClass::Sentinel
+        );
     }
 
     // ── Lane field accessors ─────────────────────────────────────
@@ -329,17 +354,38 @@ mod tests {
 
     #[test]
     fn lane_seed_kv_tokens_match_recipe_budget_table() {
-        assert_eq!(lane_with(TaskKind::Chat, LaneClass::Interactive).seed_kv_tokens(), 8 * 1024);
-        assert_eq!(lane_with(TaskKind::VoiceChat, LaneClass::Realtime).seed_kv_tokens(), 8 * 1024);
-        assert_eq!(lane_with(TaskKind::GameNpcIdle, LaneClass::Background).seed_kv_tokens(), 4 * 1024);
-        assert_eq!(lane_with(TaskKind::CodingLarge, LaneClass::Background).seed_kv_tokens(), 128 * 1024);
+        assert_eq!(
+            lane_with(TaskKind::Chat, LaneClass::Interactive).seed_kv_tokens(),
+            8 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::VoiceChat, LaneClass::Realtime).seed_kv_tokens(),
+            8 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::GameNpcIdle, LaneClass::Background).seed_kv_tokens(),
+            4 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::CodingLarge, LaneClass::Background).seed_kv_tokens(),
+            128 * 1024
+        );
     }
 
     #[test]
     fn lane_max_kv_tokens_match_recipe_budget_table() {
-        assert_eq!(lane_with(TaskKind::Chat, LaneClass::Interactive).max_kv_tokens(), 16 * 1024);
-        assert_eq!(lane_with(TaskKind::CodingLarge, LaneClass::Background).max_kv_tokens(), 256 * 1024);
-        assert_eq!(lane_with(TaskKind::GameNpcIdle, LaneClass::Background).max_kv_tokens(), 8 * 1024);
+        assert_eq!(
+            lane_with(TaskKind::Chat, LaneClass::Interactive).max_kv_tokens(),
+            16 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::CodingLarge, LaneClass::Background).max_kv_tokens(),
+            256 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::GameNpcIdle, LaneClass::Background).max_kv_tokens(),
+            8 * 1024
+        );
     }
 
     // ── Pin / reclaim semantics ──────────────────────────────────

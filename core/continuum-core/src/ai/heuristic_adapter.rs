@@ -51,14 +51,12 @@
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
-};
+use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
-    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    UsageMetrics,
+    MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
+use crate::model_registry::Capability;
 
 /// Provider ID used to register + select this adapter from the global
 /// AdapterRegistry. `Commands.execute('inference/llm/request', {
@@ -72,10 +70,12 @@ pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
 /// Echo length cap — last N chars of the most recent user message
 /// surfaces in the response.
+// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
 const ECHO_CHARS: usize = 200;
 
 /// Char-to-token ratio (same rough heuristic the rest of the L1 RAG
 /// pipeline uses for cost estimation).
+// context-budget-exempt: a chars-per-token UNIT CONVERSION in the test fixture's fake token accounting
 const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no
@@ -95,6 +95,10 @@ const CHARS_PER_TOKEN: usize = 4;
 /// needs a deterministic adapter with controllable timing.
 #[derive(Debug, Default)]
 pub struct HeuristicInferenceAdapter {
+    /// Optional typed response script and exact request observer. These extend
+    /// the shared fixture for real act-to-observe integration tests.
+    responses: Option<std::sync::Mutex<std::collections::VecDeque<TextGenerationResponse>>>,
+    request_recorder: Option<std::sync::Arc<std::sync::Mutex<Vec<TextGenerationRequest>>>>,
     /// Sleep injected before every `generate_text` returns. 0 (default)
     /// is the production-cheap shape. Setting this is useful for
     /// latency-floor regression tests + simulating slow-network
@@ -118,9 +122,28 @@ pub struct HeuristicInferenceAdapter {
     /// Same shape for `generate_text` — counts substrate-side hot-path
     /// inference calls so tests can assert per-turn counts.
     generate_observer: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// If Some, `generate_text` returns THIS text verbatim instead of the
+    /// hash-echo heuristic — so a test can drive a real cognition cycle to a
+    /// SPECIFIC decision (e.g. "PASS: done" to exercise the held-work completion
+    /// edge end-to-end). The heuristic echo is a Speak shape and can't express a
+    /// reasoned pass; this makes the deterministic adapter able to produce any
+    /// decision the parser recognizes.
+    canned_response: Option<String>,
 }
 
 impl HeuristicInferenceAdapter {
+    pub fn with_responses(mut self, responses: Vec<TextGenerationResponse>) -> Self {
+        self.responses = Some(std::sync::Mutex::new(responses.into()));
+        self
+    }
+
+    pub fn with_request_recorder(
+        mut self,
+        recorder: std::sync::Arc<std::sync::Mutex<Vec<TextGenerationRequest>>>,
+    ) -> Self {
+        self.request_recorder = Some(recorder);
+        self
+    }
     /// Zero-config constructor — what production code uses.
     pub fn new() -> Self {
         Self::default()
@@ -152,6 +175,14 @@ impl HeuristicInferenceAdapter {
         counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
         self.warmup_observer = Some(counter);
+        self
+    }
+
+    /// Return `text` verbatim from every `generate_text` instead of the
+    /// hash-echo — lets a test drive a real cognition cycle to a chosen
+    /// decision (e.g. `"PASS: done"` for the held-work completion edge).
+    pub fn with_canned_response(mut self, text: impl Into<String>) -> Self {
+        self.canned_response = Some(text.into());
         self
     }
 
@@ -265,8 +296,14 @@ impl HeuristicInferenceAdapter {
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
         let last = Self::last_user_text(&req.messages);
-        let echoed: String = last.chars().rev().take(ECHO_CHARS).collect::<String>()
-            .chars().rev().collect();
+        let echoed: String = last
+            .chars()
+            .rev()
+            .take(ECHO_CHARS)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -280,11 +317,8 @@ impl HeuristicInferenceAdapter {
             // the rag_inspect inference probe's JSON parser is
             // exercised end-to-end. `will_respond: true` keeps the
             // happy path going.
-            let inner =
-                serde_json::to_string(&plain).expect("plain string serializes");
-            return format!(
-                "{{\"will_respond\":true,\"response\":{inner}}}"
-            );
+            let inner = serde_json::to_string(&plain).expect("plain string serializes");
+            return format!("{{\"will_respond\":true,\"response\":{inner}}}");
         }
         plain
     }
@@ -312,34 +346,22 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         false
     }
 
-
     fn capabilities(&self) -> AdapterCapabilities {
+        // Heuristic adapter intentionally advertises only text I/O — tool
+        // use, vision, embeddings, etc. are peer-adapter territory (per
+        // [[ai-namespace-multimodal-crutches]]). A future
+        // HeuristicVisionAdapter / HeuristicEmbeddingAdapter would each add
+        // its capability to this set.
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            // Heuristic adapter intentionally does NOT advertise tool
-            // use, vision, embeddings, etc. — those are peer-adapter
-            // territory (per [[ai-namespace-multimodal-crutches]]).
-            // A future HeuristicVisionAdapter / HeuristicEmbeddingAdapter
-            // would handle each modality.
-            supports_tool_use: false,
-            supports_vision: false,
-            supports_streaming: false,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
             // Local in the "no network, no GPU" sense.
             is_local: true,
             // Effectively unlimited — we never reject by length.
-            max_context_window: u32::MAX,
-
-            // Arc 1 typed descriptors: heuristic is a deterministic
-            // text-only adapter — no protocols beyond text I/O.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
-            structured_output_protocol:
-                crate::ai::adapter::StructuredOutputProtocol::None,
-            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
-            max_output_tokens: 4096,
+            max_context_window: Some(u32::MAX),
+            max_output_tokens: Some(4096),
+            // Deterministic text-only adapter — no protocols beyond text I/O.
+            tool_call_protocol: crate::model_registry::ToolProtocol::None,
+            structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::None,
+            ..AdapterCapabilities::text_only()
         }
     }
 
@@ -384,20 +406,35 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         if let Some(c) = &self.generate_observer {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        if let Some(recorder) = &self.request_recorder {
+            recorder
+                .lock()
+                .map_err(|_| "request recorder lock poisoned".to_string())?
+                .push(request.clone());
+        }
         // Inject real wall-clock if the caller configured a delay. Used
         // by latency-floor regression tests to verify the substrate's
         // turn_latency metric reflects actual elapsed time, and by
         // future simulated-network adapters. Production callers use
         // `new()` with delay=0 and pay zero overhead.
         if self.inject_delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms)).await;
+        }
+        if let Some(responses) = &self.responses {
+            return responses
+                .lock()
+                .map_err(|_| "heuristic adapter response script lock poisoned".to_string())?
+                .pop_front()
+                .ok_or_else(|| "heuristic adapter response script exhausted".to_string());
         }
         let model = request
             .model
             .clone()
             .unwrap_or_else(|| HEURISTIC_DEFAULT_MODEL.to_string());
-        let text = Self::build_response_text(&request);
+        let text = self
+            .canned_response
+            .clone()
+            .unwrap_or_else(|| Self::build_response_text(&request));
 
         // Token accounting: input = system + all message text;
         // output = response text. Same chars/4 heuristic the rest
@@ -444,8 +481,10 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             request_id,
             content: None,
             tool_calls: None,
+            reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         })
     }
 
@@ -469,7 +508,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             id: HEURISTIC_DEFAULT_MODEL.to_string(),
             name: "Heuristic Echo v1".to_string(),
             provider: HEURISTIC_PROVIDER_ID.to_string(),
-            capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
+            capabilities: vec![Capability::TextGeneration, Capability::Chat],
             context_window: u32::MAX,
             max_output_tokens: 4_096,
             cost_per_1k_tokens: CostPer1kTokens {
@@ -477,8 +516,6 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
                 output: 0.0,
             },
             tokens_per_second: 1_000_000.0,
-            supports_streaming: false,
-            supports_tools: false,
         }]
     }
 
@@ -546,6 +583,8 @@ mod tests {
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -635,7 +674,9 @@ mod tests {
     async fn usage_metrics_are_populated_and_nonzero_for_nonempty_prompt() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("a long-ish prompt here for token estimation")]))
+            .generate_text(req_with(vec![user_msg(
+                "a long-ish prompt here for token estimation",
+            )]))
             .await
             .unwrap();
         assert!(resp.usage.input_tokens > 0);
@@ -677,11 +718,11 @@ mod tests {
     async fn capabilities_admit_text_chat_but_not_modality_specific() {
         let adapter = HeuristicInferenceAdapter::new();
         let caps = adapter.capabilities();
-        assert!(caps.supports_text_generation);
-        assert!(caps.supports_chat);
-        assert!(!caps.supports_tool_use);
-        assert!(!caps.supports_vision);
-        assert!(!caps.supports_embeddings);
+        assert!(caps.has(Capability::TextGeneration));
+        assert!(caps.has(Capability::Chat));
+        assert!(!caps.has(Capability::ToolUse));
+        assert!(!caps.has(Capability::Vision));
+        assert!(!caps.has(Capability::Embedding));
         assert!(caps.is_local);
     }
 
@@ -716,10 +757,10 @@ mod tests {
     /// [[inference-is-an-adapter-always-in-the-loop]].
     #[tokio::test]
     async fn routes_through_inference_llm_request_command_surface() {
-        use crate::genome::working_set::{ArtifactId, PersonaId};
+        use crate::genome::working_set::ArtifactId;
+        use crate::identity::PeerId;
         use crate::inference::llm_module::{
-            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId,
-            SamplingParams,
+            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId, SamplingParams,
         };
         use crate::inference::llm_module_service::{InferenceLlmModule, COMMAND_REQUEST};
         use crate::runtime::service_module::{CommandResult, ServiceModule};
@@ -731,7 +772,7 @@ mod tests {
 
         let request = InferenceRequest {
             request_id: InferenceRequestId::new(Uuid::from_u128(7)),
-            persona: PersonaId::new(Uuid::from_u128(8)),
+            persona: PeerId::from_uuid(Uuid::from_u128(8)),
             composition: CompositionPlan(ArtifactId::new(Uuid::from_u128(9))),
             prompt_tokens: vec![],
             prompt_text: Some("integration prompt for heuristic adapter".to_string()),

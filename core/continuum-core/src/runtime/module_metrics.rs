@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use ts_rs::TS;
 
+// context-budget-exempt: a ring-buffer length for per-module timing samples, not a context bound
 const TIMING_WINDOW_SIZE: usize = 1000;
 const SLOW_THRESHOLD_MS: u64 = 50;
 
@@ -38,8 +39,11 @@ pub struct ModuleMetrics {
 }
 
 /// Aggregate statistics for a module
-#[derive(Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/ModuleStats.ts")]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/ModuleStats.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleStats {
     pub module_name: String,

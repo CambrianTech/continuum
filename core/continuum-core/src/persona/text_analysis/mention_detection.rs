@@ -53,9 +53,7 @@ pub fn is_persona_mentioned(
     if has_at_mention_of(message_text, persona_display_name) {
         return true;
     }
-    if !persona_unique_id.is_empty()
-        && has_at_mention_of(message_text, persona_unique_id)
-    {
+    if !persona_unique_id.is_empty() && has_at_mention_of(message_text, persona_unique_id) {
         return true;
     }
 
@@ -66,8 +64,7 @@ pub fn is_persona_mentioned(
     if starts_with_then_separator(message_text, persona_display_name) {
         return true;
     }
-    if !persona_unique_id.is_empty()
-        && starts_with_then_separator(message_text, persona_unique_id)
+    if !persona_unique_id.is_empty() && starts_with_then_separator(message_text, persona_unique_id)
     {
         return true;
     }
@@ -107,7 +104,6 @@ fn starts_with_then_separator(haystack: &str, name: &str) -> bool {
     let next = haystack.as_bytes().get(name.len()).copied();
     matches!(next, Some(b',') | Some(b':'))
 }
-
 
 /// Check if a message contains ANY directed @mention (aimed at any persona).
 /// Used to prevent dog-piling: when someone @mentions a specific AI, others stay silent.

@@ -1,0 +1,120 @@
+//! `identity/whoami` — THE identity resolution point for a connecting client.
+//!
+//! Why (Joel, 2026-09-01: "there's two of me, one called 'you' and another
+//! 'joel' — this is what happens when you break separation of concerns"): the
+//! web client MINTED a per-browser uuid (`persistentIdentity()` in
+//! localStorage) and used it as the human's identity — so every browser
+//! profile, private window, and the eye-node's harness page each became a
+//! phantom human in the directory and the call grid, beside the REAL durable
+//! identity the core already holds (the operator self-peer, #27). Three
+//! joel-shaped peers in one evening.
+//!
+//! The design ([[the-grid-identity-spine-durable-id-fluid-location]], and the
+//! `userId → sessionId → contextId` hierarchy): identity is DURABLE and owned
+//! by the substrate; a client session is a CONNECTION to it, never a mint.
+//! Clients ask `identity/whoami` at boot and adopt the answer.
+//!
+//! Today's answer is the local-first one: a caller-less local session IS the
+//! node's operator (one human per node); a persona toolbelt caller is herself.
+//! Real multi-user auth replaces the resolution INSIDE this verb later — the
+//! wire contract stays.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/identity/WhoamiParams.ts")]
+pub struct WhoamiParams {}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/identity/WhoamiResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct WhoamiResult {
+    /// The caller's DURABLE identity uuid — the one id this human/persona is
+    /// everywhere (directory, calls, chat authorship).
+    pub id: String,
+    /// Display name (the operator's OS user, or the persona's agent name).
+    pub name: String,
+    /// `"human"` | `"persona"`.
+    pub kind: String,
+}
+
+crate::action_command! {
+    /// Who am I on this substrate? Returns the caller's DURABLE identity (uuid +
+    /// name + kind). Clients call this at boot and adopt the answer — a client
+    /// must never mint its own identity ([[one-logical-decision-one-place]]).
+    pub struct IdentityWhoami;
+    name: "identity/whoami",
+    access: AiSafe,
+    params: WhoamiParams,
+    output: WhoamiResult,
+    run(_this, ctx, _p) => {
+        // ONE resolver for who is acting (`operator_peer::acting_runtime`): a persona
+        // toolbelt caller is herself, an agent session is the agent self-peer, a
+        // caller-less or anonymous-socket session is the operator. The same answer
+        // every other verb acts on.
+        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .unwrap_or_default(); // unwrap_or_default: no registry yet = no personas to name; the self-peers still resolve
+        let me = crate::persona::operator_peer::acting(&registry, ctx, "identity/whoami")?;
+        Ok(WhoamiResult {
+            id: me.peer.to_string(),
+            name: me
+                .runtime
+                .as_ref()
+                .map(|rt| rt.agent_name().to_string())
+                .unwrap_or_else(|| me.peer.to_string()), // JUSTIFIED unwrap_or_else: an unhosted signed caller renders as its uuid — honest identity, never an invented name
+            kind: me.kind.as_str().into(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdk_codegen::{AccessLevel, ActionCommand};
+
+    // what this catches: the identity spine's resolution verb — its wire name
+    // (every client boots against it) and AiSafe access (asking who you are is
+    // the first thing any session does).
+    // what this catches: the web desktop's WS stamps every unsigned connection
+    // with the nil peer id; whoami once read that sentinel as a PERSONA and the
+    // human's profile page rendered "00000000-0000-…" as their name (2026-09-05).
+    // An anonymous socket must resolve like a caller-less session (operator /
+    // claimed actor — absent in this test, so a named refusal), never as an
+    // identity; a SIGNED caller still resolves to itself.
+    #[tokio::test]
+    async fn an_anonymous_socket_is_never_an_identity() {
+        use crate::identity::PeerId;
+        use crate::routing::CallerIdentity;
+        use crate::sdk_codegen::Ctx as CommandContext;
+
+        let anonymous = CommandContext {
+            caller: Some(CallerIdentity::ws(PeerId::from_uuid(uuid::Uuid::nil()))),
+            ..Default::default()
+        };
+        let err = IdentityWhoami
+            .run(&anonymous, WhoamiParams {})
+            .await
+            .expect_err("nil socket must not resolve to a persona");
+        assert!(
+            err.to_string().contains("operator self-peer"),
+            "falls through to the operator resolution, got: {err}"
+        );
+
+        let signed_id = PeerId::new();
+        let signed = CommandContext {
+            caller: Some(CallerIdentity::airc(signed_id.clone())),
+            ..Default::default()
+        };
+        let me = IdentityWhoami.run(&signed, WhoamiParams {}).await.unwrap();
+        assert_eq!(me.id, signed_id.as_uuid().to_string());
+        assert_eq!(me.kind, "persona");
+    }
+
+    #[test]
+    fn whoami_is_aisafe_under_its_wire_name() {
+        assert_eq!(IdentityWhoami::NAME, "identity/whoami");
+        assert_eq!(IdentityWhoami::ACCESS, AccessLevel::AiSafe);
+    }
+}

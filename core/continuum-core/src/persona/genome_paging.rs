@@ -21,7 +21,7 @@ use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriori
 
 /// Per-adapter state for genome paging decisions.
 /// Extended from AdapterInfo with size_mb and last_used_ms for LRU.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/GenomeAdapterInfo.ts"
@@ -51,7 +51,7 @@ pub struct GenomeAdapterInfo {
 
 /// Compaction metadata for plasticity-optimized adapters.
 /// When present, the adapter targets a compacted base model with fewer attention heads.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/CompactionMetadata.ts"

@@ -107,6 +107,9 @@ pub const ENV_PROBE_CLASSES: &str = "CONTINUUM_PROBE_CLASSES";
 /// the fmt-layer rolling retention so operators learn one number.
 pub const DEFAULT_MAX_LOG_FILES: usize = 7;
 
+/// The live probe ledger; the rotation pool that governs its generations names it too.
+pub const PROBE_LEDGER_FILE: &str = "continuum-probes.jsonl";
+
 /// JSONL-on-disk consumer for `probe!` events.
 ///
 /// Composes with [`ProbeRouterLayer`](super::probe_router::ProbeRouterLayer)
@@ -219,9 +222,11 @@ impl JsonlProbeFileSink {
     /// fmt-layer rolling uses (`tracing_appender::rolling::Builder`
     /// in `routing/tracing_init.rs`).
     ///
-    /// Files land at `<dir>/continuum-probes.YYYY-MM-DD`. The current
-    /// day's file is the one being written; older days are kept up to
-    /// `max_log_files` and then pruned automatically.
+    /// Files land at `<dir>/continuum-probes.jsonl`, with older
+    /// generations beside it as `.1`, `.2`, … up to `max_log_files`.
+    /// Rotation is by SIZE, not by date: the probe stream's volume is
+    /// driven by decision rate, not by the clock, so a per-day file
+    /// has no bound at all.
     pub fn new_rolling<P: AsRef<Path>>(
         dir: P,
         allowed_classes: HashSet<String>,
@@ -232,18 +237,21 @@ impl JsonlProbeFileSink {
             path: dir.clone(),
             source,
         })?;
-        let appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("continuum-probes")
-            .filename_suffix("jsonl")
-            .max_log_files(max_log_files)
-            .build(&dir)
-            .map_err(|e| ProbeFileSinkError::OpenFailed {
-                path: dir.clone(),
-                // tracing_appender's InitError doesn't impl io::Error;
-                // wrap its Display the same way tracing_init.rs does.
-                source: std::io::Error::other(e.to_string()),
-            })?;
+        // Size-rotated, not clock-rotated — see [`crate::routing::capped_appender`]. The
+        // probe stream is the HIGHEST-volume writer in the substrate (one JSON line per
+        // load-bearing decision across every tokio task), so a clock-based "bound" is even
+        // less of one here than for the fmt log. `max_log_files` keeps its meaning: how many
+        // generations survive. What changes is that a generation now has a size.
+        let appender = crate::routing::capped_appender::CappedAppender::with_limits(
+            &dir,
+            PROBE_LEDGER_FILE,
+            crate::routing::capped_appender::MAX_LOG_BYTES,
+            max_log_files,
+        )
+        .map_err(|source| ProbeFileSinkError::OpenFailed {
+            path: dir.clone(),
+            source,
+        })?;
         Ok(Self {
             target: dir,
             writer: Mutex::new(Box::new(BufWriter::new(appender))),
@@ -323,6 +331,15 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // ZERO-COST GATE (2026-08-23 serialization audit): callsite field sets
+        // are static metadata — asking whether `probe_class` exists allocates
+        // nothing. Without this, EVERY tracing event in the process and its
+        // dependency crates paid a full visitor walk (a String per field into a
+        // HashMap) in this layer, then discarded it. The span path got exactly
+        // this fix in PR #1541 R2; the event path never did.
+        if event.metadata().fields().field("probe_class").is_none() {
+            return;
+        }
         // Same visit pattern as ProbeRouterLayer: pull probe_class +
         // message + every other field off the tracing event. The
         // visitor is private here (not exported from probe_router)
@@ -398,9 +415,7 @@ where
         // Class filter applies to timing spans just as it does to
         // event-shape probes; an operator filtering to
         // `persona.render.exit` shouldn't see timing noise.
-        if !self.allowed_classes.is_empty()
-            && !self.allowed_classes.contains(&probe_event.class)
-        {
+        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&probe_event.class) {
             return;
         }
 
@@ -444,7 +459,10 @@ pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool
         return true;
     }
     filter.iter().any(|f| {
-        class == f || (class.len() > f.len() + 1 && class.starts_with(f) && class[f.len()..].starts_with('.'))
+        class == f
+            || (class.len() > f.len() + 1
+                && class.starts_with(f)
+                && class[f.len()..].starts_with('.'))
     })
 }
 
@@ -554,7 +572,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
-        assert_eq!(classes, vec!["persona.render.exit", "cognition.analyze.cache_hit"]);
+        assert_eq!(
+            classes,
+            vec!["persona.render.exit", "cognition.analyze.cache_hit"]
+        );
 
         // The first line should preserve the message + fields the
         // probe! call carried, so an operator reading the log can
@@ -588,9 +609,12 @@ mod tests {
         });
 
         let lines = read_jsonl(&path);
-        assert_eq!(lines.len(), 2, "namespace prefix must drop both non-matching classes");
-        let kept_classes: Vec<&str> =
-            lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "namespace prefix must drop both non-matching classes"
+        );
+        let kept_classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
         assert!(kept_classes.contains(&"persona.turn.spoke"));
         assert!(kept_classes.contains(&"persona.response.render.prompt"));
     }

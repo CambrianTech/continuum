@@ -32,25 +32,55 @@
 pub mod airc_remote;
 pub mod backends;
 pub mod batching_probe;
+pub mod child_log;
+pub mod backend_receipt;
+pub mod debug_build_watch;
 pub mod coordinator;
 pub mod coordinator_pool;
 pub mod footprint_registry;
 pub mod handle_module;
 pub mod handle_store;
 pub mod kv_quant;
+pub mod lane_args;
+pub mod lane_health;
+pub mod lane_send;
+pub mod stream_liveness;
 pub mod lane;
+pub mod lane_pidfile;
+pub mod lane_process;
+pub mod decode_knee;
+pub mod lane_footprint;
+pub mod prefill_rate;
+pub mod lane_registry;
+pub mod llama_server;
 pub mod llamacpp_adapter;
+pub mod measured_hold;
+pub mod slots;
+pub mod sse_stream;
 pub mod llm_module;
 pub mod llm_module_bus;
 pub mod llm_module_service;
 pub mod lora;
 pub mod model;
+pub mod model_commands;
 pub mod ort_providers;
+pub mod placement_capture;
 pub mod recipe_budget;
+pub mod request_body;
+pub mod serving_guard;
+pub mod throughput_expectation;
+pub mod turn_admission;
+pub mod placement_watch;
+pub mod weight_residency;
 pub mod vendored;
+pub mod vision_sidecar;
+pub mod wedge;
 
 // Re-export commonly used types
 pub use backends::{read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat};
 pub use llamacpp_adapter::{LlamaCppAdapter, LLAMACPP_PROVIDER_ID};
 pub use lora::{load_lora_adapter, merge_lora_weight, LoRAWeights, LoadedAdapter};
 pub use model::rebuild_with_stacked_lora;
+pub use throughput_expectation::{
+    baseline_for, classify_throughput, ThroughputBaseline, ThroughputVerdict, SEED_BASELINES,
+};

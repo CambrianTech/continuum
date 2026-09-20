@@ -192,6 +192,7 @@ impl AgentContext {
                 home: home.clone(),
                 source,
             })?;
+        crate::persona::self_peer::register(airc.peer_id().as_uuid());
 
         // Join by NAME (not UUID-as-string) per the recurring hazard
         // documented in PersonaAircRuntime + Slice 3 review fix #2.
@@ -223,8 +224,7 @@ impl AgentContext {
             agent_provider: Some(provider.clone()),
         };
 
-        let airc_arc: Arc<dyn AircCitizen> =
-            Arc::new(AircHandleAdapter::new(Arc::new(airc)));
+        let airc_arc: Arc<dyn AircCitizen> = Arc::new(AircHandleAdapter::new(Arc::new(airc)));
 
         tracing::info!(
             peer_id = %peer_id,

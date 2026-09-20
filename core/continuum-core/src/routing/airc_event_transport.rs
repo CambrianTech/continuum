@@ -179,185 +179,68 @@ impl AircEventTransport {
     /// Build the outbound subscribe envelope:
     /// `(MentionTarget, Headers, Body)`. Pure function — no airc
     /// involvement, fully unit-testable.
+    // ─── Pure helpers: delegate to continuum-airc-protocol ───────────
+    //
+    // The wire-shape source of truth lives in
+    // `continuum_airc_protocol::event`. These methods are thin
+    // delegations preserved on the `AircEventTransport` type for
+    // backward compatibility with existing call sites and tests.
+    // The client crate (`continuum-client`) calls the free functions
+    // directly. Same code, two entry points, zero drift.
+
+    /// Build the outbound subscribe envelope. Delegates to
+    /// [`continuum_airc_protocol::event::resolve_subscribe`].
     pub fn resolve_subscribe(
         target_peer: PeerId,
         topic: &str,
         filter: Option<Value>,
     ) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
-        if topic.is_empty() {
-            return Err(
-                "AircEventTransport: subscribe topic must not be empty — the peer-side \
-                 publisher matches subscriptions by topic and an empty topic would \
-                 match nothing (or everything, depending on the publisher's loop \
-                 shape); either way silent. Per [[no-fallbacks-ever]] the transport \
-                 refuses upfront."
-                    .to_string(),
-            );
-        }
-        let req = AircEventSubscribe {
-            topic: topic.to_string(),
-            filter,
-        };
-        let body_value = serde_json::to_value(&req).map_err(|e| {
-            format!("AircEventTransport: serialize AircEventSubscribe to JSON value: {e}")
-        })?;
-        let body = Body::Json(body_value);
-
-        let mut headers = airc_core::Headers::new();
-        headers.insert(HEADER_EVENT_TOPIC.to_string(), topic.to_string());
-        headers.insert(HEADER_EVENT_KIND.to_string(), "subscribe".to_string());
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            EVENT_SUBSCRIBE_BODY_HINT.to_string(),
-        );
-
-        Ok((MentionTarget::Peer(target_peer), headers, body))
+        continuum_airc_protocol::event::resolve_subscribe(target_peer, topic, filter)
     }
 
-    /// Build the outbound unsubscribe envelope. Pure function.
+    /// Build the outbound unsubscribe envelope. Delegates to
+    /// [`continuum_airc_protocol::event::resolve_unsubscribe`].
     pub fn resolve_unsubscribe(
         target_peer: PeerId,
         subscription_id: Uuid,
     ) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
-        let req = AircEventUnsubscribe { subscription_id };
-        let body_value = serde_json::to_value(&req).map_err(|e| {
-            format!("AircEventTransport: serialize AircEventUnsubscribe to JSON value: {e}")
-        })?;
-        let body = Body::Json(body_value);
-
-        let mut headers = airc_core::Headers::new();
-        headers.insert(HEADER_EVENT_KIND.to_string(), "unsubscribe".to_string());
-        headers.insert(
-            HEADER_EVENT_SUBSCRIPTION_ID.to_string(),
-            subscription_id.to_string(),
-        );
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            EVENT_UNSUBSCRIBE_BODY_HINT.to_string(),
-        );
-
-        Ok((MentionTarget::Peer(target_peer), headers, body))
+        continuum_airc_protocol::event::resolve_unsubscribe(target_peer, subscription_id)
     }
 
-    /// Decode a subscribe-reply body as
-    /// [`AircEventSubscribeAck`]. Pure function — every error path
-    /// (no body, binary body, malformed JSON) is testable.
+    /// Decode a subscribe-reply body. Delegates to
+    /// [`continuum_airc_protocol::event::decode_subscribe_ack`].
     pub fn decode_subscribe_ack(reply_body: Option<Body>) -> Result<AircEventSubscribeAck, String> {
-        let body = reply_body.ok_or_else(|| {
-            "AircEventTransport: subscribe reply has no body (peer-side publisher \
-             must attach Body::Json(AircEventSubscribeAck))"
-                .to_string()
-        })?;
-        let value = match body {
-            Body::Json(v) => v,
-            Body::Binary(_) => {
-                return Err(
-                    "AircEventTransport: subscribe reply body was Binary; expected Json \
-                     (AircEventSubscribeAck is a JSON envelope)"
-                        .to_string(),
-                );
-            }
-        };
-        serde_json::from_value(value).map_err(|e| {
-            format!("AircEventTransport: deserialize subscribe reply as AircEventSubscribeAck: {e}")
-        })
+        continuum_airc_protocol::event::decode_subscribe_ack(reply_body)
     }
 
-    /// Decode an unsubscribe-reply body. Pure function.
+    /// Decode an unsubscribe-reply body. Delegates to
+    /// [`continuum_airc_protocol::event::decode_unsubscribe_ack`].
     pub fn decode_unsubscribe_ack(
         reply_body: Option<Body>,
     ) -> Result<AircEventUnsubscribeAck, String> {
-        let body = reply_body.ok_or_else(|| {
-            "AircEventTransport: unsubscribe reply has no body (peer-side publisher \
-             must attach Body::Json(AircEventUnsubscribeAck))"
-                .to_string()
-        })?;
-        let value = match body {
-            Body::Json(v) => v,
-            Body::Binary(_) => {
-                return Err(
-                    "AircEventTransport: unsubscribe reply body was Binary; expected Json"
-                        .to_string(),
-                );
-            }
-        };
-        serde_json::from_value(value).map_err(|e| {
-            format!(
-                "AircEventTransport: deserialize unsubscribe reply as AircEventUnsubscribeAck: {e}"
-            )
-        })
+        continuum_airc_protocol::event::decode_unsubscribe_ack(reply_body)
     }
 
-    /// Decode an inbound `TranscriptEvent` as an
-    /// [`AircEventDeliver`] frame. Returns a typed error if the
-    /// event isn't a valid Deliver (wrong body hint, missing body,
-    /// binary body, malformed JSON). Pure function — the
-    /// subscribe-side filter task uses this to drop non-Deliver
-    /// frames before forwarding.
+    /// Decode an inbound `TranscriptEvent` as an `AircEventDeliver`
+    /// frame. Delegates to
+    /// [`continuum_airc_protocol::event::decode_deliver_frame`].
     pub fn decode_deliver_frame(event: &TranscriptEvent) -> Result<AircEventDeliver, String> {
-        let body = event.body.as_ref().ok_or_else(|| {
-            "AircEventTransport: Deliver frame has no body (peer-side publisher \
-             must attach Body::Json(AircEventDeliver))"
-                .to_string()
-        })?;
-        let value = match body {
-            Body::Json(v) => v.clone(),
-            Body::Binary(_) => {
-                return Err(
-                    "AircEventTransport: Deliver frame body was Binary; expected Json"
-                        .to_string(),
-                );
-            }
-        };
-        serde_json::from_value(value).map_err(|e| {
-            format!("AircEventTransport: deserialize Deliver frame as AircEventDeliver: {e}")
-        })
+        continuum_airc_protocol::event::decode_deliver_frame(event)
     }
 
     /// Pure predicate: does this `TranscriptEvent` belong to the
     /// given subscription AND come from the expected publisher?
-    /// Matches on (cheapest checks first):
-    ///
-    /// 1. `event.peer_id == expected_publisher` — closes the
-    ///    forgery vector (PR #1529 reviewer 2 BLOCK). The airc
-    ///    daemon has already validated the signature on the
-    ///    sender's peer_id field; we trust that, and we trust only
-    ///    the peer we explicitly subscribed to. Without this
-    ///    check, any room peer could re-stamp matching headers on
-    ///    a forged Deliver frame and inject it into our cognition.
-    /// 2. `HEADER_CONTINUUM_BODY_HINT == EVENT_DELIVER_BODY_HINT`
-    ///    — drops non-Deliver frames; the airc event stream
-    ///    carries chat, status, command-side events, etc.
-    /// 3. `HEADER_EVENT_SUBSCRIPTION_ID == subscription_id` — the
-    ///    subscription identity demux for callers holding N
-    ///    active subscriptions concurrently.
-    ///
-    /// Used by the per-subscription filter task to drop the vast
-    /// majority of inbound frames cheaply (one PeerId equality +
-    /// one HashMap get + one string compare) without parsing the
-    /// body.
+    /// Delegates to [`continuum_airc_protocol::event::matches_subscription`].
     pub fn matches_subscription(
         event: &TranscriptEvent,
         subscription_id: Uuid,
         expected_publisher: PeerId,
     ) -> bool {
-        if event.peer_id != expected_publisher {
-            return false;
-        }
-        let body_hint_ok = event
-            .headers
-            .get(HEADER_CONTINUUM_BODY_HINT)
-            .map(|s| s.as_str() == super::EVENT_DELIVER_BODY_HINT)
-            .unwrap_or(false);
-        if !body_hint_ok {
-            return false;
-        }
-        event
-            .headers
-            .get(HEADER_EVENT_SUBSCRIPTION_ID)
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .map(|id| id == subscription_id)
-            .unwrap_or(false)
+        continuum_airc_protocol::event::matches_subscription(
+            event,
+            subscription_id,
+            expected_publisher,
+        )
     }
 
     // ─── airc-touching methods (covered by LAN-loopback in #188) ──
@@ -398,11 +281,10 @@ impl AircEventTransport {
         //    is to arm the Deliver stream before the subscribe
         //    request. No frames can be missed in the window between
         //    peer ack and filter task spawn.
-        let event_stream = self
-            .airc
-            .subscribe()
-            .await
-            .map_err(|e| format!("AircEventTransport: airc subscribe stream open failed: {e}"))?;
+        let event_stream =
+            self.airc.subscribe().await.map_err(|e| {
+                format!("AircEventTransport: airc subscribe stream open failed: {e}")
+            })?;
 
         let (target, headers, body) = Self::resolve_subscribe(target_peer, topic, filter)?;
 
@@ -518,8 +400,8 @@ impl AircEventTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::{ClientId, EventId, RoomId, TranscriptKind};
     use crate::routing::EVENT_DELIVER_BODY_HINT;
+    use airc_core::{ClientId, EventId, RoomId, TranscriptKind};
 
     // ─── resolve_subscribe ───────────────────────────────────────────
 
@@ -529,11 +411,16 @@ mod tests {
         let topic = "cognition/analyze/complete";
         let filter = Some(serde_json::json!({"min_confidence": 0.6}));
         let (target, headers, body) =
-            AircEventTransport::resolve_subscribe(peer, topic, filter.clone())
-                .expect("happy path");
+            AircEventTransport::resolve_subscribe(peer, topic, filter.clone()).expect("happy path");
         assert!(matches!(target, MentionTarget::Peer(p) if p == peer));
-        assert_eq!(headers.get(HEADER_EVENT_TOPIC).map(String::as_str), Some(topic));
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("subscribe"));
+        assert_eq!(
+            headers.get(HEADER_EVENT_TOPIC).map(String::as_str),
+            Some(topic)
+        );
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("subscribe")
+        );
         assert_eq!(
             headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
             Some(EVENT_SUBSCRIBE_BODY_HINT)
@@ -587,9 +474,14 @@ mod tests {
         let (target, headers, body) =
             AircEventTransport::resolve_unsubscribe(peer, sub_id).expect("happy");
         assert!(matches!(target, MentionTarget::Peer(p) if p == peer));
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("unsubscribe"));
         assert_eq!(
-            headers.get(HEADER_EVENT_SUBSCRIPTION_ID).map(String::as_str),
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("unsubscribe")
+        );
+        assert_eq!(
+            headers
+                .get(HEADER_EVENT_SUBSCRIPTION_ID)
+                .map(String::as_str),
             Some(sub_id.to_string().as_str())
         );
         assert_eq!(
@@ -621,14 +513,20 @@ mod tests {
     #[test]
     fn decode_subscribe_ack_refuses_missing_body() {
         let err = AircEventTransport::decode_subscribe_ack(None).expect_err("None body must fail");
-        assert!(err.contains("no body"), "must name the missing piece: {err}");
+        assert!(
+            err.contains("no body"),
+            "must name the missing piece: {err}"
+        );
     }
 
     #[test]
     fn decode_subscribe_ack_refuses_binary_body() {
         let err = AircEventTransport::decode_subscribe_ack(Some(Body::Binary(vec![1, 2, 3])))
             .expect_err("Binary body must fail");
-        assert!(err.contains("Binary"), "must name the shape mismatch: {err}");
+        assert!(
+            err.contains("Binary"),
+            "must name the shape mismatch: {err}"
+        );
     }
 
     #[test]
@@ -636,7 +534,10 @@ mod tests {
         let body = Body::Json(serde_json::json!({"wrong": "shape"}));
         let err = AircEventTransport::decode_subscribe_ack(Some(body))
             .expect_err("malformed JSON must fail");
-        assert!(err.contains("deserialize"), "must name decode failure: {err}");
+        assert!(
+            err.contains("deserialize"),
+            "must name decode failure: {err}"
+        );
     }
 
     // ─── decode_unsubscribe_ack ─────────────────────────────────────
@@ -647,16 +548,22 @@ mod tests {
 
     #[test]
     fn decode_unsubscribe_ack_refuses_missing_body() {
-        let err = AircEventTransport::decode_unsubscribe_ack(None)
-            .expect_err("None body must fail");
-        assert!(err.contains("no body"), "must name the missing piece: {err}");
+        let err =
+            AircEventTransport::decode_unsubscribe_ack(None).expect_err("None body must fail");
+        assert!(
+            err.contains("no body"),
+            "must name the missing piece: {err}"
+        );
     }
 
     #[test]
     fn decode_unsubscribe_ack_refuses_binary_body() {
         let err = AircEventTransport::decode_unsubscribe_ack(Some(Body::Binary(vec![1, 2, 3])))
             .expect_err("Binary body must fail");
-        assert!(err.contains("Binary"), "must name the shape mismatch: {err}");
+        assert!(
+            err.contains("Binary"),
+            "must name the shape mismatch: {err}"
+        );
     }
 
     #[test]
@@ -664,7 +571,10 @@ mod tests {
         let body = Body::Json(serde_json::json!({"wrong": "shape"}));
         let err = AircEventTransport::decode_unsubscribe_ack(Some(body))
             .expect_err("malformed JSON must fail");
-        assert!(err.contains("deserialize"), "must name decode failure: {err}");
+        assert!(
+            err.contains("deserialize"),
+            "must name decode failure: {err}"
+        );
     }
 
     #[test]
@@ -708,7 +618,10 @@ mod tests {
     ) -> TranscriptEvent {
         let body_value = serde_json::to_value(deliver).expect("serialize");
         let mut headers = airc_core::Headers::new();
-        headers.insert(HEADER_CONTINUUM_BODY_HINT.to_string(), body_hint.to_string());
+        headers.insert(
+            HEADER_CONTINUUM_BODY_HINT.to_string(),
+            body_hint.to_string(),
+        );
         if let Some(id) = sub_id_header {
             headers.insert(HEADER_EVENT_SUBSCRIPTION_ID.to_string(), id);
         }
@@ -857,8 +770,7 @@ mod tests {
             sequence: 0,
             payload: Value::Null,
         };
-        let event =
-            make_deliver_event(publisher, &deliver, EVENT_DELIVER_BODY_HINT, None);
+        let event = make_deliver_event(publisher, &deliver, EVENT_DELIVER_BODY_HINT, None);
         assert!(!AircEventTransport::matches_subscription(
             &event, sub_id, publisher
         ));

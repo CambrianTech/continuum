@@ -1,150 +1,126 @@
 //! Scene objects — anything that lives in a scene.
 //!
-//! Each variant owns its specific state. Adding a new object type =
-//! adding a variant here + its state struct.
+//! `SceneObject` is a TRAIT, not a closed enum: a scene holds
+//! `Box<dyn SceneObject>` values keyed by a stable string id. Adding a new
+//! kind of thing to a scene = one more `impl SceneObject`, with zero edits to
+//! the slot, the enum, or a hand-written downcast matrix. This is the
+//! polymorphism-over-enums doctrine (cv::Algorithm-style) applied to the scene
+//! graph, and it is what lets a future Unreal backend or a generated prop drop
+//! in as an adapter rather than a new variant everyone must match on.
+//!
+//! Two maximally-different impls validate the trait, then we STOP:
+//!   - outlier A: [`AvatarObject`] — animated VRM with skeleton, morphs, speech
+//!   - outlier B: [`PropSceneObject`] — a static GLB with none of that
+//!
+//! The environment (room/backdrop) is deliberately NOT a `SceneObject`: it is
+//! an ECS `RoomConfig` child of the scene root (`scene::room::populate_rooms`),
+//! recursively despawned with the root. That is why the old `EnvironmentObject`
+//! variant was dead — don't reintroduce it here.
 
 use bevy::prelude::*;
+use std::any::Any;
 
 use super::avatar::AvatarObject;
 
-/// A typed object within a scene.
-pub enum SceneObject {
-    /// An animated VRM/glTF character with morph targets, bones, speech.
-    Avatar(AvatarObject),
-    /// A static 3D model — prop, furniture, vehicle, terrain feature.
-    StaticMesh(StaticMeshObject),
-    /// A full environment — room, outdoor scene, skybox + ground.
-    Environment(EnvironmentObject),
+/// Anything that can live in a scene slot. Object-safe by construction (no
+/// generics, no `Self` returns) so it can be stored as `Box<dyn SceneObject>`.
+///
+/// `id` is intentionally NOT on the trait: the slot's `HashMap` key IS the id
+/// (one source of truth — the compression principle), so storing it again on
+/// every object would be redundant state that can drift from the key.
+pub trait SceneObject: Send + Sync {
+    /// The ECS entity for this object, if spawned.
+    fn entity(&self) -> Option<Entity>;
+
+    /// Record the ECS entity after spawning.
+    fn set_entity(&mut self, entity: Entity);
+
+    /// True once this object is fully loaded/spawned in the ECS. The exact
+    /// meaning is object-specific (an avatar needs its glTF scene ready and
+    /// bones discovered; a prop only needs its entity spawned).
+    fn is_loaded(&self) -> bool;
+
+    /// Downcast seam — the ONE place typed access is recovered. Callers use
+    /// the slot's `object_as::<T>` / `objects_of::<T>` helpers, never this
+    /// directly.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Mutable downcast seam.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-impl SceneObject {
-    /// The ECS entity for this object (if spawned).
-    pub fn entity(&self) -> Option<Entity> {
-        match self {
-            SceneObject::Avatar(a) => a.entity,
-            SceneObject::StaticMesh(m) => m.entity,
-            SceneObject::Environment(e) => e.entity,
-        }
+// =============================================================================
+// Outlier A — Avatar (animated VRM: skeleton, morph targets, speech, emotion)
+// =============================================================================
+
+impl SceneObject for AvatarObject {
+    fn entity(&self) -> Option<Entity> {
+        self.entity
     }
 
-    /// Set the ECS entity after spawning.
-    pub fn set_entity(&mut self, entity: Entity) {
-        match self {
-            SceneObject::Avatar(a) => a.entity = Some(entity),
-            SceneObject::StaticMesh(m) => m.entity = Some(entity),
-            SceneObject::Environment(e) => e.entity = Some(entity),
-        }
+    fn set_entity(&mut self, entity: Entity) {
+        self.entity = Some(entity);
     }
 
-    /// True if this object has been loaded/spawned in the ECS.
-    pub fn is_loaded(&self) -> bool {
-        match self {
-            SceneObject::Avatar(a) => a.state.model_loaded,
-            SceneObject::StaticMesh(m) => m.entity.is_some(),
-            SceneObject::Environment(e) => e.entity.is_some(),
-        }
+    fn is_loaded(&self) -> bool {
+        // An avatar isn't "loaded" until its glTF scene is ready and its
+        // skeleton discovered — tracked by the SceneInstanceReady observer.
+        self.state.model_loaded
     }
 
-    /// Get this object as an avatar, if it is one.
-    pub fn as_avatar(&self) -> Option<&AvatarObject> {
-        match self {
-            SceneObject::Avatar(a) => Some(a),
-            _ => None,
-        }
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 
-    /// Get this object as a mutable avatar, if it is one.
-    pub fn as_avatar_mut(&mut self) -> Option<&mut AvatarObject> {
-        match self {
-            SceneObject::Avatar(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    /// Get this object as a static mesh, if it is one.
-    pub fn as_static_mesh(&self) -> Option<&StaticMeshObject> {
-        match self {
-            SceneObject::StaticMesh(m) => Some(m),
-            _ => None,
-        }
-    }
-
-    /// Get this object as a mutable static mesh, if it is one.
-    pub fn as_static_mesh_mut(&mut self) -> Option<&mut StaticMeshObject> {
-        match self {
-            SceneObject::StaticMesh(m) => Some(m),
-            _ => None,
-        }
-    }
-
-    /// Get this object as an environment, if it is one.
-    pub fn as_environment(&self) -> Option<&EnvironmentObject> {
-        match self {
-            SceneObject::Environment(e) => Some(e),
-            _ => None,
-        }
-    }
-
-    /// Get this object as a mutable environment, if it is one.
-    pub fn as_environment_mut(&mut self) -> Option<&mut EnvironmentObject> {
-        match self {
-            SceneObject::Environment(e) => Some(e),
-            _ => None,
-        }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
 // =============================================================================
-// Static Mesh — prop, terrain, vehicle, etc.
+// Outlier B — Prop (static, non-animated glTF/GLB: furniture, vehicle, terrain)
 // =============================================================================
 
-/// A static (non-animated) 3D model in the scene.
-pub struct StaticMeshObject {
+/// A static (non-animated) 3D model in the scene — the maximally-different
+/// outlier that proves the trait: no skeleton, no morphs, no speech, "loaded"
+/// means nothing more than "its entity has been spawned."
+pub struct PropSceneObject {
     /// ECS entity (child of scene root). None until spawned.
     pub entity: Option<Entity>,
-    /// Path to the glTF/GLB file.
+    /// Path to the glTF/GLB asset.
     pub model_path: String,
-    /// Handle to the loaded asset.
+    /// Handle to the loaded scene asset (kept alive so the asset isn't dropped).
     pub handle: Option<Handle<Scene>>,
-    /// Position/rotation/scale within the scene.
-    pub local_transform: Transform,
 }
 
-impl StaticMeshObject {
-    pub fn new(model_path: String, transform: Transform) -> Self {
+impl PropSceneObject {
+    pub fn new(model_path: String) -> Self {
         Self {
             entity: None,
             model_path,
             handle: None,
-            local_transform: transform,
         }
     }
 }
 
-// =============================================================================
-// Environment — backgrounds, rooms, skyboxes
-// =============================================================================
+impl SceneObject for PropSceneObject {
+    fn entity(&self) -> Option<Entity> {
+        self.entity
+    }
 
-/// An environment enclosure — a room, outdoor scene, or skybox.
-/// Typically loaded as a full glTF scene that provides the "stage."
-pub struct EnvironmentObject {
-    /// ECS entity (child of scene root). None until spawned.
-    pub entity: Option<Entity>,
-    /// Path to the environment glTF/GLB.
-    pub model_path: String,
-    /// Handle to the loaded asset.
-    pub handle: Option<Handle<Scene>>,
-    /// Position/rotation/scale within the scene.
-    pub local_transform: Transform,
-}
+    fn set_entity(&mut self, entity: Entity) {
+        self.entity = Some(entity);
+    }
 
-impl EnvironmentObject {
-    pub fn new(model_path: String, transform: Transform) -> Self {
-        Self {
-            entity: None,
-            model_path,
-            handle: None,
-            local_transform: transform,
-        }
+    fn is_loaded(&self) -> bool {
+        self.entity.is_some()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

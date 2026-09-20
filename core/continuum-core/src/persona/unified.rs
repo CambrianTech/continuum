@@ -30,6 +30,34 @@ use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Room-roster grounding ceiling as a FRACTION (1/64) of the served window,
+/// never a baked constant (task #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+/// A roster is a handful of presence lines (tens of tokens), so its SHARE stays
+/// tiny — floorless, always `.min(per_source_max)` — but it now SCALES with the
+/// window: ~256 tokens at the common 16k window (the tuned value), more on a big
+/// model, less on a tight one. Keeps the "never starve airc's recent_history"
+/// property (a small fraction, sorted last) while never clamping a 128k window to
+/// a constant. See the budget-claim rationale in `compose_for_turn`.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
+const ROSTER_WINDOW_FRACTION: u32 = 64;
+
+/// Room-doctrine grounding ceiling as a FRACTION (1/16) of the served window.
+/// A doctrine is a short operating contract (a few paragraphs) — larger than the
+/// roster (prose, not a name list) but still a small, floorless share that scales:
+/// ~1024 tokens at a 16k window (the tuned value), growing so a big model can hold
+/// a richer room contract without competing with engram/airc for grow headroom.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
+const DOCTRINE_WINDOW_FRACTION: u32 = 16;
+
+/// What a heavyweight grounding source gets when there IS room — its comfortable
+/// size, not its survival minimum. Formerly this same number was ALSO used as the
+/// floor, which is the bug: the allocator drops a source whole when its floor
+/// doesn't fit, so every source demanded 500 tokens to say anything at all while
+/// its real first unit costs 6..40 (measured 2026-08-06). Floor now comes from
+/// `RagSource::floor_tokens`; this stays the target the grow pass aims at.
+// context-budget-exempt: a per-source TARGET, clamped by per_source_max which IS window-relative
+const COMFORTABLE_SOURCE_TOKENS: u32 = 500;
+
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
     pub engine: PersonaCognitionEngine,
@@ -77,6 +105,34 @@ pub struct PersonaCognition {
     /// `runtime.transcript_reader()`) only becomes available after
     /// PersonaAircRuntime bootstraps.
     pub airc_source: Option<Arc<dyn RagSource>>,
+    /// The persona's room-roster RAG source — "who else is present in
+    /// this room right now", read from airc `active_agents`. Bound at
+    /// supervisor boot alongside `airc_source` (same `Airc` handle, which
+    /// satisfies `AircRosterReader`). `None` pre-attach / in unit tests
+    /// without a daemon; `Some` in production. Its delivery is routed by
+    /// the service loop into system-prompt GROUNDING (a `[Present in
+    /// this room]` block), not conversation history — the fix for a
+    /// persona confabulating other citizens' turns. See
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    pub roster_source: Option<Arc<dyn RagSource>>,
+    /// The persona's benchmark-board RAG source — the live run rows
+    /// (`ViewStateRagSource::<BenchViewState>` over
+    /// `ipc::global_bench_substrate()`), the SAME fold the academy
+    /// rail renders. Bound at supervisor boot (#426); `None` pre-attach
+    /// / in tests. This is the benchmarks-as-activity acceptance test
+    /// made real: a citizen perceives run state through the same pipe
+    /// the human's screen uses, never a file read
+    /// ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+    pub bench_source: Option<Arc<dyn RagSource>>,
+    /// The persona's room-doctrine RAG source — "what KIND of room is
+    /// this" (the airc-published operating contract via
+    /// `Airc::room_doctrine`). Bound at supervisor boot from the same
+    /// `Airc` handle (satisfies `AircDoctrineReader`). `None` pre-attach
+    /// / in tests. Routed by the service loop into system-prompt
+    /// grounding (a `[Room operating doctrine]` block) so a persona
+    /// calibrates participation to the activity (slice 2). See
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    pub doctrine_source: Option<Arc<dyn RagSource>>,
     /// The capture sink the RecordingRagSource wraps engram_source
     /// against. Default = `NoopRagCaptureSink` (zero overhead, drops
     /// events on the floor). Production callers swap in
@@ -84,6 +140,11 @@ pub struct PersonaCognition {
     /// `InMemoryRagCaptureSink` for in-flight inspection.
     pub capture_sink: Arc<dyn RagCaptureSink>,
 }
+
+// Self-determined attention allocation (#91) does NOT live on the brain: it must be
+// reachable by `persona_id` from BOTH the service loop and a self-set tool she invokes
+// through the command registry (which only knows her id, never holds `cognition.lock()`).
+// Its single home is `crate::persona::focus::registry()` — see that module.
 
 /// What [`PersonaCognition::compose_for_turn`] returns — the
 /// substrate's structured handoff between "brain composed a budgeted
@@ -161,6 +222,9 @@ impl PersonaCognition {
             recall_metadata,
             engram_source,
             airc_source: None,
+            roster_source: None,
+            bench_source: None,
+            doctrine_source: None,
             capture_sink,
         }
     }
@@ -175,12 +239,74 @@ impl PersonaCognition {
     /// airc deliveries flowing through the same capture/replay
     /// pipeline as engrams (per
     /// [[persona-record-replay-is-a-product-requirement]]).
+    /// Swap the in-memory admission for a disk-backed, rehydrated one
+    /// (per-persona `engrams.sqlite`, via `AdmissionState::for_persona`). Called
+    /// by the supervisor at boot once the persona's `PersonaHome` is known.
+    /// Rebuilds `engram_source` against the new admission (decorated with the
+    /// brain's `capture_sink`) and adopts its recall-metadata registry, so
+    /// encoding + recall + the workspace's RecallFaculty all share the persisted
+    /// store. Without this, admission is `NoopSink` — in-memory, lost on restart.
+    /// Must run BEFORE the per-persona WorkspaceCycle is assembled, so its
+    /// RecallFaculty binds the persisted admission.
+    pub fn attach_persistent_admission(
+        &mut self,
+        persona_id: Uuid,
+        admission: Arc<AdmissionState>,
+    ) {
+        self.recall_metadata = admission.recall_metadata().clone();
+        self.engram_source = Arc::new(RecordingRagSource::new(
+            EngramSource::new(persona_id, admission.clone()),
+            self.capture_sink.clone(),
+        ));
+        self.admission = admission;
+    }
+
     pub fn set_airc_source(&mut self, raw_source: Arc<dyn RagSource>) {
         let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
             ArcRagSource::new(raw_source),
             self.capture_sink.clone(),
         ));
         self.airc_source = Some(decorated);
+    }
+
+    /// Bind the brain's room-roster RAG source (`RoomRosterSource`).
+    /// Called by the supervisor at boot with the same `Airc` handle that
+    /// backs `airc_source` (it satisfies `AircRosterReader`). Decorated
+    /// with the brain's `capture_sink` so roster deliveries are recorded
+    /// + replayable on the same wire as engrams and airc transcript
+    /// (per [[persona-record-replay-is-a-product-requirement]]). Boot-
+    /// time wire, not a per-turn allocation.
+    pub fn set_roster_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.roster_source = Some(decorated);
+    }
+
+    /// Bind the brain's benchmark-board RAG source
+    /// (`ViewStateRagSource::<BenchViewState>` over the global bench
+    /// substrate). Same boot-time wire and capture decoration as
+    /// `set_roster_source` — bench deliveries are recorded + replayable
+    /// on the same wire (task #426).
+    pub fn set_bench_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.bench_source = Some(decorated);
+    }
+
+    /// Bind the brain's room-doctrine RAG source (`RoomDoctrineSource`).
+    /// Same boot-time wire as `set_roster_source`, from the same `Airc`
+    /// handle (satisfies `AircDoctrineReader`), decorated with the
+    /// `capture_sink` so doctrine deliveries are recorded + replayable.
+    pub fn set_doctrine_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.doctrine_source = Some(decorated);
     }
 
     /// Brain composition for one cognition turn. Walks the brain's
@@ -202,55 +328,136 @@ impl PersonaCognition {
     /// `now_ms` is passed in (not read from `SystemTime`) so the
     /// brain's composition is replay-deterministic per
     /// [[persona-record-replay-is-a-product-requirement]].
+    /// `room` is the WHERE axis — the context this turn is happening inside.
+    /// Room-scoped sources (`room-kanban`, `room-roster`, `room-doctrine`,
+    /// `room-board`) compare it against their own bound room and ABSTAIN when it
+    /// is absent, so passing `None` here makes the persona blind to the board,
+    /// the roster, the room's doctrine and its wall — all four at once.
+    ///
+    /// That is not hypothetical: this parameter did not exist until 2026-08-06,
+    /// and the probe (`rag.room_gate.abstain`) recorded 504 abstains with
+    /// `turn_room = NIL` — 89% of live turns — while six citizens across two
+    /// machines spent a night correctly reporting "there are no open tasks
+    /// available" from a window that had no room content in it. `#127` built the
+    /// gate, the constructor, and the probe; this caller was never switched over.
+    ///
+    /// `None` remains legitimate for genuinely room-less work (background
+    /// consolidation, dreams) — it means "no room context claimed", not "unknown".
     pub async fn compose_for_turn(
         &self,
         profile: &PersonaInferenceProfile,
         now_ms: u64,
+        room: Option<uuid::Uuid>,
     ) -> ComposedTurn {
         let persona_id = self.engine.persona_id();
-        let rag_ctx = RagContext::for_persona(persona_id, now_ms);
-
-        // Reserved tokens scale with context window. See doctrine
-        // comment on the constants — these are FALLBACK shapes, NOT
-        // hardcodes pinned to LCD tier. The substrate's real
-        // budgeter logic (driven by profile model characteristics)
-        // can override these later via a richer reservation API.
-        let context_window = profile.context_length;
-        let reserved = ReservedTokens {
-            system: (context_window / 10).clamp(128, 512),
-            completion: (context_window / 4).clamp(256, 4_000),
+        let rag_ctx = match room {
+            Some(r) => RagContext::for_persona_in_room(persona_id, now_ms, r),
+            None => RagContext::for_persona(persona_id, now_ms),
         };
-        let headroom = context_window
-            .saturating_sub(reserved.system + reserved.completion)
-            .max(512);
+
+        // Window-scaled reservation — ONE derivation, owned by
+        // ReservedTokens::scaled_for_window (#424 dedup; rag_inspect
+        // shares it). Doctrine lives on the constructor.
+        let context_window = profile.context_length;
+        let reserved = ReservedTokens::scaled_for_window(context_window);
+        let headroom = reserved.headroom_within(context_window);
 
         // Collect the brain's bound sources in deterministic order:
         // engram first (long-term memory, the L2+ recall layer),
         // then airc (the L1 conversational floor). Future sources
         // (code, tool descriptions, identity card) extend this list
         // in order of long-term-to-immediate.
-        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(2);
+        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(4);
         sources.push(self.engram_source.clone());
         if let Some(ref airc) = self.airc_source {
             sources.push(airc.clone());
         }
+        // The "identity card" sources the original author reserved this
+        // list for: WHO is present (roster) and WHAT KIND of room this is
+        // (doctrine). Both routed by the service loop into system-prompt
+        // grounding, not history.
+        if let Some(ref roster) = self.roster_source {
+            sources.push(roster.clone());
+        }
+        if let Some(ref doctrine) = self.doctrine_source {
+            sources.push(doctrine.clone());
+        }
+        // The benchmark board (#426): live run rows through the same
+        // budgeter as everything else. Its budget rides the generic
+        // floor_tokens arm — a handful of run lines, never a heavyweight.
+        if let Some(ref bench) = self.bench_source {
+            sources.push(bench.clone());
+        }
 
-        // Per-source budget claims. Even split between the two
-        // first-class sources by default — the flex allocator
-        // re-distributes idle headroom toward whoever asks. The
-        // recent-conversation floor lives on airc per the
-        // cognition-cache-hierarchy doc.
+        // Per-source budget claims. The two HEAVYWEIGHT sources (engram
+        // long-term memory + airc recent conversation) split idle
+        // headroom evenly; the recent-conversation floor lives on airc
+        // per the cognition-cache-hierarchy doc. The room-roster source
+        // is LIGHTWEIGHT — a handful of presence lines, tens of tokens —
+        // so it claims a small fixed budget with NO floor. Giving it the
+        // same 500/500/per_source_max claim as the heavyweights would
+        // (a) at small context windows let the floor sum exceed
+        // available and starve airc (the roster, sorted last, would also
+        // drop to 0), and (b) at normal windows split grow-headroom 3
+        // ways instead of 2, shrinking airc's delivered recent_history.
+        // A source's budget should reflect its real appetite.
         let per_source_max = ((context_window as u64) * 6 / 10) as u32;
         let per_source_max = per_source_max.min(headroom);
         let budgets: Vec<RagSourceBudget> = sources
             .iter()
-            .map(|s| RagSourceBudget {
-                source_id: s.source_id().to_string(),
-                priority: 10,
-                floor_tokens: 500_u32.min(per_source_max),
-                min_tokens: 500_u32.min(per_source_max),
-                max_tokens: per_source_max,
-                required: false,
+            .map(|s| {
+                // Lightweight grounding sources (roster, doctrine) claim a
+                // small floorless budget matching their real appetite, so
+                // they never starve airc's recent_history or compete for
+                // grow headroom with the heavyweight engram/airc sources.
+                let (floor, min, max) = match s.source_id() {
+                    // "roster" is the LIVE id (ViewStateRagSource<RosterViewState>,
+                    // supervisor.rs); "room-roster" was the replaced airc-fetch
+                    // reader's id — kept matched so a replay of an old capture
+                    // still budgets it lightweight. Without the live arm the
+                    // roster fell to the heavyweight `_` arm and could claim up
+                    // to 60% of the window (found 2026-09-01 during the
+                    // imposter sweep).
+                    "roster" | "room-roster" => (
+                        0,
+                        0,
+                        (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max),
+                    ),
+                    "room-doctrine" => (
+                        0,
+                        0,
+                        (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max),
+                    ),
+                    _ => {
+                        // FLOOR is what the source needs to say ONE true thing;
+                        // MIN is what it wants when there is room. Conflating them
+                        // (both were a hardcoded 500) is what made grounding
+                        // all-or-nothing: the allocator drops a source WHOLE when
+                        // its floor doesn't fit, so a source that could deliver a
+                        // complete 26-token headline was never asked for it.
+                        //
+                        // Measured 2026-08-06 — real first units are 6..40 tokens
+                        // (~104 for one unit from ALL six sources), against a 500
+                        // floor each. On a node whose grounding budget measured
+                        // 0..214, every source was dropped on 100% of turns (137/137
+                        // and 132/132 for two citizens) while asking 12-80x more than
+                        // it needed. Now the source answers for itself
+                        // (`floor_tokens`) and the comfortable size stays `min`, so
+                        // the heavyweights keep their allocation when budget allows
+                        // AND survive at their headline when it does not.
+                        let floor = s.floor_tokens().min(per_source_max);
+                        let min = COMFORTABLE_SOURCE_TOKENS.min(per_source_max).max(floor);
+                        (floor, min, per_source_max)
+                    }
+                };
+                RagSourceBudget {
+                    source_id: s.source_id().to_string(),
+                    priority: 10,
+                    floor_tokens: floor,
+                    min_tokens: min,
+                    max_tokens: max,
+                    required: false,
+                }
             })
             .collect();
 
@@ -319,6 +526,17 @@ impl RagSource for ArcRagSource {
     fn source_id(&self) -> &'static str {
         self.0.source_id()
     }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // delegates to the inner source; expansion is that source's to declare.
+        None
+    }
+
+    /// Delegates to the inner source — the floor is that source's to declare.
+    fn floor_tokens(&self) -> u32 {
+        self.0.floor_tokens()
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -367,6 +585,7 @@ mod tests {
 
     fn make_test_engram(now_ms: u64, idx: usize) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: format!("test engram body {idx}"),
@@ -445,13 +664,7 @@ mod tests {
         let rag = Arc::new(RagEngine::new());
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
-        let pc = PersonaCognition::with_capture_sink(
-            id,
-            "TestBot".into(),
-            rag,
-            200.0,
-            sink_dyn,
-        );
+        let pc = PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, 200.0, sink_dyn);
 
         // Admit + register one engram.
         let now = 1_000_000_000u64;
@@ -522,9 +735,7 @@ mod tests {
     //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
 
     use crate::persona::inference_profile::PersonaInferenceProfile;
-    use crate::persona::rag_budget::{
-        AllocationState, ContinuationCursor, RagDelivery, RagItem,
-    };
+    use crate::persona::rag_budget::{AllocationState, ContinuationCursor, RagDelivery, RagItem};
     use async_trait::async_trait;
 
     /// Test source that returns a fixed budget-aware payload — proves
@@ -539,6 +750,16 @@ mod tests {
     impl RagSource for CannedSource {
         fn source_id(&self) -> &'static str {
             self.id
+        }
+
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
+
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
         }
         async fn deliver(
             &self,
@@ -607,7 +828,7 @@ mod tests {
         let rag = Arc::new(RagEngine::new());
         let pc = PersonaCognition::new(id, "TestBot".into(), rag);
 
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
         assert_eq!(composed.deliveries.len(), 1);
         assert_eq!(composed.deliveries[0].source_id, "engrams");
     }
@@ -628,7 +849,7 @@ mod tests {
         });
         pc.set_airc_source(airc);
 
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
         assert_eq!(composed.deliveries.len(), 2);
         assert_eq!(composed.deliveries[0].source_id, "engrams");
         assert_eq!(composed.deliveries[1].source_id, "airc");
@@ -655,6 +876,72 @@ mod tests {
         }
     }
 
+    /// what this catches: the #426 wiring itself. `BenchViewState` had a
+    /// doctrine-citing `RagRenderable` impl and ZERO bindings — citizens could
+    /// only learn run state from a progress-dir scrape command. This pins that
+    /// a bound bench source delivers REAL run rows through the SAME budgeter
+    /// as every other source; if the compose push or setter regresses, minds
+    /// go blind to the board again and only this fails.
+    #[tokio::test]
+    async fn compose_for_turn_delivers_the_benchmark_board() {
+        use continuum_positron::bench::{BenchRunRow, BenchViewState};
+        use continuum_positron::StateBuilder;
+
+        let id = Uuid::new_v4();
+        let rag = Arc::new(RagEngine::new());
+        let mut pc = PersonaCognition::new(id, "TestBot".into(), rag);
+
+        // One run row in the mind-side substrate — the same envelope shape the
+        // emitter dual-publishes (a session revision of the global fold).
+        let substrate = continuum_positron::Substrate::new();
+        substrate.store(StateBuilder::standalone().session(BenchViewState {
+            runs: vec![BenchRunRow {
+                round_id: None,
+                solve_room: None,
+                solve_room_name: None,
+                run_id: "run-7".into(),
+                instance: Some("sympy__sympy-24152".into()),
+                solver: Some("Asha".into()),
+                phase: "solving".into(),
+                stalled: false,
+                attempt: Some(1),
+                max_attempts: Some(3),
+                age_secs: 42,
+                acts: Some(5),
+                patch_bytes: None,
+                resolved: None,
+                fail_to_pass: None,
+                pass_to_pass: None,
+                failed_tests: Vec::new(),
+                infra_error: None,
+            }],
+            rounds: vec![],
+            sample_interval_ms: 1000,
+        }));
+        let bench: Arc<dyn RagSource> = Arc::new(
+            crate::persona::viewstate_rag::ViewStateRagSource::<BenchViewState>::new(substrate),
+        );
+        pc.set_bench_source(bench);
+
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
+        let bench_delivery = composed
+            .deliveries
+            .iter()
+            .find(|d| d.source_id == "bench")
+            .expect("bench board must be composed alongside the other sources");
+        let rendered = bench_delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("run-7"), "run row missing: {rendered}");
+        assert!(
+            rendered.contains("sympy__sympy-24152"),
+            "instance missing: {rendered}"
+        );
+    }
+
     /// The brain's capture sink records the TurnStart / BudgetAllocated
     /// / TurnEnd events the substrate-replay pipeline expects. Proves
     /// compose_for_turn participates in the same capture/replay loop
@@ -675,7 +962,7 @@ mod tests {
         });
         pc.set_airc_source(airc);
 
-        let _composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let _composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
 
         let events = sink.events();
         let kinds: Vec<&str> = events

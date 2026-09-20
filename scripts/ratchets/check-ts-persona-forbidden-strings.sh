@@ -154,8 +154,8 @@ if [[ "$ANY_GROWTH" -eq 1 ]]; then
   echo "" >&2
   echo "  Per Joel's no-fallbacks rule + Rust-first alpha contract (PR #1070)," >&2
   echo "  the TS persona surface must shed these patterns over time. Provider" >&2
-  echo "  resolution + admission belong in Rust (workers/continuum-core/src/cognition/," >&2
-  echo "  workers/continuum-core/src/persona/), NOT in TS." >&2
+  echo "  resolution + admission belong in Rust (core/continuum-core/src/cognition/," >&2
+  echo "  core/continuum-core/src/persona/), NOT in TS." >&2
   echo "" >&2
   echo "  Options:" >&2
   echo "    1. Move the pattern occurrence Rust-side." >&2

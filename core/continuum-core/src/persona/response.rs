@@ -125,6 +125,25 @@ pub struct RespondInput {
     /// change to engrams (kind enum, embeddings, recall_keys reshape)
     /// doesn't ripple into the prompt path.
     pub recalled_engrams: Vec<String>,
+    /// Roster of OTHER citizens currently present in the room — one
+    /// pre-formatted line per peer (`name [runtime] — availability`),
+    /// produced by `RoomRosterSource` from airc `active_agents` and
+    /// projected here by the service loop. Rendered by `prompt_assembly`
+    /// as a `[Present in this room]` block so the persona is grounded in
+    /// who is present and who is NOT itself — the fix for the persona
+    /// confabulating other citizens' turns (see
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1).
+    /// Empty when no roster source is bound or the room is otherwise
+    /// quiet — backwards-compatible (no block rendered).
+    pub room_roster: Vec<String>,
+    /// The room's operating doctrine — the airc-published contract for
+    /// what kind of activity this room is (chat vs coordination vs game
+    /// vs …), produced by `RoomDoctrineSource` and projected here by the
+    /// service loop. Rendered by `prompt_assembly` as a `[Room operating
+    /// doctrine]` block so the persona calibrates participation to the
+    /// room's nature (slice 2). `None` when the room has no published
+    /// doctrine — backwards-compatible (no block rendered).
+    pub room_doctrine: Option<String>,
 }
 
 /// What `respond()` returns.
@@ -362,7 +381,8 @@ async fn respond_inner(
     // probe sprinkles #206/#207). Lands on the same JSONL channel as
     // `persona.respond` / `persona.respond.analyze` for full-stack
     // turn breakdowns.
-    let raw_response = crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
+    let raw_response =
+        crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
     let inference_ms = now_ms().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
@@ -544,9 +564,23 @@ async fn run_render(
     // source of truth per the OOP-adapter rule. Code never branches on
     // model name. Default applies if the registry has no row (e.g. a
     // brand-new cloud model not yet declared).
-    let multi_party_strategy = crate::model_registry::try_global()
-        .and_then(|reg| reg.model(&input.model))
+    let resolved_model =
+        crate::model_registry::try_global().and_then(|reg| reg.model(&input.model).cloned());
+    let multi_party_strategy = resolved_model
+        .as_ref()
         .map(|m| m.multi_party_strategy.clone())
+        .unwrap_or_default();
+    // Per-model sampling (#76): the anti-loop decode knobs live on the Model
+    // row (ModelSampling default = repeat_penalty 1.1 / repeat_last_n 320 /
+    // frequency_penalty 0.3, the #181 anti-loop floor). The persona request
+    // used to hardcode temperature 0.7 + repeat_penalty None — so llama.cpp
+    // fell back to its no-penalty default and small models DEGENERATED within a
+    // turn (Atlas looped one block 4× live, 2026-07-25). Apply the model's
+    // profile (or the substrate floor when the row is absent) so EVERY persona
+    // turn carries the anti-loop guard, data-driven, no hardcoded magic.
+    let sampling = resolved_model
+        .as_ref()
+        .map(|m| m.sampling)
         .unwrap_or_default();
 
     // Capture probe signals BEFORE moving matched_angle + history
@@ -572,6 +606,12 @@ async fn run_render(
         // handler). Empty when admission was skipped or persona has
         // no memory yet.
         recalled_engrams: input.recalled_engrams.clone(),
+        // Room roster projected from RoomRosterSource by the caller.
+        // Pass-through, same as engrams — respond() is the assembly
+        // boundary, not the policy layer.
+        room_roster: input.room_roster.clone(),
+        // Room doctrine projected from RoomDoctrineSource. Pass-through.
+        room_doctrine: input.room_doctrine.clone(),
     };
 
     let assembled = assemble(&prompt_input);
@@ -634,15 +674,21 @@ async fn run_render(
         system_prompt: Some(assembled.system_message),
         model: Some(input.model.clone()),
         provider: Some("local".to_string()),
-        temperature: Some(0.7),
+        // Data-driven per-model sampling (#76 + #181 anti-loop): the Model row's
+        // profile, NOT a scattered hardcoded 0.7. `repeat_penalty` +
+        // `repeat_last_n` (windowed) and `frequency_penalty` (unwindowed) are
+        // the anti-degeneration guard the persona path was missing.
+        temperature: Some(sampling.temperature),
         // No cap. The adapter falls back to backend.n_ctx_train() when
         // None, giving the model its full trained context window.
         // Hardcoding 1024 here was clipping qwen3.5 mid-<think>, leaving
         // unterminated reasoning that leaked '<think>' into chat.
         max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
+        top_p: Some(sampling.top_p),
+        top_k: Some(sampling.top_k),
+        repeat_penalty: Some(sampling.repeat_penalty),
+        frequency_penalty: Some(sampling.frequency_penalty),
+        repeat_last_n: Some(sampling.repeat_last_n),
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -659,6 +705,29 @@ async fn run_render(
         // id; adapters that don't (DMR, cloud) ignore it.
         persona_id: Some(input.persona.persona_id.to_string()),
     };
+
+    // #108 STEP 2 (cross-grid sprint, LaneDecision contract stamped 2026-07-24):
+    // the lane decision now runs on EVERY persona pre-inference path — the live
+    // caller the remote adapter (BigMama's step 3) lands against. THIS slice
+    // decides-and-RADIATES: the decision is computed from the live grid ledger +
+    // governed VRAM and probed; dispatch honors only the Local arm (a Remote
+    // decision is recorded for the glass box, then served locally) until step 4
+    // branches the select to provider="airc-remote". Leasability is typed at the
+    // seam: media on the turn needs THIS node's artifacts → LocalOnly; pure text
+    // may cross the compute-lease boundary ([[compute-lease-boundary]]).
+    let leasability = if input.message_media.is_empty() {
+        crate::capacity::lease::Leasability::TextOnly
+    } else {
+        crate::capacity::lease::Leasability::LocalOnly
+    };
+    let lane = crate::capacity::lease::decide_render_lane(leasability);
+    crate::probe!(
+        class = "capacity.lane_decision",
+        persona = %input.persona.persona_id,
+        model = input.model.as_str(),
+        decision = ?lane,
+        "pre-inference lane decision (step-2 slice: Remote is recorded, dispatch stays local until step 4)",
+    );
 
     // 4. Pick an adapter via the global registry — capability-routed,
     //    no hardcoded provider name. "local" + Auto = "best available
@@ -906,6 +975,17 @@ static PARAMETERS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static ARGUMENTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)<arguments\b[^>]*>.*?</arguments>").expect("arguments regex")
 });
+static TOOL_CALLS_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    // The Devstral/Mistral native tool-call marker `[TOOL_CALLS]` plus an optional
+    // immediately-following bracket-tag (the tool the model tried to invoke, e.g.
+    // `[room-roster]`). Reserved vocabulary that must NEVER appear in SPOKEN text.
+    // When a real tool followed, the parser lifted it upstream; what reaches the
+    // visible-text stripper is UNPARSED residue — an unknown/hallucinated tag
+    // (#159) — that would otherwise leak as speech (glass-boxed 2026-07-17: Casper
+    // spoke `[TOOL_CALLS][room-roster] (no one else is present)` verbatim).
+    regex::Regex::new(r"\[TOOL_CALLS\]\s*(?:\[[a-z][a-z0-9/_-]*\])?")
+        .expect("tool_calls marker regex")
+});
 static BARE_TOOL_REF_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r#"^\s*['"`][a-z][a-z0-9_-]*/[a-z0-9_/-]+['"`]\s*$"#)
         .expect("bare tool ref line regex")
@@ -979,6 +1059,7 @@ fn strip_leaked_tool_markup(text: &str) -> String {
         &*TOOL_NAME_RE,
         &*PARAMETERS_RE,
         &*ARGUMENTS_RE,
+        &*TOOL_CALLS_MARKER_RE,
     ] {
         cleaned = re.replace_all(&cleaned, "").into_owned();
     }
@@ -1091,6 +1172,30 @@ mod tests {
         assert_eq!(visible, "Before  after");
         assert!(!visible.contains("tool_use"));
         assert!(!visible.contains("cargo test"));
+    }
+
+    // what this catches: the Devstral/Mistral native `[TOOL_CALLS]` marker (and an
+    // unparsed tool-tag after it) must NEVER reach spoken text. Glass-boxed
+    // 2026-07-17: Casper answered a task by SPEAKING
+    // `[TOOL_CALLS][room-roster] (no one else is present)` — the marker + a
+    // hallucinated `room-roster` tag leaked verbatim into the room. The marker is
+    // stripped; the model's actual prose survives.
+    #[test]
+    fn strip_leaked_tool_markup_removes_tool_calls_native_marker() {
+        let raw = "[TOOL_CALLS][room-roster] (no one else is present right now)";
+        let visible = strip_leaked_tool_markup(raw);
+        assert!(
+            !visible.contains("[TOOL_CALLS]"),
+            "reserved native marker never spoken"
+        );
+        assert!(
+            !visible.contains("[room-roster]"),
+            "unparsed tool tag stripped"
+        );
+        assert!(
+            visible.contains("no one else is present"),
+            "the model's actual prose is preserved"
+        );
     }
 
     /// What this catches: models sometimes drop the outer

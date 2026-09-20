@@ -51,7 +51,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::genome::working_set::{ArtifactId, PageRef, PersonaId};
+use crate::genome::working_set::{ArtifactId, PageRef};
+use crate::identity::PeerId;
 
 // ─── ID newtype ─────────────────────────────────────────────────
 
@@ -121,8 +122,23 @@ pub struct SamplingParams {
     #[ts(type = "number")]
     pub top_k: u32,
     /// Repeat penalty. >1.0 penalizes repeated tokens. Llama.cpp
-    /// default 1.1.
+    /// default 1.1. Windowed — only scans the last `repeat_last_n`
+    /// tokens.
     pub repeat_penalty: f32,
+    /// How many trailing tokens `repeat_penalty` scans. Llama.cpp
+    /// default is 64, but a repetition loop whose repeat span (a code
+    /// block + a paragraph + the block again) is wider than 64 slips
+    /// through that window entirely (#181). Widen it here so the mild
+    /// windowed penalty actually covers a full loop span. 0 = disabled.
+    #[ts(type = "number")]
+    pub repeat_last_n: u32,
+    /// Unwindowed repetition guard: penalizes a token by how often it
+    /// has appeared across the ENTIRE generation, regardless of gap —
+    /// so a block re-emitted many times is penalized even when the
+    /// windowed `repeat_penalty` misses it (#181). 0.0 = disabled.
+    /// Honored by llama.cpp-family gateways; ignored by the in-process
+    /// Candle backend and cloud OpenAI-compat providers.
+    pub frequency_penalty: f32,
 }
 
 impl Default for SamplingParams {
@@ -132,6 +148,12 @@ impl Default for SamplingParams {
             top_p: 0.95,
             top_k: 40,
             repeat_penalty: 1.1,
+            // Anti-loop resilience floor (#181): a widened window + a
+            // gentle unwindowed penalty. Conservative substrate defaults
+            // — the same layer `repeat_penalty: 1.1` lives in, overridable
+            // per-model when #76 (per-model sampling on the Model row) lands.
+            repeat_last_n: 320,
+            frequency_penalty: 0.3,
         }
     }
 }
@@ -203,7 +225,8 @@ pub enum FinishReason {
 )]
 pub struct InferenceRequest {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     pub composition: CompositionPlan,
     /// Tokenized prompt for raw-token engines. PR-1 ships this as
     /// the canonical input; PR-4 adds `prompt_text` for adapter-
@@ -240,7 +263,8 @@ pub struct InferenceRequest {
 )]
 pub struct InferenceComplete {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// Tokens emitted by the model. Raw-token engines populate
     /// directly; adapter-based engines (PR-4) populate empty Vec
     /// + the actual output goes in `completion_text` because the
@@ -283,7 +307,8 @@ pub struct InferenceComplete {
 )]
 pub struct FirstTokenEmitted {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// Microseconds from request receipt to first token emission.
     /// Microsecond precision because sub-ms TTFT is achievable on
     /// hot-path warm models.
@@ -308,7 +333,8 @@ pub struct FirstTokenEmitted {
 )]
 pub struct ResidencyFault {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     pub missing_page: PageRef,
     /// Loud reason per Joel's never-swallow-errors rule. Examples:
     /// "page evicted mid-turn by Bench LFU policy", "foundry
@@ -324,8 +350,8 @@ mod tests {
     use super::*;
     use crate::genome::working_set::{PageKind, PageOffset};
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(1))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(1))
     }
     fn sample_request_id() -> InferenceRequestId {
         InferenceRequestId::new(Uuid::from_u128(42))

@@ -58,18 +58,18 @@ use ts_rs::TS;
 /// Maximum number of recent conversation messages included in the
 /// redundancy-check prompt. Matches the TS implementation's
 /// `slice(-10)` behavior.
+// context-budget-exempt: a count of recent TURNS to compare against (sliding-window sense), not tokens or chars
 pub const REDUNDANCY_CONVERSATION_WINDOW: usize = 10;
 
 const REDUNDANCY_PROVIDER: &str = "groq";
 const DEFAULT_REDUNDANCY_MODEL: &str = "llama-3.1-8b-instant";
 const DEFAULT_REDUNDANCY_TEMPERATURE: f32 = 0.2;
-const REDUNDANCY_MAX_TOKENS: u32 = 200;
 
 // ─── IPC request + response shapes ────────────────────────────────────
 
 /// IPC request: ask the cognition service whether a draft response is
 /// redundant given the conversation so far.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -193,10 +193,14 @@ fn build_redundancy_generation_request(
         model: Some(model),
         provider: Some(REDUNDANCY_PROVIDER.to_string()),
         temperature: Some(DEFAULT_REDUNDANCY_TEMPERATURE),
-        max_tokens: Some(REDUNDANCY_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). The prompt asks
+        // for a short verdict; we never cap generation with a const of our own.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -551,7 +555,8 @@ mod tests {
         assert_eq!(inference.provider.as_deref(), Some(REDUNDANCY_PROVIDER));
         assert_eq!(inference.model.as_deref(), Some(DEFAULT_REDUNDANCY_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_REDUNDANCY_TEMPERATURE));
-        assert_eq!(inference.max_tokens, Some(REDUNDANCY_MAX_TOKENS));
+        // No client-imposed ceiling — the model owns its generation length.
+        assert_eq!(inference.max_tokens, None);
         assert_eq!(
             inference.response_format,
             Some(crate::ai::types::ResponseFormat::JsonObject)

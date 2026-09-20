@@ -1,0 +1,23 @@
+# Project-wide Rust toolchain pin.
+#
+# Why this exists: Cargo.lock requires rtc-mdns 0.20.0-alpha.1, which uses
+# `Ipv4Addr::from_octets` from the `ip_from` library feature (tracking issue
+# #131360). That method only stabilized in a recent stable release; older
+# stable toolchains (e.g. the rust:1.89-bookworm pin that previously lived in
+# docker/continuum-core.Dockerfile) hit E0658 "use of unstable library feature"
+# when compiling rtc-mdns transitively via livekit-webrtc → rtc-* stack.
+#
+# Picking "1.95" rather than "stable" because:
+#   - 1.95.0 is the toolchain the Mac dev environment ships and where
+#     `cargo test -p continuum-core --lib` is known to work end-to-end;
+#   - pinning a concrete number keeps Docker/CI/Joel/BIGMAMA-Windows all on
+#     the same compiler so a future rustup update on one host doesn't
+#     silently shift build behavior for everyone else.
+#
+# When bumping: update docker/continuum-core.Dockerfile,
+# docker/continuum-core-vulkan.Dockerfile, and the rust:<ver> reference in
+# docker/continuum-core-cuda.Dockerfile in the same commit.
+[toolchain]
+channel = "1.95"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

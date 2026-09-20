@@ -5,7 +5,7 @@
 
 use crate::audio_constants::AUDIO_FRAME_SIZE;
 use crate::live::audio::vad::{ProductionVAD, VADError};
-use crate::live::handle::Handle;
+use crate::runtime::handle::Handle;
 use crate::{clog_debug, clog_info, clog_warn};
 use std::collections::HashMap;
 

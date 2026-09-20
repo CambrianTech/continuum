@@ -39,6 +39,7 @@
 //!   data; no "default to zero VRAM and pretend it works."
 
 pub mod enforcement;
+pub mod gguf_keys;
 pub mod gguf_loader;
 pub mod hw_probe;
 pub mod probe;

@@ -1,0 +1,62 @@
+{
+  "name": "cognition/recall-engrams",
+  "description": "Query a persona's admitted-engram store. Modes: 'recent' (default) returns newest-first N engrams; 'by_id' looks up by exact engram id; 'by_keyword' does case-insensitive substring match; 'by_origin' filters by EngramOriginKind (chat | airc | tool | self_reflection). Wraps the Rust IPC handler shipped in #1121 PR-5.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "personaId",
+      "type": "string",
+      "description": "UUID of the persona whose engram store to query"
+    },
+    {
+      "name": "kind",
+      "type": "'recent' | 'by_id' | 'by_keyword' | 'by_origin'",
+      "optional": true,
+      "description": "Recall mode (default: 'recent')"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max engrams to return (default: 10). Ignored when kind='by_id'."
+    },
+    {
+      "name": "id",
+      "type": "string",
+      "optional": true,
+      "description": "Engram UUID (required when kind='by_id')"
+    },
+    {
+      "name": "keyword",
+      "type": "string",
+      "optional": true,
+      "description": "Substring to match against engram content (required when kind='by_keyword')"
+    },
+    {
+      "name": "origin",
+      "type": "'chat' | 'airc' | 'tool' | 'self_reflection'",
+      "optional": true,
+      "description": "Origin filter (required when kind='by_origin')"
+    }
+  ],
+  "results": [
+    {
+      "name": "engrams",
+      "type": "Array<Record<string, unknown>>",
+      "description": "Matching engrams (typed as Engram in shared/generated/persona/Engram.ts)"
+    },
+    {
+      "name": "count",
+      "type": "number",
+      "description": "Number of engrams returned"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Recall the 5 most recent engrams during rag/build",
+      "command": "./jtag cognition/recall-engrams --personaId=\"<uuid>\" --kind=\"recent\" --limit=5",
+      "expectedResult": "{ engrams: [...], count: 5 }"
+    }
+  ]
+}

@@ -40,6 +40,7 @@ use crate::modules::persona_instance_manager::{PersonaInstanceInfo, PersonaInsta
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::identity_provider::PersonaIdentityIntent;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
+use crate::persona::profile_builder::ServingParams;
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner::{derive_spawn_plan, RosterEntry};
 use crate::runtime::service_module::{
@@ -49,7 +50,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
 
 /// One row in the spawner's resolved plan: a desired persona slot for
 /// the configured hardware tier, with its model already selected.
@@ -72,6 +72,15 @@ pub struct DesiredRole {
     /// registry; this id is the substrate's *intent* — "Helper at
     /// Compat tier wants the LCD Qwen2.5-0.5B."
     pub model_id: String,
+    /// Continuous-batching lanes (`n_seq_max`) for this role's backend, from
+    /// the serving daemon's ServingPlan. Defaults to 1 from `plan_for_tier`;
+    /// `PersonaSpawnerModule::with_serving` overrides it from the live plan.
+    pub lanes: u32,
+    /// Host-fit served context window (tokens) the gateway llama-server was
+    /// launched with — the planner's single source of truth, NOT a constant.
+    /// Defaults to `MIN_SERVE_CTX` from `plan_for_tier` (runnable floor when no
+    /// plan is published); `with_serving` overrides it from the live plan.
+    pub served_context_window: u32,
 }
 
 /// Compose the desired roster for a given hardware tier. Today this
@@ -87,47 +96,67 @@ pub fn plan_for_tier(
     hw_capability: HwCapabilityTier,
     tier_category: HwTierCategory,
 ) -> Vec<DesiredRole> {
-    // Slice 13 ships SINGLE-PERSONA-per-plan. The Coder slot is
-    // deferred to slice 14 because ResumeOrMintProvider's
-    // scan_personas_dir sorts alphabetically (line 200 of
-    // resume_or_mint_provider.rs), so on boot 2 the
-    // position-pairing of [Helper, Coder] against the disk-yielded
-    // alphabetic persona order flips role assignments — Bart
-    // (random-derived from peer_id) becomes Helper when he was
-    // bootstrapped as Coder, etc. PR #1510 review caught this; the
-    // load-bearing fix is role-in-seed.json (slice 14).
-    //
-    // Re-enable [Helper, Coder] (and richer rosters for higher
-    // tiers) when slice 14 lands. Until then the substrate hosts ONE
-    // Helper persona per tier — the demo-binary level of coverage,
-    // but through the substrate-managed path.
-    let _ = hw_capability; // currently informational; future per-tier
-                           // role_template selection consumes it
-    let _ = tier_category; // all tiers produce the same single-Helper
-                           // plan until slice 14 ships role-aware
-                           // mapping + multi-role-per-tier rosters
-    let plan = vec![DesiredRole {
-        role: RoleId::Helper,
-        model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-    }];
-    // P2 invariant tripwire (PR #1511 review advisory): if a future
-    // refactor adds a second role here without atomically updating
-    // ResumeOrMintProvider's role mapping, position-pairing will
-    // silently mis-pair roles on boot 2 (alphabetic disk order vs
-    // plan order). The debug_assert catches the regression at the
-    // producer in debug + test builds. Slice 14 removes this when
-    // role-in-seed.json makes multi-role plans safe.
-    debug_assert!(
-        plan.len() <= 1,
-        "plan_for_tier returned {} roles before slice 14's role-in-seed.json \
-         landed — position-pairing against ResumeOrMintProvider's alphabetic \
-         disk order would flip role identity on boot 2. See #133 slice 14.",
-        plan.len()
-    );
-    plan
-    // TODO #133 slice 14: restore tier-shaped rosters after
-    // RoleAwareProvider + role-in-seed.json land. Remove the
-    // debug_assert above as part of that change.
+    // The data-absent floor: one Helper, the same roster the embedded chat
+    // recipe declares. Production does NOT take this path with a hardcoded
+    // roster anymore — boot reads `RecipeExperienceSource::resident_roles`
+    // (the DEFAULT experience's `citizens`, #430) and injects it via
+    // `with_citizens`; this wrapper serves tests/fixtures that construct a
+    // spawner without recipe data.
+    plan_for_roles(&[RoleId::Helper], hw_capability, tier_category)
+}
+
+/// Compose the desired roster from RECIPE-DECLARED roles (#430). The roles
+/// come from authored data (the default experience's `citizens`); this
+/// function maps each onto the serving scaffold — LCD fallback model until
+/// the serving daemon's plan overrides it via `with_serving`, single lane,
+/// runnable-floor window.
+///
+/// SLICE-14 GUARD, now enforced on DATA: heterogeneous multi-role plans are
+/// unsafe until role-in-seed.json lands — ResumeOrMintProvider's
+/// alphabetic-disk-order position-pairing would flip role identity on boot 2
+/// (PR #1510/#1511). A recipe may legally AUTHOR several citizens; until
+/// slice 14, everything after the first role is DEFERRED with a loud error
+/// naming each dropped role — never a silent cap, never a debug-only assert
+/// (an author can hit this in release).
+pub fn plan_for_roles(
+    roles: &[RoleId],
+    hw_capability: HwCapabilityTier,
+    tier_category: HwTierCategory,
+) -> Vec<DesiredRole> {
+    let _ = hw_capability; // informational; future per-tier role_template
+                           // selection consumes it
+    let _ = tier_category; // roster shape now comes from recipe data, not
+                           // the tier; the tier drives MODEL selection via
+                           // the serving plan
+    if roles.len() > 1 {
+        tracing::error!(
+            hosted = ?roles[0],
+            deferred = ?&roles[1..],
+            "recipe declares a multi-role roster before role-in-seed.json \
+             (#133 slice 14) — hosting the FIRST role only; the rest are \
+             deferred until role identity survives a reboot"
+        );
+    }
+    roles
+        .iter()
+        .take(1)
+        .map(|role| DesiredRole {
+            role: role.clone(),
+            // Fallback model when no ServingPlan is published yet: the FLOOR, which
+            // is the 1.5B coder — there is no 0.5B row in the catalog any more. The
+            // serving daemon's plan overrides this via with_serving — that's the
+            // real, honest, GPU-residency-aware pick.
+            model_id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".to_string(),
+            // Default single lane; with_serving overrides from the live plan.
+            lanes: 1,
+            // Runnable floor until the serving daemon publishes a host-fit
+            // window.
+            served_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+        })
+        .collect()
+    // TODO #133 slice 14: host every declared role after RoleAwareProvider +
+    // role-in-seed.json land. Remove the take(1) + error above as part of
+    // that change.
 }
 
 /// Substrate ServiceModule that surfaces the spawner's roster plan.
@@ -138,6 +167,33 @@ pub fn plan_for_tier(
 pub struct PersonaSpawnerModule {
     hw_capability: HwCapabilityTier,
     tier_category: HwTierCategory,
+    /// Serving daemon's decision, applied as overrides on the tier roster:
+    /// the base model every desired role runs (`None` → fall back to the
+    /// tier's `plan_for_tier` pick) and the continuous-batching lane count.
+    /// This is how the daemon's honest per-host ServingPlan drives what
+    /// actually spawns — single source of truth, not a hardcode.
+    serving_base_model: Option<String>,
+    serving_lanes: u32,
+    /// Host-fit served context window from the live ServingPlan. Defaults to
+    /// `MIN_SERVE_CTX` (runnable floor); `with_serving` sets the real value.
+    serving_context_window: u32,
+    /// How many citizens of the tier's (homogeneous) role template to host.
+    /// Default 1. Driven by `CONTINUUM_PERSONA_FLOOR` at boot — the SAME
+    /// config that floors the identity provider's mint count, so plan-slots
+    /// and minted identities stay 1:1. Replicating the same role is what
+    /// makes a ≥2 population SAFE today: the boot-2 position-pairing hazard
+    /// that defers heterogeneous multi-role plans (#133 slice 14) cannot
+    /// mis-pair identical roles. Two-solver cooperation needs ≥2.
+    population: usize,
+    /// The lane count of the last SETTLED geometry this host served, handed in at boot
+    /// (`served_window_store`) — the warm-slot bound's source until the first fitting
+    /// live plan sets `serving_lanes`. `None` = this host has never served: no bound.
+    remembered_lanes: Option<u32>,
+    /// The RECIPE-DECLARED resident roles (#430) — production injects the
+    /// default experience's `citizens` via [`Self::with_citizens`]; the
+    /// constructor default (single Helper, matching the embedded chat
+    /// recipe) serves tests/fixtures built without recipe data.
+    citizens: Vec<RoleId>,
 }
 
 impl PersonaSpawnerModule {
@@ -164,14 +220,170 @@ impl PersonaSpawnerModule {
         Self {
             hw_capability,
             tier_category,
+            serving_base_model: None,
+            serving_lanes: 1,
+            remembered_lanes: None,
+            serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            population: 1,
+            citizens: vec![RoleId::Helper],
         }
     }
 
-    /// Currently-planned desired roster. Pure function over the
-    /// module's configured tier; doesn't touch async, doesn't hold a
-    /// lock — safe to call from anywhere.
+    /// Inject the RECIPE-DECLARED resident roles (#430) — the default
+    /// experience's `citizens`, read by boot from
+    /// `RecipeExperienceSource::resident_roles`. An EMPTY list is a
+    /// legitimate authored state (a headless serving node with no resident
+    /// personas) and produces an empty plan; `plan_for_roles` guards the
+    /// slice-14 multi-role hazard.
+    pub fn with_citizens(mut self, citizens: Vec<RoleId>) -> Self {
+        self.citizens = citizens;
+        self
+    }
+
+    /// Set how many citizens of the tier's role template to host. Clamped to
+    /// ≥1. Wired from `CONTINUUM_PERSONA_FLOOR` at boot. See the `population`
+    /// field doc for why replicating a homogeneous role is boot-2-safe.
+    pub fn with_population(mut self, population: usize) -> Self {
+        self.population = population;
+        self
+    }
+    /// The last settled lane count this host served (see `remembered_lanes`), for the
+    /// boot draw's bound before any live plan is known.
+    pub fn with_remembered_lanes(mut self, lanes: Option<u32>) -> Self {
+        self.remembered_lanes = lanes.filter(|l| *l > 0);
+        self
+    }
+    /// The warm slots this node is known to serve, from what it was TOLD (never a global
+    /// read on the draw path): the live fitting plan's lanes, else the remembered settled
+    /// geometry, else none.
+    fn warm_lanes(&self) -> Option<u32> {
+        if self.serving_base_model.is_some() && self.serving_lanes > 0 {
+            Some(self.serving_lanes)
+        } else {
+            self.remembered_lanes
+        }
+    }
+
+    /// Mutating sibling of [`Self::with_population`], for the boot task that
+    /// only learns the REAL population after constructing the identity
+    /// provider (#432: the plan must be sized to what the provider will
+    /// yield — every resumed citizen — not to the mint floor alone). Same
+    /// ≥1 clamp; same homogeneous-replication safety as the builder form.
+    pub fn set_population(&mut self, population: usize) {
+        self.population = population;
+    }
+
+    /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
+    /// every desired role runs the plan's base model, lane count, and host-fit
+    /// served context window. The daemon makes the honest per-host decision
+    /// (budget + footprints, GPU-residency, served window); the spawner obeys
+    /// it. Passing the whole plan by reference (per [[pass-the-model-struct-no-param-hell]])
+    /// keeps adding a new serving knob a one-field change, not a signature
+    /// re-engineer. `None` (or a plan that doesn't fit GPU) keeps the tier's
+    /// `plan_for_tier` defaults.
+    pub fn with_serving(
+        mut self,
+        plan: Option<&crate::cognition::serving_plan::ServingPlan>,
+    ) -> Self {
+        if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
+            self.serving_base_model = Some(p.base_model.model_id.clone());
+            self.serving_lanes = p.lanes.max(1);
+            self.serving_context_window = p
+                .served_context_window
+                .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        }
+        self
+    }
+
+    /// Mutating twin of [`Self::with_serving`] for the resident reconciler: the
+    /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
+    /// roster's seat count follows the LIVE lane count, never the boot-time one.
+    pub fn set_serving(&mut self, plan: Option<&crate::cognition::serving_plan::ServingPlan>) {
+        match plan {
+            Some(p) if p.fits_on_gpu => {
+                self.serving_base_model = Some(p.base_model.model_id.clone());
+                self.serving_lanes = p.lanes.max(1);
+                self.serving_context_window = p
+                    .served_context_window
+                    .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+            }
+            // A live plan that does NOT fit the GPU (a CPU-tier node, or a runtime
+            // downgrade) must never leave the seat count on a stale GPU plan's lanes
+            // (IntelMac's review of #3798): the marker and the lane count move together —
+            // both cleared, so `seats()` falls back to the configured population and the
+            // runnable-floor template.
+            _ => {
+                self.serving_base_model = None;
+                self.serving_lanes = 1;
+            }
+        }
+    }
+
+    /// Currently-planned desired roster. Pure over the module's configured
+    /// tier + the serving overrides; no async, no lock — safe anywhere.
     pub fn plan(&self) -> Vec<DesiredRole> {
-        plan_for_tier(self.hw_capability, self.tier_category)
+        let mut template =
+            plan_for_roles(&self.citizens, self.hw_capability, self.tier_category);
+        for role in &mut template {
+            if let Some(ref base) = self.serving_base_model {
+                role.model_id = base.clone();
+            }
+            role.lanes = self.serving_lanes;
+            role.served_context_window = self.serving_context_window;
+        }
+        // Replicate the (homogeneous) tier template to the configured
+        // population. The role template stays single-source in `plan_for_tier`;
+        // `population` only scales the COUNT of citizens, never introduces a
+        // second DIFFERENT role — so the boot-2 position-pairing hazard (which
+        // only bites heterogeneous rosters, #133 slice 14) stays sidestepped.
+        // population==1 returns the template unchanged (the prior behavior).
+        // THE ROSTER NEVER EXCEEDS THE WARM LANES (Joel 2026-09-06: "your machine should
+        // be serving the qwen3.8 for these coder personas"; measured the night before:
+        // a switch to the 27B left 12 minds on 3 lanes at ACT 0 / QUE 12, one act per
+        // 30 min). A mind without a lane is a cold restore every turn, not a citizen.
+        // When the daemon has published a real plan, the population is capped at its
+        // lane count; the runnable-floor template (no plan yet) keeps the configured
+        // population so boot never under-hosts on a stale guess.
+        let seats = self.seats();
+        let mut roster = Vec::with_capacity(template.len() * seats);
+        for _ in 0..seats {
+            roster.extend(template.iter().cloned());
+        }
+        roster
+    }
+
+    /// How many citizens this node seats: the configured population under any hold,
+    /// minus resting seats, BOUNDED by the warm slots (`bounded_by_warm_slots`).
+    ///
+    /// THE REVERSAL (Joel, 2026-09-20, card 7c38ff6f). On 2026-09-13 the rule was "the
+    /// lane count is NOT a cap: N minds over M slots is the design, KV pages to disk and
+    /// restores on return". Measured a week later on the M5: sixteen resident minds cost
+    /// the plan its second lane (their residency is memory the 27B needed), every
+    /// unslotted mind re-prefilled cold, and the 22:22Z hour read acts 5, writes 0, 2,174
+    /// of 2,177 pulls lane-deferred; the boot of 23d33019d drew sixteen onto a 20 GB
+    /// budget and served ONE lane at 2,048 tokens. "The nursery is over-saturated": the
+    /// active roster is the warm slots × ~2, the rest dormant with identity and memory
+    /// intact, waking as the lanes grow. The KV page store stays the restore path for the
+    /// minds that ARE seated.
+    pub fn seats(&self) -> usize {
+        let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
+            .saturating_sub(crate::persona::resting_seat::resting().len());
+        let lanes = self.warm_lanes();
+        let seats = bounded_by_warm_slots(unbounded, lanes);
+        // One row when the bound CHANGES what is drawn, not one per reconcile pass.
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let shape = ((unbounded as u64) << 32) | seats as u64;
+        if seats < unbounded && LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
+            crate::probe!(
+                class = "persona.roster.bounded",
+                population = unbounded as u64,
+                lanes = lanes.unwrap_or(0) as u64, // unwrap_or: 0 = no lane known (then nothing is bounded; unreachable here)
+                seats = seats as u64,
+                minds_per_lane = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE,
+                "the draw is bounded by the warm slots — the rest of the roster stays dormant until the lanes grow"
+            );
+        }
+        seats
     }
 }
 
@@ -193,11 +405,7 @@ impl ServiceModule for PersonaSpawnerModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         match command {
             "persona/spawner/plan" => {
                 let plan = self.plan();
@@ -242,8 +450,9 @@ impl ServiceModule for PersonaSpawnerModule {
 //   layer stops at the profile so it stays testable without llama.cpp
 //   in the loop.
 // - Run the per-persona subscribe-loop. The chat-attach + service-loop
-//   is the demo binary's main today (`airc_chat_demo`); slice 9
-//   factors that out so it's reusable from production boot.
+//   was originally inlined per-persona at the call site; slice 9
+//   factors that out so it's reusable from production boot and from
+//   integration tests.
 
 /// Errors `bootstrap_planned` can surface, kept structured so callers
 /// (e.g. a future supervisor module) can decide which failures are
@@ -320,52 +529,213 @@ pub struct MaterializedPersonaPlan {
 /// fatal — those affect every later slot, so the function early-
 /// returns. Per-row profile errors stay per-row so the supervisor
 /// keeps its policy choice.
-pub async fn bootstrap_planned(
-    module: &PersonaSpawnerModule,
-    instance_manager: &PersonaInstanceManagerModule,
+/// PHASE 1 of [`bootstrap_planned`]: draw one identity per planned slot from the
+/// provider, in its yield order — SKIPPING identities a standing roster hold does
+/// not allow. The hold says WHO may be hosted; the plan says HOW MANY seats there
+/// are; the seats go to the first `required` ALLOWED identities. Measured
+/// 2026-09-06 17:3xZ: with a 5-lane plan (#3798) and a hold naming five coders,
+/// the old draw took the first five identities alphabetically, the hold then
+/// dropped three of them, and the three named coders further down the yield were
+/// never reached — two hosted, three seats empty, the round dead. Under a hold,
+/// provider exhaustion fills fewer seats loudly (a probe per held-out identity)
+/// instead of failing the boot: the operator asked for those names, and only those.
+async fn draw_intents(
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
-    tier_id: &str,
-    registry: &crate::model_registry::Registry,
-) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
-    let plan = module.plan();
+    plan: &[DesiredRole],
+    hold: Option<crate::persona::roster_hold::RosterHold>,
+) -> Result<Vec<PersonaIdentityIntent>, BootstrapPlannedError> {
     let required = plan.len();
-    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String)> = Vec::with_capacity(required);
-
-    for (slot_index, desired) in plan.iter().enumerate() {
-        let intent: PersonaIdentityIntent = provider
+    let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
+    let mut drawn = 0usize;
+    while intents.len() < required {
+        let slot_index = intents.len();
+        let desired = &plan[slot_index];
+        let next = provider
             .next_persona()
             .await
             .map_err(|source| BootstrapPlannedError::IdentityProvider {
                 slot_index,
                 role: desired.role,
                 source,
-            })?
-            .ok_or(BootstrapPlannedError::IdentityProviderExhausted {
+            })?;
+        let Some(intent) = next else {
+            // A SHORTFALL IS A PARTIAL ROSTER, NEVER A DRAIN (2026-09-13): with the
+            // roster no longer capped at lanes, a plan can ask for more seats than the
+            // provider holds identities (or than a hold allows). Returning Err here made
+            // the host drain the already-registered minds as "partially registered" and
+            // retry every second — zero residents until an operator intervened. The
+            // identities the provider yielded ARE the roster; the plan's surplus seats are
+            // the plan's business (a probe names the shortfall), not a boot failure.
+            if !intents.is_empty() {
+                crate::probe!(
+                    class = "persona.host.provider_filled_fewer_seats",
+                    seats = required,
+                    filled = intents.len(),
+                    drawn,
+                    held = hold.is_some(),
+                    "the provider ran out of identities (or the hold allows no more) — seating fewer, not failing"
+                );
+                break;
+            }
+            return Err(BootstrapPlannedError::IdentityProviderExhausted {
                 slot_index,
                 role: desired.role,
                 provided: slot_index,
                 required,
-            })?;
+            });
+        };
+        drawn += 1;
+        // A RESTING seat (the substrate paged her out: card aed15611) is not re-drawn —
+        // she returns on a change, never on the next reconcile. The seat count already
+        // excludes her (`plan()`), so the loop never asks the provider for a seat it
+        // cannot fill.
+        if crate::persona::resting_seat::is_resting(&intent.agent_name) {
+            crate::probe!(
+                class = "persona.host.resting",
+                agent = %intent.agent_name,
+                "resting seat: identity drawn is paged out until a change — seat goes to the next one"
+            );
+            continue;
+        }
+        // Only an EXCLUSIVE (operator-file) hold holds anyone out. A derived team hold
+        // orders the roster — team first — but seats the whole population (below).
+        if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
+            if !h.allows(&intent.agent_name) {
+                crate::probe!(
+                    class = "persona.host.held_out",
+                    agent = %intent.agent_name,
+                    reason = %h.reason,
+                    "roster hold: identity drawn at boot is not on the allow-list — seat goes to the next allowed one"
+                );
+                continue;
+            }
+        }
+        intents.push(intent);
+    }
+    // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
+    // after — never fewer minds. Stable: the provider's order is kept within each half.
+    if let Some(h) = hold.as_ref().filter(|h| !h.exclusive) {
+        let (team, rest): (Vec<_>, Vec<_>) = intents.into_iter().partition(|i| h.allows(&i.agent_name));
+        intents = team.into_iter().chain(rest).collect();
+    }
+    Ok(intents)
+}
 
-        let info = instance_manager
-            .bootstrap_one(&intent)
-            .await
-            .map_err(|source| BootstrapPlannedError::AircBootstrap {
-                slot_index,
-                role: desired.role,
-                source,
-            })?;
+/// The slots still to fill: the module's plan cut to `seats - already_hosted`. The
+/// roster follows the LIVE lane count in both directions — at boot the first fitting
+/// plan is often the small under-memory one (one or two lanes, card 40f53419), so a
+/// cap computed there seats one citizen; when the pin brings five lanes the
+/// reconciler must draw the four missing seats on that edge, never wait for a
+/// reboot (M5 2026-09-06 18:0xZ: one citizen on a five-lane node).
+/// The seat count under an operator hold: a hold DEFINES the roster — only its
+/// names may sit — so it also bounds how many seats there are to fill. Without
+/// this (2026-09-13, first boot after the lane cap left the roster): population 12,
+/// hold of 5 → draw_intents filled 5 and returned; the reconciler then asked for
+/// the 7 "missing" every second, the exhausted provider yielded none, the Err path
+/// drained the five as partially registered, and the node sat at ZERO residents
+/// until the operator moved the hold file aside. Pure.
+pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold::RosterHold>) -> usize {
+    // ZERO IS DELIBERATE (2026-09-15, the one-roster rule): the population is what the
+    // identity provider WILL yield, and an empty node that hears a team seated elsewhere
+    // on the grid yields none — it offers lanes. A ≥1 clamp here would draw a seat the
+    // provider cannot fill, the "identity provider exhausted at slot 0" retry every
+    // second (the 2026-09-12 shape).
+    let seats = population;
+    match hold {
+        Some(h) if h.exclusive && !h.only.is_empty() => seats.min(h.only.len()),
+        _ => seats,
+    }
+}
 
-        bootstrapped.push((desired.role, info, desired.model_id.clone()));
+/// THE DRAW IS BOUNDED BY THE WARM SLOTS (card 7c38ff6f; Joel, 2026-09-20: "23 minds … the
+/// nursery is over-saturated" — the active roster is the warm slots × ~2, the rest dormant).
+/// Measured the boot of 23d33019d on the M5, 01:12Z: the old lane was dead at boot, sixteen
+/// minds loaded, their residency left the 27B a 20 GB Eco budget, the plan launched ONE
+/// lane at 2,048 tokens, and the hourly rest was fifty minutes away. The bound belongs at
+/// the draw: `seats` never exceeds `lanes × MINDS_PER_LANE_STARVED_ABOVE` (never below the
+/// resident floor), so the memory the roster would have taken is the plan's for lanes. No
+/// lane known (`None`, a node that has never served) bounds nothing — an absence is not a
+/// number. The mirror is free: the reconciler re-reads `seats()` every pass, so lanes that
+/// grow draw more; lanes that shrink are the hourly rest's (`citizen_health`). Pure.
+pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
+    match lanes {
+        Some(l) if l > 0 => {
+            let edge = (l as usize).saturating_mul(crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize);
+            seats.min(edge.max(crate::modules::citizen_health::MINDLESS_RESIDENT_FLOOR as usize))
+        }
+        _ => seats,
+    }
+}
+
+pub fn missing_plan(module: &PersonaSpawnerModule, already_hosted: usize) -> Vec<DesiredRole> {
+    let mut plan = module.plan();
+    let missing = plan.len().saturating_sub(already_hosted);
+    plan.truncate(missing);
+    plan
+}
+
+pub async fn bootstrap_planned(
+    module: &PersonaSpawnerModule,
+    instance_manager: &PersonaInstanceManagerModule,
+    provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
+    tier_id: &str,
+    registry: &crate::model_registry::Registry,
+    already_hosted: usize,
+) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
+    let plan = missing_plan(module, already_hosted);
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
+    let required = plan.len();
+    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, ServingParams)> =
+        Vec::with_capacity(required);
+
+    // PHASE 1 — draw every identity from the provider. Sequential because the
+    // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
+    // cost is `bootstrap_one` below, not `next_persona`.
+    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active()).await?;
+
+    // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
+    // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop
+    // paid ~minutes PER citizen: measured 2026-09-03, ~7-minute gaps between
+    // successive citizens on a reboot, so the last of N idled 30+ minutes with
+    // `resident=0` and no turns — the slow-restart Joel called out ("reboot needs
+    // work… always think of parallel", the CBAR pthreads/lambdas fork-join shape).
+    // Now the restart's bootstrap cost is the SLOWEST SINGLE persona, not their
+    // sum. `bootstrap_one` takes `&self`, so concurrent calls share no mutable
+    // state; each writes its own per-persona identity dir + seed.
+    let infos = futures::future::join_all(
+        intents
+            .iter()
+            .map(|intent| instance_manager.bootstrap_one(intent)),
+    )
+    .await;
+
+    for (slot_index, (desired, info_res)) in plan.iter().zip(infos).enumerate() {
+        let info = info_res.map_err(|source| BootstrapPlannedError::AircBootstrap {
+            slot_index,
+            role: desired.role,
+            source,
+        })?;
+        bootstrapped.push((
+            desired.role,
+            info,
+            desired.model_id.clone(),
+            ServingParams {
+                lanes: desired.lanes,
+                served_context_window: desired.served_context_window,
+            },
+        ));
     }
 
     let roster: Vec<RosterEntry> = bootstrapped
         .iter()
-        .map(|(role, info, model_id)| RosterEntry {
+        .map(|(role, info, model_id, serving)| RosterEntry {
             role: *role,
-            persona_id: info.persona_id,
+            persona_id: info.peer_id.as_uuid(),
             persona_name: info.agent_name.clone(),
             model_id: model_id.clone(),
+            serving: *serving,
         })
         .collect();
 
@@ -374,11 +744,13 @@ pub async fn bootstrap_planned(
     Ok(bootstrapped
         .into_iter()
         .zip(profiles)
-        .map(|((role, instance, _model_id), profile)| MaterializedPersonaPlan {
-            role,
-            instance,
-            profile,
-        })
+        .map(
+            |((role, instance, _model_id, _serving), profile)| MaterializedPersonaPlan {
+                role,
+                instance,
+                profile,
+            },
+        )
         .collect())
 }
 
@@ -386,8 +758,144 @@ pub async fn bootstrap_planned(
 mod tests {
     use super::*;
 
+    // what this catches (#430): the roster is DATA. with_citizens drives the
+    // plan; an EMPTY authored roster (headless serving node) legitimately
+    // plans nobody, and the slice-14 guard hosts only the FIRST of a
+    // multi-role roster (loud error, never a silent flip on boot 2).
+    #[test]
+    fn recipe_citizens_drive_the_plan() {
+        let base = || PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        assert!(base().with_citizens(vec![]).plan().is_empty());
+
+        let coder = base().with_citizens(vec![RoleId::Coder]).plan();
+        assert_eq!(coder.len(), 1);
+        assert_eq!(coder[0].role, RoleId::Coder);
+
+        let multi = base()
+            .with_citizens(vec![RoleId::Helper, RoleId::Coder])
+            .plan();
+        assert_eq!(
+            multi.len(),
+            1,
+            "multi-role rosters host the FIRST role only until #133 slice 14"
+        );
+        assert_eq!(multi[0].role, RoleId::Helper);
+    }
+
+    // what this catches (#432): the boot task re-sizing the plan to the
+    // identity provider's real yield. set_population must grow plan() the same
+    // way with_population does (with the same ≥1 clamp) — if it silently
+    // no-opped, every resumed citizen beyond the mint floor would stay
+    // unhosted on disk again.
+    #[test]
+    fn set_population_resizes_the_plan() {
+        let mut spawner =
+            PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        assert_eq!(spawner.plan().len(), 1);
+        spawner.set_population(3);
+        assert_eq!(spawner.plan().len(), 3);
+        spawner.set_population(0);
+        assert_eq!(spawner.plan().len(), 0, "zero is deliberate: the provider will yield none (a team is seated elsewhere)");
+    }
+
+    // what this catches (2026-09-06): a roster larger than the warm lanes. With a real
+    // plan of 4 lanes the population of 12 seats 4; with no plan yet the configured
+    // population stands; a plan can never seat zero.
+    // what this catches (2026-09-06): the hold applied AFTER the seat cut. Six on
+    // disk, three seats, a hold naming Delta/Foxtrot/Alpha → the seats go to Alpha,
+    // Delta, Foxtrot (yield order), never to Bravo/Charlie.
+    #[tokio::test]
+    async fn a_hold_picks_who_before_the_seats_count_how_many() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        let mut provider = Yield(["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"].into_iter().collect());
+        let plan = vec![
+            plan_for_roles(&[RoleId::Helper], HwCapabilityTier::CpuOnly, HwTierCategory::Compat)[0].clone();
+            3
+        ];
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: ["Delta", "Foxtrot", "Alpha"].iter().map(|s| s.to_string()).collect(),
+            until_ms: u64::MAX,
+            reason: "test".to_string(),
+            exclusive: true,
+        };
+        let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
+        let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
+    }
+
+    // what this catches (2026-09-06, re-pinned 2026-09-13, REVERSED 2026-09-20, card
+    // 7c38ff6f): the missing plan is the seats not yet filled — and the seats are the
+    // population BOUNDED by the warm slots (lanes × the per-lane edge). Twelve minds on
+    // five lanes seat min(12, 5 × edge); three hosted draws the rest; a full roster draws
+    // none; more hosted than seats draws none (the shrink is the hourly rest's, not a draw).
+    #[test]
+    fn the_missing_plan_is_the_seats_not_yet_filled() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 5;
+        let seats = 12.min(5 * per);
+        assert_eq!(spawner.seats(), seats, "five lanes bound twelve minds to 5 × {per}");
+        let per_seat = plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len();
+        assert_eq!(missing_plan(&spawner, 3).len(), (seats - 3) * per_seat, "three hosted: the rest of the bounded seats are drawn");
+        assert_eq!(missing_plan(&spawner, seats).len(), 0);
+        assert_eq!(missing_plan(&spawner, 14).len(), 0);
+        assert_eq!(missing_plan(&spawner, 0).len(), seats * per_seat);
+    }
+
+    #[test]
+    fn the_roster_is_the_population_bounded_by_the_warm_slots() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        assert_eq!(spawner.seats(), 12, "no plan and no remembered lanes: nothing is known, the population stands");
+        // A cold boot with a remembered geometry is bounded by it before any live plan.
+        let remembered = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
+            .with_population(12)
+            .with_remembered_lanes(Some(2));
+        assert_eq!(remembered.seats(), 12.min(2 * per), "the boot draw is bounded by the last settled lanes");
+        spawner.serving_base_model = Some("ggml-org/Qwen3.8-27B-GGUF".to_string());
+        spawner.serving_lanes = 4;
+        assert_eq!(spawner.seats(), 12.min(4 * per), "a live plan's lanes bound the draw: the rest stay dormant");
+        assert_eq!(spawner.plan().len(), spawner.seats() * plan_for_roles(&spawner.citizens, spawner.hw_capability, spawner.tier_category).len());
+        spawner.set_population(0);
+        assert_eq!(spawner.seats(), 0, "zero is deliberate: the provider will yield none while a team is seated elsewhere on the grid");
+    }
+
+    // what this catches (IntelMac on #3798): a runtime plan that no longer fits the GPU
+    // leaving the seat count on the EARLIER GPU plan's lanes. The marker and the lanes
+    // move together, so a non-fitting live plan seats the configured population.
+    #[test]
+    fn a_plan_that_stops_fitting_the_gpu_releases_the_stale_lane_cap() {
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(6);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 2;
+        assert_eq!(spawner.seats(), 6.min(2 * per), "two live lanes bound the draw");
+        spawner.set_serving(None);
+        assert_eq!(spawner.seats(), 6, "no fitting plan and nothing remembered: no lane is known, the population stands");
+        assert!(spawner.serving_base_model.is_none());
+    }
+
     /// Compat tier produces the LCD roster: Helper + Coder both on
-    /// Qwen2.5-0.5B. The canonical Intel-Mac startup state #133
+    /// the 1.5B floor. The canonical Intel-Mac startup state #133
     /// targets.
     ///
     /// Slice 13 update: temporarily single-Helper while ResumeOrMint-
@@ -395,16 +903,18 @@ mod tests {
     /// resolved in slice 14. Coder will be re-added once
     /// role-in-seed.json lands.
     #[test]
-    fn compat_tier_plans_single_helper_on_lcd() {
+    fn compat_tier_plans_single_helper_on_the_floor() {
         let plan = plan_for_tier(
             HwCapabilityTier::MacIntelMetalDiscrete,
             HwTierCategory::Compat,
         );
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].role, RoleId::Helper);
+        // THE FLOOR IS 1.5B (2026-09-16): the pre-plan fallback names the smallest
+        // model any tier may serve, and there is no 0.5B row to name.
         assert_eq!(
             plan[0].model_id,
-            "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
+            "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF"
         );
     }
 
@@ -422,7 +932,12 @@ mod tests {
             (HwCapabilityTier::Cloud, HwTierCategory::Cloud),
         ] {
             let plan = plan_for_tier(hw, cat);
-            assert_eq!(plan.len(), 1, "tier {cat:?} planned {} roles, want 1", plan.len());
+            assert_eq!(
+                plan.len(),
+                1,
+                "tier {cat:?} planned {} roles, want 1",
+                plan.len()
+            );
             assert_eq!(
                 plan[0].role,
                 RoleId::Helper,
@@ -502,12 +1017,10 @@ mod tests {
 
         // The bootstrapper is never reached because provider exhausts
         // first — its construction can be cheap-and-unreachable.
-        // continuum_root/daemon_socket/default_room never get touched.
+        // continuum_root/daemon_socket never get touched.
         let instance_manager = PersonaInstanceManagerModule::new(
             crate::persona::PersonaAircRuntimeRegistry::default(),
             PathBuf::from("/dev/null/unused"),
-            airc_core::RoomId::from_uuid(uuid::Uuid::nil()),
-            None,
             PathBuf::from("/dev/null/unused"),
         );
 
@@ -524,6 +1037,7 @@ mod tests {
             &mut provider,
             "mac_intel_metal_discrete",
             &registry,
+            0,
         )
         .await
         .expect_err("must error when provider exhausts");
@@ -554,13 +1068,91 @@ mod tests {
         let role = DesiredRole {
             role: RoleId::Helper,
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            lanes: 1,
+            served_context_window: 8192,
         };
         let json = serde_json::to_string(&role).expect("serialize");
         // RoleId already serializes as snake_case ("helper"); model_id
         // becomes modelId per the camelCase rename_all on this struct.
         assert!(json.contains("\"role\":\"helper\""));
         assert!(json.contains("\"modelId\":\"continuum-ai/qwen2.5-0.5b-instruct-GGUF\""));
+        assert!(json.contains("\"servedContextWindow\":8192"));
         let back: DesiredRole = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, role);
     }
+    // what this catches: a hold smaller than the population turning the boot into a
+    // drain loop (2026-09-13: 12 seats, 5 allowed, zero residents for four minutes).
+    // A hold defines the roster, so it bounds the seats; no hold, population stands.
+    #[test]
+    fn a_roster_hold_bounds_the_seats_to_the_names_it_allows() {
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: ["Alpha", "Bravo", "Charlie"].iter().map(|s| s.to_string()).collect(),
+            until_ms: u64::MAX,
+            reason: "test".to_string(),
+            exclusive: true,
+        };
+        assert_eq!(seats_under(12, Some(&hold)), 3, "the hold's three names are the roster");
+        assert_eq!(seats_under(2, Some(&hold)), 2, "a hold never grows the population");
+        assert_eq!(seats_under(12, None), 12, "no hold: the population stands");
+        assert_eq!(seats_under(0, None), 0, "zero is deliberate — the grid holds the roster, this node offers lanes");
+    }
+
+    // what this catches (2026-09-13): a plan larger than the provider's identities turning
+    // the boot into a drain loop — zero residents until an operator moved a file. The
+    // identities the provider yields ARE the roster; the surplus seats are a probe.
+    #[tokio::test]
+    async fn a_provider_shortfall_seats_what_it_has_and_never_fails_the_boot() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
+        let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
+        let intents = draw_intents(&mut provider, &plan, None).await.expect("a shortfall is not an error");
+        let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
+        let mut empty = Yield(std::collections::VecDeque::new());
+        assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+    }
+
+    // what this catches (2026-09-14): a working round's team hold shrinking the roster —
+    // seven of twelve minds held out on a sixteen-seat node because the derived hold read
+    // as exclusive. A derived hold orders (team first); only an operator hold excludes.
+    #[test]
+    fn a_derived_team_hold_seats_the_team_first_and_never_fewer_minds() {
+        let derived = crate::persona::roster_hold::from_team_names(vec!["Delta".into(), "Alpha".into()], 0).expect("hold");
+        assert!(!derived.exclusive);
+        assert_eq!(seats_under(12, Some(&derived)), 12, "a team hold never bounds the seats");
+        let operator = crate::persona::roster_hold::RosterHold { only: vec!["Alpha".into()], until_ms: u64::MAX, reason: "op".into(), exclusive: true };
+        assert_eq!(seats_under(12, Some(&operator)), 1, "an operator hold does");
+    }
+
+    // what this catches (card 7c38ff6f; the M5 boot of 23d33019d, 01:12Z 9/20): sixteen minds
+    // drawn onto a node whose lanes could seat four, their residency starving the plan to a
+    // 2,048-token lane. The draw is bounded by the warm slots: lanes × the per-lane edge,
+    // never below the resident floor, and an unknown lane count bounds nothing.
+    #[test]
+    fn the_draw_is_bounded_by_the_warm_slots_and_an_unknown_lane_count_bounds_nothing() {
+        use crate::modules::citizen_health::{MINDLESS_RESIDENT_FLOOR, MINDS_PER_LANE_STARVED_ABOVE};
+        let per = MINDS_PER_LANE_STARVED_ABOVE as usize;
+        assert_eq!(bounded_by_warm_slots(16, Some(2)), 2 * per, "two lanes seat two lanes' worth");
+        assert_eq!(bounded_by_warm_slots(16, Some(1)), per.max(MINDLESS_RESIDENT_FLOOR as usize), "one lane: the edge, never below the floor");
+        assert_eq!(bounded_by_warm_slots(16, Some(8)), 16, "lanes past the population change nothing");
+        assert_eq!(bounded_by_warm_slots(16, None), 16, "no lane known bounds nothing — an absence is not a number");
+        assert_eq!(bounded_by_warm_slots(16, Some(0)), 16, "a zero lane count is unknown, not a bound of zero");
+        assert_eq!(bounded_by_warm_slots(0, Some(2)), 0, "an empty population stays empty (the one-roster rule)");
+    }
+
 }

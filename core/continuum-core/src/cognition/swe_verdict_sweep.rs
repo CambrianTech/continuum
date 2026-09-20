@@ -1,0 +1,651 @@
+//! Every artifact that holds work gets a verdict — with no operator in the loop.
+//!
+//! # Why this exists (2026-08-18, and the number it recovered)
+//!
+//! The grade tail was built and correct, and it still needed a human to fire it. On the night
+//! it landed, 104 staged trees sat on this box; 17 of them held real citizen patches that had
+//! never been scored, and two of those were PASSES that had been sitting ungraded for over a
+//! day. The verdicts only appeared because an operator ran `benchmark/swe-grade` twenty times
+//! by hand. That is not a benchmark — that is a person with a shell.
+//!
+//! Joel, on being shown the recovered number: *"Needs to automatically work too"*.
+//!
+//! # The doctrine this obeys, and the one it must not break
+//!
+//! [[the-whole-system-is-event-based-not-polling]] forbids scanning the board on a clock to ask
+//! "has anything become gradeable yet" — a condition-poll that duplicates an event. This is NOT
+//! that. It is the same shape as [`crate::cognition::swe_bench::reap_orphaned_solve_runs`]: a
+//! BOOT RECONCILIATION that enumerates durable state once and makes it consistent, then stops.
+//! Boot owns the process tree, reap-or-adopt, for every service (#452,
+//! [[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]]) — and an orphaned
+//! ARTIFACT is the same class of thing as an orphaned process. A patch nobody scored is a run
+//! nobody reaped.
+//!
+//! The axis Joel named is DETERMINISM, not tick-vs-event:
+//!
+//! > *"if it's deterministic and not scan it or polling it's reliable"*
+//!
+//! So this sweep is deterministic by construction, and each property is load-bearing:
+//!
+//! - **Enumerates ALL staged instances, sorted.** No cap, no recency sort, no sampling. The
+//!   board's own artifact scan has all three and lost 12 of 13 artifacts to them — same input,
+//!   different answer depending on timing, which is the definition of unreliable.
+//! - **Idempotent.** An instance with a recorded verdict is skipped, so re-running changes
+//!   nothing and a restart mid-sweep resumes rather than re-grades.
+//! - **Refuses rather than guesses.** Ambiguity and absence are outcomes, not zeros.
+//!
+//! Given the same disk, it always produces the same set of grades.
+//!
+//! # What it will never do
+//!
+//! It never manufactures a score. The three guards that keep the durable record honest live in
+//! [`crate::cognition::swe_bench::record_verdict`] and are inherited here, not re-implemented:
+//! a gold patch is a control and never counts, an errored verdict is an environment fault and
+//! never counts, and an empty candidate is an ABSENCE and never counts
+//! ([[a-perception-fact-is-honesty-not-an-actuator]]). This module adds one more of the same
+//! family: two citizens holding worked copies of one instance is ambiguity, and grading either
+//! would score one citizen's diff against the other's card, so it grades neither and says so.
+
+use std::path::PathBuf;
+
+use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
+
+/// An artifact awaiting a verdict: the instance, and the one worked copy to score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingGrade {
+    pub instance: String,
+    pub workspace: PathBuf,
+    /// The newest modification in the chosen copy (ms) — what a refusal is
+    /// remembered against, so the same tree is not re-graded every tick.
+    pub work_mtime_ms: Option<u64>,
+}
+
+/// A refusal ("ungradeable") remembered beside the verdicts, keyed by instance.
+/// Measured 2026-09-07 16:42–16:56Z on 9808f085d: with the tick sweep live and no
+/// memory of a refusal, the same fifteen instances were re-graded every seven
+/// minutes, forever (`pending()` = "worked and no verdict").
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Refusal {
+    pub instance: String,
+    pub reason: String,
+    pub at_ms: u64,
+    pub work_mtime_ms: Option<u64>,
+}
+
+fn refusal_path(instance: &str) -> PathBuf {
+    crate::cognition::swe_bench::verdict_dir().join(format!("{instance}.ungradeable.json"))
+}
+
+pub fn read_refusal(instance: &str) -> Option<Refusal> {
+    let text = std::fs::read_to_string(refusal_path(instance)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn record_refusal(instance: &str, reason: &str, work_mtime_ms: Option<u64>) {
+    let r = Refusal {
+        instance: instance.to_string(),
+        reason: reason.chars().take(400).collect(),
+        at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),  // unwrap_or: pre-epoch clock — the marker still records the reason and the work mtime
+        work_mtime_ms,
+    };
+    let path = refusal_path(instance);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&r) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+/// Is this refusal about the ENVIRONMENT — the box cannot grade the instance at all
+/// (pristine-tree verdicts: PASS_TO_PASS 0/N, FAIL_TO_PASS passing or skipped before the
+/// patch; no runnable harness for the era; the repo will not install) — rather than about
+/// the WORK (no patch to grade)? An env refusal is deck hygiene: the instance is not
+/// offered on this box again until the env changes. A work refusal is the citizen's.
+pub fn refusal_is_env_fault(reason: &str) -> bool {
+    // A failure to look is neither env nor work: it is no verdict at all (cffc9c5e).
+    if reason.starts_with(crate::cognition::swe_bench::COULD_NOT_LOOK) {
+        return false;
+    }
+    reason.starts_with("UNGRADEABLE — ")
+        || reason.contains("env has no runnable test harness")
+        || reason.contains("could not install")
+}
+
+/// The standing ENV refusal recorded for `instance` on this box, if any. Markers outlive
+/// the work-change TTL on purpose: an environment does not fix itself between rounds —
+/// clear the marker (or run `benchmark/validate`) when it does.
+pub fn standing_env_refusal(instance: &str) -> Option<String> {
+    let r = read_refusal(instance)?;
+    refusal_is_env_fault(&r.reason).then_some(r.reason)
+}
+
+pub fn clear_refusal(instance: &str) {
+    let _ = std::fs::remove_file(refusal_path(instance));
+}
+
+/// How long a refusal stands when the work's mtime is unknowable on either side
+/// (a deletions-only patch has no file to stat). Bounded by time, never eternal:
+/// an hour suppresses the seven-minute storm 8:1 and guarantees nothing is
+/// excluded forever on a signal that cannot be read (IntelMac's review of #3857).
+pub const REFUSAL_TTL_MS: u64 = 60 * 60 * 1000;
+
+/// Does a remembered refusal still apply? With both mtimes known: only while no
+/// NEWER work exists than the work it refused. With either unknown: only while
+/// the refusal is younger than [`REFUSAL_TTL_MS`]. Pure.
+pub fn refusal_stands_at(
+    refused_work_mtime_ms: Option<u64>,
+    newest_work_mtime_ms: Option<u64>,
+    refused_at_ms: u64,
+    now_ms: u64,
+) -> bool {
+    match (refused_work_mtime_ms, newest_work_mtime_ms) {
+        (Some(refused), Some(newest)) => newest <= refused,
+        _ => now_ms.saturating_sub(refused_at_ms) < REFUSAL_TTL_MS,
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(u64::MAX)  // unwrap_or: pre-epoch clock — now reads as far future, every refusal reads EXPIRED, which errs toward grading (0 would make every refusal stand forever)
+}
+
+/// What the sweep decided for one instance — every non-grade outcome is NAMED, because
+/// "we skipped it" and "it scored zero" must never be the same row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SweepDecision {
+    /// Exactly one worked copy and no verdict on file. Score it.
+    Grade(PathBuf),
+    /// A verdict already exists. Skipping is what makes the sweep idempotent.
+    AlreadyGraded,
+    /// Nothing was ever written here. An absence, never a zero.
+    NoWork,
+    /// Two or more citizens hold worked copies. Refuse and name the candidates.
+    Ambiguous(Vec<PathBuf>),
+}
+
+/// The rule alone, with the filesystem taken out of it.
+///
+/// Split from [`pending`] for the same reason
+/// [`crate::persona::staged_workspace::grade_target`] is split from `owners_of`: the DECISION
+/// is tested against a table, not against a disk fixture that re-derives it. A test that
+/// rebuilds the predicate in its own body cannot fail when the real one changes.
+/// Is a recorded verdict older than the newest worked copy? Then a later attempt exists
+/// and the instance is pending again. A verdict without a grade time (pre-2026-09 files)
+/// cannot vouch for any work, so any work makes it stale.
+pub fn verdict_is_stale(graded_at_ms: Option<u64>, newest_work_mtime_ms: Option<u64>) -> bool {
+    match (graded_at_ms, newest_work_mtime_ms) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(graded), Some(work)) => work > graded,
+    }
+}
+
+pub fn decide(has_verdict: bool, target: GradeTarget) -> SweepDecision {
+    if has_verdict {
+        // Checked FIRST and deliberately: idempotence must not depend on the tree still
+        // being dirty. A graded artifact whose workspace was since cleaned would otherwise
+        // read as NoWork and churn a decision every boot.
+        return SweepDecision::AlreadyGraded;
+    }
+    match target {
+        GradeTarget::One(path) => SweepDecision::Grade(path),
+        GradeTarget::NoWork => SweepDecision::NoWork,
+        GradeTarget::Ambiguous(paths) => SweepDecision::Ambiguous(paths),
+    }
+}
+
+/// Every instance staged into ANY citizen's workspace, sorted and deduped.
+///
+/// Deterministic by construction — see the module doc. The sort is not cosmetic: it fixes
+/// grading ORDER, so a sweep interrupted halfway resumes at the same place rather than at
+/// whatever `read_dir` happened to yield first.
+pub fn all_staged_instances() -> Vec<String> {
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(home.join("citizens").join("peers")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().and_then(|n| uuid::Uuid::parse_str(n).ok()))
+        .flat_map(|peer| crate::persona::staged_workspace::staged_instances(&peer))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every artifact that holds work and has no verdict, in a stable order.
+pub fn pending() -> Vec<PendingGrade> {
+    pending_with_skipped().0
+}
+
+/// `pending()` plus how many instances a standing refusal kept out — so a quiet
+/// sweep_start reads "nothing to do" apart from "fifteen refusals stand".
+pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
+    let mut out = Vec::new();
+    let mut skipped_refused = 0usize;
+    // A SOLVE IN FLIGHT IS NOT AN ARTIFACT (2026-09-16): after the morning's reboots the
+    // resume re-fired five detached solves; the tick's sweep graded their checkouts
+    // minutes later — mid-run, before a single edit — and recorded "no candidate patch"
+    // for django-11211 and sympy-24443 while both were still solving. A running ledger
+    // means the work is not finished; grading it grades a snapshot. The instance waits.
+    // A `running` ledger untouched for an hour is a dead solve, not a live one — it must
+    // not hold its instance out of grading until the next boot's reaper (#4117 review).
+    let (live, stale) = crate::cognition::swe_bench::in_flight_solve_runs_fresh();
+    for (run_id, instance) in &stale {
+        crate::probe!(
+            class = "benchmark.verdict.stale_solve_ledger_ignored",
+            run_id = run_id.as_str(),
+            instance = instance.as_str(),
+            "a running ledger nothing has touched for an hour — not a solve in flight; grading proceeds"
+        );
+    }
+    let in_flight: std::collections::BTreeSet<String> =
+        live.into_iter().map(|(_, instance)| instance).collect();
+    for instance in all_staged_instances() {
+        if in_flight.contains(&instance) {
+            crate::probe!(
+                class = "benchmark.verdict.sweep_deferred_in_flight",
+                instance = instance.as_str(),
+                "a detached solve is running on this instance — not graded until it settles"
+            );
+            continue;
+        }
+        // A VERDICT IS AN ATTEMPT'S, NOT THE INSTANCE'S FOREVER. Keyed by instance, an
+        // old verdict blocked every later attempt: django-15467 carried a False from
+        // 2026-09-12 and astropy-13453 an old False, so Joaquin's validated astropy fix
+        // (2026-09-13) was never graded by this sweep — a hand grade found it resolved.
+        // A worked copy newer than the recorded grade is pending again; the new verdict
+        // replaces the old (the card, not the instance, owns the outcome — #3855 keeps
+        // the board settle per card).
+        let prior = crate::cognition::swe_bench::read_verdict(&instance);
+        let copies = owners_of(&instance);
+        let newest_work = copies.iter().filter(|c| c.has_work).filter_map(|c| c.work_mtime_ms).max();
+        // The `git status` fan-out now runs for graded instances too — the price of never
+        // losing a later attempt; it is off every hot path (the 7-minute tick).
+        let has_verdict = prior.is_some_and(|v| !verdict_is_stale(Some(v.graded_at_ms), newest_work));
+        if has_verdict {
+            continue;
+        }
+        let worked = copies.iter().filter(|c| c.has_work).count();
+        match decide(false, grade_target(&copies)) {
+            SweepDecision::Grade(workspace) => {
+                let work_mtime_ms = copies
+                    .iter()
+                    .find(|c| c.path == workspace)
+                    .and_then(|c| c.work_mtime_ms);
+                if let Some(r) = read_refusal(&instance) {
+                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms, r.at_ms, now_ms()) {
+                        // Refused before, nothing changed since: not pending. The
+                        // marker file is the record; the count rides sweep_start.
+                        skipped_refused += 1;
+                        continue;
+                    }
+                }
+                if worked > 1 {
+                    // The newest of several worked copies was chosen (a card that
+                    // changed hands). The OTHERS are named too: their work is not
+                    // graded, and whoever asks later what happened to it must find
+                    // a row, not archaeology (IntelMac, #3852).
+                    let not_graded: Vec<String> = copies
+                        .iter()
+                        .filter(|c| c.has_work && c.path != workspace)
+                        .map(|c| c.path.display().to_string())
+                        .collect();
+                    crate::probe!(
+                        class = "benchmark.verdict.multiple_worked_copies",
+                        instance = instance.as_str(),
+                        graded = %workspace.display(),
+                        not_graded = %not_graded.join(","),
+                        worked_copies = worked as u64,
+                        "several citizens worked this instance — grading the newest; the others are NOT graded"
+                    );
+                }
+                out.push(PendingGrade { instance, workspace, work_mtime_ms })
+            }
+            SweepDecision::Ambiguous(paths) => crate::probe!(
+                class = "benchmark.verdict.sweep_ambiguous",
+                instance = instance.as_str(),
+                candidates = paths.len(),
+                "two citizens hold worked copies — refusing to grade either (#419)",
+            ),
+            SweepDecision::NoWork | SweepDecision::AlreadyGraded => {}
+        }
+    }
+    (out, skipped_refused)
+}
+
+/// What one sweep did — reported as a probe so the run is legible from the state pipe
+/// rather than from a log parse.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SweepReport {
+    pub graded: usize,
+    pub resolved: usize,
+    pub ungradeable: usize,
+    pub errored: usize,
+    /// Could not LOOK (the package index unreachable while building the env) — no
+    /// verdict, no marker; the next tick tries again. Card cffc9c5e.
+    pub deferred: usize,
+}
+
+/// Grade every pending artifact, sequentially, recording each verdict.
+///
+/// SEQUENTIAL on purpose. Each grade takes a fresh clone at `base_commit` and runs a real test
+/// suite; N of those in parallel would compete with the citizens' own serving lane for the
+/// machine the round is being measured on ([[measured-work-gets-an-exclusive-warm-slot]]).
+/// The sweep is background work that must never become the reason a turn is slow.
+/// Whether a tick starts a sweep: something is pending and no sweep is already
+/// running. Pure — the tick's only decision. Before this the sweep ran ONCE, at
+/// module initialize, so a citizen's finished card waited for the next reboot
+/// to be graded (2026-09-07: sympy-22456 was graded by the 14:13Z boot's sweep,
+/// hours after the work).
+pub fn should_start_sweep(pending: usize, in_flight: bool) -> bool {
+    pending > 0 && !in_flight
+}
+
+/// One sweep at a time across ticks and boots.
+pub static SWEEP_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// THE SCAN'S COST PACES THE SCAN (2026-09-20 00:05Z, the M5): `pending()` runs
+/// `owners_of` — a `git status` + `git diff` fan-out — over EVERY staged instance on the
+/// box (335 checkouts under 755 peer workspaces), and the grade module ticks it every
+/// 180 s. Measured: a git child per second, continuously, `lsof` on `citizens/peers` in
+/// 21 of 30 snapshots between the disk scanner's walks — the scan outlasted its own
+/// tick, so it never stopped. Same rule as the scanner (#4239,
+/// [`crate::runtime::daemon::paced_delay`]): a scan that cost T is not repeated sooner
+/// than 20 × T, floored at the tick. Milliseconds on the sweep's own monotonic clock
+/// before which the tick does not scan again; 0 = scan now.
+static SCAN_NEXT_DUE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCAN_CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// The grade module's tick — the floor between two scans.
+pub const SCAN_TICK: std::time::Duration = std::time::Duration::from_secs(180);
+
+fn scan_clock_ms() -> u64 {
+    SCAN_CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// PURE: is a scan due at `now_ms` on the sweep's clock, given the last one set
+/// `next_due_ms`? Always true before any scan.
+pub fn scan_due(now_ms: u64, next_due_ms: u64) -> bool {
+    now_ms >= next_due_ms
+}
+
+/// The tick's entry: start a sweep in its own task when one is due. Returns
+/// whether one was started. The scan itself (`pending()`) is skipped while its last
+/// cost says it is not due yet — the cost is measured here and sets the next due time.
+pub fn sweep_if_due() -> bool {
+    use std::sync::atomic::Ordering;
+    if !scan_due(scan_clock_ms(), SCAN_NEXT_DUE_MS.load(Ordering::Relaxed)) {
+        return false;
+    }
+    let began = std::time::Instant::now();
+    let (work, skipped_refused) = pending_with_skipped();
+    let took = began.elapsed();
+    let next_in = crate::runtime::daemon::paced_delay(SCAN_TICK, took);
+    SCAN_NEXT_DUE_MS.store(scan_clock_ms().saturating_add(next_in.as_millis() as u64), Ordering::Relaxed);
+    crate::probe!(
+        class = "benchmark.verdict.scan",
+        pending = work.len() as u64,
+        skipped_refused = skipped_refused as u64,
+        scan_ms = took.as_millis() as u64,
+        next_scan_in_s = next_in.as_secs(),
+        "the staged-instance scan ran — its cost sets when it runs again"
+    );
+    let due = should_start_sweep(work.len(), SWEEP_IN_FLIGHT.load(Ordering::Relaxed));
+    if !due {
+        return false;
+    }
+    if SWEEP_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    tokio::spawn(async {
+        let _report = sweep().await;
+        SWEEP_IN_FLIGHT.store(false, Ordering::Release);
+    });
+    true
+}
+
+pub async fn sweep() -> SweepReport {
+    let mut report = SweepReport::default();
+    let (work, skipped_refused) = pending_with_skipped();
+    if work.is_empty() {
+        // Nothing to grade — said with the count that explains it, so "idle because
+        // fifteen refusals stand" never reads as "idle because there is no work"
+        // (Astra's review of #3859: the early return hid the new count).
+        crate::probe!(
+            class = "benchmark.verdict.sweep_idle",
+            skipped_refused = skipped_refused as u64,
+            "no pending citizen work to grade — the count says whether refusals are standing"
+        );
+        return report;
+    }
+    crate::probe!(
+        class = "benchmark.verdict.sweep_start",
+        skipped_refused = skipped_refused as u64,
+        pending = work.len(),
+        "boot artifact sweep — artifacts holding work with no verdict on file",
+    );
+    for item in work {
+        // The ONE grader. Never an inline second reading of her work — that drift already cost
+        // a credential leak once (see `SOLUTION_PATH_EXCLUDES`). `grade_swe` records the
+        // verdict itself, so this loop only tallies.
+        let params = crate::commands::benchmark::SweGradeParams {
+            instance: item.instance.clone(),
+            dataset: None,
+            gold: None,
+            patch: None,
+            workspace: Some(item.workspace.to_string_lossy().into_owned()),
+        };
+        match crate::commands::benchmark::grade_swe(params).await {
+            Ok(result)
+                if result
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with(crate::cognition::swe_bench::COULD_NOT_LOOK)) =>
+            {
+                // A failure to LOOK is not a verdict about the instance and must never
+                // become its standing refusal (xarray-4356, 2026-09-16: a DNS error during
+                // a power outage stood as the env verdict and hid the real one). No marker,
+                // so `pending()` offers it again next tick; the probe says why it waited.
+                report.deferred += 1;
+                let reason: String = result
+                    .error
+                    .as_deref()
+                    .unwrap_or("") // unwrap_or: guarded by the arm — error is Some here
+                    .chars()
+                    .take(160)
+                    .collect();
+                crate::probe!(
+                    class = "benchmark.verdict.sweep_deferred_could_not_look",
+                    instance = item.instance.as_str(),
+                    reason = %reason,
+                    "the index was unreachable while building the env — deferred, not refused",
+                );
+            }
+            Ok(result) if result.error.is_some() => {
+                report.ungradeable += 1;
+                record_refusal(
+                    &item.instance,
+                    result.error.as_deref().unwrap_or(""),  // unwrap_or: guarded by the arm — error is Some here
+                    item.work_mtime_ms,
+                );
+                // The REASON rides the row. 2026-09-07: 58 of these in six hours said
+                // "environment fault" and nothing else — 13346 (f2p passes on the
+                // pristine tree) and 14983 (the era env cannot build) were only told
+                // apart by hand grades. A reason a reader can histogram is the
+                // difference between one env fix and twenty-five mysteries.
+                let reason: String = result
+                    .error
+                    .as_deref()
+                    .unwrap_or("")  // unwrap_or: guarded by the arm — error is Some here
+                    .chars()
+                    .take(160)
+                    .collect();
+                crate::probe!(
+                    class = "benchmark.verdict.sweep_ungradeable",
+                    instance = item.instance.as_str(),
+                    reason = %reason,
+                    "environment fault, NOT a capability zero — nothing recorded",
+                );
+            }
+            Ok(result) => {
+                report.graded += 1;
+                clear_refusal(&item.instance);
+                if result.resolved {
+                    report.resolved += 1;
+                }
+            }
+            Err(e) => {
+                report.errored += 1;
+                // Loud, and never fatal: one instance that cannot be graded must not cost the
+                // sweep every artifact behind it.
+                tracing::warn!(
+                    instance = %item.instance,
+                    error = %e,
+                    "artifact sweep could not grade this instance — continuing",
+                );
+            }
+        }
+    }
+    crate::probe!(
+        class = "benchmark.verdict.sweep_done",
+        graded = report.graded,
+        resolved = report.resolved,
+        ungradeable = report.ungradeable,
+        errored = report.errored,
+        deferred = report.deferred,
+        "boot artifact sweep complete — every worked artifact now carries a verdict",
+    );
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (2026-09-13): an instance's OLD verdict blocking the grade of a
+    // NEW attempt — django-15467 (False, 09-12) and astropy-13453 (old False) were never
+    // regraded while citizens worked them; a hand grade found astropy resolved.
+    #[test]
+    fn a_worked_copy_newer_than_the_verdict_makes_the_instance_pending_again() {
+        assert!(verdict_is_stale(Some(1_000), Some(2_000)), "work after the grade = grade again");
+        assert!(!verdict_is_stale(Some(2_000), Some(1_000)), "the grade already covers this work");
+        assert!(!verdict_is_stale(Some(2_000), None), "no work at all: the verdict stands");
+        assert!(verdict_is_stale(None, Some(1)), "a grade with no time cannot vouch for any work");
+        assert!(!verdict_is_stale(None, None));
+    }
+
+    // what this catches (2026-09-13, seed-4): an instance this box cannot grade — pytest-7236
+    // (pristine PASS_TO_PASS 0/40), requests-1766 (era pytest cannot run here) — dispatched
+    // again the next round while its refusal marker stood; two of five cards burned hours
+    // on a wall. A WORK refusal (no patch) must not be mistaken for it.
+    #[test]
+    fn an_env_refusal_is_told_apart_from_a_work_refusal() {
+        assert!(refusal_is_env_fault("UNGRADEABLE — PASS_TO_PASS passes 0 of 40 on the PRISTINE tree: the suite does not run"));
+        assert!(refusal_is_env_fault("UNGRADEABLE — every FAIL_TO_PASS test already passes on the pristine tree ([\"a\"])"));
+        assert!(refusal_is_env_fault("psf__requests-1766's env has no runnable test harness: era-pinned pytest cannot execute"));
+        assert!(refusal_is_env_fault("could not install scikit-learn__scikit-learn-14983's repo into a venv — a cached broken env"));
+        assert!(!refusal_is_env_fault("no candidate patch to grade for matplotlib__matplotlib-21568 — the workspace holds no diff"));
+        // card cffc9c5e: a failure to LOOK is never an env fault (nor a work fault).
+        assert!(!refusal_is_env_fault(&format!(
+            "{}the resolver could not reach the package index during `uv pip install [\"cython<3\"]`",
+            crate::cognition::swe_bench::COULD_NOT_LOOK
+        )));
+    }
+
+    /// what this catches: the sweep manufacturing a score out of an absence or an ambiguity —
+    /// the #384/#386 laundering class, which is why the grade tail existed at all. A worked
+    /// copy grades; nothing else does, and each refusal keeps its own name.
+    #[test]
+    fn only_a_single_worked_copy_is_ever_graded_and_every_refusal_keeps_its_name() {
+        let a = PathBuf::from("/peers/a/workspace/swe/sympy__sympy-24152");
+        let b = PathBuf::from("/peers/b/workspace/swe/sympy__sympy-24152");
+
+        assert_eq!(
+            decide(false, GradeTarget::One(a.clone())),
+            SweepDecision::Grade(a.clone()),
+            "exactly one worked copy is the only thing that grades"
+        );
+        assert_eq!(
+            decide(false, GradeTarget::NoWork),
+            SweepDecision::NoWork,
+            "an unworked tree is an ABSENCE — it must never become a zero"
+        );
+        assert_eq!(
+            decide(false, GradeTarget::Ambiguous(vec![a.clone(), b.clone()])),
+            SweepDecision::Ambiguous(vec![a.clone(), b]),
+            "two worked copies must refuse, not pick — grading either scores the wrong citizen"
+        );
+    }
+
+    /// what this catches: a sweep that re-grades on every boot, which would burn hours of test
+    /// runs and rewrite verdicts that were already true. Idempotence is the property that lets
+    /// this run unattended at all.
+    #[test]
+    fn a_recorded_verdict_short_circuits_every_target_state() {
+        let a = PathBuf::from("/peers/a/workspace/swe/x");
+        for target in [
+            GradeTarget::One(a.clone()),
+            GradeTarget::NoWork,
+            GradeTarget::Ambiguous(vec![a.clone(), a]),
+        ] {
+            assert_eq!(
+                decide(true, target),
+                SweepDecision::AlreadyGraded,
+                "a graded artifact is skipped REGARDLESS of what its tree looks like now — \
+                 idempotence must not depend on the workspace still being dirty"
+            );
+        }
+    }
+
+    // what this catches: a sweep that never runs between boots, or two sweeps
+    // grading the same instance at once. The tick starts one only when work is
+    // pending and none is in flight.
+    #[test]
+    fn a_tick_starts_a_sweep_only_when_pending_and_idle() {
+        assert!(!should_start_sweep(0, false));
+        assert!(!should_start_sweep(3, true));
+        assert!(should_start_sweep(1, false));
+    }
+
+    // what this catches: a refusal that never expires (a new edit would never be
+    // graded) or one that never holds (the same tree re-graded every tick). It
+    // stands while no newer work exists; a newer edit lifts it.
+    #[test]
+    fn a_refusal_stands_until_newer_work_appears_and_never_forever_on_an_unknown_mtime() {
+        let t = 1_000_000u64;
+        assert!(refusal_stands_at(Some(1_000), Some(1_000), t, t));
+        assert!(refusal_stands_at(Some(1_000), Some(900), t, t));
+        assert!(!refusal_stands_at(Some(1_000), Some(1_001), t, t));
+        // Unknown on either side: stands only while younger than the TTL.
+        assert!(refusal_stands_at(None, None, t, t + 1));
+        assert!(!refusal_stands_at(None, None, t, t + REFUSAL_TTL_MS));
+        assert!(refusal_stands_at(None, Some(5), t, t + 1));
+        assert!(!refusal_stands_at(Some(5), None, t, t + REFUSAL_TTL_MS + 1));
+    }
+    // what this catches (the M5, 2026-09-20 00:05Z): a scan whose cost exceeds its own
+    // tick runs continuously — 335 `git status` fan-outs every 180 s were a git child per
+    // second, forever. The scan is due before any run; after a run that cost T it is not
+    // due again for max(tick, 20 × T); a cheap scan keeps the tick.
+    #[test]
+    fn the_scans_cost_paces_the_next_scan() {
+        use crate::runtime::daemon::paced_delay;
+        assert!(scan_due(0, 0), "never scanned: due");
+        let cheap = paced_delay(SCAN_TICK, std::time::Duration::from_secs(2));
+        assert_eq!(cheap, SCAN_TICK, "a 2 s scan keeps the 180 s tick");
+        let dear = paced_delay(SCAN_TICK, std::time::Duration::from_secs(240));
+        assert_eq!(dear, std::time::Duration::from_secs(4_800), "a 4-minute scan waits 80 minutes");
+        let next = 1_000 + dear.as_millis() as u64;
+        assert!(!scan_due(1_000 + 180_000, next), "one tick later: not due");
+        assert!(scan_due(next, next), "due once its wait has passed");
+    }
+
+}

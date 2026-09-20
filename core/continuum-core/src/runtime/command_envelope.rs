@@ -80,6 +80,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::cell_shapes::HandleRef;
@@ -113,12 +114,27 @@ use super::CommandResult;
 ///
 /// Tests + one-off callsites can construct directly via the public
 /// fields.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// # ts-rs / SDK
+///
+/// This is ALSO the single source of the generated TS envelope generic
+/// (`sdk_codegen`): `#[derive(TS)]` exports it to
+/// `protocol/typescript/runtime/CommandRequest.ts` as
+/// `export type CommandRequest<P> = P & { handle?, sessionId?, userId?, contextId? }`.
+/// An `Executed` command's generated `CommandMap` entry wraps its params
+/// `P` in this generic — so the typed surface cannot drift from the Rust
+/// envelope. `P` is flattened (`#[ts(flatten)]`) to match the flat wire JSON.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/CommandRequest.ts"
+)]
 pub struct CommandRequest<P> {
     /// Command-specific params, deserialized from the same JSON object
     /// as the envelope. Flatten means the wire JSON looks like
     /// `{ ...P fields..., handle?, sessionId?, userId? }`.
     #[serde(flatten)]
+    #[ts(flatten)]
     pub params: P,
 
     /// Handle to existing state from a prior command call. Present
@@ -126,22 +142,194 @@ pub struct CommandRequest<P> {
     /// training, hosting, ORM, etc.) — the producer minted the handle;
     /// this caller passes it back to thread the work.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     pub handle: Option<HandleRef>,
 
     /// Calling session — set by the kernel from the request envelope.
     /// Handlers reading this can correlate per-session telemetry, dual
     /// log, etc.
-    #[serde(
-        rename = "sessionId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
     pub session_id: Option<Uuid>,
 
     /// Calling user — set by the kernel from the session. Handlers
     /// reading this can scope per-user state (e.g., per-persona work).
     #[serde(rename = "userId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
     pub user_id: Option<Uuid>,
+
+    /// Conversation / room scope this command operates within — the THIRD
+    /// ID tier (userId > sessionId > contextId, CLAUDE.md ID hierarchy).
+    ///
+    /// UNLIKE `session_id`/`user_id` — which the kernel injects from the
+    /// connection (the substrate knows WHO you are from the airc pairing) —
+    /// `context_id` is CLIENT-SUPPLIED: the caller scopes a sequence of ops
+    /// to a conversation via the SDK's scoped client (`Continuum.scoped(ctx)`),
+    /// and it rides as an envelope sibling so handlers scope per-context state
+    /// (per-room memory, per-thread recall) without it polluting command
+    /// params. First-class for every citizen — a persona servicing a room is
+    /// a citizen scoped to that room's contextId, the same shape a browser tab
+    /// uses (this is what fills the persona cognition's tool_context).
+    /// The calling process's CLAIMED actor kind — `"agent"` when an AI agent
+    /// session (Claude Code, Codex…) drives the CLI, stamped by the CLI from
+    /// its own environment. A CLAIM for local attribution (the caller-less
+    /// sender chain resolves to the AGENT self-peer instead of the human
+    /// operator — Joel, 2026-09-01: "the chat history is clearly attributing
+    /// shit you did to me"), never an authentication: authenticated identity
+    /// stays `ctx.caller` (the airc gate).
+    #[serde(rename = "actorKind", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub actor_kind: Option<String>,
+
+    #[serde(rename = "contextId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
+    pub context_id: Option<Uuid>,
+    /// The wire's request counter (the IPC framing's `requestId`, an integer). Typed
+    /// here so the ENVELOPE consumes it and a command's own `requestId: String` never
+    /// sees an integer (measured 2026-09-06: the airc hop refused every well-formed
+    /// peer-addressed generate with "invalid type: integer `1`, expected a string").
+    ///
+    /// AND THE INVERSE (measured 2026-09-17, the first hour cross-grid inference was
+    /// addressable at all): a command's own `requestId: String` — `TextGenerationRequest`
+    /// stamps a uuid on every persona turn — lands on the RESPONDER in this same flat
+    /// namespace, and an `Option<u64>` refused it: "invalid type: string
+    /// `05acabe7-…`, expected u64", five of six remote turns dead on arrival, 0 ms.
+    /// Two ids share one key. The counter is the framing's (an integer); anything
+    /// else under the key is the command's, and the envelope has no counter on that
+    /// hop. The command's id does not survive the wire — it is per-hop correlation
+    /// and the responder stamps its own — which is the price of the flat namespace,
+    /// paid here once rather than by every command that carries a `requestId`.
+    #[serde(
+        rename = "requestId",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "wire_request_counter"
+    )]
+    #[ts(optional, type = "number")]
+    pub request_id: Option<u64>,
+}
+
+/// The framing's integer counter, or nothing: a string under `requestId` is a
+/// command's own id sharing the key (see `CommandRequest::request_id`).
+fn wire_request_counter<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(d)?;
+    Ok(match raw {
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => None,
+    })
+}
+
+/// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
+///
+/// Every caller — persona, CLI, SDK — sends a params object, and the single most common
+/// failure is a NAME mismatch, not a missing intent: `command` for `cmd`, `path` for
+/// `file_path`. serde reports only what it WANTED, so the message reads as "you forgot
+/// something" when the truth is "you called it something else, and here is the something".
+/// Measured on myself: two different commands, two mismatches, inside two minutes — a model
+/// reaching for the industry-standard name hits this constantly and has nothing to correct
+/// toward.
+///
+/// One seam, every command: this is the only place a params object is decoded.
+///
+/// Naming what was SENT is the fix. The near-miss suggestion is a bonus and is deliberately
+/// conservative — when nothing is close, listing the sent keys is still strictly better than
+/// naming the wanted one alone.
+fn param_mismatch_message(serde_error: &str, sent: &[String]) -> String {
+    let base = format!("CommandRequest deserialization failed: {serde_error}");
+    // serde renders this as: missing field `cmd`
+    let Some(wanted) = serde_error
+        .split_once("missing field `")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(name, _)| name)
+    else {
+        return base;
+    };
+    // Params the caller controls — the envelope's own fields are not the mismatch.
+    let candidates: Vec<&String> = sent
+        .iter()
+        // Envelope + transport fields are the kernel's, never her params — parading them back
+        // as "you sent" points at things she never typed.
+        //
+        // `command` is deliberately NOT filtered even though the CLI adds it: for `code/shell`
+        // it is the single likeliest mis-name (`command` for `cmd`), and suppressing it would
+        // break the exact case this function exists for. A little CLI noise beats losing the
+        // real diagnosis — caught by this function's own test.
+        .filter(|k| !is_envelope_field(k.as_str()))
+        .collect();
+    if candidates.is_empty() {
+        return format!(
+            "{base}. You sent no parameters at all — this command requires `{wanted}`."
+        );
+    }
+    let sent_list = candidates
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if let Some(near) = closest_param(wanted, &candidates) {
+        return format!(
+            "{base}. You sent {sent_list} — this command calls that parameter `{wanted}`, not `{near}`. Re-send with `{wanted}`."
+        );
+    }
+    format!("{base}. You sent {sent_list}, but this command requires `{wanted}`.")
+}
+
+/// The sent key most plausibly MEANT as `wanted`.
+///
+/// Two kinships, because the real pairs come in two shapes and the obvious check only catches
+/// one — my first version used substring alone and its own test caught that `cmd` is NOT a
+/// substring of `command` (the letters are not contiguous), i.e. it failed on the exact case
+/// that motivated it:
+///
+/// - QUALIFIER: `path` ⊂ `file_path` — substring.
+/// - ABBREVIATION: `cmd` ⊆ `command` — subsequence, the letters in order.
+///
+/// Both stay tight enough to refuse unrelated names: `cmd` is not a subsequence of `colour`
+/// (no `m`), and a wrong "you meant X" would send her to rename the wrong field, which is
+/// worse than a plain listing.
+fn closest_param<'a>(wanted: &str, sent: &[&'a String]) -> Option<&'a str> {
+    let w = wanted.to_lowercase();
+    sent.iter()
+        .find(|k| {
+            let k = k.to_lowercase();
+            k.contains(&w) || w.contains(&k) || is_subsequence(&k, &w) || is_subsequence(&w, &k)
+        })
+        .map(|k| k.as_str())
+}
+
+/// Is `short` an in-order subsequence of `long` — the abbreviation relation? Requires at least
+/// 3 characters so a 1-2 letter param never matches half the alphabet.
+fn is_subsequence(short: &str, long: &str) -> bool {
+    if short.len() < 3 || short.len() >= long.len() {
+        return false;
+    }
+    let mut chars = long.chars();
+    short.chars().all(|c| chars.any(|l| l == c))
+}
+
+/// The base fields every wire request may carry beside its command params.
+///
+/// `actorKind` belongs here for the same reason as the rest, and its absence cost two
+/// citizens a retry loop on 2026-09-05: they sent NO parameters, so `candidates` in
+/// `param_mismatch_message` should have been empty and the dedicated "you sent no
+/// parameters at all" branch should have fired. Instead actorKind made it non-empty and
+/// they were told to fix a field the KERNEL had added for them — unremovable, so the
+/// identical call was resent and the identical message came back. Observed six-plus times
+/// in minutes, including a repeat the substrate had to collapse as near-identical.
+///
+/// The list is load-bearing beyond that message: anything naming a kernel field back to a
+/// caller as something she "sent" points her at something she never typed. One place.
+pub fn is_envelope_field(key: &str) -> bool {
+    matches!(
+        key,
+        "handle" | "sessionId" | "userId" | "actorKind" | "contextId" | "requestId"
+    )
 }
 
 impl<P> CommandRequest<P>
@@ -156,8 +344,13 @@ where
     /// `ServiceModule::handle_command` error type so handlers can `?`
     /// the result directly.
     pub fn from_value(value: Value) -> Result<Self, String> {
-        serde_json::from_value(value)
-            .map_err(|e| format!("CommandRequest deserialization failed: {e}"))
+        // Keep what the caller actually sent — serde's error names only what it WANTED, and
+        // the gap between those two is the whole diagnosis.
+        let sent: Vec<String> = value
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        serde_json::from_value(value).map_err(|e| param_mismatch_message(&e.to_string(), &sent))
     }
 }
 
@@ -172,6 +365,9 @@ impl<P> CommandRequest<P> {
             handle: None,
             session_id: None,
             user_id: None,
+            context_id: None,
+            request_id: None,
+            actor_kind: None,
         }
     }
 
@@ -187,6 +383,13 @@ impl<P> CommandRequest<P> {
 
     pub fn with_user(mut self, user_id: Uuid) -> Self {
         self.user_id = Some(user_id);
+        self
+    }
+
+    /// Scope this request to a conversation/room (the third ID tier). The SDK's
+    /// scoped client stamps it; handlers read it for per-context state.
+    pub fn with_context(mut self, context_id: Uuid) -> Self {
+        self.context_id = Some(context_id);
         self
     }
 
@@ -298,7 +501,20 @@ impl<P> CommandRequest<P> {
 /// via [`CommandResponse::into_command_result`]: serialize-flatten +
 /// wrap as `CommandResult::Json`. One method call to bridge the typed
 /// envelope into the existing kernel surface.
-#[derive(Debug, Clone, Serialize)]
+///
+/// # ts-rs / SDK
+///
+/// The single source of the generated TS result-envelope generic: exports
+/// to `protocol/typescript/runtime/CommandResponse.ts` as
+/// `export type CommandResponse<T> = T & { success, handle?, error? }`. An
+/// `Executed` command's generated `CommandMap` entry wraps its result `T`
+/// in this generic, so a caller always sees the cross-cutting
+/// success/error/handle alongside the command-specific payload.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/CommandResponse.ts"
+)]
 pub struct CommandResponse<T> {
     /// Operation succeeded. Default `true`; flipped by
     /// [`CommandResponse::err`].
@@ -307,15 +523,18 @@ pub struct CommandResponse<T> {
     /// Command-specific result payload, flattened into the wire JSON
     /// alongside the envelope fields.
     #[serde(flatten)]
+    #[ts(flatten)]
     pub data: T,
 
     /// Handle minted by this command for the caller to use in follow-up
     /// calls — the long-running session pattern.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub handle: Option<HandleRef>,
 
     /// Operation-level error message. Set when `success == false`.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 
@@ -387,7 +606,7 @@ mod tests {
 
     // ── CommandRequest<P> ────────────────────────────────────────────
 
-    #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
     struct StartParams {
         model: String,
         max_tokens: u32,
@@ -401,7 +620,10 @@ mod tests {
         assert_eq!(req.params.model, "qwen");
         assert_eq!(req.params.max_tokens, 512);
         assert!(
-            req.handle.is_none() && req.session_id.is_none() && req.user_id.is_none(),
+            req.handle.is_none()
+                && req.session_id.is_none()
+                && req.user_id.is_none()
+                && req.context_id.is_none(),
             "envelope fields default to None when absent in the wire JSON"
         );
     }
@@ -427,7 +649,25 @@ mod tests {
         assert_eq!(req.params.model, "qwen");
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
-        assert_eq!(req.handle.unwrap().id, handle_id);
+        assert_eq!(req.handle.unwrap().id.as_uuid(), handle_id);
+    }
+
+    // what this catches (2026-09-17): a command whose params carry their OWN
+    // `requestId: String` (every persona turn's TextGenerationRequest) must parse on
+    // the responder — the envelope's integer counter and the command's uuid share one
+    // flat key, and refusing the string killed five of six remote turns the hour
+    // cross-grid inference first became addressable. The integer still lands in the
+    // envelope; the string is the command's and the envelope reads no counter.
+    #[test]
+    fn a_commands_own_string_request_id_does_not_break_the_envelope() {
+        let value = json!({ "model": "qwen", "max_tokens": 8, "requestId": "05acabe7-80ef-43ba-b954-9dd43784e037" });
+        let req = CommandRequest::<StartParams>::from_value(value)
+            .expect("a string requestId is the command's, not a type error"); // JUSTIFIED: the invariant under test
+        assert_eq!(req.request_id, None, "the envelope has no counter on this hop");
+        assert_eq!(req.params.model, "qwen");
+        let value = json!({ "model": "qwen", "max_tokens": 8, "requestId": 7 });
+        let req = CommandRequest::<StartParams>::from_value(value).expect("an integer is the counter"); // JUSTIFIED: the invariant under test
+        assert_eq!(req.request_id, Some(7));
     }
 
     #[test]
@@ -440,6 +680,129 @@ mod tests {
         assert!(
             err.contains("CommandRequest deserialization failed"),
             "error must name the envelope so the caller knows which layer failed: {err}"
+        );
+    }
+
+    // what this catches: the most common tool-use failure there is — a NAME mismatch, reported
+    // one-sidedly. serde says "missing field `cmd`" and never mentions that the caller sent
+    // `command`, so the message reads as "you forgot something" when the truth is "you called
+    // it something else". Measured on myself: two commands, two mismatches, two minutes. ONE
+    // seam fixes every command, because this is the only place a params object is decoded.
+    #[test]
+    fn a_param_name_mismatch_names_what_was_sent_not_just_what_was_wanted() {
+        let msg = param_mismatch_message(
+            "missing field `cmd`",
+            &["command".to_string(), "timeout".to_string()],
+        );
+        assert!(
+            msg.contains("You sent `command`"),
+            "must name what she sent: {msg}"
+        );
+        assert!(
+            msg.contains("calls that parameter `cmd`, not `command`"),
+            "must state the correspondence, not just the wanted name: {msg}"
+        );
+
+        // Envelope fields are the kernel's, never the caller's mistake — they must not be
+        // paraded back as if she had mis-named something.
+        let msg = param_mismatch_message(
+            "missing field `file_path`",
+            &[
+                "path".to_string(),
+                "sessionId".to_string(),
+                "userId".to_string(),
+            ],
+        );
+        assert!(msg.contains("`path`"), "the real candidate survives: {msg}");
+        assert!(
+            !msg.contains("sessionId"),
+            "envelope fields are not param candidates: {msg}"
+        );
+    }
+
+    // what this catches: a NEW envelope field being added to `CommandRequest` without being
+    // added to the filter — the exact way `actorKind` got missed. The sibling assertion above
+    // spot-checks two fields; this one pins the WHOLE set, so the next field someone adds has
+    // to be considered here or this fails.
+    //
+    // The cost when it was missed, measured 2026-09-05: both IntelMac personas sent NO
+    // parameters. With actorKind filtered, `candidates` is empty and the dedicated
+    // "you sent no parameters at all" branch fires — true and actionable. Instead actorKind
+    // made it non-empty, that branch was skipped, and they were told to fix a field the
+    // KERNEL had added. Unremovable, so they resent the identical call and got the identical
+    // message. Six-plus times across two citizens in minutes.
+    #[test]
+    fn every_envelope_field_is_filtered_from_the_you_sent_list() {
+        // Every wire name on `CommandRequest` that is NOT the caller's params.
+        const ENVELOPE_FIELDS: &[&str] = &[
+            "handle",
+            "sessionId",
+            "userId",
+            "actorKind",
+            "contextId",
+            "requestId",
+        ];
+        let sent: Vec<String> = ENVELOPE_FIELDS.iter().map(|f| f.to_string()).collect();
+        let msg = param_mismatch_message("missing field `cmd`", &sent);
+        assert!(
+            msg.contains("no parameters at all"),
+            "a call carrying ONLY envelope fields sent no parameters — it must say so, not \
+             name a field the kernel added: {msg}"
+        );
+        for field in ENVELOPE_FIELDS {
+            assert!(
+                !msg.contains(field),
+                "`{field}` is an envelope field and must never appear in the you-sent list: {msg}"
+            );
+        }
+    }
+
+    // what this catches: over-filtering. `command` is DELIBERATELY not filtered even though
+    // the CLI adds it — for `code/shell` it is the single likeliest mis-name for `cmd`, and
+    // suppressing it would break the case this function exists for. Pinned so a future tidy-up
+    // of the filter list cannot quietly take it.
+    #[test]
+    fn command_stays_a_candidate_because_it_is_the_likeliest_misname() {
+        let msg = param_mismatch_message(
+            "missing field `cmd`",
+            &["command".to_string(), "actorKind".to_string()],
+        );
+        assert!(
+            msg.contains("`cmd`") && msg.contains("`command`"),
+            "the real mis-name must still be named on both sides: {msg}"
+        );
+        assert!(
+            !msg.contains("actorKind"),
+            "...while the envelope field alongside it stays filtered: {msg}"
+        );
+    }
+
+    // what this catches: a confident WRONG rename is worse than none — it sends her to change
+    // the wrong field. Unrelated names must degrade to a plain listing, and no params at all
+    // must say so plainly rather than implying a rename.
+    #[test]
+    fn an_unrelated_param_gets_a_listing_never_an_invented_rename() {
+        let msg = param_mismatch_message("missing field `cmd`", &["colour".to_string()]);
+        assert!(
+            !msg.contains("not `colour`"),
+            "must not invent a correspondence between unrelated names: {msg}"
+        );
+        assert!(
+            msg.contains("You sent `colour`") && msg.contains("requires `cmd`"),
+            "but must still show both sides: {msg}"
+        );
+
+        let msg = param_mismatch_message("missing field `cmd`", &[]);
+        assert!(
+            msg.contains("no parameters at all"),
+            "an empty call deserves its own sentence: {msg}"
+        );
+
+        // A non-missing-field error is passed through untouched.
+        let msg = param_mismatch_message("invalid type: string, expected u32", &["n".to_string()]);
+        assert!(
+            msg.ends_with("expected u32"),
+            "unrelated errors are not rewritten: {msg}"
         );
     }
 
@@ -460,9 +823,38 @@ mod tests {
         assert_eq!(req.user_id, Some(user_id));
     }
 
+    // what this catches: the THIRD ID tier (contextId) parses from the flat wire
+    // envelope as a sibling of sessionId/userId, and the builder attaches it.
+    // contextId is CLIENT-supplied (the SDK's scoped client stamps it), so unlike
+    // session/user it must survive a round-trip from the caller's JSON. A drift
+    // that drops it would silently un-scope every per-context handler (per-room
+    // memory, per-thread recall, a persona's tool_context).
+    #[test]
+    fn request_parses_and_builds_context_id_third_tier() {
+        let context_id = Uuid::new_v4();
+        // From flat wire JSON (the caller stamped contextId alongside params).
+        let value = json!({
+            "model": "qwen",
+            "max_tokens": 256,
+            "contextId": context_id.to_string(),
+        });
+        let req = CommandRequest::<StartParams>::from_value(value).expect("parse must succeed");
+        assert_eq!(req.context_id, Some(context_id));
+        // Round-trips back out under the camelCase wire key.
+        let back = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(back["contextId"], json!(context_id.to_string()));
+        // And the builder attaches it.
+        let built = CommandRequest::new(StartParams {
+            model: "q".into(),
+            max_tokens: 1,
+        })
+        .with_context(context_id);
+        assert_eq!(built.context_id, Some(context_id));
+    }
+
     // ── CommandResponse<T> ───────────────────────────────────────────
 
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
     struct StartData {
         first_token: String,
         tokens_emitted: u32,
@@ -520,7 +912,9 @@ mod tests {
             tokens_emitted: 1,
         })
         .with_handle("ai/inference", Uuid::new_v4(), "ai::InferenceSession");
-        let cr = resp.into_command_result().expect("materialize must succeed");
+        let cr = resp
+            .into_command_result()
+            .expect("materialize must succeed");
         match cr {
             CommandResult::Json(v) => {
                 assert_eq!(v["success"], true);
@@ -553,7 +947,7 @@ mod tests {
         // Caller takes the result, builds a new request envelope using
         // the returned handle (+ their own session/user). The new
         // request's params type is a "poll" shape.
-        #[derive(Debug, Clone, Deserialize, Serialize)]
+        #[derive(Debug, Clone, Deserialize, Serialize, TS)]
         struct PollParams {
             max_tokens: u32,
         }
@@ -568,7 +962,7 @@ mod tests {
         assert_eq!(req.params.max_tokens, 64);
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
-        assert_eq!(req.handle.unwrap().id, handle_id);
+        assert_eq!(req.handle.unwrap().id.as_uuid(), handle_id);
     }
 
     // ── CommandRequest::handle_id_or_legacy ─────────────────────────
@@ -580,7 +974,7 @@ mod tests {
     // discovered is pinned by a test here so the substrate
     // guarantees them centrally.
 
-    #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+    #[derive(Debug, Clone, Default, Deserialize, Serialize, TS)]
     #[serde(rename_all = "camelCase")]
     struct CursorParams {
         #[serde(default)]
@@ -666,10 +1060,8 @@ mod tests {
         // this resolver, the error must name BOTH the failing command
         // (so the caller knows which surface) AND the
         // HandleRef-level mismatch (so the caller knows what to fix).
-        let req = CommandRequest::new(CursorParams::default()).with_handle(HandleRef::mint(
-            "chat",
-            "chat::MessageHandle",
-        ));
+        let req = CommandRequest::new(CursorParams::default())
+            .with_handle(HandleRef::mint("chat", "chat::MessageHandle"));
 
         let err = req
             .handle_id_or_legacy(
@@ -708,8 +1100,14 @@ mod tests {
                 "data/query-close",
             )
             .expect_err("wrong-type handle must Err");
-        assert!(err.starts_with("data/query-close:"), "command prefix: {err}");
-        assert!(err.contains("type mismatch"), "type mismatch propagates: {err}");
+        assert!(
+            err.starts_with("data/query-close:"),
+            "command prefix: {err}"
+        );
+        assert!(
+            err.contains("type mismatch"),
+            "type mismatch propagates: {err}"
+        );
         assert!(
             err.contains("data::Migration") && err.contains("data::QueryCursor"),
             "both offender and expected named: {err}"

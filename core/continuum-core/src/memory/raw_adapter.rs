@@ -36,6 +36,10 @@ impl ConsolidationAdapter for RawMemoryAdapter {
                 id: Uuid::new_v4(),
                 persona_id: context.persona_id,
                 session_id: context.session_id,
+                // Carry the thought's room forward as the memory's context — so
+                // recall can find it by room after a reconnect. 1:1 here, so each
+                // memory keeps its own thought's context_id.
+                context_id: t.context_id,
                 memory_type: MemoryType::from_thought_type(&t.thought_type),
                 content: t.content.clone(),
                 importance: t.importance,

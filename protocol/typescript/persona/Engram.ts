@@ -24,6 +24,16 @@ export type Engram = {
  */
 id: string, 
 /**
+ * The room/conversation this memory belongs to — the contextId, the
+ * third ID tier (see docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md
+ * Part A). A persona's engram store IS its identity's memory; within that one
+ * identity, memory is sub-keyed by context (room) so recall can scope to a
+ * conversation. Indexed: per-room recall is a common filter. `None` for
+ * engrams with no room (self-reflection, contextless admissions). NEVER a
+ * session id — context is durable, session is ephemeral.
+ */
+contextId?: string, 
+/**
  * Engram category — episodic vs semantic vs procedural vs meta.
  * Indexed: recall by kind ("show me all Episodic engrams") is a
  * common filter.

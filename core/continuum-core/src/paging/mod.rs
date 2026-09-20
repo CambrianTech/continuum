@@ -17,6 +17,7 @@
 
 pub mod broker;
 pub mod filesystem_tier_pool;
+pub mod lease_revocation;
 pub mod pool;
 
 pub use broker::{

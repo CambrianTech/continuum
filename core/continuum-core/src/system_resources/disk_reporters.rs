@@ -1,0 +1,646 @@
+//! Concrete `DiskReporter`s for the substrate's known disk-cache classes.
+//!
+//! The 2026-07-13 incident: `DiskPressureMonitor` ran at `level=high` for
+//! days logging `[no reporters]` while the shared cargo-target cache grew
+//! to 363 GB and three persona workspaces copied 23 GB each — 460 GB of
+//! creep the monitor could see (root-fs pressure) but could not NAME
+//! (empty per-path breakdown), so nothing and no one knew where to sweep.
+//! `main.rs` started the monitor with `Vec::new()` reporters from day one.
+//!
+//! This module closes wire (1) of task #155: one reporter per cache class,
+//! all fed by ONE background scanner. The `DiskReporter::report` contract
+//! is a 100 ms budget on the blocking pool — far too tight to walk a
+//! 300 GB tree — so reporters read a cached `AtomicU64` and the walking
+//! happens on [`DiskUsageScanner`], a canonical [`Daemon`] ticking every
+//! 5 minutes (disk grows slowly; the cadence ladder says lean slower) — and
+//! each tree is re-walked no sooner than 20× what its last walk cost
+//! ([`next_scan_delay`]), so a million-entry tree cannot own a core.
+//! One scanner for all paths, not a task per reporter — one concurrent
+//! concern, one task (CONCURRENCY-STYLE-GUIDE: no parallel managers).
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+
+use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
+
+use super::disk_pressure::{DiskPathReport, DiskReporter};
+
+/// One tracked cache-class directory: identity + cached recursive size.
+/// The reporter half reads `bytes` lock-free; the scanner half refreshes it.
+pub struct TrackedDir {
+    name: &'static str,
+    path: PathBuf,
+    bytes: AtomicU64,
+    /// Whether the scanner has completed at least one walk — before that,
+    /// the reporter labels the value as pending instead of claiming "0 B"
+    /// (an honest void, never a false zero).
+    scanned: std::sync::atomic::AtomicBool,
+    /// What the last walk COST — entries visited and wall time — so the number
+    /// carries its price and the scanner can pace itself by it (see
+    /// [`next_scan_delay`]). 0 entries / 0 ms = set directly, never walked.
+    entries: AtomicU64,
+    walk_ms: AtomicU64,
+    /// Scanner-clock ms (monotonic, from the scanner's own start) before which
+    /// this dir is NOT walked again. 0 = due now.
+    next_due_ms: AtomicU64,
+}
+
+impl TrackedDir {
+    pub fn new(name: &'static str, path: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            path,
+            bytes: AtomicU64::new(0),
+            scanned: std::sync::atomic::AtomicBool::new(false),
+            entries: AtomicU64::new(0),
+            walk_ms: AtomicU64::new(0),
+            next_due_ms: AtomicU64::new(0),
+        })
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// The cache CLASS this directory is. Public because a pool's identity must be
+    /// derived from it rather than hardcoded: two `CargoTargetPool`s both answering
+    /// `"disk-cargo-target"` meant `PressureBroker::register` (dedup-by-name)
+    /// silently REPLACED the first with the second, leaving the shared cache
+    /// ungoverned while two boot lines claimed otherwise.
+    pub fn class(&self) -> &'static str {
+        self.name
+    }
+
+    /// The cache-class name. `path` and `bytes` already had accessors;
+    /// this one was missing, so a pool built over the class had to
+    /// re-declare its own name and could drift from the reporter's.
+    /// One measurement, two consumers — one name too.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Cached recursive size — lock-free. Shared view for the reporter
+    /// AND any eviction pool built over the same class (one measurement,
+    /// two consumers — never two walkers disagreeing about one dir).
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    /// The scanner's write seam (also the test seam for pools built on
+    /// this measurement). Marks the dir scanned — a set value is a real
+    /// value, never "pending".
+    pub(crate) fn set_bytes(&self, bytes: u64) {
+        self.bytes.store(bytes, Ordering::Relaxed);
+        self.scanned.store(true, Ordering::Relaxed);
+    }
+
+    /// The scanner's write seam proper: the walk's yield AND its cost. The cost
+    /// sets when this dir is walked again — [`next_scan_delay`] — so a tree
+    /// that takes 90 s to measure is measured every 30 min, not every 5.
+    pub(crate) fn record_walk(&self, walk: TreeWalk, took: Duration, now_ms: u64) {
+        self.set_bytes(walk.bytes);
+        self.entries.store(walk.entries, Ordering::Relaxed);
+        self.walk_ms.store(took.as_millis() as u64, Ordering::Relaxed);
+        self.next_due_ms
+            .store(now_ms.saturating_add(next_scan_delay(took).as_millis() as u64), Ordering::Relaxed);
+    }
+
+    /// Is this dir due for a walk on the scanner's clock? Always true before the
+    /// first walk.
+    pub(crate) fn due(&self, now_ms: u64) -> bool {
+        now_ms >= self.next_due_ms.load(Ordering::Relaxed)
+    }
+
+    /// The last walk's cost as (entries visited, wall time); `None` when the
+    /// value was set directly (tests, eviction write-through) and never walked.
+    pub fn walk_cost(&self) -> Option<(u64, Duration)> {
+        let ms = self.walk_ms.load(Ordering::Relaxed);
+        (ms > 0).then(|| (self.entries.load(Ordering::Relaxed), Duration::from_millis(ms)))
+    }
+
+    /// Subtract freed bytes immediately after an eviction so pressure
+    /// reflects the delete now, not at the scanner's next 5-min walk
+    /// (the broker ticks every 5 s — a stale size would re-fire eviction
+    /// against space already freed).
+    pub fn record_freed(&self, freed: u64) {
+        let _ = self
+            .bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                Some(cur.saturating_sub(freed))
+            });
+    }
+}
+
+/// Process-wide registry of the tracked cache classes, set ONCE at boot by
+/// [`install_tracked_dirs`]. Exists so later boot phases (the IPC thread's
+/// broker block registering eviction pools) can reach the SAME TrackedDir
+/// instances the reporters use without threading a param through every
+/// server-start signature. Same singleton pattern as the rest of the boot
+/// sequence's shared services.
+static TRACKED_DIRS: std::sync::OnceLock<Vec<Arc<TrackedDir>>> = std::sync::OnceLock::new();
+
+/// Install the boot-time tracked-dir set. Second call is a boot-sequence
+/// bug — fail loud, never silently keep two measurement sets.
+pub fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) {
+    if TRACKED_DIRS.set(dirs).is_err() {
+        panic!("install_tracked_dirs called twice — one measurement registry per process");
+    }
+}
+
+/// Fetch a tracked cache class by name, e.g. `"cargo-target"`. `None`
+/// before boot installs the registry (tests, tools) — callers treat that
+/// as "class not under management," never a default path guess.
+pub fn tracked_dir(name: &str) -> Option<Arc<TrackedDir>> {
+    TRACKED_DIRS.get()?.iter().find(|d| d.name == name).cloned()
+}
+
+impl DiskReporter for TrackedDir {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn report(&self) -> DiskPathReport {
+        let scanned = self.scanned.load(Ordering::Relaxed);
+        DiskPathReport {
+            name: self.name.to_string(),
+            path: self.path.clone(),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            detail: match (scanned, self.walk_cost()) {
+                (false, _) => "first scan pending".to_string(),
+                (true, None) => "cached recursive size (set directly, not walked)".to_string(),
+                (true, Some((entries, took))) => format!(
+                    "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
+                    took.as_secs_f64(),
+                    entries,
+                    next_scan_delay(took).as_secs()
+                ),
+            },
+        }
+    }
+}
+
+/// The substrate's known cache classes, rooted under `home` (normally the
+/// user's home directory). These are exactly the directories that produced
+/// the 2026-07-13 creep, each of which needs an eviction owner (wire 2):
+///
+/// | class | grows by | owner (planned) |
+/// |---|---|---|
+/// | cargo-target | every cargo build/test | age-based sweeper |
+/// | genome-models | model downloads/forges | model-store LRU |
+/// | hf-hub | HF downloads | hub LRU |
+/// | citizens | persona workspaces/stores | WorkspaceResolver CoW fix |
+/// | forge | export intermediates | export trimmer |
+///
+/// Paths that the operator can RELOCATE are resolved through the same authority the rest of the
+/// substrate uses, never re-derived from `home`. A tracked dir that points somewhere the artifacts
+/// are not is worse than no tracking at all: the scanner reports a reassuring 0 bytes, the class
+/// looks governed, and the real bytes accumulate unwatched and unowned by any eviction pool —
+/// which is precisely the 2026-07-13 shape this registry exists to prevent, one level up.
+///
+/// MEASURED on BigMama 2026-08-05: `hf-hub` tracked `~/.cache/huggingface` (0 bytes) while the
+/// cold-storage installer had pointed `HF_HOME` at `D:\continuum-cold\huggingface` holding
+/// **2.48 TB** — Kimi-K3 at 1.45 TB, Kimi-K2.7 at 430 GB, GLM-5.2 at 375 GB. Entirely invisible to
+/// the disk governor.
+pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
+    // The HF cache is relocatable (HF_HOME / config.env, set by the cold-storage installer), so ask
+    // the resolver instead of assuming the default. `huggingface_cache_root()` returns `<root>/hub`;
+    // track the PARENT so the class covers the whole cache (blobs, snapshots, locks, refs), which is
+    // what actually consumes the volume.
+    // NOT `.unwrap_or_else(|| home.join(".cache/huggingface"))`. That fallback is a FABRICATION in
+    // the sense swallow-audit.py means: it substitutes a plausible path for an unknown one, and the
+    // scanner then reports a confident 0 bytes for a class whose real bytes are elsewhere. That is
+    // the exact defect this function was changed to fix — 2.48 TB invisible because the tracked path
+    // was not the real one — so silently re-introducing it as the failure branch would be the same
+    // bug wearing a fallback's clothes.
+    //
+    // If the resolver cannot answer, the honest outcome is to say so and NOT claim the class is
+    // tracked. A missing hf-hub row is visibly missing; a wrong one looks governed.
+    let hf_root = match crate::model_registry::artifacts::huggingface_cache_root()
+        .and_then(|hub| hub.parent().map(|p| p.to_path_buf()))
+    {
+        Some(root) => Some(root),
+        None => {
+            tracing::warn!(
+                probe_class = "disk.tracked_dirs",
+                "hf-hub cache root could not be resolved (no HF_HOME, no config.env entry, no home \
+                 dir) — the hf-hub class is NOT being tracked this boot. Not defaulting to \
+                 ~/.cache/huggingface: a tracked dir pointing at the wrong place reports a \
+                 reassuring zero and is worse than an absent one."
+            );
+            None
+        }
+    };
+
+    let mut dirs = vec![
+        TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
+        // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
+        // system is supposed to manage disk; you've been defying design principles so it
+        // can't"). Worktree builds must not write into the shared target — a worktree
+        // build once latched its CARGO_MANIFEST_DIR into it and broke the main checkout
+        // (card d2cda466) — so every agent building in a worktree exports
+        // CARGO_TARGET_DIR=cargo-target-wt. That directory reached 87 GB unseen, because
+        // it was never registered: the 2026-07-13 law says a new directory the substrate
+        // writes unbounded data into gets a TrackedDir row and an eviction decision, and
+        // hand-sweeping it is exactly the compensation the law exists to end.
+        TrackedDir::new("cargo-target-wt", home.join(".continuum/cache/cargo-target-wt")),
+        // The eye's browser profiles. Playwright defaults them into the OS temp dir,
+        // where nothing of ours can see or evict them: 337 leaked profiles from 31
+        // orphaned browsers accumulated there over a week (card de9b8876). A directory
+        // under our own cache root is one the monitor can weigh and the reaper can clear.
+        TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
+        // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
+        // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
+        // 91, Qwen3.8-27B 20, Ornith 20) and invisible to both halves of the governed-disk
+        // contract while the disk went from 46 GB free to ZERO under a test build. 186 GB of
+        // it was weights on NO serving path (two concluded experiments), which is exactly the
+        // sub-class an owner evicts: not in the catalog, not the active or pinned model.
+        TrackedDir::new("models", home.join(".continuum/models")),
+        TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
+        TrackedDir::new("citizens", home.join(".continuum/citizens")),
+        // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
+        // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
+        // disk contract — no size report, and the eviction guard could not flag a missing
+        // decision because that guard iterates THIS list. Exactly the silent-class shape the
+        // 2026-07-13 incident was about, found at 295 dirs / 18 MB with 286 of them under
+        // 100 KB — spawn ghosts (#437), not minds.
+        TrackedDir::new("personas", home.join(".continuum/personas")),
+        TrackedDir::new("forge", home.join(".continuum/forge")),
+        // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
+        // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
+        // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
+        // cache class rather than data.
+        TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        // THE LARGEST THING ON THE 5090'S SYSTEM VOLUME WAS INVISIBLE (2026-09-18, the
+        // day it hit 0 bytes free): the Kimi K3 expert-bank container, 760 GB, plus
+        // 25 GB of MoE probe runs — both written under the home by the K3 pager work
+        // and registered nowhere, so the daemon weighed 200 GB of caches on a 1.9 TB
+        // volume that was 1.8 TB used and could not say where the rest went. Same law
+        // as every row above: a directory the substrate writes unbounded data into gets
+        // a row and an eviction decision (deferred, named, in `disk_eviction.rs`).
+        TrackedDir::new("k3-container", home.join(".continuum/kimi-k3-container")),
+        TrackedDir::new("moe-probe", home.join(".continuum/moe-probe")),
+        // The substrate's OWN rotation-generation dirs. Registered
+        // 2026-08-06 — they had been the two directories continuum
+        // writes to most continuously and the only ones the disk
+        // monitor could not see, because the writer
+        // (`routing::capped_appender`) bounded itself with a private
+        // constant and nobody treated that as a governed class. A
+        // writer that caps itself is not governance: the broker can't
+        // claw bytes back under real disk pressure, and a
+        // still-unbounded writer (the probe sink booted through
+        // `tracing_init` was exactly that until today) accumulates
+        // invisibly. Owner: `RotationLogPool` — see
+        // `super::rotation_log_pool`.
+        // airc's transcript-projection snapshots for the OPERATOR scope (each persona's ride
+        // inside her airc home under `citizens`): the work board's (shipped untracked, card
+        // 1291173d) and the wall's (airc#1390, 2026-09-06). One JSON per room; the wall one
+        // holds every post on the room, the board one the folded projection. Registered on
+        // the pin bump that adopted the wall cache, on the reviewer's point that a cache
+        // growing with room depth on 200k–470k-event rooms is exactly the class the
+        // 2026-07-13 rule exists to catch before it is the incident.
+        TrackedDir::new("airc-board-cache", home.join(".airc/work-board-cache")),
+        TrackedDir::new("airc-wall-cache", home.join(".airc/wall-cache")),
+        TrackedDir::new("logs", home.join(".continuum/logs")),
+        TrackedDir::new("probes", home.join(".continuum/probes")),
+        // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
+        // (~31 GB logical each). RAII drop removes them on every in-process return
+        // path, and the provision-time orphan sweep (`cognition/eval.rs::
+        // sweep_orphan_eval_roots`) owns the crash path a SIGTERM'd reboot leaves
+        // behind — registered 2026-08-23 after exactly that: a mid-run reboot
+        // orphaned a full clone that no reporter could see, the silent-class shape
+        // the 2026-07-13 incident was about.
+        TrackedDir::new("eval-roots", std::env::temp_dir().join("continuum-eval")),
+        // Diagnostic captures: cognition kv-diag snapshots + the wire-request
+        // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
+        // bounded by operator attention in practice — tracked so "in practice"
+        // never becomes the 2026-07-13 silent-class shape.
+        TrackedDir::new("eval-captures", home.join(".continuum/eval-captures")),
+        // KV disk pages (restore economy): one file per activity, overwritten on
+        // each save, under a GEOMETRY-KEYED subdir per serve (model + per-slot
+        // ctx). Bounded by residents × rooms per geometry; stale geometry
+        // generations are swept at lane spawn
+        // (`inference::llama_server::sweep_stale_page_generations` — the owner
+        // of this class's eviction decision). A page at 20-40k tokens of q8_0
+        // KV is hundreds of MB, so the class is small in COUNT but real in
+        // bytes — exactly what must never be an untracked writer.
+        TrackedDir::new("kv-pages", home.join(".continuum/cache/kv-pages")),
+    ];
+    // Present only when its real location is KNOWN (see the warn above). Kept
+    // CONDITIONAL rather than defaulted: fabricating a path here is how a class
+    // gets "tracked" at a location nothing writes to, which reads as an empty
+    // cache forever.
+    if let Some(root) = hf_root {
+        dirs.push(TrackedDir::new("hf-hub", root));
+    }
+    dirs
+}
+
+/// Recursive size of `path` in bytes. Symlinks are NOT followed (a
+/// persona workspace symlinking shared models must not double-count
+/// them into its class). Unreadable entries are skipped, not fatal —
+/// a half-measured tree is still a truthful lower bound.
+pub(crate) fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    walk_tree(path).bytes
+}
+
+/// A walk's yield: the bytes under the root and every directory entry it read to
+/// learn them (files, dirs, symlinks). The entries are the walk's PRICE — one
+/// `lstat` each — and the price is what paces the next walk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TreeWalk {
+    pub bytes: u64,
+    pub entries: u64,
+}
+
+/// Recursive size of `path` with the count of entries visited. Same contract as
+/// [`dir_size_bytes`]: symlinks are counted as entries but never followed, an
+/// unreadable entry is skipped, a missing root is an empty walk.
+pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return TreeWalk::default();
+    };
+    let mut walk = TreeWalk::default();
+    for entry in entries.flatten() {
+        walk.entries = walk.entries.saturating_add(1);
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            let sub = walk_tree(&entry.path());
+            walk.bytes = walk.bytes.saturating_add(sub.bytes);
+            walk.entries = walk.entries.saturating_add(sub.entries);
+        } else {
+            walk.bytes = walk.bytes.saturating_add(meta.len());
+        }
+    }
+    walk
+}
+
+/// Scanner tick — 5 minutes, and the FLOOR between two walks of one tree.
+/// Disk-class sizes move on build/download timescales, not milliseconds.
+const SCAN_INTERVAL: Duration = Duration::from_secs(300);
+
+/// A WALK'S COST PACES THE WALK (2026-09-19, the M5): `citizens` had grown to
+/// 2.44 M entries — 755 peer workspaces, 335 staged SWE checkouts, 95 GB — and
+/// the recursive `lstat` of it took 90.7 s wall / 49 s sys, every 300 s, on a
+/// node serving two 27B lanes: a 30% duty cycle of one core in the kernel,
+/// forever, growing with every checkout (Joel: "never look up again … eats
+/// CPU like mad"). The 9/4 fix (card 7c956bb4) only moved that walk off the
+/// boot path; nothing bounded it. The bound: a tree is re-walked no sooner
+/// than [`crate::runtime::daemon::DUTY_DIVISOR`] × the time its last walk took —
+/// a walk may cost at most 1/20 of one core on average — and never sooner than
+/// [`SCAN_INTERVAL`]. The measurement stays exact (no sampling, no partial trees);
+/// only its cadence follows its price. A 2 s cargo-target walk keeps the 5 min; the
+/// 90 s citizens walk moves to 30 min, and the report says so.
+///
+/// PURE: how long after a walk that took `last_walk` the same tree is walked
+/// again — [`crate::runtime::daemon::paced_delay`] floored at [`SCAN_INTERVAL`].
+pub fn next_scan_delay(last_walk: Duration) -> Duration {
+    crate::runtime::daemon::paced_delay(SCAN_INTERVAL, last_walk)
+}
+
+/// Refreshes every [`TrackedDir`]'s cached size on its own tick, off the
+/// hot path via `spawn_blocking`. Publishes a unit snapshot (the real
+/// output is the atomics the reporters read); channel exists to satisfy
+/// the canonical daemon seam and give tests a tick-completed edge.
+pub struct DiskUsageScanner {
+    dirs: Vec<Arc<TrackedDir>>,
+    channel: DaemonChannel<u64>,
+    ticks: AtomicU64,
+    /// The scanner's own clock: `TrackedDir::next_due_ms` is ms on it. Monotonic,
+    /// so a wall-clock jump can neither skip a walk nor storm them.
+    started: Instant,
+}
+
+impl DiskUsageScanner {
+    /// Spawn on the shared daemon runner and return the handle. The
+    /// first walk happens on the first tick (immediately — the runner
+    /// ticks once at spawn), so reporters carry real numbers within
+    /// seconds of boot.
+    pub fn start(dirs: Vec<Arc<TrackedDir>>) -> Arc<Self> {
+        let scanner = Arc::new(Self {
+            dirs,
+            channel: DaemonChannel::ungated(0),
+            ticks: AtomicU64::new(0),
+            started: Instant::now(),
+        });
+        let _ = spawn_daemon(scanner.clone());
+        scanner
+    }
+}
+
+#[async_trait]
+impl Daemon for DiskUsageScanner {
+    type Snapshot = u64;
+
+    fn name(&self) -> &'static str {
+        "disk-usage-scanner"
+    }
+
+    fn cadence(&self) -> Duration {
+        SCAN_INTERVAL
+    }
+
+    fn channel(&self) -> &DaemonChannel<u64> {
+        &self.channel
+    }
+
+    async fn tick(&self) {
+        // NEVER ON THE BOOT PATH: the first walk waits for the IPC bind. On
+        // BigMama's GPU host (2026-09-04, card 7c956bb4) the recursive stat of
+        // `citizens` (97k files on a cold HDD) ran during module init, saturated
+        // the disk the registry and every module were reading, and the 300 s
+        // boot watchdog killed a working core. "first scan pending" is the
+        // honest report until then; the walk is worth nothing before the
+        // socket answers.
+        let mut ready = crate::ipc::subscribe_ready();
+        while !*ready.borrow_and_update() {
+            if ready.changed().await.is_err() {
+                return; // IPC thread gone — the process is exiting
+            }
+        }
+        for dir in &self.dirs {
+            // A tree whose last walk was expensive is not due yet: its own cost set
+            // the wait ([`next_scan_delay`]). The cached size stands meanwhile.
+            if !dir.due(self.started.elapsed().as_millis() as u64) {
+                continue;
+            }
+            let path = dir.path.clone();
+            // Walk on the blocking pool — a deep tree must never stall
+            // the async runtime the substrate's minds run on.
+            let began = Instant::now();
+            let walked = tokio::task::spawn_blocking(move || walk_tree(&path)).await;
+            let took = began.elapsed();
+            match walked {
+                Ok(walk) => {
+                    dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
+                    crate::probe!(
+                        class = "disk.scan.walk",
+                        class_name = dir.name,
+                        bytes = walk.bytes,
+                        entries = walk.entries,
+                        walk_ms = took.as_millis() as u64,
+                        next_walk_in_s = next_scan_delay(took).as_secs(),
+                        "one cache class measured — its walk's cost sets when it is measured again"
+                    );
+                }
+                // A walk that panicked measured nothing: the last value stands, never
+                // a false zero, and it is retried on the next tick.
+                Err(e) => {
+                    crate::probe!(
+                        class = "disk.scan.walk_failed",
+                        class_name = dir.name,
+                        walk_ms = took.as_millis() as u64,
+                        error = %e,
+                        "the walk did not complete — cached size kept, retried next tick"
+                    );
+                }
+            }
+            // A breath between directories so one deep tree does not own the disk.
+            tokio::task::yield_now().await;
+        }
+        let n = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
+        self.channel.publish(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the hf-hub class tracking a path the artifacts are NOT at. It hardcoded
+    // `home/.cache/huggingface` while the cold-storage installer relocates HF_HOME — measured on
+    // BigMama, the class reported 0 bytes at the default while 2.48 TB sat on the cold drive,
+    // invisible to the disk governor and owned by no eviction pool. A tracked dir pointing at the
+    // wrong place is worse than an untracked one: it reports a reassuring zero.
+    //
+    // Mutation check: reverting to `home.join(".cache/huggingface")` fails the first assert.
+    #[test]
+    fn hf_hub_class_follows_a_relocated_cache_root() {
+        let relocated = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        // Under the one crate-wide home lock (#4082): an ordinary #[test] is concurrent
+        // with the rest of libtest, and every HomeGuard writes HF_HOME. The guard pins
+        // the four home variables to `home`; the relocated HF_HOME override sits on top
+        // and the guard's drop restores everything.
+        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        std::env::set_var("HF_HOME", relocated.path());
+
+        let dirs = standard_tracked_dirs(home.path());
+        let hf = dirs
+            .iter()
+            .find(|d| d.name == "hf-hub")
+            .expect("hf-hub class must exist");
+        assert_eq!(
+            hf.path(),
+            relocated.path(),
+            "hf-hub must track the RELOCATED cache root, not the default under home"
+        );
+        assert!(
+            !hf.path().starts_with(home.path()),
+            "tracking a path under home while HF_HOME points elsewhere is the false-zero bug"
+        );
+
+    }
+
+    // what this catches: the reporter half of the seam — a TrackedDir
+    // reports its cached value inside the DiskReporter contract, labels
+    // an unscanned value as pending (never a false "0 B measured"), and
+    // flips to the measured detail once the scanner writes through.
+    #[test]
+    fn tracked_dir_reports_cached_value_and_honest_pending_state() {
+        let dir = TrackedDir::new("cargo-target", PathBuf::from("/nonexistent"));
+        let before = dir.report();
+        assert_eq!(before.bytes, 0);
+        assert!(before.detail.contains("pending"));
+
+        dir.bytes.store(42_000_000_000, Ordering::Relaxed);
+        dir.scanned.store(true, Ordering::Relaxed);
+        let after = dir.report();
+        assert_eq!(after.bytes, 42_000_000_000);
+        assert!(!after.detail.contains("pending"));
+    }
+
+    // what this catches: dir_size_bytes measures real recursive content,
+    // skips symlinks (no double-counting shared models into a workspace's
+    // class), and returns 0 — not an error — on an unreadable/missing
+    // root (a truthful lower bound, never a crash in the scanner tick).
+    #[test]
+    fn dir_size_walks_recursively_and_skips_symlinks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("sub")).expect("mkdir");
+        std::fs::write(tmp.path().join("a.bin"), vec![0u8; 1000]).expect("write");
+        std::fs::write(tmp.path().join("sub/b.bin"), vec![0u8; 500]).expect("write");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(tmp.path().join("a.bin"), tmp.path().join("link.bin"))
+            .expect("symlink");
+
+        assert_eq!(dir_size_bytes(tmp.path()), 1500);
+        assert_eq!(dir_size_bytes(std::path::Path::new("/nonexistent-xyz")), 0);
+        // The walk names its price: every entry read, the symlink included, the
+        // missing root none.
+        let walk = walk_tree(tmp.path());
+        assert_eq!(walk.bytes, 1500);
+        assert_eq!(walk.entries, 3 + u64::from(cfg!(unix)));
+        assert_eq!(walk_tree(std::path::Path::new("/nonexistent-xyz")), TreeWalk::default());
+    }
+
+    // what this catches (the M5, 2026-09-19): a 2.44 M-entry `citizens` tree walked
+    // in 90.7 s every 300 s — a 30% duty cycle of one core, forever. The bound is a
+    // duty cycle: a walk is repeated no sooner than 20× its own cost, and a cheap
+    // walk keeps the 5-minute floor. Mutation check: dropping the `max` fails the
+    // first assert; dropping the multiply fails the second.
+    #[test]
+    fn a_walks_cost_paces_the_next_walk_to_a_five_percent_duty_cycle() {
+        assert_eq!(next_scan_delay(Duration::from_secs(2)), SCAN_INTERVAL);
+        assert_eq!(next_scan_delay(Duration::from_millis(90_700)), Duration::from_millis(1_814_000));
+        assert_eq!(next_scan_delay(Duration::ZERO), SCAN_INTERVAL);
+    }
+
+    // what this catches: the scanner's tick re-walking an expensive tree on its
+    // next 5-minute tick anyway — the pacing must live on the TrackedDir the tick
+    // consults, not only in a constant. A dir is due before any walk, not due
+    // 300 s after a 90 s walk, due again once its 30 min have passed; a cheap
+    // walk is due again at the floor. The report carries the cost.
+    #[test]
+    fn a_tracked_dir_whose_walk_was_expensive_is_not_walked_on_the_next_tick() {
+        let dir = TrackedDir::new("citizens", PathBuf::from("/nonexistent"));
+        assert!(dir.due(0), "never walked = due now");
+        let now = 1_000_000;
+        dir.record_walk(TreeWalk { bytes: 95_000_000_000, entries: 2_440_220 }, Duration::from_secs(90), now);
+        assert!(!dir.due(now + 300_000), "one tick later: the 90 s walk bought 30 min");
+        assert!(!dir.due(now + 1_799_999));
+        assert!(dir.due(now + 1_800_000));
+        assert_eq!(dir.walk_cost(), Some((2_440_220, Duration::from_secs(90))));
+        let detail = dir.report().detail;
+        assert!(detail.contains("90.0 s") && detail.contains("2440220 entries") && detail.contains("1800 s"), "{detail}");
+
+        let cheap = TrackedDir::new("cargo-target", PathBuf::from("/nonexistent"));
+        cheap.record_walk(TreeWalk { bytes: 1, entries: 1 }, Duration::from_secs(2), now);
+        assert!(!cheap.due(now + 299_999));
+        assert!(cheap.due(now + 300_000), "a cheap walk keeps the 5-minute floor");
+    }
+
+    // what this catches: the standard cache-class registry names exactly
+    // the directories from the 2026-07-13 incident — losing one from this
+    // list silently un-names a known creep source.
+    #[test]
+    fn standard_dirs_cover_the_incident_cache_classes() {
+        let dirs = standard_tracked_dirs(std::path::Path::new("/home/u"));
+        let names: Vec<&str> = dirs.iter().map(|d| d.name).collect();
+        for must in [
+            "cargo-target",
+            "genome-models",
+            "hf-hub",
+            "citizens",
+            "forge",
+        ] {
+            assert!(names.contains(&must), "missing cache class: {must}");
+        }
+    }
+}

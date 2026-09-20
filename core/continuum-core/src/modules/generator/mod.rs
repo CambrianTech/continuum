@@ -54,18 +54,20 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
 
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 pub mod templates;
 pub mod types;
 
 use types::{GenerateModuleParams, GenerateModuleResult};
 
-/// Generator module — exposes `generate/module` (and future generator
-/// commands) as kernel commands. See module docs for the contract.
-pub struct GeneratorModule {
+/// The stateful generator engine — the workspace root + per-name locks + the
+/// scaffolding logic. `Arc`-shared between [`GeneratorModule`] (which exposes it
+/// as the `generate/module` command) and that command object, so concurrent
+/// callers serialize on the SAME `name_locks`. Constructing fresh state per call
+/// would silently break the same-name serialization guarantee, so the engine is
+/// shared, not rebuilt.
+pub struct GeneratorEngine {
     /// Optional override for the workspace root when generating into a
     /// non-default location. Tests use this to write into a tempdir;
     /// production runs leave it `None` and the generator targets
@@ -99,7 +101,7 @@ pub struct GeneratorModule {
     name_locks: DashMap<String, Arc<std::sync::Mutex<()>>>,
 }
 
-impl GeneratorModule {
+impl GeneratorEngine {
     pub fn new() -> Self {
         Self {
             workspace_root: None,
@@ -134,6 +136,35 @@ impl GeneratorModule {
     }
 }
 
+impl Default for GeneratorEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generator module — exposes `generate/module` (and future generator
+/// commands) as typed kernel commands. A thin holder over the `Arc`-shared
+/// [`GeneratorEngine`]; `commands()` hands the engine to the command object.
+pub struct GeneratorModule {
+    engine: Arc<GeneratorEngine>,
+}
+
+impl GeneratorModule {
+    pub fn new() -> Self {
+        Self {
+            engine: Arc::new(GeneratorEngine::new()),
+        }
+    }
+
+    /// Construct with a workspace root override. Tests use this to
+    /// generate into a tempdir without touching the live source tree.
+    pub fn with_workspace_root(root: std::path::PathBuf) -> Self {
+        Self {
+            engine: Arc::new(GeneratorEngine::with_workspace_root(root)),
+        }
+    }
+}
+
 impl Default for GeneratorModule {
     fn default() -> Self {
         Self::new()
@@ -158,17 +189,22 @@ impl ServiceModule for GeneratorModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
-        match command {
-            "generate/module" => self.handle_generate_module(params).await,
-            other => Err(format!(
-                "{other}: unknown generator command — supported: generate/module"
-            )),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // `generate/module` is migrated to the typed registry
+        // (`commands/generator/module.rs`, exposed via `commands()` below).
+        // Fail loud — no silent legacy fallback.
+        Err(format!(
+            "generator command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
+    }
+
+    fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
+        vec![std::sync::Arc::new(
+            crate::commands::generator::module::GenerateModule {
+                engine: self.engine.clone(),
+            },
+        )]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -176,16 +212,7 @@ impl ServiceModule for GeneratorModule {
     }
 }
 
-impl GeneratorModule {
-    /// Handle `generate/module` — typed envelope in, typed envelope
-    /// out. The actual scaffold work is in
-    /// [`generate_module_inner`] so tests can exercise it directly.
-    async fn handle_generate_module(&self, params: Value) -> Result<CommandResult, String> {
-        let req = CommandRequest::<GenerateModuleParams>::from_value(params)?;
-        let result = self.generate_module_inner(&req.params)?;
-        CommandResponse::ok(result).into_command_result()
-    }
-
+impl GeneratorEngine {
     /// The actual scaffolding. Pure synchronous filesystem work — no
     /// network, no IPC, no `.await`. Easy to test.
     ///
@@ -226,9 +253,8 @@ impl GeneratorModule {
             ));
         }
 
-        std::fs::create_dir_all(&target_dir).map_err(|e| {
-            format!("Failed to create module dir {}: {e}", target_dir.display())
-        })?;
+        std::fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Failed to create module dir {}: {e}", target_dir.display()))?;
 
         let mut files_created = Vec::new();
 
@@ -269,9 +295,10 @@ impl GeneratorModule {
     /// Production targets the continuum-core modules tree; tests
     /// override via `with_workspace_root` to write into a tempdir.
     fn resolve_target_dir(&self, name: &str) -> std::path::PathBuf {
-        let root = self.workspace_root.clone().unwrap_or_else(|| {
-            std::path::PathBuf::from("core/continuum-core/src/modules")
-        });
+        let root = self
+            .workspace_root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("core/continuum-core/src/modules"));
         root.join(name)
     }
 }
@@ -347,7 +374,7 @@ mod tests {
     #[test]
     fn generate_module_creates_dir_and_files() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "demo".into(),
             description: "Demo module for generator tests".into(),
@@ -424,7 +451,7 @@ mod tests {
     #[test]
     fn stateful_multi_command_scaffold_has_consistent_cross_references() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "stateful_demo".into(),
             description: "Stateful module dogfood test".into(),
@@ -485,7 +512,9 @@ mod tests {
 
         // Stateful-specific scaffold: lock map field + helper + struct.
         assert!(
-            mod_rs.contains("resource_locks: DashMap<String, Arc<tokio::sync::Mutex<ResourceState>>>"),
+            mod_rs.contains(
+                "resource_locks: DashMap<String, Arc<tokio::sync::Mutex<ResourceState>>>"
+            ),
             "stateful mod.rs must carry the lock map field"
         );
         assert!(
@@ -505,7 +534,7 @@ mod tests {
     #[test]
     fn generate_module_refuses_existing_dir_without_force() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "demo".into(),
             description: "first".into(),
@@ -535,7 +564,7 @@ mod tests {
     #[test]
     fn generate_module_overwrites_with_force() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let mut params = GenerateModuleParams {
             name: "demo".into(),
             description: "first".into(),
@@ -562,8 +591,14 @@ mod tests {
     #[test]
     fn generate_module_rejects_invalid_names() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root);
-        for bad in ["", "Has Space", "has/slash", "../escape", "9starts-with-digit"] {
+        let m = GeneratorEngine::with_workspace_root(root);
+        for bad in [
+            "",
+            "Has Space",
+            "has/slash",
+            "../escape",
+            "9starts-with-digit",
+        ] {
             let params = GenerateModuleParams {
                 name: bad.into(),
                 description: "x".into(),
@@ -584,52 +619,20 @@ mod tests {
         }
     }
 
+    // what this catches: generate/module is migrated to the typed registry
+    // (commands/generator/module.rs), so the module's legacy handle_command must
+    // fail loud for any command name (no silent fallback). The typed-envelope
+    // round-trip is covered in the command file's own tests.
     #[tokio::test]
-    async fn handle_command_returns_typed_envelope() {
-        let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
-        let params = serde_json::json!({
-            "name": "envelope_demo",
-            "description": "Verifies the full envelope round-trip",
-            "commands": ["envelope_demo/ping"],
-            "events_subscribed": [],
-            "events_published": [],
-            "priority": "normal",
-            "force": false
-        });
-        let result = m
-            .handle_command("generate/module", params)
-            .await
-            .expect("generate/module must succeed via the typed envelope");
-        let value = match result {
-            CommandResult::Json(v) => v,
-            other => panic!("expected Json variant, got {other:?}"),
-        };
-        assert_eq!(value["success"], true);
-        assert!(
-            value["module_path"].is_string(),
-            "envelope flattens the typed result fields: {value}"
-        );
-        assert!(
-            value["files_created"].is_array(),
-            "envelope carries the file list"
-        );
-        assert!(
-            value["next_step"].as_str().unwrap().contains("pub mod"),
-            "next_step prompts the caller to wire the new module"
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_command_rejects_unknown_command_loud() {
+    async fn legacy_handle_command_fails_loud() {
         let m = GeneratorModule::new();
         let err = m
-            .handle_command("generate/nonexistent", serde_json::json!({}))
+            .handle_command("generate/module", serde_json::json!({}))
             .await
-            .expect_err("unknown sub-command must surface");
+            .expect_err("legacy handler must fail loud after migration");
         assert!(
-            err.contains("generate/nonexistent") && err.contains("unknown"),
-            "error must name the bad command + what's supported: {err}"
+            err.contains("migrated to the typed registry"),
+            "error must name the migration: {err}"
         );
     }
 
@@ -643,233 +646,235 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-    //
-    // Per Joel 2026-05-30: "Each persona exists in its own threads."
-    //
-    // The kernel registers ONE GeneratorModule; multiple personas (or
-    // scripts) may call `generate/module` concurrently. The per-name
-    // mutex on the module guarantees:
-    //
-    // - same-name calls serialize (one wins without force; consistent
-    //   final state with force)
-    // - different-name calls stay fully parallel (different DashMap
-    //   shards, no contention)
-    //
-    // Every test uses `flavor = "multi_thread", worker_threads = 4`
-    // so spawned tasks actually preempt on distinct OS threads, not
-    // cooperatively interleave on one. The protected work is purely
-    // synchronous filesystem I/O (`std::sync::Mutex`), so blocking
-    // worker threads briefly for mkdir + 2 writes is correct.
+        //
+        // Per Joel 2026-05-30: "Each persona exists in its own threads."
+        //
+        // The kernel registers ONE GeneratorModule; multiple personas (or
+        // scripts) may call `generate/module` concurrently. The per-name
+        // mutex on the module guarantees:
+        //
+        // - same-name calls serialize (one wins without force; consistent
+        //   final state with force)
+        // - different-name calls stay fully parallel (different DashMap
+        //   shards, no contention)
+        //
+        // Every test uses `flavor = "multi_thread", worker_threads = 4`
+        // so spawned tasks actually preempt on distinct OS threads, not
+        // cooperatively interleave on one. The protected work is purely
+        // synchronous filesystem I/O (`std::sync::Mutex`), so blocking
+        // worker threads briefly for mkdir + 2 writes is correct.
 
-    /// N concurrent generators race the same name without force.
-    /// EXACTLY ONE must succeed; the rest must surface the canonical
-    /// "already exists" error. Without the per-name mutex, ALL of
-    /// them would pass the exists() check, ALL would write, and the
-    /// friendly error would be silenced — silent data corruption.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn same_name_concurrent_generation_without_force_yields_one_winner() {
-        const PARALLEL: usize = 8;
+        /// N concurrent generators race the same name without force.
+        /// EXACTLY ONE must succeed; the rest must surface the canonical
+        /// "already exists" error. Without the per-name mutex, ALL of
+        /// them would pass the exists() check, ALL would write, and the
+        /// friendly error would be silenced — silent data corruption.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn same_name_concurrent_generation_without_force_yields_one_winner() {
+            const PARALLEL: usize = 8;
 
-        let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
+            let root = tempdir();
+            let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
 
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let module = module.clone();
-            tasks.push(tokio::spawn(async move {
-                module.generate_module_inner(&GenerateModuleParams {
-                    name: "racy".into(),
-                    description: format!("attempt {i}"),
-                    commands: vec![],
-                    events_subscribed: vec![],
-                    events_published: vec![],
-                    priority: types::PrioritySpec::Normal,
-                    force: false,
-                    stateful: false,
-                })
-            }));
-        }
-        let results: Vec<Result<GenerateModuleResult, String>> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
+                let module = module.clone();
+                tasks.push(tokio::spawn(async move {
+                    module.generate_module_inner(&GenerateModuleParams {
+                        name: "racy".into(),
+                        description: format!("attempt {i}"),
+                        commands: vec![],
+                        events_subscribed: vec![],
+                        events_published: vec![],
+                        priority: types::PrioritySpec::Normal,
+                        force: false,
+                        stateful: false,
+                    })
+                }));
+            }
+            let results: Vec<Result<GenerateModuleResult, String>> =
+                futures::future::join_all(tasks)
+                    .await
+                    .into_iter()
+                    .map(|r| r.expect("task must not panic"))
+                    .collect();
 
-        let winners = results.iter().filter(|r| r.is_ok()).count();
-        let losers = results.iter().filter(|r| r.is_err()).count();
+            let winners = results.iter().filter(|r| r.is_ok()).count();
+            let losers = results.iter().filter(|r| r.is_err()).count();
 
-        assert_eq!(
+            assert_eq!(
             winners, 1,
             "exactly ONE concurrent generation must succeed without force; got {winners} winners"
         );
-        assert_eq!(
-            losers,
-            PARALLEL - 1,
-            "the remaining {} must Err; got {losers}",
-            PARALLEL - 1
-        );
-        for r in &results {
-            if let Err(e) = r {
+            assert_eq!(
+                losers,
+                PARALLEL - 1,
+                "the remaining {} must Err; got {losers}",
+                PARALLEL - 1
+            );
+            for r in &results {
+                if let Err(e) = r {
+                    assert!(
+                        e.contains("already exists"),
+                        "losers must surface the canonical error: {e}"
+                    );
+                    assert!(
+                        e.contains("force"),
+                        "loser error must mention the `force` escape hatch: {e}"
+                    );
+                }
+            }
+
+            // Filesystem state: the dir exists once, both files present.
+            assert!(root.join("racy").join("mod.rs").exists());
+            assert!(root.join("racy").join("README.md").exists());
+        }
+
+        /// N concurrent generators race the same name WITH force. All
+        /// should succeed (force allows overwrite). Critical: the final
+        /// on-disk state must NOT be torn — mod.rs and README must come
+        /// from the SAME caller's params, not a mix of different
+        /// callers' templates.
+        ///
+        /// We tag each caller with a unique `description` (embedded in
+        /// both templates); reading the final files must show the SAME
+        /// description in both. Without the per-name lock, the writes
+        /// would interleave per file → mismatch.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn same_name_concurrent_generation_with_force_produces_consistent_final_state() {
+            const PARALLEL: usize = 8;
+
+            let root = tempdir();
+            let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
+
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
+                let module = module.clone();
+                tasks.push(tokio::spawn(async move {
+                    module.generate_module_inner(&GenerateModuleParams {
+                        name: "forcy".into(),
+                        description: format!("MARKER-{i:02}"),
+                        commands: vec![],
+                        events_subscribed: vec![],
+                        events_published: vec![],
+                        priority: types::PrioritySpec::Normal,
+                        force: true,
+                        stateful: false,
+                    })
+                }));
+            }
+            let results: Vec<Result<GenerateModuleResult, String>> =
+                futures::future::join_all(tasks)
+                    .await
+                    .into_iter()
+                    .map(|r| r.expect("task must not panic"))
+                    .collect();
+
+            for r in &results {
                 assert!(
-                    e.contains("already exists"),
-                    "losers must surface the canonical error: {e}"
-                );
-                assert!(
-                    e.contains("force"),
-                    "loser error must mention the `force` escape hatch: {e}"
+                    r.is_ok(),
+                    "every force=true concurrent generation must succeed: {r:?}"
                 );
             }
-        }
 
-        // Filesystem state: the dir exists once, both files present.
-        assert!(root.join("racy").join("mod.rs").exists());
-        assert!(root.join("racy").join("README.md").exists());
-    }
+            // Read both files. They must contain the SAME marker.
+            let mod_rs = std::fs::read_to_string(root.join("forcy").join("mod.rs"))
+                .expect("mod.rs must exist");
+            let readme = std::fs::read_to_string(root.join("forcy").join("README.md"))
+                .expect("README.md must exist");
 
-    /// N concurrent generators race the same name WITH force. All
-    /// should succeed (force allows overwrite). Critical: the final
-    /// on-disk state must NOT be torn — mod.rs and README must come
-    /// from the SAME caller's params, not a mix of different
-    /// callers' templates.
-    ///
-    /// We tag each caller with a unique `description` (embedded in
-    /// both templates); reading the final files must show the SAME
-    /// description in both. Without the per-name lock, the writes
-    /// would interleave per file → mismatch.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn same_name_concurrent_generation_with_force_produces_consistent_final_state() {
-        const PARALLEL: usize = 8;
-
-        let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
-
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let module = module.clone();
-            tasks.push(tokio::spawn(async move {
-                module.generate_module_inner(&GenerateModuleParams {
-                    name: "forcy".into(),
-                    description: format!("MARKER-{i:02}"),
-                    commands: vec![],
-                    events_subscribed: vec![],
-                    events_published: vec![],
-                    priority: types::PrioritySpec::Normal,
-                    force: true,
-                    stateful: false,
-                })
-            }));
-        }
-        let results: Vec<Result<GenerateModuleResult, String>> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        for r in &results {
-            assert!(
-                r.is_ok(),
-                "every force=true concurrent generation must succeed: {r:?}"
-            );
-        }
-
-        // Read both files. They must contain the SAME marker.
-        let mod_rs = std::fs::read_to_string(root.join("forcy").join("mod.rs"))
-            .expect("mod.rs must exist");
-        let readme = std::fs::read_to_string(root.join("forcy").join("README.md"))
-            .expect("README.md must exist");
-
-        // Pull MARKER-XX out of each file (both templates embed the
-        // description). The two markers MUST match.
-        let mod_marker = extract_marker(&mod_rs).expect("mod.rs must carry a marker");
-        let readme_marker = extract_marker(&readme).expect("README.md must carry a marker");
-        assert_eq!(
+            // Pull MARKER-XX out of each file (both templates embed the
+            // description). The two markers MUST match.
+            let mod_marker = extract_marker(&mod_rs).expect("mod.rs must carry a marker");
+            let readme_marker = extract_marker(&readme).expect("README.md must carry a marker");
+            assert_eq!(
             mod_marker, readme_marker,
             "mod.rs ({mod_marker}) and README.md ({readme_marker}) must come from the SAME generation round — torn state from interleaved writes would surface here"
         );
-    }
+        }
 
-    /// Helper for the torn-state test: pull `MARKER-XX` out of a
-    /// file's content. Looks for the pattern emitted by the
-    /// description field which both templates embed.
-    fn extract_marker(content: &str) -> Option<String> {
-        for line in content.lines() {
-            if let Some(idx) = line.find("MARKER-") {
-                let rest = &line[idx..];
-                // Take "MARKER-" + 2 digits.
-                let end = "MARKER-".len() + 2;
-                if rest.len() >= end {
-                    return Some(rest[..end].to_string());
+        /// Helper for the torn-state test: pull `MARKER-XX` out of a
+        /// file's content. Looks for the pattern emitted by the
+        /// description field which both templates embed.
+        fn extract_marker(content: &str) -> Option<String> {
+            for line in content.lines() {
+                if let Some(idx) = line.find("MARKER-") {
+                    let rest = &line[idx..];
+                    // Take "MARKER-" + 2 digits.
+                    let end = "MARKER-".len() + 2;
+                    if rest.len() >= end {
+                        return Some(rest[..end].to_string());
+                    }
                 }
             }
+            None
         }
-        None
-    }
 
-    /// N concurrent generators with DISTINCT names. All must succeed,
-    /// each producing its own files. This is the "stay parallel"
-    /// half of the per-name lock's promise — different shards in the
-    /// DashMap, no cross-name contention.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn different_names_concurrent_generation_runs_fully_parallel() {
-        const PARALLEL: usize = 12;
+        /// N concurrent generators with DISTINCT names. All must succeed,
+        /// each producing its own files. This is the "stay parallel"
+        /// half of the per-name lock's promise — different shards in the
+        /// DashMap, no cross-name contention.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn different_names_concurrent_generation_runs_fully_parallel() {
+            const PARALLEL: usize = 12;
 
-        let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
+            let root = tempdir();
+            let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
 
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let module = module.clone();
-            let name = format!("parallel_{i:02}");
-            tasks.push(tokio::spawn(async move {
-                let result = module.generate_module_inner(&GenerateModuleParams {
-                    name: name.clone(),
-                    description: format!("module {i}"),
-                    commands: vec![],
-                    events_subscribed: vec![],
-                    events_published: vec![],
-                    priority: types::PrioritySpec::Normal,
-                    force: false,
-                    stateful: false,
-                });
-                (name, result)
-            }));
-        }
-        let results: Vec<(String, Result<GenerateModuleResult, String>)> =
-            futures::future::join_all(tasks)
-                .await
-                .into_iter()
-                .map(|r| r.expect("task must not panic"))
-                .collect();
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
+                let module = module.clone();
+                let name = format!("parallel_{i:02}");
+                tasks.push(tokio::spawn(async move {
+                    let result = module.generate_module_inner(&GenerateModuleParams {
+                        name: name.clone(),
+                        description: format!("module {i}"),
+                        commands: vec![],
+                        events_subscribed: vec![],
+                        events_published: vec![],
+                        priority: types::PrioritySpec::Normal,
+                        force: false,
+                        stateful: false,
+                    });
+                    (name, result)
+                }));
+            }
+            let results: Vec<(String, Result<GenerateModuleResult, String>)> =
+                futures::future::join_all(tasks)
+                    .await
+                    .into_iter()
+                    .map(|r| r.expect("task must not panic"))
+                    .collect();
 
-        // Every distinct-name task must succeed.
-        for (name, result) in &results {
-            let r = result
-                .as_ref()
-                .unwrap_or_else(|e| panic!("distinct-name {name} must succeed: {e}"));
-            assert_eq!(
+            // Every distinct-name task must succeed.
+            for (name, result) in &results {
+                let r = result
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("distinct-name {name} must succeed: {e}"));
+                assert_eq!(
                 r.files_created.len(),
                 4,
                 "{name}: every successful generation writes mod.rs + types.rs + DESIGN.md + README.md"
             );
-        }
+            }
 
-        // Every module's directory + files exist and are distinct on
-        // disk (no cross-contamination).
-        for (name, _) in &results {
-            let dir = root.join(name);
-            assert!(dir.join("mod.rs").exists(), "{name}: mod.rs must exist");
-            assert!(
-                dir.join("README.md").exists(),
-                "{name}: README.md must exist"
+            // Every module's directory + files exist and are distinct on
+            // disk (no cross-contamination).
+            for (name, _) in &results {
+                let dir = root.join(name);
+                assert!(dir.join("mod.rs").exists(), "{name}: mod.rs must exist");
+                assert!(
+                    dir.join("README.md").exists(),
+                    "{name}: README.md must exist"
+                );
+            }
+
+            // The per-name lock map carries one entry per distinct name.
+            assert_eq!(
+                module.name_locks.len(),
+                PARALLEL,
+                "each distinct name gets its own lock entry"
             );
         }
-
-        // The per-name lock map carries one entry per distinct name.
-        assert_eq!(
-            module.name_locks.len(),
-            PARALLEL,
-            "each distinct name gets its own lock entry"
-        );
-    }
     } // end mod stress
 }

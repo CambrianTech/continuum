@@ -20,31 +20,93 @@ use std::fmt::Write as _;
 /// than a malfunction.
 pub const SILENCE_TOKEN: &str = "PASS";
 
-/// The system-prompt block that teaches every persona the silence
-/// vocabulary. Always appended by [`assemble`] regardless of
-/// persona / model / role — silence is a universal output shape,
-/// not a per-tier capability.
+/// The system-prompt block that grounds every persona in the room's
+/// conversational posture AND teaches the silence vocabulary. Appended on
+/// AMBIENT turns (a turn DIRECTED at her drops it — she is not handed the
+/// silent-PASS hatch when a question names her; see
+/// `llm_deliberation_faculty::compose_system`). Universal output shape, not
+/// a per-tier capability.
 ///
-/// Doctrine `[[no-rust-gates-around-cognition]]`: this is not the
+/// Doctrine `[[no-rust-gates-around-cognition]]` +
+/// `[[no-hardcoded-heuristics-to-steer-cognition]]`: this is not the
 /// substrate deciding for the persona. It's the substrate giving
 /// the persona's brain an EXPLICIT vocabulary for an output that
-/// already exists in `PersonaResponse::Silent`. Without this block,
-/// the brain has no way to signal that choice — every model
+/// already exists in `PersonaResponse::Silent`. Without naming the
+/// token, the brain has no way to signal that choice — every model
 /// defaults to producing text because the prompt implicitly asks
 /// for it.
 ///
-/// Tuned for LCD-tier models (Qwen2.5-0.5B): short, concrete,
-/// concrete examples. Capable models (qwen3.5-4b, GPT-4) handle
-/// the same text gracefully because the doctrine is universal.
-pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Silence Option]\n\
-    You are NOT required to respond to every message. If you have nothing \
-    valuable to add, reply with the single word PASS (no other text, no \
-    punctuation). Choose PASS when:\n\
-    - You just spoke and nothing new has been raised.\n\
-    - The message is small-talk that doesn't need your perspective.\n\
-    - Another persona is better suited and already responded.\n\
-    - You're tired or low-confidence on this topic.\n\
-    Silence is a first-class response — it's how you avoid pointless chatter.";
+/// PARTICIPATION-DEFAULT (Joel 2026-06-29: "shouldn't need to be directly
+/// addressed — it's a chat system"). The earlier text asserted silence was
+/// "equal to speaking" with a "nothing worth adding" bar; a cautious coder
+/// model resolved that to PASS ~always (glass-box: 0/40 live turns spoke
+/// while eval spoke 36/38). A chat peer's default posture is PARTICIPATION
+/// — silence is the considered EXCEPTION, not a co-equal default. This block
+/// grounds the SETTING (you are a peer in a live conversation), it does not
+/// COACH the per-turn choice: NAMES the affordance, never scripts when to
+/// take it. The earlier persuasive checklist ("Choose PASS when: you just
+/// spoke / it's small-talk / you're tired") manufactured a silence
+/// doom-loop (the "nothing's new" rationale re-fed via working memory until
+/// it passed forever, blowing off even a direct question) and is exactly
+/// the puppeting `[[no-hardcoded-heuristics-to-steer-cognition]]` forbids —
+/// it stays gone. The wider release valve (a per-channel, self-set or
+/// learned FOCUS/priority that lets her concentrate and defer a room
+/// without ever totally muting — except when she chooses to, or it floods)
+/// is substrate-blocked on the airc per-(persona,room) state store (#89);
+/// this block is the framing half, unblocked today.
+pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+    This is a live conversation among peers, and you are one of them — you \
+    do not need to be addressed by name to take part. Speak where you have \
+    something real: a thought, a question, a build on what someone said, a \
+    disagreement, a piece of work. If a given moment genuinely does not call \
+    for you, reply with the single word PASS (no other text, no punctuation) \
+    and nothing reaches the room. Silence stays yours to choose — here it is \
+    the considered exception, not the default. The choice is yours alone; \
+    nothing here is telling you which to pick.";
+
+/// The DIRECTED variant of the presence block: appended when a message names her.
+/// Never ghost a QUESTION or request — but being named is not the same as being
+/// asked. A pure appreciation or closing pleasantry asks nothing; two peers
+/// endlessly thanking each other helps no one, and letting a finished exchange
+/// rest is real conversational judgment. This restores her CHOICE on directed
+/// turns (the spiral root cause: mutual name-mentions each FORCING a reply,
+/// forever — glass-boxed live 2026-07, 100+ turns) while keeping the
+/// never-ghost-a-question rule explicit. A framing fact fed to the mind — the
+/// choice stays hers; never a filter on her output
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+    This message names you. If it asks something of you — a question, a request, \
+    a task — answer it now; never leave a question put to you hanging. But being \
+    named is not the same as being asked: if it asks nothing (an appreciation, a \
+    closing pleasantry, a mutual well-wish on an exchange that has run its course), \
+    replying with the single word PASS (no other text, no punctuation) lets the \
+    exchange rest, and nothing reaches the room. Endless rounds of thanks help no \
+    one; knowing when a conversation is complete is part of speaking well. The \
+    choice is yours alone.";
+
+/// The HELD-WORK variant of the presence block: appended on an UNDIRECTED turn when
+/// this persona holds a live in-progress work claim (a structural fact read from the
+/// airc claim state her own [active-work] grounding renders — never a read of her
+/// output). Glass-boxed 2026-08-07 (card f6a9fe5c's sequel): with a perfect window —
+/// card title, workspace root, board, roster all present — all four citizens still
+/// yielded EVERY ambient turn, 7 tokens each, no reasoning. The conversational
+/// contract was doing exactly what it says: nobody spoke, so there was nothing to
+/// add TO THE CONVERSATION, and yield is the correct conversational move. Her held
+/// card was scenery, not the turn's purpose. Meanwhile the SAME minds act reliably
+/// under the eval/agent harness, whose framing names the work as the deliverable —
+/// the difference was never the model, it was the CONTRACT. This block states the
+/// work contract for a claim-holder's quiet turn. Framing, never a gate: yielding
+/// stays available and legitimate — what changes is that a quiet room is no longer
+/// presented as the absence of anything to do.
+pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
+    You hold claimed work in progress — your card(s) are listed under [active-work], \
+    and the repository is staged in your workspace. A quiet room is not a stop sign: \
+    with no message to answer, this turn is yours to ADVANCE that work with your \
+    tools — open the staged repo under your workspace root, read the code, run the \
+    tests, make the change. Speak when you have something real to report or ask: \
+    progress, a finding, a blocker, a question to a peer (asking is normal here). \
+    Yielding is still yours to choose, but choose it because you are blocked or \
+    resting — not because the room is quiet. The work is why the turn exists.";
 
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
@@ -58,6 +120,15 @@ pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Silence Option]\n\
 /// Examples (false): `"Pass on the bread please"`, `"I'll pass"` (the
 /// substrate wants the exact token so the brain's intent is
 /// unambiguous), `""` (empty isn't silence — it's a malformed turn).
+/// Bare inflections of the reserved token a small model produces in its place. Whole
+/// message only — see [`looks_like_silence_token`].
+const SILENCE_INFLECTIONS: [&str; 8] = [
+    "passed", "passing", "silence", "silent",
+    // the yield forms (a 5090 citizen posted "yield_turn" bare, 2026-09-15 09:2xZ) and the
+    // narrated stop ("I'm stopping now." — Delia, Intel Mac, 09:4xZ)
+    "yield", "yield_turn", "yielding", "i'm stopping now",
+];
+
 pub fn looks_like_silence_token(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -65,7 +136,37 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     }
     // Allow one trailing `.` for LCD-tier punctuation habit.
     let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
-    core.eq_ignore_ascii_case(SILENCE_TOKEN)
+    if core.eq_ignore_ascii_case(SILENCE_TOKEN) {
+        return true;
+    }
+    // A bare INFLECTION of the token as the WHOLE message — "Passed", "Silence." —
+    // is the same choice from a small model that conjugated the reserved word
+    // (2026-09-15: "Silence." from the 5090, "Passed" from the Intel Mac, each posted
+    // to a room as a message and each re-waking every peer). Whole-message only,
+    // decorated like the token; "Passed the command…" is still speech.
+    let bare = core.trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
+    if SILENCE_INFLECTIONS.iter().any(|w| bare.eq_ignore_ascii_case(w)) {
+        return true;
+    }
+    // A bare PASS on the FINAL line also counts (glass-boxed live 2026-07-09: Asha
+    // wrote a courtesy close and then `PASS` on its own line — she CHOSE silence, but
+    // the strict whole-message match ignored her choice and broadcast the text anyway).
+    // Honoring the trailing token respects her decision; a PASS merely mentioned inside
+    // a sentence still does NOT count — the line must be ONLY the token, allowing the
+    // decoration idioms models reach for: `[PASS]`, `(PASS)`, `*PASS*`, `` `PASS` ``
+    // (glass-boxed live 2026-07-09 round 2: mid-goodbye-loop Asha emitted `[PASS]` as
+    // her final line — she took the hatch and the strict match rejected her over two
+    // brackets, broadcasting the goodbye anyway and re-fueling the loop).
+    core.lines()
+        .last()
+        .map(|l| {
+            let l = l.trim().trim_matches(|c| {
+                matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\'')
+            });
+            let l = l.strip_suffix('.').unwrap_or(l).trim_end();
+            l.eq_ignore_ascii_case(SILENCE_TOKEN)
+        })
+        .unwrap_or(false)
 }
 
 /// Input to prompt assembly. Carries everything needed to build the
@@ -111,6 +212,19 @@ pub struct PromptAssemblyInput {
     /// Continuum#1211 PR-2.
     #[serde(default)]
     pub recalled_engrams: Vec<String>,
+    /// OTHER citizens currently present in the room — one pre-formatted
+    /// line per peer (`name [runtime] — availability`), produced by
+    /// `RoomRosterSource`. Rendered as a `[Present in this room]` block
+    /// so the persona is grounded in who is present and who is NOT
+    /// itself. Empty = no block rendered (backwards-compatible).
+    #[serde(default)]
+    pub room_roster: Vec<String>,
+    /// The room's operating doctrine (airc-published) — what KIND of
+    /// activity this room is. Rendered as a `[Room operating doctrine]`
+    /// block so the persona calibrates participation to the room's
+    /// nature. `None` = no block (backwards-compatible).
+    #[serde(default)]
+    pub room_doctrine: Option<String>,
 }
 
 /// A message in conversation history.
@@ -178,6 +292,48 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
              The following aspect of this conversation is specifically relevant \
              to your expertise. Focus your contribution here:\n{}",
             input.matched_angle
+        );
+    }
+
+    // Inject the room roster — who ELSE is present right now. This is
+    // identity grounding, so it sits high (right after the matched
+    // angle, before memory). Without it a persona sees other citizens'
+    // names in the transcript with nothing declaring them as real,
+    // distinct participants → it role-plays the whole room (the
+    // confabulation bug). The block names them and forbids voicing
+    // them. Empty roster = no block (backwards-compatible). See
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    if !input.room_roster.is_empty() {
+        let _ = write!(
+            system_prompt,
+            "\n\n[Present in this room]\n\
+             You are {}. The following are the OTHER citizens present right now — \
+             real, distinct participants, NOT characters for you to voice. Address \
+             them by name when relevant; speak only as yourself. The label in \
+             brackets is each one's runtime (e.g. an outside agent vs a grid \
+             persona):",
+            input.persona_name
+        );
+        for line in &input.room_roster {
+            let _ = write!(system_prompt, "\n- {line}");
+        }
+    }
+
+    // Inject the room operating doctrine — WHAT KIND of room this is.
+    // Sits adjacent to the roster (both room-context grounding): the
+    // roster says who is here, the doctrine says how this room works.
+    // This is what lets a persona calibrate participation to the
+    // activity — e.g. stay sparse in a coordination room vs conversational
+    // in a chat room. airc-published markdown, rendered verbatim. None =
+    // no block (backwards-compatible). See
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    if let Some(ref doctrine) = input.room_doctrine {
+        let _ = write!(
+            system_prompt,
+            "\n\n[Room operating doctrine]\n\
+             This room has a published operating contract. Follow it — it \
+             governs how to participate in THIS room (its activity, tone, and \
+             when to speak vs stay silent):\n{doctrine}"
         );
     }
 
@@ -590,6 +746,37 @@ mod tests {
     /// A future PR that wires per-tier prompts or removes the universal
     /// affordance must update this expectation to reflect the new
     /// contract — silent removal would re-introduce the echo-storm bug.
+    /// What this catches: the trailing-PASS silence contract. Glass-boxed live
+    /// (2026-07-09): Asha wrote a courtesy close then `PASS` on its own final line —
+    /// she CHOSE silence, but the strict whole-message match broadcast the text
+    /// anyway, ignoring her decision. A bare final-line PASS must count as silence;
+    /// PASS merely mentioned inside prose must NOT (a real reply containing the
+    /// word "pass" stays a reply).
+    #[test]
+    fn trailing_pass_line_counts_as_silence() {
+        assert!(looks_like_silence_token("PASS"));
+        assert!(looks_like_silence_token("pass."));
+        assert!(looks_like_silence_token(
+            "Understood, Anwen. See you tomorrow!\nI'll be here if you need anything.\nPASS"
+        ));
+        assert!(!looks_like_silence_token(
+            "I'll pass the results along tomorrow."
+        ));
+        assert!(!looks_like_silence_token(
+            "Let's not pass on this opportunity.\nSee you soon!"
+        ));
+        // Decorated final-line token still counts (regression for the live 2026-07-09
+        // goodbye loop: Asha emitted `[PASS]` — took the hatch, rejected over brackets).
+        assert!(looks_like_silence_token(
+            "Understood, Claude. See you tomorrow at 2 PM!\n[PASS]"
+        ));
+        assert!(looks_like_silence_token("(pass)"));
+        assert!(looks_like_silence_token("*PASS*"));
+        assert!(looks_like_silence_token("`PASS`."));
+        // A decorated NON-token line must not count.
+        assert!(!looks_like_silence_token("See you soon!\n[NOT A PASS]"));
+    }
+
     #[test]
     fn assembled_prompt_always_carries_silence_affordance() {
         let input = PromptAssemblyInput {
@@ -608,13 +795,15 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
 
         assert!(
-            result.system_message.contains("[Silence Option]"),
-            "system_message missing the silence-option header — the brain has no way to express PersonaResponse::Silent. Got: {}",
+            result.system_message.contains("[Conversational Presence]"),
+            "system_message missing the [Conversational Presence] header — the brain has no way to express PersonaResponse::Silent. Got: {}",
             result.system_message
         );
         assert!(
@@ -678,13 +867,13 @@ mod tests {
             matched_angle: "This is a coding question about Rust error handling.".to_string(),
             history: vec![HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "How do I handle errors in Rust?".to_string(),
                 timestamp_ms: Some(1000000),
             }],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "Specifically with Result types?".to_string(),
                 timestamp_ms: Some(1010000),
             },
@@ -693,6 +882,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -718,7 +909,7 @@ mod tests {
             history: vec![],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "what color did I say I liked?".to_string(),
                 timestamp_ms: Some(1000),
             },
@@ -727,9 +918,11 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![
-                "Joel's favorite color is teal.".to_string(),
-                "Joel works in San Francisco.".to_string(),
+                "Operator's favorite color is teal.".to_string(),
+                "Operator works in San Francisco.".to_string(),
             ],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -741,14 +934,14 @@ mod tests {
         assert!(
             result
                 .system_message
-                .contains("- Joel's favorite color is teal."),
+                .contains("- Operator's favorite color is teal."),
             "expected bullet-prefixed engram in: {}",
             result.system_message
         );
         assert!(
             result
                 .system_message
-                .contains("- Joel works in San Francisco."),
+                .contains("- Operator works in San Francisco."),
             "expected second bullet in: {}",
             result.system_message
         );
@@ -778,6 +971,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -786,6 +981,241 @@ mod tests {
             "should NOT render Recent Memory header for empty engrams: {}",
             result.system_message
         );
+    }
+
+    // what this catches: the persona-identity-grounding fix. A non-empty
+    // room_roster MUST render a [Present in this room] block that names
+    // the persona itself, lists the other present citizens verbatim, and
+    // forbids voicing them. Without this block a small model role-plays
+    // the whole room (the Ivar confabulation bug). Regression target:
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    #[test]
+    fn room_roster_renders_present_block_grounding_the_persona() {
+        let input = PromptAssemblyInput {
+            persona_name: "Ivar".to_string(),
+            system_prompt: "You are Ivar.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![
+                "BigMama [persona] — Busy".to_string(),
+                "win-claude [claude]".to_string(),
+            ],
+            room_doctrine: None,
+        };
+
+        let result = assemble(&input);
+        assert!(
+            result.system_message.contains("[Present in this room]"),
+            "expected the roster block header: {}",
+            result.system_message
+        );
+        // Grounds the persona in its OWN identity within the block.
+        assert!(result.system_message.contains("You are Ivar"));
+        // Lists the other present citizens verbatim (name + runtime).
+        assert!(result.system_message.contains("BigMama [persona] — Busy"));
+        assert!(result.system_message.contains("win-claude [claude]"));
+    }
+
+    // what this catches: THE personaRag convergence seam, end to end through real
+    // code (not hand-authored roster strings). A present airc `RoomMember` flows:
+    //   RoomRosterSource.deliver  (the ONE shared `roster_slot_from_member` projection
+    //                              both the WS widget and this grounding rail use)
+    //     → project_room_roster    (the heartbeat loop's own delivery fold, extracted)
+    //       → prompt_assembly       (the [Present in this room] block)
+    // and lands with the converged line INCLUDING availability — the field the widget
+    // rail used to silently drop before the convergence (#8/#13). Connects the three
+    // separately-unit-tested halves via the exact path the live turn runs; the live
+    // core proves the plumbing, this proves it deterministically without airc presence.
+    #[tokio::test]
+    async fn present_member_reaches_present_in_room_block_end_to_end() {
+        use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+        use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
+        use crate::persona::service_loop::project_room_roster;
+        use airc_core::PeerId;
+        use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
+        use async_trait::async_trait;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // One present peer, self-reported Busy — the airc upstream both rails read.
+        struct OnePresentPeer {
+            me: PeerId,
+            other: PeerId,
+        }
+        #[async_trait]
+        impl AircRosterReader for OnePresentPeer {
+            fn self_peer_id(&self) -> PeerId {
+                self.me
+            }
+            async fn room_roster(
+                &self,
+                _within: Duration,
+                _window: usize,
+                _room: Option<uuid::Uuid>,
+            ) -> Result<Vec<RoomMember>, AircError> {
+                Ok(vec![RoomMember {
+                    peer_id: self.other,
+                    display_name: Some("win-claude".to_string()),
+                    runtime: "claude".to_string(),
+                    availability: Some(AgentAvailabilityState::Busy),
+                    last_seen_ms: 1_700_000_000_000,
+                }])
+            }
+        }
+
+        let persona = uuid::Uuid::new_v4();
+        let source = RoomRosterSource::new(
+            persona,
+            Arc::new(OnePresentPeer {
+                me: PeerId::new(),
+                other: PeerId::new(),
+            }),
+        );
+
+        // 1. Real delivery from the shared roster projection.
+        let ctx = RagContext::for_persona(persona, 1_000_000);
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+
+        // 2. Real loop fold: delivery → grounding consumers (the converged line +
+        //    the bare name), via the exact fn the heartbeat loop calls.
+        let proj = project_room_roster(std::slice::from_ref(&delivery));
+        // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
+        // the grounding lines — it reaches the prompt through the same block —
+        // while other_persona_names stays peer-only (the fact has no
+        // display_name, so it can NEVER become a phantom "peer" name).
+        assert_eq!(proj.room_roster.len(), 2);
+        assert!(
+            proj.room_roster[0].contains("No human is present"),
+            "authority fact first: {}",
+            proj.room_roster[0]
+        );
+        assert_eq!(
+            proj.room_roster[1], "win-claude [claude] — busy",
+            "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
+        );
+        assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
+
+        // 3. Real assembly: grounding lines → the [Present in this room] block.
+        let input = PromptAssemblyInput {
+            persona_name: "Asha".to_string(),
+            system_prompt: "You are Asha.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "who is here?".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: proj.other_persona_names,
+            recalled_engrams: vec![],
+            room_roster: proj.room_roster,
+            room_doctrine: None,
+        };
+        let assembled = assemble(&input);
+        assert!(
+            assembled.system_message.contains("[Present in this room]"),
+            "roster block missing from live-path assembly:\n{}",
+            assembled.system_message
+        );
+        assert!(
+            assembled
+                .system_message
+                .contains("win-claude [claude] — busy"),
+            "converged roster line (with availability) did not reach the prompt:\n{}",
+            assembled.system_message
+        );
+    }
+
+    // what this catches: empty roster → NO [Present in this room] block,
+    // backwards-compatible with every caller that doesn't supply one
+    // (and the cold-start / no-presence case). A formatter that always
+    // emitted the header would clutter every prompt.
+    #[test]
+    fn empty_room_roster_emits_no_present_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
+        };
+
+        let result = assemble(&input);
+        assert!(
+            !result.system_message.contains("[Present in this room]"),
+            "should NOT render the roster block for an empty roster: {}",
+            result.system_message
+        );
+    }
+
+    // what this catches: a non-empty room_doctrine renders a
+    // [Room operating doctrine] block carrying the contract verbatim, so
+    // the persona calibrates participation to the room's nature (slice
+    // 2). Empty/None must render nothing (the other test path). Regression
+    // target: docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    #[test]
+    fn room_doctrine_renders_operating_block() {
+        let mut input = PromptAssemblyInput {
+            persona_name: "Ivar".to_string(),
+            system_prompt: "You are Ivar.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: Some(
+                "This is a coordination room. Respond sparingly; do not chat.".to_string(),
+            ),
+        };
+
+        let with = assemble(&input);
+        assert!(
+            with.system_message.contains("[Room operating doctrine]"),
+            "expected the doctrine block header: {}",
+            with.system_message
+        );
+        assert!(with.system_message.contains("Respond sparingly"));
+
+        // None → no block (backwards-compatible).
+        input.room_doctrine = None;
+        let without = assemble(&input);
+        assert!(!without.system_message.contains("[Room operating doctrine]"));
     }
 
     #[test]
@@ -806,6 +1236,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -830,6 +1262,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -862,6 +1296,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -904,6 +1340,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -947,6 +1385,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -978,7 +1418,7 @@ mod tests {
         let history = vec![
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "anyone want to review PersonaUser.ts?".to_string(),
                 timestamp_ms: None,
             },
@@ -1002,7 +1442,7 @@ mod tests {
             },
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "great, let's go".to_string(),
                 timestamp_ms: None,
             },
@@ -1078,7 +1518,7 @@ mod tests {
     fn proper_chatml_single_party_human_only_history() {
         let history = vec![HistoryMessage {
             role: "user".to_string(),
-            name: Some("Joel".to_string()),
+            name: Some("Operator".to_string()),
             content: "hi".to_string(),
             timestamp_ms: None,
         }];
@@ -1116,5 +1556,22 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].content, "first message");
+    }
+
+    // what this catches (2026-09-15): a bare inflection of the token posted as a whole
+    // message — "Silence." (5090), "Passed" (Intel Mac) — is silence; the same word
+    // opening a sentence is speech.
+    #[test]
+    fn a_bare_inflection_of_the_token_is_silence_and_a_sentence_is_not() {
+        for s in ["Passed", "Silence.", "(silence)", "  passing  ", "*Silent*", "yield_turn", "I'm stopping now."] {
+            assert!(looks_like_silence_token(s), "{s:?}");
+        }
+        for s in [
+            "Passed the command for marking the room concluded, but no action was taken.",
+            "I'll stay silent on this one until the tests pass.",
+            "Silence is not the answer here — the test still fails.",
+        ] {
+            assert!(!looks_like_silence_token(s), "{s:?}");
+        }
     }
 }

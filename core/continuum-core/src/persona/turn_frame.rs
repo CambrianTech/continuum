@@ -7,6 +7,7 @@
 use super::inbox::PersonaInboxFrame;
 use super::types::InboxMessage;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// v1 = original schema (consolidated_inbox + rag_seed only).
@@ -17,13 +18,20 @@ use uuid::Uuid;
 /// behavior).
 pub const PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ConsolidatedInboxMessage.ts"
+)]
 pub struct ConsolidatedInboxMessage {
+    #[ts(type = "string")]
     pub id: Uuid,
+    #[ts(type = "string")]
     pub sender_id: Uuid,
     pub sender_name: String,
     pub content: String,
+    #[ts(type = "number")]
     pub timestamp: u64,
 }
 
@@ -39,24 +47,40 @@ impl From<&InboxMessage> for ConsolidatedInboxMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ConsolidatedInboxChunk.ts"
+)]
 pub struct ConsolidatedInboxChunk {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
+    #[ts(type = "string")]
     pub trigger_message_id: Uuid,
     pub messages: Vec<ConsolidatedInboxMessage>,
     pub transcript: String,
+    #[ts(type = "number")]
     pub source_count: usize,
+    #[ts(type = "number")]
     pub span_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/RagAssemblySeed.ts"
+)]
 pub struct RagAssemblySeed {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     pub query_text: String,
+    #[ts(type = "Array<string>")]
     pub source_message_ids: Vec<Uuid>,
 }
 
@@ -67,8 +91,12 @@ pub struct RagAssemblySeed {
 /// IdentityState (filled in by the caller); Assistant comes from
 /// the persona's prior outputs when self-reflection is wired
 /// (future PR).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PromptRole.ts"
+)]
 pub enum PromptRole {
     System,
     User,
@@ -78,8 +106,12 @@ pub enum PromptRole {
 /// One turn in the chat-style ResponsePrompt. Pairs a `PromptRole`
 /// with a content string. Multimodal content (images, audio) lands
 /// in a follow-up PR per the CBAR-SUBSTRATE multimodal contract.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PromptMessage.ts"
+)]
 pub struct PromptMessage {
     pub role: PromptRole,
     pub content: String,
@@ -93,10 +125,16 @@ pub struct PromptMessage {
 /// The substrate owns this shape so prompt-building stays
 /// replayable + deterministic — no per-adapter TS prompt-build
 /// hacks.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ResponsePrompt.ts"
+)]
 pub struct ResponsePrompt {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     /// Persona identity / role instruction. PR-1 returns `None`;
     /// callers fill in from the persona's IdentityState (loaded
@@ -107,14 +145,22 @@ pub struct ResponsePrompt {
     /// The inbox message that triggered this turn — used by
     /// sentinel attribution + replay to correlate the prompt back
     /// to the originating event.
+    #[ts(type = "string")]
     pub trigger_message_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaTurnFrameReplayRecord.ts"
+)]
 pub struct PersonaTurnFrameReplayRecord {
+    #[ts(type = "number")]
     pub schema_version: u32,
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     pub inbox_frame: PersonaInboxFrame,
     pub consolidated_inbox: ConsolidatedInboxChunk,
@@ -132,6 +178,7 @@ pub struct PersonaTurnFrameReplayRecord {
     /// Capturing the prompt at record time pins the input to
     /// inference for downstream attribution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub response_prompt: Option<ResponsePrompt>,
 }
 
@@ -340,9 +387,9 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let inbox = PersonaInbox::new(persona_id);
-        inbox.enqueue(message(room_id, "Joel", "first", 1_000, 0.5));
+        inbox.enqueue(message(room_id, "Operator", "first", 1_000, 0.5));
         inbox.enqueue(message(room_id, "Ava", "second", 1_010, 0.9));
-        inbox.enqueue(message(room_id, "Joel", "third", 1_020, 0.7));
+        inbox.enqueue(message(room_id, "Operator", "third", 1_020, 0.7));
 
         let inbox_frame = inbox.drain_frame(100, 8).expect("frame drains");
         let turn_frame = PersonaTurnFrame::from_inbox_frame(inbox_frame);
@@ -363,7 +410,10 @@ mod tests {
             vec!["first", "second", "third"]
         );
         assert_eq!(chunk.trigger_message_id, chunk.messages[2].id);
-        assert_eq!(chunk.transcript, "Joel: first\nAva: second\nJoel: third");
+        assert_eq!(
+            chunk.transcript,
+            "Operator: first\nAva: second\nOperator: third"
+        );
         assert!(inbox.is_empty(), "one frame, not one inference per message");
     }
 
@@ -372,7 +422,7 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let messages = vec![
-            message(room_id, "Joel", "what changed?", 2_000, 0.8),
+            message(room_id, "Operator", "what changed?", 2_000, 0.8),
             message(room_id, "Mira", "the queue coalesced", 2_030, 0.7),
         ];
         let frame = PersonaInboxFrame {
@@ -399,7 +449,7 @@ mod tests {
         assert_eq!(seed.room_id, room_id);
         assert_eq!(
             seed.query_text,
-            "Joel: what changed?\nMira: the queue coalesced"
+            "Operator: what changed?\nMira: the queue coalesced"
         );
         assert_eq!(seed.source_message_ids.len(), 2);
     }
@@ -409,7 +459,7 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let messages = vec![
-            message(room_id, "Joel", "first", 3_000, 0.8),
+            message(room_id, "Operator", "first", 3_000, 0.8),
             message(room_id, "Mira", "second", 3_040, 0.7),
         ];
         let source_ids = messages
@@ -443,7 +493,7 @@ mod tests {
         assert_eq!(record.inbox_frame.metrics.messages_drained, 2);
         assert_eq!(
             record.consolidated_inbox.transcript,
-            "Joel: first\nMira: second"
+            "Operator: first\nMira: second"
         );
         assert_eq!(record.rag_seed.source_message_ids, source_ids);
 
@@ -518,7 +568,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hello", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hello", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -542,7 +592,7 @@ mod tests {
             .as_ref()
             .expect("v2 record has response_prompt for non-empty frame");
         assert_eq!(prompt.messages.len(), 1);
-        assert_eq!(prompt.messages[0].content, "Joel: hello");
+        assert_eq!(prompt.messages[0].content, "Operator: hello");
     }
 
     #[test]
@@ -647,7 +697,7 @@ mod tests {
             persona_id: Uuid::new_v4(),
             room_id,
             messages: vec![
-                message(room_id, "Joel", "first line", 1_000, 0.9),
+                message(room_id, "Operator", "first line", 1_000, 0.9),
                 message(room_id, "Mira", "second line", 1_010, 0.8),
             ],
             metrics: PersonaInboxFrameMetrics {
@@ -667,7 +717,7 @@ mod tests {
         assert_eq!(prompt.messages.len(), 2);
         assert!(matches!(prompt.messages[0].role, PromptRole::User));
         assert!(matches!(prompt.messages[1].role, PromptRole::User));
-        assert_eq!(prompt.messages[0].content, "Joel: first line");
+        assert_eq!(prompt.messages[0].content, "Operator: first line");
         assert_eq!(prompt.messages[1].content, "Mira: second line");
     }
 
@@ -680,7 +730,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hi", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -703,7 +753,7 @@ mod tests {
     #[test]
     fn response_prompt_trigger_matches_latest_message_id() {
         let room_id = Uuid::new_v4();
-        let m1 = message(room_id, "Joel", "earlier", 1, 0.5);
+        let m1 = message(room_id, "Operator", "earlier", 1, 0.5);
         let m2 = message(room_id, "Mira", "trigger", 2, 0.5);
         let trigger_id = m2.id;
         let frame = PersonaInboxFrame {
@@ -734,7 +784,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hi", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -781,24 +831,24 @@ mod tests {
         let prompt = prompt_with(
             None,
             vec![
-                (PromptRole::User, "Joel: hi"),
-                (PromptRole::User, "Joel: how are you"),
+                (PromptRole::User, "Operator: hi"),
+                (PromptRole::User, "Operator: how are you"),
             ],
         );
         let text = prompt.to_prompt_text();
-        assert_eq!(text, "user: Joel: hi\nuser: Joel: how are you");
+        assert_eq!(text, "user: Operator: hi\nuser: Operator: how are you");
     }
 
     #[test]
     fn to_prompt_text_prepends_system_prompt_when_present() {
         let prompt = prompt_with(
             Some("You are Helper, a calm assistant."),
-            vec![(PromptRole::User, "Joel: ping")],
+            vec![(PromptRole::User, "Operator: ping")],
         );
         let text = prompt.to_prompt_text();
         assert_eq!(
             text,
-            "You are Helper, a calm assistant.\n\nuser: Joel: ping"
+            "You are Helper, a calm assistant.\n\nuser: Operator: ping"
         );
     }
 
@@ -817,15 +867,15 @@ mod tests {
             None,
             vec![
                 (PromptRole::System, "Be brief."),
-                (PromptRole::User, "Joel: hi"),
+                (PromptRole::User, "Operator: hi"),
                 (PromptRole::Assistant, "Helper: hello"),
-                (PromptRole::User, "Joel: thanks"),
+                (PromptRole::User, "Operator: thanks"),
             ],
         );
         let text = prompt.to_prompt_text();
         assert_eq!(
             text,
-            "system: Be brief.\nuser: Joel: hi\nassistant: Helper: hello\nuser: Joel: thanks"
+            "system: Be brief.\nuser: Operator: hi\nassistant: Helper: hello\nuser: Operator: thanks"
         );
     }
 

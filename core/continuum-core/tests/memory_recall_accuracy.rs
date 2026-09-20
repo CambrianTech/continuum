@@ -10,6 +10,7 @@
 //! Test dataset: A persona's thought chain about learning Rust,
 //! with explicit tags forming an associative graph.
 
+use continuum_core::identity::PersonaRef;
 use continuum_core::memory::recall::{
     AssociativeRecallLayer, CoreRecallLayer, CrossContextLayer, DecayResurfaceLayer, RecallLayer,
     RecallQuery, SemanticRecallLayer, TemporalRecallLayer,
@@ -24,13 +25,28 @@ use std::sync::Arc;
 
 const PERSONA_ID: &str = "test-persona-recall";
 
+/// The fixture persona as the TYPED ref the memory API takes.
+///
+/// `load_corpus` / `multi_layer_recall` / `consciousness_context` moved from `&str`
+/// to `&PersonaRef` — an identity is a type, not loose text. This file kept handing
+/// them the bare literal and stopped compiling, which is only visible to a build that
+/// includes `--tests`: the macOS job runs `--lib`, so the red lived exclusively in the
+/// Windows column and read like a platform problem for days. It was neither Windows-
+/// specific nor a test failure — the test binary never compiled anywhere.
+///
+/// One constructor so the id itself still lives in exactly one place; the string is
+/// still `PERSONA_ID` for the struct fields that legitimately want a `String`.
+fn persona() -> PersonaRef {
+    PersonaRef(PERSONA_ID.to_string())
+}
+
 /// Create a test manager with deterministic embeddings.
 fn test_manager() -> PersonaMemoryManager {
     PersonaMemoryManager::new(Arc::new(DeterministicEmbeddingProvider))
 }
 
 /// Create a CorpusMemory with a deterministic embedding.
-fn make_memory(
+async fn make_memory(
     id: &str,
     content: &str,
     importance: f64,
@@ -40,7 +56,7 @@ fn make_memory(
     room_id: &str,
 ) -> CorpusMemory {
     let provider = DeterministicEmbeddingProvider;
-    let embedding = provider.embed(content).ok();
+    let embedding = Some(provider.embed(content).await);
 
     CorpusMemory {
         record: MemoryRecord {
@@ -57,6 +73,8 @@ fn make_memory(
             source: Some("chat".into()),
             last_accessed_at: None,
             layer: None,
+            origin_node: None,
+            origin_seq: None,
             relevance_score: None,
         },
         embedding,
@@ -65,7 +83,7 @@ fn make_memory(
 
 /// Seed the standard thought-chain dataset.
 /// Returns (memories, IDs) in order: [rust_basics, borrow_checker, lifetimes, concurrency, tokio, cooking]
-fn build_thought_chain() -> Vec<CorpusMemory> {
+async fn build_thought_chain() -> Vec<CorpusMemory> {
     let now = chrono::Utc::now();
 
     vec![
@@ -78,7 +96,7 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::minutes(60)).to_rfc3339(),
             vec!["rust".into(), "memory-safety".into(), "ownership".into()],
             "room-academy",
-        ),
+        ).await,
         // 1: Builds on ownership -> borrow checker
         make_memory(
             "m-borrow-checker",
@@ -88,7 +106,7 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::minutes(55)).to_rfc3339(),
             vec!["rust".into(), "borrow-checker".into(), "concurrency".into()],
             "room-academy",
-        ),
+        ).await,
         // 2: Builds on borrowing -> lifetimes
         make_memory(
             "m-lifetimes",
@@ -98,7 +116,7 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::minutes(50)).to_rfc3339(),
             vec!["rust".into(), "lifetimes".into(), "references".into()],
             "room-academy",
-        ),
+        ).await,
         // 3: Concurrency — connected to borrow checker
         make_memory(
             "m-concurrency",
@@ -108,7 +126,7 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::minutes(30)).to_rfc3339(),
             vec!["rust".into(), "concurrency".into(), "type-system".into()],
             "room-general",
-        ),
+        ).await,
         // 4: Tokio — recent, related to concurrency
         make_memory(
             "m-tokio",
@@ -118,7 +136,7 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::minutes(5)).to_rfc3339(),
             vec!["rust".into(), "tokio".into(), "async".into(), "concurrency".into()],
             "room-general",
-        ),
+        ).await,
         // 5: UNRELATED — cooking (should NOT surface for Rust queries)
         make_memory(
             "m-cooking",
@@ -128,12 +146,12 @@ fn build_thought_chain() -> Vec<CorpusMemory> {
             &(now - chrono::Duration::hours(12)).to_rfc3339(),
             vec!["cooking".into(), "pasta".into(), "italian".into()],
             "room-kitchen",
-        ),
+        ).await,
     ]
 }
 
 /// Build timeline events for cross-context testing.
-fn build_timeline_events() -> Vec<CorpusTimelineEvent> {
+async fn build_timeline_events() -> Vec<CorpusTimelineEvent> {
     let now = chrono::Utc::now();
     let provider = DeterministicEmbeddingProvider;
 
@@ -153,9 +171,9 @@ fn build_timeline_events() -> Vec<CorpusTimelineEvent> {
                 importance: 0.8,
                 topics: vec!["rust".into(), "ownership".into(), "architecture".into()],
             },
-            embedding: provider
+            embedding: Some(provider
                 .embed("Deep discussion about Rust ownership patterns and memory management strategies")
-                .ok(),
+                .await),
         },
         CorpusTimelineEvent {
             event: TimelineEvent {
@@ -172,9 +190,9 @@ fn build_timeline_events() -> Vec<CorpusTimelineEvent> {
                 importance: 0.5,
                 topics: vec!["cooking".into(), "mediterranean".into()],
             },
-            embedding: provider
+            embedding: Some(provider
                 .embed("Discussing Mediterranean cooking techniques and recipes")
-                .ok(),
+                .await),
         },
     ]
 }
@@ -185,7 +203,7 @@ fn load_standard_corpus(
     memories: Vec<CorpusMemory>,
     events: Vec<CorpusTimelineEvent>,
 ) {
-    manager.load_corpus(PERSONA_ID, memories, events);
+    manager.load_corpus(&persona(), memories, events);
 }
 
 /// Build a raw MemoryCorpus directly (for individual layer tests).
@@ -195,10 +213,10 @@ fn build_corpus(memories: Vec<CorpusMemory>, events: Vec<CorpusTimelineEvent>) -
 
 // ─── Test 1: Basic Store/Recall Roundtrip ─────────────────────────────────────
 
-#[test]
-fn test_roundtrip_corpus_load_and_recall() {
+#[tokio::test]
+async fn test_roundtrip_corpus_load_and_recall() {
     let manager = test_manager();
-    let memories = build_thought_chain();
+    let memories = build_thought_chain().await;
     load_standard_corpus(&manager, memories, vec![]);
 
     // Multi-layer recall with no query — should get core + temporal + decay layers
@@ -208,7 +226,7 @@ fn test_roundtrip_corpus_load_and_recall() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Should find memories (core layer alone finds 3 with importance >= 0.8)
     assert!(
@@ -225,10 +243,9 @@ fn test_roundtrip_corpus_load_and_recall() {
 
 // ─── Test 2: Core Layer — Never-Forget Memories ──────────────────────────────
 
-#[test]
-fn test_core_layer_finds_high_importance() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
-    let provider = DeterministicEmbeddingProvider;
+#[tokio::test]
+async fn test_core_layer_finds_high_importance() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
 
     let query = RecallQuery {
         query_text: None,
@@ -237,7 +254,7 @@ fn test_core_layer_finds_high_importance() {
         max_results_per_layer: 10,
     };
 
-    let results = CoreRecallLayer.recall(&corpus, &query, &provider);
+    let results = CoreRecallLayer.recall(&corpus, &query);
 
     // Core layer: importance >= 0.8
     assert!(
@@ -264,14 +281,14 @@ fn test_core_layer_finds_high_importance() {
 
 // ─── Test 3: Semantic Layer — Meaning-Based Similarity ───────────────────────
 
-#[test]
-fn test_semantic_layer_finds_related_by_meaning() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
+#[tokio::test]
+async fn test_semantic_layer_finds_related_by_meaning() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
     let provider = DeterministicEmbeddingProvider;
 
     let query_emb = provider
         .embed("How does Rust handle memory safety and concurrency?")
-        .unwrap();
+        .await;
 
     let query = RecallQuery {
         query_text: Some("How does Rust handle memory safety and concurrency?".into()),
@@ -280,7 +297,7 @@ fn test_semantic_layer_finds_related_by_meaning() {
         max_results_per_layer: 5,
     };
 
-    let results = SemanticRecallLayer.recall(&corpus, &query, &provider);
+    let results = SemanticRecallLayer.recall(&corpus, &query);
 
     assert!(
         !results.is_empty(),
@@ -310,14 +327,12 @@ fn test_semantic_layer_finds_related_by_meaning() {
     }
 }
 
-#[test]
-fn test_semantic_layer_cooking_query_finds_cooking() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
+#[tokio::test]
+async fn test_semantic_layer_cooking_query_finds_cooking() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
     let provider = DeterministicEmbeddingProvider;
 
-    let query_emb = provider
-        .embed("What do I know about cooking pasta?")
-        .unwrap();
+    let query_emb = provider.embed("What do I know about cooking pasta?").await;
 
     let query = RecallQuery {
         query_text: Some("What do I know about cooking pasta?".into()),
@@ -326,7 +341,7 @@ fn test_semantic_layer_cooking_query_finds_cooking() {
         max_results_per_layer: 5,
     };
 
-    let results = SemanticRecallLayer.recall(&corpus, &query, &provider);
+    let results = SemanticRecallLayer.recall(&corpus, &query);
 
     assert!(
         !results.is_empty(),
@@ -346,10 +361,9 @@ fn test_semantic_layer_cooking_query_finds_cooking() {
 
 // ─── Test 4: Temporal Layer — Recent Context ─────────────────────────────────
 
-#[test]
-fn test_temporal_layer_surfaces_recent() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
-    let provider = DeterministicEmbeddingProvider;
+#[tokio::test]
+async fn test_temporal_layer_surfaces_recent() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
 
     let query = RecallQuery {
         query_text: None,
@@ -358,7 +372,7 @@ fn test_temporal_layer_surfaces_recent() {
         max_results_per_layer: 3,
     };
 
-    let results = TemporalRecallLayer.recall(&corpus, &query, &provider);
+    let results = TemporalRecallLayer.recall(&corpus, &query);
 
     // Should find recent memories (within 2 hours)
     // Memories 0-4 are within 60 minutes; memory 5 (cooking) is 12 hours old
@@ -382,10 +396,9 @@ fn test_temporal_layer_surfaces_recent() {
 
 // ─── Test 5: Associative Layer — Tag/Keyword Graph ───────────────────────────
 
-#[test]
-fn test_associative_layer_finds_by_tags() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
-    let provider = DeterministicEmbeddingProvider;
+#[tokio::test]
+async fn test_associative_layer_finds_by_tags() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
 
     let query = RecallQuery {
         query_text: Some("Tell me about Rust concurrency".into()),
@@ -394,7 +407,7 @@ fn test_associative_layer_finds_by_tags() {
         max_results_per_layer: 10,
     };
 
-    let results = AssociativeRecallLayer.recall(&corpus, &query, &provider);
+    let results = AssociativeRecallLayer.recall(&corpus, &query);
 
     assert!(
         !results.is_empty(),
@@ -425,10 +438,9 @@ fn test_associative_layer_finds_by_tags() {
 
 // ─── Test 6: Decay Resurface — Spaced Repetition ─────────────────────────────
 
-#[test]
-fn test_decay_resurface_surfaces_unaccessed() {
-    let corpus = build_corpus(build_thought_chain(), vec![]);
-    let provider = DeterministicEmbeddingProvider;
+#[tokio::test]
+async fn test_decay_resurface_surfaces_unaccessed() {
+    let corpus = build_corpus(build_thought_chain().await, vec![]);
 
     let query = RecallQuery {
         query_text: None,
@@ -437,7 +449,7 @@ fn test_decay_resurface_surfaces_unaccessed() {
         max_results_per_layer: 10,
     };
 
-    let results = DecayResurfaceLayer.recall(&corpus, &query, &provider);
+    let results = DecayResurfaceLayer.recall(&corpus, &query);
 
     // All memories have access_count=0 and were created recently,
     // so decay score ~ 0 for recent ones. But any memory with importance >= 0.5 is eligible.
@@ -454,10 +466,9 @@ fn test_decay_resurface_surfaces_unaccessed() {
 
 // ─── Test 7: Cross-Context Layer ─────────────────────────────────────────────
 
-#[test]
-fn test_cross_context_finds_other_room_events() {
-    let corpus = build_corpus(build_thought_chain(), build_timeline_events());
-    let provider = DeterministicEmbeddingProvider;
+#[tokio::test]
+async fn test_cross_context_finds_other_room_events() {
+    let corpus = build_corpus(build_thought_chain().await, build_timeline_events().await);
 
     // Query from room-general — should find events from room-academy and room-kitchen
     let query = RecallQuery {
@@ -467,7 +478,7 @@ fn test_cross_context_finds_other_room_events() {
         max_results_per_layer: 10,
     };
 
-    let results = CrossContextLayer.recall(&corpus, &query, &provider);
+    let results = CrossContextLayer.recall(&corpus, &query);
 
     // Should find timeline events from OTHER rooms (not room-general)
     assert!(
@@ -488,10 +499,10 @@ fn test_cross_context_finds_other_room_events() {
 
 // ─── Test 8: Multi-Layer Merge — Convergence Boosting ────────────────────────
 
-#[test]
-fn test_multi_layer_convergence_boost() {
+#[tokio::test]
+async fn test_multi_layer_convergence_boost() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain(), vec![]);
+    load_standard_corpus(&manager, build_thought_chain().await, vec![]);
 
     // Multi-layer recall with Rust query — memories found by multiple layers
     // should rank higher than single-layer finds
@@ -502,7 +513,7 @@ fn test_multi_layer_convergence_boost() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     assert!(
         !resp.memories.is_empty(),
@@ -547,10 +558,10 @@ fn test_multi_layer_convergence_boost() {
 
 // ─── Test 9: Thought Chain — Associative Graph Traversal ─────────────────────
 
-#[test]
-fn test_thought_chain_association() {
+#[tokio::test]
+async fn test_thought_chain_association() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain(), vec![]);
+    load_standard_corpus(&manager, build_thought_chain().await, vec![]);
 
     // Query about "borrow checker" — should find:
     // - Direct match: borrow_checker memory (tagged "borrow-checker")
@@ -563,7 +574,7 @@ fn test_thought_chain_association() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Top result should be about Rust memory/ownership/borrow concepts.
     let top_content = resp.memories[0].content.to_lowercase();
@@ -592,10 +603,10 @@ fn test_thought_chain_association() {
 
 // ─── Test 10: Negative — Unrelated Query Returns Unrelated ───────────────────
 
-#[test]
-fn test_unrelated_query_finds_correct_domain() {
+#[tokio::test]
+async fn test_unrelated_query_finds_correct_domain() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain(), vec![]);
+    load_standard_corpus(&manager, build_thought_chain().await, vec![]);
 
     // Query about cooking — cooking memory should appear somewhere
     let req = MultiLayerRecallRequest {
@@ -605,7 +616,7 @@ fn test_unrelated_query_finds_correct_domain() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Cooking memory should appear somewhere in results
     let has_pasta = resp.memories.iter().any(|m| m.content.contains("pasta"));
@@ -619,15 +630,16 @@ fn test_unrelated_query_finds_correct_domain() {
 
 // ─── Test 11: Performance — Multi-Layer Recall Under Load ─────────────────────
 
-#[test]
-fn test_recall_performance_with_many_memories() {
+#[tokio::test]
+async fn test_recall_performance_with_many_memories() {
     let manager = test_manager();
     let now = chrono::Utc::now();
     let provider = DeterministicEmbeddingProvider;
 
     // Build 100 memories to stress-test
-    let memories: Vec<CorpusMemory> = (0..100)
-        .map(|i| {
+    let mut memories: Vec<CorpusMemory> = Vec::with_capacity(100);
+    for i in 0..100 {
+        memories.push({
             let topic = match i % 5 {
                 0 => "Rust programming",
                 1 => "database design",
@@ -639,7 +651,7 @@ fn test_recall_performance_with_many_memories() {
                 "Memory #{i}: Discussion about topic {topic} with importance level {}",
                 (50 + (i % 50)) as f64 / 100.0
             );
-            let embedding = provider.embed(&content).ok();
+            let embedding = Some(provider.embed(&content).await);
 
             CorpusMemory {
                 record: MemoryRecord {
@@ -659,12 +671,14 @@ fn test_recall_performance_with_many_memories() {
                     source: Some("test".into()),
                     last_accessed_at: None,
                     layer: None,
+                    origin_node: None,
+                    origin_seq: None,
                     relevance_score: None,
                 },
                 embedding,
             }
-        })
-        .collect();
+        });
+    }
 
     load_standard_corpus(&manager, memories, vec![]);
 
@@ -676,7 +690,7 @@ fn test_recall_performance_with_many_memories() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
     let elapsed = start.elapsed();
 
     assert!(
@@ -709,13 +723,13 @@ fn test_recall_performance_with_many_memories() {
 
 // ─── Test 12: Corpus Loading Response ────────────────────────────────────────
 
-#[test]
-fn test_corpus_load_response_counts() {
+#[tokio::test]
+async fn test_corpus_load_response_counts() {
     let manager = test_manager();
-    let memories = build_thought_chain(); // 6 memories, all with embeddings
-    let events = build_timeline_events(); // 2 events, both with embeddings
+    let memories = build_thought_chain().await; // 6 memories, all with embeddings
+    let events = build_timeline_events().await; // 2 events, both with embeddings
 
-    let resp = manager.load_corpus(PERSONA_ID, memories, events);
+    let resp = manager.load_corpus(&persona(), memories, events);
 
     assert_eq!(resp.memory_count, 6);
     assert_eq!(resp.embedded_memory_count, 6);
@@ -726,8 +740,8 @@ fn test_corpus_load_response_counts() {
 
 // ─── Test 13: Corpus Not Loaded Error ────────────────────────────────────────
 
-#[test]
-fn test_recall_without_corpus_returns_error() {
+#[tokio::test]
+async fn test_recall_without_corpus_returns_error() {
     let manager = test_manager();
 
     let req = MultiLayerRecallRequest {
@@ -737,16 +751,22 @@ fn test_recall_without_corpus_returns_error() {
         layers: None,
     };
 
-    let result = manager.multi_layer_recall("nonexistent-persona", &req);
+    let result = manager
+        .multi_layer_recall(&PersonaRef("nonexistent-persona".to_string()), &req)
+        .await;
     assert!(result.is_err(), "Recall without loaded corpus should error");
 }
 
 // ─── Test 14: Consciousness Context ──────────────────────────────────────────
 
-#[test]
-fn test_consciousness_context_with_cross_context_events() {
+#[tokio::test]
+async fn test_consciousness_context_with_cross_context_events() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain(), build_timeline_events());
+    load_standard_corpus(
+        &manager,
+        build_thought_chain().await,
+        build_timeline_events().await,
+    );
 
     let req = continuum_core::memory::ConsciousnessContextRequest {
         room_id: "room-general".into(),
@@ -754,7 +774,7 @@ fn test_consciousness_context_with_cross_context_events() {
         skip_semantic_search: false,
     };
 
-    let resp = manager.consciousness_context(PERSONA_ID, &req).unwrap();
+    let resp = manager.consciousness_context(&persona(), &req).unwrap();
 
     // Should have cross-context events (from room-academy and room-kitchen)
     assert!(
@@ -766,8 +786,8 @@ fn test_consciousness_context_with_cross_context_events() {
 
 // ─── Test 15: Corpus Replacement ─────────────────────────────────────────────
 
-#[test]
-fn test_corpus_replacement_clears_old_data() {
+#[tokio::test]
+async fn test_corpus_replacement_clears_old_data() {
     let manager = test_manager();
     let provider = DeterministicEmbeddingProvider;
 
@@ -787,13 +807,17 @@ fn test_corpus_replacement_clears_old_data() {
             source: None,
             last_accessed_at: None,
             layer: None,
+            origin_node: None,
+            origin_seq: None,
             relevance_score: None,
         },
-        embedding: provider
-            .embed("This is the old memory that should disappear")
-            .ok(),
+        embedding: Some(
+            provider
+                .embed("This is the old memory that should disappear")
+                .await,
+        ),
     }];
-    manager.load_corpus(PERSONA_ID, initial, vec![]);
+    manager.load_corpus(&persona(), initial, vec![]);
 
     // Replace with new corpus
     let replacement = vec![CorpusMemory {
@@ -811,11 +835,13 @@ fn test_corpus_replacement_clears_old_data() {
             source: None,
             last_accessed_at: None,
             layer: None,
+            origin_node: None,
+            origin_seq: None,
             relevance_score: None,
         },
-        embedding: provider.embed("This is the new replacement memory").ok(),
+        embedding: Some(provider.embed("This is the new replacement memory").await),
     }];
-    manager.load_corpus(PERSONA_ID, replacement, vec![]);
+    manager.load_corpus(&persona(), replacement, vec![]);
 
     // Recall should find new memory, not old
     let req = MultiLayerRecallRequest {
@@ -824,7 +850,7 @@ fn test_corpus_replacement_clears_old_data() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     assert!(
         resp.memories.iter().all(|m| m.id != "old-memory"),

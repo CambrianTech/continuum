@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// One message in the recent-conversation context the rater sees.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -30,7 +30,7 @@ pub struct RatingMessage {
 /// the fields here; carrying extras through Rust would couple this slice to
 /// fields it doesn't use. PR-2's IPC contract will accept the full
 /// `ResponseProposal` from TS and project to this rater-shape internally.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -46,7 +46,7 @@ pub struct ResponseProposal {
 
 /// The original message + recent conversation + competing proposals the
 /// rater needs to score. Pure data; no behavior.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

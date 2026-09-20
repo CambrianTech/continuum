@@ -57,7 +57,7 @@ pub const DEFAULT_SEARCH_LIMIT: u32 = 10;
 
 /// One tool surface the registry exposes — name + description.
 /// PR-2's `embed_tools` consumes these to build the embedding payload.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -84,7 +84,7 @@ pub struct ToolEmbedding {
 // ─── IPC request + response shapes ────────────────────────────────────
 
 /// IPC request: embed a batch of tool descriptions.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -114,7 +114,7 @@ pub struct EmbedToolsResponse {
 }
 
 /// IPC request: rank cached tool embeddings against a query vector.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -131,6 +131,7 @@ pub struct SemanticSearchToolsRequest {
     /// Max results to return. PR-2 defaults to
     /// [`DEFAULT_SEARCH_LIMIT`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
     /// Minimum cosine similarity to include in results. PR-2 defaults

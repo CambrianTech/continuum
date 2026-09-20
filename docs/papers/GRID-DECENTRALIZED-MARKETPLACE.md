@@ -4,6 +4,8 @@
 **Purpose**: Long-term architectural vision for p2p marketplace
 **Current Focus**: Phase 1 - Local expertise for single repo (see PRACTICAL-ROADMAP.md)
 
+> **Economics superseded (2026-06)**: the tokenomics in this paper (fixed 21M supply, per-layer GRID pricing, persona subscriptions, platform royalty) are replaced by [ECONOMY-ARCHITECTURE.md](../architecture/ECONOMY-ARCHITECTURE.md) — mint-by-attestation, universal dividend, progressive demurrage, and the atoms-metered/bits-free law. The mesh, DHT, and content-distribution layers below stand unchanged.
+
 ---
 
 ## Vision Statement

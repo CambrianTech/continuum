@@ -168,6 +168,11 @@ fn range_contains(token: &str, prefix: &str, value: u64) -> Result<bool, PolicyS
 fn silicon_token(silicon: TargetSilicon) -> &'static str {
     match silicon {
         TargetSilicon::AppleM => "apple-m",
+        // Mac Intel chassis + discrete GPU via Metal driver (task #52).
+        // Tier policy matches the discrete-GPU shape, not UMA — the
+        // policy_file matcher can target this row separately from
+        // apple-m if a Mac Intel deployment needs its own tuning.
+        TargetSilicon::MacIntelMetal => "mac-intel-metal",
         TargetSilicon::NvidiaCuda => "nvidia-cuda",
         TargetSilicon::AmdRocm => "amd-rocm",
         TargetSilicon::IntelVulkan => "intel-vulkan",

@@ -11,6 +11,12 @@ crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
 name = "continuum-core-server"
 path = "src/main.rs"
 
+# `cu` — the pure-Rust CLI client (replaces the legacy Node `./jtag`). Talks to a
+# running core over its IPC socket via the uniform Connection. See src/bin/continuum.rs.
+[[bin]]
+name = "continuum"
+path = "src/bin/continuum.rs"
+
 [[bin]]
 name = "dequantize-gguf"
 path = "src/bin/dequantize_gguf.rs"
@@ -27,24 +33,62 @@ path = "src/bin/vrm_inspect.rs"
 name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
+# The forge custodian sidecar — the continuum-owned daemon that converts a
+# trained MLX LoRA into a pageable GGUF gene (the one capability unsloth-studio
+# lacked). Declared explicitly (not just autobins-discovered) so it's an
+# intentional, contract-bearing artifact: it serves the `forge::protocol` wire
+# contract a forge daemon will grid-negotiate against.
+[[bin]]
+name = "forge-custodian"
+path = "src/bin/forge_custodian.rs"
+
 [dependencies]
 tokio.workspace = true
+expert-pager-policy = { path = "../expert-pager-policy" }
 serde.workspace = true
 serde_json.workspace = true
+ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
+# JSON Schema generation from serde types — the runtime param schema every SDK
+# (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
+# base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
+schemars = { version = "0.8", features = ["uuid1"] }
 # Procedural derive macros for ORM entities — #[derive(Entity)].
 # Same crate would be path-deps elsewhere; explicit path makes the
 # dev loop tight (no version juggle while the macro evolves).
 continuum-orm-derive = { path = "../continuum-orm-derive" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-reqwest = { version = "0.12", features = ["json"] }
+# The positron substrate side (task #29 Layer 1): `Substrate` (snapshot +
+# live broadcast), `run_session` (the transport-generic live session task),
+# and the `CommandDispatch` seam. The WS ingress owns the transport: it
+# decodes `WsClientMessage::{Subscribe,Observe}` onto `run_session`'s inbound
+# channel and serializes its `ServerMessage::State` output back as
+# `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
+# of a continuum-core dependency (no cycle — this crate implements the trait).
+continuum-positron = { path = "../continuum-positron" }
+# The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
+# implements `continuum_client::Transport` so an in-core citizen (persona,
+# foundry) holds the SAME `Connection` every external client uses — citizens
+# use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
+# depend on continuum-core.
+continuum-client = { path = "../../client/continuum-client" }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
-tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduces fragmentation
+# Distributed compile-time registration: each `CommandSpec` self-registers at its
+# own declaration site (sdk_codegen), so the command registry assembles itself —
+# no hand-maintained list (infinitely-extensible / on-the-fly commands make a
+# static list immediately stale). dtolnay's inventory; link-time collection.
+inventory = "0.3"
+# jemalloc lives in a target block below (gated off windows-msvc, where
+# jemalloc-sys's autotools build fails); see the `not(target_env = "msvc")`
+# block near the macOS deps + the gated #[global_allocator] in main.rs.
 libc = "0.2"     # Process group management (setsid, kill -pgid)
+fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+zip = "0.6"     # Extract .vrm from downloaded VRoid avatar archives (provisioning fetch executor)
 ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 contract event signatures (matches airc-protocol's pinned version)
 
 # Direct dep on the airc daemon's local IPC contract. No subprocess; no
@@ -52,6 +96,7 @@ ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 con
 # (Unix domain socket / Windows named pipe). Pulls airc-protocol +
 # airc-core transitively. SHA pinned at the workspace level.
 airc-ipc.workspace = true
+airc-bus.workspace = true
 airc-core.workspace = true
 airc-protocol.workspace = true
 # airc-lib: high-level SDK helpers. `decode_wire_event` (the canonical
@@ -59,6 +104,12 @@ airc-protocol.workspace = true
 # is what the v5 owner-core migration (task #82) consumes today; the
 # rest of airc-lib is tree-shaken away from the build.
 airc-lib.workspace = true
+# airc-work: the work-board domain. The positron kanban projector
+# (`ipc/positron_kanban_source.rs`) reads `Airc::work_board()` and maps
+# airc's `WorkCard`/`LaneRecord`/`CardState` → the neutral
+# `KanbanViewState` contract. continuum-core is the ONLY crate that may
+# depend on airc-work; `continuum-positron` mirrors the enums instead.
+airc-work.workspace = true
 
 async-trait.workspace = true
 chrono.workspace = true
@@ -67,7 +118,7 @@ chrono.workspace = true
 # Claude Code sends POST /v1/messages — we serve it from Candle
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 parking_lot.workspace = true
 tokio-stream.workspace = true
 
@@ -89,6 +140,9 @@ ort.workspace = true  # ONNX Runtime for TTS
 rayon.workspace = true
 ndarray.workspace = true
 num_cpus = "1.16"  # CPU count detection
+wide = "0.7"  # Portable SIMD (f32x8) for embedding similarity math — NEON on
+              # aarch64 (Mac) / AVX on x86 (Linux grid), guaranteed vectorization
+              # at any opt-level (not auto-vec, which only fires in release).
 dirs = "5.0"  # User directories for model paths
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 
@@ -119,8 +173,11 @@ tracing-appender.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
-# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
-fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
+# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC).
+# NOTE: embedding is async + adapter-routed (unsloth /v1/embeddings via the
+# AIProviderAdapter, see cognition::embedding) — NOT an in-process ONNX model.
+# The fastembed crate was removed in task #40. `ort` stays for live audio
+# (tts/stt/vad), which is a separate concern (task #41).
 
 # LiveKit WebRTC SFU — AI agents join rooms with native audio/video.
 # Optional: Docker ARM64 builds skip this (webrtc-sys C++ fails on ARM64 Linux).
@@ -179,10 +236,47 @@ similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
 regex = "1"                      # Regex search for code search
 
+# Static-HTML eye: parse a persona's rendered artifact (index.html) into the
+# perception ProbeNode tree so the headless eval core can grade structural
+# ui_checks (tags/roles/text/counts) WITHOUT a browser eye-node connected.
+# html5ever-backed → parses malformed model output the way a browser would.
+# CROSS-PLATFORM: `perception::static_html` (perception/mod.rs, unconditional
+# `pub mod`) uses this on every target and the eval core runs on the Linux/
+# Docker grid, so this MUST live in the plain dependency table — it was
+# previously mis-placed under the macOS-only target block, which broke the
+# Linux continuum-core build (grid Docker images) while native macOS + a stale
+# Windows incremental cache masked it.
+scraper = "0.21"
+
 # ORM module — database-agnostic storage with adapter traits
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
+rustpython-parser = "0.4.0"
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+
+# jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
+# jemalloc via an autotools `configure` shell script that fails under
+# windows-msvc, which broke the native Windows continuum-core build. Windows
+# falls back to the system allocator (this box is a dev / serving-via-Docker
+# host, not the Bevy/persona fragmentation case jemalloc fixes — see main.rs).
+# Linux + macOS serving nodes keep jemalloc unchanged.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+# Windows commit-charge sampling (GetPerformanceInfo) for the governed host-cache
+# lease (#287): pagefile overcommit thrashes SILENTLY instead of OOMing loud, so
+# the lease clamps against live commit — the binding term of the 2026-08-01
+# 95.9GB-commit-on-63GB incident. Version pinned to one already in the lockfile.
+# The CLI's detached spawn also uses an explicit native handle allow-list so
+# background cores do not retain their launcher's output-pipe writers.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_ProcessStatus", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }
+# Tokio's Mio sockets must not survive a core restart inside preserved children.
+# Keep the fixed release as a resolution floor, including without our lockfile.
+# Mio #1946 creates sockets with WSA_FLAG_NO_HANDLE_INHERIT (since 1.2.1).
+mio = { version = "1.2.3", default-features = false }
 
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
@@ -217,6 +311,13 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 # only crates into their dep tree on every host.
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
+# Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
+# live consumes its output (the new client SDKs are independent), so it's pure
+# CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
+# framework (registry, dispatch, descriptors, AccessLevel) is always compiled;
+# only the .ts emitter + its tests are gated here. Regenerate the TS SDK with
+# `cargo test --features ts-codegen` on the (rare) occasions it's needed.
+ts-codegen = []
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
@@ -289,6 +390,35 @@ test-fixtures = []
 #     grep -rln 'cfg(feature = "stress-tests")' src/
 stress-tests = []
 
+# Integration tests that link a `test-fixtures`-gated lib symbol (the
+# HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`
+# instrumentation counter). Inside continuum-core's own `#[cfg(test)] mod`s the
+# gate is free via `cfg(test)`, but an integration test in `tests/` is a SEPARATE
+# crate — the lib is built as a plain dependency with `cfg(test)` OFF, so the
+# gated items don't exist unless `test-fixtures` is on. Without these
+# `required-features` lines a bare `cargo test` tries to compile these targets,
+# hits the missing symbols, and fails the whole `tests/` build. Declaring the
+# requirement makes cargo SKIP them cleanly when the feature is off and build
+# them when it's on (`cargo test --features test-fixtures`) — compile-time
+# gating, the same doctrine as `test-fixtures`/`stress-tests` above, not
+# `#[ignore]`. Add a target here the moment a `tests/*.rs` reaches for a gated
+# lib symbol; do NOT gate one that only mentions the symbol in a comment.
+[[test]]
+name = "airc_remote_inference_end_to_end"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "architecture_demand_pull_cognition"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "architecture_killer_loop_burst_cognition"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "persona_command_inbound_pump"
+required-features = ["test-fixtures"]
+
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
 # Allow until we migrate to objc2.
@@ -298,11 +428,16 @@ unexpected_cfgs = "allow"
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
 
+# Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
+# only — production links the regular dep above without it. Lets tests drive a
+# real `Connection` over `MockTransport` (e.g. the MCP ConnectionDispatch test).
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+
 # Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
-# spawns two real Airc peers on LAN loopback; the client crate gives us
-# `Connection` + `AircIpcTransport` so we can exercise the substrate's
-# command_handler against an actual continuum-client request envelope.
+# spawns two real Airc peers on LAN loopback. `continuum-client` is now a
+# regular dependency (see [dependencies]) because `InProcessTransport` — the
+# in-core citizen's connection to its own substrate — implements
+# `continuum_client::Transport` in production code, not just tests.
 airc-test-fixtures = { path = "../airc-test-fixtures" }
-continuum-client = { path = "../../client/continuum-client" }
 airc-protocol = { workspace = true }
 futures = "0.3"

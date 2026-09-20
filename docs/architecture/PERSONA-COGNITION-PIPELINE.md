@@ -27,27 +27,41 @@ Continuum personas are **citizens**, not query handlers. The README has the full
 
 **Per-persona means each AI has its own mind.** The cycle runs per-persona. Shared optimizations (the `analyze` single-flight cache) sit underneath, not above.
 
+Resident checkpoint loading must preserve that continuity: an unreadable or
+invalid checkpoint refuses registration rather than waking a blank mind. See
+[checkpoint recovery](../personas/CHECKPOINT-RECOVERY.md) for the explicit,
+digest-bound adoption path when upgrading a legacy core that wrote to a different
+data root. A selected legacy snapshot is not an acknowledged final-turn flush.
+
 ---
 
 ## 2. The Brain Pipeline — the verbs that exist
 
-This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel. Use them.
+This is the cognition cycle PER PERSONA, PER TURN. The verbs exist in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel.
 
-| # | Verb | Location | Purpose |
-|---|------|----------|---------|
-| 1 | `admission.admit(message)` | `persona/admission_state.rs` | Memory forms — engram lands in L2, dedup + replay-protection enforced. |
-| 2 | `full_evaluate(...)` | `persona/evaluator/mod.rs` | Fast-path gates: sleep mode, undirected-persona chatter, self-message dedup, fast-path priority. Sub-1ms. Silence = first-class outcome. |
-| 3 | `cognition::analyze(AnalysisInput)` | `cognition/shared_analysis/mod.rs` | ONE inference per chat message via single-flight DashMap cache. N personas analyzing the same message coalesce into one inference. Returns `SharedAnalysis` with `suggested_angles` per specialty. **Cache is the optimization; each persona still calls.** |
-| 4 | `score_persona(slot, analysis)` | `cognition/response_orchestrator.rs` | Per-persona relevance via specialty match. Returns `ResponderDecision { is_responder, score, is_lead, reason }`. |
-| 5 | `genome_engine.activate_skill(domain, now_ms)` | `persona/genome_paging.rs` | L1-L5 LoRA paging — page in the adapter for this domain. LRU evicts under pressure. |
-| 6 | `PersonaCognition::compose_for_turn(profile, now_ms)` | `persona/unified.rs` | Brain RAG composition: `engram_source + airc_source + ...` via `FlexboxRagBudgetAdapter` (PR #8 / task #93 — no-clipping, source-owned units, full allocation telemetry). |
-| 7 | `cognition::generate_response::evaluate_response(GenerateResponseRequest)` | `cognition/generate_response.rs` | The agent inference. Takes `AIDecisionContext` (system_prompt + history + trigger). Routes through the provider registry. Typed errors (no silent fallback). |
-| 8 | `cognition::clean_and_validate(...)` | `cognition/response_validator.rs` | Output cleaning + validation. `ValidationOutcome`. |
-| 9 | `cognition::ToolExecutor` | `cognition/tool_executor/` | Executes any `ContentPart::ToolUse` in the response. Multi-modal aware: `MediaItemLite`, `ParsedToolBatch`. Threads results back; may re-call `evaluate_response`. |
-| 10 | `cognition::audit::*` | `cognition/audit.rs` | Audit trail. The substrate's forensic record of what the brain did. |
-| 11 | `cognition::check_redundancy::*` | `cognition/check_redundancy.rs` | Avoid posting echoes the room already covered. |
-| 12 | Brain state updates | `persona/unified.rs` fields | `rate_limiter.track_response`, `content_dedup.record`, `message_cache.push`, `genome_engine.record_activity`, `recall_metadata.*`. |
-| 13 | Post via `ctx.runtime.say(...)` | `persona/airc_citizen.rs` | The persona posts under HER identity (her airc citizen, her peer_id). |
+**Status column added 2026-08-14 (citizenship audit):** the LIVE turn path is the
+WorkspaceCycle in `service_loop.rs` (admit → `build_workspace_turns` → `Burst` →
+faculties → act→observe drive_to_settle). Several verbs below are today reachable
+only from diagnostic commands or from `persona::response::respond`, whose sole
+caller (`PersonaServiceModule`) the module-wiring audit declares UNWIRED/shadowed
+(`runtime/registry.rs`). "dormant" means: exists, tested, NOT on the live per-turn
+path — reuse it when the capability returns, do not write a parallel one.
+
+| # | Verb | Location | Status | Purpose |
+|---|------|----------|--------|---------|
+| 1 | `admission.admit(message)` | `persona/admission_state.rs` | **live** (service_loop) | Memory forms — engram lands in L2, dedup + replay-protection enforced. |
+| 2 | `full_evaluate(...)` | `persona/evaluator/mod.rs` | dormant (command `cognition/full-evaluate` only) | Fast-path gates: sleep mode, undirected-persona chatter, self-message dedup, fast-path priority. Sub-1ms. Silence = first-class outcome. |
+| 3 | `cognition::analyze(AnalysisInput)` | `cognition/shared_analysis/mod.rs` | dormant (respond path only) | ONE inference per chat message via single-flight DashMap cache. N personas analyzing the same message coalesce into one inference. |
+| 4 | `score_persona(slot, analysis)` | `cognition/response_orchestrator.rs` | dormant (respond path only) | Per-persona relevance via specialty match. Returns `ResponderDecision`. |
+| 5 | `genome_engine.activate_skill(domain, now_ms)` | `persona/genome_paging.rs` | dormant (command `cognition/genome-activate-skill` only) | L1-L5 LoRA paging — page in the adapter for this domain. LRU evicts under pressure. |
+| 6 | `PersonaCognition::compose_for_turn(profile, now_ms)` | `persona/unified.rs` | **live** (WorkspaceCycle RAG) | Brain RAG composition: `engram_source + airc_source + roster/doctrine/bench sources` via `FlexboxRagBudgetAdapter`. |
+| 7 | `cognition::generate_response::evaluate_response(...)` | `cognition/generate_response.rs` | dormant (command wrapper + respond path; the live turn infers via `llm_deliberation_faculty`) | Agent inference through the provider registry. Typed errors (no silent fallback). |
+| 8 | `cognition::clean_and_validate(...)` | `cognition/response_validator.rs` | dormant (test-only today) | Output cleaning + validation. `ValidationOutcome`. |
+| 9 | `cognition::ToolExecutor` | `cognition/tool_executor/` | **live** (act→observe) | Executes tool calls. Multi-modal aware. Results re-enter as working-memory receipts + engrams. |
+| 10 | `cognition::audit::*` | `cognition/audit.rs` | dormant (types used by threat_detector; no turn-cycle caller) | Audit trail. The substrate's forensic record of what the brain did. |
+| 11 | `cognition::check_redundancy::*` | `cognition/check_redundancy.rs` | dormant (`self_repeat.rs` notes it "isn't wired into the live loop"; live repetition perception is the WM repetition brick) | Avoid posting echoes the room already covered. |
+| 12 | Brain state updates | `persona/unified.rs` fields | **live** (partial: dedup/speech rings on the cycle) | `rate_limiter.track_response`, `content_dedup.record`, `message_cache.push`, `recall_metadata.*`. |
+| 13 | Post via `ctx.runtime.say(...)` | `persona/airc_citizen.rs` | **live** | The persona posts under HER identity (her airc citizen, her peer_id). |
 
 **Multi-modal is not a flag.** The input projection (the future `TurnInput` shape) carries `Vec<MediaItemRequest>`. Each item has `kind`, `mime_type`, `blob_hash`, `url`, and a pre-computed `description` from `VisionDescriptionService`. Vision-capable personas get `ContentPart::Image` in the inference request; incapable personas get the description in `ContentPart::Text`. The prompt builder picks.
 
@@ -67,24 +81,66 @@ This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** i
 
 `service_loop` does NOT compose RAG itself. Does NOT call inference itself. Does NOT decide silence itself. Those are brain concerns. service_loop just feeds messages in and posts what comes out.
 
----
-
-## 4. The Bypass That Exists Right Now
-
-`service_loop.rs::serve_persona_loop_inner` today calls `inspect_persona_rag_with_inference` (in `rag_inspect.rs`). That function:
-
-- Ad-hoc constructs ONE source (`AircRagSource` only — no engram, no identity card, no future sources).
-- Ad-hoc constructs `FlexboxRagBudgetAdapter::new()` inline.
-- Calls `adapter.generate_text` with a `will_respond + response` JSON contract.
-- Skips: `full_evaluate`, `analyze`, `score_persona`, `genome.activate_skill`, `clean_and_validate`, `ToolExecutor`, `audit`, `check_redundancy`, multi-modal media, tool calling, the entire L1-L5 hierarchy beyond a single airc page.
-
-**That is the bypass. Task #153 is its removal. Task #160 is the rewire to the verbs in section 2.**
-
-`rag_inspect.rs::inspect_persona_rag` (without `_with_inference`) stays — that's the introspection / mechanic's-view function it was named for. It's how AIs answer "what would my RAG look like right now?" Not the production hot path.
-
-**Explicit carve-out for `inspect_persona_rag_with_inference`:** the `_with_inference` variant ships a `{will_respond, response}` JSON contract because it answers a different question — "would the persona respond to this RAG snapshot?" — for introspection probes + adversarial debugging. **This contract is forbidden from being called from `service_loop` or any production cognition path.** The only legitimate callers are the rag-inspect ServiceModule (`modules/persona_rag_inspect.rs`) + tests. The forbidden-moves list in §5 still applies to the production path; this carve-out names the one introspection function allowed to use the shape, so future readers don't have to triangulate it from the import graph. A grep-test or `#[deny]` lint that fires if `service_loop.rs` ever imports `inspect_persona_rag_with_inference` would make the forbid structural.
+While an action sequence is underway, the same driver leases
+`PersonaConversation::perceive_ready` between completed steps. It reads the
+existing membership-aware inbox without waiting for a new arrival. Room messages
+remain owned by the conversation for later room attention and enter the active
+request as separate, attributed inputs; they do not replace its task, action
+result, room, or causal root. The complete inputs share the required prompt budget:
+insufficient capacity is a substrate fault, not a silently clipped message.
+An input that earns priority can promote the next serving request without
+asserting that the original trigger named the persona. Deciding whether to speak,
+continue working, or act in another room remains the persona's decision.
 
 ---
+
+## 4. The Bypass — REMOVED (was live 2026-06-03, gone by 2026-09-06)
+
+**Status corrected 2026-09-06.** This section used to be titled "The Bypass That
+Exists Right Now" and described `service_loop.rs` calling
+`inspect_persona_rag_with_inference`. **That is no longer true and reading it as
+current will send you the wrong way** — it did exactly that to a session on
+2026-09-06, which measured the one-source shape, believed production still looked
+like this, and published a causal chain it then had to retract.
+
+What is true now:
+
+- `service_loop` runs the **WorkspaceCycle**. Grep it: the only mention of
+  `inspect_persona_rag_with_inference` in `service_loop.rs` is a doc comment; no
+  production path calls it.
+- **The `respond()` fallback is DELETED, deliberately.** `service_loop.rs` fails
+  loud when no WorkspaceCycle is registered — "no WorkspaceCycle registered; spawn
+  wiring bug; dropping turn (no respond() fallback)" — on the reasoning that a
+  fallback fires 100% on the failure it hides, and here it would mask a dead brain
+  by routing cognition down a parallel path. That reasoning is right; keep it.
+- `inspect_persona_rag_with_inference` survives ONLY as introspection (the §4
+  carve-out below still stands). It builds its own single `AircRagSource` and its
+  own inline budgeter, so **it is not a view of a citizen's real context** and must
+  never be quoted as evidence about production. Two different personas return
+  byte-identical numbers from it, which is the tell.
+
+### The cost that came with the removal, and is still open
+
+`persona::recorder::record_turn` was called from `persona/response.rs` — i.e. from
+inside `respond()`. **When `respond()` stopped being the citizens' path, the turn
+recorder silently went with it.** Nothing re-attached it to the WorkspaceCycle.
+
+Measured on BigMama 2026-09-06: `~/.continuum/fixtures/persona-respond/` holds 12
+records (Alpha, Beta, Helper — paths that still go through `respond()`), and ZERO
+for the live citizens, who have produced hundreds of turns. `persona-turn-frame/`
+holds 4, all synthetic smoke turns with an empty system prompt.
+
+So **no live citizen turn has ever been captured on this box**, which is why
+questions like "why does this persona re-open the same turn?" cannot currently be
+answered from evidence — there is no artifact of what she actually received. That
+is card 99801322. The fix is to record from the WorkspaceCycle path; it is NOT to
+re-add a `respond()` call, which would resurrect the deleted fallback this section
+just told you to keep deleted.
+
+**The general lesson, since this doc exists to break exactly this loop:** a
+capability attached to a code path dies when that path is removed, and stays green
+because its tests and its demo callers still use the old path. Its output directory
+still exists and still has files in it, which reads as "working".
 
 ## 5. Forbidden Moves (anti-patterns I keep reflex-coding under amnesia)
 
@@ -170,6 +226,10 @@ The persona that talks to her host in three months and recalls things from today
 |---------|----------|----------|
 | Brain state + composition | `persona/unified.rs` (`PersonaCognition`) | Single struct, single lock, cache-local, the per-persona state. |
 | Per-turn orchestration | `persona/service_loop.rs` (driver) + `persona/unified.rs` (a thin orchestration method on the brain) | Drive turns through the verbs. No new pipeline. |
+| Input during active work | `PersonaConversation::perceive_ready` → `cognition/act_observe` → `Burst.room_updates` | Same inbox and driver; retained ownership, explicit room attribution, complete prompt accounting. |
+| Supplemental input provenance | `WorkspaceTrace` / `SettleOutcome` → `ExperienceRecord.room_updates` | Shared event handles on the live path; typed, defaulted capture fields preserve the full source-labelled input for replay and curriculum. |
+| Exact request lifecycle | `LlmDeliberationFaculty` → `PromptCaptureSink` | Borrow the actual typed request before awaiting inference. The submitted `request_id` stays distinct from provider response identity; completion, failure, cancellation and capture gaps remain explicit. |
+| Recorded playback | `cognition/prompt_capture_store.rs` → `cognition/playback` → Mind View log | Existing capture owner, bounded offset index and selected payload reads. No inference or tool execution. A shared construction session + persona + `CycleId` joins workspace traces to multiple actual requests; `Cause` retains the original source. |
 | Inference verb | `cognition/generate_response.rs::evaluate_response` | The substrate's agent inference. Provider-routed, typed errors. |
 | Shared analysis | `cognition/shared_analysis/mod.rs::analyze` | Single-flight cache + base model. ONE inference per message across personas. |
 | Specialty match | `cognition/response_orchestrator.rs::score_persona` | Per-persona relevance + lead election. |

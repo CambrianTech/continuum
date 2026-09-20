@@ -86,6 +86,96 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
     }
 }
 
+/// Routes a persona's reasoning through whatever model the **serving daemon**
+/// has live, read off its published [`ServingSnapshot`] (the `watch` seam in
+/// [`crate::inference::llama_server`]). The transport underneath is still the
+/// OpenAI-compatible `/v1` adapter — chosen 2026-06-21 (Joel) because it does
+/// **native function calling for free** (sends `tools`, parses `tool_calls` →
+/// `FinishReason::ToolUse`), so the persona's HANDS actually fire instead of the
+/// model narrating fake tool use.
+///
+/// The factory does NOT probe `/v1/models` itself: it reads the daemon's snapshot
+/// (one source of truth for "what is served"), so every upstart binds to the same
+/// model the serving plan reconciled — no drift between what this picks and what
+/// the daemon actually loaded. All personas share the one served model
+/// ([[seamless-persona-failover-model-and-genome]]: the lease contracts on
+/// (base_model, genome), re-homable across grid nodes via this same snapshot).
+///
+/// Fail LOUD if the daemon brought up nothing: a persona cannot upstart without a
+/// model, and we never fall back to a stand-in ([[fallbacks-are-illegal-fail-loud]]).
+pub struct ServedModelPersonaAdapterFactory;
+
+#[async_trait]
+impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
+    async fn build_adapter(
+        &self,
+        profile: &PersonaInferenceProfile,
+    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
+        // Read the serving daemon's own readiness signal — the same `watch` it
+        // publishes — and wait (bounded) for the first reconcile so an upstart
+        // that races boot still binds correctly. No HTTP probe of our own; the
+        // daemon is the single source of truth for "what is served".
+        let snap = crate::inference::llama_server::await_ready_serving(
+            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+        )
+        .await
+        .ok_or_else(|| {
+            "serving daemon brought up NO ready model — a persona cannot upstart without one \
+             (no servable GGUF on disk, or it failed to become ready; no local fallback)"
+                .to_string()
+        })?;
+        let model = snap.active_model.clone().ok_or_else(|| {
+            "serving daemon reports ready but no active model (daemon invariant violated)"
+                .to_string()
+        })?;
+        crate::probe!(
+            class = "persona.upstart.bind",
+            persona = %profile.persona_name,
+            persona_id = %profile.persona_id,
+            model = %model,
+            base = %snap.base_url,
+            "persona inference bound to the live served model"
+        );
+        build_served_adapter(&snap).await
+    }
+}
+
+/// Build the shared served-model adapter from a serving snapshot — the ONE site
+/// that turns "what the daemon serves" into an OpenAI-compatible adapter pointed
+/// at the live server. Used by the persona upstart factory ABOVE (first bind) AND
+/// by the served-model re-home reconciler (`ipc/mod.rs`, live rebind), so an
+/// upstart and a grid-driven re-home construct the adapter through IDENTICAL code
+/// — no drift between the boot binding and the swap.
+///
+/// The `llama-server` catalog key names the OpenAI-compatible provider entry
+/// (header shape + capabilities); the runtime `base_url` + `active_model` come from
+/// the snapshot, overriding the catalog default (which can drift from what's
+/// loaded). One adapter is shared by every persona on this node
+/// (INFERENCE-LANES-REALISTIC: one base model, N persona lanes), so this HTTP init
+/// runs once per served-model edge, not per persona.
+///
+/// Fails LOUD if the snapshot carries no active model — the caller must pass a
+/// `ready` snapshot ([[fallbacks-are-illegal-fail-loud]]).
+pub async fn build_served_adapter(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<Arc<dyn AIProviderAdapter>, String> {
+    let model = snap.active_model.clone().ok_or_else(|| {
+        "serving snapshot has no active model — build_served_adapter needs a ready snapshot \
+         (no local fallback)"
+            .to_string()
+    })?;
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+        crate::inference::llama_server::PROVIDER_ID,
+    )
+    .with_runtime_base_url(snap.base_url.clone())
+    .with_default_model(model);
+    adapter
+        .initialize()
+        .await
+        .map_err(|e| format!("persona adapter initialize failed: {e}"))?;
+    Ok(Arc::new(adapter))
+}
+
 /// One row of the supervisor's roster — and the substrate's
 /// per-persona context object. Analog of Android's `Context`:
 /// the single struct every persona-scoped function reads from.
@@ -243,7 +333,7 @@ impl PersonaContext {
     /// Construct a tracing `Span` tagged with this persona's identity
     /// + role + tier. Every log line emitted inside the span's scope
     /// inherits these fields automatically — no more
-    /// `tracing::warn!(persona_id = %ctx.identity.persona_id, ...)`
+    /// `tracing::warn!(persona_id = %ctx.identity.peer_id.as_uuid(), ...)`
     /// at every call site.
     ///
     /// Per the `&ctx` doctrine: the span derives from the context,
@@ -252,7 +342,7 @@ impl PersonaContext {
     pub fn span(&self) -> tracing::Span {
         tracing::info_span!(
             "persona",
-            persona_id = %self.identity.persona_id,
+            persona_id = %self.identity.peer_id.as_uuid(),
             agent_name = %self.identity.agent_name,
             peer_id = %self.identity.peer_id,
             role = ?self.role,
@@ -283,14 +373,15 @@ impl PersonaContext {
 // [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] — Uuid copy
 // + String clones are not the substrate's latency bottleneck.
 //
-// ## Identity Uuid — `ctx.identity().id` IS the registry key (Slice 1B)
+// ## Identity Uuid — `ctx.identity().id` IS the registry key
 //
-// Slice 1B of #142 collapsed `PersonaInstanceInfo.persona_id ==
-// peer_id` at the runtime boundary (`PersonaAircRuntime::bootstrap`
-// + `from_attached` reseat the field from `airc.peer_id().as_uuid()`).
-// Callers may now safely use `ctx.identity().id` as a registry key
-// — it is the same Uuid as `ctx.identity.persona_id` and the same
-// Uuid as `airc.peer_id().as_uuid()`, per
+// Slice 1B of #142 reseated `PersonaInstanceInfo.persona_id := peer_id`
+// at the runtime boundary; Step 4b of the identity-newtype wave then
+// DELETED the redundant `persona_id` twin entirely, leaving the single
+// canonical [`crate::identity::PeerId`] field `peer_id`. Callers use
+// `ctx.identity().id` as a registry key — it is the `.as_uuid()`
+// projection of that one `peer_id`, the same Uuid as
+// `airc.peer_id().as_uuid()`, per
 // [[persona-identity-derives-from-source-id]] (the cryptographic
 // keypair Uuid IS the substrate identity).
 impl crate::context::Context for PersonaContext {
@@ -303,12 +394,11 @@ impl crate::context::Context for PersonaContext {
             PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
         };
 
-        // `self.identity.peer_id == self.identity.persona_id` post-
-        // Slice-1B. Either field can be used as the source; we read
-        // `peer_id` because it names the cryptographic ground truth
-        // explicitly.
+        // Post-Step-4b there is one canonical identity field — `peer_id`,
+        // the airc cryptographic ground truth — so the dispatch
+        // `Identity.id` (a bare Uuid ORM key) is its `.as_uuid()` projection.
         std::borrow::Cow::Owned(Identity {
-            id: self.identity.peer_id,
+            id: self.identity.peer_id.as_uuid(),
             kind: IdentityKind::Persona,
             agent_name: self.identity.agent_name.clone(),
             home_path: self.identity.home.to_string_lossy().into_owned(),
@@ -363,6 +453,28 @@ pub enum SupervisorError {
         role: RoleId,
         message: String,
     },
+    /// A resident whose checkpoint cannot be loaded must not be hosted with
+    /// an empty memory. The existing resident, if any, remains registered.
+    #[error("slot {slot_index} (role {role:?}): workspace registration for {persona_id} failed: {source}")]
+    WorkspaceRegistration {
+        slot_index: usize,
+        role: RoleId,
+        persona_id: uuid::Uuid,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Persistent admission must be loaded before the resident's recall and
+    /// future admissions can bind to it. A failed load is not an empty store.
+    #[error(
+        "slot {slot_index} (role {role:?}): admission restore for {persona_id} failed: {source}"
+    )]
+    AdmissionRestore {
+        slot_index: usize,
+        role: RoleId,
+        persona_id: uuid::Uuid,
+        #[source]
+        source: crate::orm::OrmStoreError,
+    },
     /// The post-bootstrap registry doesn't have a runtime for this
     /// persona_id. Per [[no-fallbacks-ever]] this is a hard failure —
     /// the supervisor doesn't fabricate or stub a runtime in
@@ -397,14 +509,48 @@ pub enum SupervisorError {
 /// on an 8 GiB Intel Mac. Slice 10+ can introduce parallel + capped
 /// materialization once #122 (shared base) makes the per-persona
 /// cost much smaller.
+/// The persona's model override, read from the home the factory reads it from
+/// (`citizens/personas/<Name>` under the continuum root), falling back to the
+/// identity's own home root. `None` when neither holds a readable record.
+fn remote_override_for(
+    persona_name: &str,
+    identity_home: &std::path::Path,
+) -> Option<crate::persona::model_override::PersonaModelOverride> {
+    let by_name = crate::context::citizen_home_path(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        crate::identity::IdentityKind::Persona,
+        None,
+        persona_name,
+    )
+    .parent()
+    .map(|root| crate::persona::home::PersonaHome::from_root(root.to_path_buf()));
+    let by_identity = crate::persona::home::PersonaHome::from_root(identity_home.to_path_buf());
+    by_name
+        .into_iter()
+        .chain(std::iter::once(by_identity))
+        .find_map(|home| {
+            crate::persona::model_override::PersonaModelOverride::load(&home)
+                .ok()
+                .flatten()
+        })
+}
+
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
     runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<dyn AircCitizen>>,
+    // The persona's HANDS, built per persona by the caller (the `ipc` bootstrap,
+    // which holds the command `ModuleRegistry`). Closure DI keeps the supervisor
+    // decoupled from the command runtime — same shape as `runtime_lookup`. Returns
+    // `None` → that persona is speak-only. The executor carries the persona's
+    // identity, so the `GridTrustAuthPolicy` ACL gates what its hands may touch.
+    tool_executor_for: impl Fn(
+        uuid::Uuid,
+    ) -> Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
-        let profile = match plan.profile {
+        let mut profile = match plan.profile {
             Ok(p) => p,
             Err(source) => {
                 out.push(Err(SupervisorError::Profile {
@@ -416,13 +562,39 @@ pub async fn materialize_adapters(
             }
         };
         let identity = plan.instance;
-        let runtime = match runtime_lookup(identity.persona_id) {
+        // ADMISSION FIRST. This restore opens the persona's engram store; when it fails
+        // the seat is refused (6d17695c: never host a blank admission store). Until
+        // 2026-09-12 it ran AFTER every daemon-facing adapter had been built — a
+        // subscription to every room, the doctrine/wall invalidator task, the pumps —
+        // and a refused seat abandoned them all, un-aborted. One citizen whose store
+        // would not decode was re-attempted every reconciler pass: 24 daemon streams
+        // leaked per attempt, ~150 sockets/s, both descriptor tables full, the host at
+        // ENFILE. A seat that will be refused must build nothing first.
+        let persisted_admission = {
+            let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+            let recall_meta =
+                std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
+            {
+                Ok(persisted) => persisted,
+                Err(source) => {
+                    out.push(Err(SupervisorError::AdmissionRestore {
+                        slot_index,
+                        role: plan.role,
+                        persona_id: identity.peer_id.as_uuid(),
+                        source,
+                    }));
+                    continue;
+                }
+            }
+        };
+        let runtime = match runtime_lookup(identity.peer_id.as_uuid()) {
             Some(r) => r,
             None => {
                 out.push(Err(SupervisorError::RuntimeMissing {
                     slot_index,
                     role: plan.role,
-                    persona_id: identity.persona_id,
+                    persona_id: identity.peer_id.as_uuid(),
                 }));
                 continue;
             }
@@ -452,6 +624,89 @@ pub async fn materialize_adapters(
             }));
             continue;
         }
+
+        // Reconcile the persona's effective context window to the TRUTH the
+        // running gateway serves. `build_adapter` just awaited a READY serving
+        // snapshot, so `current_serving()` now carries the real per-slot window
+        // the daemon read from llama-server's own `/props` — the authoritative
+        // model metadata. The profile's window was provisionally set at spawn-plan
+        // time from the planner's `served_context_window`, which the daemon
+        // RE-computes every tick against live memory and which drifts ABOVE the
+        // running server's frozen, 256-padded slot. Budgeting a prompt to that
+        // drifted value overflows the slot → llama-server 500 "Compute error" and
+        // the persona abstains on every tick. Pin `profile.context_length` (the
+        // single source of the persona's compute envelope — read downstream by the
+        // RAG composer, the deliberation faculty's prompt cap, and the ctx_len
+        // probe) to the served truth so every budget is correct by construction.
+        // Cloud-routed personas (tier `Cloud`) keep their model's full window —
+        // their adapter owns its own context and there is no local slot to fit.
+        // An OFF-BOX brain is budgeted against the RESPONDER's slot, never the
+        // local gateway's: measured 2026-09-07 03:1xZ, two citizens bound to a
+        // 5090 slot were pinned to the M5's 50,944-token lane below, sent
+        // 35–43k-token prompts, and every answer died at `Length`.
+        // Her override lives in her PERSONA home (`citizens/personas/<Name>`), the
+        // home the factory reads it from — `identity.home` can be a different root
+        // (measured 2026-09-07 04:48Z: both remote-bound citizens took the local
+        // pin because this read looked in the wrong home). Try the name-resolved
+        // home first, then the identity's.
+        let remote_window = remote_override_for(&profile.persona_name, &identity.home)
+            .filter(|o| o.is_remote())
+            .map(|o| o.remote_context_window);
+        if let Some(remote) = remote_window {
+            match remote {
+                Some(window) => {
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = window,
+                        source = "remote_override",
+                        "pinning persona context window to the RESPONDER's slot (her brain runs off-box)",
+                    );
+                    profile.context_length = window;
+                }
+                None => {
+                    // The planned value IS the outage (it is the local lane's size).
+                    // Unknown responder → the conservative floor: briefly under-
+                    // budgeted costs context; over-budgeted costs every answer.
+                    // The planner's own full-turn window floor — the one substrate-owned
+                    // minimum every other bound derives from; never a number of our own.
+                    let floor = crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET
+                        .min(profile.context_length);
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = floor,
+                        source = "remote_floor",
+                        "off-box brain with no recorded responder window — sized to the floor; \
+                         pass --context_window to persona/reassign-model for her real slot",
+                    );
+                    profile.context_length = floor;
+                }
+            }
+        } else if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud
+        {
+            let snap = crate::inference::llama_server::current_serving();
+            // A ready snapshot always carries a real window (the daemon refuses to
+            // publish ready with 0). Guard on both so a not-yet-ready/empty
+            // snapshot never clobbers the provisional window with 0.
+            if snap.ready && snap.served_context_window > 0 {
+                if snap.served_context_window != profile.context_length {
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = snap.served_context_window,
+                        "pinning persona context window to the gateway's real /props slot (was the drifting plan value)",
+                    );
+                }
+                profile.context_length = snap.served_context_window;
+            }
+        }
         // Register the persona's adapter in the global provider
         // registry so the cognition layer (evaluate_response,
         // analyze, etc.) can reach it via `global_registry()` per
@@ -473,19 +728,426 @@ pub async fn materialize_adapters(
         // The runtime IS an AircTranscriptReader by trait bound.
         let rag_engine = Arc::new(crate::rag::RagEngine::new());
         let mut cognition = crate::persona::unified::PersonaCognition::new(
-            identity.persona_id,
+            identity.peer_id.as_uuid(),
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
-            crate::persona::airc_source::AircRagSource::new(
-                identity.persona_id,
+        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::airc_source::AircRagSource::new(
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ),
-        );
+            ));
         cognition.set_airc_source(airc_source);
 
+        // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
+        // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
+        // room B is never handed room A's people and never handed nothing —
+        // `PerRoomSubstrates` keeps each room's view instead of one focused slot.
+        //
+        // This is the repair for the measured defect: a live peer's name appeared
+        // ZERO times in a citizen's prompt while the browser rendered that peer
+        // fine, because the two read different code
+        // ([[citizens-cannot-see-each-other-the-prompt-promises-presence-and-delivers-nothing]]).
+        // One definition, two render targets — eyes and mind cannot drift.
+        // The REGISTRY, not `for_room(identity.default_room)`. Binding one room here
+        // is what made the promise in the comment above false: the source answered
+        // with the default room's roster on every turn, so `room_scope_allows`
+        // abstained for a citizen working anywhere else — measured 2026-09-07 at 662
+        // abstains of 873 ticks, bound #general, turns in #continuum, and the citizen
+        // never learned who was in the room she was standing in (#3862). The store
+        // was never the problem: `positron_source::sink` writes EVERY room's view
+        // into `PerRoomSubstrates` and mirrors only the focused one onto the node
+        // substrate, so #continuum's roster was being stored the whole time with
+        // nobody reading it.
+        let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::RosterViewState,
+            >::per_room(crate::ipc::global_room_substrates()));
+        cognition.set_roster_source(roster_source.clone());
+
+        // The benchmark board, read from the SAME `BenchViewState` fold the
+        // academy rail renders (#426) — the second RenderTarget of the bench
+        // outlier. The renderable existed with a comment promising exactly
+        // this and was never bound; without it a citizen's only route to run
+        // state was a command that scrapes the progress dir, which fails the
+        // doctrine's acceptance test
+        // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+        // The board is ONE global fold (unlike the per-room roster), so the
+        // handle is the global bench substrate the emitter dual-publishes into.
+        let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::bench::BenchViewState,
+            >::new(crate::ipc::global_bench_substrate()));
+        cognition.set_bench_source(bench_source);
+
+        // Bind the room-doctrine source from the same runtime (upcasts to
+        // `AircDoctrineReader`). Grounds the persona in the room's nature
+        // — the airc-published operating contract. Slice 2.
+        let raw_doctrine: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::room_doctrine_source::RoomDoctrineSource::new(
+                identity.peer_id.as_uuid(),
+                runtime.clone(),
+            )
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
+
+        // Active-work source: grounds the persona in ITS OWN live work across all
+        // rooms (claimed cards + states), read from airc's work roster. The dynamic
+        // fix for "misremembering my own card" — never hardcode the state; surface
+        // it. Reads the persona's own airc handle (acts as itself).
+        let active_work_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
+                identity.peer_id.as_uuid(),
+                runtime.clone(),
+            ));
+
+        // The persona's HANDS, built once here — consumed by the brain config
+        // below AND by the workspace-map cache wire (its command executor's bus
+        // is where write-completion events land).
+        let tool_executor = tool_executor_for(identity.peer_id.as_uuid());
+
+        // Workspace map: grounds the persona in WHERE code lives — the real root
+        // and top-level layout the code tools resolve against. NOT airc-backed
+        // (reads the same cwd-rooted FileEngine as the persona's hands, so it
+        // cannot drift from what code/glob sees); brain-only, no legacy compose
+        // wire. Closes the grounding hole behind the `src/**/*.rs` glob failures:
+        // the layout was only ever an echoed error in recall, never standing
+        // framing. Grounding, not steering — names the dirs, never which holds
+        // the answer. Swaps to the airc-leased root when #49 lands.
+        //
+        // Wrapped as an event-invalidated cache (#398): the dir re-walk ran on
+        // EVERY compose, so it serves last-good until a workspace-mutating
+        // command completes on the bus. No wrap without a wire — a speak-only
+        // persona (no hands → no bus) keeps the raw source, because her map
+        // can still be mutated by OTHERS' hands and an unwired cache would be
+        // stale forever.
+        let raw_workspace_map: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
+                identity.peer_id.as_uuid(),
+            ),
+        );
+        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            match tool_executor
+                .as_ref()
+                .and_then(|t| t.command_executor())
+                .and_then(|c| c.message_bus())
+            {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    crate::persona::grounding_invalidation::register_workspace_map_dirty(
+                        identity.peer_id.as_uuid(),
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => raw_workspace_map,
+            };
+
+        // Wall source: grounds the persona in the room's LIVING SHARED
+        // DOCUMENTS — the airc-pinned plan, coding instructions, agenda,
+        // principles, recipe. These are the SAME airc rows a human edits on
+        // the room wall (`airc publish --room …`) and a widget renders: one
+        // shared data layer, two faces, no continuum-side copy. Reads the
+        // persona's own airc handle (upcasts to `WallReader`, a supertrait of
+        // AircCitizen). Enriching framing, NOT a participation gate (that is
+        // doctrine) — bound brain-only and defer-tolerant below, like the
+        // active-work + workspace-map sources. See
+        // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 and
+        // [[airc-generic-per-user-room-state]].
+        let raw_wall: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::wall_source::WallSource::new(
+                identity.peer_id.as_uuid(),
+                runtime.clone(),
+            )
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
+
+        // Doctrine + wall as event-invalidated caches (#398): these are pure
+        // event-folds — their projections change ONLY when a peer publishes
+        // (TranscriptKind::DoctrinePublished / WallPostPublished), which is
+        // rare, yet doctrine was the ONE SYNCHRONOUS airc round-trip on every
+        // live compose (ColdStartCritical, never deferred). ONE subscribe
+        // stream per persona marks both caches; the invalidator holds weak
+        // handles and dies with them. No wrap without a wire: if subscribe
+        // fails, both stay raw (correct, just slow) and we log loud. NOTE the
+        // roster is deliberately NOT cached — room_roster(within=120s, …) is
+        // a recency projection that DECAYS with no event firing; a cached
+        // roster shows ghosts.
+        let (doctrine_source, wall_source): (
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+        ) = match runtime.subscribe_all_rooms().await {
+            Ok(stream) => {
+                let (doctrine_cached, doctrine_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
+                let (wall_cached, wall_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_wall);
+                // The invalidator owns a subscription to every room; it lives and dies with
+                // the runtime (aborted in the runtime's Drop), never as an orphan task.
+                runtime.own_task(crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                    stream,
+                    vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
+                ));
+                (doctrine_cached, wall_cached)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    persona = %identity.agent_name,
+                    error = %e,
+                    "doctrine/wall cache UNWIRED (subscribe failed) — serving raw \
+                     airc fetch per compose; slow but never stale"
+                );
+                (raw_doctrine, raw_wall)
+            }
+        };
+        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
+        cognition.set_doctrine_source(doctrine_source.clone());
+
+        // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
+        // work board — every card, its column, priority, and owner — read live
+        // from the same airc board a human's kanban widget renders (the desktop
+        // app projects it into a KanbanViewState; this reads airc DIRECTLY, one
+        // shared board, two faces, never through each other). The Observer
+        // perceiving the shared plan, the complement to the active-work source's
+        // own-claims-only view: whole-board-this-room vs own-claims-cross-room.
+        // Reads the persona's own airc handle (upcasts to `RoomBoardReader`, a
+        // supertrait of AircCitizen). Enriching framing, NOT a participation
+        // gate — bound brain-only + defer-tolerant like the active-work + wall
+        // sources. Task #117 O6.
+        let room_board_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::room_board_source::RoomBoardSource::new(
+                identity.peer_id.as_uuid(),
+                runtime.clone(),
+            )
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
+
+        // Live-call perception: the persona's room-as-NOW visual grounding — WHO is
+        // visible on the call + a description of what they show, read NON-BLOCKING from
+        // the persona's PerceptionBuffer (only cells resolved this tick; the turn never
+        // waits) and BUDGETED through the same flexbox allocator so perception can never
+        // dominate context ([[perception-feedback-must-not-blow-rag]]).
+        //
+        // The buffer is the ADDRESSABLE home in `media::perception_registry` — the ONE
+        // seam the LiveKit media ingest (#192/#193) warms via `observe()` and this source
+        // reads, resolved by persona_id from BOTH sides (the "one home, two reachers"
+        // shape of `focus::registry()`). Its cells resolve on the runtime's ONE
+        // `SharedCompute` (`shared_compute::global()`, which the Runtime adopts), so a
+        // frame warmed once by ingest is a cache hit for EVERY viewing persona:
+        // compute-once / share-many, the multi-persona vision moat
+        // ([[vision-replication-is-the-multipersona-moat-vs-cloud]]). Empty until frames
+        // arrive — this wires the READ path into cognition; the video_rx → observe ingest
+        // is #192.
+        let perception_buffer =
+            crate::media::perception_registry().handle(identity.peer_id.as_uuid());
+        let media_perception_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::media_perception_source::MediaPerceptionSource::new(
+                identity.peer_id.as_uuid(),
+                perception_buffer,
+                crate::runtime::shared_compute::global(),
+            ),
+        );
+
+        // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
+        // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
+        // Without this, admission is in-memory only (NoopSink) and the persona is
+        // amnesiac across boots. `identity.home` is the resolved
+        // <root>/personas/<name> dir. A storage or schema failure refuses this
+        // slot before registration: continuing with the fresh NoopSink state
+        // would hide prior engrams and lose future admissions across restart.
+        // A new home succeeds with an empty persistent store. MUST run before
+        // WorkspaceCycle assembly so RecallFaculty binds persisted admission.
+        cognition.attach_persistent_admission(
+            identity.peer_id.as_uuid(),
+            std::sync::Arc::new(persisted_admission),
+        );
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
+
+        // Assemble this persona's continuous mind into the process-global
+        // workspace registry — ONE WorkspaceCycle per persona, keyed by
+        // persona_id (the "one soul, many rooms" invariant, PERSONA-BRAIN-
+        // ARCHITECTURE.md §2.9). The shared hippocampus (cognition.admission)
+        // and the persona's inference adapter are leased into its faculties.
+        // Cheap (no model load — the adapter lazy-loads on first inference).
+        // Additive: makes `ai/should-respond` resolvable for this persona; does
+        // NOT change the existing service-loop decision path (heuristics stay
+        // live until the coordinated cutover).
+        // register_from_cfg (overwrite + retain a fork-template), not
+        // get_or_build: a persona can respawn in the same process (node
+        // resilience). get_or_build is idempotent by persona_id and would DISCARD
+        // the fresh admission + adapter, leaving the mind bound to the prior
+        // lifetime's orphaned (rehydrated-then-replaced) AdmissionState —
+        // newly-admitted engrams invisible to recall, the "severed" failure across
+        // a restart. Build + register replaces it. The retained cfg template is
+        // what lets `cognition/eval` fork an ephemeral measurement copy without
+        // touching this living mind (PersonaWorkspaceRegistry::fork_eval_cycle).
+        let brain_cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+            persona_id: identity.peer_id.as_uuid(),
+            persona_name: identity.agent_name.to_string(),
+            system_prompt: system_prompt.to_string(),
+            admission: cognition.admission.clone(),
+            adapter: adapter.clone(),
+            capacity: None,
+            // S1: the node's recipe registry, so this citizen's tool surface follows
+            // the room she acts in (its recipe's affordances), not a global list.
+            experience: crate::experience::source::node_experience_source(),
+            // Neural recall when the embed model serves, lexical otherwise
+            // — decided once here (process-stable; query + stored vectors
+            // must share one embedding space). Already cached by the
+            // resolver (embed-once-per-content, shared across personas).
+            embedder: Some(
+                crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+            ),
+            // Roster + doctrine bridged into the brain as STANDING-FRAMING
+            // grounding faculties (high salience floor). Without these the
+            // gating cutover routes decisions through the Workspace and the
+            // #1650/#1651 grounding silently falls out of the live path —
+            // the persona forgets who is present / what the room is for.
+            grounding_sources: vec![
+                // Roster — WHO is present. SYNCHRONOUS (ColdStartCritical),
+                // like workspace-map and for the same reason: the deferral
+                // was earned by the OLD airc-fetch reader this source
+                // replaced; the ViewState roster is a watch-channel borrow
+                // (microseconds), and keeping the fallback meant slow turns
+                // "timed out" into `reproject_to_now` serving a CACHED
+                // roster from a different presence moment — Benchy's prompt
+                // flapped between fresh and stale byte layouts at 0.4%
+                // depth, hit_rate 0.0, and slower turns caused MORE
+                // reprojections (measured 2026-09-01: both his captures
+                // carried "[reprojected … held]"). A source this cheap
+                // never gets a fallback ([[fallbacks-are-illegal-fail-loud]]).
+                crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
+                // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
+                // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
+                // would let the persona speak in a room it shouldn't on turn one,
+                // which is wrong, not merely unenriched. The lone exception to
+                // "defer almost everything."
+                crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source),
+                // The persona's own live work across rooms — enriching framing so
+                // it knows what it's working on (cross-activity, dynamic, no
+                // hardcoded card state). Defer-tolerant.
+                crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
+                    .defer_tolerant()
+                    // Claim states flap per turn — floor stays, stable-tier
+                    // placement goes (debug/prompt-reuse conviction, 2026-08-22).
+                    .volatile_content(),
+                // WHERE code lives — the real workspace layout as framing, so a
+                // reasoner can avoid blind globs like `src/**/*.rs` from the
+                // prompt alone. ColdStartCritical (synchronous, NOT deferred):
+                // measured 2026-07-13 that the deferred version was ABSENT on
+                // cold ticks (worst under repeated reboots), so some personas
+                // acted blind to the layout — a WRONG turn (blind-glob loops),
+                // not merely unenriched, which is exactly the ColdStartCritical
+                // bar. It's a cheap local dir listing (unlike the airc-backed
+                // framing sources that stay deferred), so it earns synchronous
+                // presence like doctrine. requires_hands: the block SAYS "drill
+                // in with code/list and code/tree" — it must vanish from a
+                // tool-stripped cycle (spoken exams) or the RAG lies about her
+                // affordances.
+                crate::cognition::persona_workspace::GroundingSource::framing(workspace_map_source)
+                    .requires_hands()
+                    // Her OWN writes mutate the map — every productive act. It sat
+                    // in the stable tier breaking the KV prefix at ~8k chars of a
+                    // 40k prompt (measured 2026-08-23, turn-over-turn capture diff).
+                    .volatile_content(),
+                // The room's pinned shared documents (airc wall) as
+                // enriching framing — the plan/instructions/recipe that
+                // shape HOW the persona works here, read from the exact
+                // rows a teammate or widget pins. Defer-tolerant: a
+                // first-tick miss costs one under-grounded turn, not a
+                // wrong one.
+                crate::cognition::persona_workspace::GroundingSource::framing(wall_source)
+                    .defer_tolerant(),
+                // The room's WHOLE work board (airc kanban) as enriching
+                // framing — every card/column/owner, so the persona can
+                // coordinate against the shared plan, not just its own
+                // claims. Defer-tolerant: a first-tick miss costs one
+                // under-grounded turn, not a wrong one. Task #117 O6.
+                crate::cognition::persona_workspace::GroundingSource::framing(room_board_source)
+                    .defer_tolerant()
+                    // Card/column states churn with the round — same conviction.
+                    .volatile_content(),
+                // Live-call perception (#187/#192): WHO is visible on the call +
+                // what they show, as enriching framing. Defer-tolerant: a
+                // first-tick miss costs one under-grounded turn, not a wrong one —
+                // and perception is non-blocking by construction (absent cells are
+                // simply not present this tick, never awaited). NOT requires_hands:
+                // seeing is a SENSE, not a tool, so it stays present in a
+                // tool-stripped (spoken-exam) cycle. Reads only ready cells (O(participants)
+                // string assembly, no inference) — off the 30fps media plane entirely.
+                crate::cognition::persona_workspace::GroundingSource::framing(
+                    media_perception_source,
+                )
+                .defer_tolerant(),
+            ],
+            // The persona's HANDS — built by the caller for THIS persona's
+            // identity (None → speak-only). What turns "talks" into "acts".
+            tool_executor,
+            // The window the gateway actually serves this persona (task #50:
+            // single-sourced; Local → ServingPlan.served_context_window). The
+            // deliberation faculty keeps its prompt inside it so llama-server
+            // never 500s ("Context size has been exceeded").
+            context_window: profile.context_length,
+            // LIVE mind: recall runs as a speculative prefetch off the hot
+            // path (Joel's CPU branch-prediction analogy). Turns here are
+            // seconds apart, so the background worker always catches up and
+            // the per-turn output reads a warm last-good instead of waiting on
+            // a neural-embed + vector-search round-trip. Eval forks override
+            // this to false (faithful synchronous measurement).
+            defer_recall: true,
+            // LIVE mind: push the defer-tolerant grounding (roster, active_work,
+            // workspace_map) off the hot path too — the 90%-async win for the
+            // enriching framing. Doctrine (ColdStartCritical) stays synchronous
+            // regardless. Eval/harness override to false.
+            defer_grounding: true,
+            // The LIVING persona always keeps her memories — suppression is a
+            // benchmark-reproducibility knob, never a life-path setting (#207).
+            suppress_recall: false,
+        };
+        // A checkpoint can be locked by offline adoption. Waiting and reading
+        // belong off the async runtime workers; registration publishes nothing
+        // until the existing snapshot has loaded successfully.
+        #[cfg(test)]
+        let fixture_home = crate::paths::home_dir();
+        let registration = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let _fixture_home = fixture_home
+                .as_deref()
+                .map(crate::paths::NativeHomeOverride::install);
+            crate::cognition::persona_workspace::global().register_from_cfg(brain_cfg)
+        })
+        .await;
+        let failure = match registration {
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => Some(error),
+            Err(error) => Some(std::io::Error::other(error)),
+        };
+        if let Some(source) = failure {
+            out.push(Err(SupervisorError::WorkspaceRegistration {
+                slot_index,
+                role: plan.role,
+                persona_id: identity.peer_id.as_uuid(),
+                source,
+            }));
+            continue;
+        }
 
         out.push(Ok(PersonaContext {
             role: plan.role,
@@ -565,8 +1227,12 @@ pub(super) fn build_persona_system_prompt(agent_name: &str) -> Arc<str> {
          - 'The grid' is the substrate hosting you. 'Rooms' are conversation \
          spaces where peers (other personas, humans, agents) exchange messages. \
          You are reading one room's recent activity below.\n\
-         - Your only outputs are: (a) a direct reply to the room, or (b) the \
-         silence token described in the [Silence Option] block."
+         - Speak as yourself, in the first person, with prose addressed to the \
+         room — never narrate another peer's voice, and never emit a raw \
+         tool-call envelope as your spoken reply. The silence token is described \
+         in the [Conversational Presence] block when that block is present; when \
+         it is absent you weren't handed the silent hatch, though declining in \
+         your own words always stays yours to choose."
     ))
 }
 
@@ -597,43 +1263,33 @@ mod tests {
         // exercise the same identity shape production sees. Per the
         // PersonaInstanceInfo doc: fixtures that bypass the runtime
         // constructor MUST keep both fields equal.
-        let peer_id = Uuid::new_v4();
         PersonaInstanceInfo {
-            persona_id: peer_id,
             agent_name: name.to_string(),
-            peer_id,
+            peer_id: crate::identity::PeerId::new(),
             home: PathBuf::from(format!("/tmp/fake-supervisor-test/{name}")),
             default_room: Uuid::nil(),
             source: PersonaIdentitySource::FreshlyMinted,
         }
     }
 
-    /// Pins the Slice 1B invariant: `ctx.identity().id ==
-    /// ctx.identity.persona_id == ctx.identity.peer_id` for any
-    /// `PersonaContext` constructed through the canonical path. If
-    /// a future edit reintroduces the pre-Slice-1B divergence
-    /// (separate Uuid for persona_id vs peer_id), this test fails.
-    ///
-    /// Per [[every-error-is-an-opportunity-to-battle-harden]] — the
-    /// PR #1522 reviewer caught the divergence after the fact;
-    /// this test is the rigging that catches the regression class
-    /// at unit-test time.
+    /// what this catches: the Slice-1B identity projection. The
+    /// pre-Slice-1B divergence (a separate `persona_id` Uuid vs the
+    /// airc `peer_id`) was the regression class PR #1522's reviewer
+    /// caught after the fact. Step 4b made that class IMPOSSIBLE by
+    /// collapsing the twin fields into the single canonical
+    /// [`crate::identity::PeerId`] — so the remaining seam this pins is
+    /// [`PersonaInstanceInfo::persona_identity`] projecting that one
+    /// `peer_id` down to the bare `Uuid` the `(id, name)` dispatch pair
+    /// carries (the registry key path). If that projection ever stopped
+    /// reading `peer_id`, dispatch would key on the wrong id.
     #[test]
-    fn persona_context_identity_id_matches_registry_key() {
-        use crate::context::Context;
+    fn persona_identity_projects_canonical_peer_id() {
         let instance = fake_instance("Maya");
-        // Sanity: fixture itself honors the invariant.
-        assert_eq!(instance.persona_id, instance.peer_id);
-
-        let ctx_identity = instance.peer_id;
-        let cognition_persona_id = instance.persona_id;
-
-        // The PersonaContext Context impl projects identity.peer_id
-        // into Identity.id; the registry key path reads
-        // identity.persona_id. Post-Slice-1B these MUST match.
+        let dispatch = instance.persona_identity();
         assert_eq!(
-            ctx_identity, cognition_persona_id,
-            "Slice 1B invariant broken: ctx.identity().id != ctx.identity.persona_id"
+            dispatch.id,
+            instance.peer_id.as_uuid(),
+            "persona_identity() must project the canonical peer_id into the dispatch (id, name) pair"
         );
     }
 
@@ -656,11 +1312,24 @@ mod tests {
         }
     }
 
+    /// Idempotent init of the process-global model registry.
+    ///
+    /// what this catches: every test that builds a *successful* HostedPersona
+    /// reaches `model_registry::global()`, which panics if `init_global()` was
+    /// never called. In a full-suite run some other test inits it first, so
+    /// these passed by accident; run in isolation (or single-threaded) they
+    /// panicked on the ordering. Calling this idempotent init at the top of
+    /// each such test removes the cross-test ordering dependency.
+    fn init_test_registry() {
+        let _ = crate::model_registry::init_global();
+    }
+
     /// Happy path: two materialized plans → two hosted personas. Each
     /// adapter's `provider_id` matches the profile's model_id, proving
     /// the factory ran once per persona (not once with shared state).
     #[tokio::test]
     async fn materializes_one_adapter_per_persona_via_factory() {
+        init_test_registry();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,
@@ -676,7 +1345,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         assert_eq!(factory.build_count(), 2);
@@ -701,8 +1370,71 @@ mod tests {
     /// A row that arrives with `Err(profile)` from slice 8 passes
     /// through as `SupervisorError::Profile` — the factory is NOT
     /// called for it (sibling rows still materialize normally).
+    // what this catches: the DECISION, not the serialization. A remote-bound
+    // persona's window comes from her recorded responder slot (or the floor when
+    // none is recorded) and never from the local serving snapshot — reordering
+    // the remote branch against the local-slot clamp would size every off-box
+    // brain to a lane it never runs in (35–43k prompts at a 24,832 slot, 2026-09-07).
+    #[tokio::test]
+    async fn a_remote_override_wins_over_the_local_slot_at_spawn() {
+        init_test_registry();
+        let homes = tempfile::tempdir().expect("tempdir");
+        let mut with_window = fake_instance("Rin");
+        with_window.home = homes.path().join("rin");
+        std::fs::create_dir_all(&with_window.home).expect("home dir");
+        crate::persona::model_override::PersonaModelOverride::new_remote(
+            "model-a", None, 1, "peer",
+        )
+        .with_context_window(24_832)
+        .write(&crate::persona::home::PersonaHome::from_root(
+            with_window.home.clone(),
+        ))
+        .expect("write override");
+        let mut without_window = fake_instance("Sol");
+        without_window.home = homes.path().join("sol");
+        std::fs::create_dir_all(&without_window.home).expect("home dir");
+        crate::persona::model_override::PersonaModelOverride::new_remote(
+            "model-b", None, 1, "peer",
+        )
+        .write(&crate::persona::home::PersonaHome::from_root(
+            without_window.home.clone(),
+        ))
+        .expect("write override");
+        let mut rin = fake_profile("Rin", "model-a");
+        rin.context_length = 50_944;
+        let mut sol = fake_profile("Sol", "model-b");
+        sol.context_length = 50_944;
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: with_window,
+                profile: Ok(rin),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: without_window,
+                profile: Ok(sol),
+            },
+        ];
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+        let rin = hosted[0].as_ref().expect("Rin hosted");
+        assert_eq!(
+            rin.profile.context_length, 24_832,
+            "the recorded responder window wins"
+        );
+        let sol = hosted[1].as_ref().expect("Sol hosted");
+        assert_eq!(
+            sol.profile.context_length,
+            crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+            "unknown responder → the planner's floor, never the local lane"
+        );
+    }
+
     #[tokio::test]
     async fn forwards_profile_errors_without_calling_factory() {
+        init_test_registry();
         let bad_profile_err = InferenceProfileError::UnknownModel {
             model_id: "nonexistent/sentinel".to_string(),
             role_id: "coder".to_string(),
@@ -722,7 +1454,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
@@ -754,10 +1486,9 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory =
-            ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
+        let factory = ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -780,7 +1511,7 @@ mod tests {
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
-        let hosted = materialize_adapters(vec![], &factory, |_| None).await;
+        let hosted = materialize_adapters(vec![], &factory, |_| None, |_| None).await;
         assert!(hosted.is_empty());
         assert_eq!(factory.build_count(), 0);
     }
@@ -799,7 +1530,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_lookup_none_surfaces_as_runtime_missing() {
         let instance = fake_instance("Paige");
-        let expected_persona_id = instance.persona_id;
+        let expected_persona_id = instance.peer_id.as_uuid();
         let plans = vec![MaterializedPersonaPlan {
             role: RoleId::Helper,
             instance,
@@ -809,7 +1540,7 @@ mod tests {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         // `|_| None` here is the substrate-bug shape we're locking in:
         // the registry exists but doesn't contain this persona_id.
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None, |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         // Factory MUST NOT be called when the runtime lookup fails —
@@ -842,9 +1573,10 @@ mod tests {
     /// per-slot error semantics of `Profile` and `AdapterFactory`.
     #[tokio::test]
     async fn runtime_missing_only_affects_its_own_slot() {
+        init_test_registry();
         let paige = fake_instance("Paige");
         let pax = fake_instance("Pax");
-        let pax_persona_id = pax.persona_id;
+        let pax_persona_id = pax.peer_id.as_uuid();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,
@@ -860,15 +1592,16 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
-        let lookup = move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
-            if pid == pax_persona_id {
-                None
-            } else {
-                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
-                    as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
-            }
-        };
-        let hosted = materialize_adapters(plans, &factory, lookup).await;
+        let lookup =
+            move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+                if pid == pax_persona_id {
+                    None
+                } else {
+                    Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
+                        as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
+                }
+            };
+        let hosted = materialize_adapters(plans, &factory, lookup, |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory ran exactly once — for Paige, not Pax.
@@ -897,6 +1630,7 @@ mod tests {
     /// because the shared counter stays at 0.
     #[tokio::test]
     async fn warmup_called_once_per_materialized_adapter() {
+        init_test_registry();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,
@@ -912,7 +1646,7 @@ mod tests {
 
         let (factory, counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         // Both slots materialize cleanly.
         assert_eq!(hosted.len(), 2);
@@ -924,6 +1658,173 @@ mod tests {
             2,
             "warmup() must be called once per successfully-materialized adapter"
         );
+    }
+
+    // 6d17695c: a real SQLite initialization failure must not host a blank
+    // admission store or replace an existing resident. Healthy siblings still
+    // materialize through the same factory/runtime/registration boundary.
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_restore_failure_refuses_hosting_and_preserves_existing_residents() {
+        init_test_registry();
+        for already_registered in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            let factory = ScriptedPersonaAdapterFactory::heuristic();
+            let registry = crate::cognition::persona_workspace::global();
+            let mut failed = fake_instance("admission-refused");
+            failed.home = home.path().join("refused-persona");
+            let failed_id = failed.peer_id.as_uuid();
+            let previous = if already_registered {
+                // An already-running life remains valid even if a subsequent
+                // bootstrap points at storage it cannot open. Its own DB is
+                // left untouched; only the candidate home is broken below.
+                let mut previous_identity = failed.clone();
+                previous_identity.home = home.path().join("previous-persona");
+                let previous_plan = MaterializedPersonaPlan {
+                    role: RoleId::Helper,
+                    instance: previous_identity,
+                    profile: Ok(fake_profile("admission-refused", "model-a")),
+                };
+                let hosted = materialize_adapters(
+                    vec![previous_plan],
+                    &factory,
+                    StubAircCitizen::fresh_lookup(),
+                    |_| None,
+                )
+                .await;
+                assert!(
+                    hosted[0].is_ok(),
+                    "test: the original resident must be healthy"
+                );
+                Some(
+                    registry
+                        .get(&failed_id)
+                        .expect("test: original resident registered"),
+                )
+            } else {
+                assert!(registry.get(&failed_id).is_none());
+                None
+            };
+            let failed_home = crate::persona::home::PersonaHome::from_root(failed.home.clone());
+            failed_home.ensure_exists().unwrap();
+            let broken = failed_home.engrams_db();
+            let original = b"existing engram database is not valid SQLite";
+            std::fs::write(&broken, original).unwrap();
+            let mut healthy = fake_instance("admission-healthy");
+            healthy.home = home.path().join("healthy-persona");
+            let healthy_id = healthy.peer_id.as_uuid();
+            let healthy_home = crate::persona::home::PersonaHome::from_root(healthy.home.clone());
+            let plans = vec![
+                MaterializedPersonaPlan {
+                    role: RoleId::Helper,
+                    instance: failed,
+                    profile: Ok(fake_profile("admission-refused", "model-a")),
+                },
+                MaterializedPersonaPlan {
+                    role: RoleId::Coder,
+                    instance: healthy,
+                    profile: Ok(fake_profile("admission-healthy", "model-b")),
+                },
+            ];
+            let hosted =
+                materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None)
+                    .await;
+            assert_eq!(hosted.len(), 2);
+            match &hosted[0] {
+                Err(SupervisorError::AdmissionRestore {
+                    slot_index,
+                    role,
+                    persona_id,
+                    source,
+                }) => {
+                    assert_eq!(
+                        (*slot_index, *role, *persona_id),
+                        (0, RoleId::Helper, failed_id)
+                    );
+                    assert!(
+                        matches!(source, crate::orm::OrmStoreError::AdapterFailed {
+                        operation: "initialize", collection, ..
+                    } if collection == "engrams"),
+                        "test: preserve the actual SQLite initialization error: {source}"
+                    );
+                }
+                Err(other) => panic!("test: expected admission restore failure, got {other:?}"),
+                Ok(_) => {
+                    panic!("test: failed persistent admission must not produce a hosted persona")
+                }
+            }
+            assert!(
+                hosted[1].is_ok(),
+                "a new empty home must still initialize persistent admission"
+            );
+            assert!(registry.get(&healthy_id).is_some());
+            assert!(healthy_home.engrams_db().is_file());
+            if let Some(previous) = previous {
+                assert!(Arc::ptr_eq(&previous, &registry.get(&failed_id).unwrap()));
+            } else {
+                assert!(registry.get(&failed_id).is_none());
+            }
+            assert_eq!(std::fs::read(&broken).unwrap(), original);
+        }
+    }
+
+    // 9f160b78: actual boot materialization reports a checkpoint failure for
+    // that slot, never hosts it blank, and still registers a healthy sibling.
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkpoint_failure_refuses_hosting_without_tainting_sibling_slots() {
+        init_test_registry();
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let mut failed = fake_instance("checkpoint-refused");
+        failed.home = home.path().join("refused-persona");
+        let failed_id = failed.peer_id.as_uuid();
+        let mut healthy = fake_instance("checkpoint-healthy");
+        healthy.home = home.path().join("healthy-persona");
+        let healthy_id = healthy.peer_id.as_uuid();
+        let broken = home
+            .path()
+            .join(".continuum/personas")
+            .join(failed_id.to_string())
+            .join("volatile.json");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(&broken, b"not a checkpoint").unwrap();
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: failed,
+                profile: Ok(fake_profile("checkpoint-refused", "model-a")),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: healthy,
+                profile: Ok(fake_profile("checkpoint-healthy", "model-b")),
+            },
+        ];
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+        assert_eq!(hosted.len(), 2);
+        match &hosted[0] {
+            Err(SupervisorError::WorkspaceRegistration {
+                slot_index,
+                role,
+                persona_id,
+                source,
+            }) => {
+                assert_eq!(
+                    (*slot_index, *role, *persona_id),
+                    (0, RoleId::Helper, failed_id)
+                );
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+            }
+            Err(other) => panic!("test: expected checkpoint failure, got {other:?}"),
+            Ok(_) => panic!("test: corrupt checkpoint must not produce a hosted persona"),
+        }
+        assert!(hosted[1].is_ok());
+        let registry = crate::cognition::persona_workspace::global();
+        assert!(registry.get(&failed_id).is_none());
+        assert!(registry.get(&healthy_id).is_some());
+        assert_eq!(std::fs::read(&broken).unwrap(), b"not a checkpoint");
     }
 
     /// Warmup failure surfaces as `SupervisorError::AdapterWarmup` —
@@ -942,7 +1843,7 @@ mod tests {
             "simulated warmup failure",
         );
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -969,16 +1870,20 @@ mod tests {
     /// `Profile` / `AdapterFactory` / `RuntimeMissing` already enforce.
     #[tokio::test]
     async fn warmup_failure_does_not_taint_sibling_slots() {
-        let (factory_ok, ok_counts) =
-            ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        init_test_registry();
+        let (factory_ok, ok_counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let ok_plan = vec![MaterializedPersonaPlan {
             role: RoleId::Helper,
             instance: fake_instance("Paige"),
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
-        let hosted_ok =
-            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup())
-                .await;
+        let hosted_ok = materialize_adapters(
+            ok_plan,
+            &factory_ok,
+            StubAircCitizen::fresh_lookup(),
+            |_| None,
+        )
+        .await;
         assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
         assert_eq!(ok_counts.warmups(), 1);
 
@@ -994,6 +1899,7 @@ mod tests {
             fail_plan,
             &factory_fail,
             StubAircCitizen::fresh_lookup(),
+            |_| None,
         )
         .await;
         assert!(

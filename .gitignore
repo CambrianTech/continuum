@@ -12,13 +12,23 @@ dist/
 *.tgz
 continuum-jtag-*.tgz
 
-# Generated CSS-in-JS modules emitted by src/scripts/compile-sass.ts
+# Rust build artifacts. The cargo WORKSPACE root is the repo root, so
+# `cargo run --manifest-path core/continuum-core/...` (start-server.sh / cu start)
+# builds into /target — multi-GB, never committed. `**/target/` also covers the
+# shared cache symlink target and any per-crate ghost dirs. (The canonical build
+# target is $HOME/.continuum/cache/cargo-target via CARGO_TARGET_DIR; /target is
+# what the workspace-root cargo run uses when the env var isn't set.)
+/target/
+**/target/
+
+# Generated CSS-in-JS modules emitted by the legacy Node shell's compile-sass.ts
 # from sibling .scss source files. Pure build output — never hand-edited.
-src/widgets/**/public/*.styles.ts
-src/widgets/**/styles/*.styles.ts
+# (Old Node/TS system moved to legacy/src/ — task #83.)
+legacy/src/widgets/**/public/*.styles.ts
+legacy/src/widgets/**/styles/*.styles.ts
 
 # Generated manifest files (use generated.ts instead)
-src/manifests/
+legacy/src/manifests/
 
 # Generated test files
 test-config.md
@@ -124,6 +134,9 @@ persona-verify-*.json
 **/.continuum/*.log
 **/examples/**/.continuum/
 .claude/
+# …but the team settings file IS repo-owned: it durably enables the
+# memory-bridge plugin (and future shared agent config) for every clone.
+!.claude/settings.json
 .claude-pool/
 .claude-messages/
 .continuum-comm/
@@ -192,8 +205,12 @@ _archive/
 src/.continuum/sessions/validation/
 /src/widgets/live/public/live-widget.css
 
-# Downloaded model binaries (Whisper, Piper, Silero VAD, etc.)
+# Downloaded model binaries (Whisper, Piper, Silero VAD, Kokoro, Orpheus,
+# pocket-tts, avatars, etc.) — large artifacts fetched by the start script,
+# never committed. `tools/models/` is the current download path (the
+# workers→core/tools restructure left the old `src/workers/models/` rule stale).
 src/workers/models/
+tools/models/
 # AIRC pilot — runtime state is ignored, repo-pilot docs are committed.
 # `.airc/*` ignores the contents (not the directory itself) so the
 # negation patterns below can re-include specific tracked files. See
@@ -201,3 +218,32 @@ src/workers/models/
 .airc/*
 !.airc/*.md
 !.airc/manifest.json
+/config.env
+benchmarks/swe/.venv/
+
+# Persona work artifacts (until #49 per-persona workspace isolation lands) — a
+# persona's file engine roots at the process cwd, so her card work lands here.
+# Not repo content; ignore so it never accidentally commits.
+/core/work-*/
+/core/wordstats*
+/core/sample.txt
+/core/reverse*
+
+# Agent/persona scratch workspaces at the REPO ROOT (`work-<card>/`,
+# `work-team-<name>/`) — same debris class as /core/work-*/ above, minted by
+# agent sessions whose shell CWD was the checkout. The 2026-08-14 audit found
+# one carrying a live `.airc/identity.key` (card #424); the dirs were
+# quarantined and the key destroyed. Persona hands now root at the citizen
+# layer (`ensure_engine` — never the checkout), so anything matching this at
+# root is escaped debris, never repo content.
+/work-*/
+# A nested airc scope's credential must NEVER be trackable, anywhere in the
+# tree. The root `.airc/*` rule above is anchored and does not cover scopes
+# minted inside subdirectories (that is exactly how the #424 key nearly
+# became repo content).
+**/.airc/identity.key
+
+# Agent scratch probes (shot/rowcount/msgcount) + a compiled _check_bin.
+# Ad-hoc instruments, not project tooling; regenerated on demand.
+.gymtool/
+models/whisper/

@@ -16,7 +16,7 @@ node_id: string,
 /**
  * Human-readable name (user-assigned, e.g., "home-5090", "school-laptop").
  */
-node_name: string | null, 
+node_name?: string, 
 /**
  * All transport addresses through which this node can be reached.
  * A node might be reachable via both Tailscale and Reticulum.
@@ -37,4 +37,39 @@ last_seen: number,
 /**
  * Last measured round-trip latency in milliseconds.
  */
-latency_ms: number | undefined, };
+latency_ms?: number | undefined, 
+/**
+ * The node's DURABLE airc identity — its `PeerId`, the SAME key the capacity
+ * gossip (`CapacityOffer`) and the settlement `Reputation` use. `node_id` above is
+ * a TRANSPORT-derived address (a Tailscale IP) that changes with location; THIS is
+ * the being's identity that moves with it. Optional because a node found by a
+ * transport-level scan alone has no `PeerId` until the pairing/gossip correlation
+ * supplies it (`set_peer_id`). Once set it is the ONE key that joins routing ↔
+ * capacity ↔ reputation — #2228, the node sibling of the enforced
+ * `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
+ */
+peer_id?: string | undefined, 
+/**
+ * The node's running build (9-hex sha) as its last beacon reported it.
+ */
+build_sha?: string, 
+/**
+ * The node's monotonic build number as its last beacon reported it (0 = unknown).
+ */
+build_number: number, 
+/**
+ * What the node serves, as its last beacon reported it (automatic placement stage A).
+ */
+served_model?: string, lanes: number, residents: number, 
+/**
+ * Seconds since this node was last heard (a beacon, a discovery, a frame).
+ */
+silent_secs: number, 
+/**
+ * Heard nothing for longer than the fleet's silence threshold — treat as DOWN.
+ */
+stale: boolean, 
+/**
+ * Running a build other than this node's — behind (or ahead of) tip.
+ */
+behind: boolean, };

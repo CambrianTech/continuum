@@ -5,13 +5,12 @@
 //!
 //! Security guarantees:
 //! - No directory traversal (../ sequences resolved and blocked)
-//! - Extension allowlist enforced on write operations
 //! - File size limits enforced on writes
 //! - Symlinks resolved before validation (no symlink-based escapes)
 
 use std::path::{Path, PathBuf};
 
-use super::types::{ALLOWED_EXTENSIONS, MAX_WRITE_SIZE};
+use super::types::MAX_WRITE_SIZE;
 
 /// Workspace-scoped path security validator.
 ///
@@ -30,14 +29,145 @@ pub struct PathSecurity {
 pub enum PathSecurityError {
     /// Path escapes the workspace boundary.
     TraversalBlocked { path: String, workspace: String },
-    /// File extension not in allowlist.
-    ExtensionBlocked { path: String, extension: String },
     /// File exceeds maximum write size.
     FileTooLarge { path: String, size: u64, max: u64 },
     /// Path is not valid UTF-8.
     InvalidPath { path: String },
     /// Workspace root does not exist or is not a directory.
     InvalidWorkspace { path: String },
+    /// Path is INSIDE the workspace but nothing exists there. Distinct from
+    /// `TraversalBlocked` on purpose: reporting ENOENT as a security refusal
+    /// teaches the caller (persona or human) that the file is FORBIDDEN rather
+    /// than ABSENT, and they stop probing paths instead of correcting the path.
+    /// Glass-boxed 2026-07-11: 58/65 exam reads died on this lie and the solver
+    /// never reached the file she was asked to fix.
+    NotFound {
+        path: String,
+        workspace: String,
+        /// Where the path actually diverges from the filesystem, and what IS there —
+        /// computed at construction while the tool still has the workspace in hand.
+        /// Empty when nothing useful could be found; never a guess presented as fact.
+        lead: String,
+    },
+}
+
+/// Turn "no file there" into a LEAD: the deepest ancestor that DOES exist, the segment that
+/// broke, and the real entries at that level — with an exact suggestion when one is obviously
+/// the intended name.
+///
+/// The old message ended with "check the path, e.g. with code/list or code/tree", which is true
+/// and costs her an ACT to go look. The tool is holding the workspace; it can answer the
+/// question the next act would have asked. Two distinct failures deserve different answers:
+/// a mistyped FILENAME (`file_engin.rs`) and a guessed DIRECTORY STRUCTURE (`core/src/...`) —
+/// telling her which one she hit is most of the fix.
+///
+/// Returns an empty string rather than a guess when nothing is close: a confident wrong
+/// suggestion is worse than the generic advice it replaces.
+fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
+    let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return String::new();
+    }
+
+    // Walk down until a segment does not exist — that is where her model of the tree diverges.
+    let mut here = root.to_path_buf();
+    let mut depth = 0usize;
+    for seg in &segments {
+        let next = here.join(seg);
+        if !next.exists() {
+            break;
+        }
+        here = next;
+        depth += 1;
+    }
+    if depth == segments.len() {
+        return String::new(); // whole path exists — not our case
+    }
+
+    let broke = segments[depth];
+    let existing_prefix = segments[..depth].join("/");
+    let mut names: Vec<String> = std::fs::read_dir(&here)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        return String::new();
+    }
+
+    // An obvious near-miss beats a listing: same name modulo a couple of characters.
+    if let Some(best) = nearest_name(broke, &names) {
+        let full = if existing_prefix.is_empty() {
+            best.clone()
+        } else {
+            format!("{existing_prefix}/{best}")
+        };
+        return format!(
+            "There is no '{broke}' in '{}', but there IS '{best}' — did you mean '{full}'?",
+            if existing_prefix.is_empty() {
+                "."
+            } else {
+                &existing_prefix
+            }
+        );
+    }
+
+    // No near-miss: name the divergence point and show what is actually there, so her next
+    // act is a corrected read rather than another guess.
+    let shown: Vec<String> = names.iter().take(12).cloned().collect();
+    let more = names.len().saturating_sub(shown.len());
+    format!(
+        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}{}.",
+        if existing_prefix.is_empty() {
+            "."
+        } else {
+            &existing_prefix
+        },
+        shown.join(", "),
+        if more > 0 {
+            format!(", …+{more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// The entry closest to `want`, when one is close ENOUGH to name confidently. Character-level
+/// edit distance, capped: 1-2 typos in a real filename, never a coincidental prefix match.
+fn nearest_name(want: &str, names: &[String]) -> Option<String> {
+    let budget = match want.len() {
+        0..=3 => 0, // too short to disambiguate — a listing is more honest
+        4..=8 => 1,
+        _ => 2,
+    };
+    if budget == 0 {
+        return None;
+    }
+    names
+        .iter()
+        .map(|n| (edit_distance(want, n), n))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n.clone())
+}
+
+/// Levenshtein distance, two-row. Small inputs (filenames) so allocation is irrelevant.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 impl std::fmt::Display for PathSecurityError {
@@ -45,9 +175,6 @@ impl std::fmt::Display for PathSecurityError {
         match self {
             Self::TraversalBlocked { path, workspace } => {
                 write!(f, "Path '{}' escapes workspace '{}'", path, workspace)
-            }
-            Self::ExtensionBlocked { path, extension } => {
-                write!(f, "Extension '.{}' not allowed for '{}'", extension, path)
             }
             Self::FileTooLarge { path, size, max } => {
                 write!(f, "File '{}' is {} bytes (max: {})", path, size, max)
@@ -57,6 +184,25 @@ impl std::fmt::Display for PathSecurityError {
             }
             Self::InvalidWorkspace { path } => {
                 write!(f, "Invalid workspace root: '{}'", path)
+            }
+            Self::NotFound {
+                path,
+                workspace,
+                lead,
+            } => {
+                // "check the path with code/list" costs her an ACT to go look. The tool is
+                // already holding the workspace — it can say where the path breaks and what
+                // is actually there, so the next act is the corrected read, not a search.
+                if lead.is_empty() {
+                    write!(
+                        f,
+                        "No file at '{}' under workspace '{}' (path is inside the sandbox; \
+                         nothing exists there — check the path, e.g. with code/list or code/tree)",
+                        path, workspace
+                    )
+                } else {
+                    write!(f, "No file at '{}'. {}", path, lead)
+                }
             }
         }
     }
@@ -108,9 +254,10 @@ impl PathSecurity {
     /// Returns the absolute, canonicalized path.
     pub fn validate_read(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
         // Try workspace root first
-        if let Ok(path) = self.resolve_within(&self.workspace_root, relative_path) {
-            return Ok(path);
-        }
+        let ws_err = match self.resolve_within(&self.workspace_root, relative_path) {
+            Ok(path) => return Ok(path),
+            Err(e) => e,
+        };
 
         // Try read-only roots
         for root in &self.read_roots {
@@ -119,21 +266,22 @@ impl PathSecurity {
             }
         }
 
-        Err(PathSecurityError::TraversalBlocked {
-            path: relative_path.to_string(),
-            workspace: self.workspace_root.display().to_string(),
-        })
+        // Propagate the workspace root's verdict rather than rewrapping it: an
+        // in-sandbox ENOENT must surface as NotFound (correctable), never be
+        // laundered into a security refusal (terminal). [[fallbacks-are-illegal-fail-loud]]
+        Err(ws_err)
     }
 
     /// Validate and resolve a path for write operations.
     ///
-    /// The path must be within the workspace root (not read-only roots).
-    /// Also validates the file extension against the allowlist.
-    /// Returns the absolute path (parent dir must exist).
+    /// The ONLY write boundary is the workspace sandbox: the path must resolve inside the
+    /// workspace root (`resolve_for_write` — canonicalized, symlink-escape-proof). There is
+    /// NO extension allowlist — the sandbox already contains the blast radius, so also
+    /// dictating WHICH file types a persona may write is redundant and just cripples her
+    /// (it banned `.swift`, so she couldn't build an app). A citizen writes any source in
+    /// her own sandbox. Size is still bounded (`validate_size`). Returns the absolute path.
     pub fn validate_write(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
-        let resolved = self.resolve_for_write(relative_path)?;
-        self.check_extension(relative_path)?;
-        Ok(resolved)
+        self.resolve_for_write(relative_path)
     }
 
     /// Validate file size for a write operation.
@@ -148,6 +296,60 @@ impl PathSecurity {
         Ok(())
     }
 
+    /// A persona routinely addresses her OWN file by the absolute path the
+    /// system showed her — probes, tool receipts, and `workspace.rooted` all
+    /// print absolute paths. An absolute input INSIDE `root` is that idiom:
+    /// rewrite it to root-relative and resolve normally. An absolute input
+    /// OUTSIDE the root is REFUSED loudly — the old behavior (`normalize_path`
+    /// dropping the leading slash) silently reinterpreted it as a deep RELATIVE
+    /// path and double-joined it under the root. Glass-boxed 2026-08-23 on the
+    /// fluid-sim exam: a real 34KB index.html landed at
+    /// `<root>/var/folders/…/<root>/index.html` and the grade read "she never
+    /// wrote it". The leading-slash IDIOM ("/index.html" meaning
+    /// workspace-relative) survives: a leading component that names no real
+    /// directory at filesystem root is the idiom, not an address.
+    fn rebase_absolute(root: &Path, path: &str) -> Result<String, PathSecurityError> {
+        let trimmed = path.trim();
+        if !trimmed.starts_with('/') {
+            return Ok(trimmed.to_string());
+        }
+        let p = Path::new(trimmed);
+        // Raw and canonical root forms both match (macOS /var vs /private/var),
+        // and the /private alias is tried on the INPUT too.
+        // macOS aliases /var ⇄ /private/var, and the root may be stored in
+        // EITHER form (PathSecurity::new canonicalizes; her prompt may show the
+        // raw symlink form). Strip the /private prefix from BOTH sides so every
+        // combination compares in one canonical spelling.
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf()); // fallback only narrows which prefix can match; the refusal below stays honest
+        let depriv = |p: &str| p.strip_prefix("/private").unwrap_or(p).to_string(); // no /private prefix = already the canonical-alias spelling; identity is the correct form
+        let input_forms = [trimmed.to_string(), depriv(trimmed)];
+        let base_forms = [
+            root.to_string_lossy().into_owned(),
+            depriv(&root.to_string_lossy()),
+            canonical_root.to_string_lossy().into_owned(),
+            depriv(&canonical_root.to_string_lossy()),
+        ];
+        for base in &base_forms {
+            for input in &input_forms {
+                if let Ok(rest) = Path::new(input).strip_prefix(base) {
+                    return Ok(rest.to_string_lossy().into_owned());
+                }
+            }
+        }
+        // Not under the root. Genuine absolute address (its head names a real
+        // top-level directory) → refuse; otherwise it is the slash idiom.
+        let head = p.components().nth(1).map(|c| c.as_os_str().to_string_lossy().into_owned());
+        if let Some(head) = head {
+            if Path::new("/").join(&head).is_dir() {
+                return Err(PathSecurityError::TraversalBlocked {
+                    path: trimmed.to_string(),
+                    workspace: root.display().to_string(),
+                });
+            }
+        }
+        Ok(trimmed.trim_start_matches('/').to_string())
+    }
+
     /// Resolve a relative path within a root, ensuring it doesn't escape.
     ///
     /// For existing files, uses canonicalize() to resolve symlinks.
@@ -157,6 +359,7 @@ impl PathSecurity {
         root: &Path,
         relative_path: &str,
     ) -> Result<PathBuf, PathSecurityError> {
+        let relative_path = &Self::rebase_absolute(root, relative_path)?;
         let joined = root.join(relative_path);
 
         // For existing paths, canonicalize resolves symlinks
@@ -179,10 +382,22 @@ impl PathSecurity {
             });
         }
 
-        // For non-existing paths, resolve parent and check
-        Err(PathSecurityError::TraversalBlocked {
+        // Non-existing path: resolve lexically and check the prefix (what the doc
+        // above always promised). A path INSIDE the root that simply isn't there is
+        // NotFound — an honest ENOENT the caller can correct — never a security
+        // refusal, which reads as "forbidden" and stops the caller from ever
+        // finding the real path (the 58-dead-reads exam bug).
+        let normalized = self.normalize_path(relative_path);
+        if normalized.starts_with("..") || normalized.contains("/../") {
+            return Err(PathSecurityError::TraversalBlocked {
+                path: relative_path.to_string(),
+                workspace: root.display().to_string(),
+            });
+        }
+        Err(PathSecurityError::NotFound {
             path: relative_path.to_string(),
             workspace: root.display().to_string(),
+            lead: missing_path_lead(root, &normalized),
         })
     }
 
@@ -190,6 +405,7 @@ impl PathSecurity {
     ///
     /// The parent directory must exist and be within the workspace root.
     fn resolve_for_write(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
+        let relative_path = &Self::rebase_absolute(&self.workspace_root, relative_path)?;
         // Check for obvious traversal attempts before any I/O
         let normalized = self.normalize_path(relative_path);
         if normalized.starts_with("..") || normalized.contains("/../") {
@@ -270,21 +486,6 @@ impl PathSecurity {
         })
     }
 
-    /// Check that a file's extension is in the allowlist.
-    fn check_extension(&self, path: &str) -> Result<(), PathSecurityError> {
-        let path = Path::new(path);
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        if extension.is_empty() || !ALLOWED_EXTENSIONS.contains(&extension) {
-            return Err(PathSecurityError::ExtensionBlocked {
-                path: path.display().to_string(),
-                extension: extension.to_string(),
-            });
-        }
-
-        Ok(())
-    }
-
     /// Normalize a path by collapsing `.` and `..` components without I/O.
     ///
     /// This is a pre-check before any filesystem operations.
@@ -360,6 +561,66 @@ mod tests {
         ));
     }
 
+    // what this catches: "no file there, go run code/list" costs her an ACT to answer a
+    // question the tool could have answered. A one-character filename typo must be NAMED, and
+    // a wrongly-guessed directory structure must say WHERE the path diverges and what is
+    // actually at that level — those are different mistakes needing different corrections.
+    #[test]
+    fn a_missing_path_says_where_it_broke_and_what_is_there() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("core/continuum-core/src")).unwrap();
+        std::fs::write(root.join("core/continuum-core/src/file_engine.rs"), "x").unwrap();
+        std::fs::create_dir_all(root.join("core/vendor")).unwrap();
+
+        // FILENAME typo — one character. Must be named outright, not listed.
+        let lead = missing_path_lead(root, "core/continuum-core/src/file_engin.rs");
+        assert!(
+            lead.contains("did you mean 'core/continuum-core/src/file_engine.rs'"),
+            "a one-char typo must be resolved, not listed: {lead}"
+        );
+
+        // GUESSED STRUCTURE — 'core' exists, 'core/src' does not. Must name the divergence
+        // point and show the real entries so her next act is a corrected read.
+        let lead = missing_path_lead(root, "core/src/file_engine.rs");
+        assert!(
+            lead.contains("good up to 'core'") && lead.contains("no 'src'"),
+            "must localise where her model of the tree diverged: {lead}"
+        );
+        assert!(
+            lead.contains("continuum-core") && lead.contains("vendor"),
+            "and show what is actually at that level: {lead}"
+        );
+
+        // NOTHING close — silence beats a confident wrong suggestion.
+        let lead = missing_path_lead(root, "totally/unrelated/thing.rs");
+        assert!(
+            !lead.contains("did you mean"),
+            "must not invent a neighbour when none is close: {lead}"
+        );
+    }
+
+    // what this catches: a missing file INSIDE the sandbox must report NotFound,
+    // never TraversalBlocked — reporting ENOENT as "escapes workspace" reads as
+    // FORBIDDEN and stops a persona from ever correcting the path. Regression for
+    // the bitflags exam (58/65 reads of 'src/lib.rs' at the wrong depth died on
+    // the false security refusal; solver scored 0/3 without touching the bug).
+    #[test]
+    fn missing_file_inside_sandbox_is_not_found_not_a_security_refusal() {
+        let (_dir, security) = setup_workspace();
+        let result = security.validate_read("src/does_not_exist.rs");
+        assert!(
+            matches!(result, Err(PathSecurityError::NotFound { .. })),
+            "in-sandbox ENOENT must be NotFound, got: {result:?}"
+        );
+        // Traversal via a nonexistent path still refuses as traversal, not NotFound.
+        let escape = security.validate_read("../nope/also_missing.rs");
+        assert!(matches!(
+            escape,
+            Err(PathSecurityError::TraversalBlocked { .. })
+        ));
+    }
+
     #[test]
     fn test_dot_dot_traversal() {
         let (_dir, security) = setup_workspace();
@@ -382,28 +643,25 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // what this catches: the sandbox — NOT an extension allowlist — is the write boundary.
+    // Any source extension a coder needs (.swift, .kt, .cpp, .go, …) writes fine within the
+    // workspace; the extension allowlist that used to ban .swift is gone. Escaping the
+    // sandbox is still refused.
     #[test]
-    fn test_extension_blocked() {
+    fn any_extension_writes_within_sandbox_but_escapes_are_refused() {
         let (_dir, security) = setup_workspace();
-        let result = security.validate_write("src/malware.exe");
-        assert!(matches!(
-            result,
-            Err(PathSecurityError::ExtensionBlocked { .. })
-        ));
-    }
-
-    #[test]
-    fn test_allowed_extensions() {
-        let (_dir, security) = setup_workspace();
-        // All these should pass extension check
         for ext in &[
-            "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml",
-            "txt", "sh", "py",
+            "swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist",
         ] {
             let path = format!("src/test.{}", ext);
-            let result = security.check_extension(&path);
-            assert!(result.is_ok(), "Extension '{}' should be allowed", ext);
+            assert!(
+                security.validate_write(&path).is_ok(),
+                "'{}' must be writable in the sandbox — no extension bans",
+                ext
+            );
         }
+        // The sandbox is still the wall: a traversal escape is refused regardless of extension.
+        assert!(security.validate_write("../escape.swift").is_err());
     }
 
     #[test]
@@ -466,6 +724,37 @@ mod tests {
             resolved.starts_with(&canonical_dir),
             "Write should resolve within workspace, not read root"
         );
+    }
+
+    #[test]
+    // what this catches: the absolute-path double-join (2026-08-23, fluid-sim exam):
+    // a persona addressing her own file by the absolute path the system showed her
+    // had it silently slash-stripped into a deep RELATIVE path and written to
+    // <root>/var/…/<root>/index.html — graded "she never wrote it". Inside-root
+    // absolutes rebase to relative; outside-root absolutes refuse LOUD; the
+    // "/index.html" workspace-relative idiom keeps working.
+    fn absolute_paths_rebase_inside_refuse_outside_keep_the_slash_idiom() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let sec = PathSecurity::new(root).expect("security over tempdir");
+        let inside = format!("{}/index.html", root.display());
+        let resolved = sec.resolve_for_write(&inside).expect("inside-root absolute resolves");
+        assert!(resolved.ends_with("index.html"));
+        let canon_root = root.canonicalize().expect("canon");
+        assert!(resolved.starts_with(&canon_root) || resolved.starts_with(root),
+            "must land under the root, never double-joined: {}", resolved.display());
+        assert_eq!(resolved.to_string_lossy().matches("index.html").count(), 1, "double-join would repeat the filename");
+        // deep subdir form too (the exam's actual shape)
+        let deep = format!("{}/assets/app.js", root.display());
+        let r2 = sec.resolve_for_write(&deep).expect("inside-root deep absolute resolves");
+        assert!(r2.ends_with("assets/app.js"));
+        // outside-root genuine absolute → loud refusal, never a silent deep write
+        let err = sec.resolve_for_write("/var/folders/somewhere/else.html");
+        assert!(matches!(err, Err(PathSecurityError::TraversalBlocked { .. })),
+            "outside-root absolute must refuse, got {err:?}");
+        // the forgiving idiom survives: "/index.html" = workspace-relative
+        let idiom = sec.resolve_for_write("/index.html").expect("slash idiom resolves");
+        assert!(idiom.ends_with("index.html"));
     }
 
     #[test]

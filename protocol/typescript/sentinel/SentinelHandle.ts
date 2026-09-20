@@ -4,4 +4,4 @@ import type { SentinelStatus } from "./SentinelStatus";
 /**
  * Sentinel execution handle
  */
-export type SentinelHandle = { id: string, sentinelType: string, status: SentinelStatus, progress: number, startTime: bigint, endTime: bigint | null, exitCode: number | null, error: string | null, workingDir: string, logsDir: string, };
+export type SentinelHandle = { id: string, sentinelType: string, status: SentinelStatus, progress: number, startTime: bigint, endTime?: bigint, exitCode?: number, error?: string, workingDir: string, logsDir: string, };

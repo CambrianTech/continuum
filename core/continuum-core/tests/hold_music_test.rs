@@ -15,7 +15,8 @@ async fn test_hold_music_plays_when_alone() {
     // STEP 2: Join a call as single participant (false = not AI)
     let join = manager
         .join_call("test-hold-music", "user-1", "Alice", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
     let handle = join.handle;
     let mut audio_rx = join.audio_rx;
 

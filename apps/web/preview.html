@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Continuum — Widget Preview</title>
+    <!-- Backend-free visual harness for <chat-widget>. Same Vite/TS/theme pipeline
+         as index.html — the ONLY difference is it mounts a fixture instead of a
+         live socket, so the render is byte-faithful. Open under `npm run dev` at
+         /preview.html (?fixture=roster|empty); `npm run preview:shot` captures it. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #16161a;
+      }
+      #app {
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/preview.ts"></script>
+  </body>
+</html>

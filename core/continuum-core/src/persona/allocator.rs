@@ -22,7 +22,11 @@ use crate::gpu::GpuMemoryManager;
 // =============================================================================
 
 /// Model preference for a specific VRAM tier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ModelPreference.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPreference {
     /// Minimum total VRAM (GB) for this preference to apply
@@ -36,7 +40,11 @@ pub struct ModelPreference {
 }
 
 /// A persona definition from the catalog (data, not code).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaCatalogEntry.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaCatalogEntry {
     pub unique_id: String,
@@ -64,6 +72,31 @@ pub struct PersonaCatalogEntry {
     /// The allocator picks the first preference whose minVramGb <= total VRAM.
     #[serde(default)]
     pub model_preferences: Vec<ModelPreference>,
+}
+
+impl PersonaCatalogEntry {
+    /// Whether this entry's provider is the local in-process inference lane.
+    ///
+    /// The ONE place the allocator decides "local" from the catalog `provider`
+    /// field, so the literal lives here once instead of drifting across the file
+    /// (`[[magic-strings-vs-enums]]`, SMELL #70/#73).
+    ///
+    /// TRAP — do NOT merge this with `crate::cognition::turn_batch::is_local_provider`.
+    /// They answer different questions: this is "is the catalog provider field
+    /// exactly `local`"; that is the runtime "does this *execute* as a local model"
+    /// (which also matches `dmr`, `qwen`, `continuum-ai/`). Collapsing them into one
+    /// `is_local` would make the allocator treat qwen/dmr entries as local — a
+    /// silent mis-route. The real fix is a `ProviderKind` enum on this field (#73),
+    /// threaded through routing under live validation; this accessor is the safe,
+    /// behavior-preserving first compression.
+    pub fn is_local(&self) -> bool {
+        self.provider == "local"
+    }
+
+    /// Whether this entry's provider is the sentinel-AI lane (gated on `SENTINEL_PATH`).
+    pub fn is_sentinel(&self) -> bool {
+        self.provider == "sentinel"
+    }
 }
 
 // =============================================================================
@@ -177,10 +210,18 @@ fn detect_gpu_type(gpu_name: &str) -> &'static str {
 /// Allocate personas based on hardware capabilities and available API keys.
 ///
 /// `available_api_keys`: list of env var names that are currently set (e.g., ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"])
+///
+/// `overrides`: runtime per-persona base-model assignments, keyed by catalog
+/// `unique_id` → model id. Written by `persona/reassign-model` (which resolves each
+/// persona's [`PersonaModelOverride`](crate::persona::model_override::PersonaModelOverride)
+/// from her home), it takes precedence over the catalog's tiered `model_preferences`.
+/// Pass an empty map for the pure catalog-default plan. The allocator never reads the
+/// filesystem — the caller resolves the homes and hands in the map.
 pub fn allocate(
     gpu_manager: &GpuMemoryManager,
     available_api_keys: &[String],
     catalog: &[PersonaCatalogEntry],
+    overrides: &std::collections::HashMap<String, String>,
 ) -> AllocationResult {
     let total_vram_bytes = gpu_manager.total_vram_bytes();
     let total_vram_gb = total_vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -280,7 +321,7 @@ pub fn allocate(
         };
 
         // Sentinel: special case — needs SENTINEL_PATH env var
-        if entry.provider == "sentinel" {
+        if entry.is_sentinel() {
             if has_api_key("SENTINEL_PATH") {
                 allocation.reason = "SENTINEL_PATH set".to_string();
                 allocations.push(allocation);
@@ -295,8 +336,15 @@ pub fn allocate(
         // Model sharing: if two personas use the same model, the model loads ONCE.
         // The second persona's cost is ~0 (just config overhead). This means a
         // 24GB Docker container can run multiple local personas off one model.
-        if entry.provider == "local" {
-            let resolved = resolve_model_for_persona(entry, effective_memory_gb, &local_model);
+        if entry.is_local() {
+            // Runtime per-persona assignment, keyed by the persona's stable catalog
+            // id. Written by `persona/reassign-model` (which loads each persona's
+            // `PersonaModelOverride` from her home and passes the resolved map here),
+            // empty otherwise. The allocator stays a pure planning function: it reads
+            // the resolved map, it never touches the filesystem itself.
+            let override_model = overrides.get(&entry.unique_id).map(|s| s.as_str());
+            let resolved =
+                resolve_model_for_persona(entry, effective_memory_gb, &local_model, override_model);
             let model_name = resolved.model.clone();
             let needed_gb = resolved.vram_budget_gb;
 
@@ -384,6 +432,13 @@ pub fn allocate(
 /// Resolve the best model for a specific persona based on its config and available VRAM.
 ///
 /// Priority:
+/// 0. `override_model` — the runtime per-persona assignment from
+///    [`PersonaModelOverride`](crate::persona::model_override::PersonaModelOverride),
+///    written by `persona/reassign-model`. Wins over everything: an explicit
+///    reassignment is the operator's (or the persona's own) decision and the catalog
+///    default must not override it. Fit is still enforced downstream by the
+///    allocator's budget gate — the override only changes WHICH model, never whether
+///    it fits the host.
 /// 1. `model_preferences` — tiered list, pick best that fits
 /// 2. `model_id` — explicit model for this persona
 /// 3. `default_local_model` — system-wide default from select_local_model()
@@ -391,7 +446,16 @@ fn resolve_model_for_persona(
     entry: &PersonaCatalogEntry,
     total_vram_gb: f64,
     default_local_model: &str,
+    override_model: Option<&str>,
 ) -> ResolvedModel {
+    // Runtime per-persona assignment — highest precedence.
+    if let Some(forced) = override_model {
+        return ResolvedModel {
+            model: forced.to_string(),
+            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+        };
+    }
+
     // Check tiered model preferences (sorted highest-tier-first in catalog)
     if !entry.model_preferences.is_empty() {
         for pref in &entry.model_preferences {
@@ -514,7 +578,7 @@ mod tests {
             16 * 1024 * 1024 * 1024,
         ));
         let catalog = load_catalog();
-        let result = allocate(&manager, &[], &catalog);
+        let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Should always create at least one local persona.
         let local_count = result
@@ -541,7 +605,7 @@ mod tests {
         let manager = test_gpu_manager();
         let catalog = load_catalog();
         let keys = vec!["ANTHROPIC_API_KEY".to_string()];
-        let result = allocate(&manager, &keys, &catalog);
+        let result = allocate(&manager, &keys, &catalog, &std::collections::HashMap::new());
 
         let anthropic_count = result
             .allocations
@@ -551,6 +615,47 @@ mod tests {
         assert!(
             anthropic_count >= 1,
             "Should create at least one Anthropic persona"
+        );
+    }
+
+    #[test]
+    fn provider_identity_accessors_are_the_single_source() {
+        // what this catches: is_local/is_sentinel centralize the catalog-provider
+        // predicate the allocator branches on; if they drift from the "local" /
+        // "sentinel" strings the main path checks, allocation silently mis-routes.
+        // Also pins the TRAP: a cloud provider is neither, and these stay NARROWER
+        // than turn_batch::is_local_provider (must never be merged).
+        let base = PersonaCatalogEntry {
+            unique_id: "x".to_string(),
+            display_name: "X".to_string(),
+            provider: "local".to_string(),
+            persona_type: "persona".to_string(),
+            voice_id: None,
+            model_id: None,
+            is_audio_native: false,
+            api_key_env: None,
+            min_vram_gb: None,
+            bio: None,
+            speciality: None,
+            accent_color: None,
+            model_preferences: vec![],
+        };
+        assert!(base.is_local() && !base.is_sentinel(), "provider=local");
+        let sentinel = PersonaCatalogEntry {
+            provider: "sentinel".to_string(),
+            ..base.clone()
+        };
+        assert!(
+            sentinel.is_sentinel() && !sentinel.is_local(),
+            "provider=sentinel"
+        );
+        let cloud = PersonaCatalogEntry {
+            provider: "anthropic".to_string(),
+            ..base
+        };
+        assert!(
+            !cloud.is_local() && !cloud.is_sentinel(),
+            "cloud is neither"
         );
     }
 
@@ -584,17 +689,32 @@ mod tests {
         };
 
         // 32GB → gets larger Qwen3.5 model when catalog permits
-        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        let r = resolve_model_for_persona(
+            &entry,
+            32.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-27b-code-forged");
         assert_eq!(r.vram_budget_gb, 20.0);
 
         // 24GB → gets forged Qwen3.5 default
-        let r = resolve_model_for_persona(&entry, 24.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        let r = resolve_model_for_persona(
+            &entry,
+            24.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
 
         // 8GB → falls to lowest preference
-        let r = resolve_model_for_persona(&entry, 8.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        let r = resolve_model_for_persona(
+            &entry,
+            8.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
     }
@@ -617,9 +737,53 @@ mod tests {
             model_preferences: vec![], // No preferences → legacy path
         };
 
-        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        let r = resolve_model_for_persona(
+            &entry,
+            32.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
+    }
+
+    // what this catches: a runtime per-persona override (from PersonaModelOverride,
+    // written by persona/reassign-model) wins over the catalog's tiered
+    // model_preferences. Without this precedence, reassigning a persona would be
+    // silently ignored in favour of the catalog default — the reassignment must stick.
+    #[test]
+    fn override_wins_over_model_preferences() {
+        let entry = PersonaCatalogEntry {
+            unique_id: "codereview".to_string(),
+            display_name: "CodeReview AI".to_string(),
+            provider: "local".to_string(),
+            persona_type: "persona".to_string(),
+            voice_id: None,
+            model_id: None,
+            is_audio_native: false,
+            api_key_env: None,
+            min_vram_gb: Some(9.0),
+            bio: None,
+            speciality: None,
+            accent_color: None,
+            model_preferences: vec![ModelPreference {
+                min_vram_gb: 16.0,
+                model: "continuum-ai/qwen3.5-27b-code-forged".to_string(),
+                vram_budget_gb: 20.0,
+            }],
+        };
+
+        // The catalog would pick the 27b at 32GB; the override forces the assigned
+        // model regardless, and falls back to the entry's min_vram_gb for budgeting.
+        let r = resolve_model_for_persona(&entry, 32.0, "system-default", Some("qwen3-coder-14b"));
+        assert_eq!(
+            r.model, "qwen3-coder-14b",
+            "the runtime assignment overrides the catalog tier"
+        );
+        assert_eq!(
+            r.vram_budget_gb, 9.0,
+            "override budgets off the entry's min_vram_gb"
+        );
     }
 
     /// Verify catalog model_preferences are correctly parsed from catalog.json
@@ -665,7 +829,7 @@ mod tests {
 
         let manager = GpuMemoryManager::simulated("NVIDIA RTX 5090", 32 * 1024 * 1024 * 1024);
         let catalog = load_catalog();
-        let result = allocate(&manager, &[], &catalog);
+        let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Find local personas
         let local: Vec<_> = result
@@ -703,7 +867,7 @@ mod tests {
 
         let manager = GpuMemoryManager::simulated("Apple M1 Pro", 16 * 1024 * 1024 * 1024);
         let catalog = load_catalog();
-        let result = allocate(&manager, &[], &catalog);
+        let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         let local: Vec<_> = result
             .allocations

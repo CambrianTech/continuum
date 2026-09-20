@@ -16,9 +16,8 @@ use ts_rs::TS;
 
 const GATING_PROVIDER: &str = "groq";
 const DEFAULT_GATING_MODEL: &str = "llama-3.1-8b-instant";
-const GATING_MAX_TOKENS: u32 = 200;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -35,7 +34,7 @@ pub struct AIDecisionContext {
     pub system_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -47,7 +46,7 @@ pub struct GatingTriggerMessage {
     pub content: GatingMessageContent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -57,7 +56,7 @@ pub struct GatingMessageContent {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -73,7 +72,7 @@ pub struct GatingRagContext {
     pub metadata: GatingRagMetadata,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -85,7 +84,7 @@ pub struct GatingRagMetadata {
     pub recipe_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -102,7 +101,7 @@ pub struct GatingConversationMessage {
     pub timestamp: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -148,7 +147,7 @@ pub struct AIGatingDecision {
     pub factors: Option<AIGatingDecisionFactors>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -203,10 +202,15 @@ pub async fn evaluate_gating(
         model: Some(model.clone()),
         provider: Some(GATING_PROVIDER.to_string()),
         temperature: Some(request.temperature.unwrap_or(0.3)),
-        max_tokens: Some(GATING_MAX_TOKENS),
+        // Model owns its length — the adapter forwards no ceiling (None). The gating
+        // prompt asks for a short verdict; brevity is the model's to give, not ours
+        // to guillotine (a hard cap truncates a reasoning model mid-thought → empty).
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -227,11 +231,7 @@ pub async fn evaluate_gating(
     // wrongly excluded CPU-only adapters even when they were the
     // only ones claiming the requested model.
     let (_provider_id, adapter) = registry
-        .select(
-            Some(GATING_PROVIDER),
-            Some(&model),
-            InferenceDevice::Auto,
-        )
+        .select(Some(GATING_PROVIDER), Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ShouldRespondError::NoAdapter {
             provider: GATING_PROVIDER.to_string(),
             model: Some(model.clone()),
@@ -474,7 +474,7 @@ mod tests {
             room_id: "room-1".to_string(),
             trigger_message: GatingTriggerMessage {
                 id: "message-1".to_string(),
-                sender_name: "Joel".to_string(),
+                sender_name: "Operator".to_string(),
                 content: GatingMessageContent {
                     text: "who is here?".to_string(),
                 },
@@ -483,7 +483,7 @@ mod tests {
                 conversation_history: vec![GatingConversationMessage {
                     role: "user".to_string(),
                     content: "who is here?".to_string(),
-                    name: Some("Joel".to_string()),
+                    name: Some("Operator".to_string()),
                     timestamp: Some(1),
                 }],
                 recipe_strategy: Some(GatingRecipeStrategy {
@@ -503,7 +503,7 @@ mod tests {
     fn build_prompt_marks_trigger_and_includes_recipe_rules() {
         let prompt = build_gating_prompt(&context());
         assert!(prompt.contains("You are \"Ada\""));
-        assert!(prompt.contains(">>> Joel: who is here? <<<"));
+        assert!(prompt.contains(">>> Operator: who is here? <<<"));
         assert!(prompt.contains("RECIPE RULES (from standup)"));
         assert!(prompt.contains("- answer direct questions"));
     }

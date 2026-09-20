@@ -204,6 +204,7 @@ mod tests {
         events: &'a InMemoryEvents,
     ) -> AdmissionContext<'a> {
         AdmissionContext {
+            context_id: None,
             config: cfg,
             seen_content: content,
             seen_events: events,

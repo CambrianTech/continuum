@@ -81,7 +81,7 @@ impl PostgresAdapter {
     /// Cache is invalidated per-table when schema evolution adds columns.
     async fn cached_column_types(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         bare_table: &str,
     ) -> HashMap<String, String> {
         // Check cache first (read lock — concurrent reads OK)
@@ -123,7 +123,7 @@ impl PostgresAdapter {
     /// means the cache absorbed the call.
     async fn ensure_table_exists_cached(
         &self,
-        client: &deadpool_postgres::Client,
+        client: &impl deadpool_postgres::GenericClient,
         qualified_table: &str,
         bare_table: &str,
         data: &Value,
@@ -172,6 +172,257 @@ impl PostgresAdapter {
             table
         } else {
             format!("{}.{}", self.schema, table)
+        }
+    }
+
+    /// `create` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn create_on(
+        &self,
+        client: &impl deadpool_postgres::GenericClient,
+        record: DataRecord,
+    ) -> StorageResult<DataRecord> {
+        let bare_table = naming::to_table_name(&record.collection);
+        let qualified_table = self.table_ref(&record.collection);
+        let now: DateTime<Utc> = Utc::now();
+        let now_rfc3339 = now.to_rfc3339();
+
+        // Ensure table exists (auto-create from data shape).
+        // Invalidate column type cache only when the cached helper actually
+        // hit Postgres — if the row introduced no new columns, both caches
+        // stay warm and we save 2 round-trips on the steady-state hot path.
+        let schema_changed = match self
+            .ensure_table_exists_cached(client, &qualified_table, &bare_table, &record.data)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        if schema_changed {
+            self.invalidate_column_cache(&bare_table).await;
+        }
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(client, &bare_table).await;
+
+        // Build column list and values
+        let mut columns = vec![
+            "id".to_string(),
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "version".to_string(),
+        ];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
+            Box::new(record.id.clone()),
+            Box::new(now),
+            Box::new(now),
+            Box::new(1_i64),
+        ];
+
+        if let Value::Object(data) = &record.data {
+            for (key, value) in data {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                columns.push(col_name);
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
+            qualified_table,
+            columns.join(", "),
+            placeholders.join(", ")
+        );
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            Ok(rows) => {
+                if rows == 0 {
+                    // ON CONFLICT DO NOTHING — record already exists
+                    return StorageResult::err(format!("Record already exists: {}", record.id));
+                }
+                StorageResult::ok(DataRecord {
+                    metadata: RecordMetadata {
+                        created_at: now_rfc3339.clone(),
+                        updated_at: now_rfc3339,
+                        version: 1,
+                        ..record.metadata
+                    },
+                    ..record
+                })
+            }
+            Err(e) => {
+                // Diagnostic: include column names + types for debugging serialization errors
+                let col_info: Vec<String> = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
+                        format!("${}: {}({})", i + 1, c, pg_type)
+                    })
+                    .collect();
+                StorageResult::err(format!(
+                    "Insert failed [{}]: {:?} | columns: [{}]",
+                    qualified_table,
+                    e,
+                    col_info.join(", ")
+                ))
+            }
+        }
+    }
+
+    /// `read` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn read_on(
+        &self,
+        client: &impl deadpool_postgres::GenericClient,
+        collection: &str,
+        id: &UUID,
+    ) -> StorageResult<DataRecord> {
+        let table = self.table_ref(collection);
+
+        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
+
+        let rows = match client.query(&sql, &[&id]).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format_pg_error(&e);
+                if msg.contains("does not exist") {
+                    return StorageResult::err(format!("Record not found: {}", id));
+                }
+                return StorageResult::err(format!("Query failed: {}", msg));
+            }
+        };
+
+        if rows.is_empty() {
+            return StorageResult::err(format!("Record not found: {}", id));
+        }
+
+        match row_to_record(&rows[0], collection, rows[0].columns()) {
+            Ok(record) => StorageResult::ok(record),
+            Err(e) => StorageResult::err(format!("Row conversion failed: {}", e)),
+        }
+    }
+
+    /// `delete` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn delete_on(
+        &self,
+        client: &impl deadpool_postgres::GenericClient,
+        collection: &str,
+        id: &UUID,
+    ) -> StorageResult<bool> {
+        let table = self.table_ref(collection);
+        let sql = format!("DELETE FROM {} WHERE id = $1", table);
+
+        match client.execute(&sql, &[&id]).await {
+            Ok(rows) => StorageResult::ok(rows > 0),
+            Err(e) => StorageResult::err(format!("Delete failed: {}", e)),
+        }
+    }
+
+    /// `update` with the connection INJECTED, so a caller holding an open
+    /// transaction can run it on that same client. The trait method below is a
+    /// thin wrapper that checks out its own connection.
+    async fn update_on(
+        &self,
+        client: &impl deadpool_postgres::GenericClient,
+        collection: &str,
+        id: &UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<DataRecord> {
+        let bare_table = naming::to_table_name(collection);
+        let table = self.table_ref(collection);
+        let now: DateTime<Utc> = Utc::now();
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(client, &bare_table).await;
+
+        let mut sets = vec!["updated_at = $1".to_string()];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
+        let mut idx = 1_usize;
+
+        if increment_version {
+            sets.push("version = version + 1".to_string());
+        }
+
+        if let Value::Object(obj) = &data {
+            for (key, value) in obj {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                idx += 1;
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                sets.push(format!("{} = ${}", col_name, idx));
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        idx += 1;
+        params.push(Box::new(id.clone()));
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = ${}",
+            table,
+            sets.join(", "),
+            idx
+        );
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            // read_on, NOT self.read: self.read checks out its OWN pooled
+            // connection, which inside a batch transaction is a DIFFERENT session
+            // that cannot see this statement's uncommitted row — a Create+Update of
+            // the same new row in one batch would read back "not found" — and on a
+            // one-connection pool it blocks for the 10s pool timeout first.
+            Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
+            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+            Err(e) => {
+                // Schema evolution: auto-add missing columns and retry.
+                // Evict the ensured-columns cache first — it lied (claimed a
+                // column existed that Postgres just rejected), so we must hit
+                // information_schema to rebuild ground truth.
+                let err_msg = format_pg_error(&e);
+                if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    self.ensured_columns_cache.write().await.remove(&bare_table);
+                    if let Err(evolve_err) =
+                        ensure_table_exists_pg(client, &table, &bare_table, &self.schema, &data)
+                            .await
+                    {
+                        return StorageResult::err(format!(
+                            "Update failed [{}]: {} (schema evolution also failed: {})",
+                            bare_table, err_msg, evolve_err
+                        ));
+                    }
+                    self.invalidate_column_cache(&bare_table).await;
+                    // Retry the update after adding columns
+                    match client.execute(&sql, &params_ref).await {
+                        // Same reason as the first read-back: stay on this client.
+                        Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
+                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => StorageResult::err(format!(
+                            "Update failed [{}] after schema evolution: {}",
+                            bare_table,
+                            format_pg_error(&e2)
+                        )),
+                    }
+                } else {
+                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                }
+            }
         }
     }
 }
@@ -296,7 +547,7 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
 
 /// Query column data types from information_schema for type-aware parameter coercion
 async fn get_column_types(
-    client: &deadpool_postgres::Client,
+    client: &impl deadpool_postgres::GenericClient,
     table: &str,
     schema: &str,
 ) -> HashMap<String, String> {
@@ -760,101 +1011,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let bare_table = naming::to_table_name(&record.collection);
-        let qualified_table = self.table_ref(&record.collection);
-        let now: DateTime<Utc> = Utc::now();
-        let now_rfc3339 = now.to_rfc3339();
-
-        // Ensure table exists (auto-create from data shape).
-        // Invalidate column type cache only when the cached helper actually
-        // hit Postgres — if the row introduced no new columns, both caches
-        // stay warm and we save 2 round-trips on the steady-state hot path.
-        let schema_changed = match self
-            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => return StorageResult::err(e),
-        };
-        if schema_changed {
-            self.invalidate_column_cache(&bare_table).await;
-        }
-
-        // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
-
-        // Build column list and values
-        let mut columns = vec![
-            "id".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "version".to_string(),
-        ];
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
-            Box::new(record.id.clone()),
-            Box::new(now),
-            Box::new(now),
-            Box::new(1_i64),
-        ];
-
-        if let Value::Object(data) = &record.data {
-            for (key, value) in data {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                let col_name = naming::to_snake_case(key);
-                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
-                columns.push(col_name);
-                params.push(value_to_pg_typed(value, pg_type));
-            }
-        }
-
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
-            qualified_table,
-            columns.join(", "),
-            placeholders.join(", ")
-        );
-
-        let params_ref: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
-
-        match client.execute(&sql, &params_ref).await {
-            Ok(rows) => {
-                if rows == 0 {
-                    // ON CONFLICT DO NOTHING — record already exists
-                    return StorageResult::err(format!("Record already exists: {}", record.id));
-                }
-                StorageResult::ok(DataRecord {
-                    metadata: RecordMetadata {
-                        created_at: now_rfc3339.clone(),
-                        updated_at: now_rfc3339,
-                        version: 1,
-                        ..record.metadata
-                    },
-                    ..record
-                })
-            }
-            Err(e) => {
-                // Diagnostic: include column names + types for debugging serialization errors
-                let col_info: Vec<String> = columns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
-                        format!("${}: {}({})", i + 1, c, pg_type)
-                    })
-                    .collect();
-                StorageResult::err(format!(
-                    "Insert failed [{}]: {:?} | columns: [{}]",
-                    qualified_table,
-                    e,
-                    col_info.join(", ")
-                ))
-            }
-        }
+        self.create_on(&client, record).await
     }
 
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
@@ -866,30 +1023,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let table = self.table_ref(collection);
-
-        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
-
-        let rows = match client.query(&sql, &[&id]).await {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format_pg_error(&e);
-                if msg.contains("does not exist") {
-                    return StorageResult::err(format!("Record not found: {}", id));
-                }
-                return StorageResult::err(format!("Query failed: {}", msg));
-            }
-        };
-
-        if rows.is_empty() {
-            return StorageResult::err(format!("Record not found: {}", id));
-        }
-
-        match row_to_record(&rows[0], collection, rows[0].columns()) {
-            Ok(record) => StorageResult::ok(record),
-            Err(e) => StorageResult::err(format!("Row conversion failed: {}", e)),
-        }
+        self.read_on(&client, collection, id).await
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -1151,83 +1285,7 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let bare_table = naming::to_table_name(collection);
-        let table = self.table_ref(collection);
-        let now: DateTime<Utc> = Utc::now();
-
-        // Get column types for type-aware parameter coercion
-        let col_types = self.cached_column_types(&client, &bare_table).await;
-
-        let mut sets = vec!["updated_at = $1".to_string()];
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
-        let mut idx = 1_usize;
-
-        if increment_version {
-            sets.push("version = version + 1".to_string());
-        }
-
-        if let Value::Object(obj) = &data {
-            for (key, value) in obj {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                idx += 1;
-                let col_name = naming::to_snake_case(key);
-                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
-                sets.push(format!("{} = ${}", col_name, idx));
-                params.push(value_to_pg_typed(value, pg_type));
-            }
-        }
-
-        idx += 1;
-        params.push(Box::new(id.clone()));
-
-        let sql = format!(
-            "UPDATE {} SET {} WHERE id = ${}",
-            table,
-            sets.join(", "),
-            idx
-        );
-        let params_ref: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
-
-        match client.execute(&sql, &params_ref).await {
-            Ok(rows) if rows > 0 => self.read(collection, id).await,
-            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-            Err(e) => {
-                // Schema evolution: auto-add missing columns and retry.
-                // Evict the ensured-columns cache first — it lied (claimed a
-                // column existed that Postgres just rejected), so we must hit
-                // information_schema to rebuild ground truth.
-                let err_msg = format_pg_error(&e);
-                if err_msg.contains("does not exist") && err_msg.contains("column") {
-                    self.ensured_columns_cache.write().await.remove(&bare_table);
-                    if let Err(evolve_err) =
-                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
-                            .await
-                    {
-                        return StorageResult::err(format!(
-                            "Update failed [{}]: {} (schema evolution also failed: {})",
-                            bare_table, err_msg, evolve_err
-                        ));
-                    }
-                    self.invalidate_column_cache(&bare_table).await;
-                    // Retry the update after adding columns
-                    match client.execute(&sql, &params_ref).await {
-                        Ok(rows) if rows > 0 => self.read(collection, id).await,
-                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-                        Err(e2) => StorageResult::err(format!(
-                            "Update failed [{}] after schema evolution: {}",
-                            bare_table,
-                            format_pg_error(&e2)
-                        )),
-                    }
-                } else {
-                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
-                }
-            }
-        }
+        self.update_on(&client, collection, id, data, increment_version).await
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
@@ -1239,60 +1297,155 @@ impl StorageAdapter for PostgresAdapter {
             Ok(c) => c,
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
-
-        let table = self.table_ref(collection);
-        let sql = format!("DELETE FROM {} WHERE id = $1", table);
-
-        match client.execute(&sql, &[&id]).await {
-            Ok(rows) => StorageResult::ok(rows > 0),
-            Err(e) => StorageResult::err(format!("Delete failed: {}", e)),
-        }
+        self.delete_on(&client, collection, id).await
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
+        // ONE checked-out connection for the whole batch. Dispatching through
+        // `self.create(...)` per operation (as this did before) takes a DIFFERENT
+        // pooled connection each time, so a transaction opened on any one of them
+        // could not cover the others — which is why the batch could half-apply.
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        // `mut` because `transaction()` borrows the client mutably.
+        let mut client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        // ── Schema readiness happens BEFORE the transaction opens ──────────
+        //
+        // Both remaining review findings come from DDL running INSIDE the batch:
+        // postgres aborts a transaction on the first error and rejects every
+        // later statement, so update's missing-column ALTER retry could never
+        // succeed in there; and the column caches are published when DDL RUNS,
+        // so a rolled-back batch left them asserting columns the database no
+        // longer had. Ensuring here — on the pooled client, in autocommit, before
+        // any transaction exists — removes both: nothing inside the transaction
+        // issues DDL, so nothing inside it can abort on DDL or be rolled back
+        // underneath a cache that already published. Astra's steer, and it beats
+        // per-op savepoints because it deletes the failure rather than recovering
+        // from it.
+        for op in &operations {
+            let Some(data) = op.data.as_ref() else { continue };
+            if !matches!(
+                op.operation_type,
+                BatchOperationType::Create | BatchOperationType::Update
+            ) {
+                continue;
+            }
+            let bare_table = naming::to_table_name(&op.collection);
+            let qualified_table = self.table_ref(&op.collection);
+            match self
+                .ensure_table_exists_cached(&client, &qualified_table, &bare_table, data)
+                .await
+            {
+                Ok(changed) => {
+                    if changed {
+                        self.invalidate_column_cache(&bare_table).await;
+                    }
+                }
+                // Fail BEFORE opening the transaction: a batch that cannot have
+                // its schema is not a batch that should half-open one.
+                Err(e) => {
+                    return StorageResult::err(format!(
+                        "Batch schema readiness failed for '{}': {}",
+                        op.collection, e
+                    ))
+                }
+            }
+        }
+
+        // A REAL `tokio_postgres::Transaction`, not a raw BEGIN. Its `Drop` impl
+        // issues the rollback, which is the whole point: an error path I write can
+        // only cover the failures I anticipated, but a CANCELLED future never
+        // reaches any of my code at all. With a raw BEGIN, a cancelled batch
+        // returned a connection to the pool with an ACTIVE transaction on it and
+        // poisoned the next borrower. The guard cannot be forgotten because it is
+        // not a code path (Astra, 2026-09-08: "prefer the existing transaction
+        // guard").
+        let tx = match client.transaction().await {
+            Ok(tx) => tx,
+            Err(e) => return StorageResult::err(format!("Failed to open batch transaction: {}", e)),
+        };
+
         let mut results = Vec::with_capacity(operations.len());
-        for op in operations {
-            let result = match op.operation_type {
-                BatchOperationType::Create => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
+        for (index, op) in operations.into_iter().enumerate() {
+            let outcome: Result<Value, String> = match op.operation_type {
+                BatchOperationType::Create => match (op.id, op.data) {
+                    (Some(id), Some(data)) => {
                         let record = DataRecord {
                             id,
                             collection: op.collection,
                             data,
                             metadata: RecordMetadata::default(),
                         };
-                        let r = self.create(record).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
+                        let r = self.create_on(&tx, record).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "create failed".to_string())) // the adapter reported failure without detail; the operation still failed
+                        }
                     }
-                }
-                BatchOperationType::Read => {
-                    if let Some(id) = op.id {
-                        let r = self.read(&op.collection, &id).await;
-                        json!({"success": r.success, "data": r.data, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
+                    _ => Err("create requires both id and data".to_string()),
+                },
+                BatchOperationType::Read => match op.id {
+                    Some(id) => {
+                        let r = self.read_on(&tx, &op.collection, &id).await;
+                        if r.success {
+                            Ok(json!({"success": true, "data": r.data}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "read failed".to_string())) // the adapter reported failure without detail; the operation still failed
+                        }
                     }
-                }
-                BatchOperationType::Update => {
-                    if let (Some(id), Some(data)) = (op.id, op.data) {
-                        let r = self.update(&op.collection, &id, data, true).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id or data"})
+                    None => Err("read requires an id".to_string()),
+                },
+                BatchOperationType::Update => match (op.id, op.data) {
+                    (Some(id), Some(data)) => {
+                        let r = self.update_on(&tx, &op.collection, &id, data, true).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "update failed".to_string())) // the adapter reported failure without detail; the operation still failed
+                        }
                     }
-                }
-                BatchOperationType::Delete => {
-                    if let Some(id) = op.id {
-                        let r = self.delete(&op.collection, &id).await;
-                        json!({"success": r.success, "error": r.error})
-                    } else {
-                        json!({"success": false, "error": "Missing id"})
+                    _ => Err("update requires both id and data".to_string()),
+                },
+                BatchOperationType::Delete => match op.id {
+                    Some(id) => {
+                        let r = self.delete_on(&tx, &op.collection, &id).await;
+                        if r.success {
+                            Ok(json!({"success": true}))
+                        } else {
+                            Err(r.error.unwrap_or_else(|| "delete failed".to_string())) // the adapter reported failure without detail; the operation still failed
+                        }
                     }
-                }
+                    None => Err("delete requires an id".to_string()),
+                },
             };
-            results.push(result);
+
+            match outcome {
+                Ok(value) => results.push(value),
+                Err(e) => {
+                    // No explicit ROLLBACK: returning here drops `tx`, and its Drop
+                    // rolls back. Writing the rollback by hand would be a second
+                    // path that has to stay correct — and would still miss the
+                    // cancellation case the guard covers for free.
+                    return StorageResult::err(format!(
+                        "Batch operation {} failed, entire batch rolled back: {}",
+                        index, e
+                    ));
+                }
+            }
+        }
+
+        // Committing CONSUMES the transaction, so nothing can be applied after
+        // this point, and a failure to commit drops it — rolled back, not
+        // half-applied.
+        if let Err(e) = tx.commit().await {
+            return StorageResult::err(format!("Failed to commit batch: {}", e));
         }
         StorageResult::ok(results)
     }
@@ -1557,7 +1710,7 @@ impl StorageAdapter for PostgresAdapter {
 /// `bare_table` is the unqualified name for information_schema queries.
 /// `schema` is the schema name for information_schema filtering.
 async fn ensure_table_exists_pg(
-    client: &deadpool_postgres::Client,
+    client: &impl deadpool_postgres::GenericClient,
     qualified_table: &str,
     bare_table: &str,
     schema: &str,
@@ -2046,4 +2199,237 @@ mod tests {
             .await;
         assert_eq!(count.data.unwrap(), 0);
     }
+
+    /// Batch ATOMICITY against a real server — the four cases Astra specified
+    /// after review of 4b1595c31 found four transactional defects that had all
+    /// compiled cleanly and passed 102 green ORM tests, none of which touch
+    /// Postgres. Each case below names the specific defect it would have caught.
+    mod batch_transaction {
+        use super::*;
+
+        async fn adapter_with_pool(max_connections: usize) -> PostgresAdapter {
+            let mut adapter = PostgresAdapter::new();
+            adapter
+                .initialize(AdapterConfig {
+                    connection_string: get_test_url(),
+                    namespace: Some("test_orm".to_string()),
+                    timeout_ms: 30_000,
+                    max_connections,
+                })
+                .await
+                .expect("PostgreSQL connection failed - is Postgres running?");
+            adapter
+        }
+
+        fn create(collection: &str, id: &str, data: Value) -> BatchOperation {
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: collection.to_string(),
+                id: Some(id.to_string()),
+                data: Some(data),
+            }
+        }
+
+        fn update(collection: &str, id: &str, data: Value) -> BatchOperation {
+            BatchOperation {
+                operation_type: BatchOperationType::Update,
+                collection: collection.to_string(),
+                id: Some(id.to_string()),
+                data: Some(data),
+            }
+        }
+
+        // what this catches: a read-back inside the batch checking out a SECOND
+        // pooled connection. That session cannot see the batch's uncommitted row,
+        // so Create+Update of the same new row returned "Record not found"; and on
+        // a ONE-connection pool it first blocks for the full 10s pool timeout,
+        // because the only connection is the one its own caller holds. Pool size 1
+        // is the whole point of the case — it turns a wrong answer into a hang.
+        #[tokio::test]
+        #[ignore] // Requires live Postgres
+        async fn create_then_update_then_read_in_one_batch_on_a_single_connection_pool() {
+            let adapter = adapter_with_pool(1).await;
+            let _ = adapter.truncate("batch_same_row").await;
+            let id = uuid::Uuid::new_v4().to_string();
+
+            let result = adapter
+                .batch(vec![
+                    create("batch_same_row", &id, json!({"label": "first"})),
+                    update("batch_same_row", &id, json!({"label": "second"})),
+                    BatchOperation {
+                        operation_type: BatchOperationType::Read,
+                        collection: "batch_same_row".to_string(),
+                        id: Some(id.clone()),
+                        data: None,
+                    },
+                ])
+                .await;
+
+            assert!(
+                result.success,
+                "a row created earlier in the SAME batch must be visible to a later \
+                 operation in it: {:?}",
+                result.error
+            );
+            let stored = adapter.read("batch_same_row", &id).await;
+            assert!(stored.success, "the committed row must be readable afterwards");
+            assert_eq!(stored.data.unwrap().data["label"], "second");
+        }
+
+        // what this catches: a batch abandoned mid-transaction leaving its earlier
+        // writes behind, and — worse — returning a connection with an ACTIVE
+        // transaction to the pool. The old code opened a raw BEGIN and rolled back
+        // only on paths it wrote; a DROPPED future runs none of them. Here the
+        // batch is cancelled by timing it out while op2 waits on a row lock held
+        // by another session, which is exactly the shape no error path can cover.
+        #[tokio::test]
+        #[ignore] // Requires live Postgres
+        async fn a_cancelled_batch_leaves_no_writes_and_does_not_poison_the_pool() {
+            let adapter = adapter_with_pool(4).await;
+            let _ = adapter.truncate("batch_cancelled").await;
+
+            let locked_id = uuid::Uuid::new_v4().to_string();
+            let created = adapter
+                .create(DataRecord {
+                    id: locked_id.clone(),
+                    collection: "batch_cancelled".to_string(),
+                    data: json!({"label": "locked"}),
+                    metadata: RecordMetadata::default(),
+                })
+                .await;
+            assert!(created.success, "seed row: {:?}", created.error);
+
+            // Hold a row lock from an INDEPENDENT session so op2 blocks.
+            let pool = adapter.pool().unwrap();
+            let mut locker = pool.get().await.unwrap();
+            let lock_tx = locker.transaction().await.unwrap();
+            lock_tx.execute("SET search_path TO test_orm", &[]).await.unwrap();
+            lock_tx
+                .execute(
+                    "SELECT id FROM batch_cancelled WHERE id = $1 FOR UPDATE",
+                    &[&locked_id],
+                )
+                .await
+                .unwrap();
+
+            let orphan_id = uuid::Uuid::new_v4().to_string();
+            let cancelled = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                adapter.batch(vec![
+                    create("batch_cancelled", &orphan_id, json!({"label": "op1"})),
+                    update("batch_cancelled", &locked_id, json!({"label": "op2 blocks"})),
+                ]),
+            )
+            .await;
+            assert!(cancelled.is_err(), "the batch was expected to block on the row lock");
+
+            // Releasing the lock lets any leaked transaction settle either way.
+            drop(lock_tx);
+            drop(locker);
+
+            // THE INVARIANT: op1 must not survive a batch that never committed.
+            let orphan = adapter.read("batch_cancelled", &orphan_id).await;
+            assert!(
+                !orphan.success,
+                "a write from a CANCELLED batch survived — the transaction was not rolled back"
+            );
+
+            // AND the pool must still be usable: a connection handed back mid
+            // transaction poisons whichever borrower gets it next.
+            let after = adapter
+                .batch(vec![create(
+                    "batch_cancelled",
+                    &uuid::Uuid::new_v4().to_string(),
+                    json!({"label": "after"}),
+                )])
+                .await;
+            assert!(
+                after.success,
+                "a later batch failed, so the cancelled one returned a poisoned \
+                 connection to the pool: {:?}",
+                after.error
+            );
+        }
+
+        // what this catches: the column caches published when DDL RUNS rather than
+        // when it commits. A batch that created a table/columns and then failed
+        // left ensured_columns_cache and col_type_cache asserting a shape the
+        // database did not have, so the NEXT write on the same adapter skipped the
+        // DDL it needed. Reusing the same adapter is essential — a fresh one would
+        // have an empty cache and hide the defect.
+        #[tokio::test]
+        #[ignore] // Requires live Postgres
+        async fn a_failed_batch_leaves_no_cache_claiming_rolled_back_schema() {
+            let adapter = adapter_with_pool(4).await;
+            let fresh = format!("batch_cache_{}", uuid::Uuid::new_v4().simple());
+
+            // op2 is malformed, so the batch fails after op1 has run.
+            let failed = adapter
+                .batch(vec![
+                    create(&fresh, &uuid::Uuid::new_v4().to_string(), json!({"label": "a"})),
+                    BatchOperation {
+                        operation_type: BatchOperationType::Create,
+                        collection: fresh.clone(),
+                        id: Some(uuid::Uuid::new_v4().to_string()),
+                        data: None,
+                    },
+                ])
+                .await;
+            assert!(!failed.success, "a malformed operation must fail the batch");
+
+            // SAME adapter, same shape: this must still land. If the caches kept a
+            // rolled-back claim, the write would skip its DDL and fail.
+            let id = uuid::Uuid::new_v4().to_string();
+            let after = adapter
+                .batch(vec![create(&fresh, &id, json!({"label": "b"}))])
+                .await;
+            assert!(
+                after.success,
+                "a valid same-shape write after a failed batch failed — the schema \
+                 cache is asserting something the database does not have: {:?}",
+                after.error
+            );
+            assert!(adapter.read(&fresh, &id).await.success);
+        }
+
+        // what this catches: schema evolution inside a transaction. Postgres aborts
+        // a transaction on the first error and rejects every later statement, so
+        // update's missing-column ALTER retry could never succeed in there — the
+        // path was not merely buggy, it was unreachable. Ensuring schema BEFORE the
+        // transaction is what makes this case pass without per-op savepoints.
+        #[tokio::test]
+        #[ignore] // Requires live Postgres
+        async fn a_batch_update_introducing_a_new_column_succeeds() {
+            let adapter = adapter_with_pool(4).await;
+            let fresh = format!("batch_evolve_{}", uuid::Uuid::new_v4().simple());
+            let id = uuid::Uuid::new_v4().to_string();
+
+            let seeded = adapter
+                .batch(vec![create(&fresh, &id, json!({"label": "before"}))])
+                .await;
+            assert!(seeded.success, "seed batch: {:?}", seeded.error);
+
+            // `note` does not exist yet — the write must add it.
+            let evolved = adapter
+                .batch(vec![update(
+                    &fresh,
+                    &id,
+                    json!({"label": "after", "note": "a new text column"}),
+                )])
+                .await;
+            assert!(
+                evolved.success,
+                "an update introducing a new column inside a batch failed — schema \
+                 evolution is running inside the transaction: {:?}",
+                evolved.error
+            );
+
+            let stored = adapter.read(&fresh, &id).await;
+            assert!(stored.success);
+            let data = stored.data.unwrap().data;
+            assert_eq!(data["note"], "a new text column");
+            assert_eq!(data["label"], "after");
+        }
+    }
+
 }

@@ -6,4 +6,4 @@ import type { VideoInput } from "./VideoInput";
 /**
  * Content part for multimodal and tool protocol messages
  */
-export type ContentPart = { "type": "text", text: string, } | { "type": "image", image: ImageInput, } | { "type": "audio", audio: AudioInput, } | { "type": "video", video: VideoInput, } | { "type": "tool_use", id: string, name: string, input: Record<string, unknown>, } | { "type": "tool_result", tool_use_id: string, content: string, is_error: boolean | null, };
+export type ContentPart = { "type": "text", text: string, } | { "type": "image", image: ImageInput, } | { "type": "audio", audio: AudioInput, } | { "type": "video", video: VideoInput, } | { "type": "tool_use", id: string, name: string, input: Record<string, unknown>, } | { "type": "tool_result", tool_use_id: string, content: string, is_error?: boolean, };

@@ -57,9 +57,7 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::types::{
-    ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse,
-};
+use crate::ai::types::{ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse};
 use crate::runtime::cell_shapes::HandleRef;
 
 /// Owner string used on every minted HandleRef. Future kernel grid
@@ -126,10 +124,7 @@ impl std::fmt::Debug for InferenceSession {
             .field("model", &self.model)
             .field("persona_id", &self.persona_id)
             .field("created_at_ms", &self.created_at_ms)
-            .field(
-                "last_used_ms",
-                &self.last_used_ms.load(Ordering::Relaxed),
-            )
+            .field("last_used_ms", &self.last_used_ms.load(Ordering::Relaxed))
             .field(
                 "generation_count",
                 &self.generation_count.load(Ordering::Relaxed),
@@ -159,11 +154,17 @@ pub struct SessionInspection {
 pub enum HandleStoreError {
     /// HandleRef.owner != HANDLE_OWNER. Producer-mismatch — the
     /// caller is using a handle minted by a different module.
-    OwnerMismatch { actual: String, expected: &'static str },
+    OwnerMismatch {
+        actual: String,
+        expected: &'static str,
+    },
     /// HandleRef.type_tag != HANDLE_TYPE_TAG. Wrong type — caller
     /// has a handle from a different module that happens to have
     /// the same owner string.
-    TypeTagMismatch { actual: String, expected: &'static str },
+    TypeTagMismatch {
+        actual: String,
+        expected: &'static str,
+    },
     /// The UUID isn't in the store. Either never opened, already
     /// closed, or LRU-evicted.
     HandleNotFound { handle_id: Uuid },
@@ -242,7 +243,7 @@ impl InferenceHandleStore {
             last_used_ms: AtomicU64::new(now),
             generation_count: AtomicU64::new(0),
         });
-        self.sessions.insert(handle.id, session);
+        self.sessions.insert(handle.id.as_uuid(), session);
         handle
     }
 
@@ -302,26 +303,20 @@ impl InferenceHandleStore {
 
         // Update telemetry before invoking the adapter so observers
         // see the session as in-flight even if generation fails.
-        session
-            .last_used_ms
-            .store(now_ms(), Ordering::Relaxed);
+        session.last_used_ms.store(now_ms(), Ordering::Relaxed);
         session.generation_count.fetch_add(1, Ordering::Relaxed);
 
-        session
-            .adapter
-            .generate_text(request)
-            .await
-            .map_err(|e| {
-                // Adapter errors aren't HandleStoreErrors per se,
-                // but the consumer needs them surfaced. Wrap as a
-                // synthetic "not-found-but-adapter-failed" string.
-                // Better: return Result<Result<...>>? — keep this
-                // shape simple for now; callers handle via Display.
-                HandleStoreError::HandleNotFound {
-                    handle_id: Uuid::nil(),
-                }
-                .also_log(&e)
-            })
+        session.adapter.generate_text(request).await.map_err(|e| {
+            // Adapter errors aren't HandleStoreErrors per se,
+            // but the consumer needs them surfaced. Wrap as a
+            // synthetic "not-found-but-adapter-failed" string.
+            // Better: return Result<Result<...>>? — keep this
+            // shape simple for now; callers handle via Display.
+            HandleStoreError::HandleNotFound {
+                handle_id: Uuid::nil(),
+            }
+            .also_log(&e)
+        })
     }
 
     /// Close a session, removing it from the store. Returns true
@@ -330,7 +325,7 @@ impl InferenceHandleStore {
     /// was already gone.
     pub fn close(&self, handle: &HandleRef) -> Result<bool, HandleStoreError> {
         Self::validate_handle_shape(handle)?;
-        Ok(self.sessions.remove(&handle.id).is_some())
+        Ok(self.sessions.remove(&handle.id.as_uuid()).is_some())
     }
 
     /// Inspection snapshot for a handle — answers "what does this
@@ -366,10 +361,10 @@ impl InferenceHandleStore {
     fn lookup(&self, handle: &HandleRef) -> Result<Arc<InferenceSession>, HandleStoreError> {
         Self::validate_handle_shape(handle)?;
         self.sessions
-            .get(&handle.id)
+            .get(&handle.id.as_uuid())
             .map(|s| s.value().clone())
             .ok_or(HandleStoreError::HandleNotFound {
-                handle_id: handle.id,
+                handle_id: handle.id.as_uuid(),
             })
     }
 
@@ -441,6 +436,8 @@ mod tests {
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -566,7 +563,10 @@ mod tests {
             after.last_used_ms
         );
         assert_eq!(after.generation_count, 1);
-        store.generate(&handle, req_with_text("second")).await.unwrap();
+        store
+            .generate(&handle, req_with_text("second"))
+            .await
+            .unwrap();
         let after2 = store.inspect(&handle).unwrap();
         assert_eq!(after2.generation_count, 2);
     }
@@ -611,10 +611,7 @@ mod tests {
         let mut request = req_with_text("hi");
         request.system_prompt = Some("override".to_string());
         let resp_override = store.generate(&handle, request).await.unwrap();
-        let resp_session = store
-            .generate(&handle, req_with_text("hi"))
-            .await
-            .unwrap();
+        let resp_session = store.generate(&handle, req_with_text("hi")).await.unwrap();
         assert_ne!(
             resp_override.text, resp_session.text,
             "per-call system_prompt should override session default"

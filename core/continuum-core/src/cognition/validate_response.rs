@@ -43,7 +43,6 @@ use ts_rs::TS;
 
 const VALIDATE_PROVIDER: &str = "groq";
 const DEFAULT_VALIDATE_MODEL: &str = "llama-3.1-8b-instant";
-const VALIDATE_MAX_TOKENS: u32 = 10;
 const VALIDATE_TEMPERATURE: f32 = 0.1;
 const VALIDATE_CONFIDENCE: f32 = 0.9;
 
@@ -71,7 +70,7 @@ pub enum ResponseDecision {
 
 /// IPC request: ask cognition whether a draft response actually answers
 /// the original question.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -185,11 +184,7 @@ pub async fn evaluate_validate_response(
     // Device = `Auto` — cognition is model-driven, not device-driven.
     // See cognition/generate_response.rs:285 doctrine note.
     let (_provider_id, adapter) = registry
-        .select(
-            Some(VALIDATE_PROVIDER),
-            Some(&model),
-            InferenceDevice::Auto,
-        )
+        .select(Some(VALIDATE_PROVIDER), Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ValidateResponseError::NoAdapter {
             provider: VALIDATE_PROVIDER.to_string(),
             model: Some(model.clone()),
@@ -234,10 +229,15 @@ fn build_validate_generation_request(
         model: Some(model),
         provider: Some(VALIDATE_PROVIDER.to_string()),
         temperature: Some(VALIDATE_TEMPERATURE),
-        max_tokens: Some(VALIDATE_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). A 10-token cap
+        // here guaranteed an empty verdict on any reasoning model (the `<think>` block
+        // alone exceeds it); brevity comes from the prompt + JSON response_format.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -364,7 +364,8 @@ mod tests {
         assert_eq!(g.provider.as_deref(), Some(VALIDATE_PROVIDER));
         assert_eq!(g.model.as_deref(), Some(DEFAULT_VALIDATE_MODEL));
         assert_eq!(g.temperature, Some(VALIDATE_TEMPERATURE));
-        assert_eq!(g.max_tokens, Some(VALIDATE_MAX_TOKENS));
+        // No client-imposed ceiling — the model owns its generation length.
+        assert_eq!(g.max_tokens, None);
         assert_eq!(
             g.purpose.as_deref(),
             Some("cognition/validate-response-decision")

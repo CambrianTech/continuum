@@ -30,9 +30,10 @@
 //! - `TaskKind` — the seven canonical task kinds the substrate
 //!   names: Chat / Code / Vision / ToolUse / Memory / Plan / Other.
 //! - `TrustClass` — Local / TrustedPeer / KnownPeer / Anonymous.
-//! - `PeerId(Uuid)` — typed wrapper distinct from PersonaId /
-//!   ArtifactId (same primitive, different type — type system
-//!   catches swapped arguments).
+//! - `PeerId` — the canonical `crate::identity::PeerId` (airc's
+//!   universal actor id), re-used here for federation peers rather
+//!   than a local newtype; `ArtifactId` stays distinct (content-
+//!   addressed), so the type system still catches swapped arguments.
 //! - `RecallError` — typed errors covering Budget exhaustion, Scope
 //!   denial, FreshnessUnmet, and federation-level NoMatchingArtifacts.
 //!
@@ -50,32 +51,15 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use super::tier::TierRole;
-
-/// Stable per-peer identifier for federated recall. UUID-shaped
-/// (transparent on the wire as a string), typed wrapper distinct
-/// from PersonaId + ArtifactId so the type system catches swapped
-/// arguments at call sites that take both (e.g.
-/// `RecallScope::Federation { peers, .. }`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/genome/PeerId.ts",
-    type = "string"
-)]
-pub struct PeerId(pub Uuid);
-
-impl PeerId {
-    pub fn new(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
-    }
-}
+// The peer/actor in a federated recall is the same canonical actor identity used
+// everywhere else on the substrate ([[identity-one-canonical-newtype-not-bare-uuid]]).
+// This was once a local `recall::PeerId(Uuid)` newtype — a duplicate of
+// `airc_core::PeerId` — collapsed onto the one type (2026-06-30) so a federation
+// peer and a persona are the same `PeerId`, and `ArtifactId` (content-addressed,
+// distinct) stays the only id newtype this module defines.
+use crate::identity::PeerId;
 
 /// Where an artifact currently lives, from the persona's
 /// perspective. The load-bearing type per GENOME-FOUNDRY-SENTINEL
@@ -114,6 +98,9 @@ pub enum ResidencyHint {
         role: TierRole,
     },
     GridPeer {
+        // PeerId is the canonical airc actor id (no ts-rs TS derive); it is
+        // serde-transparent over a Uuid, so the wire/TS shape is a string.
+        #[ts(type = "string")]
         peer: PeerId,
         #[serde(rename = "estLatencyMs")]
         #[ts(rename = "estLatencyMs", type = "number")]
@@ -159,7 +146,10 @@ pub enum AcquireSource {
 /// bounded; defaults sum to 1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallScore.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallScore.ts"
+)]
 pub struct RecallScore {
     /// Cosine similarity between query embedding and artifact
     /// metadata embedding. Range [0.0, 1.0]; 1.0 = identical.
@@ -190,7 +180,10 @@ pub struct RecallScore {
 /// federation-scope plumbing through every caller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallScope.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallScope.ts"
+)]
 pub enum RecallScope {
     /// Never leave this machine. Fastest; may return a thinner
     /// RankedPool if local artifacts don't cover the query well.
@@ -207,6 +200,9 @@ pub enum RecallScope {
     /// bounded by `max_latency_ms`. Returns whatever the peers
     /// respond with inside the deadline.
     Federation {
+        // Vec of canonical airc PeerIds; each is serde-transparent over a Uuid,
+        // so the TS shape is an array of strings (PeerId has no ts-rs derive).
+        #[ts(type = "Array<string>")]
         peers: Vec<PeerId>,
         #[serde(rename = "maxLatencyMs")]
         #[ts(rename = "maxLatencyMs", type = "number")]
@@ -268,7 +264,10 @@ pub enum TaskKind {
 /// can map a peer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/TrustClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/TrustClass.ts"
+)]
 pub enum TrustClass {
     /// The persona's own artifacts. Always full trust.
     Local,
@@ -289,8 +288,13 @@ pub enum TrustClass {
 /// context needed to debug.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallError.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallError.ts"
+)]
 pub enum RecallError {
+    /// Missing, incompatible, corrupt, or unwritable decision record.
+    ReplayUnavailable { reason: String },
     /// The query's resource budget couldn't be satisfied by any
     /// combination of available artifacts.
     BudgetExhausted {
@@ -332,6 +336,7 @@ pub enum RecallError {
 impl std::fmt::Display for RecallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RecallError::ReplayUnavailable { reason } => write!(f, "recall replay unavailable: {reason}"),
             RecallError::BudgetExhausted {
                 budget_bytes,
                 available_bytes,
@@ -366,9 +371,10 @@ mod tests {
     //! the wire contract is what they intend.
     use super::*;
     use serde_json::json;
+    use uuid::Uuid;
 
     fn sample_peer() -> PeerId {
-        PeerId::new(Uuid::nil())
+        PeerId::from_uuid(Uuid::nil())
     }
 
     /// What this catches: PeerId serializes as a transparent UUID
@@ -376,7 +382,7 @@ mod tests {
     /// peer identifiers travel through gist/SSH/JSON-RPC as strings.
     #[test]
     fn peer_id_serializes_transparent_as_uuid_string() {
-        let id = PeerId::new(Uuid::nil());
+        let id = PeerId::from_uuid(Uuid::nil());
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, "\"00000000-0000-0000-0000-000000000000\"");
     }
@@ -599,7 +605,7 @@ mod tests {
         assert_eq!(hint, back);
 
         let scope = RecallScope::Federation {
-            peers: vec![sample_peer(), PeerId::new(Uuid::from_u128(1))],
+            peers: vec![sample_peer(), PeerId::from_uuid(Uuid::from_u128(1))],
             max_latency_ms: 200,
         };
         let j = serde_json::to_string(&scope).unwrap();

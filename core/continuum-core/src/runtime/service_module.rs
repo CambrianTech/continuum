@@ -182,11 +182,7 @@ impl CommandResult {
     /// the UUID before constructing the handle, use
     /// [`super::cell_shapes::HandleRef::mint`] directly and wrap with
     /// `CommandResult::Handle(...)`.
-    pub fn handle(
-        owner: impl Into<String>,
-        id: uuid::Uuid,
-        type_tag: impl Into<String>,
-    ) -> Self {
+    pub fn handle(owner: impl Into<String>, id: uuid::Uuid, type_tag: impl Into<String>) -> Self {
         CommandResult::Handle(super::cell_shapes::HandleRef::with_id(owner, id, type_tag))
     }
 
@@ -207,8 +203,9 @@ impl CommandResult {
         match self {
             CommandResult::Json(v) => Ok(v.clone()),
             CommandResult::Binary { metadata, .. } => Ok(metadata.clone()),
-            CommandResult::Handle(h) => serde_json::to_value(h)
-                .map_err(|e| format!("HandleRef serialization failed: {e}")),
+            CommandResult::Handle(h) => {
+                serde_json::to_value(h).map_err(|e| format!("HandleRef serialization failed: {e}"))
+            }
             CommandResult::Stream(_) => Err(Self::stream_protocol_error()),
             CommandResult::Lambda(_) => Err(Self::lambda_protocol_error()),
         }
@@ -252,6 +249,18 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Module configuration — declares what this module handles.
     /// Called ONCE at registration time.
     fn config(&self) -> ModuleConfig;
+
+    /// The tick cadence the module wants NOW, when it differs from what
+    /// [`ModuleConfig::tick_interval`] declared at registration. The runtime's tick loop
+    /// reads THIS each iteration — never `config()`: rebuilding the whole `ModuleConfig`
+    /// per tick for every module (a persona at 250 ms; `ChannelModule` behind an
+    /// `RwLock` read + clone) was one of the twenty re-derivations on card 948c30c2
+    /// (Joel: "rederiving = outrageously expensive CPU everywhere"). Default `None` =
+    /// the registered cadence stands. A module whose cadence moves at runtime
+    /// overrides this with the cheapest read it has.
+    fn tick_interval_now(&self) -> Option<Duration> {
+        None
+    }
 
     /// Initialize the module. Called after registration, before any commands.
     /// The ModuleContext provides access to the registry (query other modules),
@@ -311,7 +320,48 @@ pub trait ServiceModule: Send + Sync + Any {
         None
     }
 
-    /// Graceful shutdown. Release resources, flush buffers.
+    /// STOP TAKING NEW WORK and let what is already in flight finish, within the
+    /// caller's bound. Broadcast by [`Runtime::shutdown`] BEFORE `save_state`.
+    ///
+    /// Returns the number of items still in flight when the method returns — `0` means
+    /// drained, non-zero means the bound expired with work outstanding and whatever
+    /// `save_state` writes next is a snapshot taken mid-turn. Reporting the count rather
+    /// than a bool is what lets the receipt say how much was lost instead of only that
+    /// something was.
+    ///
+    /// This exists because suspending a module's own tick is NOT a drain. The persona
+    /// registry's `quiesce_all` stops each mind's autonomic self-tick, which is what a
+    /// measurement lease needs, and leaves room input arriving and active turns running —
+    /// so a save that follows a quiesce can still be taken underneath a turn that is
+    /// halfway through writing.
+    ///
+    /// Default is `Ok(0)`, honest for a module with no producer of its own. A module
+    /// that accepts work from outside itself implements this or its shutdown saves a
+    /// torn state BY CONTRACT.
+    async fn drain(&self) -> Result<u32, String> {
+        Ok(0)
+    }
+
+    /// SAVE this node's volatile state to its durable home — the explicit half
+    /// of the CBAR contract (Joel 2026-09-02: "I can call all nodes and tell
+    /// them to save or load state"). Broadcast by [`Runtime::shutdown`] before
+    /// `shutdown()`, in parallel, under the same 2s bound. Default no-op is
+    /// honest for modules whose discipline is save-on-write; a module holding
+    /// anything volatile at stop time implements this or loses it BY CONTRACT
+    /// (never by surprise).
+    async fn save_state(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// LOAD this node's state — the symmetric half, broadcast by the runtime
+    /// after `initialize` succeeds. Default no-op; a module that saves must
+    /// load, and the boot receipt shows which nodes did.
+    async fn load_state(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Graceful shutdown. Release resources, flush buffers. Runs AFTER
+    /// `save_state` in the runtime's broadcast — save first, then join.
     async fn shutdown(&self) -> Result<(), String> {
         Ok(())
     }
@@ -397,6 +447,43 @@ pub trait ServiceModule: Send + Sync + Any {
     /// subscribe independently.
     fn ready_edge(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
         None
+    }
+
+    /// Install the substrate-wide `CommandExecutor` into this module.
+    ///
+    /// Modules that need to dispatch commands (channel sends a chat message;
+    /// PIM bootstraps a persona; sentinel runs nested steps) store a
+    /// `runtime::LateBound<CommandExecutor>` and override this method to
+    /// populate it via `self.executor.install(executor)`. Default: no-op
+    /// (most modules don't dispatch commands). See `runtime::late_bound`
+    /// for the canonical injection slot.
+    ///
+    /// Called by `start_server` AFTER the executor is built and BEFORE any
+    /// dispatch can reach this module — `Runtime::install_executor_on_all`
+    /// walks every registered module exactly once. Per [[no-fallbacks-ever]]:
+    /// when a module's command handler needs the executor and it isn't there,
+    /// the right answer is a typed error at that call site, NOT a global
+    /// panicking accessor. See task #224 for the GLOBAL_EXECUTOR removal
+    /// rationale.
+    fn install_executor(
+        &self,
+        _executor: std::sync::Arc<super::command_executor::CommandExecutor>,
+    ) {
+        // Default: module doesn't dispatch commands.
+    }
+
+    /// The self-routing command objects this module contributes to the kernel's
+    /// `name -> Arc<dyn DynCommand>` map (see
+    /// [docs/architecture/COMMAND-ORGANIZATION.md]). Each
+    /// [`DynCommand`](crate::sdk_codegen::DynCommand) captures the module's deps
+    /// at construction (an `Arc<Shared>`), so the kernel can route a command name
+    /// DIRECTLY to it — no prefix scan, no per-module `match` arm. Default: none,
+    /// so a module that hasn't migrated keeps routing through the legacy
+    /// prefix → [`handle_command`](ServiceModule::handle_command) path. A module
+    /// migrates a command by returning its object here and dropping its match arm;
+    /// the typed object wins over the prefix fallback in the executor.
+    fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
+        Vec::new()
     }
 
     /// Downcast support for typed discovery.
@@ -688,7 +775,7 @@ mod tests {
         let r = CommandResult::handle("ai/inference", id, "ai::InferenceSession");
         match r {
             CommandResult::Handle(h) => {
-                assert_eq!(h.id, id);
+                assert_eq!(h.id.as_uuid(), id);
                 assert_eq!(h.owner, "ai/inference");
                 assert_eq!(h.type_tag, "ai::InferenceSession");
             }
@@ -730,6 +817,6 @@ mod tests {
         let echoed = serde_json::to_string(&wire).unwrap();
         let from_wire: HandleRef = serde_json::from_str(&echoed).unwrap();
         assert_eq!(from_wire, original);
-        assert_eq!(from_wire.id, id);
+        assert_eq!(from_wire.id.as_uuid(), id);
     }
 }

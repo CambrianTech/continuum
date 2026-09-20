@@ -130,7 +130,7 @@ pub fn verify_contract_replay(
 }
 
 struct PeerManifestIndex<'a> {
-    by_peer_id: HashMap<&'a str, &'a AircPeerManifest>,
+    by_peer_id: HashMap<String, &'a AircPeerManifest>,
 }
 
 impl<'a> PeerManifestIndex<'a> {
@@ -138,7 +138,7 @@ impl<'a> PeerManifestIndex<'a> {
         Self {
             by_peer_id: manifests
                 .iter()
-                .map(|manifest| (manifest.peer_id.as_str(), manifest))
+                .map(|manifest| (manifest.peer_id.to_string(), manifest))
                 .collect(),
         }
     }
@@ -296,6 +296,7 @@ mod tests {
         AircPeerCapability, AircRealtimeDelivery, AircRealtimePayloadRef, AircReplayCursor,
     };
     use crate::contracts::{ContractSigningKey, EVENT_CONTRACT_PROPOSED};
+    use airc_core::PeerId;
 
     fn room() -> uuid::Uuid {
         uuid::Uuid::from_u128(0xA1)
@@ -304,7 +305,7 @@ mod tests {
     fn proposed_payload(peer_id: &str) -> ContractProposedPayload {
         ContractProposedPayload {
             contract_id: "contract-1".to_string(),
-            proposer_id: peer_id.to_string(),
+            proposer_id: test_peer_str(peer_id),
             alloy_hash: "sha256:contract".to_string(),
             bid_currency: "".to_string(),
             max_bid: 0,
@@ -313,13 +314,32 @@ mod tests {
         }
     }
 
+    /// One derivation for a test peer's identity, used by BOTH the manifest and
+    /// the event that claims to come from it. The manifest is looked up BY the
+    /// event's signer id, so if only one side is a `PeerId` the lookup silently
+    /// misses and every verification test fails as "MissingPeerManifest" —
+    /// which is what happened when `peer_id` was typed and the fixtures were
+    /// converted one side at a time.
+    fn test_peer_id(name: &str) -> PeerId {
+        PeerId::from_uuid(uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            name.as_bytes(),
+        ))
+    }
+
+    /// The canonical string form of a test peer — what an event carries in its
+    /// `source_id` / `proposer_id`, since those are still wire strings.
+    fn test_peer_str(name: &str) -> String {
+        test_peer_id(name).as_uuid().to_string()
+    }
+
     fn manifest(peer_id: &str, key: &ContractSigningKey) -> AircPeerManifest {
         let pubkey_hex =
             SignedContractEvent::sign(EVENT_CONTRACT_PROPOSED, proposed_payload(peer_id), key, 1)
                 .unwrap()
                 .signer_pubkey_hex;
         AircPeerManifest {
-            peer_id: peer_id.to_string(),
+            peer_id: test_peer_id(peer_id),
             display_name: None,
             room_ids: vec![room()],
             capabilities: vec![AircPeerCapability {
@@ -340,7 +360,7 @@ mod tests {
         AircRealtimeEnvelope {
             event_id: "event-1".to_string(),
             room_id: room(),
-            source_id: peer_id.to_string(),
+            source_id: test_peer_str(peer_id),
             target_id: None,
             created_at_ms: 2,
             delivery: AircRealtimeDelivery::Durable,
@@ -387,7 +407,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].contract_id, "contract-1");
         assert_eq!(result[0].event_name, EVENT_CONTRACT_PROPOSED);
-        assert_eq!(result[0].signer_peer_id, peer_id);
+        assert_eq!(result[0].signer_peer_id, test_peer_str(peer_id));
     }
 
     #[test]

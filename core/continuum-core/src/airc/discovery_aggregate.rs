@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use airc_core::RoomId;
 
 use crate::airc::discovery::{
-    discover_airc_socket, discover_default_channel, discover_default_room_name,
-    discover_peer_id, DiscoveryError,
+    discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
+    DiscoveryError,
 };
 use crate::airc::discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 
@@ -48,12 +48,30 @@ pub async fn discover() -> AircDiscovery {
             partial.peer_id = Some(p);
             p
         }
-        Err(e) => {
-            return AircDiscovery::Degraded {
-                reason: stale_socket_from_status_err(&socket, e),
-                partial,
-            };
-        }
+        // A DEAD DAEMON IS RECOVERED HERE, ONCE — never printed as a remediation for a
+        // human to type (2026-09-14: the airc daemon died on the M5 twice; each time the
+        // core's own start printed "remove the stale socket and restart airc", refused,
+        // and the node sat dark until an operator did exactly that — 03:33 and 06:53).
+        Err(first) => match recover_stale_daemon(&socket).await {
+            true => match discover_peer_id(&socket).await {
+                Ok(p) => {
+                    partial.peer_id = Some(p);
+                    p
+                }
+                Err(e) => {
+                    return AircDiscovery::Degraded {
+                        reason: stale_socket_from_status_err(&socket, e),
+                        partial,
+                    };
+                }
+            },
+            false => {
+                return AircDiscovery::Degraded {
+                    reason: stale_socket_from_status_err(&socket, first),
+                    partial,
+                };
+            }
+        },
     };
 
     let room_name = match discover_default_room_name().await {
@@ -91,25 +109,149 @@ pub async fn discover() -> AircDiscovery {
     }
 }
 
+/// How long a boot waits for the daemon to come back before it accepts a
+/// degraded verdict. An `airc update` (or the launcher's own re-ensure)
+/// takes the daemon down for a few seconds; on 2026-09-07 07:0xZ one landed
+/// between `ensure_airc_daemon` and this probe, the core booted degraded
+/// (no persona hosting) on a socket that was live again ten seconds later,
+/// and the deploy reported an empty verify. Sized to the slow case of a
+/// daemon restart, not to a missing install — an absent binary is refused
+/// on the first probe (see `is_transient`).
+pub const DISCOVERY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(45);
+/// Cadence between probes while the daemon is coming back.
+pub const DISCOVERY_RETRY_CADENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A failure that a daemon restart explains — worth another probe. Install
+/// and configuration failures are not: waiting cannot change them.
+pub fn is_transient(d: &AircDiscovery) -> bool {
+    match d {
+        AircDiscovery::Healthy { .. } => false,
+        AircDiscovery::Unreachable { reason } | AircDiscovery::Degraded { reason, .. } => {
+            matches!(
+                reason,
+                DiscoveryFailure::StaleSocket(..)
+                    | DiscoveryFailure::PeerStatusFailed(_)
+                    | DiscoveryFailure::RoomCommandFailed(_)
+                    | DiscoveryFailure::EndpointCommandFailed(_)
+                    | DiscoveryFailure::EmptyPath
+                    | DiscoveryFailure::AutoInstallInProgress
+            )
+        }
+    }
+}
+
+/// Whether to probe again: the verdict is transient and the budget is not
+/// spent. Pure so the policy is testable without a daemon.
+pub fn should_retry(
+    d: &AircDiscovery,
+    elapsed: std::time::Duration,
+    patience: std::time::Duration,
+) -> bool {
+    is_transient(d) && elapsed < patience
+}
+
+/// `discover()` with patience for a daemon that is restarting: probes at
+/// `DISCOVERY_RETRY_CADENCE` until the verdict is `Healthy`, the failure is
+/// one waiting cannot fix, or `DISCOVERY_PATIENCE` is spent. Every retry is
+/// a probe row (`airc.discovery.retry`) so a slow boot names what it waited
+/// for; the final verdict rides the caller's boot.status row as before.
+pub async fn discover_with_patience() -> AircDiscovery {
+    let started = std::time::Instant::now();
+    let mut attempt: u32 = 0;
+    loop {
+        let d = discover().await;
+        attempt += 1;
+        if !should_retry(&d, started.elapsed(), DISCOVERY_PATIENCE) {
+            if attempt > 1 {
+                crate::probe!(
+                    class = "airc.discovery.settled",
+                    attempts = attempt,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    kind = d.kind(),
+                    "airc discovery settled after waiting for the daemon"
+                );
+            }
+            return d;
+        }
+        crate::probe!(
+            class = "airc.discovery.retry",
+            attempt = attempt,
+            waited_ms = started.elapsed().as_millis() as u64,
+            kind = d.kind(),
+            reason = ?d.reason(),
+            "airc daemon not answering yet — probing again (a restart in progress, not a missing install)"
+        );
+        tokio::time::sleep(DISCOVERY_RETRY_CADENCE).await;
+    }
+}
+
 impl From<DiscoveryError> for DiscoveryFailure {
     fn from(e: DiscoveryError) -> Self {
         match e {
             DiscoveryError::InstallFailed(msg) => DiscoveryFailure::InstallFailed(msg),
             DiscoveryError::AutoInstallDisabled => DiscoveryFailure::AutoInstallDisabled,
+            DiscoveryError::AutoInstallInProgress => DiscoveryFailure::AutoInstallInProgress,
             DiscoveryError::EndpointCommandFailed(msg) => {
                 DiscoveryFailure::EndpointCommandFailed(msg)
             }
             DiscoveryError::EmptyPath => DiscoveryFailure::EmptyPath,
             DiscoveryError::RoomCommandFailed(msg) => DiscoveryFailure::RoomCommandFailed(msg),
-            DiscoveryError::UnparseableChannel(msg) => {
-                DiscoveryFailure::UnparseableRoomOutput(msg)
-            }
+            DiscoveryError::UnparseableChannel(msg) => DiscoveryFailure::UnparseableRoomOutput(msg),
             DiscoveryError::PeerStatusFailed(msg) => DiscoveryFailure::PeerStatusFailed(msg),
             DiscoveryError::UnparseablePeerId(raw, err) => {
                 DiscoveryFailure::UnparseablePeerId(raw, err.to_string())
             }
         }
     }
+}
+
+/// Recover a daemon whose socket nobody holds: remove the stale file, start a daemon by
+/// the same path `airc status` uses (it starts one when none answers), and wait — bounded
+/// — for the new socket to answer. Returns `true` when a retry is worth making. A socket
+/// some process still holds is NOT stale (a wedged daemon is a different fault) and is
+/// left alone. Every outcome is a probe: `airc.daemon.recovered`.
+async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
+    use tokio::process::Command;
+    let bound = std::time::Duration::from_secs(5);
+    let held = tokio::time::timeout(bound, Command::new("lsof").arg("-t").arg(socket).output())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false); // JUSTIFIED unwrap_or: lsof absent or hung = cannot prove a holder; treat as unheld and try (the retry is bounded and harmless)
+    if held {
+        crate::probe!(
+            class = "airc.daemon.recovered",
+            socket = %socket.display(),
+            outcome = "held_not_stale",
+            "a process still holds the daemon socket — not a stale file; no recovery attempted"
+        );
+        return false;
+    }
+    let existed = socket.exists();
+    if existed {
+        let _ = std::fs::remove_file(socket);
+    }
+    let started = std::time::Instant::now();
+    let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
+    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
+    let mut answered = false;
+    while started.elapsed() < std::time::Duration::from_secs(25) {
+        if socket.exists() && discover_peer_id(socket).await.is_ok() {
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    crate::probe!(
+        class = "airc.daemon.recovered",
+        socket = %socket.display(),
+        outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
+        stale_file_removed = existed,
+        waited_ms = started.elapsed().as_millis() as u64,
+        "dead airc daemon: stale socket cleared and a daemon started by the core itself"
+    );
+    answered
 }
 
 /// Status RPC failure → typed `StaleSocket` carrying the path AND
@@ -150,8 +292,7 @@ mod discovery_failure_mapping_tests {
 
     #[test]
     fn install_failed_preserves_message() {
-        let f: DiscoveryFailure =
-            DiscoveryError::InstallFailed("permission denied".into()).into();
+        let f: DiscoveryFailure = DiscoveryError::InstallFailed("permission denied".into()).into();
         assert!(matches!(f, DiscoveryFailure::InstallFailed(m) if m == "permission denied"));
     }
 
@@ -213,8 +354,7 @@ mod discovery_failure_mapping_tests {
     #[test]
     fn unparseable_peer_id_preserves_raw_and_error() {
         let uuid_err = "not-a-uuid".parse::<uuid::Uuid>().unwrap_err();
-        let f: DiscoveryFailure =
-            DiscoveryError::UnparseablePeerId("xyz".into(), uuid_err).into();
+        let f: DiscoveryFailure = DiscoveryError::UnparseablePeerId("xyz".into(), uuid_err).into();
         assert!(matches!(
             f,
             DiscoveryFailure::UnparseablePeerId(raw, err_msg)
@@ -257,4 +397,22 @@ mod discovery_failure_mapping_tests {
         let f = stale_socket_from_status_err(&socket, DiscoveryError::EmptyPath);
         assert!(matches!(f, DiscoveryFailure::StaleSocket(p, _) if p == socket));
     }
+
+    /// what this catches: a daemon restart (stale socket) is waited out inside the
+    /// budget, while a missing/disabled install is refused on the first probe.
+    #[test]
+    fn a_daemon_restart_is_waited_out_but_a_missing_install_is_not() {
+        use std::time::Duration;
+        let restarting = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::StaleSocket(PathBuf::from("/tmp/x.sock"), "gone".into()),
+            partial: PartialDiscovery::default(),
+        };
+        assert!(should_retry(&restarting, Duration::from_secs(1), DISCOVERY_PATIENCE));
+        assert!(!should_retry(&restarting, DISCOVERY_PATIENCE, DISCOVERY_PATIENCE));
+        let disabled = AircDiscovery::Unreachable { reason: DiscoveryFailure::AutoInstallDisabled };
+        assert!(!should_retry(&disabled, Duration::from_secs(1), DISCOVERY_PATIENCE));
+        let broken = AircDiscovery::Unreachable { reason: DiscoveryFailure::InstallFailed("x".into()) };
+        assert!(!is_transient(&broken));
+    }
+
 }

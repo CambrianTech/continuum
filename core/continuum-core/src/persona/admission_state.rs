@@ -40,13 +40,13 @@
 //! concurrently from per-persona task tasks. Same shape as `PersonaInbox`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use uuid::Uuid;
 
 use super::admission::{HeuristicIsMemorable, SeenContentLookup, SeenEventLookup};
-use super::engram::{AdmissionDecision, AdmissionError, Engram, EngramOrigin};
-use super::inbox_admission::InboxAdmissionRunner;
+use super::engram::{AdmissionDecision, AdmissionDropReason, AdmissionError, Engram, EngramOrigin};
+use super::inbox_admission::{content_hash_sha256, InboxAdmissionRunner};
 use super::trace::CognitionTrace;
 use super::types::InboxMessage;
 
@@ -67,6 +67,14 @@ impl InMemorySeenContent {
     fn record(&self, hash: String, engram_id: Uuid) {
         self.0.lock().unwrap().insert(hash, engram_id);
     }
+    /// Snapshot the dedup map for an eval-isolation checkpoint.
+    fn snapshot(&self) -> HashMap<String, Uuid> {
+        self.0.lock().unwrap().clone()
+    }
+    /// Restore the dedup map to a prior snapshot (rewind a measurement window).
+    fn restore(&self, snap: HashMap<String, Uuid>) {
+        *self.0.lock().unwrap() = snap;
+    }
 }
 
 #[derive(Default)]
@@ -82,6 +90,40 @@ impl InMemorySeenEvents {
     fn record(&self, event_id: String, when_ms: u64) {
         self.0.lock().unwrap().insert(event_id, when_ms);
     }
+    /// Snapshot the replay-protection map for an eval-isolation checkpoint.
+    fn snapshot(&self) -> HashMap<String, u64> {
+        self.0.lock().unwrap().clone()
+    }
+    /// Restore the replay-protection map to a prior snapshot.
+    fn restore(&self, snap: HashMap<String, u64>) {
+        *self.0.lock().unwrap() = snap;
+    }
+}
+
+//=============================================================================
+// EVAL-ISOLATION CHECKPOINT
+//=============================================================================
+
+/// An opaque snapshot of a persona's entire in-memory admission state — the
+/// engram store, the recall-metadata sidecar, and both the dedup + replay
+/// oracles. Produced by [`AdmissionState::checkpoint`] and consumed by
+/// [`AdmissionState::restore`].
+///
+/// Why it exists: `cognition/eval` drives the persona's REAL cognition, which
+/// admits act-observation engrams as it measures her. Without a checkpoint
+/// those writes (1) make absolute scores non-reproducible run-to-run, (2)
+/// order-bias a paired A/B (the second arm inherits the first arm's writes),
+/// and (3) pollute her durable memory. The fix is NOT to skip admission (that
+/// would make the measured motion differ from a real turn — see
+/// PERSONA-COGNITION-PIPELINE.md "every turn that skips admit forms no
+/// memory"); it is to admit normally into a frozen frame that gets rewound
+/// between arms and discarded at the end, with persistence muted so nothing
+/// reaches sqlite. See [[eval-mutates-persona-lift-needs-isolation]].
+pub struct AdmissionCheckpoint {
+    engrams: Vec<Engram>,
+    recall_metadata: Vec<(Uuid, crate::persona::recall_metadata::RecallMetadata)>,
+    seen_content: HashMap<String, Uuid>,
+    seen_events: HashMap<String, u64>,
 }
 
 //=============================================================================
@@ -113,7 +155,34 @@ pub struct AdmissionState {
     /// Per [[organization-purity-as-we-migrate]] + adapter-first
     /// methodology: AdmissionState observes, sink impls choose what
     /// to do with the observations.
-    persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+    ///
+    /// Behind a `RwLock` so a measurement window (`cognition/eval`) can
+    /// hot-swap it to a `NoopSink` and back — admit still fires (memory
+    /// motion stays identical → the measurement is valid) but nothing
+    /// reaches the persona's real sqlite. The lock is taken once per
+    /// admit / once per recall-batch (human-message cadence, never
+    /// per-token), so the cost is nil. See
+    /// [[eval-mutates-persona-lift-needs-isolation]].
+    persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    /// The engram edge graph — causal + associative structure over the
+    /// engrams this store admits (docs/cognition/CAUSAL-MEMORY-GRAPH.md,
+    /// docs/cognition/BELIEF-JUSTIFICATION-GRAPH.md). Edges are FACTS about
+    /// what happened, recorded at the write site; the graph never decides —
+    /// retrieval surfaces walk it, cognition judges. In-memory (DashMap);
+    /// sidecar durability is a follow-on slice.
+    graph: crate::persona::engram_graph::EngramGraph,
+    /// The persona this store BELONGS to (its own user id). Set once at spawn via
+    /// [`set_owner_id`](Self::set_owner_id); `None` for bare/test states. Used to
+    /// recognize the persona's OWN authored chat engrams (`Chat` origin whose
+    /// `sender_id == owner_id`) so they can be gated out of AMBIENT semantic
+    /// recall (#166): a persona's own broadcasts are proprioception-like — she
+    /// said them, she knows she said them — not external knowledge, and left in
+    /// the recall pool they DROWN real memory (glass-boxed 2026-07-17: 271
+    /// self-authored "I ran X because Y is acting" receipts recalling at
+    /// salience 0.78-0.85, teaching the survey-spin). Still explicitly
+    /// queryable by keyword (`recall_by_keyword`) — this gates AMBIENT recall
+    /// only, the same treatment as Tool receipts and stale inner-speech.
+    owner_id: RwLock<Option<Uuid>>,
 }
 
 impl Default for AdmissionState {
@@ -157,7 +226,9 @@ impl AdmissionState {
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(Vec::new()),
             recall_metadata,
-            persistence,
+            persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
+            graph: crate::persona::engram_graph::EngramGraph::new(),
         }
     }
 
@@ -200,17 +271,59 @@ impl AdmissionState {
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(loaded_engrams),
             recall_metadata,
-            persistence,
+            persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
+            // Edges are not yet durable — a rehydrated store starts with an
+            // empty graph and re-accumulates from live acts. Sidecar
+            // persistence is the next slice (CAUSAL-MEMORY-GRAPH.md §4).
+            graph: crate::persona::engram_graph::EngramGraph::new(),
         }
     }
 
     /// Borrow the shared recall metadata registry. Recall + decay tick
     /// subsystems clone this Arc for their own reads/writes — they
     /// observe the same DashMap admission writes into.
-    pub fn recall_metadata(
-        &self,
-    ) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
+    pub fn recall_metadata(&self) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
         &self.recall_metadata
+    }
+
+    /// Record one directed edge between two admitted engrams — a FACT about
+    /// how they relate (CausedBy, Produced, derived_from, …), written at the
+    /// site that KNOWS the relation, never inferred later. The graph never
+    /// decides anything; retrieval surfaces walk it and cognition judges
+    /// (CAUSAL-MEMORY-GRAPH.md §3c, BELIEF-JUSTIFICATION-GRAPH.md §5).
+    /// Weight 1.0: a wired structural edge is a certainty, unlike the
+    /// tuned associative kinds.
+    pub fn link_engrams(
+        &self,
+        from: Uuid,
+        to: Uuid,
+        kind: crate::persona::engram_graph::EdgeKind,
+    ) {
+        self.graph.add_edge(from, to, kind, 1.0);
+    }
+
+    /// Outbound edges of one engram — the traversal read the ledger,
+    /// thread retrieval, and the confabulation check walk.
+    pub fn engram_neighbors(
+        &self,
+        id: &Uuid,
+    ) -> Vec<crate::persona::engram_graph::EngramEdge> {
+        self.graph.neighbors(id)
+    }
+
+    /// Bind this store to the persona that owns it (its own user id). Called once
+    /// at spawn (`persona_workspace` ActingBody construction). Enables the
+    /// own-authored-chat recall gate (#166). Idempotent; last write wins.
+    pub fn set_owner_id(&self, id: Uuid) {
+        *self.owner_id.write().unwrap() = Some(id);
+    }
+
+    /// The owning persona's id, if bound. `None` for bare/test states — the
+    /// own-chat recall gate is then a no-op (fail-open: never gate what we can't
+    /// prove is self-authored).
+    fn owner_id_snapshot(&self) -> Option<Uuid> {
+        *self.owner_id.read().unwrap()
     }
 
     /// Construct AdmissionState for a specific persona — opens the
@@ -238,16 +351,14 @@ impl AdmissionState {
         use crate::orm::adapter::{AdapterConfig, StorageAdapter};
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::admission_persistence::{
-            AdmissionPersistenceLoader, OrmLoader, OrmPersistenceSink,
-        };
+        use crate::persona::admission_persistence::{OrmLoader, OrmPersistenceSink};
         use crate::persona::engram::Engram;
         use crate::persona::recall_metadata::EngramRecallMetadata;
 
         // Ensure the persona's home directory exists. fs::create_dir_all
         // is idempotent and safe to call on every boot.
-        home.ensure_exists().map_err(|e| {
-            crate::orm::OrmStoreError::AdapterFailed {
+        home.ensure_exists()
+            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
                 operation: "ensure_persona_home",
                 collection: "engrams".to_string(),
                 detail: format!(
@@ -255,21 +366,21 @@ impl AdmissionState {
                     home.root().display(),
                     e
                 ),
-            }
-        })?;
+            })?;
 
         // Open the per-persona SQLite. The adapter handles WAL + FK
         // pragmas etc; we just hand it the path.
         let mut adapter = SqliteAdapter::new();
         let mut config = AdapterConfig::default();
         config.connection_string = home.engrams_db().to_string_lossy().into_owned();
-        adapter.initialize(config).await.map_err(|e| {
-            crate::orm::OrmStoreError::AdapterFailed {
+        adapter
+            .initialize(config)
+            .await
+            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
                 operation: "initialize",
                 collection: "engrams".to_string(),
                 detail: e,
-            }
-        })?;
+            })?;
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         // Build the typed stores. Each ensure_schema runs on
@@ -301,7 +412,8 @@ impl AdmissionState {
 
         Ok(Self::new_rehydrated(
             recall_metadata,
-            sink_concrete as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+            sink_concrete
+                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
             engrams,
             metadata,
         ))
@@ -330,6 +442,75 @@ impl AdmissionState {
         Ok(decision)
     }
 
+    /// Override the recall salience of an already-admitted engram, preserving its
+    /// other metadata (notably `last_decayed_ms`, so this never triggers the
+    /// epoch-delta decay-collapse `admit_with_defaults` guards against).
+    ///
+    /// Used to DOWN-WEIGHT proprioception (#166): an action-observation receipt
+    /// ("code/list(...) → ok") is admitted as an Episodic engram so the mind can
+    /// remember what it did, but it is NOT durable knowledge — at neutral salience
+    /// it out-competes genuine findings in recall (recency-heavy), so recall
+    /// echoes the persona's own recent tool-chatter back at it instead of useful
+    /// memory. A lower salience keeps the receipt recallable (for "what did I just
+    /// do") without letting it dominate. Not a content heuristic that steers
+    /// output — a storage-tier weight on a structurally-known kind (a receipt),
+    /// the recall-side twin of the recency-vs-recall channel split in act_observe.
+    pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
+        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        meta.salience = salience;
+        self.recall_metadata.admit(engram_id, meta);
+    }
+
+    /// Admit a SELF-PRODUCED engram — a memory the persona generated ABOUT
+    /// ITSELF (dream-consolidated `Semantic` facts, `SelfReflection`
+    /// meta-cognition), NOT a message that arrived off the wire.
+    ///
+    /// This is the `SelfTrust` counterpart to [`admit`](Self::admit). It runs
+    /// the same store side-effects — dedup record, recall-metadata seed,
+    /// fire-and-forget persistence, in-memory push — but deliberately SKIPS the
+    /// external admission gate (`runner.admit`'s envelope verification,
+    /// trust-boundary check, and wire-replay protection). That gate exists to
+    /// decide whether to trust DATA FROM ANOTHER PARTY; a fact the persona
+    /// distilled from its own already-admitted episodic memories has no external
+    /// envelope to verify and is, by construction, `SelfTrust`. Skipping the
+    /// gate here is a DISTINCT legitimate ingestion path, not a bypass of a
+    /// safety check — the path is named, not hidden
+    /// (`[[fallbacks-are-illegal-fail-loud]]`).
+    ///
+    /// Idempotent: identical fact content (same `content_hash_sha256`) is
+    /// dropped as `Duplicate`, so a dream that re-distills the same cluster on a
+    /// later tick does not accumulate duplicate facts. The caller MUST set the
+    /// engram's `kind`/`origin`/`trust_state_at_admission` to the self-produced
+    /// shape (e.g. `Semantic` + `SelfReflection` + `SelfTrust`); this method
+    /// records, it does not synthesize them.
+    pub fn admit_reflection(&self, engram: Engram) -> Result<AdmissionDecision, AdmissionError> {
+        let hash = content_hash_sha256(&engram.content);
+        if let Some(existing_engram_id) = self.seen_content.find_by_content_hash(&hash) {
+            // Idempotent dream: this exact fact is already engrammed.
+            return Ok(AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            });
+        }
+
+        // Record the dedup pointer + recall metadata BEFORE the store push, so
+        // a concurrent re-admit of identical content loses the race cleanly
+        // (the dedup map points at this engram). Mirrors `record_admitted` +
+        // `record_side_effects` for the external path.
+        self.seen_content.record(hash, engram.id);
+        self.recall_metadata.admit_with_defaults(engram.id);
+        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+        self.persistence
+            .read()
+            .unwrap()
+            .observe_admission(&engram, metadata);
+        self.engrams.lock().unwrap().push(engram.clone());
+
+        Ok(AdmissionDecision::Admit {
+            engram,
+            why: "self-produced reflection admitted (SelfTrust, no external envelope)".to_string(),
+        })
+    }
+
     /// Apply the decision's side-effects to the stores. Pulled out so the
     /// admission path stays linear and testable.
     ///
@@ -352,11 +533,11 @@ impl AdmissionState {
                 // fires-and-forgets the disk write through tokio::spawn.
                 // The metadata snapshot reflects the just-admitted
                 // default state (admit_with_defaults above).
-                let metadata = self
-                    .recall_metadata
-                    .get(engram.id)
-                    .unwrap_or_default();
-                self.persistence.observe_admission(engram, metadata);
+                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+                self.persistence
+                    .read()
+                    .unwrap()
+                    .observe_admission(engram, metadata);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
                 // Replay-only recording — see method-doc Quarantine note.
@@ -383,12 +564,18 @@ impl AdmissionState {
                 self.seen_events
                     .record(r.message_id.clone(), engram.admitted_at_ms);
             }
-            EngramOrigin::Tool(_) | EngramOrigin::SelfReflection { .. } => {
-                // Tool + SelfReflection origins don't carry a content_hash
-                // string on a uniform field — dedup for those paths lands
-                // when the tool/reflection ingestion converters land
-                // (later PR). For now the admit path doesn't synthesize
-                // these origins from the inbox path.
+            EngramOrigin::Tool(_)
+            | EngramOrigin::SelfReflection { .. }
+            | EngramOrigin::Agent(_) => {
+                // Tool + SelfReflection + Agent origins don't carry a
+                // content_hash on a uniform field — dedup for those paths
+                // lands when their ingestion converters land (later PR).
+                // For Agent specifically: the `/remember` converter (agent
+                // side) either hashes engram.content or AgentRef grows a
+                // content_hash — a co-design call, tracked in the bridge doc.
+                // Re-remembering the SAME lesson STRENGTHENS via the
+                // RecallMetadata sidecar below, which is the consolidation
+                // the bridge is actually for.
             }
         }
 
@@ -463,6 +650,91 @@ impl AdmissionState {
     }
 
     //=========================================================================
+    // EVAL ISOLATION (checkpoint / restore / persistence mute)
+    //=========================================================================
+    //
+    // Lets a measurement (`cognition/eval`) run the persona's REAL admission
+    // motion without leaving a trace: snapshot here, rewind between A/B arms,
+    // mute persistence so nothing lands in sqlite. See
+    // [[eval-mutates-persona-lift-needs-isolation]].
+
+    /// Snapshot the full in-memory admission state — engram store, recall
+    /// metadata, and both oracles — for a later [`restore`](Self::restore).
+    pub fn checkpoint(&self) -> AdmissionCheckpoint {
+        AdmissionCheckpoint {
+            engrams: self.engrams.lock().unwrap().clone(),
+            recall_metadata: self.recall_metadata.snapshot(),
+            seen_content: self.seen_content.snapshot(),
+            seen_events: self.seen_events.snapshot(),
+        }
+    }
+
+    /// Restore the in-memory admission state to a prior checkpoint, discarding
+    /// every engram / metadata / dedup-record admitted since it was taken.
+    /// Does NOT touch the persistence sink — mute that separately with
+    /// [`swap_persistence`](Self::swap_persistence) so a restore can't race a
+    /// disk write back in.
+    pub fn restore(&self, cp: &AdmissionCheckpoint) {
+        *self.engrams.lock().unwrap() = cp.engrams.clone();
+        self.recall_metadata.restore(cp.recall_metadata.clone());
+        self.seen_content.restore(cp.seen_content.clone());
+        self.seen_events.restore(cp.seen_events.clone());
+    }
+
+    /// Fork a fully DETACHED copy of this admission frame — same engrams,
+    /// salience, and dedup oracles as right now, but sharing NO mutable state
+    /// with the original. The copy gets a FRESH `RecallMetadataRegistry` (so the
+    /// fork's Hebbian recall-hits + decay land on the copy, never bumping HER
+    /// live salience) and the default `NoopSink` (so nothing the fork admits ever
+    /// reaches her sqlite). The runner + seen oracles are independent instances.
+    ///
+    /// This is the welfare primitive for `cognition/eval`: the exam runs on the
+    /// fork while the LIVING persona keeps living — heartbeat beating, present in
+    /// the room, never frozen or anesthetized to be measured. See
+    /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
+    pub fn fork_detached(&self) -> AdmissionState {
+        let cp = self.checkpoint();
+        let fork_registry = crate::persona::recall_metadata::RecallMetadataRegistry::new();
+        // Carry the LIVING registry's state into the fork — salience, rehearsal
+        // counts, protection, supersession demotions. A fresh-empty registry
+        // resets every engram to DEFAULT salience inside the fork, which
+        // soul-strips her learned memory WEIGHTS at the measurement boundary:
+        // glass-boxed 2026-07-23 — 490 live supersessions had ZERO benchmark
+        // effect because every demoted stale belief snapped back to 0.5 in the
+        // fork and out-ranked her fresh knowledge again. She must compete with
+        // the salience landscape she actually LEARNED
+        // ([[eval-measures-the-true-full-being-not-a-stripped-copy]]). Still a
+        // detached COPY: the fork's hits/decay touch nothing living.
+        for (id, meta) in self.recall_metadata().snapshot() {
+            fork_registry.admit(id, meta);
+        }
+        let fork = Self::new(Arc::new(fork_registry));
+        fork.restore(&cp);
+        // Carry owner identity across the fork, or the eval measurement copy would
+        // recall the persona's OWN chatter that the live self now gates (#166): the
+        // fork is a fresh AdmissionState (owner_id=None) and `restore` copies only
+        // engrams — so without this the BENCHMARK (which runs on the fork) wouldn't
+        // reflect the recall fix, and the number would lie about the living mind.
+        if let Some(owner) = self.owner_id_snapshot() {
+            fork.set_owner_id(owner);
+        }
+        fork
+    }
+
+    /// Hot-swap the persistence sink, returning the previous one. The
+    /// eval-isolation window swaps in a `NoopSink` (admit still fires; nothing
+    /// reaches the persona's real sqlite) and swaps the real sink back when the
+    /// measurement ends. The lock is taken once per swap (twice per eval), not
+    /// on any hot path.
+    pub fn swap_persistence(
+        &self,
+        sink: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+    ) -> Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink> {
+        let mut guard = self.persistence.write().unwrap();
+        std::mem::replace(&mut *guard, sink)
+    }
+
+    //=========================================================================
     // RECALL SURFACE (continuum#1121 PR-5)
     //=========================================================================
     //
@@ -477,12 +749,151 @@ impl AdmissionState {
     /// "Newest first" = reverse insertion order in the in-memory v1 store.
     /// PR-6 will swap to ORM-backed storage indexed by `admitted_at_ms`
     /// for the same ordering guarantee under restart.
+    /// The persona's existing consolidated BELIEFS related to a set of recall
+    /// keys — the dream's supersession-review candidates (#221 slice 2). Pure
+    /// RETRIEVAL by lexical key overlap (the same mechanics recall uses), never
+    /// a judgment: the distiller model decides which, if any, of these a newly
+    /// consolidated fact supersedes. Newest-first, capped at `limit`, Semantic
+    /// only (episodics are experience, not beliefs — they decay, they aren't
+    /// superseded). Keys shorter than 4 chars are skipped as noise.
+    pub fn semantic_beliefs_matching(&self, keys: &[String], limit: usize) -> Vec<Engram> {
+        let needles: Vec<String> = keys
+            .iter()
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| k.len() >= 4)
+            .collect();
+        if needles.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        let mut hits: Vec<Engram> = engrams
+            .iter()
+            .rev() // newest-first (insertion order store)
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| {
+                let content = e.content.to_lowercase();
+                needles.iter().any(|n| content.contains(n.as_str()))
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        hits.shrink_to_fit();
+        hits
+    }
+
+    /// The persona's OLDEST consolidated beliefs not yet in `exclude` — the
+    /// dream's ROTATING review window (#221 slice 2b). Lexical key-overlap
+    /// retrieval (`semantic_beliefs_matching`) only reaches beliefs that share
+    /// tokens with new experience; glass-boxed 2026-07-22: her stale Rust-era
+    /// beliefs share nothing with python lesson keys, so supersession never saw
+    /// them. The rotating window guarantees EVENTUAL coverage: every dream also
+    /// re-examines a few of her oldest unreviewed beliefs against the new
+    /// understanding, oldest-first because age without rehearsal is where
+    /// staleness lives. Retrieval only — the model judges.
+    pub fn semantic_beliefs_oldest_excluding(
+        &self,
+        exclude: &std::collections::HashSet<Uuid>,
+        admitted_before_ms: u64,
+        limit: usize,
+    ) -> Vec<Engram> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        engrams
+            .iter() // insertion order == oldest first
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| e.admitted_at_ms < admitted_before_ms)
+            .filter(|e| !exclude.contains(&e.id))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn recall_recent(&self, limit: usize) -> Vec<Engram> {
         if limit == 0 {
             return Vec::new();
         }
         let engrams = self.engrams.lock().unwrap();
         engrams.iter().rev().take(limit).cloned().collect()
+    }
+
+    /// The AMNESIA FLASH (Joel's "MIB lamp"): drop every engram tagged with `context_id`,
+    /// returning how many were forgotten. This is what lets a benchmark be a PROCTORED EXAM of
+    /// the NATURAL living persona — she sits the exam with her full memory intact (never a
+    /// stripped fork), and afterward we neuralyze JUST that exam's episode so the answer key
+    /// can't leak into what she carries forward or trains on. Scoped strictly by `context_id`
+    /// (the exam's own context), so her life's other memories are untouched. In-memory drop;
+    /// the ORM/persistence sink deletion for the durable row is a follow-up (the eval fork uses
+    /// a NoopSink, so nothing durable is written during an exam anyway).
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    pub fn forget_context(&self, context_id: Uuid) -> usize {
+        let mut engrams = self.engrams.lock().unwrap();
+        let before = engrams.len();
+        engrams.retain(|e| e.context_id != Some(context_id));
+        before - engrams.len()
+    }
+
+    /// The SURGICAL complement to [`forget_context`](Self::forget_context):
+    /// walk every engram and scrub a policy-defined *class* of content out of
+    /// its `content` and `recall_keys`, keeping the engram (its id, salience,
+    /// recall history, provenance) otherwise intact. Where `forget_context`
+    /// drops a whole exam episode, `redact` keeps the memory of *having been
+    /// asked and having answered* and excises only the crib sheet — the held-out
+    /// answer key, a leaked secret, PII on export. Returns an aggregate report
+    /// of what was removed across the whole store.
+    ///
+    /// Durable: every rewritten engram is re-saved through the persistence sink
+    /// (`observe_content_update`) so the scrub survives restart. A noop policy
+    /// (no detectors) short-circuits — no store walk, no lock churn.
+    ///
+    /// Note on dedup: rewriting `content` changes its hash, so the
+    /// `seen_content` map's old-hash→id pointer goes stale. That is harmless and
+    /// arguably correct — the pre-redaction content is gone, so a future admit of
+    /// the *old* text should NOT dedup against a memory that no longer holds it.
+    pub fn redact(
+        &self,
+        policy: &crate::persona::redaction::RedactionPolicy,
+    ) -> crate::persona::redaction::RedactionReport {
+        let mut total = crate::persona::redaction::RedactionReport::default();
+        if policy.is_noop() {
+            return total;
+        }
+
+        // Rewrite in-memory under the engrams lock; collect the changed rows to
+        // persist AFTER releasing it (never hold the store lock across the sink).
+        let mut changed: Vec<Engram> = Vec::new();
+        {
+            let mut engrams = self.engrams.lock().unwrap();
+            for engram in engrams.iter_mut() {
+                let mut touched = false;
+                let (new_content, r) = policy.redact(&engram.content);
+                if !r.is_empty() {
+                    engram.content = new_content;
+                    total.merge(&r);
+                    touched = true;
+                }
+                for key in engram.recall_keys.iter_mut() {
+                    let (new_key, rk) = policy.redact(key);
+                    if !rk.is_empty() {
+                        *key = new_key;
+                        total.merge(&rk);
+                        touched = true;
+                    }
+                }
+                if touched {
+                    changed.push(engram.clone());
+                }
+            }
+        }
+
+        if !changed.is_empty() {
+            let sink = self.persistence.read().unwrap().clone();
+            for engram in &changed {
+                sink.observe_content_update(engram);
+            }
+        }
+        total
     }
 
     /// Algorithm 4 recall. Returns the top `limit` engrams ranked by
@@ -539,15 +950,128 @@ impl AdmissionState {
         // persistence sink so the disk row keeps pace. NoopSink
         // (default) does nothing; OrmPersistenceSink upserts the
         // engram_recall_metadata row through tokio::spawn.
+        let sink = self.persistence.read().unwrap().clone();
         for (engram, _) in &scored {
             self.recall_metadata.record_recall_hit(engram.id, now_ms);
             if let Some(updated) = self.recall_metadata.get(engram.id) {
-                self.persistence
-                    .observe_metadata_update(engram.id, updated);
+                sink.observe_metadata_update(engram.id, updated);
             }
         }
 
         scored
+    }
+
+    /// Score the top `limit` engrams by salience-decay — but DO NOT record recall
+    /// hits. The hit (Hebbian rehearsal / salience uplift) must land on what a
+    /// caller actually SURFACES, not on everything it scored. A relevance
+    /// re-ranker (RecallFaculty) over-fetches candidates here, narrows by cosine
+    /// similarity to the burst, then calls [`record_recall_hits`] on the final
+    /// surfaced set — so the loop closes on the memories the persona truly used,
+    /// not on candidates that lost the re-rank. (`recall_scored` is the
+    /// no-re-ranker shortcut: score + hit in one pass.)
+    pub fn recall_candidates(&self, now_ms: u64, limit: usize) -> Vec<(Engram, f32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        // How long a wanderer INNER-SPEECH thought (EngramKind::SelfReflection — the
+        // historian/dreamer lenses, #145) stays eligible for AMBIENT recall. A passing
+        // thought is "current inner speech" only briefly; past this it has PASSED, and
+        // resurfacing it as though it were current fact is a bug, not a memory. 15 min:
+        // long enough that a fresh musing can still bubble up the same activity, short
+        // enough that a stale self-assessment cannot masquerade as the present.
+        const INNER_SPEECH_RECALL_TTL_MS: u64 = 15 * 60 * 1000;
+        // The owning persona's id (if bound) — for the own-authored-chat gate below.
+        // Snapshotted once, outside the per-engram closure.
+        let owner = self.owner_id_snapshot();
+        let engrams = self.engrams.lock().unwrap();
+        // Enumerate in insertion order: `idx` is a monotonic recency rank
+        // (higher == more recently admitted), used as the tiebreaker below.
+        let mut scored: Vec<(usize, Engram, f32)> = engrams
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, e)| {
+                // Tool receipts — the persona's own "I ran X → result" — are
+                // PROPRIOCEPTION, not durable knowledge. The recency/working-memory
+                // channel carries them so she sees her own hands
+                // ([[act-results-need-a-recency-channel-not-semantic-recall]]); they
+                // must NOT compete in the SEMANTIC recall pool, where they were
+                // drowning real memories (#166, seen live: recall surfaced "I ran
+                // commands/list because Anwen is acting" as its top hits). Gate them
+                // out here → recall returns knowledge (conversation, distilled
+                // self-reflection), never the persona's own tool chatter. This is the
+                // structural form of the earlier salience down-weight, which alone
+                // couldn't stop them surfacing when knowledge was sparse.
+                if matches!(e.origin, EngramOrigin::Tool(_)) {
+                    return None;
+                }
+                // The persona's OWN authored chat is the SIBLING leak (#166, glass-boxed
+                // 2026-07-17 on Casper: 271 self-authored "I ran X because Y is acting"
+                // messages — receipt-mimicry SPEECH, #158 — admitted as durable Chat
+                // engrams, recalling at salience 0.78-0.85 and teaching the survey-spin).
+                // The Tool gate can't catch them (they're Chat-origin, not Tool). A
+                // persona's own broadcast is proprioception, not external knowledge —
+                // she said it, she knows she said it. Gate own-authored chat out of
+                // AMBIENT recall the same way; it stays keyword-queryable
+                // (`recall_by_keyword`). Fail-open: only when we can PROVE self-authorship
+                // (owner bound AND sender matches) — never gate others' chat.
+                if let (Some(owner_id), EngramOrigin::Chat(chat_ref)) = (owner, &e.origin) {
+                    if chat_ref.sender_id == owner_id {
+                        return None;
+                    }
+                }
+                // Wanderer inner-speech (EngramKind::SelfReflection) is a PASSING
+                // thought, not durable knowledge. A FRESH one may bubble up as ambient
+                // inner speech (the arc's intent, dream_consolidation §wanderer); a STALE
+                // one must NOT resurface as current fact. Glass-boxed 2026-07-14: Atlas
+                // recalled a 25m-old "[thought:historian] you keep failing to claim" AS
+                // present truth minutes after his claim SUCCEEDED, and rationalized the
+                // contradiction into a loop — the "feedback vs rag" incoherence. Bound
+                // its ambient-recall lifetime here; introspection still queries ALL of
+                // them explicitly by `thought:<lens>` recall-key (`recall_by_keyword`, a
+                // separate path). Dream-DISTILLED insight is EngramKind::Semantic
+                // (durable) — untouched. Sibling of the Tool-receipt gate above (#166).
+                if e.kind == crate::persona::engram::EngramKind::SelfReflection
+                    && now_ms.saturating_sub(e.admitted_at_ms) > INNER_SPEECH_RECALL_TTL_MS
+                {
+                    return None;
+                }
+                self.recall_metadata.apply_decay(e.id, now_ms);
+                self.recall_metadata
+                    .get(e.id)
+                    .map(|m| (idx, e.clone(), m.salience))
+            })
+            .collect();
+        drop(engrams);
+        // Rank by salience, breaking ties by RECENCY (newest wins). Without the
+        // recency tiebreak, recall-hit uplift flattens salience to a ceiling
+        // (every surfaced memory rises toward 1.0), a stable sort then preserves
+        // insertion order (oldest-first), and `truncate` evicts the NEWEST engram
+        // — so a just-admitted act-observation never even reaches the re-ranker,
+        // and the mind loops re-issuing the identical act, blind to its own hands.
+        // Newest-wins-on-ties guarantees the freshest memory survives truncation;
+        // the relevance re-rank (RecallFaculty) then surfaces it because it
+        // literally contains what the burst is asking about.
+        // See [[act-results-need-a-recency-channel-not-semantic-recall]].
+        scored.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.0.cmp(&a.0))
+        });
+        scored.truncate(limit);
+        scored.into_iter().map(|(_, e, s)| (e, s)).collect()
+    }
+
+    /// Record recall hits (salience uplift + access_count + persistence observe)
+    /// on a specific set of engram ids — the memories a caller actually surfaced.
+    /// The write half of the [`recall_candidates`] → re-rank → record loop.
+    pub fn record_recall_hits(&self, ids: &[Uuid], now_ms: u64) {
+        let sink = self.persistence.read().unwrap().clone();
+        for id in ids {
+            self.recall_metadata.record_recall_hit(*id, now_ms);
+            if let Some(updated) = self.recall_metadata.get(*id) {
+                sink.observe_metadata_update(*id, updated);
+            }
+        }
     }
 
     /// Recall a specific engram by id. None if not present in the store
@@ -609,6 +1133,9 @@ pub enum EngramOriginKind {
     Airc,
     Tool,
     SelfReflection,
+    /// Authored by an external agent via the agent-memory bridge
+    /// (`docs/cognition/AGENT-MEMORY-BRIDGE.md`).
+    Agent,
 }
 
 impl From<&EngramOrigin> for EngramOriginKind {
@@ -618,6 +1145,7 @@ impl From<&EngramOrigin> for EngramOriginKind {
             EngramOrigin::Airc(_) => Self::Airc,
             EngramOrigin::Tool(_) => Self::Tool,
             EngramOrigin::SelfReflection { .. } => Self::SelfReflection,
+            EngramOrigin::Agent(_) => Self::Agent,
         }
     }
 }
@@ -795,6 +1323,7 @@ mod tests {
 
     fn synthetic_engram_with_chat_origin(content: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),
@@ -814,6 +1343,7 @@ mod tests {
 
     fn synthetic_engram_with_airc_origin(content: &str, message_id: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),
@@ -954,6 +1484,44 @@ mod tests {
         assert_eq!(recent[2].id, ids[0]);
     }
 
+    /// What this catches: the amnesia flash (`forget_context`) wipes ONLY the exam episode's
+    /// engrams and leaves her other memory intact — the property that makes a natural proctored
+    /// exam safe (she keeps her life's memory; only the answer-key episode is neuralyzed). A
+    /// regression that widened the scope would erase real memories; one that narrowed it would
+    /// leak exam answers into what she carries forward.
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    #[test]
+    fn forget_context_wipes_only_the_tagged_episode() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        admit_n_distinct(
+            &state,
+            &[
+                "her real life memory one worth keeping",
+                "exam question engram to be neuralyzed",
+                "her real life memory two worth keeping",
+            ],
+        );
+        let exam_ctx = Uuid::new_v4();
+        // Stamp the middle engram as belonging to the exam episode (the acting body tags act
+        // results with a context_id in the live path; here we set it directly for the test).
+        {
+            let mut engrams = state.engrams.lock().unwrap();
+            engrams[1].context_id = Some(exam_ctx);
+        }
+        let forgotten = state.forget_context(exam_ctx);
+        assert_eq!(forgotten, 1, "exactly the one exam engram is neuralyzed");
+        let remaining = state.recall_recent(10);
+        assert_eq!(remaining.len(), 2, "her two real memories survive");
+        assert!(
+            remaining.iter().all(|e| e.context_id != Some(exam_ctx)),
+            "no exam-tagged engram remains"
+        );
+        // Flashing an unrelated context wipes nothing (scope safety).
+        assert_eq!(state.forget_context(Uuid::new_v4()), 0);
+    }
+
     /// What this catches: recall_recent honors the limit, never exceeds
     /// it, never panics on limit > available.
     #[test]
@@ -977,14 +1545,403 @@ mod tests {
         );
     }
 
+    // What this catches: when many engrams share the same salience (the common
+    // case once recall-hit uplift flattens them to a ceiling), recall_candidates
+    // must keep the NEWEST under truncation, not the oldest. A stable sort on
+    // tied salience used to preserve insertion order (oldest-first), so the
+    // truncate evicted the just-admitted engram — a persona acting and admitting
+    // "I ran X → got Y" could never recall its own fresh result and looped
+    // re-issuing the identical act. Regression for the [you just acted]-fold
+    // removal (2026-06-25); see [[act-results-need-a-recency-channel-not-semantic-recall]].
+    #[test]
+    fn recall_candidates_keeps_newest_when_salience_ties() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        // Seven engrams, all at the default salience (a tie). The freshest is ids[6].
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "first observation worth storing here",
+                "second observation worth storing here",
+                "third observation worth storing here",
+                "fourth observation worth storing here",
+                "fifth observation worth storing here",
+                "sixth observation worth storing here",
+                "I ran code/read(external_fingerprint) and got the function body",
+            ],
+        );
+        let surfaced = state.recall_candidates(10_000, 5);
+        assert_eq!(surfaced.len(), 5, "honors the limit");
+        let surfaced_ids: Vec<Uuid> = surfaced.iter().map(|(e, _)| e.id).collect();
+        // The freshest memory survives truncation and ranks first on the tie.
+        assert_eq!(
+            surfaced_ids[0], ids[6],
+            "newest-wins-on-ties: the just-admitted act-observation is surfaced first"
+        );
+        // The two oldest are the ones evicted by the limit, not the newest.
+        assert!(
+            !surfaced_ids.contains(&ids[0]) && !surfaced_ids.contains(&ids[1]),
+            "the OLDEST tied engrams are evicted, never the newest"
+        );
+    }
+
+    // what this catches: a Tool-origin engram — a persona's own "I ran X → result"
+    // receipt (proprioception) — must be EXCLUDED from the semantic recall pool so
+    // it can never drown durable knowledge (#166). Note it's admitted NEWER than the
+    // knowledge, so if the exclusion regressed, recency would surface it first. This
+    // is the coverage that was missing when act_observe mis-admitted receipts as
+    // non-Tool persona messages and the gate never bit.
+    #[test]
+    fn recall_candidates_excludes_tool_origin_receipts() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let knowledge = admit_n_distinct(&state, &["the ticket asks for a wordstats CLI here"]);
+        let receipt = crate::persona::engram::Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Episodic,
+            content: "code/list(path=src) → ok".to_string(),
+            origin: crate::persona::engram::EngramOrigin::Tool(
+                crate::persona::engram::ToolInvocationRef {
+                    invocation_id: Uuid::new_v4(),
+                    tool_name: "code/list".to_string(),
+                    invoked_at_ms: 1000,
+                    input_hash: "sha256:in".to_string(),
+                    output_hash: "sha256:out".to_string(),
+                },
+            ),
+            recall_keys: Vec::new(),
+            admitted_at_ms: 2000,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let receipt_id = receipt.id;
+        state.admit_reflection(receipt).expect("receipt admits");
+
+        let ids: Vec<Uuid> = state
+            .recall_candidates(10_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(
+            ids.contains(&knowledge[0]),
+            "durable knowledge stays recallable"
+        );
+        assert!(
+            !ids.contains(&receipt_id),
+            "a Tool-origin receipt is NEVER in the semantic recall pool"
+        );
+    }
+
+    // what this catches: wanderer INNER-SPEECH recall is recency-bounded (#145 / the
+    // 2026-07-14 "feedback vs rag" incoherence — Atlas recalled a stale historian
+    // thought "you keep failing to claim" as present truth after his claim succeeded).
+    // A FRESH SelfReflection-kind thought still bubbles up; a STALE one drops; a
+    // dream-DISTILLED Semantic reflection is durable and ALWAYS stays.
+    #[test]
+    fn recall_recency_bounds_wanderer_inner_speech_but_keeps_distilled() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let now = 100 * 60 * 1000; // 100 min in
+        let inner = |content: &str, admitted_at_ms: u64| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::SelfReflection, // wanderer inner speech
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::new_v4(),
+            },
+            recall_keys: vec!["thought:historian".to_string()],
+            admitted_at_ms,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let fresh = inner(
+            "[thought:historian] a passing thought, moments old",
+            now - 5 * 60 * 1000,
+        );
+        let stale = inner(
+            "[thought:historian] you keep failing to claim",
+            now - 40 * 60 * 1000,
+        );
+        // A dream-distilled DURABLE insight (Semantic kind, SelfReflection origin).
+        let distilled =
+            semantic_reflection("the codebase grades via rustc exit code", Uuid::new_v4());
+        let (fresh_id, stale_id, distilled_id) = (fresh.id, stale.id, distilled.id);
+        for e in [fresh, stale, distilled] {
+            state.admit_reflection(e).expect("admits");
+        }
+        let ids: Vec<Uuid> = state
+            .recall_candidates(now, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(
+            ids.contains(&fresh_id),
+            "fresh inner speech still bubbles up"
+        );
+        assert!(
+            !ids.contains(&stale_id),
+            "a stale wanderer thought does NOT resurface as current fact"
+        );
+        assert!(
+            ids.contains(&distilled_id),
+            "dream-distilled Semantic insight is durable — always recallable"
+        );
+    }
+
+    fn semantic_reflection(content: &str, parent: Uuid) -> Engram {
+        Engram {
+            context_id: None,
+            id: Uuid::new_v4(),
+            kind: EngramKind::Semantic,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection {
+                parent_engram_id: parent,
+            },
+            recall_keys: vec!["distilled".to_string()],
+            admitted_at_ms: 2_000_000,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        }
+    }
+
+    /// What this catches: a self-produced (dream-distilled) Semantic engram is
+    /// ingested through `admit_reflection` WITHOUT an external envelope, lands
+    /// in the store, and is recall-visible — proving the dream's output reaches
+    /// the same persistence recall reads, not a side buffer.
+    #[test]
+    fn admit_reflection_stores_self_produced_fact() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let fact = semantic_reflection("Rust is the core; Node is the shell", Uuid::new_v4());
+
+        let decision = state
+            .admit_reflection(fact.clone())
+            .expect("self-admission does not error");
+        assert!(matches!(decision, AdmissionDecision::Admit { .. }));
+        assert_eq!(state.engram_count(), 1);
+        let recent = state.recall_recent(5);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].content, fact.content);
+        assert_eq!(recent[0].kind, EngramKind::Semantic);
+    }
+
+    /// What this catches: `redact` is the surgical complement to
+    /// `forget_context` — it scrubs the held-out answer key out of a memory
+    /// while KEEPING the engram and the experience of having answered. The
+    /// proctored-exam integrity guarantee at the store level: she can't
+    /// memorize the crib sheet, but her autobiography of struggling stays.
+    #[test]
+    fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
+        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection(
+            "I was asked which file holds the loop; I answered service_loop.rs and it passed.",
+            Uuid::new_v4(),
+        );
+        state.admit_reflection(mem).expect("admits");
+
+        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+            ["service_loop.rs".to_string()],
+            ExamKeyDetector::DEFAULT_MIN_LEN,
+        ))]);
+        let report = state.redact(&policy);
+        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+
+        let recalled = state.recall_recent(1);
+        assert_eq!(recalled.len(), 1);
+        let content = &recalled[0].content;
+        assert!(content.contains("I was asked which file holds the loop"));
+        assert!(content.contains("it passed."));
+        assert!(!content.contains("service_loop.rs"));
+        assert!(content.contains("[redacted:exam-key]"));
+    }
+
+    /// What this catches: a noop policy (no detectors) short-circuits to an
+    /// empty report and mutates nothing — the hot path when no exam is in play.
+    #[test]
+    fn redact_with_noop_policy_changes_nothing() {
+        use crate::persona::redaction::RedactionPolicy;
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection("plain memory, nothing sensitive", Uuid::new_v4());
+        state.admit_reflection(mem).expect("admits");
+        let report = state.redact(&RedactionPolicy::new(vec![]));
+        assert!(report.is_empty());
+        assert_eq!(
+            state.recall_recent(1)[0].content,
+            "plain memory, nothing sensitive"
+        );
+    }
+
+    fn chat_engram(content: &str, sender: Uuid) -> Engram {
+        Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: sender,
+                posted_at_ms: 1_000,
+                content_hash: format!("sha256:{content}"),
+            }),
+            recall_keys: vec![],
+            admitted_at_ms: 1_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        }
+    }
+
+    // what this catches: #166 sibling leak — a persona's OWN authored chat is
+    // gated out of AMBIENT recall (it's proprioception, not knowledge) once
+    // owner-id is bound, while OTHERS' chat still surfaces AND the own message
+    // stays explicitly keyword-queryable. This is the structural kill for the
+    // 271 self-authored "I ran X because Y" engrams that were drowning Casper's
+    // real memory and teaching the survey-spin.
+    #[test]
+    fn own_authored_chat_is_gated_from_ambient_recall_but_stays_queryable() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because Asha is acting on the situation",
+                owner,
+            ))
+            .expect("own chat admits");
+        state
+            .admit_reflection(chat_engram(
+                "The service loop lives in service_loop.rs",
+                other,
+            ))
+            .expect("other's chat admits");
+
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient.iter().any(|c| c.contains("service_loop.rs")),
+            "others' knowledge still surfaces in ambient recall"
+        );
+        assert!(
+            !ambient.iter().any(|c| c.contains("because Asha is acting")),
+            "own chatter is gated out of ambient recall"
+        );
+
+        // Still there when asked for explicitly.
+        let queried: Vec<String> = state
+            .recall_by_keyword("commands/list", 10)
+            .into_iter()
+            .map(|e| e.content)
+            .collect();
+        assert!(
+            queried.iter().any(|c| c.contains("because Asha is acting")),
+            "own chat remains keyword-queryable (gated from AMBIENT recall only)"
+        );
+    }
+
+    // what this catches: the eval fork inherits owner-id, so the BENCHMARK (which
+    // runs on `fork_detached`, not the live self) reflects the #166 recall fix.
+    // Without the propagation, live turns would be clean but measured numbers
+    // would still be polluted by the persona's own chatter — a lying benchmark.
+    #[test]
+    fn fork_detached_inherits_owner_id_so_the_benchmark_gets_the_recall_fix() {
+        let owner = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because I am acting",
+                owner,
+            ))
+            .expect("admits");
+        let fork = state.fork_detached();
+        let ambient: Vec<String> = fork
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            !ambient.iter().any(|c| c.contains("because I am acting")),
+            "fork inherits owner-id → own chatter is gated on the measurement copy too"
+        );
+    }
+
+    // what this catches: fail-open — with no owner bound (bare/test state), the
+    // gate never fires, so we never drop chat we can't prove is self-authored.
+    #[test]
+    fn chat_recall_gate_is_noop_without_owner_bound() {
+        let author = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state
+            .admit_reflection(chat_engram("some chat from an author", author))
+            .expect("admits");
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient
+                .iter()
+                .any(|c| c.contains("some chat from an author")),
+            "no owner bound → nothing gated (fail-open)"
+        );
+    }
+
+    /// What this catches: re-distilling the same cluster on a later dream tick
+    /// is idempotent — identical fact content is Dropped as Duplicate, never
+    /// accumulated. Without this guard the store would fill with duplicate facts
+    /// every idle tick.
+    #[test]
+    fn admit_reflection_dedups_identical_facts() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let parent = Uuid::new_v4();
+        let first = semantic_reflection("Headless core, many equal clients", parent);
+        let second = semantic_reflection("Headless core, many equal clients", parent);
+
+        let d1 = state.admit_reflection(first.clone()).expect("first admits");
+        assert!(matches!(d1, AdmissionDecision::Admit { .. }));
+
+        let d2 = state.admit_reflection(second).expect("second resolves");
+        match d2 {
+            AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            } => assert_eq!(existing_engram_id, first.id),
+            other => panic!("expected Duplicate drop, got {other:?}"),
+        }
+        assert_eq!(state.engram_count(), 1, "duplicate fact not stored twice");
+    }
+
     /// What this catches: recall_scored ranks engrams by salience desc.
     /// A regression to admission-order or insertion-order would silently
     /// return whichever was admitted last instead of whichever scored
     /// highest — defeating the whole point of Algorithm 4 driving recall.
     #[test]
     fn recall_scored_ranks_by_salience_desc() {
-        let registry =
-            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -1021,8 +1978,7 @@ mod tests {
     /// remembering.
     #[test]
     fn recall_scored_records_recall_hit_on_returned_engrams() {
-        let registry =
-            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -1063,8 +2019,7 @@ mod tests {
     /// without panicking + without recording spurious hits.
     #[test]
     fn recall_scored_respects_limit_and_empty() {
-        let registry =
-            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let state = AdmissionState::new(Arc::clone(&registry));
         let ids = admit_n_distinct(
             &state,
@@ -1088,7 +2043,11 @@ mod tests {
             "limit=0 records no recall hits"
         );
 
-        assert_eq!(state.recall_scored(1_000, 1).len(), 1, "limit=1 returns one");
+        assert_eq!(
+            state.recall_scored(1_000, 1).len(),
+            1,
+            "limit=1 returns one"
+        );
         assert_eq!(
             state.recall_scored(1_000, 99).len(),
             3,
@@ -1203,9 +2162,45 @@ mod tests {
         let airc = synthetic_engram_with_airc_origin("y", "evt-1");
         assert_eq!(EngramOriginKind::from(&chat.origin), EngramOriginKind::Chat);
         assert_eq!(EngramOriginKind::from(&airc.origin), EngramOriginKind::Airc);
+        // Agent origin (agent-memory bridge) maps to EngramOriginKind::Agent.
+        let agent_origin = EngramOrigin::Agent(crate::persona::engram::AgentRef {
+            agent_peer_id: Uuid::new_v4(),
+            session: None,
+            origin_hint: None,
+        });
+        assert_eq!(
+            EngramOriginKind::from(&agent_origin),
+            EngramOriginKind::Agent
+        );
         // Tool + SelfReflection variants exist on EngramOrigin (per PR-1)
         // and are covered by the From impl's exhaustive match — no need
         // to construct them here; the compiler enforces coverage.
+    }
+
+    /// What this catches: an Agent origin serializes with tag "Agent" and its
+    /// AgentRef payload (agent_peer_id required, session/origin_hint optional),
+    /// and round-trips back to EngramOriginKind::Agent. The wire shape is what
+    /// the agent-memory bridge's /remember + /recall commands depend on; a
+    /// serde-tag drift would silently break cross-agent recall.
+    #[test]
+    fn agent_origin_serde_round_trips_with_required_peer_id() {
+        use crate::persona::engram::AgentRef;
+        let me = Uuid::new_v4();
+
+        let origin = EngramOrigin::Agent(AgentRef {
+            agent_peer_id: me,
+            session: Some("sess-1".into()),
+            origin_hint: None,
+        });
+        let json = serde_json::to_value(&origin).unwrap();
+        assert_eq!(json["kind"], "Agent");
+        assert_eq!(json["ref"]["agent_peer_id"], me.to_string());
+        // origin_hint is None → omitted (ts optional / serde skips nothing by
+        // default, so it's present-but-null); session present.
+        assert_eq!(json["ref"]["session"], "sess-1");
+
+        let back: EngramOrigin = serde_json::from_value(json).unwrap();
+        assert_eq!(EngramOriginKind::from(&back), EngramOriginKind::Agent);
     }
 
     /// What this catches: Admit (NOT Quarantine) records BOTH content_hash
@@ -1251,13 +2246,12 @@ mod tests {
     #[test]
     fn admit_observes_admission_through_persistence_sink() {
         use crate::persona::admission_persistence::RecordingSink;
-        let registry = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let sink = Arc::new(RecordingSink::new());
         let state = AdmissionState::new_with_persistence(
             Arc::clone(&registry),
-            Arc::clone(&sink) as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+            Arc::clone(&sink)
+                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
         );
         let msg = synthetic_human_message("watch me persist");
         state.admit(&msg, None).expect("admit");
@@ -1273,13 +2267,12 @@ mod tests {
     #[test]
     fn recall_scored_observes_metadata_updates_through_sink() {
         use crate::persona::admission_persistence::RecordingSink;
-        let registry = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let sink = Arc::new(RecordingSink::new());
         let state = AdmissionState::new_with_persistence(
             Arc::clone(&registry),
-            Arc::clone(&sink) as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+            Arc::clone(&sink)
+                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
         );
         // Admit 2 engrams so recall has something to score.
         admit_n_distinct(
@@ -1301,15 +2294,86 @@ mod tests {
         );
     }
 
+    /// What this catches: eval mutating the persona it measures. The
+    /// isolation seam (checkpoint → mute persistence → admit → restore →
+    /// unmute) must (1) let admit fire normally INTO the frozen frame so the
+    /// measured memory motion is identical to a real turn, (2) keep every muted
+    /// admit off the real sink, (3) rewind engram_count AND the dedup oracle on
+    /// restore — proven by re-admitting the same content after restore and
+    /// seeing it ADMIT (not dedup-drop) — and (4) restore the real sink so it
+    /// observes again afterward. Regresses [[eval-mutates-persona-lift-needs-isolation]].
+    #[test]
+    fn eval_isolation_checkpoint_restore_leaves_no_trace() {
+        use crate::persona::admission_persistence::{NoopSink, RecordingSink};
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let real_sink = Arc::new(RecordingSink::new());
+        let state = AdmissionState::new_with_persistence(
+            Arc::clone(&registry),
+            Arc::clone(&real_sink)
+                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        );
+
+        // Non-trivial content: the admission gate drops short strings as
+        // NotMemorable, so both arms use durable, distinct observations.
+        let content_a = "the durable baseline observation worth keeping in memory";
+        let content_b = "the eval-window observation that must never reach disk";
+
+        // Baseline: one durable engram, observed by the real sink.
+        state
+            .admit(&synthetic_human_message(content_a), None)
+            .expect("admit A");
+        assert_eq!(state.engram_count(), 1, "baseline admit lands");
+        assert_eq!(real_sink.admissions_seen().len(), 1, "real sink saw A");
+
+        // ── Begin isolation: checkpoint the frame, mute persistence. ──
+        let checkpoint = state.checkpoint();
+        let saved_real = state.swap_persistence(NoopSink::arc());
+
+        // Admit INSIDE the window: admit fires (count climbs → identical
+        // motion) but the real sink, now swapped out, sees nothing more.
+        state
+            .admit(&synthetic_human_message(content_b), None)
+            .expect("admit B");
+        assert_eq!(state.engram_count(), 2, "muted admit still forms memory");
+        assert_eq!(
+            real_sink.admissions_seen().len(),
+            1,
+            "muted window writes NOTHING to the real sink"
+        );
+
+        // ── End isolation: rewind the frame, restore the real sink. ──
+        state.restore(&checkpoint);
+        state.swap_persistence(saved_real);
+        assert_eq!(
+            state.engram_count(),
+            1,
+            "restore rewinds memory to baseline"
+        );
+
+        // The dedup oracle rewound too: content_b is admissible again (had it
+        // NOT rewound, this would dedup-drop and the count would stay 1).
+        state
+            .admit(&synthetic_human_message(content_b), None)
+            .expect("re-admit B");
+        assert_eq!(
+            state.engram_count(),
+            2,
+            "dedup oracle rewound — B re-admits"
+        );
+        assert_eq!(
+            real_sink.admissions_seen().len(),
+            2,
+            "real sink restored — observes the post-window admit"
+        );
+    }
+
     /// What this catches: new_rehydrated populates the engram Vec
     /// + the metadata DashMap from loaded snapshots. Subsequent
     /// recall_scored sees those engrams and uses the loaded
     /// salience values. The proof that boot rehydration works.
     #[test]
     fn new_rehydrated_restores_engrams_and_metadata_for_recall() {
-        let registry = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         // Synthesize a couple of engrams + their metadata as if they
         // had been loaded from disk.
         let alpha_engram = synthetic_engram_with_chat_origin("alpha persisted");
@@ -1364,11 +2428,33 @@ mod tests {
     /// Vec with N engrams + a metadata vec with only K < N entries.
     /// The post-fix invariant: every loaded engram is recall-visible
     /// (with default metadata if its row was missing).
+    // what this catches: set_recall_salience (#166) down-weights an admitted
+    // engram's recall salience WITHOUT clobbering its other metadata — critically
+    // last_decayed_ms, whose loss would trigger the epoch-delta decay collapse.
+    #[test]
+    fn set_recall_salience_lowers_salience_and_preserves_decay_clock() {
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(registry.clone());
+        let id = Uuid::new_v4();
+        // Seed as an ordinary admission does (default 0.5 salience, decay clock set).
+        registry.admit_with_defaults(id);
+        let before = registry.get(id).expect("seeded");
+        assert_eq!(before.salience, 0.5);
+        assert!(before.last_decayed_ms > 0, "decay clock initialized");
+
+        state.set_recall_salience(id, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        let after = registry.get(id).expect("still present");
+        assert_eq!(after.salience, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        assert_eq!(
+            after.last_decayed_ms, before.last_decayed_ms,
+            "decay clock preserved — no epoch-delta collapse"
+        );
+    }
+    const PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST: f32 = 0.25;
+
     #[test]
     fn rehydrate_backfills_metadata_for_phantom_engrams() {
-        let registry = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let phantom_engram = synthetic_engram_with_chat_origin("phantom no metadata row");
         let healthy_engram = synthetic_engram_with_chat_origin("healthy has metadata");
         let phantom_id = phantom_engram.id;
@@ -1401,7 +2487,11 @@ mod tests {
         // assertion fails because the phantom is permanently
         // invisible to filter_map.
         let scored = state.recall_scored(2_000, 8);
-        assert_eq!(scored.len(), 2, "both engrams recall-visible after rehydration");
+        assert_eq!(
+            scored.len(),
+            2,
+            "both engrams recall-visible after rehydration"
+        );
 
         let scored_ids: std::collections::BTreeSet<Uuid> =
             scored.iter().map(|(e, _)| e.id).collect();
@@ -1438,17 +2528,12 @@ mod tests {
 
         // ── Lifetime 1: admit through the persona's home ────────
         let original_ids: Vec<Uuid> = {
-            let registry = Arc::new(
-                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-            );
+            let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
             let state = AdmissionState::for_persona(&home, Arc::clone(&registry))
                 .await
                 .expect("for_persona setup");
 
-            let messages = [
-                "paige learns alpha for real",
-                "paige learns beta for real",
-            ];
+            let messages = ["paige learns alpha for real", "paige learns beta for real"];
             let mut ids = Vec::new();
             for content in &messages {
                 let decision = state
@@ -1465,9 +2550,7 @@ mod tests {
 
         // Wait for fire-and-forget writes to land.
         let mut tries = 0;
-        let registry2 = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let registry2 = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let state2 = loop {
             let st = AdmissionState::for_persona(&home, Arc::clone(&registry2))
                 .await
@@ -1485,10 +2568,8 @@ mod tests {
         let scored = state2.recall_scored(10_000, 8);
         let scored_ids: std::collections::BTreeSet<Uuid> =
             scored.iter().map(|(e, _)| e.id).collect();
-        let original_set: std::collections::BTreeSet<Uuid> =
-            original_ids.iter().copied().collect();
+        let original_set: std::collections::BTreeSet<Uuid> = original_ids.iter().copied().collect();
         assert_eq!(scored_ids, original_set);
-
     }
 
     /// What this catches: two personas under the same continuum_root
@@ -1498,16 +2579,12 @@ mod tests {
     #[tokio::test]
     async fn for_persona_isolates_two_personas_at_the_storage_layer() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let paige_home =
-            crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
-        let niko_home =
-            crate::persona::home::PersonaHome::for_persona(tmp.path(), "Niko");
+        let paige_home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
+        let niko_home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Niko");
 
         // Admit through Paige's home only.
         let paige_id = {
-            let registry = Arc::new(
-                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-            );
+            let registry = Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
             let state = AdmissionState::for_persona(&paige_home, registry)
                 .await
                 .expect("paige setup");
@@ -1526,13 +2603,11 @@ mod tests {
         // Wait for Paige's fire-and-forget write to land.
         let mut tries = 0;
         loop {
-            let paige_registry = Arc::new(
-                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-            );
-            let paige_state =
-                AdmissionState::for_persona(&paige_home, paige_registry)
-                    .await
-                    .expect("paige reload");
+            let paige_registry =
+                Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+            let paige_state = AdmissionState::for_persona(&paige_home, paige_registry)
+                .await
+                .expect("paige reload");
             if paige_state.engram_count() == 1 {
                 break;
             }
@@ -1544,9 +2619,8 @@ mod tests {
         }
 
         // Niko's fresh state must NOT see Paige's engram.
-        let niko_registry = Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
+        let niko_registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
         let niko_state = AdmissionState::for_persona(&niko_home, niko_registry)
             .await
             .expect("niko setup");
@@ -1562,6 +2636,126 @@ mod tests {
             scored.is_empty(),
             "Niko's recall is empty: paige's engram {paige_id} stayed scoped to her home"
         );
+    }
 
+    // What this catches: the per-task eval rewind invariant (cognition/eval.rs
+    // run_pass calls `isolation.rewind()` before EVERY task). An engram admitted
+    // while measuring task N — e.g. the act->observe self-observation from a
+    // code/search she ran — must NOT survive into task N+1's recall, or the exam
+    // bleeds ("based on my earlier code search, SELF_TICK_MS is in…" leaking into
+    // an unrelated task, observed live 2026-07-02). checkpoint()/restore() is the
+    // mechanism the rewind uses: restoring the pre-task checkpoint discards every
+    // engram admitted since, while PRESERVING the baseline the fork was born with
+    // (her real engrams via fork_detached) — mirror her reality, drop only the
+    // cross-task bleed. See [[mirror-and-challenge-during-training-and-dream]].
+    #[test]
+    fn restore_drops_post_checkpoint_engrams_but_keeps_baseline() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mut trace = CognitionTrace::new();
+
+        // Baseline: one engram present when the "task" begins (stands in for the
+        // real engrams the eval fork is born carrying).
+        let baseline = "a durable baseline observation the fork was born carrying";
+        state
+            .admit(&synthetic_human_message(baseline), Some(&mut trace))
+            .unwrap();
+        assert_eq!(state.engram_count(), 1);
+
+        // Checkpoint = the pre-task frame the rewind restores to.
+        let cp = state.checkpoint();
+
+        // Task N admits a fresh engram (the act->observe result-as-engram).
+        let task_n = "task N just ran code/search and admitted this result engram";
+        state
+            .admit(&synthetic_human_message(task_n), Some(&mut trace))
+            .unwrap();
+        assert_eq!(state.engram_count(), 2);
+        assert!(
+            state.recall_recent(8).iter().any(|e| e.content == task_n),
+            "task N's engram is recallable within task N (sanity)"
+        );
+
+        // Rewind before task N+1.
+        state.restore(&cp);
+
+        // Task N's engram is gone; the baseline reality survives untouched.
+        assert_eq!(
+            state.engram_count(),
+            1,
+            "rewind drops the post-checkpoint engram"
+        );
+        let recalled = state.recall_recent(8);
+        assert!(
+            !recalled.iter().any(|e| e.content == task_n),
+            "task N's engram must NOT bleed into task N+1"
+        );
+        assert!(
+            recalled.iter().any(|e| e.content == baseline),
+            "the pre-eval baseline reality is preserved (mirror, not sterilize)"
+        );
+    }
+
+    // what this catches: the supersession-review retrieval (#221 slice 2) is
+    // RETRIEVAL, not judgment — Semantic-only (episodics are experience, not
+    // beliefs), matched by recall-key overlap on content, short keys skipped as
+    // noise, capped. If this ever returned episodics, the dream would ask the
+    // model to "supersede" raw experience — plasticity eating her history
+    // instead of her stale conclusions.
+    #[test]
+    fn semantic_beliefs_matching_is_semantic_only_key_overlap() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mk = |kind: EngramKind, content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::new_v4(),
+            },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let stale_belief = mk(
+            EngramKind::Semantic,
+            "You work with main.rs and wordstats.rs",
+        );
+        let other_belief = mk(EngramKind::Semantic, "The team prefers ranked-choice votes");
+        let episode = mk(EngramKind::Episodic, "I edited main.rs and it compiled");
+        let stale_id = stale_belief.id;
+        for e in [stale_belief, other_belief, episode] {
+            state.engrams.lock().unwrap().push(e);
+        }
+        let hits = state.semantic_beliefs_matching(
+            &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped
+            8,
+        );
+        assert_eq!(hits.len(), 1, "semantic-only, key-matched: {hits:?}");
+        assert_eq!(hits[0].id, stale_id);
+        // Cap respected; empty needles → empty.
+        assert!(state.semantic_beliefs_matching(&[], 8).is_empty());
+        assert!(state
+            .semantic_beliefs_matching(&["main.rs".to_string()], 0)
+            .is_empty());
+
+        // Rotating window (#221 slice 2b): oldest-first, Semantic-only,
+        // exclusion honored — what guarantees the review EVENTUALLY reaches
+        // beliefs lexical overlap can't (the stale-Rust vs python-keys gap).
+        let mut exclude = std::collections::HashSet::new();
+        let oldest = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 1);
+        assert_eq!(oldest.len(), 1);
+        assert_eq!(
+            oldest[0].content, "You work with main.rs and wordstats.rs",
+            "oldest belief first (insertion order)"
+        );
+        exclude.insert(oldest[0].id);
+        let next = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 4);
+        assert_eq!(next.len(), 1, "episodics never enter the window: {next:?}");
+        assert_eq!(next[0].content, "The team prefers ranked-choice votes");
     }
 }

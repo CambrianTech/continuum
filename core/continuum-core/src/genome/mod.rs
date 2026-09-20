@@ -61,10 +61,22 @@
 
 pub mod blob;
 pub mod bus;
+pub mod candidate_source_store;
+pub mod eviction;
+pub mod expert_ingest;
+pub mod expert_layout;
+pub mod fine_tuning;
+pub mod fitness;
+pub mod commons_ranking;
+pub mod recall_select;
+pub mod fitness_ledger;
+pub mod gate_magnitude;
 pub mod local_manager;
+pub mod signature;
 pub mod manager;
 pub mod recall;
 pub mod recall_trait;
+pub mod residency;
 pub mod store;
 pub mod tier;
 pub mod working_set;
@@ -75,22 +87,24 @@ pub use bus::{
     publish_page_fault, subscribe_to_genome_events, ACCESS_DENIED_KEY, EVICTION_RECORD_KEY,
     PAGE_FAULT_KEY,
 };
+pub use eviction::rank_pages_for_eviction;
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use recall::{
-    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint,
-    TaskKind, TrustClass,
+    AcquireSource, FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
+    TrustClass,
 };
 pub use recall_trait::{
     ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall, DomainHint,
     EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, RankedPool, RecallBudget, RecallContext,
     RecallScoreWeights, RecallTrace, TrajectoryHint, WeightSumOutOfBounds,
 };
+pub use residency::GenomeResidencyModule;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{
-    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, PersonaId,
-    ResidentPage, WorkingSet, WorkingSetCapacity,
+    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, ResidentPage,
+    WorkingSet, WorkingSetCapacity,
 };
 pub mod recall_scoring;
 pub use recall_scoring::{

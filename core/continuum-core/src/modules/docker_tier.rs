@@ -149,11 +149,25 @@ impl DockerTierProbe {
         let path_string = path.display().to_string();
         match std::fs::metadata(&path) {
             Ok(meta) => {
-                use std::os::unix::fs::MetadataExt;
-                Self::Detected {
-                    allocated_bytes: meta.size(),
-                    used_bytes: meta.blocks() * 512,
-                    path: path_string,
+                // Unix: apparent size + real allocated blocks. Windows has no
+                // st_blocks in std; len() serves both fields (honest apparent
+                // size, no fake allocation number).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    Self::Detected {
+                        allocated_bytes: meta.size(),
+                        used_bytes: meta.blocks() * 512,
+                        path: path_string,
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    Self::Detected {
+                        allocated_bytes: meta.len(),
+                        used_bytes: meta.len(),
+                        path: path_string,
+                    }
                 }
             }
             Err(err) => Self::NotFound {

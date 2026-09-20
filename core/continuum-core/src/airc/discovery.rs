@@ -48,8 +48,9 @@ const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
 /// Deadline for the auto-install path. Generous because the install
 /// script runs `curl` + `bash` and on a cold install can clone +
 /// build airc — minutes, legitimately. 120s catches a truly stuck
-/// install without holding boot forever; below this we trust the
-/// installer's own progress.
+/// install; it now bounds the **detached background task**
+/// (`discover_airc_socket` spawns the install and fails fast), so boot
+/// NEVER waits on it — below this we trust the installer's own progress.
 const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Canonical installer URL. Same one printed at the top of airc's
@@ -67,7 +68,7 @@ const AIRC_DISABLE_AUTOINSTALL: &str = "CONTINUUM_DISABLE_AIRC_AUTOINSTALL";
 /// Explicit socket-path override. Honored unconditionally — when set,
 /// no discovery, no install, no PATH probe. For tests pointing at
 /// ephemeral daemons, and for operators with non-standard airc deploys.
-const AIRC_DAEMON_SOCKET_ENV: &str = "AIRC_DAEMON_SOCKET";
+pub(crate) const AIRC_DAEMON_SOCKET_ENV: &str = "AIRC_DAEMON_SOCKET";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
@@ -75,6 +76,8 @@ pub enum DiscoveryError {
     InstallFailed(String),
     #[error("auto-install suppressed via {AIRC_DISABLE_AUTOINSTALL}=1 — install airc manually: curl -fsSL {AIRC_INSTALL_URL} | bash")]
     AutoInstallDisabled,
+    #[error("airc not on PATH — bootstrapping it in the background; the node is UP (local commands work) but not yet a grid peer. Restart the core once the install completes to join airc (self-healing re-attach without restart is a follow-up).")]
+    AutoInstallInProgress,
     #[error("`airc ipc-endpoint` failed: {0}")]
     EndpointCommandFailed(String),
     #[error("`airc ipc-endpoint` returned an empty path — airc binary may be from before #1095 (add the command or upgrade airc)")]
@@ -109,19 +112,30 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
         return Err(DiscoveryError::AutoInstallDisabled);
     }
 
+    // airc is not on PATH. SPEED IS PARAMOUNT (Joel, 2026-07-06): the boot path
+    // must NEVER block on a network install (the old synchronous
+    // `auto_install_airc().await` held socket-bind for up to AUTO_INSTALL_DEADLINE
+    // = 120s — a launchd/service boot with airc off its minimal PATH hung the
+    // whole core). Kick the installer off DETACHED and fail fast: the core binds
+    // its IPC socket + is responsive NOW; airc stays Unreachable (the aggregate
+    // degrades gracefully) until the install lands and a later discovery attaches.
+    // Still fail loud (named error) — we just don't HANG to do it.
     warn!(
-        "airc not found on PATH — installing from {AIRC_INSTALL_URL}. \
-         Most users won't have airc pre-installed; continuum-core \
-         bootstraps it so the persona-as-airc-peer flow works headless. \
+        "airc not found on PATH — bootstrapping it in the BACKGROUND from \
+         {AIRC_INSTALL_URL}; boot continues (node is up, local commands work). \
+         Restart the core once it lands to join airc as a grid peer. \
          Set {AIRC_DISABLE_AUTOINSTALL}=1 to opt out."
     );
-    auto_install_airc().await?;
-    if !airc_on_path().await {
-        return Err(DiscoveryError::InstallFailed(
-            "post-install `which airc` still empty — check $HOME/.local/bin in PATH".into(),
-        ));
-    }
-    query_airc_endpoint().await
+    tokio::spawn(async {
+        match auto_install_airc().await {
+            Ok(()) => info!(
+                "airc background bootstrap installed — restart the core to join airc \
+                 (or wait for the self-healing re-discovery tick once that lands)"
+            ),
+            Err(e) => warn!("airc background bootstrap failed: {e}"),
+        }
+    });
+    Err(DiscoveryError::AutoInstallInProgress)
 }
 
 async fn airc_on_path() -> bool {
@@ -253,10 +267,15 @@ pub async fn discover_default_room_name() -> Result<String, DiscoveryError> {
 fn parse_room_name_from_room_output(stdout: &str) -> Result<String, DiscoveryError> {
     for line in stdout.lines() {
         let trimmed = line.trim();
+        // `current:` is the airc #270 membership-visibility rename of the
+        // current-room line (bare `airc room` now lists ALL subscriptions,
+        // so the head line names the CURRENT one explicitly). Accept both
+        // labels so either binary generation parses.
         let Some(rest) = trimmed
             .strip_prefix("room:")
             .or_else(|| trimmed.strip_prefix("Room:"))
             .or_else(|| trimmed.strip_prefix("ROOM:"))
+            .or_else(|| trimmed.strip_prefix("current:"))
         else {
             continue;
         };
@@ -275,7 +294,7 @@ fn parse_room_name_from_room_output(stdout: &str) -> Result<String, DiscoveryErr
 /// Output today (from airc rust-rewrite branch, as of this PR):
 /// ```text
 /// room:    continuum
-/// wire:    /Users/joel/.airc/wires/continuum
+/// wire:    ~/.airc/wires/<room>
 /// channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
 /// ```
 ///
@@ -418,7 +437,7 @@ mod tests {
     fn parses_channel_from_typical_airc_room_output() {
         let stdout = "\
 room:    continuum
-wire:    /Users/joel/.airc/wires/continuum
+wire:    ~/.airc/wires/<room>
 channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
 ";
         let uuid = parse_channel_from_room_output(stdout).expect("parse channel");

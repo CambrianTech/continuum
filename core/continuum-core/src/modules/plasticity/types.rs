@@ -252,12 +252,16 @@ pub struct UtilizationData {
 /// 0.0 ──dead── 0.1 ──dormant── 0.2 ──low── 0.3 ──medium── 0.5 ──active── 0.7 ──hot── 0.9 ──saturated── 1.0
 ///   Removed      Ternary         Q2           Q4              Q8            BF16       BF16+mitosis
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/plasticity/CompactionConfig.ts"
 )]
-#[serde(rename_all = "camelCase")]
+// `default` at the container level: a caller may pass a partial override
+// (`{minHeadsPerLayer: 2}`) and every unspecified field falls back to
+// `CompactionConfig::default()` — the parity replacement for the old
+// field-by-field `parse_config`. Also makes it a clean optional command param.
+#[serde(rename_all = "camelCase", default)]
 pub struct CompactionConfig {
     /// Minimum Q heads to retain per layer (safety floor)
     #[ts(type = "number")]

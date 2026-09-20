@@ -24,60 +24,103 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+pub mod admission_gate;
 pub mod airc_interceptor;
 pub mod artifact_handle;
+pub mod boot_clock;
 pub mod boot_mode;
+pub mod boot_status;
 pub mod brain_region;
+pub mod cadence_table;
 pub mod cell_shapes;
 pub mod command_envelope;
 pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
+pub mod core_bind_guard;
+pub mod deploy_claim;
+pub mod core_ipc_transport;
+pub mod deploy_provenance;
+pub mod deploy_tracker;
+pub mod tracked_checkout;
+pub mod daemon;
+pub mod governor_bus;
 pub mod grid_interceptor;
+pub mod handle;
+pub mod in_process_transport;
+pub mod late_bound;
 pub mod message_bus;
 pub mod module_context;
+/// Per-module TDD harness — boots a single module in isolation. Test-only.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod module_harness;
 pub mod module_logger;
 pub mod module_metrics;
+pub mod orientation_shares;
+pub mod per_key_gate;
+pub mod provided_provider;
 pub mod ready_buffer;
 pub mod region_telemetry;
 pub mod registry;
 #[allow(clippy::module_inception)]
 pub mod runtime;
 pub mod service_module;
+pub mod share_controller;
 pub mod shared_compute;
+pub mod substrate_governor;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 
+pub use airc_interceptor::AircInterceptor;
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
-    PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,
-    SleepPhase, TickOutcome,
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PersonaLifecycle,
+    PressureLevel, PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId,
+    RegionSignal, SleepPhase, TickOutcome,
 };
-pub use airc_interceptor::AircInterceptor;
+pub use cadence_table::{CadenceKey, CadenceTable};
 pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
 pub use command_envelope::{CommandRequest, CommandResponse};
 pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
-pub use command_executor::{
-    execute as execute_command, execute_json as execute_command_json, executor, init_executor,
-    init_executor_with_bus_and_interceptors, init_executor_with_interceptors, CommandExecutor,
-};
+pub use command_executor::CommandExecutor;
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
-pub use grid_interceptor::GridInterceptor;
 pub use control::{ModuleInfo, RuntimeControl};
-pub use message_bus::MessageBus;
+pub use daemon::{
+    guarded, spawn_daemon, Daemon, DaemonChannel, DaemonHandle, Guarded, QuarantineLedger,
+    DEFAULT_QUARANTINE_LIMIT,
+};
+pub use governor_bus::{publish_persona_scheduled, PersonaScheduled, PERSONA_SCHEDULED_KEY};
+pub use grid_interceptor::GridInterceptor;
+pub use handle::Handle;
+pub use in_process_transport::InProcessTransport;
+pub use late_bound::LateBound;
+pub use message_bus::{BusEvent, MessageBus};
 pub use module_context::ModuleContext;
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
+pub use orientation_shares::{
+    apportion, orientation_index, OrientationCounts, OrientationShares, ORIENTATIONS,
+};
+pub use per_key_gate::{Lease, PerKeyGate};
+pub use provided_provider::{
+    ProvidedCommandInterceptor, ProvidedCommandProvider, ProviderRegistry,
+};
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
-pub use runtime::Runtime;
+pub use admission_gate::{AdmissionGate, Permit};
+pub use runtime::{
+    await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
+    signal_runtime, DrainOutcome, ModuleStop,
+    ModuleStopOutcome, Runtime, ShutdownReceipt,
+};
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
 };
+pub use share_controller::ShareController;
 pub use shared_compute::SharedCompute;
+pub use substrate_governor::{GovernorSnapshot, SubstrateGovernor};
 
 // ============================================================================
 // Global Logger Access

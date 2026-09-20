@@ -5,11 +5,16 @@ use bevy::prelude::*;
 
 use super::components::*;
 use super::prng::SlotRng;
+use super::ExternalPose;
 
 /// Animate eye blinks on any entity with BlinkAnimation + MorphTargets.
+/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_blinking(
     time: Res<Time>,
-    mut query: Query<(&mut BlinkAnimation, &MorphTargets, &MorphMeshLink, &SlotId)>,
+    mut query: Query<
+        (&mut BlinkAnimation, &MorphTargets, &MorphMeshLink, &SlotId),
+        Without<ExternalPose>,
+    >,
     mut morph_weights: Query<&mut MorphWeights>,
 ) {
     let elapsed = time.elapsed_secs();

@@ -1,0 +1,10 @@
+{
+  "_doc": "Baseline for scripts/dev/measure-persona.sh. tokens_per_sec higher=better; latencies/prompt_tokens lower=better. Refresh with --update after a real improvement and commit.",
+  "metrics": {
+    "tokens_per_sec": 28.52,
+    "server_latency_ms": 7223,
+    "wall_latency_ms": 7254,
+    "prompt_tokens": 59,
+    "output_tokens": 206
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "cognition/admit-inbox-message",
+  "description": "Run the per-persona admission gate over a single InboxMessage. Returns the typed AdmissionDecision (Admit | Drop | Quarantine) plus the post-call admitted-engram count and trace seam count. Side effects: admitted engram → store, content_hash → dedup record, AIRC event_id → replay-protection record. Wraps the Rust IPC handler shipped in #1121 PR-4.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "personaId",
+      "type": "string",
+      "description": "UUID of the persona whose admission gate runs"
+    },
+    {
+      "name": "message",
+      "type": "Record<string, unknown>",
+      "description": "InboxMessageRequest — the candidate inbox message to admit. Recipe pipelines pass $signal or the drained-frame entry."
+    }
+  ],
+  "results": [
+    {
+      "name": "decision",
+      "type": "Record<string, unknown>",
+      "description": "Typed AdmissionDecision (Admit | Drop | Quarantine). See shared/generated/persona/AdmissionDecision.ts for shape."
+    },
+    {
+      "name": "engramCount",
+      "type": "number",
+      "description": "Total engrams in the persona's admitted store after this call"
+    },
+    {
+      "name": "traceSeamCount",
+      "type": "number",
+      "description": "Number of cognition trace seams emitted during this admission"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Admit an inbox message during a chat recipe pipeline",
+      "command": "./jtag cognition/admit-inbox-message --personaId=\"<uuid>\" --message='{\"content\":\"hello\",\"sender_id\":\"<uuid>\"}'",
+      "expectedResult": "{ decision: { decision: 'Admit', data: {...} }, engramCount: 12, traceSeamCount: 3 }"
+    }
+  ]
+}

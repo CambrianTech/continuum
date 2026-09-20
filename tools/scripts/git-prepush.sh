@@ -6,9 +6,11 @@ set -e
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUST_DIR="$SRC_DIR/workers/continuum-core"
-REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
+# Script lives at <repo>/tools/scripts/ (substrate-first layout) — resolve
+# the repo root from there, then anchor src/ and the Rust workspace off it.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SRC_DIR="$REPO_ROOT/src"
+RUST_DIR="$REPO_ROOT/core/continuum-core"
 
 require_node_deps() {
     if [ -x "$SRC_DIR/node_modules/.bin/tsx" ] \
@@ -116,7 +118,30 @@ elif [ -x "$ESLINT_RATCHET" ]; then
     fi
 else
     BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
+    # THIS BRANCH IS UNREACHABLE, and saying so is the point of this comment.
+    #
+    # It runs only when scripts/ratchets/check-eslint-baseline.sh is NOT
+    # executable, and that file is committed executable (-rwxr-xr-x), so the
+    # `elif` above always wins. The whole Node phase is unreachable a second
+    # time over: `require_node_deps` (line 75) gates on `$SRC_DIR/node_modules`
+    # where SRC_DIR is `$REPO_ROOT/src`, a directory deleted in July by
+    # e46d968c5 when the Node shell moved to legacy/src.
+    #
+    # Card aad30dee briefly replaced the counting here with an exit-status check
+    # (eslint 0 = clean, 1 = found errors, >=2 = the linter itself failed), on
+    # the theory that a CRASHED linter yielded 0 and printed a green checkmark.
+    # The reasoning was right and the placement was wrong three ways: the branch
+    # cannot run, fixing SRC_DIR would not make it run, and the path that DOES
+    # run — check-eslint-baseline.sh:124 — already defends the case:
+    #
+    #     if [[ "$ESLINT_STATUS" -ne 0 && "$CURRENT" -eq 0 ]]; then … exit 2
+    #
+    # That change is reverted rather than left in place, because inert code that
+    # LOOKS like a defence is worse than no code: the next reader assumes the
+    # case is handled here and stops looking for where it actually is.
     CURRENT=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
+fi
+if [ -n "${CURRENT:-}" ]; then
     LINT_DUR=$(( $(date +%s) - LINT_START ))
     if [ "$CURRENT" -le "$BASELINE" ]; then
         if [ "$CURRENT" -lt "$BASELINE" ]; then
@@ -152,7 +177,12 @@ if [ "$RUST_RELEVANT" -eq 0 ]; then
 elif [ -d "$RUST_DIR" ]; then
     # shellcheck source=shared/cargo-features.sh
     source "$(dirname "$0")/shared/cargo-features.sh"
-    if (cd "$RUST_DIR" && cargo check $CARGO_GPU_FEATURES 2>/dev/null); then
+    # --message-format=short: rustc 1.94+'s default annotate-snippets diagnostic
+    # renderer ICEs ("StyledBuffer::replace ... slice index starts at N but ends
+    # at N-1", rust-lang/rust#157460 / #157148) while rendering some warnings in
+    # this large crate. The short format bypasses that renderer entirely and the
+    # hook discards diagnostic output anyway — exit code semantics are unchanged.
+    if (cd "$RUST_DIR" && cargo check --message-format=short $CARGO_GPU_FEATURES 2>/dev/null); then
         echo "✅ Rust: clean ($(( $(date +%s) - RUST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust compilation FAILED"
@@ -178,7 +208,8 @@ TEST_START=$(date +%s)
 if [ "$RUST_RELEVANT" -eq 0 ]; then
     echo "⏭️  No Rust-relevant changes in this push — skipping cargo test."
 elif [ -d "$RUST_DIR" ]; then
-    if (cd "$RUST_DIR" && cargo test --lib $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
+    # --message-format=short for the same annotate-snippets ICE reason as Phase 2.
+    if (cd "$RUST_DIR" && cargo test --lib --message-format=short $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
         echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust tests FAILED"

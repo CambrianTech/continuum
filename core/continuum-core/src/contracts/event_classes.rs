@@ -104,9 +104,15 @@ pub struct ContractProposedPayload {
     /// Currency/escrow terms. Zero-cost ("household") tier = empty
     /// `bid_currency` + zero `max_bid`.
     pub bid_currency: String,
+    /// `#[ts(type = "number")]`: the JSON wire carries a number; ts-rs's default
+    /// `bigint` for 64-bit ints breaks `JSON.stringify` (throws) and numeric
+    /// fixtures. Escrow amounts never approach 2^53.
+    #[ts(type = "number")]
     pub max_bid: u64,
     /// Expiry (Unix ms). After this point the proposal is dead even
-    /// if no `:accepted` was ever emitted.
+    /// if no `:accepted` was ever emitted. `number` per the `max_bid` note —
+    /// Unix-ms timestamps stay far below 2^53.
+    #[ts(type = "number")]
     pub expiry_unix_ms: i64,
     /// Required executor capability tag — matches the L1-4
     /// `presence:peer-manifest` capability index format.
@@ -123,12 +129,17 @@ pub struct ContractProposedPayload {
 pub struct ContractBidPayload {
     pub contract_id: String,
     pub bidder_id: String,
+    /// `number` per the `ContractProposedPayload::max_bid` note — JSON wire
+    /// carries a number, `bigint` breaks `JSON.stringify`, bids stay < 2^53.
+    #[ts(type = "number")]
     pub bid_amount: u64,
     /// Bidder's promised SLA (max latency in ms). Proposer uses this
     /// in the bid-selection policy (lower latency + lower bid wins,
     /// per the policy engine).
     pub max_latency_ms: u32,
     /// Bidder's expiry — how long this bid is honored if accepted.
+    /// `number` per the `max_bid` note — Unix-ms timestamps stay below 2^53.
+    #[ts(type = "number")]
     pub bid_expiry_unix_ms: i64,
 }
 
@@ -161,6 +172,9 @@ pub struct ContractAcceptedPayload {
 pub struct ContractExecutingPayload {
     pub contract_id: String,
     pub executor_id: String,
+    /// `number` per the `max_bid` note — Unix-ms timestamps stay below 2^53,
+    /// and `bigint` would break `JSON.stringify` on the wire.
+    #[ts(type = "number")]
     pub started_at_unix_ms: i64,
 }
 
@@ -224,6 +238,10 @@ pub struct ContractPaidPayload {
     pub contract_id: String,
     pub payer_id: String,
     pub payee_id: String,
+    /// `number` per the `ContractProposedPayload::max_bid` note — the JSON wire
+    /// carries a number, `bigint` breaks `JSON.stringify`, and settlement
+    /// amounts never approach 2^53 (household tier settles `amount: 0`).
+    #[ts(type = "number")]
     pub amount: u64,
     pub currency: String,
     /// Optional settlement reference (chain tx hash, internal ledger
@@ -251,6 +269,57 @@ pub struct ContractDisputedPayload {
     #[ts(optional)]
     pub disputed_event_hash: Option<String>,
 }
+
+// ─── SDK EventSpec registrations (sdk_codegen) ─────────────────────────────
+//
+// The codegen view of the contract events: class + ts-rs payload, so the
+// generated EventMap + typed EventApi (api.onContractProposed/emitContractPaid)
+// flow from the same Rust declaration as the runtime EventClassConfig below.
+// `declare_event_spec!(Ident, CLASS_CONST, PayloadType)` is local sugar — one
+// line per event, registered into the auto-discovered event registry.
+macro_rules! declare_event_spec {
+    ($ident:ident, $class:expr, $payload:ty) => {
+        pub struct $ident;
+        impl crate::sdk_codegen::EventSpec for $ident {
+            const CLASS: &'static str = $class;
+            type Payload = $payload;
+        }
+        crate::register_event!($ident);
+    };
+}
+
+declare_event_spec!(
+    ContractProposedEvent,
+    EVENT_CONTRACT_PROPOSED,
+    ContractProposedPayload
+);
+declare_event_spec!(ContractBidEvent, EVENT_CONTRACT_BID, ContractBidPayload);
+declare_event_spec!(
+    ContractAcceptedEvent,
+    EVENT_CONTRACT_ACCEPTED,
+    ContractAcceptedPayload
+);
+declare_event_spec!(
+    ContractExecutingEvent,
+    EVENT_CONTRACT_EXECUTING,
+    ContractExecutingPayload
+);
+declare_event_spec!(
+    ContractDeliveredEvent,
+    EVENT_CONTRACT_DELIVERED,
+    ContractDeliveredPayload
+);
+declare_event_spec!(
+    ContractVerifiedEvent,
+    EVENT_CONTRACT_VERIFIED,
+    ContractVerifiedPayload
+);
+declare_event_spec!(ContractPaidEvent, EVENT_CONTRACT_PAID, ContractPaidPayload);
+declare_event_spec!(
+    ContractDisputedEvent,
+    EVENT_CONTRACT_DISPUTED,
+    ContractDisputedPayload
+);
 
 // ─── EventClass registration helper ───────────────────────────────────────
 

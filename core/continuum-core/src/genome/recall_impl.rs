@@ -1,46 +1,6 @@
-//! `demand-aligned-recall` PR-3b: `LocalDemandAlignedRecall` —
-//! the per-process implementation that composes PR-3a's scoring
-//! function (`recall_scoring::score`) with a candidate-injection
-//! API to produce ranked `RankedPool`s.
-//!
-//! PR-3b ships the ranking engine but NOT the candidate-source
-//! integration. The recall walks whatever the caller hands it; the
-//! caller (PR-3c's working-set + genome-catalog walker) is
-//! responsible for sourcing candidates from the substrate.
-//!
-//! Why split: PR-3b stays a small atomic slice (~250 LoC) reviewable
-//! as pure ranking logic. PR-3c adds the integration with
-//! `WorkingSetManager` (from #1355) + the genome catalog (future)
-//! and wires `LocalDemandAlignedRecall` into Runtime as the
-//! substrate's recall provider.
-//!
-//! ## What PR-3b ships
-//!
-//! - `CandidateArtifact` — a fully-described candidate ready for
-//!   scoring. Carries the per-factor inputs (semantic, outcome,
-//!   provenance) + residency + last-used timestamp. PR-3c populates
-//!   from substrate sources; PR-3b tests construct directly.
-//! - `LocalDemandAlignedRecall { weights, half_life_ms }` — the
-//!   ranking engine. Holds the governor-tunable scoring weights +
-//!   recency half-life. Thread-safe (the ranking is pure-function
-//!   over the candidate set).
-//! - `rank(now_ms, candidates)` method — scores every candidate,
-//!   partitions by `PageKind` into the three sub-pools (layers /
-//!   experts / engrams), sorts each descending by `combined`,
-//!   returns the populated `RankedPool`.
-//! - Honors `CapabilityQuery::must_include` hard pins — the caller
-//!   filters/injects must-include candidates upstream; the rank
-//!   layer doesn't drop them.
-//!
-//! ## What PR-3b does NOT ship (PR-3c)
-//!
-//! - `DemandAlignedRecall` trait impl — needs the working-set +
-//!   genome catalog to source candidates. PR-3c wires it.
-//! - `RecallTrace` replay backing store — separate sentinel PR.
-//! - Federation candidate sourcing (RecallScope::Federation /
-//!   LocalThenGrid) — PR-3c.
-//! - Embedding model integration (the semantic factor input) —
-//!   separate Lane H slice.
+//! Demand-aligned candidate ranking with captured decisions and offline replay.
+//! Candidate acquisition is separate from ranking: replay never consults a live
+//! catalog, embedder, clock, or persona. Persistence uses the shared ORM adapter.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -124,6 +84,141 @@ pub trait CandidateSource: Send + Sync {
     ) -> Vec<CandidateArtifact>;
 }
 
+/// All inputs and the observed result of one ranking decision. This records
+/// selection evidence, not retained weight bytes or proof that a layer was loaded.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "genome_recall_decisions")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallDecision.ts"
+)]
+pub struct RecallDecision {
+    pub schema_version: u32,
+    pub policy_revision: String,
+    #[ts(type = "number")]
+    pub now_ms: u64,
+    #[entity(json)]
+    pub query: CapabilityQuery,
+    #[entity(json)]
+    pub context: RecallContext,
+    #[entity(json)]
+    pub weights: RecallScoreWeights,
+    #[ts(type = "number")]
+    pub half_life_ms: u64,
+    pub candidates: Vec<CandidateArtifact>,
+    #[entity(json)]
+    pub result: RankedPool,
+}
+
+inventory::submit! {
+    crate::orm::entity::ProtectedCollection {
+        collection: <RecallDecision as crate::orm::OrmEntity>::COLLECTION,
+        owning_command: "genome/recall/replay",
+    }
+}
+
+impl RecallDecision {
+    pub const POLICY_REVISION: &'static str = "weighted-recall-v1";
+
+    /// Re-evaluate the frozen input under a supplied policy configuration.
+    /// Keeping the recorded timestamp prevents recency drift between trials.
+    /// The result is unrecorded (nil trace); it must not impersonate the original
+    /// decision handle merely because it used that decision's input snapshot.
+    pub fn evaluate(
+        &self,
+        weights: RecallScoreWeights,
+        half_life_ms: u64,
+    ) -> Result<RankedPool, RecallError> {
+        if self.schema_version != 1 || self.policy_revision != Self::POLICY_REVISION {
+            return Err(RecallError::ReplayUnavailable {
+                reason: "unsupported recall capture schema or policy revision".into(),
+            });
+        }
+        validate_candidates(&self.candidates)?;
+        RecallScoreWeights::new(
+            weights.semantic,
+            weights.outcome_history,
+            weights.recency,
+            weights.tier_proximity,
+            weights.provenance_trust,
+        )
+        .map_err(|e| RecallError::ReplayUnavailable {
+            reason: e.to_string(),
+        })?;
+        Ok(
+            LocalDemandAlignedRecall::with_config(weights, half_life_ms).rank_borrowed(
+                self.now_ms,
+                &self.candidates,
+                RecallTrace(ArtifactId::new(uuid::Uuid::nil())),
+            ),
+        )
+    }
+
+    pub fn replay(&self) -> Result<RankedPool, RecallError> {
+        let mut replayed = self.evaluate(self.weights, self.half_life_ms)?;
+        replayed.trace_ref = self.result.trace_ref;
+        if replayed != self.result {
+            return Err(RecallError::ReplayUnavailable {
+                reason: "recorded recall result does not reproduce under its policy revision"
+                    .into(),
+            });
+        }
+        Ok(replayed)
+    }
+}
+
+// JSON cannot retain NaN/Inf as numbers. Refuse these before issuing a durable
+// handle, rather than saving a receipt that fails to decode on its first replay.
+fn validate_candidates(candidates: &[CandidateArtifact]) -> Result<(), RecallError> {
+    if candidates.iter().any(|c| {
+        !c.semantic_factor.is_finite()
+            || !c.outcome_history_factor.is_finite()
+            || !c.provenance_trust_factor.is_finite()
+    }) {
+        return Err(RecallError::ReplayUnavailable {
+            reason: "recall candidates contain non-finite scoring evidence".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Persistence adapter for decision handles. Implemented by the existing typed
+/// ORM store; no second database, file cache, or per-command connection pool.
+#[async_trait]
+pub trait RecallTraceStore: Send + Sync {
+    async fn save_decision(&self, decision: &RecallDecision) -> Result<(), RecallError>;
+    async fn load_decision(&self, trace: RecallTrace) -> Result<RecallDecision, RecallError>;
+}
+
+#[async_trait]
+impl RecallTraceStore for crate::orm::OrmStore<RecallDecision> {
+    async fn save_decision(&self, decision: &RecallDecision) -> Result<(), RecallError> {
+        self.save(decision.result.trace_ref.0.as_uuid(), decision)
+            .await
+            .map_err(|e| RecallError::ReplayUnavailable {
+                reason: e.to_string(),
+            })
+    }
+    async fn load_decision(&self, trace: RecallTrace) -> Result<RecallDecision, RecallError> {
+        let decision = self
+            .find_by_id(trace.0.as_uuid())
+            .await
+            .map_err(|e| RecallError::ReplayUnavailable {
+                reason: e.to_string(),
+            })?
+            .ok_or_else(|| RecallError::ReplayUnavailable {
+                reason: "recall decision is not retained".into(),
+            })?;
+        if decision.result.trace_ref != trace {
+            return Err(RecallError::ReplayUnavailable {
+                reason: "recall decision handle does not match its stored result".into(),
+            });
+        }
+        Ok(decision)
+    }
+}
+
 /// Per-process implementation of demand-aligned recall ranking.
 /// Holds the governor-tunable scoring weights + recency half-life
 /// + an optional CandidateSource for the trait impl.
@@ -139,6 +234,7 @@ pub struct LocalDemandAlignedRecall {
     weights: RecallScoreWeights,
     half_life_ms: u64,
     source: Option<Arc<dyn CandidateSource>>,
+    trace_store: Option<Arc<dyn RecallTraceStore>>,
 }
 
 impl LocalDemandAlignedRecall {
@@ -151,6 +247,7 @@ impl LocalDemandAlignedRecall {
             weights: RecallScoreWeights::default(),
             half_life_ms: DEFAULT_RECENCY_HALF_LIFE_MS,
             source: None,
+            trace_store: None,
         }
     }
 
@@ -163,6 +260,7 @@ impl LocalDemandAlignedRecall {
             weights,
             half_life_ms,
             source: None,
+            trace_store: None,
         }
     }
 
@@ -175,6 +273,7 @@ impl LocalDemandAlignedRecall {
             weights: RecallScoreWeights::default(),
             half_life_ms: DEFAULT_RECENCY_HALF_LIFE_MS,
             source: Some(source),
+            trace_store: None,
         }
     }
 
@@ -191,7 +290,15 @@ impl LocalDemandAlignedRecall {
             weights,
             half_life_ms,
             source: Some(source),
+            trace_store: None,
         }
+    }
+
+    /// Opt into durable decisions. A failed capture fails recall rather than
+    /// handing the caller an apparently replayable but nonexistent receipt.
+    pub fn with_trace_store(mut self, store: Arc<dyn RecallTraceStore>) -> Self {
+        self.trace_store = Some(store);
+        self
     }
 
     /// Score + partition + sort the candidate set. Returns a fully-
@@ -202,15 +309,27 @@ impl LocalDemandAlignedRecall {
     /// - `engrams`: engram candidates, sorted descending
     /// - `composition_hint`: empty placeholder (PR-3b doesn't
     ///   compute stacking order; the composer module owns that)
-    /// - `trace_ref`: deterministic placeholder derived from the
-    ///   query timestamp. PR-3c replaces with a real trace handle
-    ///   the sentinel can replay against.
+    /// - `trace_ref`: nil for this unrecorded pure ranking operation.
+    ///   `recall` with a trace store returns a durable decision handle.
     ///
     /// `now_ms` is passed in (rather than read from
     /// `SystemTime::now`) so callers can replay with snapshotted
     /// clocks — the spec requires replay determinism, and reading
     /// `now()` inside the ranker would break that.
     pub fn rank(&self, now_ms: u64, candidates: Vec<CandidateArtifact>) -> RankedPool {
+        self.rank_borrowed(
+            now_ms,
+            &candidates,
+            RecallTrace(ArtifactId::new(uuid::Uuid::nil())),
+        )
+    }
+
+    fn rank_borrowed(
+        &self,
+        now_ms: u64,
+        candidates: &[CandidateArtifact],
+        trace_ref: RecallTrace,
+    ) -> RankedPool {
         let mut layers: Vec<(LoRALayerRef, RecallScore, ResidencyHint)> = Vec::new();
         let mut experts: Vec<(MoEExpertRef, RecallScore, ResidencyHint)> = Vec::new();
         let mut engrams: Vec<(EngramRef, RecallScore, ResidencyHint)> = Vec::new();
@@ -228,12 +347,14 @@ impl LocalDemandAlignedRecall {
             );
             match c.kind {
                 PageKind::LoRALayer => {
-                    layers.push((LoRALayerRef(c.artifact_id), scored, c.residency))
+                    layers.push((LoRALayerRef(c.artifact_id), scored, c.residency.clone()))
                 }
                 PageKind::MoEExpert => {
-                    experts.push((MoEExpertRef(c.artifact_id), scored, c.residency))
+                    experts.push((MoEExpertRef(c.artifact_id), scored, c.residency.clone()))
                 }
-                PageKind::Engram => engrams.push((EngramRef(c.artifact_id), scored, c.residency)),
+                PageKind::Engram => {
+                    engrams.push((EngramRef(c.artifact_id), scored, c.residency.clone()))
+                }
                 PageKind::KVCache => {
                     // Spec's RankedPool has three sub-pools; KV
                     // cache pages are working-set state, not recall
@@ -271,11 +392,7 @@ impl LocalDemandAlignedRecall {
             experts,
             engrams,
             composition_hint: CompositionHint::default(),
-            // Trace placeholder: deterministic UUID derived from
-            // now_ms so replay-with-same-inputs produces the same
-            // trace_ref. PR-3c replaces with a real RecallTrace
-            // that includes the query hash + weights snapshot.
-            trace_ref: RecallTrace(ArtifactId::new(uuid::Uuid::from_u128(now_ms as u128))),
+            trace_ref,
         }
     }
 
@@ -329,24 +446,47 @@ impl DemandAlignedRecall for LocalDemandAlignedRecall {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        Ok(self.rank(now_ms, candidates))
+        let Some(store) = &self.trace_store else {
+            return Ok(self.rank(now_ms, candidates));
+        };
+        validate_candidates(&candidates)?;
+        RecallScoreWeights::new(
+            self.weights.semantic,
+            self.weights.outcome_history,
+            self.weights.recency,
+            self.weights.tier_proximity,
+            self.weights.provenance_trust,
+        )
+        .map_err(|e| RecallError::ReplayUnavailable {
+            reason: e.to_string(),
+        })?;
+        let trace = RecallTrace(ArtifactId::new(uuid::Uuid::new_v4()));
+        let result = self.rank_borrowed(now_ms, &candidates, trace);
+        let decision = RecallDecision {
+            schema_version: 1,
+            policy_revision: RecallDecision::POLICY_REVISION.into(),
+            now_ms,
+            query: query.clone(),
+            context: context.clone(),
+            weights: self.weights,
+            half_life_ms: self.half_life_ms,
+            candidates,
+            result,
+        };
+        store.save_decision(&decision).await?;
+        Ok(decision.result)
     }
 
-    /// Replay support deferred to a sentinel-owned PR. PR-3c
-    /// returns `RecallError::ScopeUnreachable` with a clear reason
-    /// so callers see a typed refusal rather than silent empty
-    /// pool — per Joel's "never swallow errors" rule. The sentinel
-    /// PR will add a RecallTraceStore that maps RecallTrace →
-    /// snapshotted (weights, candidate_set, now_ms), then replay
-    /// re-ranks deterministically.
-    async fn replay(
-        &self,
-        _trace: &super::recall_trait::RecallTrace,
-    ) -> Result<RankedPool, RecallError> {
-        Err(RecallError::ScopeUnreachable {
-            reason: "replay requires RecallTraceStore (sentinel PR); not yet implemented in PR-3c"
-                .to_string(),
-        })
+    /// Resolve a retained decision and use its original policy, not this
+    /// engine's current configuration or candidate source.
+    async fn replay(&self, trace: &RecallTrace) -> Result<RankedPool, RecallError> {
+        let store = self
+            .trace_store
+            .as_ref()
+            .ok_or_else(|| RecallError::ReplayUnavailable {
+                reason: "recall recording is not configured".into(),
+            })?;
+        store.load_decision(*trace).await?.replay()
     }
 }
 
@@ -631,22 +771,11 @@ mod tests {
         assert!(pool.composition_hint.layer_order_hint.is_empty());
     }
 
-    /// What this catches: trace_ref derives deterministically from
-    /// now_ms. PR-3c replaces with a richer RecallTrace; this test
-    /// pins the current deterministic-by-now contract so replay
-    /// continues to work in the meantime.
+    // What this catches: pure ranking must not advertise a replayable receipt.
     #[test]
-    fn rank_trace_ref_is_deterministic_from_now_ms() {
-        let r = LocalDemandAlignedRecall::new();
-        let pool1 = r.rank(12345, Vec::new());
-        let pool2 = r.rank(12345, Vec::new());
-        assert_eq!(pool1.trace_ref, pool2.trace_ref);
-
-        let pool3 = r.rank(99999, Vec::new());
-        assert_ne!(
-            pool1.trace_ref, pool3.trace_ref,
-            "different now_ms must yield different trace_ref"
-        );
+    fn unrecorded_ranking_has_no_trace_handle() {
+        let pool = LocalDemandAlignedRecall::new().rank(12345, Vec::new());
+        assert!(pool.trace_ref.0.as_uuid().is_nil());
     }
 
     // ─── PR-3c: trait impl + CandidateSource tests ─────────────
@@ -655,7 +784,7 @@ mod tests {
     use crate::genome::recall_trait::{
         CapabilityQuery, DemandAlignedRecall, DomainHint, RecallBudget, RecallContext, RecallTrace,
     };
-    use crate::genome::working_set::PersonaId;
+    use crate::identity::PeerId;
     use parking_lot::Mutex;
 
     /// Stub CandidateSource: returns a pre-set Vec on every call,
@@ -704,8 +833,8 @@ mod tests {
         }
     }
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(100))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(100))
     }
 
     /// What this catches: trait impl exists + is object-safe.
@@ -780,24 +909,89 @@ mod tests {
         assert_eq!(source.fetch_count(), 1, "source still wired");
     }
 
-    /// What this catches: replay returns the typed
-    /// ScopeUnreachable refusal with a clear reason rather than
-    /// silently returning an empty pool. Per Joel's never-swallow-
-    /// errors rule — when the sentinel PR adds the RecallTraceStore,
-    /// this test flips to expect Ok(pool).
+    // What this catches: missing capture is a refusal, never an invented replay.
     #[tokio::test]
-    async fn replay_returns_typed_not_implemented_refusal_in_pr3c() {
+    async fn replay_without_recording_is_explicit() {
         let recall = LocalDemandAlignedRecall::new();
         let trace = RecallTrace(ArtifactId::new(Uuid::nil()));
-        let result = recall.replay(&trace).await;
-        match result {
-            Err(RecallError::ScopeUnreachable { reason }) => {
-                assert!(
-                    reason.contains("RecallTraceStore") || reason.contains("not yet implemented"),
-                    "expected typed not-implemented reason, got: {reason}"
-                );
-            }
-            other => panic!("expected ScopeUnreachable, got {other:?}"),
-        }
+        assert!(matches!(
+            recall.replay(&trace).await,
+            Err(RecallError::ReplayUnavailable { .. })
+        ));
+    }
+
+    // What this catches: real SQLite capture survives an engine replacement,
+    // replays without sourcing candidates, and isolates counterfactual tuning.
+    #[tokio::test]
+    async fn persisted_recall_replays_original_policy_and_compares_adjustments() {
+        let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
+        let store = Arc::new(
+            crate::orm::OrmStore::<RecallDecision>::new(adapter)
+                .await
+                .unwrap(),
+        );
+        let candidates = vec![
+            cand(
+                PageKind::LoRALayer,
+                1,
+                1.0,
+                0.0,
+                ResidencyHint::Hot {
+                    role: TierRole::Fast,
+                },
+            ),
+            cand(
+                PageKind::LoRALayer,
+                2,
+                0.0,
+                1.0,
+                ResidencyHint::Hot {
+                    role: TierRole::Fast,
+                },
+            ),
+        ];
+        let source = StubSource::new(candidates);
+        let recall =
+            LocalDemandAlignedRecall::with_source(source.clone()).with_trace_store(store.clone());
+        let context = RecallContext::cold_start(sample_persona());
+        let result = recall.recall(&sample_query(), &context).await.unwrap();
+        let next = recall.recall(&sample_query(), &context).await.unwrap();
+        assert_ne!(result.trace_ref, next.trace_ref);
+        let different_weights = RecallScoreWeights::new(0.0, 1.0, 0.0, 0.0, 0.0).unwrap();
+        let replacement = LocalDemandAlignedRecall::with_config(different_weights, 1)
+            .with_trace_store(store.clone());
+        assert_eq!(replacement.replay(&result.trace_ref).await.unwrap(), result);
+        assert_eq!(
+            source.fetch_count(),
+            2,
+            "replay must never refetch candidates"
+        );
+        let decision = store.load_decision(result.trace_ref).await.unwrap();
+        let changed = decision
+            .evaluate(different_weights, decision.half_life_ms)
+            .unwrap();
+        assert_ne!(result.layers[0].0, changed.layers[0].0);
+        assert!(
+            changed.trace_ref.0.as_uuid().is_nil(),
+            "a counterfactual is not the recorded decision"
+        );
+        assert_eq!(
+            store
+                .load_decision(result.trace_ref)
+                .await
+                .unwrap()
+                .replay()
+                .unwrap(),
+            result
+        );
+        let mut invalid = decision;
+        invalid.policy_revision = "unavailable-future-policy".into();
+        assert!(invalid.replay().is_err());
+        invalid.policy_revision = RecallDecision::POLICY_REVISION.into();
+        invalid.candidates[0].semantic_factor = f32::NAN;
+        assert!(
+            matches!(invalid.replay(), Err(RecallError::ReplayUnavailable { reason }) if reason.contains("non-finite"))
+        );
+        assert!(store.load_decision(RecallTrace(art(999))).await.is_err());
     }
 }

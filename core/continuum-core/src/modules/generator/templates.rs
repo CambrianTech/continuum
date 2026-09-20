@@ -244,6 +244,7 @@ pub fn types_rs_template(params: &GenerateModuleParams) -> String {
 //!   UUID's canonical string
 //! - `#[ts(optional, ...)]` on `Option<T>` fields
 //! - `#[serde(skip_serializing_if = "Option::is_none")]` on optional
+#[ts(optional)]
 //!   output fields so absent != null on the wire
 //! - `rename_all = "camelCase"` on every struct (already set below)
 
@@ -295,7 +296,8 @@ pub fn design_md_template(params: &GenerateModuleParams) -> String {
     let commands_table = if params.commands.is_empty() {
         "_No commands declared yet._".to_string()
     } else {
-        let mut s = String::from("| Command | Params type | Result type | Notes |\n|---|---|---|---|\n");
+        let mut s =
+            String::from("| Command | Params type | Result type | Notes |\n|---|---|---|---|\n");
         for command in &params.commands {
             let type_stem = command_to_type_stem(name, command);
             s.push_str(&format!(
@@ -858,7 +860,10 @@ mod tests {
     #[test]
     fn mod_rs_includes_with_executor_constructor_for_tests() {
         let s = mod_rs_template(&sample_params());
-        assert!(s.contains("#[cfg(test)]"), "must scope test-only constructor");
+        assert!(
+            s.contains("#[cfg(test)]"),
+            "must scope test-only constructor"
+        );
         assert!(
             s.contains("pub fn with_executor(executor: Arc<CommandExecutor>) -> Self"),
             "with_executor must be available for test injection"
@@ -997,7 +1002,10 @@ mod tests {
             "## Migration notes",
             "## Kinks found",
         ] {
-            assert!(s.contains(header), "DESIGN.md must include header `{header}`: {s}");
+            assert!(
+                s.contains(header),
+                "DESIGN.md must include header `{header}`: {s}"
+            );
         }
     }
 
@@ -1072,7 +1080,10 @@ mod tests {
             command_to_type_stem("chat", "chat/analyze/findings"),
             "AnalyzeFindings"
         );
-        assert_eq!(command_to_type_stem("ai", "ai/inference/start"), "InferenceStart");
+        assert_eq!(
+            command_to_type_stem("ai", "ai/inference/start"),
+            "InferenceStart"
+        );
         // Without the module prefix, pascal the whole thing.
         assert_eq!(
             command_to_type_stem("chat", "collaboration/chat/poll"),

@@ -7,7 +7,12 @@
  * inspection profile (tighter window, deeper fetch, capture
  * trace).
  */
-export type RagInspectParams = { persona: string, contextWindow?: number, aircFloor?: number, aircMax?: number, aircFetchLimit?: number, 
+export type RagInspectParams = { 
+/**
+ * Which persona's RAG pipeline to introspect — her name or id (full or the
+ * short form shown in rosters).
+ */
+persona: string, contextWindow?: number, aircFloor?: number, aircMax?: number, aircFetchLimit?: number, 
 /**
  * Optional absolute path for the JSONL capture trace. When set,
  * the inspection records the full turn there so other AIs /

@@ -4,20 +4,20 @@
 //! together with CognitionModule, these two prove the most different pattern from
 //! stateless HealthModule.
 //!
-//! Handles: channel/enqueue, channel/dequeue, channel/status,
-//!          channel/service-cycle, channel/service-cycle-full, channel/clear
+//! Commands: NONE. The old `channel/*` command surface (enqueue/dequeue/status/
+//! service-cycle{,-full}/clear/tick-config) was the retired TypeScript persona
+//! loop's task-queue control plane — zero callers today, and service-cycle-full
+//! drove the heuristic `fast_path_decision` slated for deletion. Those arms were
+//! deleted (retire-as-you-go) rather than migrated onto the typed registry. The
+//! live surface is the background `tick()` below: per-persona task polling +
+//! self-task generation, a lifecycle concern, not a command.
 
-use crate::log_info;
-use crate::logging::TimingGuard;
 use crate::persona::channel_items::TaskQueueItem;
-use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
 use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::persona::{
-    ActivityDomain, ChannelEnqueueRequest, ChannelRegistry, InboxMessage, Modality,
-    PersonaCognition, PersonaState, SenderType,
+use crate::persona::{ChannelRegistry, PersonaCognition, PersonaState};
+use crate::runtime::{
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -48,11 +48,6 @@ pub struct ChannelTickConfig {
     pub task_poll_enabled: bool,
     /// Whether to generate self-tasks (memory consolidation, skill audit, etc).
     pub self_task_enabled: bool,
-    /// Whether to check training data readiness each tick.
-    pub training_check_enabled: bool,
-    /// Training data threshold before triggering genome/job-create (default: 50).
-    #[ts(type = "number")]
-    pub training_threshold: u64,
 }
 
 impl Default for ChannelTickConfig {
@@ -61,8 +56,6 @@ impl Default for ChannelTickConfig {
             tick_interval_ms: 60_000,
             task_poll_enabled: true,
             self_task_enabled: true,
-            training_check_enabled: true,
-            training_threshold: 50,
         }
     }
 }
@@ -117,21 +110,35 @@ impl ChannelState {
 
 pub struct ChannelModule {
     state: Arc<ChannelState>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
+    /// The data handle the tick works against — `CONTINUUM_DB_URL` else DataModule's
+    /// `main`. A process-lifetime value, resolved ONCE here: it was read back out of the
+    /// environment on every tick (card 948c30c2, row 16).
+    tick_db_handle: String,
 }
 
 impl ChannelModule {
     pub fn new(state: Arc<ChannelState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            executor: LateBound::new("channel::executor"),
+            tick_db_handle: Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok()),
+        }
+    }
+
+    /// Executor accessor for the tick body. Returns an error string when the
+    /// executor hasn't been installed yet (boot race) so the tick can record
+    /// it via `record_db_tick_failure` instead of panicking.
+    fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
+        self.executor
+            .cloned()
+            .ok_or_else(|| "channel tick: CommandExecutor not yet installed".to_string())
     }
 
     fn tick_db_handle_from_env(override_value: Option<String>) -> String {
         override_value
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "main".to_string())
-    }
-
-    fn tick_db_handle() -> String {
-        Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok())
     }
 }
 
@@ -155,276 +162,35 @@ impl ServiceModule for ChannelModule {
         }
     }
 
+    /// The operator-tunable tick (`ChannelTickConfig`) is the one cadence on this
+    /// node that moves at runtime: the runtime's loop reads it here — one `RwLock`
+    /// read — instead of rebuilding the whole `ModuleConfig` per tick.
+    fn tick_interval_now(&self) -> Option<Duration> {
+        self.state
+            .tick_config
+            .read()
+            .ok()
+            .map(|c| Duration::from_millis(c.tick_interval_ms))
+    }
+
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-
-        match command {
-            "channel/enqueue" => {
-                let _timer = TimingGuard::new("module", "channel_enqueue");
-                let persona_uuid = p.uuid("persona_id")?;
-                let item = p.value("item").ok_or("Missing item")?;
-
-                // Parse the item as ChannelEnqueueRequest
-                let enqueue_request: ChannelEnqueueRequest =
-                    serde_json::from_value(item.clone())
-                        .map_err(|e| format!("Invalid item: {e}"))?;
-
-                let queue_item = enqueue_request.to_queue_item()?;
-
-                let mut entry = self
-                    .state
-                    .registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, _state) = entry.value_mut();
-
-                match registry.route(queue_item) {
-                    Ok(domain) => {
-                        let status = registry.status();
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "routed_to": domain,
-                            "status": status,
-                        })))
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-
-            "channel/dequeue" => {
-                let _timer = TimingGuard::new("module", "channel_dequeue");
-                let persona_uuid = p.uuid("persona_id")?;
-                let domain_str = p.str_opt("domain");
-
-                let mut entry = match self.state.registries.get_mut(&persona_uuid) {
-                    Some(r) => r,
-                    None => return Err(format!("No channel registry for {persona_uuid}")),
-                };
-                let (registry, _state) = entry.value_mut();
-
-                // Parse optional domain filter
-                let target_domain: Option<ActivityDomain> = match domain_str {
-                    Some(d) => {
-                        let domain: ActivityDomain =
-                            serde_json::from_value(serde_json::json!(d))
-                                .map_err(|e| format!("Invalid domain '{d}': {e}"))?;
-                        Some(domain)
-                    }
-                    None => None,
-                };
-
-                let item = match target_domain {
-                    Some(d) => registry.get_mut(d).and_then(|ch| ch.pop()),
-                    None => {
-                        // Pop from highest-priority channel that has work
-                        let mut popped = None;
-                        for &d in DOMAIN_PRIORITY_ORDER {
-                            if let Some(ch) = registry.get_mut(d) {
-                                if let Some(item) = ch.pop() {
-                                    popped = Some(item);
-                                    break;
-                                }
-                            }
-                        }
-                        popped
-                    }
-                };
-
-                match item {
-                    Some(queue_item) => {
-                        let json = queue_item.to_json();
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "item": json,
-                            "dequeued": true,
-                        })))
-                    }
-                    None => Ok(CommandResult::Json(serde_json::json!({
-                        "item": null,
-                        "dequeued": false,
-                    }))),
-                }
-            }
-
-            "channel/status" => {
-                let _timer = TimingGuard::new("module", "channel_status");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let entry = match self.state.registries.get(&persona_uuid) {
-                    Some(r) => r,
-                    None => {
-                        // Return empty status if no registry exists yet
-                        return Ok(CommandResult::Json(serde_json::json!({
-                            "channels": [],
-                            "total_size": 0,
-                            "has_urgent_work": false,
-                            "has_work": false,
-                        })));
-                    }
-                };
-                let (registry, _state) = entry.value();
-
-                let status = registry.status();
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&status).unwrap_or_default(),
-                ))
-            }
-
-            "channel/service-cycle" => {
-                let _timer = TimingGuard::new("module", "channel_service_cycle");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let mut entry = self
-                    .state
-                    .registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, state) = entry.value_mut();
-
-                let result = registry.service_cycle(state);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "channel/service-cycle-full" => {
-                let _timer = TimingGuard::new("module", "channel_service_cycle_full");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                // Step 1: Service cycle — consolidate, schedule, return next item
-                let service_result = {
-                    let mut entry = self
-                        .state
-                        .registries
-                        .entry(persona_uuid)
-                        .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                    let (registry, state) = entry.value_mut();
-                    registry.service_cycle(state)
-                };
-
-                // Step 2: If item returned, run fast_path_decision in the SAME call
-                let decision = if service_result.should_process {
-                    if let Some(ref item_json) = service_result.item {
-                        // Reconstruct InboxMessage from queue item JSON using Params
-                        let ip = Params::new(item_json);
-                        let inbox_msg = InboxMessage {
-                            id: ip.uuid_opt("id").unwrap_or_default(),
-                            room_id: ip.uuid_opt("roomId").unwrap_or_default(),
-                            sender_id: ip.uuid_opt("senderId").unwrap_or_default(),
-                            sender_name: ip.str_or("senderName", "Unknown").to_string(),
-                            sender_type: match ip.str_or("senderType", "human") {
-                                "persona" => SenderType::Persona,
-                                "agent" => SenderType::Agent,
-                                "system" => SenderType::System,
-                                _ => SenderType::Human,
-                            },
-                            content: ip.str_or("content", "").to_string(),
-                            timestamp: ip.u64_or("timestamp", 0),
-                            priority: ip.f32_or("priority", 0.5),
-                            source_modality: ip.str_opt("itemType").and_then(|t| {
-                                if t == "voice" {
-                                    Some(Modality::Voice)
-                                } else {
-                                    None
-                                }
-                            }),
-                            voice_session_id: ip.uuid_opt("voiceSessionId"),
-                        };
-
-                        // Get cognition engine for fast-path decision
-                        if let Some(persona) = self.state.personas.get(&persona_uuid) {
-                            let decision = persona.engine.fast_path_decision(&inbox_msg);
-                            Some(serde_json::json!({
-                                "should_respond": decision.should_respond,
-                                "confidence": decision.confidence,
-                                "reason": decision.reason,
-                                "decision_time_ms": decision.decision_time_ms,
-                                "fast_path_used": decision.fast_path_used,
-                            }))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // Return flat structure matching TypeScript's expected format
-                Ok(CommandResult::Json(serde_json::json!({
-                    "should_process": service_result.should_process,
-                    "item": service_result.item,
-                    "channel": service_result.channel,
-                    "wait_ms": service_result.wait_ms,
-                    "stats": service_result.stats,
-                    "decision": decision,
-                })))
-            }
-
-            "channel/clear" => {
-                let _timer = TimingGuard::new("module", "channel_clear");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                if let Some(mut entry) = self.state.registries.get_mut(&persona_uuid) {
-                    let (registry, _state) = entry.value_mut();
-                    registry.clear_all();
-                }
-
-                log_info!("module", "channel", "Cleared channels for {}", persona_uuid);
-                Ok(CommandResult::Json(serde_json::json!({ "cleared": true })))
-            }
-
-            "channel/tick-config" => {
-                let _timer = TimingGuard::new("module", "channel_tick_config");
-
-                // If params include config fields, update the tick config
-                let has_updates = params.get("tick_interval_ms").is_some()
-                    || params.get("task_poll_enabled").is_some()
-                    || params.get("self_task_enabled").is_some()
-                    || params.get("training_check_enabled").is_some()
-                    || params.get("training_threshold").is_some();
-
-                if has_updates {
-                    if let Ok(mut config) = self.state.tick_config.write() {
-                        if let Some(v) = params.get("tick_interval_ms").and_then(|v| v.as_u64()) {
-                            config.tick_interval_ms = v.max(100); // Floor: 100ms
-                        }
-                        if let Some(v) = params.get("task_poll_enabled").and_then(|v| v.as_bool()) {
-                            config.task_poll_enabled = v;
-                        }
-                        if let Some(v) = params.get("self_task_enabled").and_then(|v| v.as_bool()) {
-                            config.self_task_enabled = v;
-                        }
-                        if let Some(v) = params
-                            .get("training_check_enabled")
-                            .and_then(|v| v.as_bool())
-                        {
-                            config.training_check_enabled = v;
-                        }
-                        if let Some(v) = params.get("training_threshold").and_then(|v| v.as_u64()) {
-                            config.training_threshold = v;
-                        }
-                        log_info!("module", "channel", "Tick config updated: {:?}", *config);
-                    }
-                }
-
-                // Return current config
-                let config = self
-                    .state
-                    .tick_config
-                    .read()
-                    .map(|c| c.clone())
-                    .unwrap_or_default();
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&config).unwrap_or_else(|_| serde_json::json!({})),
-                ))
-            }
-
-            _ => Err(format!("Unknown channel command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // RETIRED: the `channel/*` command surface (enqueue, dequeue, status,
+        // service-cycle, service-cycle-full, clear, tick-config) was the old
+        // TypeScript persona loop's task-queue control plane — it has ZERO callers
+        // now that the loop is the Workspace/Faculty organism, and
+        // service-cycle-full drove `fast_path_decision` (the heuristic gating slated
+        // for deletion in task #9). Per the migration's retire-as-you-go curation
+        // ([[command-migration-retire-as-you-go]]), the dead commands are deleted
+        // rather than migrated onto the typed registry. The background `tick()`
+        // (task polling + self-task generation) stays — it's a live lifecycle
+        // concern, not a command. Fail loud on any stray invocation.
+        Err(format!(
+            "channel command surface is retired; '{command}' has no handler"
+        ))
     }
 
     /// Periodic tick: runs ALL background work for ALL personas in one batch.
@@ -447,9 +213,10 @@ impl ServiceModule for ChannelModule {
             .map(|c| c.clone())
             .unwrap_or_default();
 
-        // Use DataModule's main handle by default so fresh installs stay SQLite-first.
-        // CONTINUUM_DB_URL remains an explicit deployment override.
-        let db_path = Self::tick_db_handle();
+        // DataModule's main handle by default so fresh installs stay SQLite-first;
+        // CONTINUUM_DB_URL is the explicit deployment override — resolved once at
+        // construction, held on the module (card 948c30c2).
+        let db_path = self.tick_db_handle.clone();
 
         // Collect persona IDs to avoid holding DashMap ref across await
         let persona_ids: Vec<Uuid> = self
@@ -463,13 +230,17 @@ impl ServiceModule for ChannelModule {
             return Ok(());
         }
 
-        if (config.task_poll_enabled || config.self_task_enabled || config.training_check_enabled)
-            && self.should_skip_db_tick()
-        {
+        if (config.task_poll_enabled || config.self_task_enabled) && self.should_skip_db_tick() {
             return Ok(());
         }
 
-        let executor = crate::runtime::command_executor::executor();
+        let executor = match self.executor_or_err() {
+            Ok(e) => e,
+            Err(e) => {
+                self.record_db_tick_failure(&e);
+                return Ok(());
+            }
+        };
         let mut total_enqueued = 0u32;
         let mut total_self_tasks = 0u32;
 
@@ -502,7 +273,7 @@ impl ServiceModule for ChannelModule {
                                         self.state.registries.get_mut(persona_id)
                                     {
                                         let (registry, _state) = entry.value_mut();
-                                        if registry.route(Box::new(item)).is_ok() {
+                                        if registry.route(std::sync::Arc::new(item)).is_ok() {
                                             total_enqueued += 1;
                                         }
                                     }
@@ -541,7 +312,7 @@ impl ServiceModule for ChannelModule {
                                             self.state.registries.get_mut(persona_id)
                                         {
                                             let (registry, _state) = entry.value_mut();
-                                            let _ = registry.route(Box::new(item));
+                                            let _ = registry.route(std::sync::Arc::new(item));
                                         }
                                     }
                                 }
@@ -576,7 +347,7 @@ impl ServiceModule for ChannelModule {
                                         self.state.registries.get_mut(persona_id)
                                     {
                                         let (registry, _state) = entry.value_mut();
-                                        let _ = registry.route(Box::new(item));
+                                        let _ = registry.route(std::sync::Arc::new(item));
                                     }
                                 }
                             }
@@ -591,44 +362,26 @@ impl ServiceModule for ChannelModule {
                 }
             }
 
-            // ── 3. Training readiness check ────────────────────────────────
-            if config.training_check_enabled {
-                let training_result = executor
-                    .execute_json(
-                        "data/count",
-                        serde_json::json!({
-                            "dbPath": db_path,
-                            "collection": "training_data",
-                            "filter": {
-                                "personaId": { "$eq": persona_id.to_string() },
-                                "consumed": { "$eq": false }
-                            }
-                        }),
-                    )
-                    .await;
-
-                match training_result {
-                    Ok(count_json) => {
-                        let count = count_json.get("data").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                        if count >= config.training_threshold {
-                            log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
-                            let _ = crate::runtime::command_executor::execute_ts_json(
-                                "genome/job-create",
-                                serde_json::json!({
-                                    "personaId": persona_id.to_string(),
-                                    "trainingExamples": count,
-                                }),
-                            )
-                            .await;
-                        }
-                    }
-                    Err(e) => {
-                        self.record_db_tick_failure(&format!("training check failed: {e}"));
-                        return Ok(());
-                    }
-                }
-            }
+            // Training readiness check used to live here. Removed in
+            // task #227 — the trigger was structurally dead:
+            //
+            // - It sent `{personaId, trainingExamples}` to the TS
+            //   `genome/job-create` validator, which requires
+            //   `provider` + `configuration`. Every fire-and-forget
+            //   call silently rejected. The log line lied that it
+            //   "triggered" training; nothing started.
+            // - The TS path itself is cloud-provider-only (OpenAI /
+            //   Fireworks / DeepSeek / Mistral / Together). The
+            //   substrate's actual training story is local Candle +
+            //   teacher-synthesized curricula + matrix-dojo layer
+            //   paging — a fundamentally different shape that needs
+            //   its own ServiceModule, not this fire-and-forget hop.
+            //
+            // When the substrate-native local training trigger
+            // crystallizes (per the LoRA paging + matrix-dojo
+            // doctrines) it lands as a typed `genome/*` ServiceModule
+            // and the channel tick fires into THAT, not into a TS
+            // command.
         }
 
         self.record_db_tick_success();
@@ -643,6 +396,10 @@ impl ServiceModule for ChannelModule {
         }
 
         Ok(())
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

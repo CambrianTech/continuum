@@ -42,7 +42,7 @@
 
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
-use crate::persona::profile_builder::build_profile;
+use crate::persona::profile_builder::{build_profile, ServingParams};
 use crate::persona::role_template::RoleId;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -68,6 +68,11 @@ pub struct RosterEntry {
     /// `model_per_tier` table; future refinements via #123 ORM data
     /// substitute this without changing the planner contract.
     pub model_id: String,
+    /// Serving-plan-derived backend knobs (lanes + host-fit served context
+    /// window) for this persona, from the serving daemon's ServingPlan (honest
+    /// host budget + footprint). Grouped per [[pass-the-model-struct-no-param-hell]]
+    /// and threaded as one unit into `build_profile`.
+    pub serving: ServingParams,
 }
 
 /// Materialize a spawn plan from a roster + tier descriptor.
@@ -95,6 +100,7 @@ pub fn derive_spawn_plan(
                 tier_id,
                 tier_category,
                 &entry.model_id,
+                entry.serving,
                 registry,
             )
         })
@@ -117,7 +123,13 @@ mod tests {
             slug,
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"fake gguf").expect("create tempfile");
+        // Must be a STRUCTURALLY VALID empty GGUF, not arbitrary bytes:
+        // `Registry::from_catalog` hydrates every resolved GGUF's header at
+        // load (#74), and `b"fake gguf"` fails loud with `unknown magic` the
+        // moment hydration reads it. `write_empty_gguf` is the one canonical
+        // "a model is present here" stand-in — parseable, zero metadata, so
+        // the row's hand-authored fields stand unchanged.
+        crate::model_registry::artifacts::write_empty_gguf(&path);
         path
     }
 
@@ -131,8 +143,11 @@ mod tests {
             api_key_env: None,
             default_model: None,
             model_prefixes: Vec::new(),
+            capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         };
         let qwen25_05b = Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
             name: Some("Qwen2.5 0.5B Instruct".to_string()),
             provider: "llamacpp-local".to_string(),
@@ -150,11 +165,16 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: Some(make_fake_gguf_tempfile("lcd")),
             chat_template: Some("{% for m in messages %}".to_string()),
             stop_sequences: vec!["<|im_end|>".to_string()],
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
+            parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
+            persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         };
         Arc::new(
             Registry::from_catalog(vec![qwen25_05b], vec![llamacpp_provider])
@@ -162,12 +182,22 @@ mod tests {
         )
     }
 
+    /// Stand-in served window the ServingPlan would compute for the host.
+    /// The planner is unit-tested in `serving_plan.rs`; here we only assert
+    /// the value threads through unchanged for local models.
+    // context-budget-exempt: a TEST fixture stating the window it measures against — the pattern this guard asks for
+    const TEST_SERVE_WINDOW: u32 = 8192;
+
     fn helper_paige() -> RosterEntry {
         RosterEntry {
             role: RoleId::Helper,
             persona_id: Uuid::nil(),
             persona_name: "Paige".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            serving: ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
         }
     }
 
@@ -177,6 +207,10 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Pax".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            serving: ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
         }
     }
 
@@ -197,7 +231,9 @@ mod tests {
         let helper = plan[0].as_ref().expect("Helper plan").clone();
         assert_eq!(helper.persona_name, "Paige");
         assert_eq!(helper.tier_category, HwTierCategory::Compat);
-        assert_eq!(helper.context_length, 2048);
+        // Local-served → exactly the planner's served window (task #50),
+        // threaded through unchanged (not a per-tier clamp, task #46).
+        assert_eq!(helper.context_length, TEST_SERVE_WINDOW);
         assert_eq!(helper.n_gpu_layers, 0);
         let coder = plan[1].as_ref().expect("Coder plan").clone();
         assert_eq!(coder.persona_name, "Pax");
@@ -271,20 +307,18 @@ mod tests {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::Compat);
             assert_eq!(prof.n_gpu_layers, 0);
-            assert_eq!(prof.context_length, 2048);
+            // Local-served → the planner's served window, threaded through (task #50).
+            assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
 
-        let mseries_plan = derive_spawn_plan(
-            &roster,
-            "m1_uma_8gb",
-            HwTierCategory::MSeries,
-            &registry,
-        );
+        let mseries_plan =
+            derive_spawn_plan(&roster, "m1_uma_8gb", HwTierCategory::MSeries, &registry);
         for p in &mseries_plan {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::MSeries);
             assert_eq!(prof.n_gpu_layers, -1);
-            assert_eq!(prof.context_length, 4096);
+            // Local-served → the served window the roster carried (task #50).
+            assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
     }
 }

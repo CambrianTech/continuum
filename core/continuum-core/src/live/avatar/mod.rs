@@ -38,6 +38,7 @@ pub mod render_loop;
 pub mod renderer;
 pub mod selection;
 pub mod types;
+pub mod video_pump;
 
 // Re-export everything at the module level for backward compatibility.
 // Call sites use `crate::live::avatar::RgbaFrame`, etc.
@@ -66,6 +67,7 @@ pub use selection::{
     select_dynamic_avatar, select_from_catalog, select_from_catalog_by_identity,
 };
 pub use types::*;
+pub use video_pump::spawn_avatar_video_pump;
 
 #[cfg(test)]
 pub use selection::reset_allocation;

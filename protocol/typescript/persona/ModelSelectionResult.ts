@@ -21,6 +21,11 @@ adapter_name?: string,
  */
 trait_used?: string, 
 /**
+ * Signature similarity that carried the pick (rung 0 only) — observability
+ * for the distance rung, absent on every other tier.
+ */
+similarity?: number, 
+/**
  * How long the selection took (microseconds).
  */
 decision_time_us: number, };

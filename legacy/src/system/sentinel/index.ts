@@ -1,0 +1,81 @@
+/**
+ * Sentinel System - Pipeline Execution in Rust
+ *
+ * All sentinel execution happens in Rust SentinelModule.
+ * This module exports types, definition utilities, and the entity class.
+ */
+
+// Model selection types
+export { ModelCapacity, ModelProvider } from './ModelProvider';
+export type { ModelConfig } from './ModelProvider';
+
+// Portable definitions (JSON-serializable)
+export {
+  SentinelBuilder,
+  validateDefinition,
+  type SentinelDefinition,
+  type SentinelDefinitionBase,
+  type SentinelEntity,        // Data interface (used by commands for plain objects)
+  type SentinelExecutionResult,
+  // Pipeline types
+  type PipelineSentinelDefinition,
+  type LoopConfig,
+  type SentinelTrigger,
+  type SentinelSafety,
+  type SentinelStep,
+  type CommandStep,
+  type LLMStep,
+  type ConditionStep,
+  type WatchStep,
+  type SentinelSpawnStep,
+  type EmitStep,
+  type ParallelStep,
+  type SentinelRule,
+} from './SentinelDefinition';
+
+// Entity class (proper ORM entity for EntityRegistry + database schema)
+// Commands use the SentinelEntity interface above for plain objects.
+// EntityRegistry uses this class for decorator metadata / schema.
+export { SentinelEntity as SentinelEntityClass } from './entities/SentinelEntity';
+export {
+  DEFAULT_ESCALATION_RULES,
+  VALID_SENTINEL_STATUSES,
+  type EscalationRule,
+  type EscalationCondition,
+  type EscalationAction,
+  type EscalationPriority,
+  type SentinelStatus,
+} from './entities/SentinelEntity';
+
+// Escalation is now substrate-pure: when a sentinel hits a terminal
+// state the Rust SentinelModule calls
+// `core/continuum-core/src/modules/sentinel/escalation.rs::dispatch`
+// directly. The persona's inbox + memory writes happen via data/*
+// commands that already live in Rust. Task #225 removed the TS
+// SentinelEscalationService + the sentinel/escalate command;
+// no TS-side polling or push-receiver remains.
+
+// Trigger service (automatic sentinel execution: event, cron, immediate)
+export {
+  initializeSentinelTriggers,
+  shutdownSentinelTriggers,
+  getActiveTriggerCount,
+  listActiveTriggers,
+  parseCronSchedule,
+} from './SentinelTriggerService';
+
+// Event bridge (Rust sentinel events → TypeScript Events)
+export {
+  sentinelEventBridge,
+  initializeSentinelEventBridge,
+  shutdownSentinelEventBridge,
+} from './SentinelEventBridge';
+
+// Chat bridge (sentinel events → chat room messages)
+export {
+  initializeSentinelChatBridge,
+  announceSentinelStart,
+} from './SentinelChatBridge';
+
+// Pipeline template registry
+export { TemplateRegistry, type TemplateInfo } from './pipelines/TemplateRegistry';

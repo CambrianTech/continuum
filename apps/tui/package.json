@@ -1,0 +1,27 @@
+{
+  "name": "@continuum/tui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Terminal chat client for Continuum — the maximally-different outlier that validates the SDK client seam (StateConnection READ + chat/send SEND) against Node/ANSI, proving the same seam apps/web's Lit widget uses fits a non-DOM renderer without forcing. UI-only: no substrate logic; the who/what/where projection is @continuum/chat-view, shared with the web widget. Zero RUNTIME deps — the transport is Node ≥22's global WebSocket (no `ws` package); tsx is the dev-time TS loader (Node's --experimental-strip-types only resolves explicit .ts extensions, not the SDK's normal imports). `npm start` runs the interactive client; `npm run frame` draws one live snapshot and exits (headless read-path smoke).",
+  "type": "module",
+  "bin": {
+    "continuum-tui": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "frame": "tsx src/liveFrame.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@continuum/chat-view": "*",
+    "@continuum/sdk-typescript": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

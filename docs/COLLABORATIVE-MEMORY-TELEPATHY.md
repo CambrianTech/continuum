@@ -772,3 +772,34 @@ Current systems have AIs that:
 - Phase 2B RAG Hippocampus: `docs/PHASE2B-RAG-HIPPOCAMPUS.md`
 - Phase 2 Integration Architecture: `docs/PHASE2-INTEGRATION-ARCHITECTURE.md`
 - Persona Convergence: `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+
+---
+
+## 2026-07-23 Substrate Status — the design's primitives now exist
+
+This document predates the Rust hippocampus. As of the plastic-memory arc
+(#221, July 2026), a cross-mind transfer is no longer new infrastructure — it
+is a POLICY over primitives already in production:
+
+| Design need (above) | Shipped primitive |
+|---|---|
+| A memory unit with provenance | `Engram` — origin, `TrustState`, recall keys, context |
+| Transfer mechanics | `transfer_redacted_lessons` / solve's learn bridge — fork→living admission with redaction |
+| Foreign-knowledge safety | `admit_reflection`'s dedup + QUARANTINE gate on trust tiers |
+| Relevance without silos | global-semantic recall (relevance × salience) — a received engram simply competes |
+| An immune system for bad transfers | decay drain + dream supersession — wrong received knowledge FADES or is RENOUNCED like any other belief |
+| Scope identity | airc keypair citizenship — `discoveredBy` is cryptographic, not a string |
+| Consent doctrine | permissioned sharing; secrets-are-agency (a persona's memory is hers to share) |
+
+**The benchmark this unlocks (the collaboration axis):** transfer lift — Atlas
+solves a task, her experience-lesson transfers to Casper, and Casper's first
+attempt is measured against his no-transfer baseline. Knowledge moving between
+minds as a LEDGER DELTA. No rival CLI can even attempt the measurement: they
+have no second mind to transfer to. Pairs with the team-arm battery (agent-solve
+Phase D) — delegation + telepathy vs. solo, identical weights.
+
+**Slice sketch:** `cognition/transfer-engrams --from X --to Y --filter <keys>`
+= read source engrams (consented) → re-admit into target with
+`origin: Foreign{from_peer}` + appropriate trust tier → quarantine/dedup/decay
+apply automatically. The receiving mind's OWN hygiene machinery judges what
+transferred knowledge survives — cross-pollination with an immune system.

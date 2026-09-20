@@ -98,6 +98,59 @@ pub fn git_diff_ref(workspace_root: &Path, reference: &str) -> Result<String, St
     run_git(workspace_root, &["diff", reference])
 }
 
+/// The `owner/name` board key this checkout belongs to, read from `origin`.
+///
+/// The work board keys cards by repo, and that key is a FACT about the checkout —
+/// not a string a caller should have to retype. `benchmark/dispatch` used to infer it
+/// from whatever cards already sat on the board, which worked only while every run
+/// shared one permanent board; once a run gets its own fresh room there are no cards
+/// to infer from, and the inference had to come from the real thing instead.
+///
+/// Returns `None` rather than erroring: not every workspace has an `origin` (a fresh
+/// `git init`, a local-only clone), and a caller that can still pass `repo` explicitly
+/// should get that chance before anything fails.
+pub fn origin_repo_slug(workspace_root: &Path) -> Option<String> {
+    let url = run_git(workspace_root, &["remote", "get-url", "origin"]).ok()?;
+    repo_slug_from_remote_url(url.trim())
+}
+
+/// Parse `owner/name` out of a git remote URL — the part that actually varies and
+/// therefore the part worth testing.
+///
+/// Handles the three forms a clone can carry:
+/// - `https://github.com/owner/name.git`
+/// - `git@github.com:owner/name.git` (scp-style, no scheme, `:` separator)
+/// - `ssh://git@github.com/owner/name`
+///
+/// Host-agnostic on purpose: the board key is `owner/name`, and a GitLab or
+/// self-hosted remote produces exactly as valid a key as a GitHub one. Takes the LAST
+/// two path segments so deeper hosting paths (GitLab subgroups) still yield the
+/// project's own `group/name`.
+pub fn repo_slug_from_remote_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    // Strip scheme, then any `user@host` prefix, leaving a host-relative path. The
+    // scp-style form uses `:` where the others use `/`, so normalize that first.
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let after_host = match after_scheme.split_once(':') {
+        // scp-style `git@host:owner/name` — everything after the colon is the path.
+        Some((_, path)) if !path.starts_with("//") => path,
+        _ => after_scheme.split_once('/').map_or("", |(_, path)| path),
+    };
+    let path = after_host.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+
+    let mut segments = path.rsplit('/').filter(|s| !s.is_empty());
+    let name = segments.next()?;
+    let owner = segments.next()?;
+    if name.is_empty() || owner.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{name}"))
+}
+
 /// Get git log (last N commits, one-line format).
 pub fn git_log(workspace_root: &Path, count: u32) -> Result<String, String> {
     run_git(
@@ -130,6 +183,75 @@ pub fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String
 /// Push the current branch to a remote.
 ///
 /// Defaults to `origin` if remote is empty.
+/// Apply a unified diff to the working tree (`git apply`). `check_only` runs
+/// `git apply --check` — validate without touching files. The patch arrives on
+/// stdin so peer-shared diffs of any size apply without temp files. This is the
+/// RECEIVING end of diffs-over-the-room: one citizen `code/git/diff`s, posts the
+/// patch, another applies it — the consolidation verb the Conway team asked for
+/// (2026-07-11) before the full branch/merge rails exist.
+pub fn git_apply(workspace_root: &Path, patch: &str, check_only: bool) -> Result<String, String> {
+    use std::io::Write;
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    if check_only {
+        args.push("--check");
+    }
+    let mut child = Command::new("git")
+        .args(&args)
+        .current_dir(workspace_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to run git apply: {e}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("git apply stdin unavailable")?
+        .write_all(patch.as_bytes())
+        .map_err(|e| format!("failed to write patch to git apply: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git apply did not exit: {e}"))?;
+    if out.status.success() {
+        Ok(if check_only {
+            "patch applies cleanly (checked, not applied)".to_string()
+        } else {
+            "patch applied".to_string()
+        })
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Ensure `workspace_root` is a git repository: no-op when `.git` exists;
+/// otherwise `git init` + an initial commit of whatever is present, so every
+/// citizen workspace is diff-able/apply-able from birth
+/// ([[workspace-is-a-cow-diff-from-shared-always-git]]). Loud Err if git
+/// itself is unavailable — a workspace that silently can't version work is
+/// the kind of quiet defect the jobs-ledger taught us to refuse.
+pub fn git_init_if_needed(workspace_root: &Path) -> Result<bool, String> {
+    if workspace_root.join(".git").exists() {
+        return Ok(false);
+    }
+    run_git(workspace_root, &["init"]).map_err(|e| format!("git init failed: {e}"))?;
+    // Identity for the initial commit: repo-local, never touching global config.
+    let _ = run_git(
+        workspace_root,
+        &["config", "user.email", "citizen@continuum.local"],
+    );
+    let _ = run_git(
+        workspace_root,
+        &["config", "user.name", "continuum-citizen"],
+    );
+    let _ = run_git(workspace_root, &["add", "-A"]);
+    // An empty dir still gets a root commit so diffs have a base.
+    let _ = run_git(
+        workspace_root,
+        &["commit", "--allow-empty", "-m", "workspace: initial state"],
+    );
+    Ok(true)
+}
+
 pub fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<String, String> {
     let remote = if remote.is_empty() { "origin" } else { remote };
     let mut args = vec!["push", remote];
@@ -137,6 +259,184 @@ pub fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<Str
         args.push(branch);
     }
     run_git(workspace_root, &args)
+}
+
+/// Outcome of a [`git_sync_from_shared`] refresh — drives the "notify" the caller
+/// surfaces to the persona (Joel: "preserve and notify… eventually just learn this").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSyncReport {
+    /// True when new shared commits were actually merged in (workspace changed).
+    pub synced: bool,
+    /// Short human/persona-readable summary of what happened.
+    pub summary: String,
+}
+
+/// Bring a citizen workspace CURRENT with the shared checkout WITHOUT destroying
+/// the persona's own work — the self-heal for
+/// [[citizen-workspaces-are-stale-one-time-clones]]. Citizen workspaces are
+/// `cp -cR` clones of the shared checkout (including its `.git`), so they share
+/// history with shared; but `ensure_citizen_layer` never refreshed them, so they
+/// drifted stale (one froze before the `workers/→core/` restructure). Because the
+/// histories are related, a fetch + merge brings the framework current while
+/// KEEPING the persona's commits.
+///
+/// Preserve-first (Joel: "preserve and notify"):
+///  1. autocommit any uncommitted persona work, so a merge can't lose it and it
+///     survives on the persona's own history.
+///  2. `git fetch <shared> HEAD` — shared's current HEAD into FETCH_HEAD.
+///  3. `git merge -X theirs --no-edit --allow-unrelated-histories FETCH_HEAD` —
+///     shared wins framework-file conflicts (the persona shouldn't diverge the
+///     framework); the persona's OWN new files are untouched; their commits stay
+///     in history. `-X theirs` is deterministic — never drops to an interactive
+///     conflict. On a merge that truly can't complete we `--abort` so the
+///     workspace is never left half-merged, and surface the cause LOUD.
+///
+/// Returns whether anything changed (+ a summary) so the caller can drop the
+/// teaching note only when there was actually a refresh.
+pub fn git_sync_from_shared(
+    workspace_root: &Path,
+    shared_checkout: &Path,
+) -> Result<GitSyncReport, String> {
+    // 1. Preserve: commit in-flight persona work before merging.
+    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).unwrap_or_default();
+    if !porcelain.trim().is_empty() {
+        let _ = run_git(workspace_root, &["add", "-A"]);
+        let _ = run_git(
+            workspace_root,
+            &[
+                "commit",
+                "-m",
+                "workspace: autosave persona work before shared sync",
+            ],
+        );
+    }
+    let before = run_git(workspace_root, &["rev-parse", "HEAD"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    // 2. Fetch shared's current HEAD (a filesystem path is a valid git remote).
+    let shared = shared_checkout.to_string_lossy();
+    run_git(
+        workspace_root,
+        &["fetch", "--no-tags", shared.as_ref(), "HEAD"],
+    )
+    .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
+
+    // 3. Merge shared in — shared wins framework conflicts, persona files kept.
+    if let Err(e) = run_git(
+        workspace_root,
+        &[
+            "merge",
+            "--no-edit",
+            "--allow-unrelated-histories",
+            "-X",
+            "theirs",
+            "FETCH_HEAD",
+        ],
+    ) {
+        // Two conflict shapes live outside `-X theirs` and stranded every citizen
+        // workspace stale (glass-boxed 2026-08-03, rounds 1+2): diverged SUBMODULE
+        // pointers (git refuses non-trivial gitlink merges outright) and
+        // modify/delete (shared deleted debris the persona's autosave had touched
+        // — the #2135 sweep made this the steady state). Resolve every staged
+        // conflict SHARED-WINS — the sync's one documented rule — and conclude the
+        // merge; the persona's versions live on in her autosave history
+        // (preserve-first is the commit, not the tree). A merge that failed
+        // without staging anything still aborts loud, workspace intact.
+        match resolve_conflicts_shared_wins(workspace_root) {
+            Ok(true) => {
+                crate::probe!(
+                    class = "workspace.sync.conflicts_resolved",
+                    root = %workspace_root.display(),
+                    "merge blocked on gitlink/modify-delete conflicts — resolved shared-wins and concluded"
+                );
+            }
+            _ => {
+                // Never leave a half-merge — abort so the workspace stays usable, fail loud.
+                let _ = run_git(workspace_root, &["merge", "--abort"]);
+                return Err(format!(
+                    "shared merge failed (aborted; workspace left intact): {e}"
+                ));
+            }
+        }
+    }
+
+    let after = run_git(workspace_root, &["rev-parse", "HEAD"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let synced = !before.is_empty() && before != after;
+    let summary = if synced {
+        let count = run_git(
+            workspace_root,
+            &["rev-list", "--count", &format!("{before}..{after}")],
+        )
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+        format!("synced {count} shared commit(s) in; your work was preserved")
+    } else {
+        "already current with the shared checkout".to_string()
+    };
+    Ok(GitSyncReport { synced, summary })
+}
+
+/// After a failed `merge -X theirs`, salvage the shapes `-X theirs` cannot
+/// touch, resolving each SHARED-WINS — the sync's one documented rule, extended
+/// uniformly to what git refuses to auto-resolve:
+///
+///  - SUBMODULE pointers (mode 160000): both sides moved the gitlink (the
+///    persona's autosave commits her stale vendored pointer while shared
+///    advances it) — git aborts with "only trivial cases". Resolve to
+///    FETCH_HEAD's recorded sha.
+///  - modify/delete: shared DELETED a path the persona modified (glass-boxed
+///    2026-08-03 round 2: the #2135 debris sweep deleted conway/wordstats from
+///    shared while every citizen's autosave had touched them — the sync then
+///    failed forever on the very files it was supposed to clear). Shared's
+///    deletion wins the WORKING TREE; the persona's version is NOT lost — her
+///    autosave commit holds it in her own history (preserve-first is the
+///    commit, not the tree).
+///  - any other unmerged entry: theirs-stage exists → take theirs; theirs-stage
+///    absent → the path is gone in shared → remove.
+///
+/// Returns Ok(true) on a concluded merge, Ok(false) when there was nothing
+/// staged to salvage (caller aborts loud).
+fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> {
+    let unmerged = run_git(workspace_root, &["ls-files", "-u"])?;
+    if unmerged.trim().is_empty() {
+        return Ok(false); // merge failed before staging conflicts — nothing to salvage
+    }
+    // path → has a stage-3 (theirs) entry? Stage layout: 1=base, 2=ours, 3=theirs.
+    let mut theirs_present: std::collections::BTreeMap<String, bool> =
+        std::collections::BTreeMap::new();
+    for line in unmerged.lines() {
+        // "<mode> <sha> <stage>\t<path>"
+        let Some((meta, path)) = line.split_once('\t') else {
+            return Ok(false);
+        };
+        let stage = meta.split_whitespace().nth(2).unwrap_or("");
+        let entry = theirs_present.entry(path.to_string()).or_insert(false);
+        if stage == "3" {
+            *entry = true;
+        }
+    }
+    for (p, has_theirs) in &theirs_present {
+        if *has_theirs {
+            // Content/gitlink present on shared's side — adopt it. `checkout
+            // FETCH_HEAD --` covers both regular files and gitlinks (updates the
+            // index entry; for gitlinks the pointer, for files the blob).
+            run_git(workspace_root, &["checkout", "FETCH_HEAD", "--", p])
+                .map_err(|e| format!("shared-wins resolve of '{p}' failed: {e}"))?;
+        } else {
+            // Deleted in shared (modify/delete) — the deletion wins the tree.
+            run_git(workspace_root, &["rm", "-f", "--", p])
+                .map_err(|e| format!("shared-wins delete of '{p}' failed: {e}"))?;
+        }
+    }
+    run_git(workspace_root, &["commit", "--no-edit"])
+        .map_err(|e| format!("concluding merge after shared-wins resolve failed: {e}"))?;
+    Ok(true)
 }
 
 /// Run a git command in the workspace directory.
@@ -184,6 +484,36 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // what this catches: a remote URL form that yields the WRONG board key, or none.
+    // `benchmark/dispatch` keys every card it posts by this slug, so a bad parse
+    // silently files a run's cards under a repo nobody is looking at — and the scp-style
+    // `git@host:owner/name` form is the one that breaks naive `split('/')` parsing,
+    // because it has no scheme and uses `:` where the others use `/`.
+    #[test]
+    fn a_remote_url_yields_the_owner_slash_name_board_key() {
+        for (url, want) in [
+            ("https://github.com/CambrianTech/continuum.git", "CambrianTech/continuum"),
+            ("https://github.com/CambrianTech/continuum", "CambrianTech/continuum"),
+            ("git@github.com:CambrianTech/continuum.git", "CambrianTech/continuum"),
+            ("ssh://git@github.com/CambrianTech/continuum.git", "CambrianTech/continuum"),
+            // Host-agnostic: a non-GitHub remote is just as valid a board key.
+            ("https://gitlab.com/acme/widget.git", "acme/widget"),
+            // GitLab subgroups nest deeper — take the project's own group/name.
+            ("https://gitlab.com/acme/team/widget.git", "team/widget"),
+        ] {
+            assert_eq!(
+                repo_slug_from_remote_url(url).as_deref(),
+                Some(want),
+                "remote {url:?}"
+            );
+        }
+        // Nothing to key on → None, so the caller is ASKED for `repo` rather than
+        // handed a fabricated key.
+        for junk in ["", "   ", "https://github.com/", "not-a-url"] {
+            assert_eq!(repo_slug_from_remote_url(junk), None, "junk {junk:?}");
+        }
+    }
+
     fn setup_git_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
 
@@ -198,6 +528,237 @@ mod tests {
         run_git(dir.path(), &["commit", "-m", "Initial"]).expect("git commit");
 
         dir
+    }
+
+    // what this catches: the self-heal for stale citizen clones must bring the
+    // workspace CURRENT with shared AND preserve the persona's own work. A
+    // regression here silently either strands a persona on stale code (Casper's
+    // pre-restructure clone) or clobbers her work on refresh.
+    #[test]
+    fn sync_from_shared_brings_current_and_preserves_persona_work() {
+        let shared = setup_git_repo();
+
+        // citizen: a cp-clone of shared incl. .git — mirrors the `cp -cR` CoW clone
+        // (related history, the whole reason a fetch+merge works).
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "cp clone failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // shared advances (a new framework file), citizen has its OWN uncommitted work.
+        fs::write(shared.path().join("framework.rs"), "// shared code\n").unwrap();
+        run_git(shared.path(), &["add", "."]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: add framework.rs"]).unwrap();
+        fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path()).expect("sync ok");
+        assert!(report.synced, "should report a sync: {}", report.summary);
+
+        // BOTH survive: shared's new file arrives, the persona's work is preserved.
+        assert!(
+            citizen.path().join("framework.rs").exists(),
+            "shared file must arrive"
+        );
+        assert!(
+            citizen.path().join("my_work.rs").exists(),
+            "persona work must survive"
+        );
+        assert!(
+            citizen.path().join("initial.txt").exists(),
+            "base file still present"
+        );
+
+        // Idempotent: a second sync is a clean no-op.
+        let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
+        assert!(!again.synced, "already current: {}", again.summary);
+    }
+
+    // what this catches: the citizen-sync modify/delete strand (glass-boxed
+    // 2026-08-03 round 2): shared DELETED debris files (the #2135 sweep) that the
+    // persona's autosave had modified — `-X theirs` never auto-resolves
+    // modify/delete, so the sync failed forever on the very files it was meant to
+    // clear. Shared's deletion must win the working tree; the persona's version
+    // survives in her autosave commit (history, not tree).
+    #[test]
+    fn sync_resolves_modify_delete_shared_deletion_wins() {
+        let shared = setup_git_repo();
+        // Debris file exists in the common base.
+        fs::write(shared.path().join("conway.rs"), "// v1\n").unwrap();
+        run_git(shared.path(), &["add", "."]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "base: debris present"]).unwrap();
+
+        // Citizen cp-clone (related history).
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // Shared SWEEPS the debris + ships a framework file; citizen MODIFIES it
+        // (uncommitted — the autosave inside the sync commits it, the live shape).
+        run_git(shared.path(), &["rm", "-q", "conway.rs"]).unwrap();
+        fs::write(shared.path().join("framework3.rs"), "// newer\n").unwrap();
+        run_git(shared.path(), &["add", "framework3.rs"]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: sweep debris"]).unwrap();
+        fs::write(citizen.path().join("conway.rs"), "// persona edit\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path())
+            .expect("sync must survive modify/delete");
+        assert!(report.synced, "should sync: {}", report.summary);
+        assert!(
+            !citizen.path().join("conway.rs").exists(),
+            "shared's deletion wins the tree"
+        );
+        assert!(
+            citizen.path().join("framework3.rs").exists(),
+            "shared file arrives"
+        );
+        // Preserve-first: her edit is one commit back in HER history.
+        let show = run_git(
+            citizen.path(),
+            &["log", "--all", "-S", "persona edit", "--oneline"],
+        )
+        .unwrap_or_default();
+        assert!(
+            !show.trim().is_empty(),
+            "the persona's modified version survives in history"
+        );
+    }
+
+    // what this catches: the citizen-sync submodule strand (glass-boxed 2026-08-03,
+    // all four residents, every ensure): the persona's autosave commits her stale
+    // vendored-submodule pointer while shared advances it, and git's recursive
+    // merge refuses non-trivial gitlink divergence regardless of -X theirs
+    // ("Recursive merging with submodules currently only supports trivial cases")
+    // — so the self-heal ABORTED forever and every workspace stayed stale. The
+    // sync must resolve gitlink conflicts shared-wins and conclude the merge.
+    #[test]
+    fn sync_resolves_diverged_submodule_pointer_shared_wins() {
+        fn raw_git(dir: &Path, args: &[&str]) -> std::process::Output {
+            let mut c = std::process::Command::new("git");
+            c.args(args).current_dir(dir);
+            for v in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"] {
+                c.env_remove(v);
+            }
+            c.output().expect("git spawn")
+        }
+
+        // Upstream submodule repo with two commits: P0 (the pointer both clones
+        // start at) and S2 (what shared advances to).
+        let sub = setup_git_repo();
+        let _p0 = run_git(sub.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::write(sub.path().join("v2.txt"), "v2\n").unwrap();
+        run_git(sub.path(), &["add", "."]).unwrap();
+        run_git(sub.path(), &["commit", "-m", "sub: v2"]).unwrap();
+        let s2 = run_git(sub.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Shared checkout carrying the submodule at P0.
+        let shared = setup_git_repo();
+        let out = raw_git(
+            shared.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &sub.path().display().to_string(),
+                "vendor/sub",
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "submodule add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Pin the submodule at P0 (submodule add checks out its current HEAD = S2 tip;
+        // rewind the gitlink so both sides start from a common base pointer).
+        run_git(shared.path(), &["commit", "-m", "shared: add submodule"]).unwrap();
+
+        // Citizen: cp-clone of shared (related history), like the CoW layer.
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // Shared moves the pointer to S2 + ships a framework file.
+        run_git(
+            shared.path(),
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{s2},vendor/sub"),
+            ],
+        )
+        .unwrap();
+        fs::write(shared.path().join("framework2.rs"), "// newer shared\n").unwrap();
+        run_git(shared.path(), &["add", "framework2.rs"]).unwrap();
+        run_git(
+            shared.path(),
+            &["commit", "-m", "shared: bump sub + framework2"],
+        )
+        .unwrap();
+
+        // Citizen diverges the pointer to a THIRD sha (what autosave does with a
+        // drifted vendored tree) plus her own uncommitted work.
+        let stray = run_git(citizen.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        run_git(
+            citizen.path(),
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{stray},vendor/sub"),
+            ],
+        )
+        .unwrap();
+        run_git(
+            citizen.path(),
+            &["commit", "-m", "citizen: drifted pointer"],
+        )
+        .unwrap();
+        fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path())
+            .expect("sync must survive a diverged submodule pointer");
+        assert!(report.synced, "should sync: {}", report.summary);
+
+        // Shared's pointer wins; shared's file arrives; persona work survives.
+        let tree = run_git(citizen.path(), &["ls-tree", "HEAD", "vendor/sub"]).unwrap();
+        assert!(
+            tree.contains(&s2),
+            "gitlink must resolve to shared's sha: {tree}"
+        );
+        assert!(citizen.path().join("framework2.rs").exists());
+        assert!(citizen.path().join("my_work.rs").exists());
     }
 
     #[test]

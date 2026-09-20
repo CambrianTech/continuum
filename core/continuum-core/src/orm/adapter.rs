@@ -45,7 +45,12 @@ impl Default for AdapterConfig {
 }
 
 /// Storage adapter capabilities
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/AdapterCapabilities.ts"
+)]
+#[serde(rename_all = "camelCase")]
 pub struct AdapterCapabilities {
     pub supports_transactions: bool,
     pub supports_indexing: bool,
@@ -106,7 +111,16 @@ pub trait StorageAdapter: Send + Sync {
 
     // ─── Batch Operations ────────────────────────────────────────────────────
 
-    /// Execute batch operations
+    /// Execute batch operations ATOMICALLY — all of them commit, or none do.
+    ///
+    /// The first failing operation aborts the batch, rolls back every earlier
+    /// operation in it, and returns `StorageResult::err`. Implementations must
+    /// NOT report partial application as success: a caller writing a parent row
+    /// and its dependent rows in one batch relies on never observing the parent
+    /// without them.
+    ///
+    /// A failure is an ERROR, not a `{"success": false}` element in the returned
+    /// vector. The returned values describe operations that all committed.
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>>;
 
     // ─── Schema Operations ───────────────────────────────────────────────────
@@ -133,10 +147,15 @@ pub trait StorageAdapter: Send + Sync {
 }
 
 /// Result of clear_all operation
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/ClearAllResult.ts"
+)]
 pub struct ClearAllResult {
     pub tables_cleared: Vec<String>,
+    #[ts(type = "number")]
     pub records_deleted: usize,
 }
 

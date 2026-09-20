@@ -13,6 +13,7 @@
 //! - **Pipeline Support**: Multi-step pipelines with LLM, conditions, loops
 
 pub mod checkpoint;
+pub mod escalation;
 pub mod executor;
 pub mod interpolation;
 pub mod logs;
@@ -32,7 +33,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::runtime::{
-    message_bus::MessageBus, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
+    message_bus::MessageBus, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
     ModuleRegistry, ServiceModule,
 };
 use crate::utils::params::Params;
@@ -65,6 +66,9 @@ pub struct SentinelModule {
     bus: RwLock<Option<Arc<MessageBus>>>,
     /// Module registry for inter-module calls (set during initialize)
     registry: RwLock<Option<Arc<ModuleRegistry>>>,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built (task #224).
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl SentinelModule {
@@ -82,7 +86,18 @@ impl SentinelModule {
             max_concurrent: 6,
             bus: RwLock::new(None),
             registry: RwLock::new(None),
+            executor: LateBound::new("sentinel::executor"),
         }
+    }
+
+    /// Borrow the installed executor or return an error string. Sentinel
+    /// call sites generally tolerate a `None` executor (the memory check
+    /// is a guard, not load-bearing); this helper makes the intent
+    /// explicit at the call site.
+    fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
+        self.executor
+            .cloned()
+            .ok_or_else(|| "sentinel: CommandExecutor not yet installed".to_string())
     }
 
     /// Generate a unique handle ID
@@ -121,22 +136,22 @@ impl SentinelModule {
 
         // Check system memory pressure before starting a new sentinel.
         // Candle model loads + LoRA training can easily exhaust RAM if unchecked.
-        if let Ok(mem) =
-            crate::runtime::command_executor::execute_json("system/memory", Value::Null).await
-        {
-            let available = mem
-                .get("available_bytes")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(u64::MAX);
-            if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
-                let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
-                let threshold_gb =
-                    Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
-                return Err(format!(
-                    "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
-                     Cancel existing sentinels or wait for completion.",
-                    available_gb, threshold_gb
-                ));
+        if let Ok(executor) = self.executor_or_err() {
+            if let Ok(mem) = executor.execute_json("system/memory", Value::Null).await {
+                let available = mem
+                    .get("available_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(u64::MAX);
+                if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
+                    let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
+                    let threshold_gb =
+                        Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
+                    return Err(format!(
+                        "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
+                         Cancel existing sentinels or wait for completion.",
+                        available_gb, threshold_gb
+                    ));
+                }
             }
         }
 
@@ -198,14 +213,30 @@ impl SentinelModule {
             logs_dir: logs_dir.to_string_lossy().to_string(),
         };
 
-        // Parse escalation metadata (if caller wants persona inbox routing)
+        // Parse escalation metadata (if caller wants persona inbox routing).
+        // `escalationRules` is now typed `Vec<EscalationRule>` (task #225 —
+        // dropped the `Value` pass-through when the substrate took ownership
+        // of the schema). Malformed rules are dropped with a warning; the
+        // dispatcher falls back to `default_escalation_rules()`.
         let escalation =
             if p.str_opt("parentPersonaId").is_some() || p.str_opt("entityId").is_some() {
+                let parsed_rules = p.json_opt("escalationRules").and_then(|raw| {
+                    serde_json::from_value::<Vec<types::EscalationRule>>(raw).map_or_else(
+                        |e| {
+                            crate::runtime::logger("sentinel").warn(&format!(
+                                "escalationRules param failed typed parse ({e}); \
+                                 dispatcher will use defaults"
+                            ));
+                            None
+                        },
+                        Some,
+                    )
+                });
                 Some(SentinelEscalation {
                     parent_persona_id: p.str_opt("parentPersonaId").map(|s| s.to_string()),
                     entity_id: p.str_opt("entityId").map(|s| s.to_string()),
                     sentinel_name: p.str_or("sentinelName", "unnamed").to_string(),
-                    escalation_rules: p.json_opt("escalationRules"),
+                    escalation_rules: parsed_rules,
                 })
             } else {
                 None
@@ -241,6 +272,7 @@ impl SentinelModule {
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
         let escalation_clone = escalation;
+        let executor_for_task = self.executor.cloned();
 
         tokio::spawn(async move {
             let log = runtime::logger("sentinel");
@@ -279,6 +311,7 @@ impl SentinelModule {
                     working_dir_clone.clone(),
                     bus.clone(),
                     registry.clone(),
+                    executor_for_task.clone(),
                 );
 
                 if timeout_secs == 0 {
@@ -394,25 +427,29 @@ impl SentinelModule {
                     let _ = tx.send(true);
                 }
 
-                // Push completion to TypeScript for persona escalation.
-                // Rust owns the lifecycle — TS just receives and routes.
+                // Dispatch the substrate-native escalation pipeline
+                // (task #225 — replaces the deleted TS round-trip).
+                // The fire-and-forget contract is preserved: dispatch
+                // logs errors per stage; sentinel cleanup never blocks.
                 if let Some(ref esc) = escalation_clone {
-                    let escalation_payload = json!({
-                        "handle": handle_id_clone,
-                        "status": final_status,
-                        "durationMs": duration_ms,
-                        "error": error_msg,
-                        "parentPersonaId": esc.parent_persona_id,
-                        "entityId": esc.entity_id,
-                        "sentinelName": esc.sentinel_name,
-                        "escalationRules": esc.escalation_rules,
-                    });
-                    // Fire-and-forget — escalation failure shouldn't block sentinel cleanup
-                    let _ = crate::runtime::command_executor::execute_ts_json(
-                        "sentinel/escalate",
-                        escalation_payload,
-                    )
-                    .await;
+                    if let Some(executor) = executor_for_task.as_ref() {
+                        let terminal = match final_status {
+                            "completed" => escalation::SentinelTerminalStatus::Completed,
+                            "cancelled" => escalation::SentinelTerminalStatus::Cancelled,
+                            _ => escalation::SentinelTerminalStatus::Failed,
+                        };
+                        escalation::dispatch(
+                            executor,
+                            escalation::SentinelEscalationEvent {
+                                handle: handle_id_clone.clone(),
+                                status: terminal,
+                                duration_ms: Some(duration_ms),
+                                error: error_msg.clone(),
+                                escalation: esc.clone(),
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         });
@@ -549,6 +586,7 @@ impl SentinelModule {
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
+        let executor_for_call = self.executor.cloned();
 
         let result = executor::execute_pipeline_direct(
             &logs_base_dir,
@@ -556,6 +594,7 @@ impl SentinelModule {
             pipeline,
             bus.as_ref(),
             registry.as_ref(),
+            executor_for_call.as_ref(),
         )
         .await;
 
@@ -612,9 +651,10 @@ impl SentinelModule {
                 let pid_path = entry.path().join("pid");
                 if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
                     if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                        unsafe {
-                            libc::kill(-pid, libc::SIGTERM);
-                        }
+                        // Graceful process-group/tree kill — one cross-platform
+                        // definition lives in executor.rs (Unix: kill(-pgid,
+                        // SIGTERM); Windows: taskkill /T).
+                        executor::kill_process_group(Some(pid as u32));
                         std::fs::remove_file(&pid_path).ok();
                         killed += 1;
                     }
@@ -702,6 +742,7 @@ impl SentinelModule {
 
         let sentinels = Arc::clone(&self.sentinels);
         let escalation_clone = cp.escalation.clone();
+        let executor_for_task = self.executor.cloned();
 
         tokio::spawn(async move {
             let log = crate::runtime::logger("sentinel");
@@ -719,6 +760,7 @@ impl SentinelModule {
                 registry: &registry,
                 bus: bus.as_ref(),
                 steps_log_path: Some(&steps_log_path),
+                executor: executor_for_task.as_ref(),
             };
 
             let mut ctx = ExecutionContext {
@@ -883,19 +925,30 @@ impl SentinelModule {
                 );
             }
 
-            // Escalation
+            // Substrate-native escalation dispatch (task #225). Resumed
+            // pipelines lose track of duration_ms across the restart
+            // boundary — pass `None` so the dispatcher renders the
+            // memory content as "unknown" duration rather than fabricating
+            // a misleading interval.
             if let Some(ref esc) = escalation_clone {
-                let _ = crate::runtime::command_executor::execute_ts_json(
-                    "sentinel/escalate",
-                    json!({
-                        "handle": handle_id_owned,
-                        "status": if failed { "failed" } else { "completed" },
-                        "parentPersonaId": esc.parent_persona_id,
-                        "entityId": esc.entity_id,
-                        "sentinelName": esc.sentinel_name,
-                    }),
-                )
-                .await;
+                if let Some(executor) = executor_for_task.as_ref() {
+                    let terminal = if failed {
+                        escalation::SentinelTerminalStatus::Failed
+                    } else {
+                        escalation::SentinelTerminalStatus::Completed
+                    };
+                    escalation::dispatch(
+                        executor,
+                        escalation::SentinelEscalationEvent {
+                            handle: handle_id_owned.clone(),
+                            status: terminal,
+                            duration_ms: None,
+                            error: None,
+                            escalation: esc.clone(),
+                        },
+                    )
+                    .await;
+                }
             }
         });
 
@@ -1063,6 +1116,7 @@ impl ServiceModule for SentinelModule {
                     let bus_clone = self.bus.read().clone();
                     let logs_dir = self.logs_base_dir.read().clone();
                     let sentinels = Arc::clone(&self.sentinels);
+                    let executor_for_resume = self.executor.cloned();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         let log = crate::runtime::logger("sentinel");
@@ -1122,6 +1176,7 @@ impl ServiceModule for SentinelModule {
                                         working_dir,
                                         bus_clone.clone(),
                                         registry_clone.clone(),
+                                        executor_for_resume.clone(),
                                     )
                                     .await;
 
@@ -1201,6 +1256,10 @@ impl ServiceModule for SentinelModule {
 
             _ => Err(format!("Unknown sentinel command: {command}")),
         }
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

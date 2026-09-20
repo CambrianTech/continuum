@@ -156,12 +156,41 @@ const STUB_COMPLETION_TOKENS: &[u32] = &[1, 2, 3];
 /// the first-token event. The command returns both as a JSON
 /// object so the caller can publish them individually if it
 /// wants, or treat the pair atomically.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/inference_llm/InferenceResponse.ts"
+)]
 pub struct InferenceResponse {
     pub complete: InferenceComplete,
     pub first_token: FirstTokenEmitted,
 }
+
+/// Typed declaration of the `inference/llm/request` command — the single source
+/// for its SDK surface (`sdk_codegen`). Params/Result are the SAME ts-rs types
+/// the handler parses + returns, so the generated `CommandMap` entry can't drift
+/// from the command. Registered crate-wide via `register_command!`; the Rust
+/// generator emits its TS surface. (First REAL command migrated onto the
+/// Rust-rooted, self-assembling registry — [[persona-is-a-client]] /
+/// [[lock-uniform-client-early]].)
+pub struct InferenceLlmRequestCommand;
+
+impl crate::sdk_codegen::CommandSpec for InferenceLlmRequestCommand {
+    const NAME: &'static str = COMMAND_REQUEST;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: a one-shot raw LLM inference request. NOT a task tool — \
+         your own replies already run through inference. (Legacy one-shot path.)";
+    // BARE: `handle_request` parses `InferenceRequest` directly and returns
+    // `InferenceResponse` directly (CommandResult::json(&response), llm_module_service.rs)
+    // — no CommandRequest/CommandResponse envelope. The SDK sees bare in, bare out.
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
+    type Params = InferenceRequest;
+    type Result = InferenceResponse;
+}
+
+crate::register_command!(InferenceLlmRequestCommand);
 
 #[async_trait]
 impl ServiceModule for InferenceLlmModule {
@@ -361,6 +390,8 @@ pub(super) async fn run_adapter_inference(
         top_p: Some(request.sampling.top_p),
         top_k: Some(request.sampling.top_k),
         repeat_penalty: Some(request.sampling.repeat_penalty),
+        frequency_penalty: Some(request.sampling.frequency_penalty),
+        repeat_last_n: Some(request.sampling.repeat_last_n),
         stop_sequences: if request.stop_sequences.is_empty() {
             None
         } else {
@@ -453,7 +484,8 @@ mod tests {
     //! integration tests that exercise the real engine; PR-2's
     //! tests pin the seam.
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PersonaId};
+    use crate::genome::working_set::ArtifactId;
+    use crate::identity::PeerId;
     use crate::inference::llm_module::{
         CompositionPlan, GenerationBudget, InferenceRequestId, SamplingParams,
     };
@@ -462,7 +494,7 @@ mod tests {
     fn sample_request() -> InferenceRequest {
         InferenceRequest {
             request_id: InferenceRequestId::new(Uuid::from_u128(42)),
-            persona: PersonaId::new(Uuid::from_u128(1)),
+            persona: PeerId::from_uuid(Uuid::from_u128(1)),
             composition: CompositionPlan(ArtifactId::new(Uuid::from_u128(100))),
             prompt_tokens: vec![10, 11, 12],
             prompt_text: None,
@@ -846,8 +878,10 @@ mod tests {
                 text: "stub adapter completion".to_string(),
             }]),
             tool_calls: None,
+            reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         }
     }
 

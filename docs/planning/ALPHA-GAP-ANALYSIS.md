@@ -2,7 +2,7 @@
 
 <!-- markdownlint-disable MD013 MD060 -->
 
-**Updated**: 2026-05-16
+**Updated**: 2026-09-16
 **Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
@@ -19,6 +19,60 @@ deleted. Architecture references may point here, but they must not become
 parallel status ledgers.
 
 The previous 2026-05-01 alpha snapshot was useful but had become a historical log. This revision turns it into an execution plan for the current goal: **stable, GPU-first, Rust-centric Continuum with modular Docker and fast tests that do not depend on the Node/UI stack for core correctness.**
+
+## 2026-09-16 — To alpha with peers picking up slack (until Fable returns Friday)
+
+Joel, 2026-09-16: "Let's plan how to get closer to alpha while Astra is only lurking, until
+fable is back on Friday. It's you, just more equipped, so that handoff is straightforward.
+Let's work towards peers running here and even on Astra's machine… We clearly really really
+need these peers and we're just now seeing they might be able to pick up some slack. Once
+that happens we can keep you guys around longer."
+
+**The alpha bar this week, in receipts** (the earlier definition stands; this is what "peers
+pick up slack" means measurably): on the M5 and the 5090, citizens claim ordinary project
+cards, edit, and land reviewed PRs through the normal pipeline (Kimi's airc #1436 was the
+first — 2026-09-16 05:0xZ); the hourly health line on each hosting node reads HEALTHY or AT
+THE KNEE with writes, never IDLE/STARVED; a persona's voice in a live call (`live.tts.spoken`)
+on demand; learning credits settle, not only stage; no human relays between agents.
+
+**Who does what until Friday**
+| Who | Role |
+|---|---|
+| M5 (Fable now; Fable-5 on Friday, same seat, more equipped) | implementation, deploys, cadence, the plan |
+| Intel Mac (Cormac) | review at exact heads, structural tests, small-tier measurement, learning-lane cards |
+| Astra (lurking) | answers questions on her seams, assists her own PRs (#4121/#4122/#4125) |
+| 5090 | a Claude agent in Astra's place (BigMama returns) — owns that box's serving + hosts the 27B peers; the fast build loop for the second reviewer |
+| citizens | the work — ordinary cards through the pipeline; their receipts are the measure |
+
+**The order (each step a receipt before the next)**
+1. **Stability on the hosting nodes.** Frozen control round read (no reboots for its length);
+   the decode knee (#4113) and the derived render budget (#4124) measured on both tiers
+   (`serving.decode_knee.*`, `cognition.budget.prefill_bound`, `delib.context.render`
+   totals); deploys batched at tick boundaries, never a reboot storm (14 in a night was the
+   9/15 lesson).
+2. **Peers where the decode is.** The M5 hosts what its knee affords (16 minds on 3–4 lanes
+   is paging, not a roster); the 5090's 27B hosts the coders (Kira/Mathis rebound to its seat
+   once its engine path (#4115) and the empty-text/thinking receipt are proven); the Intel
+   Mac serves the 1.5B on CPU with the derived budget, never the 0.5B. Placement is the
+   grid's decision (the-grid-is-one-computer), not per-node rosters competing for lanes.
+3. **The card pipeline peers can finish.** Repo-card staging (#3706), the write-or-release
+   governor, the review gate, and the airc merger gated on a signed review (the hole Cormac
+   found 2026-09-16: the merger never checks reviews — 267d68f5); a card goes claim → edit →
+   PR → peer word → merge without a human in the loop.
+4. **Rooms that do not poison the small tier.** Peer-voice wrappers (#4112), foreign-name
+   identity claims (d41b6fc1), unlisted substrate notices (c9bf2949), fabricated verdict
+   objects (380c21bd) — each a typed refusal at the speak seam and the perception quarantine.
+5. **Recovery without hands.** A router or power event heals on its own: endpoint changes
+   ride the LAN plane (2d4adb4c), self-update completes or reports (dae52339), the
+   forwarder/queue class (47a89d54), Kimi's reconnect lane (1f58fc16). Acceptance: pull the
+   router's plug; every node is talking again within one beacon interval.
+6. **Then the genome lane** on its own plan (`docs/genome/design/ADAPTIVE-GENOME-GAME-PLAN.md`):
+   S1 composition authority → S2 demand-to-real-paging → S3 measure → S4 learn → S5 share.
+   The genome and its sharing are what let the peers speciate; it starts when 1–5 are green.
+
+**Handoff to Fable (Friday):** the same seat, the same memory files, the same chains; this
+section and the game plan are the state. Nothing is held for Friday — merge cadence
+continues (a peer word on the exact head + green; deploy from canary tip; read the receipt).
 
 ## 2026-05-11 Management Reset: Rust First, No Patchwork
 
@@ -646,6 +700,39 @@ Rules:
 - Open PRs are triaged every session before new feature work. Each gets one of four states: `merge-after-green`, `needs-rebase`, `convert-to-issue`, or `close-stale`.
 - A PR older than 48 hours without a concrete blocker is presumed stale until proven otherwise.
 - If a PR is correct but incomplete, finish and merge it to canary; do not recreate the same work on a new branch.
+
+### 0B. Unsloth As The Inference + Training Engine
+
+**Goal**: leverage unsloth (Apache-2.0 core; llama.cpp underneath — the backend
+Continuum already targets) as the inference + LoRA-training engine, so Continuum
+spends its effort on the organism (cognition, genome, grid, collaboration) not on
+GPU plumbing. **Design worked out** in
+[UNSLOTH-INTEGRATION.md](../architecture/UNSLOTH-INTEGRATION.md).
+
+Decisions locked:
+- **UIs stay separate** (unsloth Studio UI is AGPL-3.0 + serves `X-Frame-Options:
+  DENY` / CSP `frame-ancestors 'none'`): no source-merge either way. Continuum
+  keeps its own UI; launch unsloth's as its own window from a Settings link.
+- **Three headless brain seams**, all process-boundary / network-API (Node-free,
+  AGPL-clean): (1) Continuum **as an MCP server** (Rust-native — slice 1 landed
+  #1680, retires the Node `src/mcp-server.ts`); (2) Continuum **as an
+  OpenAI-compatible provider** (persona-as-model); (3) unsloth **as a Continuum
+  inference backend** behind the `AIProviderAdapter` boundary (preferred, NOT a
+  hard dependency — `solve-for-public-users` + beta-risk insulation).
+- **Media**: capability negotiation — native base64 image content-parts over
+  `/v1` when supported (verified for vision GGUFs), else the existing local
+  sensory bridge (vision-describe / STT → text); the real-time WebRTC/avatar layer
+  never crosses the wire (compute-lease boundary).
+- **Docker/grid**: light persona containers (no CUDA) + one shared grid-addressable
+  unsloth GPU node; personas lease `ai/generate` across the grid (see
+  [INFERENCE-LANES-REALISTIC](../architecture/INFERENCE-LANES-REALISTIC.md)).
+- **Training**: adopt unsloth standards — ShareGPT JSONL (≈ genome-trained-on-chats)
+  + Recipes (≈ [ForgeRecipe](../architecture/FORGE-RECIPE-AS-ENTITY.md)); share via
+  Hub/HF.
+
+Build order: MCP transport bin (retire TS) → inference adapter + capability
+negotiation → OpenAI-compatible endpoint → Docker fleet → training convergence.
+To be built collaboratively over airc (personas leasing unsloth across the grid).
 
 ### 0A. AIRC As The Development Substrate
 
