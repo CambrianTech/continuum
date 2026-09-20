@@ -221,6 +221,110 @@ const PREFILL_TARGET_SECONDS: usize = 30;
 // context-budget-exempt: a measured throughput floor (tokens/second), not a context-size constant
 const CONSERVATIVE_PREFILL_TOKENS_PER_S: usize = 500;
 
+/// The kind of turn a completion is for — its latency budget and its runaway bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnKind {
+    /// A work turn: deliverable + hands — a tool call plus a short plan.
+    Act,
+    /// Every other turn — a reply in a room, or a workspace turn with nothing
+    /// deliverable: a sentence and a reason. A short turn, on a thinking model, is
+    /// still a THINK and then a sentence.
+    Pass,
+}
+
+impl TurnKind {
+    /// The seconds the TIME term of the allowance is derived from — a floor on a fast
+    /// lane, never the bound (see [`output_allowance`]).
+    fn latency_budget_secs(self) -> f64 {
+        match self {
+            Self::Act => LlmDeliberationFaculty::ACT_LATENCY_BUDGET_SECS,
+            Self::Pass => LlmDeliberationFaculty::PASS_LATENCY_BUDGET_SECS,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Act => "act",
+            Self::Pass => "pass",
+        }
+    }
+}
+
+/// The derived allowance and its terms — every field rides the
+/// `delib.turn.output_allowance` receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputAllowance {
+    /// `latency budget × her decode rate`; `None` when no rate is known on this box.
+    time_term: Option<u32>,
+    /// Her measured reasoning + answer need; `None` until measured.
+    need_term: Option<u32>,
+    /// What the request carries as `max_tokens`.
+    allowance: u32,
+    /// The measured need did not fit the reserve the prompt left — said, not hidden.
+    need_clipped: bool,
+}
+
+/// THE output allowance for a turn: `max(time budget × her decode rate, her measured
+/// reasoning need + answer need)`, under the reserve the prompt left and (for an act)
+/// the runaway bound.
+///
+/// Why both terms, and why the max (the M5, 2026-09-20 20:58–21:14Z): #4194 sized the
+/// allowance as TIME alone. After a restart her rate read 0.0 and the allowance fell to
+/// a floor — `kind=pass measured_tps=0.0 allowance=768`, `kind=act allowance=1500` —
+/// against the reserve of 2,172–6,932 it replaced; Qwen3.8 thinks before it answers,
+/// and two turns ended inside the reasoning channel (`persona.act.think_only
+/// reasoning_len=2730`, `2112`): no answer, no act. Even measured, 20 s × 12 tok/s =
+/// 240 tokens cannot hold a thinking pass. Joel's law: bounds sized wrong are where
+/// AIs ruin a project; busy is not dead.
+///
+/// So the NEED term — what this mind measurably generates per channel
+/// ([`super::working_set::OutputNeed`]) — is the floor of the allowance, and the time
+/// term only ever adds room on a fast lane. Unknown is NOT zero: with no measured need
+/// the allowance is the reserve (what the code before #4194 did), never a constant; with
+/// no rate the time term is skipped. Never past the reserve: the prompt was sized to
+/// leave exactly that room, and past it `prompt + completion` reaches `n_ctx`.
+fn output_allowance(
+    kind: TurnKind,
+    tps: Option<f64>,
+    need: Option<super::working_set::OutputNeed>,
+    reserve: u32,
+) -> OutputAllowance {
+    let time_term = tps
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .map(|t| (kind.latency_budget_secs() * t).round() as u32);
+    let need_term = need.map(|n| n.total());
+    let wanted = match (time_term, need_term) {
+        // Unknown is not zero: an unmeasured need takes the reserve, as before #4194.
+        (_, None) => reserve,
+        (Some(t), Some(n)) => t.max(n),
+        (None, Some(n)) => n,
+    };
+    let bound = match kind {
+        TurnKind::Act => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+        TurnKind::Pass => reserve,
+    };
+    let allowance = wanted.min(bound).max(1);
+    OutputAllowance {
+        time_term,
+        need_term,
+        allowance,
+        need_clipped: need_term.is_some_and(|n| n > allowance),
+    }
+}
+
+/// Apportion the server's output count between the reasoning channel and the answer
+/// by the bytes each channel carried — the server counts tokens, the adapter splits
+/// text. No channel text at all (a native tool call) is all answer.
+fn reasoning_answer_split(output_tokens: u32, reasoning_chars: usize, answer_chars: usize) -> (u32, u32) {
+    let total = reasoning_chars.saturating_add(answer_chars);
+    if total == 0 || reasoning_chars == 0 {
+        return (0, output_tokens);
+    }
+    let reasoning = ((output_tokens as u64 * reasoning_chars as u64) / total as u64) as u32;
+    let reasoning = reasoning.min(output_tokens);
+    (reasoning, output_tokens - reasoning)
+}
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -517,6 +621,16 @@ impl LlmDeliberationFaculty {
     /// rather than being spelled twice and drifting.
     fn is_work_turn(&self, ws: &Workspace) -> bool {
         ws.workspace_deliverable && !self.hands_specs.is_empty()
+    }
+
+    /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
+    /// else is a PASS.
+    fn turn_kind(&self, ws: &Workspace) -> TurnKind {
+        if self.is_work_turn(ws) {
+            TurnKind::Act
+        } else {
+            TurnKind::Pass
+        }
     }
 
     /// The tool surface THIS turn will send, what it COSTS, and WHY — decided once.
@@ -953,6 +1067,16 @@ impl LlmDeliberationFaculty {
     /// THINKING on act turns, which is card 61b6e54d's next slice.
     pub const ACT_OUTPUT_CAP: u32 = 12_288;
 
+    /// The TIME term's budgets, in seconds, per turn kind — `budget × her measured
+    /// decode rate` is a FLOOR the allowance may rise to on a fast lane (the 5090 at
+    /// 40 tok/s: an act may run to 6,000 tokens), never the bound. The bound is her
+    /// measured reasoning + answer need, under the reserve ([`output_allowance`]). Sized
+    /// small on purpose: a floor that is too low costs nothing when the need is
+    /// measured and is not consulted when it is not; a bound that is too low ended
+    /// turns inside the reasoning channel (the M5, 2026-09-20).
+    pub const ACT_LATENCY_BUDGET_SECS: f64 = 150.0;
+    pub const PASS_LATENCY_BUDGET_SECS: f64 = 60.0;
+
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
     /// floor uses for a minimum burst.
     ///
@@ -1217,26 +1341,41 @@ impl LlmDeliberationFaculty {
         // slot instead of all N collapsing onto one and thrashing (the 2026-08-26
         // KV-reuse-0% bug). None only for the roomless test rig.
         room_id: Option<uuid::Uuid>,
-        // A ceiling on the completion for THIS turn kind, applied under the
-        // reserved room. An ACT turn is a tool call plus a short plan; the
-        // reserve (half the window, or twice her measured peak) let the 27B write
-        // 5,316 tokens per act — 157 s on the lane (2026-09-07 02:47Z, card
-        // 61b6e54d). None = the reserve alone (message turns, tests).
-        output_cap: Option<u32>,
+        // The kind of turn — its allowance is derived by [`output_allowance`]: her
+        // measured reasoning + answer need, or more on a fast lane, under the reserve;
+        // an ACT also under the runaway bound (a tool call plus a short plan; the
+        // reserve let the 27B write 5,316 tokens per act — 157 s on the lane,
+        // 2026-09-07 02:47Z, card 61b6e54d). Unmeasured = the reserve, never a floor
+        // (the M5, 2026-09-20: a floor of 768 ended turns inside the think).
+        kind: TurnKind,
     ) -> TextGenerationRequest {
-        let max_tokens = match output_cap {
-            Some(cap) if cap < reserve => {
-                crate::probe!(
-                    class = "delib.act.output_capped",
-                    persona = %self.persona_name,
-                    cap = cap,
-                    reserve = reserve,
-                    "act turn completion capped under the reserved room"
-                );
-                cap
-            }
-            _ => reserve,
-        };
+        let rate = binding
+            .model
+            .as_deref()
+            .map(crate::inference::decode_knee::rate_for)
+            .unwrap_or(crate::inference::decode_knee::MeasuredRate::UNKNOWN); // unwrap_or: no model bound = no rate known; the need term alone bounds
+        let need = self
+            .working_set
+            .as_ref()
+            .and_then(|reg| reg.need_of(self.persona_id));
+        let derived = output_allowance(kind, rate.tps, need, reserve);
+        let max_tokens = derived.allowance;
+        crate::probe!(
+            class = "delib.turn.output_allowance",
+            persona = %self.persona_name,
+            kind = kind.label(),
+            rate_source = rate.source.label(),
+            measured_tps = rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none"; the derivation never used it
+            time_term = derived.time_term.map_or(0, u64::from),
+            need_measured = need.is_some(),
+            reasoning_need = need.map_or(0, |n| u64::from(n.reasoning)),
+            answer_need = need.map_or(0, |n| u64::from(n.answer)),
+            need_term = derived.need_term.map_or(0, u64::from),
+            need_clipped = derived.need_clipped,
+            allowance = max_tokens,
+            reserve = reserve,
+            "the turn's output allowance — max(time × her rate, her measured think + answer), under the reserve"
+        );
         TextGenerationRequest {
             messages,
             system_prompt: Some(system_prompt),
@@ -1292,14 +1431,15 @@ impl LlmDeliberationFaculty {
             request_id: None,
             user_id: None,
             room_id: room_id.map(|r| r.to_string()),
-            // An ACT turn (the caller passed an output cap — the hands surface is
-            // offered) announces itself: the body builder bounds the model's
-            // thinking on it (card 12ef9c10), the lane class stays Turn.
+            // An ACT turn (the hands surface is offered) announces itself: the body
+            // builder bounds the model's thinking on it (card 12ef9c10), the lane
+            // class stays Turn. A PASS keeps the model's own thinking policy — there
+            // is no per-request thinking switch on this type; its allowance holds the
+            // measured think instead ([`output_allowance`]).
             purpose: Some(
-                if output_cap.is_some() {
-                    "cognition/act"
-                } else {
-                    "cognition/deliberation"
+                match kind {
+                    TurnKind::Act => "cognition/act",
+                    TurnKind::Pass => "cognition/deliberation",
                 }
                 .to_string(),
             ),
@@ -3846,7 +3986,7 @@ impl LlmDeliberationFaculty {
                     (!stops.is_empty()).then_some(stops)
                 },
                 Some(ws.room_id),
-                self.is_work_turn(ws).then_some(Self::ACT_OUTPUT_CAP),
+                self.turn_kind(ws),
             );
 
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
@@ -3935,9 +4075,18 @@ impl LlmDeliberationFaculty {
         // the registry (the growth path). This is the seam that turns the reserve
         // from a `window/2` prior into a measurement.
         if let Some(reg) = &self.working_set {
+            // The channel split the NEXT turn's allowance is sized from: the server's
+            // count apportioned by the bytes the adapter separated into `reasoning`
+            // and `text` (a think-only turn is all reasoning; a native call all answer).
+            let (reasoning_tokens, _answer_tokens) = reasoning_answer_split(
+                resp.usage.output_tokens,
+                resp.reasoning.as_ref().map_or(0, |r| r.len()),
+                resp.text.len(),
+            );
             reg.record_emission(
                 self.persona_id,
                 resp.usage.output_tokens,
+                reasoning_tokens,
                 matches!(resp.finish_reason, FinishReason::Length),
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
@@ -4261,6 +4410,9 @@ impl LlmDeliberationFaculty {
                             reasoning_len = reasoning.len(),
                             "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
                         );
+                        // The hour's receipt counts it (`[health] … think-only N`): two of
+                        // these in an hour on the M5 were the whole story of #4194.
+                        crate::modules::citizen_health::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL
@@ -5587,12 +5739,70 @@ mod tests {
         // This asserts the closed invariant: worst-case prompt (at its budget ceiling)
         // PLUS the generation cap never exceeds the served window. Regression for the
         // abstain-every-tick reliability bug.
-        // what this catches: an ACT turn's completion is bounded by ACT_OUTPUT_CAP
-        // under the reserve, and a message turn (no cap) still gets the whole
-        // reserved room. Losing the cap reproduces the 5,316-token act (157 s on
-        // the lane); capping message turns would truncate answers.
+        // what this catches (the M5, 2026-09-20 20:58–21:14Z, after #4194): the allowance
+        // fell to a floor — `kind=pass measured_tps=0.0 allowance=768`, `kind=act
+        // allowance=1500` — against a reserve of 2,172–6,932, and Qwen3.8 ended two turns
+        // inside its reasoning channel (`persona.act.think_only reasoning_len=2730`,
+        // `2112`): no answer, no act. Even measured, 20 s × 12 tok/s = 240 tokens cannot
+        // hold a thinking pass. Pinned: unmeasured rate + unmeasured need = the reserve
+        // (never a constant); a measured need dominates a small time term; a pass never
+        // gets less than her measured reasoning + answer; the reserve and the act's
+        // runaway bound still bind; and the channel split that feeds the need.
+        #[test]
+        fn the_allowance_holds_the_reasoning_channel_and_unknown_is_the_reserve() {
+            use crate::cognition::working_set::OutputNeed;
+            let reserve = 6_932u32;
+            let a = output_allowance(TurnKind::Pass, None, None, reserve);
+            assert_eq!((a.allowance, a.time_term, a.need_term), (reserve, None, None));
+            assert_eq!(output_allowance(TurnKind::Act, None, None, reserve).allowance, reserve);
+            // A rate without a measured need is still an unknown need: the reserve, not 12 × 60.
+            let a = output_allowance(TurnKind::Pass, Some(12.0), None, reserve);
+            assert_eq!((a.allowance, a.time_term), (reserve, Some(720)));
+            // The M5's shape: 12 tok/s, a mind that thinks ~900 tokens before a 300-token answer.
+            let need = OutputNeed { reasoning: 900, answer: 300, turns: 5 };
+            let pass = output_allowance(TurnKind::Pass, Some(12.0), Some(need), reserve);
+            assert_eq!(pass.need_term, Some(1_200));
+            assert!(
+                pass.allowance >= need.reasoning + need.answer,
+                "a pass never gets less than her measured think + answer: {}",
+                pass.allowance
+            );
+            assert!(pass.time_term.is_some_and(|t| t < pass.allowance), "the need dominates a small time term");
+            assert!(pass.allowance > 768, "never #4194's floor");
+            assert!(!pass.need_clipped);
+            // A fast lane earns more than its need: the time term wins on the 5090 at 40 tok/s.
+            assert_eq!(output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve).allowance, 6_000);
+            // Never past the reserve the prompt left; a need past it is said, not hidden.
+            assert_eq!(output_allowance(TurnKind::Pass, Some(40.0), Some(need), 1_000).allowance, 1_000);
+            let clipped = output_allowance(
+                TurnKind::Pass,
+                None,
+                Some(OutputNeed { reasoning: 3_000, answer: 500, turns: 5 }),
+                2_172,
+            );
+            assert_eq!((clipped.allowance, clipped.need_clipped), (2_172, true));
+            // An act still stops at the runaway bound; a pass is bounded by the reserve alone.
+            assert_eq!(
+                output_allowance(TurnKind::Act, Some(400.0), Some(need), 50_000).allowance,
+                LlmDeliberationFaculty::ACT_OUTPUT_CAP
+            );
+            assert_eq!(output_allowance(TurnKind::Pass, None, None, 50_000).allowance, 50_000);
+            // A rate of 0.0 or NaN is no rate (the M5's `measured_tps=0.0`), never a term.
+            assert_eq!(output_allowance(TurnKind::Act, Some(0.0), Some(need), reserve).time_term, None);
+            assert_eq!(output_allowance(TurnKind::Act, Some(f64::NAN), Some(need), reserve).time_term, None);
+            // The split that feeds the need: the server's count, apportioned by channel bytes.
+            assert_eq!(reasoning_answer_split(1_000, 2_730, 910), (750, 250));
+            assert_eq!(reasoning_answer_split(500, 0, 0), (0, 500), "no channel text (a native call): all answer");
+            assert_eq!(reasoning_answer_split(300, 2_112, 0), (300, 0), "a think-only turn is all reasoning");
+        }
+
+        // what this catches: the request carries the derived allowance. An unmeasured
+        // faculty (no working set, no need) sends the reserve on a pass and the reserve
+        // under the runaway bound on an act — the code before #4194, which the M5 ran on
+        // for weeks without a think-only turn. Losing the act bound reproduces the
+        // 5,316-token act (157 s on the lane).
         #[tokio::test]
-        async fn an_act_turn_is_capped_under_the_reserved_room() {
+        async fn an_unmeasured_turn_carries_the_reserve_and_an_act_the_runaway_bound() {
             let window = 32_768u32;
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -5615,14 +5825,15 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                Some(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
+                TurnKind::Act,
             );
             assert_eq!(
                 act.max_tokens,
                 Some(reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP)),
-                "an act turn is capped under the reserve"
+                "an unmeasured act turn is the reserve under the runaway bound"
             );
-            let msg = faculty.build_request_within(
+            assert_eq!(act.purpose.as_deref(), Some("cognition/act"));
+            let pass = faculty.build_request_within(
                 &binding,
                 view.completion_reserve,
                 view.messages.clone(),
@@ -5630,13 +5841,14 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                None,
+                TurnKind::Pass,
             );
             assert_eq!(
-                msg.max_tokens,
+                pass.max_tokens,
                 Some(reserve),
-                "a message turn keeps the reserved room"
+                "an unmeasured pass keeps the reserved room — never a floor"
             );
+            assert_eq!(pass.purpose.as_deref(), Some("cognition/deliberation"));
         }
 
         #[test]
@@ -5673,7 +5885,7 @@ mod tests {
                 view.system.clone(),
                 None,
                 Some(ws.room_id),
-                None,
+                TurnKind::Pass,
             );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
@@ -5791,14 +6003,14 @@ mod tests {
 
             let cold = faculty.completion_reserve_within(window);
             // (a) below the observation bar the prior stands
-            reg.record_emission_in_memory(persona, 2_500, false, 1);
-            reg.record_emission_in_memory(persona, 1_200, false, 2);
+            reg.record_emission_in_memory(persona, 2_500, 0, false, 1);
+            reg.record_emission_in_memory(persona, 1_200, 0, false, 2);
             assert_eq!(faculty.completion_reserve_within(window), cold);
             // (b) measured: peak 2,500 × 2 = 5,000 — still far under the 14,720 share,
             // but ABOVE the reply-sized cold prior. The direction inverted deliberately:
             // the prior is what a reply costs, and measurement earns room UP toward the
             // share rather than shaving a half-window default down.
-            reg.record_emission_in_memory(persona, 2_500, false, 3);
+            reg.record_emission_in_memory(persona, 2_500, 0, false, 3);
             let share = window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM;
             let measured = faculty.completion_reserve_within(window);
             assert_eq!(measured, 5_000);
@@ -5810,7 +6022,7 @@ mod tests {
             // tiny-talker floor: a 40-token ack cannot strangle the next thought
             let quiet = Uuid::new_v4();
             for t in 1..=3 {
-                reg.record_emission_in_memory(quiet, 40, false, t);
+                reg.record_emission_in_memory(quiet, 40, 0, false, t);
             }
             let quiet_faculty = LlmDeliberationFaculty::new(
                 quiet,
@@ -5828,7 +6040,7 @@ mod tests {
             // the SHARE — a citizen who genuinely needs the room earns it back within a
             // turn instead of freezing at the reply-sized prior. Growth saturates at the
             // share (the prior is a starting point, the share is the wall).
-            reg.record_emission_in_memory(persona, 5_000, true, 4);
+            reg.record_emission_in_memory(persona, 5_000, 0, true, 4);
             assert_eq!(faculty.completion_reserve_within(window), share);
         }
 
@@ -7958,7 +8170,7 @@ mod tests {
                 );
                 let registry = crate::cognition::working_set::WorkingSetRegistry::new();
                 for tick in 0..3 {
-                    registry.record_emission_in_memory(persona, 834, false, tick);
+                    registry.record_emission_in_memory(persona, 834, 0, false, tick);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -8217,7 +8429,7 @@ mod tests {
                 ]);
             let registry = WorkingSetRegistry::new();
             for tick in 0..3 {
-                registry.record_emission_in_memory(persona, 834, false, tick);
+                registry.record_emission_in_memory(persona, 834, 0, false, tick);
             }
             let faculty =
                 LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -8565,7 +8777,7 @@ mod tests {
                 // cold half-window prior must yield to optional conversation.
                 let registry = WorkingSetRegistry::new();
                 for now in 1..=3 {
-                    registry.record_emission_in_memory(persona, 1_000, false, now);
+                    registry.record_emission_in_memory(persona, 1_000, 0, false, now);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())

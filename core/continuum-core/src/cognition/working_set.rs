@@ -132,6 +132,55 @@ pub struct PersonaDemand {
 /// to 195 tokens and dropping the room board for want of 137 (measured
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
+/// How many recent turns the reasoning / answer NEED is read from — a p90 over this
+/// many is the mind's measured demand per channel; a peak alone is one loud turn.
+const NEED_SAMPLES: usize = 16;
+/// Turns observed before the need is trusted to size an allowance — the same bar the
+/// reserve asks (`turns >= 3`) before one reply sizes every turn after it.
+const MIN_NEED_TURNS: u32 = 3;
+/// Headroom over the p90 need (5/4): the p90 is what she USUALLY needs; the allowance
+/// must hold the turn that runs a little longer. An integer ratio, like the decay.
+const NEED_HEADROOM_NUM: u32 = 5;
+const NEED_HEADROOM_DEN: u32 = 4;
+
+/// What ONE turn of this mind needs to generate, per channel: her measured reasoning
+/// (the `<think>` / `reasoning_content` channel) and her measured answer — each the p90
+/// of recent turns with headroom. Measured on the M5 (2026-09-20, 20:58–21:14Z) because
+/// #4194 sized the allowance in TIME alone and two turns ended inside the reasoning
+/// channel (`persona.act.think_only reasoning_len=2730`, `2112`): no answer, no act. An
+/// allowance that does not hold the think never reaches the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputNeed {
+    /// Tokens of reasoning a turn needs (p90 × headroom).
+    pub reasoning: u32,
+    /// Tokens of answer a turn needs (p90 × headroom).
+    pub answer: u32,
+    /// Turns the need was read from — how much to trust it.
+    pub turns: u32,
+}
+
+impl OutputNeed {
+    /// The whole turn: think, then answer.
+    pub fn total(self) -> u32 {
+        self.reasoning.saturating_add(self.answer)
+    }
+}
+
+/// The p90 of `samples` (ascending sort, the value at the 90th percentile position)
+/// with the need headroom applied. Empty = 0.
+fn p90_with_headroom(samples: &[u32]) -> u32 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    let idx = (n * 9).div_ceil(10).saturating_sub(1);
+    sorted[idx.min(n - 1)]
+        .saturating_mul(NEED_HEADROOM_NUM)
+        .div_ceil(NEED_HEADROOM_DEN)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PersonaEmission {
     /// High-water mark, in tokens, of a completed generation. A turn that hit
@@ -146,6 +195,17 @@ pub(crate) struct PersonaEmission {
     pub last_seen_ms: u64,
     /// Observation count — what lets a reader judge how much to trust the peak.
     pub turns: u64,
+    /// The last [`NEED_SAMPLES`] turns' reasoning tokens, a ring (`need_turns` is the
+    /// cursor). A file from before this field loads zeros with `need_turns` 0 — no
+    /// need measured, never a zero need.
+    #[serde(default)]
+    pub reasoning_samples: [u32; NEED_SAMPLES],
+    /// The last [`NEED_SAMPLES`] turns' answer tokens, the same ring.
+    #[serde(default)]
+    pub answer_samples: [u32; NEED_SAMPLES],
+    /// Turns recorded into the rings (saturating). `< MIN_NEED_TURNS` = no need yet.
+    #[serde(default)]
+    pub need_turns: u32,
 }
 
 /// Per-persona observed turn demand for ONE core.
@@ -302,22 +362,27 @@ impl WorkingSetRegistry {
     /// Record one completed generation's measured output for `persona`.
     ///
     /// `output_tokens` is the SERVER's count (`usage.output_tokens`) — reasoning
-    /// tokens included, never an estimate. `hit_cap` marks a `FinishReason::Length`
+    /// tokens included, never an estimate; `reasoning_tokens` is the share of it the
+    /// reasoning channel took (the faculty apportions the server's count by channel
+    /// bytes), so the answer is the remainder. `hit_cap` marks a `FinishReason::Length`
     /// stop: that emission was clamped by the very reserve this measurement sizes,
     /// so it records at double (a floor on true demand, and the growth path — see
-    /// [`PersonaEmission::peak_tokens`]). Zero-token completions are the empty-
-    /// completion fault's territory, not a data point to drag the peak with.
+    /// [`PersonaEmission::peak_tokens`]); the channel that was cut (the reasoning when
+    /// no answer came, else the answer) records at double too. Zero-token completions
+    /// are the empty-completion fault's territory, not a data point to drag the peak with.
     pub(crate) fn record_emission(
         &self,
         persona: Uuid,
         output_tokens: u32,
+        reasoning_tokens: u32,
         hit_cap: bool,
         now_ms: u64,
     ) {
         if output_tokens == 0 {
             return;
         }
-        let updated = self.record_emission_in_memory(persona, output_tokens, hit_cap, now_ms);
+        let updated =
+            self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, hit_cap, now_ms);
         // Same persistence contract as demand: every observation, atomic, best-effort
         // — a restart is a pause, and a mind must not re-earn its reply size per boot.
         let path = match emission_path(persona) {
@@ -363,6 +428,7 @@ impl WorkingSetRegistry {
         &self,
         persona: Uuid,
         output_tokens: u32,
+        reasoning_tokens: u32,
         hit_cap: bool,
         now_ms: u64,
     ) -> PersonaEmission {
@@ -371,10 +437,26 @@ impl WorkingSetRegistry {
         } else {
             output_tokens
         };
+        // The channel split, with the cut channel doubled: a Length stop with no answer
+        // cut the THINK (the M5's think-only turns); with an answer, it cut the answer.
+        let reasoning = reasoning_tokens.min(output_tokens);
+        let answer = output_tokens - reasoning;
+        let (reasoning, answer) = match (hit_cap, answer) {
+            (true, 0) => (reasoning.saturating_mul(2), 0),
+            (true, a) => (reasoning, a.saturating_mul(2)),
+            (false, a) => (reasoning, a),
+        };
+        let push_need = |e: &mut PersonaEmission| {
+            let slot = (e.need_turns as usize) % NEED_SAMPLES;
+            e.reasoning_samples[slot] = reasoning;
+            e.answer_samples[slot] = answer;
+            e.need_turns = e.need_turns.saturating_add(1);
+        };
         *self
             .emitted
             .entry(persona)
             .and_modify(|e| {
+                push_need(&mut *e);
                 // A RECENT high-water mark, not an eternal one. `.max()` alone is a
                 // one-way ratchet: `hit_cap` records at DOUBLE, so a single truncated
                 // turn pins the peak at twice the cap forever, the reserve derived from
@@ -400,17 +482,40 @@ impl WorkingSetRegistry {
                 e.last_seen_ms = now_ms;
                 e.turns += 1;
             })
-            .or_insert(PersonaEmission {
-                peak_tokens: observed,
-                last_tokens: observed,
-                last_seen_ms: now_ms,
-                turns: 1,
+            .or_insert_with(|| {
+                let mut e = PersonaEmission {
+                    peak_tokens: observed,
+                    last_tokens: observed,
+                    last_seen_ms: now_ms,
+                    turns: 1,
+                    reasoning_samples: [0; NEED_SAMPLES],
+                    answer_samples: [0; NEED_SAMPLES],
+                    need_turns: 0,
+                };
+                push_need(&mut e);
+                e
             })
     }
 
     /// This persona's observed reply size, for the reserve derivation and the glass box.
     pub(crate) fn emission_of(&self, persona: Uuid) -> Option<PersonaEmission> {
         self.emitted.get(&persona).map(|e| *e.value())
+    }
+
+    /// What ONE turn of this mind needs to generate, per channel — `None` until
+    /// [`MIN_NEED_TURNS`] turns have been measured (a legacy `emission.json` without the
+    /// rings reads `None` too). Unknown is not zero: the caller falls back to the reserve.
+    pub fn need_of(&self, persona: Uuid) -> Option<OutputNeed> {
+        let e = self.emission_of(persona)?;
+        if e.need_turns < MIN_NEED_TURNS {
+            return None;
+        }
+        let filled = (e.need_turns as usize).min(NEED_SAMPLES);
+        Some(OutputNeed {
+            reasoning: p90_with_headroom(&e.reasoning_samples[..filled]),
+            answer: p90_with_headroom(&e.answer_samples[..filled]),
+            turns: e.need_turns.min(NEED_SAMPLES as u32),
+        })
     }
 
     /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
@@ -667,9 +772,9 @@ mod tests {
     #[test]
     fn a_capped_emission_records_double_and_an_uncapped_one_verbatim() {
         let reg = WorkingSetRegistry::new();
-        reg.record_emission_in_memory(p(1), 2_500, false, 1_000);
+        reg.record_emission_in_memory(p(1), 2_500, 0, false, 1_000);
         assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
-        reg.record_emission_in_memory(p(1), 3_000, true, 2_000);
+        reg.record_emission_in_memory(p(1), 3_000, 0, true, 2_000);
         let e = reg.emission_of(p(1)).expect("observed");
         assert_eq!(
             e.peak_tokens, 6_000,
@@ -680,7 +785,7 @@ mod tests {
         // collapse to the size of one ack (that is the tiny-talker trap the floor exists
         // for), and it must not stay pinned either (that is the ratchet that poisoned a
         // citizen's emission.json at 16,384 and left her 297 tokens of context).
-        reg.record_emission_in_memory(p(1), 40, false, 3_000);
+        reg.record_emission_in_memory(p(1), 40, 0, false, 3_000);
         let decayed = reg
             .emission_of(p(1))
             .map(|e| e.peak_tokens)
@@ -700,7 +805,7 @@ mod tests {
     fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
         let reg = WorkingSetRegistry::new();
         // Exactly the poisoned value read off a real citizen's emission.json.
-        reg.record_emission_in_memory(p(7), 8_192, true, 1_000);
+        reg.record_emission_in_memory(p(7), 8_192, 0, true, 1_000);
         assert_eq!(
             reg.emission_of(p(7)).map(|e| e.peak_tokens),
             Some(16_384),
@@ -710,7 +815,7 @@ mod tests {
         // Her actual replies are a few hundred tokens. Within a work session of them the
         // measurement must come back to something a reply-sized reserve can be built on.
         for turn in 2..=40u64 {
-            reg.record_emission_in_memory(p(7), 300, false, turn * 1_000);
+            reg.record_emission_in_memory(p(7), 300, 0, false, turn * 1_000);
         }
         let healed = reg
             .emission_of(p(7))
@@ -739,7 +844,7 @@ mod tests {
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
-        before.record_emission(persona, 321, false, 1_001);
+        before.record_emission(persona, 321, 200, false, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
@@ -757,12 +862,58 @@ mod tests {
         );
 
         assert_eq!(after.emission_of(persona), before.emission_of(persona));
+        assert_eq!(
+            after.emission_of(persona).map(|e| (e.need_turns, e.reasoning_samples[0], e.answer_samples[0])),
+            Some((1, 200, 121)),
+            "the channel split rides the same file: her reasoning need is not re-earned per boot"
+        );
         assert!(home
             .path()
             .join(".continuum/personas")
             .join(persona.to_string())
             .join("working-set.json")
             .is_file());
+    }
+
+    // what this catches (the M5, 2026-09-20 20:58–21:14Z): an allowance sized in time alone
+    // (20 s × 12 tok/s = 240) cannot hold a thinking pass; Qwen3.8 ended two turns inside
+    // the reasoning channel (`think_only reasoning_len=2730`, `2112`). The need is the p90
+    // of recent turns per channel with 5/4 headroom; it is UNKNOWN (None) before three
+    // turns and for a legacy emission file; a Length stop with no answer doubles the cut
+    // think; the ring keeps the last 16 so one loud turn ages out.
+    #[test]
+    fn the_reasoning_need_is_a_p90_with_headroom_and_unknown_before_it_is_measured() {
+        let reg = WorkingSetRegistry::new();
+        assert_eq!(reg.need_of(p(3)), None, "never measured: unknown, not zero");
+        reg.record_emission_in_memory(p(3), 1_000, 700, false, 1);
+        reg.record_emission_in_memory(p(3), 1_200, 900, false, 2);
+        assert_eq!(reg.need_of(p(3)), None, "two turns are not yet a need");
+        reg.record_emission_in_memory(p(3), 900, 600, false, 3);
+        let need = reg.need_of(p(3)).expect("three turns measure a need");
+        assert_eq!((need.reasoning, need.answer, need.turns), (1_125, 375, 3), "p90 of 3 is the max (900, 300) × 5/4");
+        assert_eq!(need.total(), 1_500);
+        // A Length stop with NO answer cut the think: it records at double.
+        reg.record_emission_in_memory(p(3), 768, 768, true, 4);
+        let need = reg.need_of(p(3)).expect("measured");
+        assert_eq!(need.reasoning, 1_536 * 5 / 4, "the cut think is a floor, doubled");
+        // A Length stop WITH an answer cut the answer instead.
+        reg.record_emission_in_memory(p(3), 1_000, 600, true, 5);
+        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[4]), Some(800));
+        // The ring: sixteen quiet turns age the loud one out.
+        for t in 6..=22u64 {
+            reg.record_emission_in_memory(p(3), 400, 300, false, t);
+        }
+        let need = reg.need_of(p(3)).expect("measured");
+        assert_eq!((need.reasoning, need.answer, need.turns), (375, 125, 16));
+        // A legacy emission.json (no rings) reads as no need — never a zero need.
+        let legacy: PersonaEmission =
+            serde_json::from_str(r#"{"peak_tokens":2500,"last_tokens":2500,"last_seen_ms":1,"turns":9}"#).unwrap();
+        assert_eq!(legacy.need_turns, 0);
+        reg.emitted.insert(p(4), legacy);
+        assert_eq!(reg.need_of(p(4)), None);
+        assert_eq!(p90_with_headroom(&[]), 0);
+        assert_eq!(p90_with_headroom(&[100; 10]), 125);
+        assert_eq!(p90_with_headroom(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 12, "the 9th of ten × 5/4, rounded up");
     }
 
     // what this catches: an invented number standing in for missing data. Before any
