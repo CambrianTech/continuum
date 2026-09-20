@@ -1,0 +1,540 @@
+//! THE GRID ALLOCATES ITS MINDS (card 2eec3977; Joel, 2026-09-20: "Grid size is dynamic.
+//! Residents exist between the grid. You need daemons and recipes that are big picture" /
+//! "why do we have 25 persona spawned … What even determines this? … run through all
+//! computer scenarios and test that our system delivers competency").
+//!
+//! What determined the population before this file: `identities_available()` — every
+//! identity on disk came online (#432), then the draw was bounded by this node's warm
+//! slots (card 7c38ff6f). Nothing derived the population from what the GRID can seat, no
+//! one decided which node a mind belongs on, and a node that joined or dropped changed
+//! nothing but its own draw. Minds accumulated as cruft; seats were never counted.
+//!
+//! PURE. One function, [`allocate`], over three DECLARED inputs — the [`Role`]s the
+//! operator's society needs (each a [`Requirement`]: window, capability, decode floor),
+//! the [`Mind`]s that exist (each with a role and a home), and what every node can run
+//! right now (a [`NodeOffer`]: the [`LanePlan`]s its own serving planner already computed
+//! — model, window, lanes, measured decode) — returns what each node serves, who is seated
+//! where, who is dormant, and how many seats stand open (the spawn signal). Nothing here
+//! reads a global, spawns a process or holds a constant of Joel's grid: a node that joins
+//! is one more offer; a node that drops is one fewer; a bigger box is a better plan in its
+//! offer. The daemon that feeds it holds the offers as they arrive and calls this once per
+//! change, never per tick (Joel: "find something once and pass it along").
+//!
+//! The objective, in order (the frame on card 2eec3977):
+//!   1. EVERY SEATED MIND AT ITS ROLE'S REQUIREMENT. A plan below a requirement seats
+//!      nobody for that role — a 2,048-token lane is not a seat (Joel: "2k is a useless
+//!      persona"). A node hosts the highest-priority role it can hold at requirement:
+//!      coders go where the capability is, weak nodes host orchestration phenotypes.
+//!   2. CAPABILITY — among holding plans the most capable model ("I need my 27b").
+//!   3. SEATS — then the plan with the most lanes.
+//!   4. WINDOW — then the largest window.
+//! Minds beyond the seats stay DORMANT with identity and memory intact; seats beyond the
+//! minds are OPEN — the count the spawner may mint. A mind is seated at home when home has
+//! a seat for its role, else on any node that has one: residents exist between the grid.
+
+use uuid::Uuid;
+
+/// What a role needs from a lane before one of its minds may sit on it. Declared by the
+/// society (a recipe), never derived from a machine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Requirement {
+    /// Tokens one turn of this role needs (the persona's typical prompt with headroom).
+    pub window: u32,
+    /// The least capable model this role is competent on (`ModelFootprint::capability_rank`).
+    pub min_capability: u8,
+    /// Decode below this is not a seat (the knee). `None` = the role does not care.
+    pub decode_floor_tps: Option<f32>,
+}
+
+/// A role in priority order: index 0 is seated first and hosted by every node that can.
+#[derive(Clone, Debug)]
+pub struct Role {
+    pub name: String,
+    pub requirement: Requirement,
+}
+
+/// A mind that exists (on some disk): its role and the node its memory lives on.
+#[derive(Clone, Debug)]
+pub struct Mind {
+    pub id: Uuid,
+    /// Index into `GridInputs::roles`.
+    pub role: usize,
+    pub home: Option<Uuid>,
+}
+
+/// One thing a node can run: the shape its own planner computed for one candidate model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LanePlan {
+    pub model_id: String,
+    pub capability_rank: u8,
+    pub window: u32,
+    pub lanes: u32,
+    /// Measured per-lane decode at this lane count; `None` = never measured (an absence
+    /// is not a number: it does not refuse the plan).
+    pub decode_tps_per_lane: Option<f32>,
+}
+
+impl LanePlan {
+    /// A node's published plan, read as an offer. The decode measurement lives outside
+    /// the plan (the knee record); the caller passes what it has.
+    pub fn of(plan: &super::serving_plan::ServingPlan, decode_tps_per_lane: Option<f32>) -> Self {
+        Self {
+            model_id: plan.base_model.model_id.clone(),
+            capability_rank: plan.base_model.capability_rank,
+            window: plan.served_context_window,
+            lanes: plan.lanes,
+            decode_tps_per_lane,
+        }
+    }
+
+    /// Does one lane of this plan seat a mind of a role with this requirement?
+    pub fn holds(&self, req: &Requirement) -> bool {
+        self.lanes > 0
+            && self.window >= req.window
+            && self.capability_rank >= req.min_capability
+            && match (self.decode_tps_per_lane, req.decode_floor_tps) {
+                (Some(tps), Some(floor)) => tps >= floor,
+                _ => true,
+            }
+    }
+
+    /// Objective 2–4: capability, then lanes, then window.
+    fn rank(&self) -> (u8, u32, u32) {
+        (self.capability_rank, self.lanes, self.window)
+    }
+}
+
+/// What one node can run right now: every runnable plan its planner computed.
+#[derive(Clone, Debug)]
+pub struct NodeOffer {
+    pub node: Uuid,
+    pub plans: Vec<LanePlan>,
+}
+
+/// The three declared inputs plus the one society-wide ratio (minds a warm lane serves,
+/// `citizen_health::MINDS_PER_LANE_STARVED_ABOVE` on the live path — passed, not read).
+#[derive(Clone, Debug)]
+pub struct GridInputs {
+    pub roles: Vec<Role>,
+    pub minds: Vec<Mind>,
+    pub nodes: Vec<NodeOffer>,
+    pub minds_per_lane: u32,
+}
+
+/// Why a node serves what it serves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeVerdict {
+    /// The node hosts this role (index into roles) on its chosen plan.
+    Hosts { role: usize },
+    /// Every runnable plan is below every role's requirement — the node seats nobody.
+    /// `best_window`/`best_capability` say how far off it is.
+    BelowEveryRequirement { best_window: u32, best_capability: u8 },
+    /// The node offered no runnable plan at all.
+    NothingRunnable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeAllocation {
+    pub node: Uuid,
+    pub plan: Option<LanePlan>,
+    /// The highest-priority role the chosen plan holds (the plan was chosen for it).
+    pub verdict: NodeVerdict,
+    /// EVERY role the chosen plan holds, in priority order — one engine at one window
+    /// seats every role whose requirement is at or below it (Cormac's condition on
+    /// #4259: a 27B at 2 × 70k holds coders AND orchestrators; seating coders only left
+    /// its seats open for coders that did not exist while orchestrators went dormant).
+    pub holds: Vec<usize>,
+    /// lanes × minds_per_lane when hosting, else 0. Shared by every role in `holds`.
+    pub seats: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seat {
+    pub mind: Uuid,
+    pub node: Uuid,
+    pub role: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenSeats {
+    pub node: Uuid,
+    pub role: usize,
+    pub count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridAllocation {
+    pub nodes: Vec<NodeAllocation>,
+    pub seated: Vec<Seat>,
+    /// Minds with no seat anywhere on the grid: identity and memory kept, no lane.
+    pub dormant: Vec<Uuid>,
+    /// Seats no existing mind fills — what the spawner may mint, per node and role.
+    pub open: Vec<OpenSeats>,
+}
+
+impl GridAllocation {
+    pub fn node(&self, id: Uuid) -> Option<&NodeAllocation> {
+        self.nodes.iter().find(|n| n.node == id)
+    }
+    pub fn seat_of(&self, mind: Uuid) -> Option<Uuid> {
+        self.seated.iter().find(|s| s.mind == mind).map(|s| s.node)
+    }
+    /// Seats a role can sit in: every node whose plan holds it (shared with the other
+    /// roles that node holds).
+    pub fn seats_for(&self, role: usize) -> u32 {
+        self.nodes.iter().filter(|n| n.holds.contains(&role)).map(|n| n.seats).sum()
+    }
+    pub fn open_total(&self) -> u32 {
+        self.open.iter().map(|o| o.count).sum()
+    }
+}
+
+/// The best plan on a node for a requirement: the most capable holding plan, then the
+/// most lanes, then the widest window. `None` when no plan holds.
+pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
+    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.rank())
+}
+
+/// What each node serves: its best plan for the highest-priority role it can hold (so
+/// coders stay on the capability), and every role that plan holds fills its seats.
+fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32) -> NodeAllocation {
+    for (role, r) in roles.iter().enumerate() {
+        if let Some(plan) = best_plan_for(&offer.plans, &r.requirement) {
+            let holds = roles
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| plan.holds(&r.requirement))
+                .map(|(i, _)| i)
+                .collect();
+            return NodeAllocation {
+                node: offer.node,
+                seats: plan.lanes.saturating_mul(minds_per_lane),
+                plan: Some(plan.clone()),
+                verdict: NodeVerdict::Hosts { role },
+                holds,
+            };
+        }
+    }
+    let verdict = match offer.plans.iter().max_by_key(|p| p.rank()) {
+        Some(best) => NodeVerdict::BelowEveryRequirement {
+            best_window: offer.plans.iter().map(|p| p.window).max().unwrap_or(0), // unwrap_or: unreachable, `best` exists
+            best_capability: best.capability_rank,
+        },
+        None => NodeVerdict::NothingRunnable,
+    };
+    NodeAllocation { node: offer.node, plan: None, verdict, holds: Vec::new(), seats: 0 }
+}
+
+/// The allocation. Deterministic: nodes in offer order, minds in their given order.
+pub fn allocate(inputs: &GridInputs) -> GridAllocation {
+    let nodes: Vec<NodeAllocation> = inputs
+        .nodes
+        .iter()
+        .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane))
+        .collect();
+    // Free seats per node, drawn down as minds are seated.
+    let mut free: Vec<u32> = nodes.iter().map(|n| n.seats).collect();
+    let mut seated = Vec::new();
+    let mut dormant = Vec::new();
+    for role in 0..inputs.roles.len() {
+        // Every node whose chosen plan holds this role — not only the one it was chosen
+        // for: seats are the node's, and roles fill them in priority order.
+        let hosts: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.holds.contains(&role))
+            .map(|(i, _)| i)
+            .collect();
+        let minds: Vec<&Mind> = inputs.minds.iter().filter(|m| m.role == role).collect();
+        let mut unseated: Vec<&Mind> = Vec::new();
+        // Pass 1: home has a seat for her role — she stays where her memory is.
+        for m in &minds {
+            let at_home = m.home.and_then(|h| hosts.iter().copied().find(|&i| nodes[i].node == h && free[i] > 0));
+            match at_home {
+                Some(i) => {
+                    free[i] -= 1;
+                    seated.push(Seat { mind: m.id, node: nodes[i].node, role });
+                }
+                None => unseated.push(m),
+            }
+        }
+        // Pass 2: any node on the grid with a free seat for her role — residents exist
+        // between the grid. The node with the most free seats first, so load spreads.
+        for m in unseated {
+            let target = hosts
+                .iter()
+                .copied()
+                .filter(|&i| free[i] > 0)
+                .max_by_key(|&i| free[i]);
+            match target {
+                Some(i) => {
+                    free[i] -= 1;
+                    seated.push(Seat { mind: m.id, node: nodes[i].node, role });
+                }
+                None => dormant.push(m.id),
+            }
+        }
+    }
+    // A seat no existing mind of ANY held role fills is open for the highest-priority
+    // role the node holds — the spawner mints what the node is best at.
+    let open = nodes
+        .iter()
+        .zip(free.iter())
+        .filter_map(|(n, &f)| match n.verdict {
+            NodeVerdict::Hosts { role } if f > 0 => Some(OpenSeats { node: n.node, role, count: f }),
+            _ => None,
+        })
+        .collect();
+    GridAllocation { nodes, seated, dormant, open }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- fixtures: shapes, not Joel's grid. Numbers are illustrative machine classes. ----
+    fn coder() -> Role {
+        Role {
+            name: "coder".into(),
+            requirement: Requirement { window: 65_536, min_capability: 7, decode_floor_tps: Some(10.0) },
+        }
+    }
+    fn orchestrator() -> Role {
+        Role {
+            name: "orchestrator".into(),
+            requirement: Requirement { window: 32_768, min_capability: 3, decode_floor_tps: None },
+        }
+    }
+    fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
+        LanePlan { model_id: model.into(), capability_rank: cap, window, lanes, decode_tps_per_lane: tps }
+    }
+    fn minds(role: usize, home: Option<Uuid>, n: usize) -> Vec<Mind> {
+        (0..n).map(|_| Mind { id: Uuid::new_v4(), role, home }).collect()
+    }
+    /// A 64 GB unified-memory box: the 27B at 2 lanes or 1 wide lane; a 7B at 4 lanes.
+    fn big_box(node: Uuid) -> NodeOffer {
+        NodeOffer {
+            node,
+            plans: vec![
+                plan("27b", 9, 67_072, 2, Some(14.0)),
+                plan("27b", 9, 131_072, 1, Some(14.3)),
+                plan("7b", 5, 131_072, 4, Some(40.0)),
+            ],
+        }
+    }
+    /// A 32 GB discrete-GPU box: the 27B at 3 lanes × 128k.
+    fn gpu_box(node: Uuid) -> NodeOffer {
+        NodeOffer { node, plans: vec![plan("27b", 9, 131_072, 3, Some(30.0))] }
+    }
+    /// A 16 GB laptop: a 7B or a 1.5B, never the 27B.
+    fn small_box(node: Uuid) -> NodeOffer {
+        NodeOffer { node, plans: vec![plan("7b", 5, 32_768, 1, Some(12.0)), plan("1.5b", 2, 32_768, 3, Some(60.0))] }
+    }
+    fn inputs(nodes: Vec<NodeOffer>, minds: Vec<Mind>) -> GridInputs {
+        GridInputs { roles: vec![coder(), orchestrator()], minds, nodes, minds_per_lane: 2 }
+    }
+
+    // what this catches: the 2026-09-20 07:52Z shape — a box whose only runnable plans are
+    // 2,048-token lanes. Before this, sixteen minds drew onto it and every turn refused.
+    #[test]
+    fn a_box_that_can_only_serve_two_k_seats_nobody_and_says_how_far_off_it_is() {
+        let n = Uuid::new_v4();
+        let offer = NodeOffer { node: n, plans: vec![plan("27b", 9, 2_048, 1, None), plan("27b", 9, 2_048, 2, None)] };
+        let m = minds(0, Some(n), 6);
+        let a = allocate(&inputs(vec![offer], m.clone()));
+        assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: 9 });
+        assert!(a.seated.is_empty());
+        assert_eq!(a.dormant.len(), 6, "every mind dormant, identity kept — none seated on a useless lane");
+        assert_eq!(a.open_total(), 0, "and nothing tells the spawner to mint more");
+    }
+
+    // what this catches: a lone big box seats coders on the 27B at requirement — capability
+    // before lane count (the 7B at 4 lanes has more seats and is not chosen), lanes before
+    // window (2 × 67k beats 1 × 131k), minds beyond the seats dormant.
+    #[test]
+    fn a_lone_big_box_seats_its_coders_on_the_most_capable_model_then_the_most_lanes() {
+        let n = Uuid::new_v4();
+        let m = minds(0, Some(n), 6);
+        let a = allocate(&inputs(vec![big_box(n)], m.clone()));
+        let node = a.node(n).unwrap();
+        assert_eq!(node.verdict, NodeVerdict::Hosts { role: 0 });
+        assert_eq!(node.plan.as_ref().unwrap(), &plan("27b", 9, 67_072, 2, Some(14.0)));
+        assert_eq!(node.seats, 4);
+        assert_eq!(a.seated.len(), 4);
+        assert_eq!(a.dormant.len(), 2);
+        assert!(a.seated.iter().all(|s| s.node == n && s.role == 0));
+    }
+
+    // what this catches: the grid growing — a GPU box joins, the seats grow from 4 to 10,
+    // the two dormant minds wake ON THE NEW BOX (residents exist between the grid), the
+    // four seated stay home, and the four seats nobody fills are the spawn signal.
+    #[test]
+    fn a_gpu_box_joining_wakes_the_dormant_keeps_the_seated_home_and_opens_seats_to_mint() {
+        let big = Uuid::new_v4();
+        let gpu = Uuid::new_v4();
+        let m = minds(0, Some(big), 6);
+        let alone = allocate(&inputs(vec![big_box(big)], m.clone()));
+        let joined = allocate(&inputs(vec![big_box(big), gpu_box(gpu)], m.clone()));
+        assert_eq!(joined.seats_for(0), 10);
+        assert!(joined.dormant.is_empty(), "every existing mind has a seat now");
+        for s in &alone.seated {
+            assert_eq!(joined.seat_of(s.mind), Some(big), "a mind seated at home stays home");
+        }
+        for d in &alone.dormant {
+            assert_eq!(joined.seat_of(*d), Some(gpu), "a dormant mind wakes where the seat opened");
+        }
+        assert_eq!(joined.open, vec![OpenSeats { node: gpu, role: 0, count: 4 }]);
+    }
+
+    // what this catches: the grid shrinking — the GPU box drops; its minds reseat on the
+    // big box's free seats, the rest go dormant, nothing is minted.
+    #[test]
+    fn a_node_dropping_reseats_what_the_grid_can_hold_and_the_rest_go_dormant() {
+        let big = Uuid::new_v4();
+        let gpu = Uuid::new_v4();
+        let mut m = minds(0, Some(big), 2);
+        m.extend(minds(0, Some(gpu), 6));
+        let both = allocate(&inputs(vec![big_box(big), gpu_box(gpu)], m.clone()));
+        assert_eq!(both.seated.len(), 8);
+        assert_eq!(both.open_total(), 2);
+        let dropped = allocate(&inputs(vec![big_box(big)], m.clone()));
+        assert_eq!(dropped.seated.len(), 4, "four seats on the box that remains");
+        assert_eq!(dropped.dormant.len(), 4);
+        assert_eq!(dropped.open_total(), 0);
+        assert!(dropped.seated.iter().all(|s| s.node == big));
+        // The two homed on the big box keep their seats; two of the GPU box's minds move.
+        for mind in m.iter().filter(|x| x.home == Some(big)) {
+            assert_eq!(dropped.seat_of(mind.id), Some(big));
+        }
+    }
+
+    // what this catches: a weak node is not a bad coder seat — it hosts the role it CAN hold
+    // (orchestration), and coders go where the capability is when a big box joins.
+    #[test]
+    fn a_small_box_hosts_orchestration_and_coders_go_where_the_capability_is() {
+        let small = Uuid::new_v4();
+        let big = Uuid::new_v4();
+        let mut m = minds(0, Some(small), 2);
+        m.extend(minds(1, Some(small), 1));
+        let alone = allocate(&inputs(vec![small_box(small)], m.clone()));
+        let node = alone.node(small).unwrap();
+        assert_eq!(node.verdict, NodeVerdict::Hosts { role: 1 }, "the 7B holds orchestration, never the coder role");
+        assert_eq!(node.plan.as_ref().unwrap().model_id, "7b", "the most capable holding model, not the 1.5B with more lanes");
+        assert_eq!(alone.dormant.len(), 2, "the coders wait for a box that can hold them");
+        assert_eq!(alone.seated.len(), 1);
+        let joined = allocate(&inputs(vec![small_box(small), big_box(big)], m.clone()));
+        assert!(joined.dormant.is_empty());
+        assert!(joined.seated.iter().filter(|s| s.role == 0).all(|s| s.node == big), "coders seat on the big box");
+        assert_eq!(joined.node(small).unwrap().verdict, NodeVerdict::Hosts { role: 1 }, "the small box still hosts orchestration");
+    }
+
+    // what this catches: the decode knee is a requirement — 2 lanes at 6.3 t/s do not seat a
+    // coder whose floor is 10; an UNMEASURED decode is not a refusal (absence ≠ number).
+    #[test]
+    fn a_starved_decode_does_not_hold_and_an_unmeasured_one_is_not_refused() {
+        let req = coder().requirement;
+        assert!(!plan("27b", 9, 67_072, 2, Some(6.3)).holds(&req));
+        assert!(plan("27b", 9, 67_072, 1, Some(14.3)).holds(&req));
+        assert!(plan("27b", 9, 67_072, 2, None).holds(&req));
+        assert!(!plan("27b", 9, 65_535, 2, None).holds(&req), "one token under the window is under");
+        assert!(!plan("7b", 6, 131_072, 4, Some(40.0)).holds(&req), "capability is a requirement, not a preference");
+        assert!(!plan("27b", 9, 131_072, 0, None).holds(&req), "zero lanes seat nobody");
+        let n = Uuid::new_v4();
+        let offer = NodeOffer { node: n, plans: vec![plan("27b", 9, 67_072, 2, Some(6.3)), plan("27b", 9, 131_072, 1, Some(14.3))] };
+        let a = allocate(&inputs(vec![offer], minds(0, Some(n), 3)));
+        assert_eq!(a.node(n).unwrap().plan.as_ref().unwrap().lanes, 1, "the knee sheds the second lane; the one lane that decodes is the seat");
+        assert_eq!(a.seated.len(), 2);
+        assert_eq!(a.dormant.len(), 1);
+    }
+
+    // what this catches: the population is the SEATS, never the minds on disk — too few
+    // minds opens seats to mint; too many leaves the extra dormant; both are the same law.
+    #[test]
+    fn open_seats_are_the_spawn_signal_and_extra_minds_are_dormant() {
+        let n = Uuid::new_v4();
+        let few = allocate(&inputs(vec![big_box(n)], minds(0, None, 1)));
+        assert_eq!(few.seated.len(), 1);
+        assert_eq!(few.open, vec![OpenSeats { node: n, role: 0, count: 3 }]);
+        let many = allocate(&inputs(vec![big_box(n)], minds(0, None, 25)));
+        assert_eq!(many.seated.len(), 4);
+        assert_eq!(many.dormant.len(), 21);
+        assert_eq!(many.open_total(), 0);
+        let none = allocate(&inputs(vec![], minds(0, None, 3)));
+        assert_eq!(none.dormant.len(), 3, "no grid, no seats, every mind dormant");
+        let empty = allocate(&inputs(vec![NodeOffer { node: n, plans: vec![] }], vec![]));
+        assert_eq!(empty.node(n).unwrap().verdict, NodeVerdict::NothingRunnable);
+    }
+
+    // what this catches (Cormac's condition on #4259): one engine at one window holds every
+    // role at or below it — a 4-seat coder box with 2 coders and 3 orchestrators seats
+    // 2 + 2, leaves 1 orchestrator dormant and NO seat open. Before, it seated the coders,
+    // held 2 seats open for coders that did not exist, and sent 3 orchestrators dormant.
+    #[test]
+    fn a_node_seats_every_role_its_plan_holds_in_priority_order() {
+        let n = Uuid::new_v4();
+        let mut m = minds(0, Some(n), 2);
+        m.extend(minds(1, Some(n), 3));
+        let a = allocate(&inputs(vec![big_box(n)], m));
+        let node = a.node(n).unwrap();
+        assert_eq!(node.verdict, NodeVerdict::Hosts { role: 0 }, "chosen for the coders — capability first");
+        assert_eq!(node.holds, vec![0, 1], "…and it holds orchestrators too");
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 2);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 2);
+        assert_eq!(a.dormant.len(), 1);
+        assert_eq!(a.open_total(), 0, "no seat is open while a mind of a held role waits");
+        // Priority holds under pressure: 5 coders and 3 orchestrators on the same 4 seats
+        // seat 4 coders; every orchestrator waits.
+        let mut m = minds(0, Some(n), 5);
+        m.extend(minds(1, Some(n), 3));
+        let a = allocate(&inputs(vec![big_box(n)], m));
+        assert_eq!(a.seated.iter().filter(|s| s.role == 0).count(), 4);
+        assert_eq!(a.seated.iter().filter(|s| s.role == 1).count(), 0);
+        assert_eq!(a.dormant.len(), 4);
+    }
+
+    // what this catches: a homeless mind (fresh identity, home unknown) seats wherever the
+    // grid has a free seat, spread to the node with the most room.
+    #[test]
+    fn a_mind_without_a_home_seats_where_the_grid_has_the_most_room() {
+        let big = Uuid::new_v4();
+        let gpu = Uuid::new_v4();
+        let a = allocate(&inputs(vec![big_box(big), gpu_box(gpu)], minds(0, None, 1)));
+        assert_eq!(a.seat_of(a.seated[0].mind), Some(gpu), "six free seats there, four here");
+    }
+
+    // what this catches: the outlier validation — the REAL per-node planner's plan reads
+    // as an offer with no translation layer, so the daemon feeds `allocate` what it
+    // already publishes. A cold 64 GB-class budget planning a 27B-class footprint.
+    #[test]
+    fn a_real_serving_plan_reads_as_a_lane_plan() {
+        use super::super::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
+        let model = ModelFootprint {
+            model_id: "coder-27b".into(),
+            weights_bytes: 19_000_000_000,
+            kv_per_token: 32_768,
+            context_window: 262_144,
+            capability_rank: 9,
+            fixed_per_lane_bytes: 0,
+        };
+        let host = HostBudget { usable_bytes: 25_000_000_000, perf_cores: 12 };
+        let plan = plan_serving(host, &[model], ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
+        let lane = LanePlan::of(&plan, None);
+        assert_eq!(lane.model_id, "coder-27b");
+        assert_eq!(lane.capability_rank, 9);
+        assert_eq!(lane.window, plan.served_context_window);
+        assert_eq!(lane.lanes, plan.lanes);
+        assert!(lane.lanes >= 1);
+        let n = Uuid::new_v4();
+        let i = inputs(vec![NodeOffer { node: n, plans: vec![lane.clone()] }], minds(0, Some(n), 2));
+        let a = allocate(&i);
+        // The node hosts the first role its real plan holds — a 25 GB budget planning a
+        // 27B for two lanes lands under the coder window here (2 × ~44k) and hosts
+        // orchestration; the verdict names the plan's real width either way.
+        let expected = match i.roles.iter().position(|r| lane.holds(&r.requirement)) {
+            Some(role) => NodeVerdict::Hosts { role },
+            None => NodeVerdict::BelowEveryRequirement { best_window: lane.window, best_capability: 9 },
+        };
+        assert_eq!(a.node(n).unwrap().verdict, expected);
+        assert!(lane.window < coder().requirement.window, "the shape this fixture pins: two lanes on 25 GB do not reach the coder window");
+    }
+}

@@ -35,6 +35,7 @@ pub mod act_replay;
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod bench_round;
+pub mod grid_allocation;
 pub mod bench_staging;
 pub mod bench_task;
 pub mod round_readiness;
