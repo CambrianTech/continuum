@@ -107,6 +107,9 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
+    /// Explicit retained learning revision to bind before publication. It must
+    /// belong to this persona, card and claim; omission publishes without learning
+    /// credit. A revision is not interchangeable with the artifact/submission ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -778,6 +781,10 @@ pub struct WorkSubmissionParams {
     /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
+    /// Inspect this card's retained learning-revision metadata. Does not select,
+    /// bind, or train it; matching a claim alone does not prove artifact causality.
+    #[serde(default)]
+    pub include_staged_evidence: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -794,6 +801,8 @@ pub struct WorkSubmissionResult {
     pub reviews: Vec<WorkReviewResult>,
     pub credit: Option<reviewed::ReviewedCredit>,
     pub credit_error: Option<String>,
+    pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
+    pub staged_evidence_error: Option<String>,
 }
 
 #[async_trait]
@@ -834,8 +843,13 @@ impl ActionCommand for WorkSubmission {
                         .into(),
                 )
             })?;
+        let mut staged_evidence = None;
+        let mut staged_evidence_error = None;
         let credit = async {
             let Some(owner) = self.registry.get(submitted.publisher.as_uuid()) else {
+                if p.include_staged_evidence {
+                    staged_evidence_error = Some("publisher is not resident on this node".into());
+                }
                 return Ok(reviewed::ReviewedCredit::pending(
                     reviewed::ReviewedCreditState::PublisherNotResident,
                 ));
@@ -855,6 +869,12 @@ impl ActionCommand for WorkSubmission {
                     crate::identity::PeerId::from_uuid(owner.persona_id()),
                 )),
             ));
+            if p.include_staged_evidence {
+                match reviewed::staged_evidence(&conn, owner.agent_name(), submitted).await {
+                    Ok(rows) => staged_evidence = Some(rows),
+                    Err(error) => staged_evidence_error = Some(error.to_string()),
+                }
+            }
             reviewed::credit_status(&conn, owner.agent_name(), p.submission_id)
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))
@@ -897,6 +917,8 @@ impl ActionCommand for WorkSubmission {
             reviews,
             credit,
             credit_error,
+            staged_evidence,
+            staged_evidence_error,
         })
     }
 }

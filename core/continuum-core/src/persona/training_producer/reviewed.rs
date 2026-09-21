@@ -336,6 +336,68 @@ pub struct ReviewedCredit {
     pub destination: Option<SubmitOutcome>,
 }
 
+/// Inspectable staging metadata, not authorization to train or an inferred link
+/// to an artifact. In particular, the newest turn may only discuss the review.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/work/StagedCreditEvidence.ts"
+)]
+pub struct StagedCreditEvidence {
+    #[ts(type = "string")]
+    pub revision_id: Uuid,
+    #[ts(type = "string | null")]
+    pub claim_id: Option<Uuid>,
+    #[ts(type = "string | null")]
+    pub owner: Option<Uuid>,
+    pub staged_at_ms: u64,
+    pub generation_count: usize,
+    pub matches_submission_claim: bool,
+    pub predates_submission: bool,
+}
+
+/// The existing credit owner projects its own rows. Consumers never receive the
+/// prompt/completion, and an incomplete store response is an error, not "no work".
+pub async fn staged_evidence<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    submitted: &airc_work::WorkSubmission,
+) -> Result<Vec<StagedCreditEvidence>, ClientError> {
+    ensure_storage(conn, persona_name).await?;
+    let value = conn
+        .commands()
+        .execute_value(
+            "data/list",
+            json!({
+                "collection": StagedCredit::COLLECTION,
+                "dbPath": format!("@persona:{persona_name}"),
+                "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
+            }),
+        )
+        .await?;
+    let rows = staged_credit_from_list(value)?;
+    let mut evidence = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.card_id != submitted.card_id.as_uuid() {
+            return Err(ClientError::Transport(
+                "staged credit query returned another card".into(),
+            ));
+        }
+        evidence.push(StagedCreditEvidence {
+            revision_id: row.id,
+            claim_id: row.claim_id,
+            owner: row.owner,
+            staged_at_ms: row.staged_at_ms,
+            generation_count: row.receipts.len(),
+            matches_submission_claim: row.claim_id == Some(submitted.claim_id.as_uuid())
+                && row.owner == Some(submitted.publisher.as_uuid()),
+            predates_submission: row.staged_at_ms <= submitted.submitted_at_ms,
+        });
+    }
+    evidence.sort_by_key(|row| (row.staged_at_ms, row.revision_id));
+    Ok(evidence)
+}
+
 impl ReviewedCredit {
     pub fn pending(state: ReviewedCreditState) -> Self {
         Self {
