@@ -107,6 +107,16 @@ change claims to implement. The full grader's owning node, pending prerequisite
 and execution receipt must also be visible in the activity rather than known only
 to the coordinating agents.
 
+Reclaim is another boundary: Kimi identified that her edits preceded the claim
+used for publication. Inspection confirmed an older retained revision under a
+different claim. CapturedCredit freezes the claim at turn selection; it is not
+relabelled at snapshot write time. Consequently submitted-claim equality is a
+diagnostic comparison, not a complete contribution-eligibility policy. The
+current binder requires exact equality. A successor must distinguish permission
+to publish now from evidence of earlier authorized contributions, prove the
+artifact/provenance connection across reclaims, and retain generation reservations.
+Do not weaken the existing authorization check merely to make old work train.
+
 The automatic handoff must carry the source owner's immutable selection through
 typed execution context, before artifact publication. The turn's credit capture
 already owns the revision and generation receipts; the submission handler owns
