@@ -2547,6 +2547,10 @@ impl LlmDeliberationFaculty {
                 // …and what it is structurally forbidden to cost her.
                 kept_recent_move_messages = evidence.messages,
                 kept_recent_move_tokens = evidence.tokens,
+                // 0 messages = her last move is further back than the scan bound and is
+                // NOT protected; `truncated` = only a suffix of a longer chain is. The
+                // protection's limits ride its own receipt.
+                kept_recent_move_truncated = evidence.truncated,
                 "conversation fill capped by the act-latency target at THIS node's \
                  measured prefill rate — window headroom is reserve for content that \
                  earns its prefill, never default fill; her own last move and its \
@@ -3368,13 +3372,31 @@ impl LlmDeliberationFaculty {
             // this turn"), then `persona.act.no_deliverable_yet`, then an hour line with
             // zero writes that reads as a lazy persona.
             //
-            // Protected whenever the budget can hold it at all; when it cannot, nothing
-            // here can save it and the ordinary drop stands (stopping short would put the
-            // assembled prompt over the window, which mutes her for the whole tick).
+            // Protected whenever the budget can hold it at all. When it CANNOT, nothing
+            // here can save it — stopping short would put the assembled prompt over the
+            // window, which mutes her for the whole tick — but it is never silent: a
+            // `CannotFit` is an outcome this code declares and names, with what was lost.
+            //
             // `min`, not `saturating_sub`: the quiet-tick branch above already holds the
-            // LAST message back, and that message is inside the evidence run — subtracting
-            // would reserve one extra old turn and leave the fitted suffix over budget.
-            let drop_end = if evidence.tokens > 0 && evidence.tokens <= history_budget {
+            // LAST message back, and that message is inside the evidence suffix —
+            // subtracting would reserve one extra old turn and leave the fit over budget.
+            let evidence_fit = evidence.fit_within(history_budget);
+            if evidence_fit == EvidenceFit::CannotFit {
+                crate::probe!(
+                    class = "delib.fill.evidence_cannot_fit",
+                    persona = %self.persona_name,
+                    evidence_messages = evidence.messages,
+                    evidence_tokens = evidence.tokens,
+                    history_budget,
+                    truncated_chain = evidence.truncated,
+                    "her most recent act and its result do NOT fit the conversation \
+                     budget — they are being dropped and she may re-issue the act. A \
+                     cannot-fit outcome, never a silent fallback: either the budget is \
+                     too small for a turn of this shape, or the act's result is too big \
+                     to carry whole and wants condensing"
+                );
+            }
+            let drop_end = if evidence_fit == EvidenceFit::Protected {
                 drop_end.min(messages.len().saturating_sub(evidence.messages))
             } else {
                 drop_end
@@ -3536,12 +3558,37 @@ struct PromptMessages {
     room_updates: Vec<ChatMessage>,
 }
 
-/// Her OWN most recent move and its outcome, priced — the run at the END of the optional
-/// history that a binding fill budget must never reach.
+/// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
+/// that a binding fill budget must not reach into.
+///
+/// A suffix, not a run in the middle: you cannot drop from the middle of a conversation,
+/// so protecting her act means keeping everything from its opener to the end — including
+/// the follow-up question that arrived after it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RecentMove {
     messages: usize,
     tokens: usize,
+    /// The cluster extends FURTHER BACK than the scan bound: this is a suffix of her
+    /// causal chain, not the chain. Rides the receipt so a partial protection never
+    /// reads as a whole one.
+    truncated: bool,
+}
+
+/// Whether her most recent causal unit can be held out of a binding drop.
+///
+/// The seam other machinery composes with — a `cannot-fit` here is an OUTCOME the
+/// substrate declares and names on `delib.fill.evidence_cannot_fit`, never a quiet
+/// fallback to ordinary dropping. Something too large to fit must never disappear with
+/// nobody told; that is the disease this whole change exists to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvidenceFit {
+    /// No move of hers within the scan bound — there is nothing to protect.
+    NoMove,
+    /// The unit fits the budget and is held out of the drop.
+    Protected,
+    /// The unit is LARGER than the whole conversation budget. Nothing here can save it;
+    /// it is dropped, loudly, and she may re-issue the act.
+    CannotFit,
 }
 
 /// What a binding fill budget costs her, in KIND and amount. A clip that takes her own
@@ -3555,31 +3602,85 @@ struct ShedPreview {
     results: usize,
 }
 
+impl RecentMove {
+    /// Can this unit be held out of a drop against `history_budget`? See [`EvidenceFit`]
+    /// — a `CannotFit` is declared and named, never a silent fallback.
+    fn fit_within(self, history_budget: usize) -> EvidenceFit {
+        if self.messages == 0 || self.tokens == 0 {
+            EvidenceFit::NoMove
+        } else if self.tokens <= history_budget {
+            EvidenceFit::Protected
+        } else {
+            EvidenceFit::CannotFit
+        }
+    }
+}
+
 impl PromptMessages {
-    /// Her OWN most recent move and its outcome: the trailing run of assistant turns and
-    /// result blocks at the end of the optional history, plus the turn that OPENED the
-    /// cluster (an act without the ask that produced it is the broken-cluster shape the
-    /// evictor already refuses to leave at the front).
+    /// The suffix that carries her OWN most recent move and its outcome: from the turn
+    /// that OPENED the cluster through the end of the history.
     ///
-    /// Bounded by [`LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES`] so a pathological run
-    /// of assistant turns cannot turn this protection into the whole budget.
+    /// Her move need not be the LAST message — a follow-up question, a room turn, a peer
+    /// asking about the thing she just did all arrive after it, and those are exactly the
+    /// turns whose answer depends on the act being still visible. So the scan walks back
+    /// past trailing ordinary turns to find her move, then back through its cluster, then
+    /// one more for the opener (an act without the ask that produced it is the
+    /// broken-cluster shape the evictor already refuses to leave at the front).
+    ///
+    /// # What this does NOT do, stated plainly
+    ///
+    /// This is an ASSEMBLER HEURISTIC over message roles and prose prefixes, and it is
+    /// bounded by [`LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES`] in both directions:
+    ///
+    /// - a move further back than the bound (more than N ordinary turns have happened
+    ///   since) is NOT protected — `RecentMove::default()`, and the receipt says
+    ///   `kept_recent_move_messages=0`;
+    /// - a tool chain LONGER than the bound is protected only as a SUFFIX, with
+    ///   [`RecentMove::truncated`] set, and no opener is added because the message before
+    ///   the cut is another link, not the real opener;
+    /// - it does not protect an act referenced by an arbitrarily later message, and it
+    ///   does not close recent-action loss.
+    ///
+    /// The real answer is SOURCE-OWNED CAUSAL GROUPING — the source that emits an act and
+    /// its result declares them one unit, and the assembler protects declared units
+    /// instead of sniffing prefixes. That is out of reach in this change (Astra's review
+    /// of #4290); this is the smaller honest move, with its limits on the receipt.
     fn recent_move_evidence(&self) -> RecentMove {
-        let mut out = RecentMove::default();
-        let mut idx = self.history.len();
-        while idx > 0 && out.messages < LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES {
-            let message = &self.history[idx - 1];
-            if !LlmDeliberationFaculty::continues_cluster(message) {
-                break;
-            }
-            out.tokens += LlmDeliberationFaculty::message_cost(message);
-            out.messages += 1;
+        let history = &self.history;
+        let scan = LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES;
+        // Walk back over turns that arrived AFTER her move.
+        let mut end = history.len();
+        let mut skipped = 0usize;
+        while end > 0
+            && skipped < scan
+            && !LlmDeliberationFaculty::continues_cluster(&history[end - 1])
+        {
+            end -= 1;
+            skipped += 1;
+        }
+        if end == 0 || !LlmDeliberationFaculty::continues_cluster(&history[end - 1]) {
+            return RecentMove::default();
+        }
+        // …then back through the cluster itself.
+        let mut idx = end;
+        let mut span = 0usize;
+        while idx > 0 && span < scan && LlmDeliberationFaculty::continues_cluster(&history[idx - 1])
+        {
+            idx -= 1;
+            span += 1;
+        }
+        let truncated = idx > 0 && LlmDeliberationFaculty::continues_cluster(&history[idx - 1]);
+        if !truncated && idx > 0 {
             idx -= 1;
         }
-        if out.messages > 0 && idx > 0 {
-            out.tokens += LlmDeliberationFaculty::message_cost(&self.history[idx - 1]);
-            out.messages += 1;
+        RecentMove {
+            messages: history.len() - idx,
+            tokens: history[idx..]
+                .iter()
+                .map(LlmDeliberationFaculty::message_cost)
+                .sum(),
+            truncated,
         }
-        out
     }
 
     /// What a `history_budget`-sized fill sheds, in kind and amount — oldest first, whole
@@ -7929,6 +8030,96 @@ mod tests {
                 LlmDeliberationFaculty::messages_cost(&starving) <= last_cost,
                 "a budget too small for her last move still binds — a trimmed prompt \
                  beats a 500 that mutes her for the whole tick"
+            );
+        }
+
+        // what this catches (Astra's review of #4290): the protection reading only the
+        // TRAILING run, so the single commonest shape in a room — a follow-up arriving
+        // after a completed action — got NO protection at all, and the act the follow-up
+        // is asking about was the first thing dropped. Plus the two limits this
+        // protection still has, pinned so the PR cannot read as if recent-action loss is
+        // closed: a chain longer than the scan bound is protected only as a SUFFIX, and a
+        // move further back than the bound is not protected at all. The real answer is
+        // source-owned causal grouping; this test is the honest boundary of the heuristic.
+        #[test]
+        fn her_move_is_protected_after_a_follow_up_and_its_limits_are_explicit() {
+            let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
+            let of = |history: Vec<ChatMessage>| PromptMessages {
+                input_identity: [0; 32],
+                grounding_tokens: 0,
+                grounding_at: 0,
+                history,
+                stimulus: None,
+                latest_result: None,
+                room_updates: Vec::new(),
+            };
+
+            // (a) A NEW ROOM/USER MESSAGE ARRIVES AFTER A COMPLETED ACTION. The whole
+            // suffix is protected — you cannot drop from the middle of a conversation, so
+            // keeping her act means keeping the follow-up that depends on it too.
+            let after_follow_up = of(vec![
+                msg("user", "old chatter"),
+                msg("user", "please write the file"),
+                msg("assistant", "calling code/write"),
+                msg("user", "Full result of code/write — ok"),
+                msg("user", "did that land?"),
+            ]);
+            let evidence = after_follow_up.recent_move_evidence();
+            assert_eq!(
+                evidence.messages, 4,
+                "the ask, the act, its result AND the follow-up asking about it"
+            );
+            assert!(!evidence.truncated, "a four-message unit is whole, not a suffix");
+
+            // (b) A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix,
+            // and SAID to be one: no opener is added, because the message before the cut
+            // is another link in the chain, not the turn that opened it.
+            let mut chain = vec![msg("user", "do the whole migration")];
+            for i in 0..5 {
+                chain.push(msg("assistant", &format!("calling tool {i}")));
+                chain.push(msg("user", &format!("Full result of tool {i}")));
+            }
+            let long = of(chain);
+            let evidence = long.recent_move_evidence();
+            assert_eq!(
+                evidence.messages,
+                LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES,
+                "a chain longer than the bound yields a bounded suffix"
+            );
+            assert!(
+                evidence.truncated,
+                "and it must SAY it is a suffix — a partial protection that reads as a \
+                 whole one is how a limit becomes an invisible loss"
+            );
+
+            // (c) A MOVE FURTHER BACK THAN THE SCAN BOUND IS NOT PROTECTED. Stated, not
+            // hidden: this is the heuristic's edge, and the receipt carries a zero.
+            let mut buried = vec![msg("assistant", "calling code/write")];
+            for i in 0..LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES + 1 {
+                buried.push(msg("user", &format!("unrelated room turn {i}")));
+            }
+            assert_eq!(
+                of(buried).recent_move_evidence(),
+                RecentMove::default(),
+                "beyond the scan bound this protection does not reach — source-owned \
+                 causal grouping is what closes that, not a longer sniff"
+            );
+
+            // (d) CANNOT-FIT IS AN OUTCOME, NOT A SILENT FALLBACK. Evidence larger than
+            // the whole conversation budget is still dropped — nothing can save it — but
+            // the verdict is typed and named (`delib.fill.evidence_cannot_fit`), so it
+            // composes with the substrate's other cannot-fit signals instead of vanishing.
+            let evidence = after_follow_up.recent_move_evidence();
+            assert_eq!(evidence.fit_within(evidence.tokens), EvidenceFit::Protected);
+            assert_eq!(
+                evidence.fit_within(evidence.tokens - 1),
+                EvidenceFit::CannotFit,
+                "one token short of the unit is a declared cannot-fit"
+            );
+            assert_eq!(
+                RecentMove::default().fit_within(1_000),
+                EvidenceFit::NoMove,
+                "no move is not a cannot-fit — there is nothing to lose"
             );
         }
 
