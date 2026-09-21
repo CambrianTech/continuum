@@ -1,54 +1,15 @@
 //! [`MlxLoraFineTuner`] — the Apple-Silicon LoRA trainer behind the
 //! [`FineTuningAdapter`] seam.
 //!
-//! ## Why this adapter exists (the differentiator)
-//!
-//! unsloth's trainer is the NVIDIA/CUDA path; it does **not** train
-//! LoRA on Apple Silicon. Apple's `mlx_lm.lora` does — natively, on the
-//! Mac GPU (memory `unsloth-mlx-train-broken-on-mac`: the proven Mac
-//! recipe). Registering that path as a first-class `FineTuningAdapter`
-//! means the substrate covers a modality unsloth can't: a developer on
-//! a MacBook trains a real LoRA locally, and the grid can lease the
-//! best node per job (Apple → this adapter, NVIDIA → `local-candle` /
-//! the cloud `openai`/unsloth adapter, cross-grid → the airc-routed
-//! adapter the module doc anticipates). We serve the Mac + Hermes-local
-//! crowd better than the NVIDIA-only trainers serve themselves.
-//!
-//! ## Where it sits in the seam
-//!
-//! Third trainer *modality* behind the same trait, proving the
-//! interface holds across all three (the outlier-validation method):
-//!   - `openai_adapter`        — cloud HTTP trainer (also unsloth /v1)
-//!   - `local_candle_adapter`  — in-process Rust/Candle trainer
-//!   - **this**                — out-of-process subprocess trainer
-//!
-//! ## What it does
-//!
-//! - **`create_job`**: gates on Apple Silicon + an available `mlx_lm`,
-//!   materializes the dataset into MLX's `train.jsonl` / `valid.jsonl`
-//!   layout, spawns `<python> -m mlx_lm.lora --train …` as a
-//!   `tokio::process::Child` (module invocation, not inline python —
-//!   the sanctioned subprocess path per `no-python-in-rs-files`),
-//!   stores a [`JobSlot`] keyed by `local_id`, and spawns ONE watcher
-//!   task that awaits the child and publishes terminal status over a
-//!   `watch` channel (the canonical own-task + `watch::Sender` shape).
-//! - **`poll`**: reads the slot's `watch::Receiver` — cheap, no work.
-//! - **`cancel`**: kills the child; the watcher reports `Cancelled`.
-//!
-//! On `Completed`, the artifact's `local_path` is the adapter dir
-//! holding `adapters.safetensors` + `adapter_config.json` — exactly
-//! what `forge-custodian` converts to a GGUF-lora gene (the supply
-//! side of task #32). This adapter trains; the custodian converts;
-//! genome paging loads. No cloud hop, no unsloth, fully owned.
+//! Shares process lifetime, UUID handles, diagnostic draining and latched
+//! cancellation with the CUDA adapter through `native_jobs`. This adapter owns
+//! MLX model preparation, training inputs and artifact validation. The existing
+//! custodian converts MLX weights to PEFT/GGUF; genome evaluation and paging
+//! remain downstream concerns.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Instant;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
-use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
@@ -58,6 +19,7 @@ use super::types::{
 };
 use crate::inference_capability::probe_hardware_profile;
 use crate::runtime;
+use super::native_jobs::{default_schedule, default_lora, job_dir_for};
 
 /// Stable provider id — matches the model_registry provider convention.
 pub const PROVIDER_ID: &str = "mlx-local";
@@ -67,23 +29,10 @@ pub const PROVIDER_ID: &str = "mlx-local";
 /// ships `mlx_lm` on this class of machine; override per host.
 const MLX_PYTHON_KEY: &str = "MLX_PYTHON";
 
-/// One in-flight or terminal job. The `watch::Receiver` carries the
-/// latest [`TrainingStatus`]; the watcher task owns the matching
-/// `Sender`. A terminal status stays latched so repeated `poll`s after
-/// completion are idempotent (the reputation/lineage subsystem reads
-/// metrics off the terminal status).
-struct JobSlot {
-    status: watch::Receiver<TrainingStatus>,
-    /// Kill switch for `cancel` — `None` once the child has been taken
-    /// by the watcher (the watcher owns the wait; cancel kills via this
-    /// handle which shares the OS process through `kill_on_drop`).
-    cancel: Arc<tokio::sync::Notify>,
-}
-
 /// Apple-Silicon `mlx_lm.lora` trainer. Holds a concurrent table of
 /// job slots keyed by substrate-side `local_id`.
 pub struct MlxLoraFineTuner {
-    jobs: Arc<DashMap<Uuid, JobSlot>>,
+    jobs: super::native_jobs::NativeJobs,
     python: PathBuf,
 }
 
@@ -96,7 +45,7 @@ impl MlxLoraFineTuner {
             .map(PathBuf::from)
             .unwrap_or_else(default_mlx_python);
         Self {
-            jobs: Arc::new(DashMap::new()),
+            jobs: super::native_jobs::NativeJobs::new(PROVIDER_ID),
             python,
         }
     }
@@ -289,10 +238,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .arg("--max-seq-length")
             .arg(schedule.sequence_length.to_string())
             .arg("-c")
-            .arg(&config_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .arg(&config_path);
 
         log.info(&format!(
             "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} \
@@ -307,206 +253,24 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             adapter_dir.display()
         ));
 
-        let child = cmd.spawn().map_err(|e| {
-            FineTuningError::LocalTrainerFailed(format!(
-                "spawn {} -m mlx_lm.lora: {e}",
-                self.python.display()
-            ))
-        })?;
-
-        // ── Watcher: own the child, publish terminal status ────────
-        let (tx, rx) = watch::channel(TrainingStatus::Queued);
-        let cancel = Arc::new(tokio::sync::Notify::new());
         let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
-        spawn_watcher(child, tx, cancel.clone(), adapter_dir, model_id);
-
-        self.jobs.insert(local_id, JobSlot { status: rx, cancel });
-
-        Ok(JobHandle {
-            provider_id: PROVIDER_ID.to_string(),
-            provider_job_id: local_id.to_string(),
-            local_id,
+        self.jobs.launch(local_id, cmd, adapter_dir.clone(), Some(parse_loss_line), move |wall_clock_ms| {
+            if !adapter_dir.join("adapters.safetensors").is_file() {
+                return Err("MLX exited successfully without adapters.safetensors".into());
+            }
+            Ok(TrainingArtifact {
+                model_id, local_path: Some(adapter_dir), format: ArtifactFormat::MlxAdapterDir,
+                metrics: JobMetrics { wall_clock_ms, ..Default::default() },
+            })
         })
     }
 
     async fn poll(&self, handle: &JobHandle) -> Result<TrainingStatus, FineTuningError> {
-        match self.jobs.get(&handle.local_id) {
-            Some(slot) => Ok(slot.status.borrow().clone()),
-            None => Err(FineTuningError::UnknownHandle(handle.clone())),
-        }
+        self.jobs.poll(handle)
     }
 
     async fn cancel(&self, handle: &JobHandle) -> Result<(), FineTuningError> {
-        match self.jobs.get(&handle.local_id) {
-            Some(slot) => {
-                slot.cancel.notify_waiters();
-                Ok(())
-            }
-            None => Err(FineTuningError::UnknownHandle(handle.clone())),
-        }
-    }
-}
-
-/// Spawn the single watcher task for one job. Owns the child process,
-/// races completion against the cancel notification, and latches the
-/// terminal [`TrainingStatus`] into the watch channel. Canonical
-/// own-task + `watch::Sender` shape (CONCURRENCY-STYLE-GUIDE).
-fn spawn_watcher(
-    mut child: tokio::process::Child,
-    tx: watch::Sender<TrainingStatus>,
-    cancel: Arc<tokio::sync::Notify>,
-    adapter_dir: PathBuf,
-    model_id: String,
-) {
-    tokio::spawn(async move {
-        let log = runtime::logger(PROVIDER_ID);
-        let _ = tx.send(TrainingStatus::Running {
-            progress_pct: 0.0,
-            current_epoch: 0,
-        });
-        let started = Instant::now();
-
-        // Stream the trainer's pipes LIVE instead of buffering to exit
-        // (`wait_with_output`), which made a running job unfalsifiable: no loss
-        // curve existed anywhere until the process died. Every line lands in
-        // `trainer.log`; `Iter N: … loss X` lines additionally parse into
-        // `loss.jsonl` (the live learning proof `genome/job-status` and the
-        // evidence engine can read). The last stderr lines are kept for the
-        // failure message the old path built from the buffered output.
-        let stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
-            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-        if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(stream_trainer_pipe(
-                stdout,
-                adapter_dir.join("trainer.log"),
-                adapter_dir.join("loss.jsonl"),
-                None,
-            ));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(stream_trainer_pipe(
-                stderr,
-                adapter_dir.join("trainer.log"),
-                adapter_dir.join("loss.jsonl"),
-                Some(stderr_tail.clone()),
-            ));
-        }
-
-        let outcome = tokio::select! {
-            // mlx_lm.lora ran to completion (or failed).
-            res = child.wait() => res,
-            // Operator cancelled — kill is via kill_on_drop when we
-            // drop the child by leaving the select with a Cancelled.
-            _ = cancel.notified() => {
-                let _ = tx.send(TrainingStatus::Cancelled);
-                log.warn("mlx_lm.lora job cancelled by operator");
-                return;
-            }
-        };
-
-        let wall_clock_ms = started.elapsed().as_millis() as u64;
-        let status = match outcome {
-            Ok(exit) if exit.success() => {
-                let safetensors = adapter_dir.join("adapters.safetensors");
-                if !safetensors.exists() {
-                    TrainingStatus::Failed {
-                        error: format!(
-                            "mlx_lm.lora exited 0 but {} is missing",
-                            safetensors.display()
-                        ),
-                    }
-                } else {
-                    log.info(&format!(
-                        "mlx_lm.lora completed in {wall_clock_ms}ms → {}",
-                        adapter_dir.display()
-                    ));
-                    TrainingStatus::Completed {
-                        artifact: TrainingArtifact {
-                            model_id,
-                            local_path: Some(adapter_dir),
-                            // The MLX `adapters.safetensors` dir — NOT directly
-                            // pageable. The completion sentinel dispatches a
-                            // `forge/export` (gguf-lora) to the custodian to
-                            // convert this into a loadable gene before eval.
-                            format: ArtifactFormat::MlxAdapterDir,
-                            metrics: JobMetrics {
-                                wall_clock_ms,
-                                ..Default::default()
-                            },
-                        },
-                    }
-                }
-            }
-            Ok(exit) => {
-                let tail: String = stderr_tail
-                    .lock()
-                    .map(|d| d.iter().rev().take(8).cloned().collect::<Vec<_>>())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                TrainingStatus::Failed {
-                    error: format!("mlx_lm.lora exited {exit}: {tail}"),
-                }
-            }
-            Err(e) => TrainingStatus::Failed {
-                error: format!("mlx_lm.lora wait failed: {e}"),
-            },
-        };
-        let _ = tx.send(status);
-    });
-}
-
-/// Stream one trainer pipe: every line appends to `log_path`; `Iter N: … loss X`
-/// lines additionally append a `{"iter","kind","loss","atMs"}` row to `loss_path`;
-/// when `tail` is given (the stderr pipe) the last ~40 lines are retained for the
-/// failure message. Line-buffered writes — the trainer emits a handful of lines
-/// per minute, so this costs nothing.
-async fn stream_trainer_pipe(
-    pipe: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    log_path: PathBuf,
-    loss_path: PathBuf,
-    tail: Option<Arc<std::sync::Mutex<std::collections::VecDeque<String>>>>,
-) {
-    use tokio::io::AsyncBufReadExt;
-    let mut lines = tokio::io::BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{line}");
-        }
-        if let Some((iter, kind, loss)) = parse_loss_line(&line) {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&loss_path)
-            {
-                use std::io::Write;
-                let _ = writeln!(
-                    f,
-                    "{}",
-                    serde_json::json!({
-                        "iter": iter,
-                        "kind": kind,
-                        "loss": loss,
-                        "atMs": chrono::Utc::now().timestamp_millis(),
-                    })
-                );
-            }
-        }
-        if let Some(t) = &tail {
-            if let Ok(mut d) = t.lock() {
-                d.push_back(line);
-                while d.len() > 40 {
-                    d.pop_front();
-                }
-            }
-        }
+        self.jobs.cancel(handle)
     }
 }
 
@@ -532,31 +296,6 @@ fn parse_loss_line(line: &str) -> Option<(u64, &'static str, f64)> {
         .collect();
     let loss: f64 = num.parse().ok()?;
     Some((iter, kind, loss))
-}
-
-/// `~/.continuum/genome/<persona>/<trait_kind>/<job_uuid>/` — honors an
-/// explicit `local_artifact_dir` override when the caller set one.
-fn job_dir_for(request: &TrainingJobRequest, local_id: Uuid) -> PathBuf {
-    if let Some(dir) = &request.local_artifact_dir {
-        return dir.join(local_id.to_string());
-    }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".continuum/genome")
-        .join(request.persona_name.replace(['/', ' '], "_"))
-        .join(sanitize(&request.trait_kind))
-        .join(local_id.to_string())
-}
-
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// Does `train_base`'s tokenizer carry a chat template? Decides the dataset
@@ -680,23 +419,7 @@ fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
     (schedule.epochs.max(1) * n / batch).max(1)
 }
 
-fn default_schedule() -> ScheduleParams {
-    ScheduleParams {
-        epochs: 3,
-        batch_size: 4,
-        sequence_length: 2048,
-        learning_rate: 1e-5,
-    }
-}
 
-fn default_lora() -> LoRAHyperparams {
-    LoRAHyperparams {
-        rank: 8,
-        alpha: 16,
-        dropout: 0.0,
-        target_modules: vec!["q_proj".into(), "v_proj".into()],
-    }
-}
 
 /// The `-c` config YAML carrying the LoRA knobs mlx_lm.lora has NO CLI flag for
 /// (`rank`/`scale`/`dropout`). This is LOAD-BEARING: without it, mlx_lm silently
