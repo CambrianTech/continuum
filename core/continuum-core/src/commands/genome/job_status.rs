@@ -1,4 +1,4 @@
-//! `genome/job-status` — look the adapter up by `handle.providerId`, poll, return
+//! `genome/job-status` — look the adapter up by `jobHandle.providerId`, poll, return
 //! the typed [`TrainingStatus`].
 
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct JobStatusOutcome {
 
 crate::action_command! {
     /// Poll a fine-tuning job's status by its handle. The adapter is looked back up
-    /// from `handle.providerId`; on a hit the typed `TrainingStatus` (Queued /
+    /// from `jobHandle.providerId`; on a hit the typed `TrainingStatus` (Queued /
     /// Running / Completed / Failed) comes back. An unknown provider yields
     /// `success=false` with `errorKind="UnknownHandle"`; an adapter error yields its
     /// own `errorKind` slug.
@@ -127,19 +127,17 @@ mod tests {
         let cmd = GenomeJobStatus {
             registry: registry_with(&["openai"]),
         };
-        let out = cmd
-            .run(
-                &Ctx::default(),
-                JobLookupParams {
-                    handle: JobHandle {
-                        provider_id: "openai".into(),
-                        provider_job_id: "openai-job-1".into(),
-                        local_id: Uuid::nil(),
-                    },
-                },
-            )
-            .await
-            .unwrap();
+        // Regression: the common envelope owns `handle`; a provider JobHandle
+        // must survive that real boundary under its distinct `jobHandle` field.
+        let request = crate::runtime::CommandRequest::<JobLookupParams>::from_value(
+            serde_json::json!({"jobHandle": {
+                "providerId": "openai", "providerJobId": "openai-job-1",
+                "localId": Uuid::nil()
+            }}),
+        )
+        .unwrap();
+        assert!(request.handle.is_none());
+        let out = cmd.run(&Ctx::default(), request.params).await.unwrap();
         assert!(out.success);
         assert!(matches!(out.status, Some(TrainingStatus::Completed { .. })));
     }

@@ -8,7 +8,7 @@
 //! - `genome/job-create` — coordinator picks a capable adapter (honoring an
 //!   optional `preferredProvider`), the adapter creates the job, the
 //!   [`JobHandle`] + selected provider come back.
-//! - `genome/job-status` — look the adapter back up by `handle.providerId`, poll.
+//! - `genome/job-status` — look the adapter back up by `jobHandle.providerId`, poll.
 //! - `genome/job-cancel` — same lookup, then cancel.
 //!
 //! Per [[commands-are-dumb-daemons-are-smart]] the verbs are narrow: validate →
@@ -46,7 +46,7 @@ pub mod job_status;
 pub mod teach;
 
 /// Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
-/// adapter lookup keys on `handle.providerId`.
+/// adapter lookup keys on `jobHandle.providerId`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -55,6 +55,7 @@ pub mod teach;
 #[serde(rename_all = "camelCase")]
 pub struct JobLookupParams {
     /// The job handle returned by `genome/job-create`.
+    #[serde(rename = "jobHandle")]
     pub handle: JobHandle,
 }
 
