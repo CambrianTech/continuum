@@ -194,6 +194,15 @@ pub struct PersonaSpawnerModule {
     /// constructor default (single Helper, matching the embedded chat
     /// recipe) serves tests/fixtures built without recipe data.
     citizens: Vec<RoleId>,
+    /// THE GRID ALLOCATION'S ROSTER FOR THIS NODE (card 10bba591): the seats the
+    /// allocator counts here — seated + open for this owner. ONE OWNER for the lane-side
+    /// bound: once the allocator daemon has published, this is it, and the warm-slot
+    /// bound (`bounded_by_warm_slots`) is only the prior the boot draws on until then.
+    /// The identity-side bound (what the provider can yield: the population under the
+    /// hold, minus resting seats) stays the spawner's — the allocation never seats a
+    /// name the provider cannot fill. Told by the reconciler each pass
+    /// (`set_grid_roster`), never a global read on the draw path.
+    grid_roster: Option<crate::cognition::grid_allocation::GridRoster>,
 }
 
 impl PersonaSpawnerModule {
@@ -226,7 +235,14 @@ impl PersonaSpawnerModule {
             serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             population: 1,
             citizens: vec![RoleId::Helper],
+            grid_roster: None,
         }
+    }
+
+    /// The grid allocation's roster for this node, as the reconciler last read it
+    /// (see the `grid_roster` field). `None` = nothing published: the warm-slot prior.
+    pub(crate) fn set_grid_roster(&mut self, roster: Option<crate::cognition::grid_allocation::GridRoster>) {
+        self.grid_roster = roster;
     }
 
     /// Inject the RECIPE-DECLARED resident roles (#430) — the default
@@ -369,7 +385,12 @@ impl PersonaSpawnerModule {
         let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
             .saturating_sub(crate::persona::resting_seat::resting().len());
         let lanes = self.warm_lanes();
-        let seats = bounded_by_warm_slots(unbounded, lanes);
+        // The allocation's seat count for this node owns the lane-side bound once
+        // published (card 10bba591); the warm-slot bound is the prior before it.
+        let seats = match self.grid_roster {
+            Some(r) => unbounded.min(r.seats() as usize),
+            None => bounded_by_warm_slots(unbounded, lanes),
+        };
         // One row when the bound CHANGES what is drawn, not one per reconcile pass.
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
         let shape = ((unbounded as u64) << 32) | seats as u64;
@@ -857,6 +878,30 @@ mod tests {
         assert_eq!(missing_plan(&spawner, seats).len(), 0);
         assert_eq!(missing_plan(&spawner, 14).len(), 0);
         assert_eq!(missing_plan(&spawner, 0).len(), seats * per_seat);
+    }
+
+    // what this catches (card 10bba591): once the grid allocator has published, THIS
+    // node's seat count is the allocation's (seated + open here), not the warm-slot
+    // arithmetic — a wider grid seats more, a held or full grid seats fewer — while the
+    // identity-side bound (the population) still holds; and with nothing published the
+    // warm-slot prior stands exactly as before.
+    #[test]
+    fn a_published_allocation_owns_this_nodes_seat_count_and_the_population_still_bounds_it() {
+        use crate::cognition::grid_allocation::GridRoster;
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 2;
+        assert_eq!(spawner.seats(), 12.min(2 * per), "nothing published: the warm-slot prior");
+        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4 }));
+        assert_eq!(spawner.seats(), 8, "the allocation counts eight seats here");
+        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0 }));
+        assert_eq!(spawner.seats(), 1, "a held or full grid seats one");
+        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10 }));
+        assert_eq!(spawner.seats(), 12, "never past what the provider can yield");
+        spawner.set_grid_roster(None);
+        assert_eq!(spawner.seats(), 12.min(2 * per), "unpublished again: the prior");
     }
 
     #[test]

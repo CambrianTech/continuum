@@ -74,6 +74,12 @@ struct Ledger {
     /// derived on read (averaging rates lies — `TurnMetrics::accumulate`'s rule).
     prompt_cached: AtomicU64,
     prompt_prefilled: AtomicU64,
+    /// Placement moves this hour, by cause (card 10bba591): ON OPPORTUNITY — the grid
+    /// allocation seated her on a strictly better seat and the switch took it between
+    /// turns; ON FAILURE — a seat went dark, cold, queued or too narrow and she fell
+    /// home, returned, or spilled off a starved node.
+    moves_opportunity: AtomicU64,
+    moves_failure: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -90,11 +96,30 @@ static LEDGER: Ledger = Ledger {
     lanes_max: AtomicU64::new(0),
     prompt_cached: AtomicU64::new(0),
     prompt_prefilled: AtomicU64::new(0),
+    moves_opportunity: AtomicU64::new(0),
+    moves_failure: AtomicU64::new(0),
 };
 /// A turn ended inside the reasoning channel with no answer and no act (the
 /// `persona.act.think_only` seam) — the allowance did not hold her think.
 pub fn note_think_only() {
     LEDGER.think_only.fetch_add(1, Ordering::Relaxed);
+}
+/// A placement move landed (the `placement.move.opportunity` seam and the switch's
+/// fall-home / return / spill seams). `opportunity` = a better seat, not a failed one.
+pub(crate) fn note_move(opportunity: bool) {
+    if opportunity {
+        LEDGER.moves_opportunity.fetch_add(1, Ordering::Relaxed);
+    } else {
+        LEDGER.moves_failure.fetch_add(1, Ordering::Relaxed);
+    }
+}
+fn snapshot_moves_and_reset() -> (u64, u64) {
+    (LEDGER.moves_opportunity.swap(0, Ordering::Relaxed), LEDGER.moves_failure.swap(0, Ordering::Relaxed))
+}
+/// What the grid allocator last published about THIS hour's placement: the oldest
+/// dormant mind's turn age. `None` = nothing published yet or nobody dormant.
+fn oldest_dormant_turn_age_ms() -> Option<u64> {
+    crate::modules::grid_allocator::current().and_then(|p| p.oldest_dormant_turn_age_ms())
 }
 /// The node served `lanes` lanes just now — fold into the hour's maximum (see
 /// `Ledger::lanes_max`). Called at the serving daemon's geometry settle and at every
@@ -345,6 +370,12 @@ pub struct CitizenHealth {
     /// than inventing a 0% reuse. See [`prefix_reuse_pct`].
     pub prompt_cached_tokens: u64,
     pub prompt_prefill_tokens: u64,
+    /// Placement moves this hour by cause (card 10bba591) — see `Ledger`.
+    pub moves_opportunity: u64,
+    pub moves_failure: u64,
+    /// The oldest dormant mind's last-turn age at the tick, from the grid allocator's
+    /// published order; `None` = nobody dormant (or nothing published yet).
+    pub oldest_dormant_turn_age_ms: Option<u64>,
 }
 
 /// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
@@ -515,14 +546,24 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         ),
         None => String::new(),
     };
+    // THE GRID's half (card 10bba591): who moved and why — an opportunity move is the
+    // allocation finding her a strictly better seat, a failure move is a seat that
+    // stopped serving her — and how long the oldest dormant mind has waited for a clip
+    // of the grid's slack ("dormant is not off"). Silent when nobody is dormant rather
+    // than inventing a 0-minute wait, the same rule `reuse` and `directed` follow.
+    let dormant = match h.oldest_dormant_turn_age_ms {
+        Some(age) => format!(" · oldest dormant turn {} min ago", age / 60_000),
+        None => String::new(),
+    };
     format!(
         // THE WAYS AN HOUR CAN GO, SIDE BY SIDE AND NEVER SUMMED. `acts` is work that
         // reached the model and came back with hands; `lane-starved` never reached it at
         // all (card cff534ba — 6 and 25 minutes of waiting read as two of "8 acts" on the
         // M5, 2026-09-20); `think-only` reached it and ended inside the reasoning channel
         // (#4283); `prefix reuse` is how much of each prompt the engine did not re-read
-        // (card c119ace7). Four different problems with four different owners.
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} — {}",
+        // (card c119ace7); `moves` is minds changing seats and `oldest dormant turn` is a
+        // mind with no seat at all (card 10bba591). Six different problems, six owners.
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -539,6 +580,9 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.credits_settled,
         directed,
         reuse,
+        h.moves_opportunity,
+        h.moves_failure,
+        dormant,
         tail
     )
 }
@@ -684,6 +728,7 @@ impl CitizenHealthModule {
             crate::cognition::resource_admission::directed_lane_wait_ms();
         let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
         let lane_starved = snapshot_lane_starved_and_reset();
+        let (moves_opportunity, moves_failure) = snapshot_moves_and_reset();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
             resident,
@@ -708,6 +753,9 @@ impl CitizenHealthModule {
             prompt_cached_tokens,
             prompt_prefill_tokens,
             lane_starved,
+            moves_opportunity,
+            moves_failure,
+            oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
         }
     }
 }
@@ -804,6 +852,9 @@ impl ServiceModule for CitizenHealthModule {
             mindless_paged_out = paged_out.len() as u64,
             lane_bound_rested = rested.len() as u64,
             lane_bound_woken = woken.len() as u64,
+            moves_opportunity = h.moves_opportunity,
+            moves_failure = h.moves_failure,
+            oldest_dormant_turn_age_ms = h.oldest_dormant_turn_age_ms.unwrap_or(0), // unwrap_or: 0 = nobody dormant
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
@@ -851,6 +902,9 @@ impl ServiceModule for CitizenHealthModule {
                     standing_enabled,
                     prompt_cached_tokens: LEDGER.prompt_cached.load(Ordering::Relaxed),
                     prompt_prefill_tokens: LEDGER.prompt_prefilled.load(Ordering::Relaxed),
+                    moves_opportunity: LEDGER.moves_opportunity.load(Ordering::Relaxed),
+                    moves_failure: LEDGER.moves_failure.load(Ordering::Relaxed),
+                    oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
@@ -862,6 +916,8 @@ impl ServiceModule for CitizenHealthModule {
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "prompt_cached_tokens": h.prompt_cached_tokens, "prompt_prefill_tokens": h.prompt_prefill_tokens,
                     "prefix_reuse_pct": prefix_reuse_pct(&h),
+                    "moves_opportunity": h.moves_opportunity, "moves_failure": h.moves_failure,
+                    "oldest_dormant_turn_age_ms": h.oldest_dormant_turn_age_ms,
                     "verdict": v.as_str(), "line": line(&h, &v),
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -917,7 +973,27 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0 }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
+    }
+
+    // what this catches (card 10bba591): the line carries the grid's half — moves by
+    // cause, and the oldest dormant turn when anyone is dormant (never a "0 min ago" for
+    // nobody) — and the move ledger is a window like the rest.
+    #[test]
+    fn the_line_carries_the_moves_and_the_oldest_dormant_turn() {
+        let x = h(4, 2, 10, 2);
+        let l = line(&x, &verdict(&x));
+        assert!(l.contains("moves: 0 on opportunity / 0 on failure"), "{l}");
+        assert!(!l.contains("oldest dormant"), "nobody dormant: the line does not invent an age: {l}");
+        let moved = CitizenHealth { moves_opportunity: 2, moves_failure: 1, oldest_dormant_turn_age_ms: Some(23 * 60_000 + 5_000), ..x };
+        let l = line(&moved, &verdict(&moved));
+        assert!(l.contains("moves: 2 on opportunity / 1 on failure · oldest dormant turn 23 min ago"), "{l}");
+        note_move(true);
+        note_move(false);
+        note_move(false);
+        let (o, f) = snapshot_moves_and_reset();
+        assert!(o >= 1 && f >= 2);
+        assert_eq!(snapshot_moves_and_reset(), (0, 0), "a window, not a lifetime");
     }
 
     // what this catches (2026-09-19, IntelMac): an IDLE roster says WHY. Thirty hours of
