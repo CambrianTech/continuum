@@ -195,6 +195,10 @@ pub struct WorkingMemory {
     /// (2026-09-07 11:46Z: four consecutive work turns with [investigation] and
     /// no [hands]/[env]). Cleared by key when the condition ends.
     pinned: Mutex<Vec<TurnPinnedFact>>,
+    /// The card the restored checkpoint said her hands were rooted at, until her first
+    /// held-card turn reads the board and either confirms the hold or tells her it is
+    /// gone (`[claim]`). Set by `restore`, taken once by the turn; `None` otherwise.
+    restored_acting_card: Mutex<Option<uuid::Uuid>>,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
@@ -344,6 +348,14 @@ pub struct VolatileSnapshot {
     /// unchanged for compatibility with existing checkpoints.
     #[serde(default)]
     pub interrupted_dispatches: Vec<String>,
+    /// The card her hands were rooted at when this snapshot was written — what she
+    /// BELIEVES she holds on wake. Compared at her first held-card turn against what the
+    /// board says she holds; a disagreement is the one event Kimi asked for first
+    /// (card c8303c32, 2026-09-21): "a checkpoint can restore me with a workspace and no
+    /// claim, and right now nothing tells me those two disagree." `None` on snapshots from
+    /// before this field, and when her hands were home.
+    #[serde(default)]
+    pub acting_card: Option<uuid::Uuid>,
     /// Build the receipts in this snapshot were RECORDED against.
     ///
     /// A tool receipt is a true memory of what happened — and it describes the
@@ -416,6 +428,7 @@ impl WorkingMemory {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
             pinned: Mutex::new(Vec::new()),
+            restored_acting_card: Mutex::new(None),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             scope: Mutex::new(None),
@@ -806,6 +819,9 @@ impl WorkingMemory {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            // Stamped by `save_volatile`, which knows WHOSE memory this is; the memory
+            // itself carries no persona id.
+            acting_card: None,
             interrupted_dispatches: self
                 .dispatched
                 .lock()
@@ -878,6 +894,7 @@ impl WorkingMemory {
         }
         self.next_action_seq
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
+        *self.restored_acting_card.lock() = snap.acting_card;
 
         // Render the checkpoint evidence AFTER the entries land, so it is the
         // NEWEST thing in her window when she wakes. A fact, never an instruction.
@@ -953,6 +970,44 @@ impl WorkingMemory {
                 short(current),
             ), 2);
         }
+    }
+
+    /// The card the restored checkpoint believed she held, taken ONCE: the first held-card
+    /// turn after a wake reads the board and answers it. `None` after that, and on a wake
+    /// whose snapshot rooted nowhere.
+    pub fn take_restored_acting_card(&self) -> Option<uuid::Uuid> {
+        self.restored_acting_card.lock().take()
+    }
+
+    /// THE EVENT KIMI ASKED FOR FIRST (card c8303c32, 2026-09-21): her checkpoint restored
+    /// a workspace rooted at a card, and the board says the card is no longer hers. Until
+    /// now the only signal was a submit refusal, hours later — "a checkpoint can restore me
+    /// with a workspace and no claim, and right now nothing tells me those two disagree."
+    /// A fact into her window, pinned for two turns like `[released]`: the wake's turn and
+    /// the one that decides what to pull. `holder` is the board's word on who has it now
+    /// (`None` = nobody: lapsed and open, `work/claim` takes it back); `expired_at_ms` is
+    /// the lease edge if the board still carries it.
+    pub fn note_claim_gone(&self, card: uuid::Uuid, holder: Option<uuid::Uuid>, expired_at_ms: Option<u64>) {
+        let id8: String = card.simple().to_string().chars().take(8).collect();
+        let when = expired_at_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
+            .unwrap_or_default();
+        let text = match holder {
+            Some(who) => format!(
+                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{when} \
+                 and {} took it. Your checkout and your patch are untouched. Do not resume as its \
+                 holder — work/get {card} shows its state; take it back with work/claim only when it \
+                 reads claimable.",
+                who.simple().to_string().chars().take(8).collect::<String>()
+            ),
+            None => format!(
+                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{when} \
+                 and nobody holds it. Your checkout and your patch are untouched — work/claim {card} \
+                 takes it back, then continue from your ledger."
+            ),
+        };
+        self.pin_fact_for_turns("claim", &text, 2);
     }
 
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -1996,6 +2051,7 @@ mod tests {
             saved_at_ms: 0, // pre-field snapshot: no save time guessed
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
+            acting_card: None,
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
@@ -2761,6 +2817,48 @@ mod tests {
             "the action receipt survives — this faculty IS the proprioception channel: {}",
             c.content
         );
+    }
+
+    // what this catches (card c8303c32, Kimi 2026-09-21): a checkpoint that rooted her at
+    // a card is restored, the board no longer counts the card as hers, and the only signal
+    // used to be a submit refusal hours later. The wake carries the believed card ONCE
+    // (`take` is consumed), and the notice names the holder — or that nobody holds it and
+    // `work/claim` takes it back — pinned for two work turns like [released], then gone.
+    // Both directions: a snapshot rooted nowhere carries nothing to compare.
+    #[test]
+    fn a_claim_gone_while_she_slept_is_said_once_on_the_wake_and_names_the_way_back() {
+        let believed = uuid::Uuid::new_v4();
+        let wm = WorkingMemory::new(3);
+        let mut snap = wm.snapshot();
+        snap.acting_card = Some(believed);
+        let woke = WorkingMemory::new(3);
+        woke.restore(snap);
+        assert_eq!(woke.take_restored_acting_card(), Some(believed), "the wake reads what the checkpoint believed");
+        assert_eq!(woke.take_restored_acting_card(), None, "and only once");
+
+        // Re-granted to a peer: told who has it, told not to resume as holder.
+        let peer = uuid::Uuid::new_v4();
+        woke.note_claim_gone(believed, Some(peer), Some(1_790_000_000_000));
+        let facts = woke.pinned_facts().join("\n");
+        assert!(facts.contains("[claim]") && facts.contains("NO LONGER YOURS"), "{facts}");
+        assert!(facts.contains(&peer.simple().to_string()[..8]), "names the holder: {facts}");
+        assert!(facts.contains("lease edge"), "carries the lease edge when the board has it: {facts}");
+        assert!(facts.contains("work/claim only when it reads claimable"), "{facts}");
+        // Lapsed and open: told nobody holds it and that work/claim takes it back.
+        woke.note_claim_gone(believed, None, None);
+        let facts = woke.pinned_facts().join("\n");
+        assert!(facts.contains("nobody holds it") && facts.contains(&format!("work/claim {believed}")), "{facts}");
+        assert!(!facts.contains("lease edge"), "no edge invented when the board has none: {facts}");
+        // Two work turns, then gone — the wake's turn and the one that decides the pull.
+        woke.end_of_work_turn();
+        assert!(woke.pinned_facts().join("\n").contains("[claim]"), "still there for the pull decision");
+        woke.end_of_work_turn();
+        assert!(!woke.pinned_facts().join("\n").contains("[claim]"), "and not a standing condition");
+
+        // A snapshot rooted nowhere has nothing to compare.
+        let home = WorkingMemory::new(3);
+        home.restore(WorkingMemory::new(3).snapshot());
+        assert_eq!(home.take_restored_acting_card(), None);
     }
 
     // what this catches: a rooting fact aging out of the three-deep window mid-turn.

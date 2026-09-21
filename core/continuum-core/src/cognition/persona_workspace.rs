@@ -872,6 +872,29 @@ pub(crate) async fn root_at_held_card(
     let Ok(held) = citizen.active_claims().await else {
         return HeldCardTurn::unheld();
     };
+    // THE WAKE'S FIRST READ OF THE BOARD answers what the checkpoint believed (card
+    // c8303c32, Kimi 2026-09-21): her hands were rooted at a card when the snapshot was
+    // written; if the board no longer lists it among her holds, she is told NOW — in her
+    // window, before she resumes as its holder — instead of by a submit refusal hours on.
+    // Taken once: the notice is pinned for two turns and never repeated.
+    if let Some(body) = cycle.acting() {
+        if let Some(believed) = body.working_memory.take_restored_acting_card() {
+            if !held.iter().any(|c| c.card_id.as_uuid() == believed) {
+                let (holder, expired_at) = match citizen.card(believed).await {
+                    Some(card) => (card.owner.map(|o| o.as_uuid()), card.claim_expires_at_ms),
+                    None => (None, None),
+                };
+                body.working_memory.note_claim_gone(believed, holder, expired_at);
+                crate::probe!(
+                    class = "persona.claim.gone_on_wake",
+                    peer = %peer_id,
+                    card = %believed,
+                    holder = %holder.map(|h| h.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only, "" = nobody
+                    "her checkpoint rooted her at a card the board no longer counts as hers — told in her window on the first held-card read"
+                );
+            }
+        }
+    }
     if held.is_empty() {
         return HeldCardTurn::unheld();
     }
@@ -1634,8 +1657,12 @@ fn save_volatile(
 ) -> std::io::Result<()> {
     let path = volatile_path(persona_id)?;
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    let mut snapshot = wm.snapshot();
+    // What she believes she holds, stamped by the one writer that knows whose memory this
+    // is: her next wake compares it to the board (card c8303c32).
+    snapshot.acting_card = acting_card_of(persona_id);
     let persisted = PersistedVolatile {
-        wm: wm.snapshot(),
+        wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
         )),
