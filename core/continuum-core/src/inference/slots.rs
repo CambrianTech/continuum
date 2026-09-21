@@ -188,7 +188,7 @@ pub struct KvSlotPool {
     /// Activities with a valid KV page on disk (written via
     /// `/slots/{id}?action=save` under the lane's `--slot-save-path`). The
     /// restore half of the ledger: a re-entering activity whose slot was
-    /// recycled restores its page (~0.1s measured at 20k tokens) instead of
+    /// recycled restores its page (at this node's measured switch cost) instead of
     /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
     saved: Mutex<std::collections::HashSet<ActivityKey>>,
 }
@@ -417,7 +417,7 @@ impl KvSlotPool {
                     evicted_count = evicted,
                     "all slots held — engine evicted the least-valuable activity; its \
                      warm prefix is forfeit and its next turn re-prefills (or restores \
-                     from the server's prompt cache, measured ~0.1s at 20k)",
+                     its page at this node's measured switch cost — inference.kv_page.action ms)",
                 );
                 if evicted == 0 {
                     return None;
