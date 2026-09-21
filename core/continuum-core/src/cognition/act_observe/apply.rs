@@ -314,7 +314,13 @@ pub async fn apply_act(
             for call in calls {
                 let cmd = call.name.replace('_', "/");
                 if is_long_running(&cmd) {
-                    let handle = exec.dispatch_background(cmd.clone(), call.input.clone(), None);
+                    let handle = exec.dispatch_background(
+                        cmd.clone(),
+                        call.input.clone(),
+                        Some(crate::routing::CallerIdentity::local_persona(
+                            crate::identity::PeerId::from_uuid(body.persona_id),
+                        )),
+                    );
                     dispatched_calls.push(call.clone());
                     body.working_memory.record_dispatch_event(
                         handle,
