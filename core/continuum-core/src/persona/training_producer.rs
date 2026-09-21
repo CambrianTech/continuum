@@ -2855,6 +2855,7 @@ pub(crate) mod tests {
         assert!(original.matches_submission_claim);
         assert!(original.predates_submission);
         assert_eq!(original.generation_count, selected.receipts.len());
+        assert_eq!(original.generation_request_ids, vec!["public-command-request"]);
         let later = evidence
             .iter()
             .find(|row| row.revision_id == later_revision)

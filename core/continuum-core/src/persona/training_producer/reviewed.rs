@@ -352,6 +352,9 @@ pub struct StagedCreditEvidence {
     pub owner: Option<Uuid>,
     pub staged_at_ms: u64,
     pub generation_count: usize,
+    /// Join keys into the existing capture owner, in dispatch order. Snapshot
+    /// write time is not their dispatch time; an absent capture stays unknown.
+    pub generation_request_ids: Vec<String>,
     pub matches_submission_claim: bool,
     pub predates_submission: bool,
 }
@@ -389,6 +392,11 @@ pub async fn staged_evidence<T: Transport>(
             owner: row.owner,
             staged_at_ms: row.staged_at_ms,
             generation_count: row.receipts.len(),
+            generation_request_ids: row
+                .receipts
+                .into_iter()
+                .map(|receipt| receipt.submitted_request_id)
+                .collect(),
             matches_submission_claim: row.claim_id == Some(submitted.claim_id.as_uuid())
                 && row.owner == Some(submitted.publisher.as_uuid()),
             predates_submission: row.staged_at_ms <= submitted.submitted_at_ms,

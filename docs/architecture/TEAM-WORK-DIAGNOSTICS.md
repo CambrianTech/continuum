@@ -93,6 +93,19 @@ A final turn snapshot can also replace an earlier revision after its submit
 action. Therefore a staging time later than publication is not proof that the
 underlying experience happened later. Compare execution/generation provenance;
 do not turn the diagnostic timestamp comparison into an eligibility gate.
+The projection includes submitted generation request IDs in dispatch order,
+which join the existing capture owner. It does not manufacture a dispatch clock
+when a capture is absent.
+
+Kimi's acceptance requirements for the eventual receipt are explicit: artifact
+hash and base revision; captured versus published claim; work/dispatch time
+distinct from snapshot write time; exclusions with reasons; separately identified
+grade, signed review and credit binding. A challenge should reference an exact
+receipt/revision and return its provenance, with the dispute retained as card
+evidence. These are follow-up requirements, not capabilities this inspection
+change claims to implement. The full grader's owning node, pending prerequisite
+and execution receipt must also be visible in the activity rather than known only
+to the coordinating agents.
 
 The automatic handoff must carry the source owner's immutable selection through
 typed execution context, before artifact publication. The turn's credit capture
