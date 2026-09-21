@@ -16,7 +16,7 @@
 //!    priced eviction skips it. A concurrent returner can then never lease — and
 //!    restore INTO — a slot that is still decoding this turn's KV.
 //! 3. **Save/restore** now targets a guaranteed-free, non-decoding slot, so the
-//!    restore lands (~0.1s) instead of deferring behind a live decode.
+//!    restore lands at this node's measured switch cost instead of deferring behind a live decode.
 //!
 //! Before this, the slot was leased before the permit and never pinned, so a
 //! returner grabbed a still-decoding slot and its restore timed out — measured
@@ -148,14 +148,41 @@ pub async fn admit_turn(
     admission
 }
 
+/// The page switches this node has completed (ms), newest kept: what a save/restore
+/// COSTS HERE, measured — the wedge bound derives from it, and the allocator reads it
+/// as the per-turn price of fewer lanes than residents on a discrete card.
+static KV_PAGE_SWITCH_MS: crate::cognition::resource_admission::WaitRing =
+    crate::cognition::resource_admission::WaitRing::new();
+
+/// Below this a switch is never called a wedge, whatever the ring says — the floor the
+/// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
+const KV_PAGE_WEDGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// (p50 ms, p90 ms, count) of this node's completed page switches. (0, 0, 0) = unmeasured.
+pub fn kv_page_switch_ms() -> (u64, u64, u32) {
+    KV_PAGE_SWITCH_MS.p50_p90()
+}
+
+/// The bound past which a page switch is a WEDGE, not a slow switch: the floor, raised
+/// to three times this node's measured p90. Pure.
+///
+/// The bound was a flat 10 s from the day the M5 measured a restore at ~0.1 s — on
+/// unified memory the KV already lives in host RAM. On a discrete card a page is
+/// VRAM → host → file: the 5090 (2026-09-21, 26,880-token q8 pages) measured 88
+/// switches at p50 4.1 s, p90 6.8 s, **max 10,004 ms** — the flat cap was cutting a
+/// healthy switch off and calling the server wedged, and a 60k page would trip it every
+/// time. A bound sized from the work (Fable, #4277) cannot mistake a big page for a hang.
+pub fn kv_page_wedge_bound(measured_p90_ms: u64) -> std::time::Duration {
+    KV_PAGE_WEDGE_FLOOR.max(std::time::Duration::from_millis(measured_p90_ms.saturating_mul(3)))
+}
+
 /// Execute one KV page action against the server (`/slots/{id}?action=save|restore`).
 ///
-/// The 10s cap is a WEDGE DETECTOR, not a wait-for-the-slot: with permit-first + pin
+/// The bound is a WEDGE DETECTOR, not a wait-for-the-slot: with permit-first + pin
 /// admission ([`admit_turn`]) a restore is only ever issued into an already-free
-/// slot, so it lands in ~0.1s and never defers behind a live decode. A restore
-/// taking >10s now means a wedged server. (History: pre-fix this path saw 27/27
-/// restores fail `status=0`, then 55/67 with a 90s wait; the pin removes the failure
-/// mode instead of waiting it out, so the wait is gone.)
+/// slot and never defers behind a live decode; past the bound the server is wedged.
+/// (History: pre-fix this path saw 27/27 restores fail `status=0`, then 55/67 with a
+/// 90s wait; the pin removes the failure mode instead of waiting it out.)
 ///
 /// `pub(crate)` so the spawned warm-ahead task drives the SAME seam as admission.
 pub(crate) async fn kv_page_action(
@@ -167,15 +194,21 @@ pub(crate) async fn kv_page_action(
 ) -> bool {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
+    let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
+    let bound = kv_page_wedge_bound(p90_ms);
     let started = std::time::Instant::now();
     let resp = client
         .post(&url)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(bound)
         .json(&json!({ "filename": filename }))
         .send()
         .await;
     let ok = matches!(&resp, Ok(r) if r.status().is_success());
     let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // 0 = transport error
+    let ms = started.elapsed().as_millis() as u64;
+    if ok {
+        KV_PAGE_SWITCH_MS.note(ms);
+    }
     crate::probe!(
         class = "inference.kv_page.action",
         action = %action,
@@ -184,15 +217,32 @@ pub(crate) async fn kv_page_action(
         room = %key.room,
         ok,
         status = status as u64,
-        ms = started.elapsed().as_millis() as u64,
+        ms,
+        bound_ms = bound.as_millis() as u64,
+        node_p50_ms = p50_ms,
+        node_p90_ms = p90_ms,
+        node_measured = measured as u64,
         "KV page context switch — save pages the evictee's state out, restore pages \
-         the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
+         the returner's state in; `ms` is what it cost HERE (a miss means this turn re-prefills)",
     );
     ok
 }
 
 #[cfg(test)]
 mod tests {
+    // what this catches (the 5090, 2026-09-21): a page switch that costs seconds on a
+    // discrete card is not a wedge — the bound rises with this node's measured p90 and
+    // never falls below the floor; an unmeasured node is judged by the floor alone.
+    #[test]
+    fn the_wedge_bound_is_sized_from_the_nodes_measured_switches_never_a_flat_cap() {
+        use super::kv_page_wedge_bound;
+        use std::time::Duration;
+        assert_eq!(kv_page_wedge_bound(0), Duration::from_secs(10), "unmeasured: the floor");
+        assert_eq!(kv_page_wedge_bound(100), Duration::from_secs(10), "the M5's 0.1 s: the floor");
+        assert_eq!(kv_page_wedge_bound(6_835), Duration::from_millis(20_505), "the 5090's p90 × 3: a 10 s switch is a switch");
+        assert!(kv_page_wedge_bound(6_835) > Duration::from_millis(10_004), "the max this box measured is inside the bound");
+    }
+
     use super::*;
     use uuid::Uuid;
 
