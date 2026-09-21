@@ -4,7 +4,7 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkReviewParams = { 
 /**
- * The room the review card lives in (id or name).
+ * Review room (ID/name).
  */
 room: string, 
 /**
@@ -24,19 +24,19 @@ evidence_text?: string,
  */
 review_id?: string, 
 /**
- * The card under review; read from the review card when omitted.
+ * Parent card; defaults to review's parent.
  */
 card_id?: string, 
 /**
- * The submission reviewed; the latest when omitted.
+ * Submission; defaults to latest.
  */
 submission_id?: string, 
 /**
- * Its artifact; read off the board when omitted.
+ * Artifact; defaults to board.
  */
 artifact?: WorkArtifactReference, 
 /**
- * Your claim on the review card; read off the board when omitted.
+ * Review claim; defaults to board.
  */
 review_claim_id?: string, 
 /**

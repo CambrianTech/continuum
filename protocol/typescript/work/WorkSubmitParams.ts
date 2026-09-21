@@ -3,7 +3,7 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkSubmitParams = { 
 /**
- * The room the card lives in (id or name).
+ * Card room (ID/name).
  */
 room: string, 
 /**
@@ -19,14 +19,18 @@ submission_id?: string,
  */
 claim_id?: string, 
 /**
- * Benchmark instance name; read from your checkout when omitted.
+ * Instance; defaults to checkout.
  */
 instance?: string, 
 /**
- * The commit your patch is against; read from your checkout when omitted.
+ * Patch base commit; defaults to checkout base.
  */
 base_sha?: string, 
 /**
- * SHA-256 + size of your patch; computed when omitted.
+ * Patch hash/size; computed if omitted.
  */
-artifact?: WorkArtifactReference, staged_revision_id?: string, };
+artifact?: WorkArtifactReference, 
+/**
+ * Revision UUID, not artifact/submission ID. Bind before publish; omitted: no credit.
+ */
+staged_revision_id?: string, };

@@ -12,4 +12,8 @@ card_id: string,
 /**
  * Accepted submission UUID.
  */
-submission_id: string, };
+submission_id: string, 
+/**
+ * Inspect only; no selection/binding/training. Matching claims do not prove causality.
+ */
+include_staged_evidence: boolean, };
