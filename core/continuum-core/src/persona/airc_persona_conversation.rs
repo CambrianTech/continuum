@@ -751,7 +751,6 @@ impl AircPersonaConversation {
                 if ready_scan_remaining == 0 {
                     return Ok(None);
                 }
-                ready_scan_remaining -= 1;
             }
             // Rejoin-replayed turns first — they are OLDER than anything the live
             // stream will yield, and ordering is what keeps an addressed kickoff
@@ -766,6 +765,11 @@ impl AircPersonaConversation {
                 if let Some(event) = self.ready_event.clone() {
                     let message = self.admit_event(event).await;
                     self.ready_event = None;
+                    // Charge an examined event, not the earlier pass that only
+                    // retained it across awaits. Cancellation retains ownership.
+                    if !wait {
+                        ready_scan_remaining -= 1;
+                    }
                     if message.is_some() {
                         return Ok(message);
                     }
@@ -1138,6 +1142,23 @@ mod tests {
         assert_eq!(perceived[0].room_id, room);
         assert_eq!(perceived[0].peer_id, peer);
         assert!(perceived[0].text.contains("Shared Cargo owner"));
+
+        // A page counts examined events, not stash/admit loop iterations.
+        // Fill its first N-1 positions with legitimate non-turn control traffic.
+        let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
+            .map(|_| Ok(Arc::clone(&control)))
+            .collect();
+        page.push(Ok(Arc::new(event("last event in one admission page"))));
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(futures::stream::iter(page).chain(
+            futures::stream::once(async move {
+                drained.send(()).unwrap();
+                std::future::pending().await
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
+        let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
+        assert_eq!(last.text, "last event in one admission page");
 
         // Error frames must still reach the consumer, never disappear as noise.
         let (drained, ready) = tokio::sync::oneshot::channel();
