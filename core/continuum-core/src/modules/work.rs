@@ -3069,6 +3069,17 @@ pub struct WorkGetParams {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkGetResult {
     pub id: String,
+    /// The board that supplied this receipt; never the caller's current focus.
+    #[ts(type = "string")]
+    pub room_id: airc_core::RoomId,
+    pub room: String,
+    pub is_self: bool,
+    /// Availability uses the same holder projection as work/list.
+    pub claimable: bool,
+    pub lease: Option<String>,
+    pub observed_at_ms: u64,
+    pub claim_expires_at_ms: Option<u64>,
+    pub last_heartbeat_at_ms: Option<u64>,
     pub title: String,
     /// The card's full body — the task's requirements/spec, when authored.
     pub body: Option<String>,
@@ -3085,7 +3096,7 @@ pub struct WorkGetResult {
 impl WorkGet {
     /// Read only the caller's subscribed boards; a card lookup neither joins a
     /// room nor moves focus. Resolution and content use the same board view.
-    async fn read_card(airc: &Arc<Airc>, requested: &str) -> Result<WorkGetResult, CommandError> {
+    async fn read_card(airc: &Arc<Airc>, requested: &str, reader: Uuid) -> Result<WorkGetResult, CommandError> {
         let horizon = board_horizon(airc)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
@@ -3102,15 +3113,45 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        Ok(WorkGetResult {
+        Ok(Self::receipt(
+            room,
+            card,
+            ledger,
+            crate::modules::chat::now_ms(),
+            reader,
+        ))
+    }
+
+    fn receipt(
+        room: &airc_lib::Room,
+        card: &airc_work::WorkCard,
+        ledger: Option<crate::experience::ledger::CardLedger>,
+        now_ms: u64,
+        reader: Uuid,
+    ) -> WorkGetResult {
+        let holder = crate::persona::card_holder::holder(
+            card,
+            reader,
+            now_ms,
+            &crate::persona::card_holder::NoNames,
+        );
+        WorkGetResult {
             id: short8(card.card_id.as_uuid()),
+            room_id: room.channel,
+            room: room.name.clone(),
+            is_self: holder.is_self,
+            claimable: holder.claimable(card.state),
+            lease: holder.lease_word().map(str::to_string),
+            observed_at_ms: now_ms,
+            claim_expires_at_ms: card.claim_expires_at_ms,
+            last_heartbeat_at_ms: card.last_heartbeat_at_ms,
             title: card.title.clone(),
             body: card.body.clone(),
             state: state_str(&card.state).to_string(),
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
             ledger,
-        })
+        }
     }
 }
 
@@ -3122,14 +3163,15 @@ impl ActionCommand for WorkGet {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Read one work card in full (read-only): title, body (the task's requirements), state, \
-         owner, claim id. Accepts a full or short id from any room you belong to, without \
+         board room, claimability, lease expiry/heartbeat, owner and claim id. Accepts a full or short id from any room you belong to, without \
          changing your current room. This is how you re-check a spec mid-task.";
     type Params = WorkGetParams;
     type Output = WorkGetResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
-        Self::read_card(&airc, &p.card_id).await
+        let reader = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()).unwrap_or_default(); // An absent caller has no self identity; never attribute the claim to the operator.
+        Self::read_card(&airc, &p.card_id, reader).await
     }
 }
 
@@ -3828,7 +3870,7 @@ mod tests {
                 .await
                 .expect("a local airc scope opens without a daemon"),
         );
-        airc.join("academy").await.expect("join the academy");
+        let academy = airc.join("academy").await.expect("join the academy");
         let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
         let mut request = CreateWorkCard::new(
             repo.clone(),
@@ -3860,11 +3902,11 @@ mod tests {
             .await
             .expect("subscriptions before refused reads");
         assert!(matches!(
-            WorkGet::read_card(&airc, &full_id).await,
+            WorkGet::read_card(&airc, &full_id, Uuid::nil()).await,
             Err(CommandError::NotFound(_))
         ));
         assert!(matches!(
-            WorkGet::read_card(&airc, &prefix).await,
+            WorkGet::read_card(&airc, &prefix, Uuid::nil()).await,
             Err(CommandError::Invalid(_))
         ));
         assert_eq!(
@@ -3892,22 +3934,57 @@ mod tests {
             .expect("the academy card resolves by prefix from the run room");
         assert_eq!(resolved, card);
         for id in [&full_id, &prefix] {
-            let read = WorkGet::read_card(&airc, id)
+            let read = WorkGet::read_card(&airc, id, Uuid::nil())
                 .await
                 .expect("read the subscribed card");
             assert_eq!(read.id, prefix);
             assert_eq!(read.title, "serve-time pin match gap");
+            assert_eq!(read.room_id, academy.channel);
+            assert!(read.claimable);
+            assert!(read.lease.is_none());
             assert_eq!(
                 read.body.as_deref(),
                 Some("Review the serving match against the actual source.")
             );
             assert_eq!(read.state, "open");
         }
+        // Regression: a stale owner must not look like live contention in work/get.
+        // Use the real board shape and the shared projection's clock, not a sleep.
+        let horizon = board_horizon(&airc).await.expect("subscribed boards");
+        let boards = &horizon.boards;
+        let (room, source) = boards
+            .iter()
+            .find_map(|(r, b)| b.card(card).map(|c| (r, c)))
+            .expect("academy card");
+        let mut claimed = source.clone();
+        claimed.owner = Some(airc_core::PeerId::new());
+        claimed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        claimed.claim_expires_at_ms = Some(100);
+        claimed.last_heartbeat_at_ms = Some(50);
+        let held = WorkGet::receipt(room, &claimed, None, 99, Uuid::nil());
+        assert!(!held.claimable);
+        assert_eq!(held.lease.as_deref(), Some("held"));
+        let lapsed = WorkGet::receipt(room, &claimed, None, 100, Uuid::nil());
+        assert!(lapsed.claimable);
+        assert_eq!(lapsed.lease.as_deref(), Some("expired"));
+        assert_eq!(
+            lapsed.owner, held.owner,
+            "historical owner is preserved, not treated as an active hold"
+        );
+        assert_eq!(lapsed.claim_expires_at_ms, Some(100));
+        assert_eq!(lapsed.last_heartbeat_at_ms, Some(50));
+        assert_eq!(lapsed.observed_at_ms, 100);
+        assert!(!lapsed.is_self);
+        let own = WorkGet::receipt(room, &claimed, None, 100, claimed.owner.expect("owner").as_uuid());
+        assert!(own.is_self, "an expired claim still identifies its own holder");
+        assert_eq!(own.room, academy.name);
+        claimed.state = CardState::Review;
+        assert!(!WorkGet::receipt(room, &claimed, None, 100, Uuid::nil()).claimable);
         for id in [
             local_card.as_uuid().to_string(),
             short8(local_card.as_uuid()),
         ] {
-            let read = WorkGet::read_card(&airc, &id)
+            let read = WorkGet::read_card(&airc, &id, Uuid::nil())
                 .await
                 .expect("read the current-room card");
             assert_eq!(read.id, short8(local_card.as_uuid()));
@@ -3915,7 +3992,7 @@ mod tests {
             assert!(read.body.is_none());
         }
         assert!(matches!(
-            WorkGet::read_card(&airc, &Uuid::nil().to_string()).await,
+            WorkGet::read_card(&airc, &Uuid::nil().to_string(), Uuid::nil()).await,
             Err(CommandError::NotFound(_))
         ));
         assert_eq!(
