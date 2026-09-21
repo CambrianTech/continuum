@@ -51,11 +51,41 @@ pub struct Requirement {
     pub decode_floor_tps: Option<f32>,
 }
 
+impl Requirement {
+    /// The MEASURED form of this requirement: capability and decode still gate (Astra's
+    /// constraint on #4295 — "explicit floor/capability still gates"), the window becomes
+    /// a target and only the engine's own serve floor refuses. Used exactly where a
+    /// role's window was measured rather than declared.
+    pub fn held_as_target(&self, plan: &LanePlan, serve_floor: u32) -> bool {
+        plan.lanes > 0
+            && plan.window >= serve_floor
+            && plan.capability_rank >= self.min_capability
+            && match (plan.decode_tps_per_lane, self.decode_floor_tps) {
+                (Some(tps), Some(floor)) => tps >= floor,
+                _ => true,
+            }
+    }
+}
+
 /// A role in priority order: index 0 is seated first and hosted by every node that can.
 #[derive(Clone, Debug)]
 pub struct Role {
     pub name: String,
     pub requirement: Requirement,
+    /// Where `requirement.window` CAME FROM, and therefore what it may do (Cormac on
+    /// #4295, Joel's card 53a8d49b: "a measured requirement is a target, not a gate").
+    ///
+    /// `true` — the recipe DECLARED this window. It is a gate: a node below it seats
+    /// nobody for this role, because the society said what the role needs.
+    ///
+    /// `false` — the substrate MEASURED it from the minds who happen to live here. It
+    /// ORDERS plans (the widest node is the best host) but never refuses one: the
+    /// closest feasible plan still hosts, down to the engine's serve floor. A measured
+    /// number must never be able to dark a grid, because it is a description of who is
+    /// currently home, not a statement of what the work needs — and at the production
+    /// shape it is a description of ONE OR TWO minds, where every statistic (max, median,
+    /// lower-median) reduces to the outlier itself.
+    pub declared: bool,
 }
 
 /// A mind that exists (on some disk): its role and the node its memory lives on.
@@ -242,6 +272,7 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
         r.requirement.window.hash(&mut h);
         r.requirement.min_capability.hash(&mut h);
         r.requirement.decode_floor_tps.map(f32::to_bits).hash(&mut h);
+        r.declared.hash(&mut h);
     }
     for m in &inputs.minds {
         (m.id, m.role, m.home, m.owner).hash(&mut h);
@@ -322,8 +353,14 @@ impl GridInputs {
 /// Why a node serves what it serves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeVerdict {
-    /// The node hosts this role (index into roles) on its chosen plan.
+    /// The node hosts this role (index into roles) on its chosen plan, which MEETS the
+    /// role's requirement.
     Hosts { role: usize },
+    /// The node hosts this role on the closest feasible plan, BELOW the role's measured
+    /// target (`target` says by how much it fell short). Only a MEASURED window lands
+    /// here — a declared one gates instead. The minds this plan cannot actually serve
+    /// fall home at placement, by name; the rest get a seat instead of a dark grid.
+    HostsBelowTarget { role: usize, target: u32 },
     /// Every runnable plan is below every role's requirement — the node seats nobody.
     /// `best_window`/`best_capability` say what the node offered; `lowest_requirement`
     /// says what the LOWEST bar on the grid was, so the receipt names the gap instead of
@@ -449,6 +486,7 @@ pub fn roles_from(
                 decode_floor_tps: None,
             },
         };
+        let declared = c.requirement.is_some();
         match roles.iter().position(|r| r.name == name) {
             Some(i) => {
                 // A second citizen of a role adds a seat to its floor; a declared
@@ -464,9 +502,12 @@ pub fn roles_from(
                     (Some(a), Some(b)) => Some(a.max(b)),
                     (a, b) => a.or(b),
                 };
+                // Provenance is strictest-wins like every other axis: one citizen of this
+                // role DECLARING a window makes the role's window a gate for all of them.
+                roles[i].declared = roles[i].declared || declared;
             }
             None => {
-                roles.push(Role { name: name.to_string(), requirement });
+                roles.push(Role { name: name.to_string(), requirement, declared });
                 floors.push(RoleFloor { role: roles.len() - 1, min_seats: 1 });
             }
         }
@@ -482,7 +523,7 @@ pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a
 
 /// What each node serves: its best plan for the highest-priority role it can hold (so
 /// coders stay on the capability), and every role that plan holds fills its seats.
-fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Option<&Hold>) -> NodeAllocation {
+fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Option<&Hold>, serve_floor: u32) -> NodeAllocation {
     for (role, r) in roles.iter().enumerate() {
         if let Some(plan) = best_plan_for(&offer.plans, &r.requirement) {
             let holds = roles
@@ -502,6 +543,50 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Opt
                 seats,
                 plan: Some(plan.clone()),
                 verdict: NodeVerdict::Hosts { role },
+                holds,
+            };
+        }
+    }
+    // PASS 2 (Cormac on #4295): no plan MEETS any role. A DECLARED window gates here and
+    // we stop — the society said what the role needs and this node does not have it. But a
+    // MEASURED window is a target, so the closest feasible plan still hosts: refuse only
+    // below the engine's serve floor, keep capability and decode as real gates. Without
+    // this arm one resident's working set is the whole node's admission bar, and at the
+    // production shape (a node with one or two residents) every statistic over that
+    // population IS that resident — which is how three nodes with live engines published
+    // zero seats on 2026-09-21 while a lane was decoding.
+    for (role, r) in roles.iter().enumerate() {
+        if r.declared {
+            continue;
+        }
+        let closest = offer
+            .plans
+            .iter()
+            .filter(|p| r.requirement.held_as_target(p, serve_floor))
+            .max_by_key(|p| p.rank());
+        if let Some(plan) = closest {
+            let holds = roles
+                .iter()
+                .enumerate()
+                .filter(|(_, other)| {
+                    if other.declared {
+                        plan.holds(&other.requirement)
+                    } else {
+                        other.requirement.held_as_target(plan, serve_floor)
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let warm = plan.lanes.saturating_mul(minds_per_lane);
+            let seats = match hold {
+                Some(h) if h.exclusive && !h.only.is_empty() => warm.min(h.only.len() as u32),
+                _ => warm,
+            };
+            return NodeAllocation {
+                node: offer.node,
+                seats,
+                plan: Some(plan.clone()),
+                verdict: NodeVerdict::HostsBelowTarget { role, target: r.requirement.window },
                 holds,
             };
         }
@@ -529,7 +614,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let nodes: Vec<NodeAllocation> = inputs
         .nodes
         .iter()
-        .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane, inputs.hold_on(o.node)))
+        .map(|o| decide_node(o, &inputs.roles, inputs.minds_per_lane, inputs.hold_on(o.node), crate::cognition::serving_plan::MIN_SERVE_CTX))
         .collect();
     // Free seats per node, drawn down as minds are seated; and the seats each node has
     // LENT to other owners' minds, bounded by its terms.
@@ -639,8 +724,12 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
         }
     }
     for ((n, &f), offer) in nodes.iter().zip(free.iter()).zip(inputs.nodes.iter()) {
-        if let (NodeVerdict::Hosts { role }, true, false) = (&n.verdict, f > 0, held(n.node)) {
-            open.push(OpenSeats { node: n.node, owner: offer.owner, role: *role, count: f });
+        let hosting = match &n.verdict {
+            NodeVerdict::Hosts { role } | NodeVerdict::HostsBelowTarget { role, .. } => Some(*role),
+            _ => None,
+        };
+        if let (Some(role), true, false) = (hosting, f > 0, held(n.node)) {
+            open.push(OpenSeats { node: n.node, owner: offer.owner, role, count: f });
         }
     }
     GridAllocation { nodes, seated, dormant, open }
@@ -655,12 +744,14 @@ mod tests {
         Role {
             name: "coder".into(),
             requirement: Requirement { window: 65_536, min_capability: 7, decode_floor_tps: Some(10.0) },
+            declared: true,
         }
     }
     fn orchestrator() -> Role {
         Role {
             name: "orchestrator".into(),
             requirement: Requirement { window: 32_768, min_capability: 3, decode_floor_tps: None },
+            declared: true,
         }
     }
     fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
@@ -796,18 +887,19 @@ mod tests {
     }
 
     // what this catches: the 2026-09-21 07:0xZ dark grid, END TO END through `roles_from`.
-    // The live recipe declares one citizen (`helper`) with NO requirement, so its role
-    // window is whatever `measured_floor` says. The four minds measured 38,142 / 50,970 /
-    // 76,630 / 125,898. Handed the population's MAXIMUM (125,898) it exceeds every node's
-    // window and all three nodes read `BelowEveryRequirement` — four minds dormant, zero
-    // seats on a grid that was decoding. Handed the MEDIAN (76,630,
-    // `window_allocator::typical_known`) the widest node holds it and seats them. The
-    // fixture pins both directions with the real numbers so it cannot drift back.
+    // Three nodes with live engines published ZERO seats while a lane was decoding, because
+    // the one undeclared role's window was MEASURED from the residents and then used as an
+    // admission gate. Cormac's correction on #4295 is the shape this pins: a MEASURED window
+    // orders plans and the closest feasible one still hosts; a DECLARED window gates.
+    //
+    // Direction (a): measured, above every node → the widest node HOSTS BELOW TARGET.
+    // Direction (b): declared, above every node → every node is BelowEveryRequirement.
+    // The production shape is the point: a node with one or two residents, where the
+    // outlier IS every statistic over that population.
     #[test]
-    fn an_undeclared_roles_window_must_be_the_typical_not_the_populations_peak() {
-        use crate::experience::recipe::CitizenRecipe;
+    fn a_measured_role_window_orders_plans_while_a_declared_one_gates_them() {
+        use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
         use crate::persona::role_template::RoleId;
-        let citizens = vec![CitizenRecipe { role: RoleId::Coder, requirement: None }];
         let nodes: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
         // The three real nodes that night: Intel 32,768 / 5090 75,776 / M5 78,592.
         let offers = vec![
@@ -816,57 +908,74 @@ mod tests {
             offer(nodes[2], vec![plan("27b", 255, 78_592, 1, None)]),
         ];
         let minds_here = minds(0, Some(nodes[2]), 4);
+        let build = |roles: Vec<Role>, floors: Vec<RoleFloor>| {
+            allocate(&GridInputs { roles, minds: minds_here.clone(), nodes: offers.clone(), minds_per_lane: 2, holds: vec![], floors })
+        };
 
-        // THE PEAK: one mind's 335,299 as the role window darkens every node.
-        let (peak_roles, peak_floors) = roles_from(&citizens, Some(125_898));
-        let dark = allocate(&GridInputs {
-            roles: peak_roles,
-            minds: minds_here.clone(),
-            nodes: offers.clone(),
-            minds_per_lane: 2,
-            holds: vec![],
-            floors: peak_floors,
-        });
-        assert!(dark.seated.is_empty(), "the outage: nobody seated anywhere");
-        assert_eq!(dark.dormant.len(), 4, "all four minds dormant on a decoding grid");
+        // (a) MEASURED — the live recipe: one `helper`, NO declared requirement. Its window
+        // is whatever the substrate measured, here the 5090's production shape: two
+        // residents, one of them an outlier, so EVERY statistic over them is the outlier.
+        let measured = vec![CitizenRecipe { role: RoleId::Coder, requirement: None }];
+        let (m_roles, m_floors) = roles_from(&measured, Some(335_299));
+        assert!(!m_roles[0].declared, "a citizen with no requirement leaves the role measured");
+        let lit = build(m_roles, m_floors);
+        assert_eq!(
+            lit.node(nodes[2]).unwrap().verdict,
+            NodeVerdict::HostsBelowTarget { role: 0, target: 335_299 },
+            "the widest node hosts on the closest feasible plan instead of darkening the grid"
+        );
+        assert!(!lit.seated.is_empty(), "and minds actually get seats");
+        // Every node above the serve floor hosts — none of them is refused by a measurement.
         for n in &nodes {
             assert!(
-                matches!(dark.node(*n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { .. }),
-                "every node below — including the one whose engine was serving"
+                matches!(lit.node(*n).unwrap().verdict, NodeVerdict::HostsBelowTarget { .. }),
+                "a measured window must never refuse a runnable node"
             );
         }
-        // And the receipt now names the bar it missed, which it did not that night.
+
+        // (b) DECLARED — the society states the role needs 100k. That IS a gate, and the
+        // same grid is honestly below it on every node. The alarm is supposed to fire here.
+        let declared = vec![CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 100_000, min_capability: 0, decode_floor_tps: None }),
+        }];
+        let (d_roles, d_floors) = roles_from(&declared, Some(335_299));
+        assert!(d_roles[0].declared, "a declared requirement makes the role a gate");
+        let dark = build(d_roles, d_floors);
+        assert!(dark.seated.is_empty(), "a declared bar no node clears seats nobody — by design");
+        assert_eq!(dark.dormant.len(), 4);
         assert_eq!(
             dark.node(nodes[2]).unwrap().verdict,
-            NodeVerdict::BelowEveryRequirement { best_window: 78_592, best_capability: 255, lowest_requirement: 125_898 }
+            NodeVerdict::BelowEveryRequirement { best_window: 78_592, best_capability: 255, lowest_requirement: 100_000 },
+            "and the receipt names the bar it missed — tonight it did not"
         );
+    }
 
-        // THE TYPICAL: the same grid, the same recipe, the median requirement — seats.
-        let (typical_roles, typical_floors) = roles_from(&citizens, Some(76_630));
-        let lit = allocate(&GridInputs {
-            roles: typical_roles,
-            minds: minds_here,
-            nodes: offers,
+    // what this catches: Cormac's mutation on #4295, which killed the median fix. A node
+    // with TWO residents and one outlier has the outlier as its median (`len / 2` is the
+    // upper middle); with ONE resident the median IS that resident. No statistic over a
+    // one- or two-mind population can separate the outlier from the typical — which is why
+    // the provenance bit, not a better statistic, is the fix. Pinned at the allocator so a
+    // future "just use the lower median" cannot quietly reintroduce the outage.
+    #[test]
+    fn a_single_outlier_resident_cannot_dark_its_own_node() {
+        use crate::experience::recipe::CitizenRecipe;
+        use crate::persona::role_template::RoleId;
+        let n = Uuid::new_v4();
+        // The 5090 that night: one warm slot, and a resident whose measured window is far
+        // above it. Whatever statistic produced 335,299, it must not cost the node its seat.
+        let (roles, floors) = roles_from(&[CitizenRecipe { role: RoleId::Coder, requirement: None }], Some(335_299));
+        let a = allocate(&GridInputs {
+            roles,
+            minds: minds(0, Some(n), 1),
+            nodes: vec![offer(n, vec![plan("27b", 42, 75_776, 1, None)])],
             minds_per_lane: 2,
             holds: vec![],
-            floors: typical_floors,
+            floors,
         });
-        assert!(!lit.seated.is_empty(), "the fix: the minds who fit get seats");
-        assert!(
-            matches!(lit.node(nodes[2]).unwrap().verdict, NodeVerdict::Hosts { .. }),
-            "the widest node hosts the role"
-        );
-        assert!(
-            matches!(lit.node(nodes[0]).unwrap().verdict, NodeVerdict::BelowEveryRequirement { .. }),
-            "and the 32k box is still honestly below a 76,630 role — the gate still gates"
-        );
-        // And the number Joel's closeness card (53a8d49b) exists for: the 5090 misses by
-        // 854 tokens — 98.9% of the bar — and loses every seat for it. This fix does not
-        // address that; the assertion is here so the next reader sees the margin.
-        assert!(
-            matches!(lit.node(nodes[1]).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 75_776, .. }),
-            "75,776 vs 76,630: a hair under the bar is still under it, today"
-        );
+        assert!(matches!(a.node(n).unwrap().verdict, NodeVerdict::HostsBelowTarget { .. }));
+        assert_eq!(a.seated.len(), 1, "her own outlier measurement must not unseat her");
+        assert!(a.dormant.is_empty());
     }
 
     // what this catches: the 2026-09-20 07:52Z shape — a box whose only runnable plans are
