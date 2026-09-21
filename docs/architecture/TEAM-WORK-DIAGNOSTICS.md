@@ -89,6 +89,11 @@ revision is not proof that a revision produced the artifact. This command does
 not choose a revision, attach retrospective credit, resubmit work, or train it.
 Reservations and eligibility are still checked by the existing binding owner.
 
+A final turn snapshot can also replace an earlier revision after its submit
+action. Therefore a staging time later than publication is not proof that the
+underlying experience happened later. Compare execution/generation provenance;
+do not turn the diagnostic timestamp comparison into an eligibility gate.
+
 The automatic handoff must carry the source owner's immutable selection through
 typed execution context, before artifact publication. The turn's credit capture
 already owns the revision and generation receipts; the submission handler owns
