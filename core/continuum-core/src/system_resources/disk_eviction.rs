@@ -1159,6 +1159,9 @@ mod tests {
             // Same owner and the same rule as the shared target: derived build output,
             // re-creatable by definition, evicted oldest-artifact-first under pressure.
             "cargo-target-wt",
+            // Same owner, same loop, same reasoning — the airc build tree is derived
+            // artifacts like its two siblings, so it is OWNED rather than deferred.
+            "cargo-target-airc",
             // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
             // only after complete verified preservation. Memory is never evicted.
             "citizens",
