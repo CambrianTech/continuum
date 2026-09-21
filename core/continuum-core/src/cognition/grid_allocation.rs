@@ -43,8 +43,11 @@ use uuid::Uuid;
 /// society (a recipe), never derived from a machine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Requirement {
-    /// Tokens one turn of this role needs (the persona's typical prompt with headroom).
+    /// Hard minimum declared by the recipe, or the serving floor when undeclared.
     pub window: u32,
+    /// Measured sizing target, not permission to exclude every feasible seat.
+    /// Among equally capable plans, prefer approaching this target before adding lanes.
+    pub target_window: Option<u32>,
     /// The least capable model this role is competent on (`ModelFootprint::capability_rank`).
     pub min_capability: u8,
     /// Decode below this is not a seat (the knee). `None` = the role does not care.
@@ -240,6 +243,7 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
     for r in &inputs.roles {
         r.name.hash(&mut h);
         r.requirement.window.hash(&mut h);
+        r.requirement.target_window.hash(&mut h);
         r.requirement.min_capability.hash(&mut h);
         r.requirement.decode_floor_tps.map(f32::to_bits).hash(&mut h);
     }
@@ -422,12 +426,12 @@ impl GridAllocation {
 /// The roles and floors an experience DECLARES, in the allocator's terms — `GridInputs`'
 /// roles and floors from data, never from a constant. Roles are ordered by first
 /// appearance (authoring order is priority); a role's floor is how many citizens the
-/// recipe lists for it; a citizen with no declared requirement takes the MEASURED
-/// typical prompt (`measured_floor`, the serving demand's `typical_prompt_floor`) as its
-/// window, any model, decode unjudged — and with nothing measured yet, the serve floor.
+/// recipe lists for it. An undeclared citizen retains the serving floor as its hard
+/// minimum; measured demand is a sizing target. A large thought must not turn every
+/// node into a refused seat. Declared recipe requirements remain hard constraints.
 pub fn roles_from(
     citizens: &[crate::experience::recipe::CitizenRecipe],
-    measured_floor: Option<u32>,
+    measured_target: Option<u32>,
 ) -> (Vec<Role>, Vec<RoleFloor>) {
     let mut roles: Vec<Role> = Vec::new();
     let mut floors: Vec<RoleFloor> = Vec::new();
@@ -436,11 +440,13 @@ pub fn roles_from(
         let requirement = match &c.requirement {
             Some(r) => Requirement {
                 window: r.window_tokens,
+                target_window: None,
                 min_capability: r.min_capability,
                 decode_floor_tps: r.decode_floor_tps,
             },
             None => Requirement {
-                window: measured_floor.unwrap_or(super::serving_plan::MIN_SERVE_CTX), // unwrap_or: nothing measured = the serve floor, the same prior the planner starts from
+                window: super::serving_plan::MIN_SERVE_CTX,
+                target_window: measured_target,
                 min_capability: 0,
                 decode_floor_tps: None,
             },
@@ -453,6 +459,7 @@ pub fn roles_from(
                 if requirement.window > roles[i].requirement.window {
                     roles[i].requirement.window = requirement.window;
                 }
+                roles[i].requirement.target_window = roles[i].requirement.target_window.max(requirement.target_window);
                 roles[i].requirement.min_capability = roles[i].requirement.min_capability.max(requirement.min_capability);
                 // The strictest on EVERY axis (Cormac, #4271): a later, laxer decode floor
                 // never loosens the role's.
@@ -471,9 +478,12 @@ pub fn roles_from(
 }
 
 /// The best plan on a node for a requirement: the most capable holding plan, then the
-/// most lanes, then the widest window. `None` when no plan holds.
+/// closest measured window target within that capability, then most lanes and width.
+/// Only declared minima gate admission. `None` when no plan holds those minima.
 pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
-    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.rank())
+    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| {
+        (p.capability_rank, req.target_window.map_or(0, |target| p.window.min(target)), p.lanes, p.window)
+    })
 }
 
 /// What each node serves: its best plan for the highest-priority role it can hold (so
@@ -649,13 +659,13 @@ mod tests {
     fn coder() -> Role {
         Role {
             name: "coder".into(),
-            requirement: Requirement { window: 65_536, min_capability: 7, decode_floor_tps: Some(10.0) },
+            requirement: Requirement { window: 65_536, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) },
         }
     }
     fn orchestrator() -> Role {
         Role {
             name: "orchestrator".into(),
-            requirement: Requirement { window: 32_768, min_capability: 3, decode_floor_tps: None },
+            requirement: Requirement { window: 32_768, target_window: None, min_capability: 3, decode_floor_tps: None },
         }
     }
     fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
@@ -1050,12 +1060,69 @@ mod tests {
         };
         let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
         assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
-        assert_eq!(roles[0].requirement, Requirement { window: 131_072, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
-        assert_eq!(roles[1].requirement, Requirement { window: 70_071, min_capability: 0, decode_floor_tps: None }, "undeclared = the measured typical prompt");
+        assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
+        assert_eq!(roles[1].requirement, Requirement { window: super::super::serving_plan::MIN_SERVE_CTX, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
         assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
         let (roles, _) = roles_from(&[helper], None);
         assert_eq!(roles[0].requirement.window, super::super::serving_plan::MIN_SERVE_CTX, "nothing measured yet = the serve floor");
         assert!(roles_from(&[], Some(1)).0.is_empty());
+    }
+
+    // Regression: a measured turn larger than every host window made all three
+    // healthy nodes BelowEveryRequirement, leaving Kimi and Sahar dormant.
+    #[test]
+    fn measured_window_above_the_fleet_does_not_remove_its_seats() {
+        use crate::experience::recipe::CitizenRecipe;
+        use crate::persona::role_template::RoleId;
+        let node = Uuid::new_v4();
+        let (roles, floors) = roles_from(
+            &[CitizenRecipe { role: RoleId::Helper, requirement: None }],
+            Some(150_000),
+        );
+        let mut i = inputs(vec![
+            offer(node, vec![plan("27b", 255, 65_280, 1, Some(50.0))]),
+            offer(Uuid::new_v4(), vec![plan("peer", 42, 78_592, 3, None)]),
+            offer(Uuid::new_v4(), vec![plan("thin", 40, 32_768, 1, None)]),
+        ], minds(0, Some(node), 2));
+        i.roles = roles;
+        i.floors = floors;
+        let a = allocate(&i);
+        assert_eq!(a.seated.len(), 2);
+        assert!(a.dormant.is_empty());
+        assert!(a.nodes.iter().all(|n| n.seats > 0));
+        let key = inputs_key(&i);
+        i.roles[0].requirement.target_window = Some(160_000);
+        assert_ne!(key, inputs_key(&i), "new measurements must recompute selection");
+        i.nodes[0].plans[0].window = super::super::serving_plan::MIN_SERVE_CTX - 1;
+        assert_eq!(allocate(&i).node(node).unwrap().seats, 0, "the serving floor remains hard");
+    }
+
+    // Regression: measured targets must neither become declared gates nor loosen
+    // declared requirements when citizens of the same role are combined.
+    #[test]
+    fn measured_targets_preserve_declared_gates_and_capability_order() {
+        use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
+        use crate::persona::role_template::RoleId;
+        let declared = CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 32_768, min_capability: 7, decode_floor_tps: Some(10.0) }),
+        };
+        let measured = CitizenRecipe { role: RoleId::Coder, requirement: None };
+        for citizens in [[declared.clone(), measured.clone()], [measured.clone(), declared.clone()]] {
+            let (roles, _) = roles_from(&citizens, Some(100_000));
+            let req = &roles[0].requirement;
+            assert_eq!(req.window, 32_768);
+            assert_eq!(req.target_window, Some(100_000));
+            assert!(!plan("short", 9, 32_767, 1, Some(20.0)).holds(req));
+            assert!(!plan("weak", 6, 131_072, 1, Some(20.0)).holds(req));
+            assert!(!plan("slow", 9, 131_072, 1, Some(5.0)).holds(req));
+            let candidates = vec![
+                plan("strong-wide", 9, 65_536, 1, Some(20.0)),
+                plan("strong-many", 9, 32_768, 3, Some(20.0)),
+                plan("weaker-fitting", 8, 131_072, 4, Some(20.0)),
+            ];
+            assert_eq!(best_plan_for(&candidates, req).unwrap().model_id, "strong-wide");
+        }
     }
 
     // what this catches (card 10bba591): the "better seat" order IS the allocator's —

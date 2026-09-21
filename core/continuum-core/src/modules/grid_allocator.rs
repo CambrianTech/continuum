@@ -10,8 +10,8 @@
 //! measured decode), every peer's offer from the capacity gossip the grid module already
 //! consumes (`capacity::gossip::global_ledger`, the same rows, no second listener), the
 //! live roster with the recipe's citizens (`roles_from`, #4271 — role + declared
-//! requirement, the undeclared window being the largest `LaneRequirement` this seat
-//! knows: ONE requirement notion in the crate) and the operator's hold —
+//! requirement, the undeclared sizing target being the largest `LaneRequirement` this
+//! seat knows, without promoting that measurement to a declared gate) and the operator's hold —
 //! folds them into a [`GridInputs`], and publishes the [`GridAllocation`] through a
 //! `watch::Sender` for the placement switch (the opportunity move), the spawner (this
 //! node's open seats) and the health line to read.
@@ -29,7 +29,7 @@
 
 use crate::cognition::grid_allocation::{
     allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan,
-    Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats,
+    Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role,
 };
 use crate::cognition::serving_plan::ServingPlan;
 use crate::cognition::window_allocator::{largest_known, requirements_for};
@@ -69,6 +69,8 @@ pub(crate) struct DormantMind {
 #[derive(Clone, Debug)]
 pub(crate) struct Published {
     pub allocation: GridAllocation,
+    /// The exact hard minima and measured targets used for this allocation.
+    pub roles: Vec<Role>,
     pub key: u64,
     pub at_ms: u64,
     /// The id this node offered under (`capacity::gossip::this_process_origin`).
@@ -139,7 +141,7 @@ pub(crate) struct GridFacts {
     /// (`CitizenRequirement`). The allocator's roles and floors are `roles_from` over
     /// exactly these (#4271), never a second fold.
     pub citizens: Vec<CitizenRecipe>,
-    /// The window an UNDECLARED role stands at: the largest requirement this seat knows
+    /// The sizing target an UNDECLARED role prefers: the largest requirement this seat knows
     /// (`window_allocator::largest_known` over `requirements_for` — the same derivation
     /// the serving daemon sizes its lanes from), `None` while nothing is measured.
     pub undeclared_window: Option<u32>,
@@ -375,6 +377,7 @@ impl Inner {
             dormant_by_age: dormant,
             clip_interval_ms: clip,
             allocation,
+            roles: inputs.roles,
         };
         let seats_per_node: Vec<String> = published
             .allocation
@@ -391,7 +394,7 @@ impl Inner {
             open_seats = published.allocation.open_total(),
             dormant = published.allocation.dormant.len() as u64,
             minds = inputs.minds.len() as u64,
-            roles = inputs.roles.len() as u64,
+            roles = published.roles.len() as u64,
             "the grid allocation changed — published for the switch, the spawner and the health line"
         );
         crate::probe!(
@@ -476,6 +479,13 @@ impl ServiceModule for GridAllocatorModule {
                         "key": p.key,
                         "at_ms": p.at_ms,
                         "this_node": p.this_node,
+                        "roles": p.roles.iter().map(|r| serde_json::json!({
+                            "name": r.name,
+                            "minimum_window": r.requirement.window,
+                            "target_window": r.requirement.target_window,
+                            "min_capability": r.requirement.min_capability,
+                            "decode_floor_tps": r.requirement.decode_floor_tps,
+                        })).collect::<Vec<_>>(),
                         "passes": self.inner.passes.load(Ordering::Relaxed),
                         "skipped": self.inner.skipped.load(Ordering::Relaxed),
                         "nodes": p.allocation.nodes.iter().map(|n| serde_json::json!({

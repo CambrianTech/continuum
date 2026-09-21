@@ -1208,7 +1208,7 @@ mod tests {
     #[test]
     fn a_new_wider_node_moves_the_mind_it_holds_and_not_the_ones_it_does_not() {
         use crate::cognition::grid_allocation::{allocate, BetterBy, GridAllocation, GridInputs, LanePlan, Mind, NodeOffer, OfferTerms, Requirement, Role};
-        let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, min_capability: 0, decode_floor_tps: None } };
+        let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: 0, decode_floor_tps: None } };
         let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: 9, window, lanes, decode_tps_per_lane: None };
         let (home, joined) = (Uuid::from_u128(0x40), Uuid::from_u128(0x5090));
         let (coder, helper, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
