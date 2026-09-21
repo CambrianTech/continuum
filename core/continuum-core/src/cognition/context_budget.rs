@@ -215,9 +215,22 @@ fn prefill_affordable_window(served: u32) -> u32 {
     // The ladder already exists and is the fix: `measured_rate_for` reads fresh → stale →
     // the slowest curve this box holds → nothing, and its own doc says to prefer it over
     // `rate_for` "wherever an absence would otherwise become a constant". Last hour's
-    // measured rate is still evidence about this box; the served window never was. With a
-    // stale rung the loop opens on its own — the prompt falls to the serve floor, that
-    // generation finishes inside the client floor, and finishing is what re-measures.
+    // measured rate is still evidence about this box; the served window never was.
+    //
+    // THIS NARROWS THE LOOP, IT DOES NOT CLOSE IT, and the difference is measured rather
+    // than assumed (Cormac on #4321). A stale rung is LAST hour's rate, and on a box that
+    // has since gone into contention it is optimistic by multiples: the IntelMac's
+    // persisted rung is 63.6 t/s from 02:46Z against the ~12.5 t/s its engine prints under
+    // five concurrent prefills, so 63.6 × UNATTENDED_TTFT still buys 11,448 tokens, still
+    // 916 s of prefill, still cancelled at the 300 s floor, still never re-measured. The
+    // no-rung arm is worse (16,384 tokens), and a freshly installed slow box never leaves
+    // it, because leaving it needs a completed generation.
+    //
+    // What actually closes it: a cancel at the floor IS a measurement — the box
+    // demonstrably did NOT prefill `prompt_tokens` inside the bound, so
+    // `rate <= prompt_tokens / bound_s` — fed back as a rung that can only LOWER the EMA,
+    // so each cancel shrinks the next prompt until one completes and re-measures for real.
+    // The failure becomes the evidence. Card a2578811; not in this change.
     let rate = crate::inference::prefill_rate::measured_rate_for(&model);
     let affordable = Self::affordable_for_rate(rate, served, audience);
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -492,10 +505,15 @@ mod tests {
         let served = 26_000;
         let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive);
 
-        // A rung with a number governs — even a STALE one. 12.5 t/s x 60 s = 750, under
-        // MIN_SERVE_CTX, so the serve floor carries it: a prompt this box finishes well
-        // inside the client floor, and FINISHING is what re-measures the rate. This arm is
-        // what opens the loop without anyone intervening.
+        // A rung with a number governs — even a STALE one: 12.5 t/s x 60 s = 750, under
+        // MIN_SERVE_CTX, so the serve floor carries the prompt instead of the window.
+        //
+        // What this pins is the FUNCTION, not a promise about any box. Whether the
+        // resulting prompt finishes inside the client floor depends on what the stale rung
+        // SAYS, and a stale rung can be optimistic by multiples (IntelMac: 63.6 persisted
+        // vs ~12.5 actual). So this arm narrows the prompt; it does not on its own
+        // guarantee a completed generation. See a2578811 for the cancel-as-measurement
+        // piece that does.
         let got = afford(MeasuredRate { tps: Some(12.5), source: RateSource::Stale });
         assert_eq!(
             got,
