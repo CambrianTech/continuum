@@ -554,7 +554,7 @@ impl AircPersonaConversation {
                             live_since_tick = live_since_tick.saturating_add(1);
                             reopen_attempt = 0;
                             if let Ok(ev) = &item {
-                                // These headers already mean "not perception" in
+                                // These routing headers mean "not perception" in
                                 // admission and durable catch-up. Drop them BEFORE
                                 // the bounded attention inbox: a token flood must
                                 // not consume the ready-drain budget ahead of a
@@ -562,6 +562,7 @@ impl AircPersonaConversation {
                                 // seen-ring churn for traffic we will never admit.
                                 if crate::persona::airc_citizen::is_heartbeat(ev)
                                     || crate::airc::realtime_wire::is_stream_chunk(ev)
+                                    || crate::airc::realtime_wire::is_command_frame(ev)
                                 {
                                     continue;
                                 }
@@ -1082,16 +1083,21 @@ mod tests {
         for index in 0..CATCH_UP_PAGE * 2 {
             let mut noise = event("not a completed utterance");
             noise.headers.insert(
-                if index % 2 == 0 {
-                    airc_lib::HEADER_STREAM_ID
-                } else {
-                    airc_lib::HEADER_HEARTBEAT_KIND
+                match index % 3 {
+                    0 => airc_lib::HEADER_STREAM_ID,
+                    1 => airc_lib::HEADER_HEARTBEAT_KIND,
+                    _ => airc_protocol::HEADER_AIRC_CORRELATION_ID,
                 }
                 .into(),
                 "fixture".into(),
             );
             frames.push(Ok(Arc::new(noise)));
         }
+        // Even textual RPC results are not a colleague speaking. A completed
+        // directed room message still passes below.
+        let mut rpc = event("RPC result, not speech");
+        rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
+        assert_eq!(crate::airc::realtime_wire::room_turn_from_event(&rpc), Err("command_frame"));
         let mut control = event("");
         control.kind = airc_core::TranscriptKind::System;
         control.body = None;

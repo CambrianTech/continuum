@@ -165,7 +165,16 @@ pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
     event.headers.get(airc_lib::HEADER_STREAM_ID).is_some()
 }
 
+/// Correlated command traffic belongs to the request/reply dispatcher, not room
+/// attention. Inspect the routing header before decoding or queueing its body.
+pub fn is_command_frame(event: &TranscriptEvent) -> bool {
+    event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
+}
+
 pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
+    if is_command_frame(event) {
+        return Err("command_frame");
+    }
     // - `"stream_chunk"` — a live streaming token chunk (`airc.stream.*` headers,
     //   published by `publish_stream_chunk` as typing-indicator-class traffic).
     //   By the stream-chunk contract the settled utterance arrives separately via
