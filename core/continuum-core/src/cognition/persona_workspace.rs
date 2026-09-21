@@ -855,24 +855,28 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
 
 /// What the board says became of a card she believed she held, from the ONE holder
 /// projection the board itself renders (`card_holder`). PURE, so every branch is pinned:
-/// a live lease that is not hers → `HeldBy`; a card past the claimable states → `MovedOn`
-/// (its life advanced, not a lapse); otherwise `Lapsed` — the last lease, whoever's, ran
-/// out and nobody holds it. `owner` is never read as authority: an expired claim still
-/// names its last holder, and that holder may be her.
+/// a live lease held by `her` → `None` (the card IS hers — a renewal or re-claim landed
+/// between the wake's two reads, nothing is gone); a live lease that is not hers →
+/// `HeldBy`; a card past the claimable states → `MovedOn` (its life advanced, not a
+/// lapse); otherwise `Lapsed` — the last lease, whoever's, ran out and nobody holds it.
+/// `owner` is never read as authority: an expired claim still names its last holder, and
+/// that holder may be her.
 pub(crate) fn claim_gone_verdict(
     card: &airc_lib::WorkCard,
     now_ms: u64,
-) -> crate::cognition::working_memory::ClaimGone {
+    her: uuid::Uuid,
+) -> Option<crate::cognition::working_memory::ClaimGone> {
     use crate::cognition::working_memory::ClaimGone;
     use crate::persona::card_holder::{hold_of, refused_by_claim, Hold};
     if refused_by_claim(card.state) {
-        return ClaimGone::MovedOn {
+        return Some(ClaimGone::MovedOn {
             state: crate::modules::work::state_str(&card.state),
-        };
+        });
     }
     let expired_at_ms = card.claim_expires_at_ms;
-    match hold_of(card, now_ms) {
+    Some(match hold_of(card, now_ms) {
         Hold::Held => match card.owner {
+            Some(peer) if peer.as_uuid() == her => return None,
             Some(peer) => ClaimGone::HeldBy {
                 peer: peer.as_uuid(),
                 expires_at_ms: expired_at_ms,
@@ -882,7 +886,7 @@ pub(crate) fn claim_gone_verdict(
             None => ClaimGone::Lapsed { expired_at_ms },
         },
         Hold::Lapsed | Hold::Unclaimed => ClaimGone::Lapsed { expired_at_ms },
-    }
+    })
 }
 
 /// Root her hands at her held card's staged checkout for THIS turn — any turn,
@@ -919,28 +923,37 @@ pub(crate) async fn root_at_held_card(
                 // The board agrees with the checkpoint: nothing to say, nothing to keep.
                 body.working_memory.take_restored_acting_card();
             } else {
-                let verdict = match citizen.card(believed).await {
-                    Some(card) => Some(claim_gone_verdict(&card, crate::modules::chat::now_ms())),
-                    None => None,
-                };
+                // The card's own row is a SECOND read; a renewal or re-claim can land
+                // between it and `active_claims`, so the verdict is reconciled with HER
+                // identity — a live hold that is hers is not gone (Astra, #4315 round 2).
+                // Three outcomes: the row shows her holding it (settled, silent); the row
+                // shows it gone (settled, said); no board she stands in shows the row
+                // (unsettled — said as unknown, the belief kept for the next read).
+                let now_ms = crate::modules::chat::now_ms();
+                let row = citizen.card(believed).await;
+                let verdict = row.as_ref().map(|card| claim_gone_verdict(card, now_ms, peer_id));
                 match verdict {
-                    Some(v) => {
+                    Some(None) => {
+                        body.working_memory.take_restored_acting_card();
+                    }
+                    Some(Some(v)) => {
                         body.working_memory.take_restored_acting_card();
                         body.working_memory.note_claim_gone(believed, v);
                     }
-                    // No evidence: say so, keep the belief, ask the board again next turn.
                     None => body.working_memory.note_claim_gone(
                         believed,
                         crate::cognition::working_memory::ClaimGone::Unknown,
                     ),
                 }
-                crate::probe!(
-                    class = "persona.claim.gone_on_wake",
-                    peer = %peer_id,
-                    card = %believed,
-                    verdict = ?verdict,
-                    "her checkpoint rooted her at a card the board no longer counts as hers — told in her window on the first held-card read"
-                );
+                if !matches!(verdict, Some(None)) {
+                    crate::probe!(
+                        class = "persona.claim.gone_on_wake",
+                        peer = %peer_id,
+                        card = %believed,
+                        verdict = ?verdict.flatten(),
+                        "her checkpoint rooted her at a card the board no longer counts as hers — told in her window on the first held-card read"
+                    );
+                }
             }
         }
     }
@@ -1708,8 +1721,14 @@ fn save_volatile(
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
     let mut snapshot = wm.snapshot();
     // What she believes she holds, stamped by the one writer that knows whose memory this
-    // is: her next wake compares it to the board (card c8303c32).
-    snapshot.acting_card = acting_card_of(persona_id);
+    // is: her next wake compares it to the board (card c8303c32). A belief the board has
+    // NOT yet answered (restored, then `Unknown` on every read so far) outranks where her
+    // hands stand now: the card she stands at is on the board and recoverable from it, the
+    // pending comparison is recoverable from nowhere else — a checkpoint that wrote the
+    // ambient root would settle it by forgetting (Astra on #4315, round 2).
+    snapshot.acting_card = wm
+        .peek_restored_acting_card()
+        .or_else(|| acting_card_of(persona_id));
     let persisted = PersistedVolatile {
         wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
@@ -1788,25 +1807,68 @@ mod tests {
             last_submission_rejection: None,
         };
         let her = PeerId::new();
+        let me = her.as_uuid();
         let peer = PeerId::new();
         // Her own EXPIRED claim: the owner field still says her — the verdict must be Lapsed,
         // never "her took it".
         let lapsed_self = card(Some(her), true, Some(now - 1), CardState::Claimed);
-        assert_eq!(claim_gone_verdict(&lapsed_self, now), ClaimGone::Lapsed { expired_at_ms: Some(now - 1) });
+        assert_eq!(claim_gone_verdict(&lapsed_self, now, me), Some(ClaimGone::Lapsed { expired_at_ms: Some(now - 1) }));
+        // Her own LIVE hold on the second read (a renewal or re-claim landed between the
+        // wake's two board reads): nothing is gone — never "you lost it, <her uuid> took it".
+        let held_self = card(Some(her), true, Some(now + 60_000), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&held_self, now, me), None);
         // A peer's LIVE lease: held by them, with the edge.
         let held = card(Some(peer), true, Some(now + 60_000), CardState::Claimed);
-        assert_eq!(claim_gone_verdict(&held, now), ClaimGone::HeldBy { peer: peer.as_uuid(), expires_at_ms: Some(now + 60_000) });
+        assert_eq!(claim_gone_verdict(&held, now, me), Some(ClaimGone::HeldBy { peer: peer.as_uuid(), expires_at_ms: Some(now + 60_000) }));
         // A peer's EXPIRED lease: lapsed and open, the peer is not named as holder.
         let lapsed_peer = card(Some(peer), true, Some(now - 1), CardState::Claimed);
-        assert_eq!(claim_gone_verdict(&lapsed_peer, now), ClaimGone::Lapsed { expired_at_ms: Some(now - 1) });
-        // Review / Merged / Closed: the card moved on — whatever the lease fields say.
+        assert_eq!(claim_gone_verdict(&lapsed_peer, now, me), Some(ClaimGone::Lapsed { expired_at_ms: Some(now - 1) }));
+        // Review / Merged / Closed: the card moved on — whatever the lease fields say, even
+        // a live lease in her own name.
         for state in [CardState::Review, CardState::Merged, CardState::Closed] {
             let moved = card(Some(her), true, Some(now + 60_000), state);
-            assert!(matches!(claim_gone_verdict(&moved, now), ClaimGone::MovedOn { .. }), "{state:?}");
+            assert!(matches!(claim_gone_verdict(&moved, now, me), Some(ClaimGone::MovedOn { .. })), "{state:?}");
         }
         // Unclaimed and open: lapsed-and-open is the honest word for "nobody holds it".
         let open = card(None, false, None, CardState::Open);
-        assert_eq!(claim_gone_verdict(&open, now), ClaimGone::Lapsed { expired_at_ms: None });
+        assert_eq!(claim_gone_verdict(&open, now, me), Some(ClaimGone::Lapsed { expired_at_ms: None }));
+    }
+
+    // what this catches (Astra, #4315 round 2): a belief the board has not answered must
+    // SURVIVE the next checkpoint. `snapshot()` writes `acting_card: None` and the writer
+    // stamps the ambient root; with her hands unheld and the board unseen, that wrote None
+    // and a second restart forgot the comparison. Restore → unknown → save → restore must
+    // carry the same card; once the board has answered (take), the next save stamps the
+    // ambient root again.
+    #[test]
+    fn an_unanswered_belief_survives_the_next_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let believed = Uuid::new_v4();
+        // First lifetime: rooted at `believed` when the checkpoint was written.
+        let first = WorkingMemory::new(8);
+        let mut snap = first.snapshot();
+        snap.acting_card = Some(believed);
+        let woke = WorkingMemory::new(8);
+        woke.restore(snap);
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed));
+        // The board is unseen this lifetime (Unknown keeps the belief); hands unheld, so
+        // the ambient root is None. The periodic checkpoint runs.
+        woke.note_claim_gone(believed, crate::cognition::working_memory::ClaimGone::Unknown);
+        assert_eq!(acting_card_of(persona), None, "fixture premise: hands unheld");
+        save_volatile(persona, &woke).unwrap();
+        let persisted = load_volatile(persona).unwrap().expect("checkpoint written");
+        assert_eq!(persisted.wm.acting_card, Some(believed), "the unanswered belief is carried, not settled by forgetting");
+        // Second restart: the comparison is still pending.
+        let again = WorkingMemory::new(8);
+        again.restore(persisted.wm);
+        assert_eq!(again.peek_restored_acting_card(), Some(believed));
+        // The board answers: consumed. The next checkpoint stamps the ambient root (None here).
+        again.take_restored_acting_card();
+        save_volatile(persona, &again).unwrap();
+        let settled = load_volatile(persona).unwrap().expect("checkpoint written");
+        assert_eq!(settled.wm.acting_card, None, "answered beliefs are not resurrected");
     }
 
     // Uses the real persisted schema and WorkingMemory writer, not a second

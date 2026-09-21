@@ -1020,23 +1020,26 @@ impl WorkingMemory {
         };
         let untouched = "Your checkout and your patch are untouched.";
         let text = match verdict {
+            // Each sentence is what the board SHOWS NOW — never a story about how it got
+            // there (the wake did not watch the lease lapse or the transfer happen).
             ClaimGone::HeldBy { peer, expires_at_ms } => format!(
-                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed and \
-                 {} took it{}. {untouched} Do not resume as its holder — work/get {card} shows \
-                 its state; take it back with work/claim only when it reads claimable.",
+                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                 the board now shows {} holding it{}. {untouched} Do not resume as its holder — \
+                 work/get {card} shows its state; take it back with work/claim only when it \
+                 reads claimable.",
                 peer.simple().to_string().chars().take(8).collect::<String>(),
                 edge(expires_at_ms),
             ),
             ClaimGone::Lapsed { expired_at_ms } => format!(
-                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{} \
-                 and nobody holds it. {untouched} work/claim {card} takes it back, then continue \
-                 from your ledger.",
+                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                 the board now shows it unheld — the last lease on it ran out{} and nobody holds \
+                 it. {untouched} work/claim {card} takes it back, then continue from your ledger.",
                 edge(expired_at_ms),
             ),
             ClaimGone::MovedOn { state } => format!(
-                "[claim] card {id8} is no longer in your hands because it moved to {state} while \
-                 you were away — that is the card's life advancing, not a lapse. {untouched} \
-                 Nothing to re-claim; work/get {card} shows where it stands."
+                "[claim] card {id8} is no longer in your hands: the board now shows it in {state} \
+                 — that is the card's life advancing, not a lapse. {untouched} Nothing to \
+                 re-claim; work/get {card} shows where it stands."
             ),
             ClaimGone::Unknown => format!(
                 "[claim] your checkpoint had you working card {id8}, but no board you stand in \
@@ -2882,6 +2885,7 @@ mod tests {
         woke.note_claim_gone(believed, ClaimGone::HeldBy { peer, expires_at_ms: Some(1_790_000_000_000) });
         let f = facts(&woke);
         assert!(f.contains("NO LONGER YOURS") && f.contains(&peer.simple().to_string()[..8]) && f.contains("lease edge"), "{f}");
+        assert!(f.contains("board now shows") && !f.contains("took it") && !f.contains("lapsed"), "observed state, not a story: {f}");
         assert!(f.contains("only when it reads claimable") && f.contains("untouched"), "{f}");
 
         woke.note_claim_gone(believed, ClaimGone::Lapsed { expired_at_ms: None });
@@ -2891,7 +2895,7 @@ mod tests {
 
         woke.note_claim_gone(believed, ClaimGone::MovedOn { state: "review" });
         let f = facts(&woke);
-        assert!(f.contains("moved to review") && f.contains("not a lapse") && !f.contains("work/claim"), "{f}");
+        assert!(f.contains("shows it in review") && f.contains("not a lapse") && !f.contains("work/claim"), "{f}");
 
         woke.note_claim_gone(believed, ClaimGone::Unknown);
         let f = facts(&woke);
