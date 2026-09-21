@@ -53,11 +53,13 @@ request, binding, source evidence and terminal record and isolate side effects.
 Add `--max-tokens <allowance>` for an explicitly changed output-budget experiment.
 The input, tools, model, active adapters and sampling parameters come from the
 recorded request, not from today's workspace assembly. A new persona/room/request
-identity separates cache ownership. The command does not enter a persona faculty,
+identity separates cache ownership. Its explicit replay purpose uses the existing
+Probe/scratch admission class rather than claiming a live citizen slot. The
+command does not enter a persona faculty,
 execute proposed tool calls, post to the room, or train the live persona.
 
 The returned comparison includes original/replay finish reasons, token counts,
-answer length and proposed tool-call counts. The new lifecycle is written through
+answer length, proposed tool-call counts and provider-reported timing/cache metrics. The new lifecycle is written through
 the existing capture owner, with `replay_of` pointing at the original persona and
 cursor. Inspect `replay_persona_id` through `cognition/playback` for its terminal
 record. `selected` is its submission cursor. The original record is unchanged.

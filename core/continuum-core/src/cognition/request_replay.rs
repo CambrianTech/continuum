@@ -34,6 +34,9 @@ pub struct ReplayOutcome {
     pub finish_reason: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[ts(type = "number")]
+    pub response_time_ms: u64,
+    pub timing: Option<crate::ai::types::GenerationTiming>,
     pub answer_chars: u32,
     pub tool_calls: u32,
     pub model: String,
@@ -46,6 +49,8 @@ impl From<&TextGenerationResponse> for ReplayOutcome {
             finish_reason: response.finish_reason.to_string(),
             input_tokens: response.usage.input_tokens,
             output_tokens: response.usage.output_tokens,
+            response_time_ms: response.response_time_ms,
+            timing: response.timing.clone(),
             answer_chars: response.text.chars().count() as u32,
             tool_calls: response
                 .tool_calls
@@ -100,6 +105,11 @@ fn prepare(
         .submitted
         .take()
         .ok_or_else(|| CommandError::Invalid("capture has no submitted request".into()))?;
+    if submitted.get("schema_version").and_then(|v| v.as_u64()) != Some(4) {
+        return Err(CommandError::Invalid(
+            "unsupported captured-request schema; replay requires schema 4".into(),
+        ));
+    }
     let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take())
         .map_err(|e| CommandError::Invalid(format!("captured context window: {e}")))?;
     let mut request: TextGenerationRequest = serde_json::from_value(submitted["request"].take())
@@ -129,6 +139,7 @@ fn prepare(
     request.room_id = Some(room.to_string());
     request.request_id = Some(request_id.clone());
     request.provider = Some(p.provider.clone());
+    request.purpose = Some("cognition/replay-request".into());
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -326,6 +337,11 @@ mod tests {
             expected[field] = actual[field].clone();
         }
         expected["provider"] = serde_json::json!("explicit-provider");
+        expected["purpose"] = serde_json::json!("cognition/replay-request");
+        assert_eq!(
+            crate::inference::slots::class_for(prepared.request.purpose.as_deref()),
+            crate::inference::slots::SlotClass::Probe
+        );
         expected["maxTokens"] = serde_json::json!(41_053);
         assert_eq!(
             actual, expected,

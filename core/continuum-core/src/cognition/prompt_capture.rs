@@ -235,7 +235,7 @@ impl JsonlPromptCaptureSink {
         value: &impl Serialize,
         header: CallHeader,
         terminal: bool,
-    ) -> Option<PayloadRef> {
+    ) -> Option<CallHeader> {
         let result = self
             .store
             .lock()
@@ -277,7 +277,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         request: &TextGenerationRequest,
     ) -> Option<CaptureToken> {
         let captured_at_ms = now_ms();
-        let mut header = CallHeader {
+        let header = CallHeader {
             request_id: call.request_id.clone(),
             session_id: self.session_id,
             cycle_id: call.cycle_id,
@@ -305,7 +305,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             call,
             request,
         };
-        header.request = self.append(&record, header.clone(), false)?;
+        let header = self.append(&record, header, false)?;
         Some(CaptureToken { header })
     }
     fn terminal(

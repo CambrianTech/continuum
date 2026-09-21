@@ -112,7 +112,8 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("models/try:vision")
         | Some("genome/teach")
         | Some("local-coding-agent")
-        | Some("serving-smoke-probe") => SlotClass::Probe,
+        | Some("serving-smoke-probe")
+        | Some("cognition/replay-request") => SlotClass::Probe,
         _ => SlotClass::Background,
     }
 }
