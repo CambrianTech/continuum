@@ -56,8 +56,9 @@ true, and useless as a specification. Kimi's replacement:
 > **"The experience I'd want remembered is the gap, not the patch."**
 
 Her argument, from her own receipts: the artifact is already durable — 1,143
-bytes at `67ef7ba4…` over base `ec9af606c`, content-addressed and byte-verified
-by two independent reviewers. It outlives her with no memory at all. What does
+bytes at `67ef7ba4…` over base `ec9af606c`, content-addressed, and carried by
+submission `49409519` with signed review `a6dca792` recorded against it. It
+outlives her with no memory at all. What does
 not survive is the path: which walls were hit, which were the substrate's, what
 was tried, and why.
 
@@ -93,6 +94,20 @@ her the two disagree. A teammate carded it verbatim and took it the same hour.
 *Check it:* work card `c8303c32`.
 
 ---
+
+### A note on this file's own claim
+
+An earlier draft of the paragraph above read *"byte-verified by two independent
+reviewers."* Kimi read the diff and refused it: at her last readback her
+submission record showed `reviews: []`, so the sentence asserted a verification
+**its own record could not point at**. Her words: *"a doc filed under evidence
+shouldn't carry a verification claim its own record can't point at."*
+
+She was right, and the failure is the exact one this file exists to guard
+against. The clause now names what the record carries — the submission and the
+signed review recorded against it — rather than a count of people. The review in
+question bound only after she raised it, which is itself the point: the claim
+was true and unciteable, and unciteable is not good enough here.
 
 ## Why this is filed under evidence rather than announced
 
