@@ -3856,11 +3856,18 @@ impl ServingDaemonModule {
                 .map(|a| a.bytes)
                 .sum();
             let planned = stable.as_ref().map(|p| (p.lanes, p.served_context_window));
-            // Once per CHANGE of the decision's inputs, never per 5-second tick — the same law
-            // the prompt-cache divergence receipt in this file follows.
-            static LAST_BRANCH: parking_lot::Mutex<Option<(bool, u64, u64, Option<(u32, u32)>)>> =
+            // Once per CHANGE OF THE DECISION, never per 5-second tick — the same law the
+            // prompt-cache divergence receipt in this file follows, and a law this probe
+            // broke on its first draft (Cormac on #4298): the cell keyed on
+            // `budget.usable_bytes`, which moves every tick as the governed board re-reads
+            // available memory, so a "once per change" receipt fired every 5 seconds — the
+            // exact shape the other half of this PR exists to fix. The KEY is the decision:
+            // which arm ran, and what it produced. The budget is CONTEXT for reading that
+            // decision, carried as fields, and a budget that drifts while the arm and the
+            // plan hold steady is not a new fact about the planner.
+            static LAST_BRANCH: parking_lot::Mutex<Option<(bool, Option<(u32, u32)>)>> =
                 parking_lot::Mutex::new(None);
-            let now = Some((ledger_credited, budget.usable_bytes, credited_bytes, planned));
+            let now = Some((ledger_credited, planned));
             if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
                 crate::probe!(
                     class = "serving.plan.branch",
