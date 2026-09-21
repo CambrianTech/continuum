@@ -288,7 +288,8 @@ impl PersonaSpawnSupervisor {
         // Draw only the seats not yet filled: at boot that is every seat; on a later
         // serving edge it is the seats a bigger plan just opened. Live identities are
         // never re-bootstrapped — the provider's cursor has moved past them.
-        let already_hosted = self.registry.ids().len();
+        let live_at_entry = self.registry.ids();
+        let already_hosted = live_at_entry.len();
         let plans = match bootstrap_planned(
             &self.spawner,
             &self.instance_manager,
@@ -301,17 +302,33 @@ impl PersonaSpawnSupervisor {
         {
             Ok(p) => p,
             Err(err) => {
-                let already_registered = self.registry.ids();
-                let orphans = already_registered.len();
-                for orphan_id in already_registered {
+                // ONLY WHAT THIS CALL REGISTERED IS AN ORPHAN. This used to drain every id
+                // in the registry — right at boot, when the registry holds nothing else,
+                // and catastrophic on a reconciler pass, when it holds the LIVE residents.
+                // Measured on the IntelMac 2026-09-21 13:00:49Z: the grid allocation gave
+                // the node 10 seats, the pass asked the provider for 2 more than the 6 live
+                // residents, the provider had none to yield, and this arm shut down all
+                // six — "6 partially-registered personas drained" for six citizens who had
+                // been fully live for an hour. The node sat at ZERO residents (the
+                // 2026-09-13 hold shape, by a new route: seats > population) until a
+                // reboot, while a stale claim held by one of them blocked a peer's hand-in.
+                // A resident that was live before this pass is never partial: drain the
+                // difference, name the count honestly, and leave the exhausted provider
+                // as the failure it is.
+                let orphans_to_drain =
+                    partially_registered(&live_at_entry, &self.registry.ids());
+                let orphans = orphans_to_drain.len();
+                for orphan_id in orphans_to_drain {
                     let _ = self.registry.shutdown_slot(orphan_id).await;
                 }
                 tracing::error!(
                     error = %err,
                     orphans_drained = orphans,
+                    live_kept = already_hosted,
                     "PersonaSpawnSupervisor: bootstrap_planned failed; \
-                     {} partially-registered personas drained",
+                     {} partially-registered personas drained, {} live residents kept",
                     orphans,
+                    already_hosted,
                 );
                 return BootSummary {
                     hosted: 0,
@@ -842,6 +859,16 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
     }
 }
 
+/// The ids a failed `bootstrap_planned` pass may drain: those registered SINCE the pass
+/// began. PURE, so the invariant that made the IntelMac dark on 2026-09-21 — a live
+/// resident is never an orphan of a later pass — is pinned by a test, not by a log line.
+pub(crate) fn partially_registered(live_at_entry: &[Uuid], now: &[Uuid]) -> Vec<Uuid> {
+    now.iter()
+        .copied()
+        .filter(|id| !live_at_entry.contains(id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,4 +1040,19 @@ mod tests {
         assert_eq!(names, vec!["Kira", "Atlas", "Benchy"], "team first, everyone seated");
     }
 
+    // what this catches (IntelMac 2026-09-21 13:00:49Z): an exhausted identity provider
+    // on a RECONCILER pass drained the six live residents as "partially registered" and the
+    // node sat at zero until a reboot. Only ids registered since the pass began are
+    // orphans; a resident live at entry is kept. Both directions: nothing new → nothing
+    // drained; one new registration → exactly that one.
+    #[test]
+    fn a_failed_pass_drains_only_what_it_registered_never_the_live_residents() {
+        let live: Vec<Uuid> = (0..6).map(|_| Uuid::new_v4()).collect();
+        assert!(super::partially_registered(&live, &live).is_empty(), "six live, nothing new: nothing to drain");
+        let newcomer = Uuid::new_v4();
+        let mut now = live.clone();
+        now.push(newcomer);
+        assert_eq!(super::partially_registered(&live, &now), vec![newcomer], "only the id this pass registered");
+        assert!(super::partially_registered(&[], &now).len() == 7, "at boot the registry is all this pass's");
+    }
 }
