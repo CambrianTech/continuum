@@ -74,6 +74,17 @@ struct Ledger {
     /// derived on read (averaging rates lies — `TurnMetrics::accumulate`'s rule).
     prompt_cached: AtomicU64,
     prompt_prefilled: AtomicU64,
+    /// GENERATIONS THIS HOUR AND THE ONES THROWN AWAY (card ebce2ba0). A generation is
+    /// counted once it has a terminal answer — a response OR a typed adapter refusal,
+    /// both of which reached the model — and `generations_dropped` counts the ones the
+    /// awaiting side abandoned WHILE THE MODEL WAS STILL PRODUCING (the
+    /// `persona.generation.dropped` seam). NOT the same failure as `lane_starved`: a
+    /// lane-starved turn never reached the model, a dropped one did and its output was
+    /// discarded. On the M5 2026-09-20 five of an evening's generations died this way at
+    /// 1,207,290–1,492,456 ms — the act deadline reaping work that was still inside its
+    /// own stated bound, and the hour line called it READING (lazy personas).
+    generations: AtomicU64,
+    generations_dropped: AtomicU64,
     /// Placement moves this hour, by cause (card 10bba591): ON OPPORTUNITY — the grid
     /// allocation seated her on a strictly better seat and the switch took it between
     /// turns; ON FAILURE — a seat went dark, cold, queued or too narrow and she fell
@@ -93,6 +104,8 @@ static LEDGER: Ledger = Ledger {
     pulls_deferred: AtomicU64::new(0),
     think_only: AtomicU64::new(0),
     lane_starved: AtomicU64::new(0),
+    generations: AtomicU64::new(0),
+    generations_dropped: AtomicU64::new(0),
     lanes_max: AtomicU64::new(0),
     prompt_cached: AtomicU64::new(0),
     prompt_prefilled: AtomicU64::new(0),
@@ -142,6 +155,19 @@ pub fn note_pull(deferred: bool) {
 /// what made a starved hour read as a working one.
 pub fn note_lane_starved() {
     LEDGER.lane_starved.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A generation reached its end, one way or the other (the
+/// `crate::cognition::generation_drop::InFlight` seam). `dropped` = the awaiting side went
+/// away while the model was still producing; anything else — a response, a typed adapter
+/// refusal — is a terminal answer the substrate can read. Both increment the denominator,
+/// so the hour can say what FRACTION of its work it threw away rather than a bare count
+/// nobody can size.
+pub fn note_generation_outcome(dropped: bool) {
+    LEDGER.generations.fetch_add(1, Ordering::Relaxed);
+    if dropped {
+        LEDGER.generations_dropped.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A generation reported its prefill split (the `serving.kv.reuse` seam, fed by
@@ -353,6 +379,11 @@ pub struct CitizenHealth {
     /// Turn iterations this hour that never reached the model — a wait, not an act, and
     /// not a think-only turn either. Its own term on the line (card cff534ba).
     pub lane_starved: u64,
+    /// Generations this hour that reached a terminal answer, and the ones dropped in
+    /// flight (card ebce2ba0). `generations` is the denominator the drop RATE is read
+    /// against; 0 generations is an unmeasured hour, never a 0% loss hour.
+    pub generations: u64,
+    pub generations_dropped: u64,
     /// The measured decode knee for the served model (`inference::decode_knee`), when
     /// one is known: the lane count the planner will not exceed because every further
     /// stream would decode below the tax floor. Above it, lanes are not what is owed.
@@ -392,6 +423,13 @@ pub fn prefix_reuse_pct(h: &CitizenHealth) -> Option<u64> {
     (total > 0).then(|| h.prompt_cached_tokens.saturating_mul(100) / total)
 }
 
+/// The hour's DROP RATE as a whole percentage — dropped / generations, derived on read
+/// like [`prefix_reuse_pct`] and for the same reason. `None` until at least one
+/// generation ended this hour: an hour that ran nothing did not lose 0%.
+pub fn dropped_pct(h: &CitizenHealth) -> Option<u64> {
+    (h.generations > 0).then(|| h.generations_dropped.saturating_mul(100) / h.generations)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Healthy,
@@ -403,6 +441,13 @@ pub enum Verdict {
     /// for. The roster pages (the restore economy); what is owed is fewer seats on
     /// this box or more decode (a faster tier, another node) — never more lanes here.
     AtKnee { resident: u64, lanes: u64, knee: u64 },
+    /// THE PIPE IS BROKEN, NOT THE MINDS (card ebce2ba0). Too large a share of this
+    /// hour's generations were dropped in flight — the model was producing and the
+    /// awaiting side went away. It outranks [`Verdict::Reading`] deliberately: 18 of 50
+    /// generations cancelled on the M5 2026-09-20 rendered as "READING: n acts, no
+    /// writes — the governor owes a delivery", which points a reader at the citizens.
+    /// The citizens were writing; a bound above them was taking it back.
+    Dropping { dropped: u64, generations: u64 },
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
     /// Residents, no acts at all — and WHY, as far as the node can read it: with no
@@ -430,6 +475,7 @@ impl Verdict {
             Verdict::Healthy => "healthy",
             Verdict::Starved { .. } => "starved",
             Verdict::AtKnee { .. } => "at_knee",
+            Verdict::Dropping { .. } => "dropping",
             Verdict::Reading { .. } => "reading",
             Verdict::Idle { .. } => "idle",
             Verdict::Slow { .. } => "slow",
@@ -446,6 +492,13 @@ impl Verdict {
 /// 2,174 of 2,177 pulls deferred) was not useful. Minds past the edge rest — dormant, not
 /// resident, not polling — and return when the lanes do or a card names them.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
+
+/// A node is DROPPING above this share of its generations thrown away in flight. One
+/// dropped turn an hour is a bound trimming a genuine outlier; a tenth of them is a pipe
+/// that reaps healthy work, and the loss compounds — every drop is a full prefill (five
+/// to six minutes of a 27B lane on the M5) spent and discarded. The measured night this
+/// was written ran at 36%.
+pub const DROPPED_GENERATIONS_ABOVE_PCT: u64 = 10;
 
 /// A roster is SLOW below one write per this many residents in an hour: 16 minds that
 /// write twice in an hour (00:01Z 2026-09-15, the first receipt the core posted) are not
@@ -474,6 +527,12 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
             _ => Verdict::Starved { resident: h.resident, lanes: h.lanes },
         };
     }
+    // BEFORE blaming the minds: did the substrate throw their work away? A node losing
+    // this share of its generations has a bound problem, and every verdict below reads as
+    // a capability verdict about the citizens.
+    if dropped_pct(h).is_some_and(|pct| pct >= DROPPED_GENERATIONS_ABOVE_PCT) {
+        return Verdict::Dropping { dropped: h.generations_dropped, generations: h.generations };
+    }
     if h.writes == 0 {
         return Verdict::Reading { acts: h.acts };
     }
@@ -492,6 +551,12 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         }
         Verdict::AtKnee { resident, lanes, knee } => format!(
             "AT THE KNEE: {resident} minds on {lanes} lanes, the measured decode knee is {knee} — the roster pages; owed: fewer seats here or more decode, never more lanes"
+        ),
+        Verdict::Dropping { dropped, generations } => format!(
+            "DROPPING: {dropped} of {generations} generations thrown away in flight ({}%) — the model was \
+             producing and the awaiting side went away; the bound that reaped them is on \
+             `persona.generation.dropped`, and this is a PIPE fault, not a citizen one",
+            dropped_pct(h).unwrap_or(0) // unwrap_or: unreachable — this verdict requires generations > 0
         ),
         Verdict::Reading { acts } => {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
@@ -546,6 +611,14 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         ),
         None => String::new(),
     };
+    // WHAT THE SUBSTRATE THREW AWAY (card ebce2ba0): generations the awaiting side
+    // abandoned while the model was still producing, with the share of the hour they
+    // cost. `dropped 0` when the hour ran generations and kept them all; `dropped n/a`
+    // when none ended this hour — an unmeasured hour is not a clean one.
+    let dropped = match dropped_pct(h) {
+        Some(pct) => format!("{} of {} ({pct}%)", h.generations_dropped, h.generations),
+        None => "n/a".to_string(),
+    };
     // THE GRID's half (card 10bba591): who moved and why — an opportunity move is the
     // allocation finding her a strictly better seat, a failure move is a seat that
     // stopped serving her — and how long the oldest dormant mind has waited for a clip
@@ -563,7 +636,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         // (#4283); `prefix reuse` is how much of each prompt the engine did not re-read
         // (card c119ace7); `moves` is minds changing seats and `oldest dormant turn` is a
         // mind with no seat at all (card 10bba591). Six different problems, six owners.
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · dropped {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -571,6 +644,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.acts,
         h.lane_starved,
         h.think_only,
+        dropped,
         h.writes,
         h.lanes_granted,
         h.pulls,
@@ -594,6 +668,17 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
 /// that noticed. A separable counter cannot be mis-positioned by a merge.
 fn snapshot_lane_starved_and_reset() -> u64 {
     LEDGER.lane_starved.swap(0, Ordering::Relaxed)
+}
+
+/// The hour's generations and the ones dropped in flight, read and reset by the tick.
+/// Its own reader for the reason [`snapshot_lane_starved_and_reset`] is: the main tuple
+/// is already nine positional `u64`s and a tenth cannot be mis-positioned by a merge if
+/// it never joins the tuple.
+fn snapshot_generations_and_reset() -> (u64, u64) {
+    (
+        LEDGER.generations.swap(0, Ordering::Relaxed),
+        LEDGER.generations_dropped.swap(0, Ordering::Relaxed),
+    )
 }
 
 /// The hour's prompt-cache totals (cached, prefilled), read and reset by the tick.
@@ -728,6 +813,7 @@ impl CitizenHealthModule {
             crate::cognition::resource_admission::directed_lane_wait_ms();
         let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
         let lane_starved = snapshot_lane_starved_and_reset();
+        let (generations, generations_dropped) = snapshot_generations_and_reset();
         let (moves_opportunity, moves_failure) = snapshot_moves_and_reset();
         CitizenHealth {
             window_secs: HEALTH_WINDOW.as_secs(),
@@ -747,6 +833,8 @@ impl CitizenHealthModule {
             pulls,
             pulls_deferred,
             think_only,
+            generations,
+            generations_dropped,
             knee: knee_of(serving.active_model.as_deref()),
             rounds_working,
             standing_enabled,
@@ -846,6 +934,9 @@ impl ServiceModule for CitizenHealthModule {
             pulls_deferred = h.pulls_deferred,
             think_only = h.think_only,
             lane_starved = h.lane_starved,
+            generations = h.generations,
+            generations_dropped = h.generations_dropped,
+            dropped_pct = dropped_pct(&h).unwrap_or(0), // unwrap_or: 0 = no generation ended this hour; `generations` says so
             settles = h.settles,
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
@@ -897,6 +988,8 @@ impl ServiceModule for CitizenHealthModule {
                     pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     think_only: LEDGER.think_only.load(Ordering::Relaxed),
                     lane_starved: LEDGER.lane_starved.load(Ordering::Relaxed),
+                    generations: LEDGER.generations.load(Ordering::Relaxed),
+                    generations_dropped: LEDGER.generations_dropped.load(Ordering::Relaxed),
                     knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
                     rounds_working,
                     standing_enabled,
@@ -913,6 +1006,8 @@ impl ServiceModule for CitizenHealthModule {
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
                     "lane_starved": h.lane_starved,
+                    "generations": h.generations, "generations_dropped": h.generations_dropped,
+                    "dropped_pct": dropped_pct(&h),
                     "rounds_working": h.rounds_working, "standing_enabled": h.standing_enabled,
                     "prompt_cached_tokens": h.prompt_cached_tokens, "prompt_prefill_tokens": h.prompt_prefill_tokens,
                     "prefix_reuse_pct": prefix_reuse_pct(&h),
@@ -928,7 +1023,7 @@ impl ServiceModule for CitizenHealthModule {
     fn command_schemas(&self) -> Vec<CommandSchema> {
         vec![CommandSchema {
             name: "citizen/health",
-            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, writes, lane grants, settles, prefix reuse, and the verdict (healthy / starved / reading / idle)",
+            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, dropped generations, writes, lane grants, settles, prefix reuse, and the verdict (healthy / starved / dropping / reading / idle)",
             params: vec![],
         }]
     }
@@ -973,7 +1068,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
     }
 
     // what this catches (card 10bba591): the line carries the grid's half — moves by
@@ -1060,6 +1155,52 @@ mod tests {
         let below_knee = CitizenHealth { knee: Some(8), ..h(16, 5, 70, 4) };
         assert_eq!(verdict(&below_knee), Verdict::Starved { resident: 16, lanes: 5 }, "below the knee the planner still owes lanes");
         assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Empty { lanes: 0, lanes_granted: 0 }, "an empty node is EMPTY, never 'healthy'");
+    }
+
+    // what this catches (card ebce2ba0): a dropped generation reaches the hour line as its
+    // OWN number and its own verdict. The M5 2026-09-20 threw away 18 of 50 generations —
+    // six at ~165.9 s, four at ~412.2 s, two at ~485.2 s (all of those abandoned at the
+    // serving gate before dispatch) and five at 1,207–1,492 s with the model still
+    // producing — and the hour line said "READING: n acts, no writes", which points a
+    // reader at the citizens. A regression that folds `dropped` into any other counter, or
+    // lets READING outrank it, puts the blame back on the minds.
+    #[test]
+    fn a_dropped_generation_is_counted_rendered_and_outranks_the_reading_verdict() {
+        let _ = snapshot_generations_and_reset(); // start this assertion from a known floor
+        note_generation_outcome(false);
+        note_generation_outcome(true);
+        note_generation_outcome(true);
+        let (generations, dropped) = snapshot_generations_and_reset();
+        // `>=`, not `==`: the ledger is a process global and a sibling test may be
+        // generating into it. An UNDER-count is the only thing this can miss, and that is
+        // the failure worth catching.
+        assert!(generations >= 3 && dropped >= 2, "the ledger counts both halves: {generations}/{dropped}");
+
+        // The rate, derived on read and never stored. An hour that ran nothing did not
+        // lose 0% of it.
+        let clean = CitizenHealth { generations: 50, generations_dropped: 0, ..h(4, 2, 10, 2) };
+        assert_eq!(dropped_pct(&clean), Some(0));
+        assert_eq!(dropped_pct(&h(4, 2, 10, 2)), None, "an unmeasured hour is not a clean one");
+        assert!(line(&clean, &verdict(&clean)).contains("dropped 0 of 50 (0%)"));
+        assert!(line(&h(4, 2, 10, 2), &verdict(&h(4, 2, 10, 2))).contains("dropped n/a"));
+
+        // The measured night: 18 of 50 = 36%, well past the threshold.
+        let m5 = CitizenHealth { generations: 50, generations_dropped: 18, ..h(4, 2, 13, 0) };
+        assert_eq!(dropped_pct(&m5), Some(36));
+        assert_eq!(
+            verdict(&m5),
+            Verdict::Dropping { dropped: 18, generations: 50 },
+            "36% thrown away is a PIPE fault; it must not render as READING"
+        );
+        let l = line(&m5, &verdict(&m5));
+        assert!(l.contains("dropped 18 of 50 (36%)"), "{l}");
+        assert!(l.contains("DROPPING"), "{l}");
+        assert!(!l.contains("READING"), "{l}");
+        // Below the threshold the older verdicts still stand — this does not swallow them.
+        let occasional = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 0) };
+        assert_eq!(verdict(&occasional), Verdict::Reading { acts: 13 }, "4% is a bound trimming an outlier");
+        let healthy = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 4) };
+        assert_eq!(verdict(&healthy), Verdict::Healthy);
     }
 
     // what this catches: the line carries every number and ends with the verdict, so a

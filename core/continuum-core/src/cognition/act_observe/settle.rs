@@ -353,7 +353,27 @@ async fn settle_to_outcome(
     let mut seen_inputs = None;
     let mut input_watermark = 0;
     loop {
-        let tick_deadline = tokio::time::Instant::now() + TICK_DEADLINE;
+        // THE ACT'S DEADLINE IS SIZED FROM THE TURN IT MUST HOLD (card ebce2ba0).
+        // `TICK_DEADLINE` was a flat 25 minutes, and on the M5 2026-09-20 it reaped five
+        // generations MID-FLIGHT at 1,207,290 / 1,228,814 / 1,491,253 / 1,492,283 /
+        // 1,492,456 ms of elapsed generation — the deadline expiring, less however far
+        // into the act the model call had started. Each of those left a `cancelled`
+        // capture reading "request future dropped before a terminal response": the
+        // substrate reaping its own healthy work, then reading the silence as a lazy
+        // citizen. A turn whose own stated bound (the `turn_bound` the request carries,
+        // #4277) exceeds the act's cannot finish inside the act.
+        //
+        // So the constant becomes a FLOOR under her measured expectation, never a
+        // ceiling over it — the same rule every waiting seam below already follows.
+        // `act_bound_with_source` covers TWO turn bounds because an act is a lane wait
+        // PLUS the generation after it, and the serving gate's own wait is one.
+        let (act_bound, act_bound_source) = crate::inference::turn_bound::act_bound_with_source(
+            TICK_DEADLINE,
+            cycle.acting().and_then(|body| {
+                crate::cognition::llm_deliberation_faculty::expected_occupancy_for(body.persona_id)
+            }),
+        );
+        let tick_deadline = tokio::time::Instant::now() + act_bound;
         if !first_step {
             if let (Some(input), Some(body)) = (conversation.as_deref_mut(), cycle.acting()) {
                 let received = match tokio::time::timeout_at(tick_deadline, input.perceive_ready()).await {
@@ -572,14 +592,20 @@ async fn settle_to_outcome(
                     class = "settle.tick.deadline",
                     room = %room_id,
                     acts_so_far = acts as u64,
-                    deadline_s = TICK_DEADLINE.as_secs(),
-                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive"
+                    deadline_s = act_bound.as_secs(),
+                    // Which sized it: `turn_bound` = her measured turn raised the floor,
+                    // `floor` = she has no measured turn yet and the constant governed.
+                    // A `floor` row on a slow box is the next thing to fix.
+                    bound_source = act_bound_source.as_str(),
+                    floor_s = TICK_DEADLINE.as_secs(),
+                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive. Any generation in flight is dropped and says so on persona.generation.dropped"
                 );
                 (
                     SettleStep::InferenceFailed {
                         error: format!(
-                            "tick exceeded {}s deadline at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
-                            TICK_DEADLINE.as_secs(),
+                            "tick exceeded {}s deadline ({}) at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            act_bound.as_secs(),
+                            act_bound_source.as_str(),
                             acts
                         ),
                     },
