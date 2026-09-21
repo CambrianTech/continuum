@@ -128,7 +128,7 @@ pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_a
 /// off-box, so she comes home at once — no cooldown, no beacon read — and the durable
 /// record that named the seat is retired so the next boot does not repeat it.
 pub const SEAT_STARVES_REASON: &str = "seat window below her turn: a lane that cannot serve is no seat";
-const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
+pub(crate) const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -170,6 +170,28 @@ pub struct PlacementInputs {
     pub requirement: Option<u32>,
 }
 
+/// THE TWO NUMBERS A SEAT VERDICT COMPARED. Carried to the probe so the glass-box record
+/// answers the question it raises: a `fell_home` line reading "seat window below her turn"
+/// without the width and the demand cannot tell a seat that is honestly too small from a
+/// beacon that disagrees with its own node's plan — and on 2026-09-21 that ambiguity is
+/// exactly what stalled the diagnosis of three citizens falling off one seat. A verdict
+/// that omits its inputs is the same defect as `NodeVerdict::BelowEveryRequirement` never
+/// naming the requirement it missed. `None` is honest: an unpublished width, or a mind
+/// whose turn has not been measured yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SeatFit {
+    /// The seat's per-slot window as ITS beacon published it — never this node's plan for it.
+    pub window: Option<u32>,
+    /// What her turn needs of a lane, measured.
+    pub requirement: Option<u32>,
+}
+
+impl SeatFit {
+    fn of(i: &PlacementInputs) -> Self {
+        Self { window: i.seat_window, requirement: i.requirement }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementMove {
     FallHome { reason: &'static str },
@@ -177,6 +199,20 @@ pub enum PlacementMove {
     /// The seat is dark and this node has nothing to run her on: say so, move nothing.
     Park { reason: &'static str },
     Stay,
+}
+
+/// CAN THIS SEAT HOLD HER TURN AT ALL? The ONE answer, because two callers ask it: the
+/// rule below (which move to make) and the tick (whether the durable override naming the
+/// seat should survive the reboot). Before this was extracted only [`decide`] asked, so a
+/// seat proven unable to serve her was walked home every boot and re-bound by the next
+/// one — three citizens (Benchy, Aiko, Atlas) off the same seat across four deploys on
+/// 2026-09-21, 8 `fell_home` events against 0 returns ([[the-compression-principle]]).
+///
+/// Unknown width (an older core's beacon, or a seat that has never published one) is NOT
+/// a refusal — an absence is not a number, and [`crate::cognition::serving_plan::persona_lane_holds`]
+/// already answers the unmeasured-requirement case with the serve floor. Pure.
+pub(crate) fn seat_starves(seat_window: Option<u32>, requirement: Option<u32>) -> bool {
+    seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, requirement))
 }
 
 /// The rule. Pure so the four scenarios are hand-computed tests.
@@ -196,7 +232,7 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
     // token seat). She comes home now — no cooldown, this is not a flap between machines,
     // it is a lane that cannot serve — and she is never returned to it. Unknown width
     // (an older core's beacon) is not a refusal: an absence is not a number.
-    if i.seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, i.requirement)) {
+    if seat_starves(i.seat_window, i.requirement) {
         return match i.seat {
             Seat::Remote if i.local_available => PlacementMove::FallHome { reason: SEAT_STARVES_REASON },
             Seat::Remote => PlacementMove::Park { reason: SEAT_STARVES_REASON },
@@ -274,6 +310,14 @@ pub struct PlacementSwitch {
     home: Option<PersonaHome>,
     seat: AtomicU8,
     moved_at_ms: AtomicU64,
+    /// Has a retirement of her bound seat already been SAID? The retirement itself stays
+    /// idempotent and unconditional (the self-seat path needs the second call — the first
+    /// runs while she is still Remote and cannot drop the lane, the second does once she
+    /// is Home). Only the RECEIPT is once-per-change: a PARKED mind on a starving seat is
+    /// re-asked every tick by design, and a probe that fires on every tick is noise that
+    /// buries the change it was added to report — the third time that shape bit this
+    /// session (Cormac on #4307).
+    retire_said: std::sync::atomic::AtomicBool,
     /// Fixed strings the adapter trait hands out by reference.
     provider_label: String,
     name_label: String,
@@ -330,6 +374,7 @@ impl PlacementSwitch {
             home,
             seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
+            retire_said: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -405,14 +450,50 @@ impl PlacementSwitch {
     }
 
     /// Her bound seat was this node (card 2500d2f1): retire the durable override that
-    /// named it, and — once she is home — the loopback lane and the peer, so she is
-    /// home-born from here and the next boot does not bear her on a lane to herself.
-    /// Idempotent; the override is a record of the old confusion, never an assignment.
+    /// named it. See [`Self::retire_bound_seat`] — this is one of its two callers.
     pub fn retire_self_seat(&self) {
+        self.retire_bound_seat(SELF_SEAT_REASON);
+    }
+
+    /// The seat cannot hold her turn (2026-09-21): retire the durable override the same
+    /// way, so the NEXT BOOT does not bear her back onto it.
+    ///
+    /// Why this is not a fall-home. [`Self::come_home_for_good`] already draws the line —
+    /// a fall-home deliberately KEEPS the seat to return to, because the seat going dark
+    /// or cold is a temporary outage. A window that cannot hold her turn is not an
+    /// outage; `decide` says so in its own words ("this is not a flap between machines,
+    /// it is a lane that cannot serve") and refuses to return her to it. But that refusal
+    /// lived only in the running process: the override on disk survived, and each deploy
+    /// bound her to the same seat again. Measured 2026-09-21 on the IntelMac — Benchy,
+    /// Aiko and Atlas off seat e85a5bb3, EIGHT `fell_home` events across four deploys
+    /// against ZERO returns, clustering 28 s and 69 s after two of those deploys.
+    ///
+    /// Retiring is not exile. The override is a BINDING, not a verdict on the node: a
+    /// mind sitting home past her cooldown is a chooser candidate again (see the
+    /// `at_home` push below), so if that seat's window grows to hold her the chooser
+    /// re-binds her on its own. That is what makes this safe against a seat read narrow
+    /// mid-relaunch, when the grow-back ladder has not yet restored the window — the cost
+    /// of retiring too eagerly is one chooser pass, while the cost of keeping a stale
+    /// binding is a citizen walked home on every deploy forever.
+    pub fn retire_starving_seat(&self) {
+        self.retire_bound_seat(SEAT_STARVES_REASON);
+    }
+
+    /// Retire the durable override naming her bound seat, and — once she is home — the
+    /// remote lane and the peer, so she is home-born from here and the next boot does not
+    /// bear her onto a seat this run already proved is none.
+    /// Idempotent; the override is a record of the old confusion, never an assignment.
+    fn retire_bound_seat(&self, why: &'static str) {
         let Some(peer) = self.peer() else {
             return;
         };
-        if self.seat() == Seat::Home {
+        // THE WORK IS UNCONDITIONAL, THE RECEIPT IS ONCE-PER-CHANGE. The self-seat path
+        // needs to be re-asked: the first call runs while she is still Remote and cannot
+        // drop the lane, the second drops it once she is Home. So the clear stays
+        // idempotent and repeated — only the probe below is gated, on something having
+        // actually changed.
+        let dropped_lane = self.seat() == Seat::Home;
+        if dropped_lane {
             *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
             *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         }
@@ -420,14 +501,25 @@ impl PlacementSwitch {
             Some(home) => PersonaModelOverride::clear(home).map_err(|e| e.to_string()),
             None => Ok(()),
         };
+        // A PARKED mind on a starving seat is re-asked every tick by design (Park repeats;
+        // that is why `apply` returns no room line for it). Saying it every tick would
+        // bury the one transition worth reading, so the receipt fires on the first sight
+        // and again when the lane actually drops — never on the ticks between.
+        let first = !self
+            .retire_said
+            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        if !(first || dropped_lane) {
+            return;
+        }
         crate::probe!(
-            class = "persona.placement.self_seat_retired",
+            class = "persona.placement.seat_retired",
             persona = %self.persona_name,
             peer = %peer,
+            why,
             cleared = cleared.is_ok(),
             error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
             at_home = self.seat() == Seat::Home,
-            "her bound seat was this very node — the override naming it is retired, and the loopback lane once she is home"
+            "this run proved her bound seat is no seat — the override naming it is retired, and her remote lane once she is home"
         );
     }
 
@@ -493,7 +585,7 @@ impl PlacementSwitch {
 
     /// Apply one decided move. Returns the org-room line for a move, `None` for Stay/Park
     /// (Park is a probe only — it repeats every tick and would flood the room).
-    pub async fn apply(&self, mv: &PlacementMove, now_ms: u64) -> Option<String> {
+    pub(crate) async fn apply(&self, mv: &PlacementMove, now_ms: u64, fit: SeatFit) -> Option<String> {
         match mv {
             PlacementMove::Stay => None,
             PlacementMove::Park { reason } => {
@@ -503,6 +595,8 @@ impl PlacementSwitch {
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
 
                     reason = *reason,
+                    seat_window = ?fit.window,
+                    requirement = ?fit.requirement,
                     "her remote seat is dark and this node has no lane for her — parked, not downgraded"
                 );
                 None
@@ -519,6 +613,8 @@ impl PlacementSwitch {
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
 
                     reason = *reason,
+                    seat_window = ?fit.window,
+                    requirement = ?fit.requirement,
                     "her remote seat went dark — her brain runs on this node until the seat beacons again"
                 );
                 Some(format!(
@@ -890,7 +986,7 @@ pub async fn follow_the_fleet(
                 }
             }
         }
-        if let Some(line) = sw.apply(&mv, now_ms).await {
+        if let Some(line) = sw.apply(&mv, now_ms, SeatFit::of(&inputs)).await {
             lines.push(line);
         }
         // A seat that is this node is retired whatever the move (idempotent): the
@@ -898,6 +994,15 @@ pub async fn follow_the_fleet(
         // loopback lane goes once she is home (a parked mind keeps the lane she has).
         if seat_is_self {
             sw.retire_self_seat();
+        }
+        // A SEAT THAT CANNOT HOLD HER TURN IS RETIRED THE SAME WAY, and for the same
+        // reason: the record must not outlive the run that disproved it. `decide` already
+        // refuses to return her to such a seat — but only while this process lives, so
+        // before this the override survived every deploy and re-bound her at the next
+        // boot (Benchy, Aiko, Atlas off one seat, 8 fall-homes / 0 returns, 2026-09-21).
+        // Asked through the SAME predicate `decide` used, never a second reading.
+        if seat_starves(inputs.seat_window, inputs.requirement) {
+            sw.retire_starving_seat();
         }
         // A bound switch sitting HOME past her cooldown is a chooser candidate again —
         // the chooser may bind her to a seat that is capacity now (S1b). Her old seat is
@@ -1426,6 +1531,36 @@ mod tests {
     // narrow seat sends her home NOW (no cooldown: it is not a flap, it cannot serve),
     // is never returned to, and is never chosen for a spill; an unknown width (an older
     // core's beacon) changes nothing; a wide seat is capacity as before.
+    // what this catches (2026-09-21, the IntelMac): `decide` refuses to RETURN her to a
+    // starving seat, but that refusal lived only in the running process — the durable
+    // override on disk survived, so each deploy re-bound Benchy, Aiko and Atlas to seat
+    // e85a5bb3 and the first tick walked them home again. Eight `fell_home` events across
+    // four deploys against ZERO returns, two clusters landing 28 s and 69 s after a
+    // deploy. The tick now asks THIS predicate — the same one `decide` asks, never a
+    // second reading of the same two numbers — to decide whether the record survives.
+    #[test]
+    fn the_predicate_that_refuses_a_seat_is_the_one_that_retires_its_record() {
+        // The starving case `decide` acts on is exactly the case the tick retires.
+        assert!(seat_starves(Some(2_048), Some(70_071)));
+        assert_eq!(
+            decide(PlacementInputs { seat_window: Some(2_048), requirement: Some(70_071), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }),
+            PlacementMove::FallHome { reason: SEAT_STARVES_REASON },
+            "the move and the retirement must never disagree about what starves",
+        );
+        // A seat wide enough keeps its binding — retiring a good record would cost her
+        // the seat she is correctly on.
+        assert!(!seat_starves(Some(131_072), Some(70_071)));
+        // UNKNOWN WIDTH IS NOT A REFUSAL, so it is not a retirement either: an older
+        // core's beacon publishes no width, and an absence is not a number. Before this
+        // was one predicate, a second hand-rolled reading here is exactly where that
+        // asymmetry would have crept back in.
+        assert!(!seat_starves(None, Some(70_071)));
+        assert!(!seat_starves(None, None));
+        // Nothing measured of her turn: the serve floor is the bar, on both sides.
+        assert!(!seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX), None));
+        assert!(seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX - 1), None));
+    }
+
     #[test]
     fn a_seat_whose_window_cannot_hold_her_turn_is_no_seat() {
         let starves = |i: PlacementInputs| PlacementInputs { seat_window: Some(2_048), requirement: Some(70_071), ..i };
