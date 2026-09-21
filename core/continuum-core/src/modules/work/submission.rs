@@ -91,7 +91,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your claim on the card; read off the board when omitted.
+    /// Your claim; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<Uuid>,
@@ -99,7 +99,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// Patch base commit; defaults to checkout base.
+    /// Base commit; defaults to checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
@@ -107,7 +107,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Revision UUID, not artifact/submission ID. Bind before publish; omitted: no credit.
+    /// Revision UUID (not artifact/submission ID); bind before publish or no credit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -531,7 +531,7 @@ pub struct WorkReviewParams {
     pub review_card_id: Uuid,
     /// Your verdict.
     pub outcome: ReviewOutcome,
-    /// What you ran and saw; becomes the review's evidence.
+    /// What you ran and saw; the review's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence_text: Option<String>,
@@ -539,7 +539,7 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_id: Option<Uuid>,
-    /// Parent card; defaults to review's parent.
+    /// Parent card; defaults to review parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<Uuid>,
@@ -555,7 +555,7 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_claim_id: Option<Uuid>,
-    /// A typed evidence reference instead of evidence_text.
+    /// Typed evidence instead of evidence_text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence: Option<WorkArtifactReference>,
@@ -779,7 +779,7 @@ pub struct WorkSubmissionParams {
     /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
-    /// Inspect only; no selection/binding/training. Matching claims do not prove causality.
+    /// Inspect only: no binding/training. Claim match is not causality.
     #[serde(default)]
     pub include_staged_evidence: bool,
 }

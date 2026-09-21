@@ -15,7 +15,7 @@ card_id: string,
  */
 submission_id?: string, 
 /**
- * Your claim on the card; read off the board when omitted.
+ * Your claim; defaults to board.
  */
 claim_id?: string, 
 /**
@@ -23,7 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * Patch base commit; defaults to checkout base.
+ * Base commit; defaults to checkout.
  */
 base_sha?: string, 
 /**
@@ -31,6 +31,6 @@ base_sha?: string,
  */
 artifact?: WorkArtifactReference, 
 /**
- * Revision UUID, not artifact/submission ID. Bind before publish; omitted: no credit.
+ * Revision UUID (not artifact/submission ID); bind before publish or no credit.
  */
 staged_revision_id?: string, };

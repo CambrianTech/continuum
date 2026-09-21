@@ -14,6 +14,6 @@ card_id: string,
  */
 submission_id: string, 
 /**
- * Inspect only; no selection/binding/training. Matching claims do not prove causality.
+ * Inspect only: no binding/training. Claim match is not causality.
  */
 include_staged_evidence: boolean, };

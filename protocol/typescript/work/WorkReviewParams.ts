@@ -16,7 +16,7 @@ review_card_id: string,
  */
 outcome: ReviewOutcome, 
 /**
- * What you ran and saw; becomes the review's evidence.
+ * What you ran and saw; the review's evidence.
  */
 evidence_text?: string, 
 /**
@@ -24,7 +24,7 @@ evidence_text?: string,
  */
 review_id?: string, 
 /**
- * Parent card; defaults to review's parent.
+ * Parent card; defaults to review parent.
  */
 card_id?: string, 
 /**
@@ -40,6 +40,6 @@ artifact?: WorkArtifactReference,
  */
 review_claim_id?: string, 
 /**
- * A typed evidence reference instead of evidence_text.
+ * Typed evidence instead of evidence_text.
  */
 evidence?: WorkArtifactReference, };
