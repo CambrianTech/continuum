@@ -310,6 +310,14 @@ pub struct PlacementSwitch {
     home: Option<PersonaHome>,
     seat: AtomicU8,
     moved_at_ms: AtomicU64,
+    /// Has a retirement of her bound seat already been SAID? The retirement itself stays
+    /// idempotent and unconditional (the self-seat path needs the second call — the first
+    /// runs while she is still Remote and cannot drop the lane, the second does once she
+    /// is Home). Only the RECEIPT is once-per-change: a PARKED mind on a starving seat is
+    /// re-asked every tick by design, and a probe that fires on every tick is noise that
+    /// buries the change it was added to report — the third time that shape bit this
+    /// session (Cormac on #4307).
+    retire_said: std::sync::atomic::AtomicBool,
     /// Fixed strings the adapter trait hands out by reference.
     provider_label: String,
     name_label: String,
@@ -366,6 +374,7 @@ impl PlacementSwitch {
             home,
             seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
+            retire_said: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -478,7 +487,13 @@ impl PlacementSwitch {
         let Some(peer) = self.peer() else {
             return;
         };
-        if self.seat() == Seat::Home {
+        // THE WORK IS UNCONDITIONAL, THE RECEIPT IS ONCE-PER-CHANGE. The self-seat path
+        // needs to be re-asked: the first call runs while she is still Remote and cannot
+        // drop the lane, the second drops it once she is Home. So the clear stays
+        // idempotent and repeated — only the probe below is gated, on something having
+        // actually changed.
+        let dropped_lane = self.seat() == Seat::Home;
+        if dropped_lane {
             *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
             *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         }
@@ -486,6 +501,16 @@ impl PlacementSwitch {
             Some(home) => PersonaModelOverride::clear(home).map_err(|e| e.to_string()),
             None => Ok(()),
         };
+        // A PARKED mind on a starving seat is re-asked every tick by design (Park repeats;
+        // that is why `apply` returns no room line for it). Saying it every tick would
+        // bury the one transition worth reading, so the receipt fires on the first sight
+        // and again when the lane actually drops — never on the ticks between.
+        let first = !self
+            .retire_said
+            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        if !(first || dropped_lane) {
+            return;
+        }
         crate::probe!(
             class = "persona.placement.seat_retired",
             persona = %self.persona_name,
