@@ -153,6 +153,33 @@ pub(crate) struct GridFacts {
 /// arguments. Peers' RESIDENTS are seated as anonymous minds homed there (ids derived
 /// from the node), so a peer's own roster fills its seats before ours spill onto them —
 /// without this a 4-resident, 2-lane peer read as four open seats.
+/// The minds whose OWN measured turn exceeds the widest lane this grid offers, with the
+/// number each asked for. PURE, so the sentence a human needs is pinned by a test rather
+/// than by a probe nobody reads until it fires.
+///
+/// Not the same question as [`crate::cognition::grid_allocation::GridAllocation::role_unservable`],
+/// which asks whether any node holds a declared ROLE. Since #4296 an undeclared role's
+/// hard gate is the serve floor, so every node holds it and a mind whose turn overflows
+/// every lane is SEATED — she never reaches that field (Cormac on #4314). This is the
+/// per-MIND fact: seated or not, this grid cannot serve her.
+///
+/// `None` in a requirement is Unknown — not yet measured — and an absence is never a
+/// number, so an unmeasured mind is never named. A grid offering no plan at all
+/// (`widest == 0`) names nobody either: there is no width to exceed.
+pub(crate) fn minds_over_the_grid(
+    requirements: &[crate::cognition::window_allocator::LaneRequirement],
+    widest_window: u32,
+) -> Vec<(Uuid, u32)> {
+    if widest_window == 0 {
+        return Vec::new();
+    }
+    requirements
+        .iter()
+        .filter_map(|r| r.window.map(|w| (r.persona, w)))
+        .filter(|(_, w)| *w > widest_window)
+        .collect()
+}
+
 pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if let Some(plan) = &f.local_plan {
         book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: vec![plan.clone()] }, f.now_ms);
@@ -393,35 +420,54 @@ impl Inner {
             seated = published.allocation.seated.len() as u64,
             open_seats = published.allocation.open_total(),
             dormant = published.allocation.dormant.len() as u64,
-            // Of the dormant, the ones no node could HOLD — a seat was free somewhere
-            // and every free seat refused them. That is not "waiting for room", it is
-            // "this grid cannot serve this mind", and it is the sentence nobody said
-            // while Benchy read as a citizen who produces nothing (card b8503234).
-            unservable = published.allocation.unservable.len() as u64,
+            // Of the dormant, the ones whose declared ROLE no node holds at all — not
+            // "waiting for room". Distinct from the big-mind case below, which is seated.
+            role_unservable = published.allocation.role_unservable.len() as u64,
             minds = inputs.minds.len() as u64,
             roles = published.roles.len() as u64,
             "the grid allocation changed — published for the switch, the spawner and the health line"
         );
-        // A COUNT DOES NOT REACH A PERSON. The published allocation knows exactly which
-        // minds this grid cannot hold, so it says their ids rather than leaving a reader
-        // to diff two lists. Only when there ARE any — a grid that serves everyone stays
-        // silent here.
-        if !published.allocation.unservable.is_empty() {
+        // A COUNT DOES NOT REACH A PERSON, and the count above is the wrong fact for the
+        // mind this was written for. Since #4296 an UNDECLARED role's hard gate is the
+        // serve floor, so every node holds it and a mind whose TURN overflows every lane
+        // is SEATED, not dormant — she never reaches `role_unservable` (Cormac on #4314).
+        //
+        // Her sentence lives HERE instead, because this is where the two numbers already
+        // meet: `requirements_for` is her OWN measured demand with headroom, and the
+        // offer book carries every plan any node published. A mind asking for more than
+        // the widest window on the grid cannot be served by it, seated or not, and no
+        // amount of waiting or re-seating changes that. Measured 2026-09-21: Benchy's
+        // smallest recent prompt, 76,952, already exceeded the widest lane anywhere,
+        // 75,776 (card b8503234).
+        let widest_window = inputs
+            .nodes
+            .iter()
+            .flat_map(|n| n.plans.iter())
+            .map(|p| p.window)
+            .max()
+            .unwrap_or(0); // unwrap_or: no node offers a plan = no width to exceed; nobody is named
+        let over_the_grid = minds_over_the_grid(
+            &requirements_for(
+                &inputs.minds.iter().map(|m| m.id).collect::<Vec<_>>(),
+                &crate::cognition::working_set::global(),
+            ),
+            widest_window,
+        );
+        if !over_the_grid.is_empty() {
             crate::probe!(
                 class = "grid.mind.unservable",
-                // 8-hex prefixes, the same shape a citizen reads on a board line.
-                // Spelled here rather than borrowing `modules::work::short8`, which is
-                // private to that module — a receipt is not a reason to widen someone
-                // else's surface.
-                minds = %published
-                    .allocation
-                    .unservable
+                minds = %over_the_grid
                     .iter()
-                    .map(|m| m.to_string().chars().take(8).collect::<String>())
+                    // 8-hex prefixes, the shape a citizen reads on a board line. Spelled
+                    // here rather than borrowing `modules::work::short8`, which is private
+                    // to that module — a receipt is not a reason to widen someone else's
+                    // surface.
+                    .map(|(m, w)| format!("{}:{w}", m.to_string().chars().take(8).collect::<String>()))
                     .collect::<Vec<_>>()
                     .join(","),
-                count = published.allocation.unservable.len() as u64,
-                "a seat was free and every free seat refused them — their turn exceeds this grid, and waiting cannot fix it"
+                count = over_the_grid.len() as u64,
+                widest_window,
+                "their own measured turn exceeds the widest lane on this grid — seated or not, this grid cannot serve them"
             );
         }
         crate::probe!(
@@ -668,5 +714,42 @@ mod tests {
         assert_eq!(a.roster_on(me, ONE_OWNER), Some(GridRoster { seated: 1, open: 0 }), "a held box seats its name and mints nothing");
         assert_eq!(a.seat_of(minds[1]), Some(me));
         assert_eq!(a.dormant, vec![minds[0]]);
+    }
+
+    // what this catches (card b8503234; Cormac's REQUEST CHANGES on #4314): the first cut
+    // of this fix asked whether any node HOLDS her ROLE, which since #4296 is the serve
+    // floor for an undeclared role — every node holds it, so the mind it was written for
+    // is SEATED on a lane her turn overflows and never appears in `role_unservable` at
+    // all. The fix was correct machinery aimed at the wrong case. THIS is the per-mind
+    // question, and it is the one a human needed: her own measured turn against the
+    // widest lane the grid offers.
+    //
+    // Measured 2026-09-21: Benchy's smallest recent prompt was 76,952 and the widest lane
+    // anywhere was 75,776 — every refusal individually correct, nobody saying the
+    // sentence. Aiko at ~24k fits and must never be named.
+    #[test]
+    fn a_mind_whose_turn_exceeds_every_lane_is_named_and_the_ones_that_fit_are_not() {
+        use crate::cognition::window_allocator::LaneRequirement;
+        let benchy = Uuid::new_v4();
+        let aiko = Uuid::new_v4();
+        let unmeasured = Uuid::new_v4();
+        let reqs = vec![
+            LaneRequirement::from_demand(benchy, 110_396, 1.0),
+            LaneRequirement::from_demand(aiko, 24_226, 1.0),
+            // no turn yet: Unknown, and an absence is never a number
+            LaneRequirement::from_demand(unmeasured, 0, 1.0),
+        ];
+
+        let named = minds_over_the_grid(&reqs, 78_592);
+        assert_eq!(named, vec![(benchy, 110_396)], "only the mind the grid cannot serve: {named:?}");
+
+        // A grid wide enough for her names nobody.
+        assert!(minds_over_the_grid(&reqs, 131_072).is_empty());
+        // Exactly at the width is served, not refused — `>` and never `>=`.
+        assert!(minds_over_the_grid(&reqs, 110_396).is_empty());
+        // One token under, and she is named.
+        assert_eq!(minds_over_the_grid(&reqs, 110_395).len(), 1);
+        // A grid offering no plan at all has no width to exceed: nobody is named.
+        assert!(minds_over_the_grid(&reqs, 0).is_empty());
     }
 }
