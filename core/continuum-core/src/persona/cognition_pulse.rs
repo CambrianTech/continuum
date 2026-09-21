@@ -177,38 +177,33 @@ mod tests {
         let persona = Uuid::new_v4();
         let (card, other) = (Uuid::new_v4(), Uuid::new_v4());
         let ttl = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
-        touch(persona, 1);
+        let now = crate::modules::chat::now_ms();
+        touch(persona, now.saturating_sub(ttl * 3));
         let captured = || CommandWork {
             key: (persona, card),
             active: false,
         };
         let running = captured().begin();
-        assert!(renewal_earned(
-            work_idle_ms(persona, Some(card), ttl * 3),
-            ttl
-        ));
+        assert!(renewal_earned(work_idle_ms(persona, Some(card), now), ttl));
         assert!(!renewal_earned(
-            work_idle_ms(persona, Some(other), ttl * 3),
+            work_idle_ms(persona, Some(other), now),
             ttl
         ));
         drop(running);
-        assert!(!renewal_earned(
-            work_idle_ms(persona, Some(card), ttl * 3),
-            ttl
-        ));
+        assert!(!renewal_earned(work_idle_ms(persona, Some(card), now), ttl));
         let completed = captured().begin();
-        completed.completed(ttl * 3);
+        completed.completed(now);
         drop(completed);
         assert!(renewal_earned(
-            work_idle_ms(persona, Some(card), ttl * 4),
+            work_idle_ms(persona, Some(card), now + ttl),
             ttl
         ));
         assert!(!renewal_earned(
-            work_idle_ms(persona, Some(card), ttl * 4 + 1),
+            work_idle_ms(persona, Some(card), now + ttl + 1),
             ttl
         ));
         assert!(!renewal_earned(
-            work_idle_ms(persona, Some(other), ttl * 3),
+            work_idle_ms(persona, Some(other), now),
             ttl
         ));
     }
