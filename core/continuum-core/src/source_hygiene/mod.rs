@@ -25,6 +25,7 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod boundary_serialization;
+pub mod derived_bounds;
 pub mod identity_discipline;
 pub mod production_reachability;
 pub mod tenant_neutrality;
