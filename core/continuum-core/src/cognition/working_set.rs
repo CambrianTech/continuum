@@ -1008,4 +1008,33 @@ mod tests {
             "a zero demand must not register as data"
         );
     }
+
+    // what this catches (the M5, 2026-09-21): `placement_switch` read a mind's seat
+    // requirement as `sent_median_of(&[her]).or(node_median)` — so a mind who had sent
+    // nothing yet was judged against the median of EVERY resident's sent peak, and
+    // `seat_starves` feeds `FallHome`, so she was EVICTED on a number that was not hers.
+    //
+    // The sibling test above pins this median for lane SIZING, which is what it is for.
+    // This one pins the fact that made it wrong for ADMISSION: on a node hosting one huge
+    // prompt, the population's answer is the outlier, and it can exceed every seat on the
+    // grid while the small mind being judged fits easily. Benchy peaks ~110k; Aiko wants
+    // 22-24k and Atlas 21-35k; all three were walked off the same 75,776 seat that holds
+    // the latter two with room to spare. Size lanes with the population; admit a mind on
+    // her own demand, or on the serve floor when she has none.
+    #[test]
+    fn the_population_median_sizes_lanes_and_must_never_admit_a_mind() {
+        let reg = WorkingSetRegistry::new();
+        let benchy = Uuid::new_v4();
+        let aiko = Uuid::new_v4();
+        reg.record_sent(benchy, 110_396, 0);
+        reg.record_sent(aiko, 24_226, 0);
+
+        assert_eq!(reg.sent_median_of(&[aiko]), Some(24_226), "her own demand is hers");
+        let population = reg.sent_median_of(&[benchy, aiko]).expect("two residents");
+        assert_eq!(population, 110_396, "the population's answer IS the outlier here");
+        assert!(
+            population > 75_776 && 24_226 < 75_776,
+            "and it exceeds the widest seat on the grid while she fits it — the eviction this removes",
+        );
+    }
 }
