@@ -118,6 +118,36 @@ pub fn largest_known(requirements: &[LaneRequirement]) -> Option<u32> {
     requirements.iter().filter_map(|r| r.window).max()
 }
 
+/// The TYPICAL requirement this seat knows — the median of the measured ones. `None`
+/// = nothing measured anywhere.
+///
+/// This is the grid-wide twin of `ServingDemand::typical_prompt_floor`
+/// (`prompt_floor_of(sent_median)`): the headroom is already in each `LaneRequirement`
+/// (`requirements_for` applies `SENT_HEADROOM`), so the median of those IS the typical
+/// prompt floor across a population instead of one seat's history.
+///
+/// Why a median and not [`largest_known`], which reads like the safe choice: the two
+/// answer different questions. `largest_known` resolves ONE unmeasured mind on a seat
+/// where others are measured, and `pack` walks smallest-first and simply stops adding
+/// lanes when it stops fitting — an outlier costs lanes, never the seat. A grid ROLE's
+/// requirement is a gate: `LanePlan::holds` is all-or-nothing, so a role standing at the
+/// population's MAXIMUM lets a single mind's working set lock every mind out of every
+/// node. That is not theory — on 2026-09-21 four minds measured 38,142 / 50,970 / 76,630
+/// / 125,898, and the one at 125,898 stood as the undeclared role's window while the
+/// grid's widest served window was 78,592; all three nodes read `BelowEveryRequirement`,
+/// all four minds went dormant, and the hour line reported citizens who wrote nothing.
+/// The median of the same four is 76,630, which the widest node holds.
+/// A role describes what its citizens typically need; the minds who need more are
+/// `unserved` by name, which is the honest answer for them and costs nobody else a seat.
+pub fn typical_known(requirements: &[LaneRequirement]) -> Option<u32> {
+    let mut known: Vec<u32> = requirements.iter().filter_map(|r| r.window).collect();
+    if known.is_empty() {
+        return None;
+    }
+    known.sort_unstable();
+    Some(known[known.len() / 2])
+}
+
 /// The allocator's answer: one engine geometry and who it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Allocation {
@@ -313,6 +343,48 @@ mod tests {
     // largest requirement on the seat, and with nothing known on the seat to the
     // model's own trained window, which the budget then bounds at one lane. A
     // measured demand is the requirement, with headroom, whatever its size.
+    // what this catches: the 2026-09-21 07:0xZ dark grid. One mind's typical prompt was
+    // 268k (requirement 335,299 with headroom) while the grid's widest served window was
+    // 78,592. The undeclared grid role stood at `largest_known` — that one mind's number —
+    // so `LanePlan::holds` refused on all three nodes at once, all four minds went dormant
+    // with zero seats anywhere, and the hour line reported citizens who wrote nothing.
+    // `typical_known` is the median, so an outlier costs HER a seat and nobody else one.
+    #[test]
+    fn one_outlier_mind_must_not_set_the_grids_role_window() {
+        let reqs = vec![
+            LaneRequirement::from_demand(Uuid::new_v4(), 20_000, 1.25), // 25,000
+            LaneRequirement::from_demand(Uuid::new_v4(), 30_000, 1.25), // 37,500
+            LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25), // 50,000
+            LaneRequirement::from_demand(Uuid::new_v4(), 268_239, 1.25), // 335,298 — the outlier
+        ];
+        assert_eq!(largest_known(&reqs), Some(335_298), "the peak is still the peak");
+        let typical = typical_known(&reqs).expect("three measured minds");
+        assert_eq!(typical, 50_000);
+        // The grid's widest node that night. The peak gates it out; the typical does not.
+        let widest_node_window = 78_592;
+        assert!(largest_known(&reqs).unwrap() > widest_node_window, "the shape that darkened the grid");
+        assert!(typical <= widest_node_window, "the typical seats the minds who fit");
+    }
+
+    // what this catches: `typical_known` must say NOTHING rather than a number when
+    // nothing is measured — an unmeasured grid gets the serve floor from its caller, never
+    // a zero that reads as "requires nothing" and admits every mind onto a 2k lane.
+    #[test]
+    fn typical_known_is_none_until_something_is_measured() {
+        assert_eq!(typical_known(&[]), None);
+        let all_unknown = vec![
+            LaneRequirement::from_demand(Uuid::new_v4(), 0, 1.25),
+            LaneRequirement::from_demand(Uuid::new_v4(), 0, 1.25),
+        ];
+        assert_eq!(typical_known(&all_unknown), None);
+        // One measured mind among unknowns IS the typical — a median over what is known.
+        let one = vec![
+            LaneRequirement::from_demand(Uuid::new_v4(), 0, 1.25),
+            LaneRequirement::from_demand(Uuid::new_v4(), 56_057, 1.25),
+        ];
+        assert_eq!(typical_known(&one), Some(70_071));
+    }
+
     #[test]
     fn an_unmeasured_mind_resolves_to_the_seat_or_the_model_never_a_constant() {
         let unknown = LaneRequirement::from_demand(Uuid::new_v4(), 0, 1.25);

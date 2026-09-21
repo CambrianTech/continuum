@@ -325,8 +325,12 @@ pub enum NodeVerdict {
     /// The node hosts this role (index into roles) on its chosen plan.
     Hosts { role: usize },
     /// Every runnable plan is below every role's requirement — the node seats nobody.
-    /// `best_window`/`best_capability` say how far off it is.
-    BelowEveryRequirement { best_window: u32, best_capability: u8 },
+    /// `best_window`/`best_capability` say what the node offered; `lowest_requirement`
+    /// says what the LOWEST bar on the grid was, so the receipt names the gap instead of
+    /// only one side of it. Without that number a dark grid is undiagnosable from its own
+    /// receipt — read `allocator/grid` on 2026-09-21 and every node said "below" while
+    /// nothing said below WHAT.
+    BelowEveryRequirement { best_window: u32, best_capability: u8, lowest_requirement: u32 },
     /// The node offered no runnable plan at all.
     NothingRunnable,
 }
@@ -506,6 +510,7 @@ fn decide_node(offer: &NodeOffer, roles: &[Role], minds_per_lane: u32, hold: Opt
         Some(best) => NodeVerdict::BelowEveryRequirement {
             best_window: offer.plans.iter().map(|p| p.window).max().unwrap_or(0), // unwrap_or: unreachable, `best` exists
             best_capability: best.capability_rank,
+            lowest_requirement: roles.iter().map(|r| r.requirement.window).min().unwrap_or(0), // unwrap_or: no roles = no bar to miss
         },
         None => NodeVerdict::NothingRunnable,
     };
@@ -790,6 +795,80 @@ mod tests {
         assert_eq!(a.open, vec![OpenSeats { node: s, owner: US, role: 1, count: 2 }], "the 7B holds orchestration only");
     }
 
+    // what this catches: the 2026-09-21 07:0xZ dark grid, END TO END through `roles_from`.
+    // The live recipe declares one citizen (`helper`) with NO requirement, so its role
+    // window is whatever `measured_floor` says. The four minds measured 38,142 / 50,970 /
+    // 76,630 / 125,898. Handed the population's MAXIMUM (125,898) it exceeds every node's
+    // window and all three nodes read `BelowEveryRequirement` — four minds dormant, zero
+    // seats on a grid that was decoding. Handed the MEDIAN (76,630,
+    // `window_allocator::typical_known`) the widest node holds it and seats them. The
+    // fixture pins both directions with the real numbers so it cannot drift back.
+    #[test]
+    fn an_undeclared_roles_window_must_be_the_typical_not_the_populations_peak() {
+        use crate::experience::recipe::CitizenRecipe;
+        use crate::persona::role_template::RoleId;
+        let citizens = vec![CitizenRecipe { role: RoleId::Coder, requirement: None }];
+        let nodes: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
+        // The three real nodes that night: Intel 32,768 / 5090 75,776 / M5 78,592.
+        let offers = vec![
+            offer(nodes[0], vec![plan("27b", 40, 32_768, 1, None)]),
+            offer(nodes[1], vec![plan("27b", 42, 75_776, 1, None)]),
+            offer(nodes[2], vec![plan("27b", 255, 78_592, 1, None)]),
+        ];
+        let minds_here = minds(0, Some(nodes[2]), 4);
+
+        // THE PEAK: one mind's 335,299 as the role window darkens every node.
+        let (peak_roles, peak_floors) = roles_from(&citizens, Some(125_898));
+        let dark = allocate(&GridInputs {
+            roles: peak_roles,
+            minds: minds_here.clone(),
+            nodes: offers.clone(),
+            minds_per_lane: 2,
+            holds: vec![],
+            floors: peak_floors,
+        });
+        assert!(dark.seated.is_empty(), "the outage: nobody seated anywhere");
+        assert_eq!(dark.dormant.len(), 4, "all four minds dormant on a decoding grid");
+        for n in &nodes {
+            assert!(
+                matches!(dark.node(*n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { .. }),
+                "every node below — including the one whose engine was serving"
+            );
+        }
+        // And the receipt now names the bar it missed, which it did not that night.
+        assert_eq!(
+            dark.node(nodes[2]).unwrap().verdict,
+            NodeVerdict::BelowEveryRequirement { best_window: 78_592, best_capability: 255, lowest_requirement: 125_898 }
+        );
+
+        // THE TYPICAL: the same grid, the same recipe, the median requirement — seats.
+        let (typical_roles, typical_floors) = roles_from(&citizens, Some(76_630));
+        let lit = allocate(&GridInputs {
+            roles: typical_roles,
+            minds: minds_here,
+            nodes: offers,
+            minds_per_lane: 2,
+            holds: vec![],
+            floors: typical_floors,
+        });
+        assert!(!lit.seated.is_empty(), "the fix: the minds who fit get seats");
+        assert!(
+            matches!(lit.node(nodes[2]).unwrap().verdict, NodeVerdict::Hosts { .. }),
+            "the widest node hosts the role"
+        );
+        assert!(
+            matches!(lit.node(nodes[0]).unwrap().verdict, NodeVerdict::BelowEveryRequirement { .. }),
+            "and the 32k box is still honestly below a 76,630 role — the gate still gates"
+        );
+        // And the number Joel's closeness card (53a8d49b) exists for: the 5090 misses by
+        // 854 tokens — 98.9% of the bar — and loses every seat for it. This fix does not
+        // address that; the assertion is here so the next reader sees the margin.
+        assert!(
+            matches!(lit.node(nodes[1]).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 75_776, .. }),
+            "75,776 vs 76,630: a hair under the bar is still under it, today"
+        );
+    }
+
     // what this catches: the 2026-09-20 07:52Z shape — a box whose only runnable plans are
     // 2,048-token lanes. Before this, sixteen minds drew onto it and every turn refused.
     #[test]
@@ -798,7 +877,7 @@ mod tests {
         let two_k = offer(n, vec![plan("27b", 9, 2_048, 1, None), plan("27b", 9, 2_048, 2, None)]);
         let m = minds(0, Some(n), 6);
         let a = allocate(&inputs(vec![two_k], m.clone()));
-        assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: 9 });
+        assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: 9, lowest_requirement: 32_768 });
         assert!(a.seated.is_empty());
         assert_eq!(a.dormant.len(), 6, "every mind dormant, identity kept — none seated on a useless lane");
         assert_eq!(a.open_total(), 0, "and nothing tells the spawner to mint more");
@@ -1119,7 +1198,7 @@ mod tests {
         // orchestration; the verdict names the plan's real width either way.
         let expected = match i.roles.iter().position(|r| lane.holds(&r.requirement)) {
             Some(role) => NodeVerdict::Hosts { role },
-            None => NodeVerdict::BelowEveryRequirement { best_window: lane.window, best_capability: 9 },
+            None => NodeVerdict::BelowEveryRequirement { best_window: lane.window, best_capability: 9, lowest_requirement: 32_768 },
         };
         assert_eq!(a.node(n).unwrap().verdict, expected);
         assert!(lane.window < coder().requirement.window, "the shape this fixture pins: two lanes on 25 GB do not reach the coder window");

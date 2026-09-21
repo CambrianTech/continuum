@@ -32,7 +32,7 @@ use crate::cognition::grid_allocation::{
     Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats,
 };
 use crate::cognition::serving_plan::ServingPlan;
-use crate::cognition::window_allocator::{largest_known, requirements_for};
+use crate::cognition::window_allocator::{requirements_for, typical_known};
 use crate::experience::recipe::CitizenRecipe;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use futures::FutureExt;
@@ -139,9 +139,12 @@ pub(crate) struct GridFacts {
     /// (`CitizenRequirement`). The allocator's roles and floors are `roles_from` over
     /// exactly these (#4271), never a second fold.
     pub citizens: Vec<CitizenRecipe>,
-    /// The window an UNDECLARED role stands at: the largest requirement this seat knows
-    /// (`window_allocator::largest_known` over `requirements_for` — the same derivation
-    /// the serving daemon sizes its lanes from), `None` while nothing is measured.
+    /// The window an UNDECLARED role stands at: the TYPICAL requirement this seat knows
+    /// (`window_allocator::typical_known` over `requirements_for` — the grid-wide twin of
+    /// the `typical_prompt_floor` the serving daemon sizes its lanes from), `None` while
+    /// nothing is measured. The typical, never the maximum: a role's requirement is an
+    /// all-or-nothing gate in `LanePlan::holds`, so standing it at the population's peak
+    /// lets one mind's working set lock every mind out of every node (2026-09-21).
     pub undeclared_window: Option<u32>,
     /// The operator's roster hold resolved to ids, and whether it is exclusive.
     pub hold: Option<(Vec<Uuid>, bool)>,
@@ -315,8 +318,10 @@ impl Inner {
         // ONE requirement notion in the crate (card 10bba591, Cormac on #4281): what a
         // mind needs of a lane is `window_allocator::LaneRequirement` — the untrimmed
         // demand with headroom, Unknown until she has turned — and an undeclared ROLE
-        // stands at the largest of those this seat knows. Never a second median here.
-        let undeclared_window = largest_known(&requirements_for(&minds, &crate::cognition::working_set::global()));
+        // stands at the TYPICAL of those this seat knows, the same statistic (median ×
+        // headroom) the serving daemon's `typical_prompt_floor` is. Not the largest: a
+        // role requirement gates every node at once, so the peak darkens the grid.
+        let undeclared_window = typical_known(&requirements_for(&minds, &crate::cognition::working_set::global()));
         let hold = crate::persona::roster_hold::active().map(|h| {
             let ids: Vec<Uuid> = registry
                 .as_ref()
@@ -382,6 +387,49 @@ impl Inner {
             .iter()
             .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
             .collect();
+        // THE DARK-GRID ALARM (Joel, 2026-09-21: "Need safeguards. I'm tired of limping
+        // around"). Every node running a real plan and NOT ONE seat anywhere is never a
+        // capacity fact — a node with no plan says `NothingRunnable`. It means every
+        // role's requirement sits above every plan's window, which is a REQUIREMENT
+        // defect, and it is invisible downstream: the minds go dormant, the hour line
+        // reads "acts N, writes 0", and the citizens get blamed for the substrate
+        // refusing to seat them. Say it here, with both sides of the gap, so the next
+        // one is read off the probe stream instead of reconstructed by hand.
+        let below: Vec<&crate::cognition::grid_allocation::NodeAllocation> = published
+            .allocation
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.verdict, crate::cognition::grid_allocation::NodeVerdict::BelowEveryRequirement { .. }))
+            .collect();
+        if !below.is_empty() && below.len() == published.allocation.nodes.len() && published.allocation.seated.is_empty() {
+            let gap: Vec<String> = below
+                .iter()
+                .filter_map(|n| match n.verdict {
+                    crate::cognition::grid_allocation::NodeVerdict::BelowEveryRequirement { best_window, lowest_requirement, .. } => {
+                        Some(format!("{}:{}<{}", &n.node.to_string()[..8], best_window, lowest_requirement))
+                    }
+                    _ => None,
+                })
+                .collect();
+            crate::probe!(
+                class = "grid.allocation.no_node_holds_any_role",
+                nodes = below.len() as u64,
+                minds = inputs.minds.len() as u64,
+                roles = inputs.roles.len() as u64,
+                gap = %gap.join(","),
+                lowest_requirement = published
+                    .allocation
+                    .nodes
+                    .iter()
+                    .filter_map(|n| match n.verdict {
+                        crate::cognition::grid_allocation::NodeVerdict::BelowEveryRequirement { lowest_requirement, .. } => Some(lowest_requirement),
+                        _ => None,
+                    })
+                    .min()
+                    .unwrap_or(0), // unwrap_or: unreachable, `below` is non-empty
+                "EVERY node is below EVERY role requirement — the grid seats nobody and no mind can act. A requirement defect, not a capacity fact: read the gap as best_window<requirement per node"
+            );
+        }
         crate::probe!(
             class = "grid.allocation.published",
             key = key,
