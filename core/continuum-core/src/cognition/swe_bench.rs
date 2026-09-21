@@ -2077,11 +2077,11 @@ async fn build_env_from_scratch(
     py: PathBuf,
 ) -> Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
-    let uv = which("uv").ok_or_else(|| {
-        "uv is not installed — it builds the per-instance environment (a Rust binary, \
-         install from https://astral.sh/uv)"
-            .to_string()
-    })?;
+    // A missing HOST tool is a failure to LOOK, never a fact about the instance: typed
+    // by its head so the sweep defers and re-tries every tick instead of recording a
+    // standing refusal that only a change in the citizen's WORK can lift (card 1aac0c72:
+    // sphinx-7889 on the 5090 sat unre-graded for hours after uv appeared on the box).
+    let uv = which("uv").ok_or_else(uv_missing_is_could_not_look)?;
     let interpreter = interpreter_for_year(instance.year());
     let env_s = env_dir.to_string_lossy().to_string();
     let py_s = py.to_string_lossy().to_string();
@@ -2285,11 +2285,16 @@ async fn build_env_from_scratch(
         };
         if !freetype_ok {
             let _ = std::fs::remove_dir_all(&env_dir);
-            return Err(format!(
-                "matplotlib needs the HOST freetype (its vendored freetype 2.6.1 cannot \
-                 build on this machine): install it with `brew install freetype pkg-config` \
-                 and re-run — an ENV prerequisite, not a model result ({})",
-                instance.instance_id
+            // A HOST prerequisite, not a model result — and not the instance's standing
+            // refusal either: typed COULD_NOT_LOOK so the sweep looks again after
+            // `brew install` instead of holding the marker until the citizen's work changes.
+            return Err(host_prereq_is_could_not_look(
+                "the HOST freetype that matplotlib needs (its vendored freetype 2.6.1 cannot \
+                 build on this machine)",
+                &format!(
+                    "install it with `brew install freetype pkg-config` and re-run ({})",
+                    instance.instance_id
+                ),
             ));
         }
     }
@@ -2557,6 +2562,30 @@ const MAX_ERA_OVERRIDES: usize = 8;
 /// re-derived by hand. COULD_NOT_LOOK ≠ NOT_FOUND ([[unknown-is-not-a-quantity]]); a
 /// reader that sees this head defers and looks again, it never records a verdict.
 pub const COULD_NOT_LOOK: &str = "COULD NOT LOOK — ";
+
+/// ONE answer to "how is a missing HOST prerequisite recorded": a [`COULD_NOT_LOOK`] —
+/// the box could not look at the instance at all, so no marker stands and the next sweep
+/// looks again. The marker's own invalidation rule (`refusal_stands_at`) watches the
+/// citizen's WORK mtime and cannot see a tool appearing on the host; a bare reason from
+/// any of these gates therefore stood forever (card 1aac0c72: sphinx-7889 after uv
+/// appeared on the 5090; every matplotlib graded before `brew install freetype`).
+/// `what` names the prerequisite, `remedy` says how to put it on the box.
+pub fn host_prereq_is_could_not_look(what: &str, remedy: &str) -> String {
+    format!(
+        "{COULD_NOT_LOOK}{what} is not available on this box — {remedy}; nothing about the \
+         instance is known until it is"
+    )
+}
+
+/// `uv` — the one tool that builds every per-instance environment — is not on this
+/// process's PATH.
+pub fn uv_missing_is_could_not_look() -> String {
+    host_prereq_is_could_not_look(
+        "uv",
+        "it builds the per-instance environment (a Rust binary, install from \
+         https://astral.sh/uv)",
+    )
+}
 
 /// Does uv's stderr say the INDEX was unreachable (resolver/network), as opposed to a
 /// package that would not resolve or build? Anchored on uv's/reqwest's own phrasing for
@@ -4181,6 +4210,27 @@ mod tests {
         assert!(!network_failure_signature(""));
         // The head every reader keys on is one substrate sentence, never uv's wording.
         assert!(COULD_NOT_LOOK.starts_with("COULD NOT LOOK"));
+    }
+
+    // what this catches (card 1aac0c72): `uv` missing from the HOST was recorded as the
+    // instance's standing refusal; `refusal_stands_at` lifts a marker only when the
+    // citizen's work changes, so the grade was never re-tried after uv appeared on the
+    // box (sphinx-7889, 5090, 2026-09-21). The reason must carry the COULD_NOT_LOOK head
+    // the sweep defers on, and must never classify as an env fault.
+    #[test]
+    fn a_missing_host_prerequisite_is_a_could_not_look_never_a_standing_refusal() {
+        use super::{host_prereq_is_could_not_look, uv_missing_is_could_not_look, COULD_NOT_LOOK};
+        let uv = uv_missing_is_could_not_look();
+        let freetype = host_prereq_is_could_not_look(
+            "the HOST freetype that matplotlib needs",
+            "install it with `brew install freetype pkg-config`",
+        );
+        for reason in [&uv, &freetype] {
+            assert!(reason.starts_with(COULD_NOT_LOOK), "{reason}");
+            assert!(!crate::cognition::swe_verdict_sweep::refusal_is_env_fault(reason), "{reason}");
+        }
+        assert!(uv.contains("astral.sh/uv"), "still says how to fix it: {uv}");
+        assert!(freetype.contains("brew install freetype"), "still says how to fix it: {freetype}");
     }
 
     // what this catches: the Multilingual harness misread — the marked command not
