@@ -869,10 +869,10 @@ pub async fn follow_the_fleet(
     };
     let mut lines = Vec::new();
     let mut at_home: Vec<(Uuid, u64)> = Vec::new();
-    // What a turn needs of a lane, read once per pass: hers when she has sent one, the
-    // node's typical otherwise (Joel: "find something once and pass it along").
+    // What a turn needs of a lane, read once per pass (Joel: "find something once and
+    // pass it along"). HERS, and only hers — the node's typical used to stand in when she
+    // had sent nothing, which is the line this fix removed; see `requirement` below.
     let working_set = crate::cognition::working_set::global();
-    let node_median = working_set.sent_median_of(&switches().iter().map(|s| s.persona_id()).collect::<Vec<_>>());
     // Home-bound minds whose seat is fresh and serving but offers no slot this tick —
     // one line per seat per tick, not one refused ask per mind per tick.
     let mut withheld: std::collections::HashMap<Uuid, u32> = std::collections::HashMap::new();
@@ -909,9 +909,22 @@ pub async fn follow_the_fleet(
             seat_is_self,
             seat_offers_slot: offers.get(&peer).is_some_and(|o| o.free_slots_live > 0),
             seat_window: offers.get(&peer).and_then(|o| o.served_context_window),
+            // HER demand, or NOTHING — never the population's. This read `.or(node_median)`,
+            // so a mind with no measurement of her own was judged against the median of every
+            // resident's sent peak, and evicted on it: `seat_starves` feeds `FallHome`, and a
+            // node hosting ONE huge prompt drags that median over every small mind's head.
+            // Measured 2026-09-21 on the M5 — Benchy's peak is ~110k while Aiko wants 22-24k
+            // and Atlas 21-35k, and all three were walked off the same 75,776 seat that holds
+            // the latter two with room to spare.
+            //
+            // An absence is not a number ([[unknown-is-not-a-quantity-context-needs-the-vram-machinery]]).
+            // `None` is the honest answer for an unmeasured mind, and `persona_lane_holds`
+            // already treats it correctly — it asks only `window >= MIN_SERVE_CTX`, so any
+            // real seat holds her and nobody is evicted on a stranger's demand. The node
+            // median remains right where it belongs: SIZING lanes for the whole population
+            // (`ServingDemand`), never ADMITTING one mind to a seat.
             requirement: working_set
                 .sent_median_of(&[sw.persona_id()])
-                .or(node_median)
                 .map(crate::cognition::serving_plan::prompt_floor_of),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
