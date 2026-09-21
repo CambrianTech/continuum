@@ -19,7 +19,10 @@ pub struct DataReadParams {
     pub id: UUID,
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// a specific store. Accepts the legacy `dbPath` field name as an alias.
-    #[serde(default, alias = "dbPath", skip_serializing_if = "Option::is_none")]
+    // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
+    // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
+    // its name; only the wire changes.
+    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub handle: Option<String>,
 }

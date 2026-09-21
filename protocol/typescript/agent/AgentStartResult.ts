@@ -5,6 +5,7 @@
  */
 export type AgentStartResult = { 
 /**
- * The handle identifying the spawned agent — pass to `status`/`stop`/`wait`.
+ * The handle identifying the spawned agent — pass it back as `agentHandle` to
+ * `status`/`stop`/`wait`.
  */
-handle: string, };
+agentHandle: string, };

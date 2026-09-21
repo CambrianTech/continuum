@@ -20,4 +20,4 @@ data: unknown,
  * Storage handle. Defaults to "main" (the shared DB). Power callers may pass
  * a specific store. Accepts the legacy `dbPath` field name as an alias.
  */
-handle?: string, };
+dbPath?: string, };

@@ -22,6 +22,10 @@ fn default_timeout_ms() -> u64 {
 )]
 pub struct AgentWaitParams {
     /// The agent handle returned by `agent/start`.
+    // `agentHandle` on the wire, NOT `handle`: the envelope owns that name and refuses a
+    // string for it (`expected struct HandleRef`), so this verb could not be called through
+    // the envelope at all — card ea28d2f6. The Rust field keeps its name.
+    #[serde(rename = "agentHandle")]
     pub handle: String,
     /// Max milliseconds to wait before returning a timeout error (default 300000).
     #[serde(default = "default_timeout_ms")]
@@ -71,11 +75,15 @@ mod tests {
     // the legacy `u64_or("timeout_ms", 300000)` contract, preserved via serde default.
     #[test]
     fn timeout_defaults_to_300s() {
-        let p: AgentWaitParams = serde_json::from_value(serde_json::json!({
-            "handle": "agent-abc"
+        // Through the REAL envelope, with the wire name: a bare `handle` here is the
+        // envelope's HandleRef and the call fails to parse (card ea28d2f6).
+        let req = crate::runtime::CommandRequest::<AgentWaitParams>::from_value(serde_json::json!({
+            "agentHandle": "agent-abc"
         }))
         .unwrap();
-        assert_eq!(p.timeout_ms, 300_000);
+        assert!(req.handle.is_none());
+        assert_eq!(req.params.handle, "agent-abc");
+        assert_eq!(req.params.timeout_ms, 300_000);
     }
 
     // what this catches: waiting on an unknown handle is a NotFound error (not a hang
