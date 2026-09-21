@@ -30,9 +30,19 @@ pub struct PromptCall {
     pub persona_id: Uuid,
     pub room_id: Uuid,
     pub cycle_id: Option<u64>,
-    pub context_window: u32,
+    /// Live binding window, or unknown for a replay provider without a window receipt.
+    pub context_window: Option<u32>,
     pub cause: &'static str,
     pub cause_root: Option<Uuid>,
+    /// Present only for an isolated replay; the original record remains untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_of: Option<ReplaySource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplaySource {
+    pub persona_id: Uuid,
+    pub cursor: String,
 }
 #[derive(Debug, Clone)]
 pub struct CaptureToken {
@@ -94,6 +104,9 @@ impl CaptureLease {
             token,
             started: std::time::Instant::now(),
         }
+    }
+    pub fn cursor(&self) -> Option<&str> {
+        self.token.as_ref().map(|token| token.header.cursor.as_str())
     }
     pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) {
         if let Some(token) = self.token.take() {
@@ -579,9 +592,10 @@ mod tests {
             persona_id: persona,
             room_id: Uuid::nil(),
             cycle_id: Some(1),
-            context_window: 8192,
+            context_window: Some(8192),
             cause: "synthetic",
             cause_root: None,
+            replay_of: None,
         };
         let request = TextGenerationRequest {
             request_id: Some("first".into()),
