@@ -309,13 +309,6 @@ pub fn prepare_base_for_mlx(
     Ok(changes)
 }
 
-/// Generous wall-clock TTL for the training job's governed VRAM/UMA lease (#56/G2).
-/// A LoRA forge can run many minutes to hours; the RAII guard releases the moment
-/// `run_mlx_train` returns (the child has exited by then). This TTL is ONLY the
-/// self-healing backstop that returns the reservation to the board if the whole
-/// PROCESS is SIGKILLed mid-train without running `Drop`.
-const FORGE_TRAIN_LEASE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
-
 /// Derive a training job's peak UMA footprint from its OWN parameters — a sum of
 /// named terms, not a multiplier ([[no-hardcoded-heuristics]]; the ×1.3-then-×2.0
 /// factor era ended 2026-07-23 when ×1.3 granted a Devstral-24B job that Metal
@@ -373,8 +366,8 @@ fn acquire_train_slot(
     footprint: Option<u64>,
     base_model_dir: &std::path::Path,
 ) -> Result<Option<crate::resources::LeaseGuard>, String> {
-    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
-    let Some(daemon) = ResourceDaemon::global() else {
+    use crate::resources::ResourceDaemon;
+    let Some(_daemon) = ResourceDaemon::global() else {
         return Ok(None); // ungoverned node — proceed unleased, behavior unchanged
     };
     let Some(footprint) = footprint else {
@@ -385,41 +378,7 @@ fn acquire_train_slot(
         );
         return Ok(None);
     };
-    let req = LeaseRequest {
-        consumer_id: "forge-train".to_string(),
-        kind: ResourceKind::Vram,
-        bytes: footprint,
-        ttl_ms: FORGE_TRAIN_LEASE_TTL_MS,
-        // A bare lease with no preemption handler must stay Pinned: the RAII guard is
-        // the real release, so the board must never free the accounting while the
-        // subprocess still holds the UMA. Real yield-under-pressure (checkpoint + pause
-        // the forge when live serving needs the bytes) is the piece-3 follow-up.
-        reclaim_policy: ReclaimPolicy::Pinned,
-    };
-    match daemon.acquire_guarded(&req) {
-        Ok(guard) => {
-            crate::probe!(
-                class = "forge.mlx_train.govern",
-                footprint_bytes = footprint,
-                "governor granted a training lease"
-            );
-            Ok(Some(guard))
-        }
-        Err(LeaseError::InsufficientCapacity {
-            available,
-            requested,
-            ..
-        }) => Err(format!(
-            "governor refused the training lease: needs {requested}B of VRAM/UMA but only \
-             {available}B is available (live serving + other consumers hold the rest). \
-             Refusing to launch mlx_lm.lora rather than OOM the machine mid-forge — free \
-             VRAM (quit a game, let a benchmark lane finish) and retry."
-        )),
-        Err(e) => Err(format!(
-            "governor lease error acquiring a training slot ({e:?}) — refusing to launch \
-             ungoverned rather than risk an OOM"
-        )),
-    }
+    super::training_admission::acquire_training_memory("forge-train", footprint).map(Some)
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,

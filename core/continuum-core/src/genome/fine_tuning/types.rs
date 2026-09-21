@@ -364,6 +364,8 @@ pub enum TrainingStatus {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactFormat {
+    /// Standard PEFT adapter directory produced by CUDA QLoRA. Convert before paging.
+    PeftAdapterDir,
     /// Apple `mlx_lm.lora` output dir (`adapters.safetensors` +
     /// `adapter_config.json`). NOT directly pageable — the forge custodian
     /// converts it to a GGUF-lora gene (locally today, on a grid GPU node

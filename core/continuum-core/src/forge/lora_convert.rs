@@ -47,6 +47,63 @@ pub struct PeftConversion {
     pub target_modules: Vec<String>,
 }
 
+/// External PEFT configuration decoded once at the checkpoint boundary.
+#[derive(Debug, serde::Deserialize)]
+pub struct PeftLoraConfig {
+    #[serde(rename = "peft_type")]
+    _kind: PeftKind,
+    pub base_model_name_or_path: String,
+    #[serde(rename = "r")]
+    pub rank: std::num::NonZeroUsize,
+    #[serde(rename = "lora_alpha")]
+    pub alpha: std::num::NonZeroU32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+enum PeftKind {
+    #[serde(rename = "LORA")]
+    Lora,
+}
+
+impl PeftLoraConfig {
+    pub fn parse(bytes: &[u8], expected_base: &str) -> Result<Self, String> {
+        let config: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        if config.base_model_name_or_path != expected_base {
+            return Err("PEFT checkpoint base identity does not match the requested LoRA".into());
+        }
+        Ok(config)
+    }
+}
+
+/// Validate tensors against the already-decoded, source-owned configuration.
+pub fn inspect_peft_adapter(directory: &Path, config: &PeftLoraConfig) -> Result<PeftConversion, String> {
+    let config_path = directory.join("adapter_config.json");
+    let rank = config.rank.get();
+    let adapter_path = directory.join("adapter_model.safetensors");
+    let bytes = std::fs::read(&adapter_path).map_err(|e| e.to_string())?;
+    let tensors = SafeTensors::deserialize(&bytes).map_err(|e| e.to_string())?;
+    let mut targets = BTreeSet::new();
+    let mut pairs = std::collections::BTreeMap::<String, (bool, bool)>::new();
+    for (name, tensor) in tensors.tensors() {
+        let (module, axis, is_a) = if let Some(module) = name.strip_suffix(".lora_A.weight") {
+            (module, 0, true)
+        } else if let Some(module) = name.strip_suffix(".lora_B.weight") {
+            (module, 1, false)
+        } else { return Err(format!("unsupported PEFT tensor {name}")); };
+        if tensor.shape().len() != 2 || tensor.shape()[axis] != rank {
+            return Err(format!("PEFT tensor {name} disagrees with rank {rank}"));
+        }
+        let pair = pairs.entry(module.into()).or_default();
+        if is_a { pair.0 = true; } else { pair.1 = true; }
+        targets.insert(module.rsplit('.').next().ok_or("empty PEFT module")?.to_owned());
+    }
+    if pairs.is_empty() || pairs.values().any(|pair| *pair != (true, true)) {
+        return Err("PEFT checkpoint has empty or incomplete LoRA factor pairs".into());
+    }
+    Ok(PeftConversion { adapter_path, config_path, tensor_count: tensors.len(), rank,
+        target_modules: targets.into_iter().collect() })
+}
+
 /// Convert an MLX `adapters.safetensors` into a HuggingFace PEFT adapter
 /// directory (`adapter_model.safetensors` + `adapter_config.json`).
 ///
@@ -422,6 +479,10 @@ mod tests {
         assert_eq!(conv.rank, 2, "rank derived from shapes");
         assert_eq!(conv.tensor_count, 2);
         assert_eq!(conv.target_modules, vec!["q_proj".to_string()]);
+        let config_bytes = std::fs::read(out.join("adapter_config.json")).unwrap();
+        let config = PeftLoraConfig::parse(&config_bytes, "unsloth/Qwen2.5-0.5B-Instruct").unwrap();
+        assert_eq!(inspect_peft_adapter(&out, &config).unwrap(), conv);
+        assert!(PeftLoraConfig::parse(&config_bytes, "different/base").is_err());
 
         let data = std::fs::read(&conv.adapter_path).unwrap();
         let st = SafeTensors::deserialize(&data).unwrap();

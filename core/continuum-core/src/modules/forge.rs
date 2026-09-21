@@ -674,6 +674,8 @@ fn run_train_native_mlx(
 /// (custodian-owned). Both stay custodian-side — the organism passes handles.
 #[derive(Debug, Deserialize)]
 struct ForgeExportParams {
+    #[serde(default)]
+    checkpoint_format: crate::forge::protocol::AdapterCheckpointFormat,
     /// The trained checkpoint directory (loaded into the custodian's exporter).
     checkpoint: String,
     /// Where the custodian writes the export (custodian-owned path).
@@ -763,6 +765,7 @@ async fn run_export_gguf_lora(
         .map_err(|e| e.to_string())?;
 
     let req = crate::forge::protocol::GgufLoraRequest {
+        checkpoint_format: p.checkpoint_format,
         checkpoint: p.checkpoint.clone(),
         save_directory: p.save_directory.clone(),
         base_model_id: hf_base.to_string(),
@@ -1372,6 +1375,7 @@ mod tests {
     async fn forge_export_gguf_lora_sends_stateless_contract_c_request() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1407,6 +1411,7 @@ mod tests {
     async fn forge_export_gguf_lora_without_base_fails_loud() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1439,6 +1444,7 @@ mod tests {
     async fn forge_export_gguf_lora_fails_loud_when_custodian_fails() {
         let cust = RecordingForgeCustodian::default(); // succeed=false
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1469,6 +1475,7 @@ mod tests {
     async fn forge_export_gguf_lora_registers_gene_in_manifest() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpts/asha-code".into(),
             save_directory: "/genes".into(),
             format: "gguf-lora".into(),

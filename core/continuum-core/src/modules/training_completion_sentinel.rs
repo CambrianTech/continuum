@@ -352,7 +352,7 @@ async fn resolve_pageable_gene_path(
             };
             Some(path.to_string_lossy().to_string())
         }
-        ArtifactFormat::MlxAdapterDir => {
+        ArtifactFormat::MlxAdapterDir | ArtifactFormat::PeftAdapterDir => {
             let Some(mlx_dir) = artifact.local_path.as_ref() else {
                 tracing::warn!(
                     persona = %job.persona_id,
@@ -368,7 +368,13 @@ async fn resolve_pageable_gene_path(
             // alongside it. `base_model_id` is REQUIRED for gguf-lora — the
             // converter needs the base architecture; forge/export fails loud
             // without it, and so do we by passing the watched base.
+            let checkpoint_format = if artifact.format == ArtifactFormat::PeftAdapterDir {
+                crate::forge::protocol::AdapterCheckpointFormat::Peft
+            } else {
+                crate::forge::protocol::AdapterCheckpointFormat::Mlx
+            };
             let params = serde_json::json!({
+                "checkpoint_format": checkpoint_format,
                 "checkpoint": mlx_dir,
                 "save_directory": mlx_dir,
                 "format": "gguf-lora",

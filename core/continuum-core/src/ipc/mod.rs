@@ -3375,9 +3375,10 @@ pub fn start_server(
     // selection logic lives in the coordinator.
     {
         use crate::genome::fine_tuning::{
-            FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
+            CudaLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
         };
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
+        ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
 
         // OpenAI when credentials present. Other cloud LoRA-trainer
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,
