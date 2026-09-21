@@ -112,6 +112,7 @@ jobs:
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
+          python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
           # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present

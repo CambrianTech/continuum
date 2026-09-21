@@ -172,7 +172,7 @@ impl NativeJobs {
                     "trainer exit {other:?}: {}",
                     tail.lock()
                         .map(|t| t.iter().cloned().collect::<Vec<_>>().join("\n"))
-                        .unwrap_or_else(|_| "stderr unavailable".into())
+                        .unwrap_or_else(|_| "stderr unavailable".into()) // Failed diagnostic reads report absence; they never change job success.
                 )),
             };
             tx.send_replace(match artifact {
@@ -233,7 +233,7 @@ pub(super) fn job_dir_for(request: &TrainingJobRequest, local_id: Uuid) -> PathB
     if let Some(dir) = &request.local_artifact_dir {
         return dir.join(local_id.to_string());
     }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")); // Preserve the existing MLX current-directory job-root fallback when no home is available.
     home.join(".continuum/genome")
         .join(request.persona_name.replace(['/', ' '], "_"))
         .join(sanitize(&request.trait_kind))

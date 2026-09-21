@@ -77,16 +77,18 @@ through the existing tool installer is not implemented in this change.
 ## Verification and remaining acceptance
 
 The opt-in `CONTINUUM_TEST_CUDA=1 python -m unittest cuda_train_test -v` test uses
-a locally constructed small Qwen architecture. It exercises real CUDA NF4/LoRA,
+locally constructed small Qwen2 and Qwen3.5 hybrid/multimodal architectures. It exercises real CUDA NF4/LoRA,
 checks changed adapter weights, unchanged base weights, supervised-token
-coverage and validation output. This is a mechanics test, not a benchmark or
+coverage and validation output. `CONTINUUM_TEST_GGUF=1` additionally runs the
+pinned upstream converter for both produced adapters and reads the resulting
+GGUF tensor tables. CPU-only data-contract tests run in the existing Rust CI job. This is a mechanics test, not a benchmark or
 evidence that Kimi learned. Rust regressions cover native cancellation/foreign
 handles and the existing MLX-to-PEFT conversion plus native PEFT validation.
 
 Kimi's registered Qwen3.8-27B source resolves through the existing catalog. An
 initial full-batch plan exceeded the 5090's 32 GB. After accounting for the
 unquantized output head and choosing microbatch one/effective batch four, the
-model-only plan requires 30.74 GB at 2,048 tokens. This is an estimate on an idle
+full-wrapper model-only plan requires 31.04 GB at 2,048 tokens. This is an estimate on an idle
 GPU, not simultaneous inference/training acceptance. On the Windows test host,
 CUDA reports 31.8 GB free while NVIDIA reports about 25.9 GB used. The live
 resource board reports about 6 GB available. The adapter therefore passes the
@@ -100,3 +102,14 @@ Remote training dispatch, restart
 reattachment to native jobs, and typed per-step progress are not implemented
 here. The shared owner currently exposes job status and persisted diagnostic
 loss records; these limitations must remain visible in acceptance receipts.
+
+The Qwen3.5-family regression caught a text-only AutoModel projection taking
+precedence over the multimodal wrapper. The trainer now preserves the wrapper;
+its config, parameter paths and memory plan include the vision component even
+when a curriculum currently contains only text. The fixture carries the actual
+base family's MTP configuration; no vendored converter modification is included.
+On Windows the hybrid test uses Transformers' reference CUDA operations because
+causal-conv1d and flash-linear-attention are absent. Installed versions/absence
+and actual model class are recorded in training provenance. Correctness and
+GGUF conversion pass; optimized-kernel availability and full-model throughput
+remain explicit acceptance work.

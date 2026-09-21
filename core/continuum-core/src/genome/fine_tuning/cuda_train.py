@@ -9,6 +9,7 @@ import json
 import math
 import os
 import time
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 
@@ -21,10 +22,12 @@ def write_json(path, value):
 
 def model_class(config):
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
-    if type(config) in AutoModelForCausalLM._model_mapping:
-        return AutoModelForCausalLM
+    # Some multimodal configs also register a text-only CausalLM projection.
+    # Preserve the actual wrapper and parameter paths used by the serving base.
     if type(config) in AutoModelForImageTextToText._model_mapping:
         return AutoModelForImageTextToText
+    if type(config) in AutoModelForCausalLM._model_mapping:
+        return AutoModelForCausalLM
     raise ValueError(f"no installed Transformers trainer for {config.model_type}")
 
 
@@ -163,6 +166,7 @@ def train(spec, output):
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True,
                                            gradient_checkpointing_kwargs={"use_reentrant": False})
     model.config.use_cache = False
+    model.config.get_text_config().use_cache = False
     model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"],
         lora_dropout=lora["dropout"], target_modules=lora["targetModules"],
         bias="none", task_type="CAUSAL_LM"))
@@ -230,12 +234,19 @@ def train(spec, output):
     write_json(output / "metrics.json", {"trainedTokens": trained_tokens, "finalLoss": final_loss,
         "finalValidationLoss": validation_loss, "wallClockMs": int((time.monotonic()-started)*1000),
         "costUsd": None})
+    packages = {}
+    for package in ["transformers", "peft", "bitsandbytes", "causal-conv1d", "flash-linear-attention"]:
+        try:
+            packages[package] = version(package)
+        except PackageNotFoundError:
+            packages[package] = None
     write_json(output / "training-provenance.json", {"baseModel": base, "revision": revision,
         "device": torch.cuda.get_device_name(), "cuda": torch.version.cuda,
         "peakAllocatedBytes": torch.cuda.max_memory_allocated(), "budgetBytes": budget,
         "quantization": "nf4-double", "steps": step, "microBatchSize": micro,
         "effectiveBatchSize": schedule["batchSize"], "trainingRows": len(training),
-        "validationRows": len(validation), "torch": torch.__version__})
+        "validationRows": len(validation), "torch": torch.__version__,
+        "packages": packages, "modelClass": type(model.get_base_model()).__name__})
 
 
 if __name__ == "__main__":

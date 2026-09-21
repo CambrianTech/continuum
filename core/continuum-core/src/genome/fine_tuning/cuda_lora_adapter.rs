@@ -46,7 +46,8 @@ impl CudaLoraFineTuner {
         let python = crate::config_env::read("CUDA_TRAIN_PYTHON")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let home = dirs::home_dir().unwrap_or_default();
+                // An absent explicit override selects the conventional local installation.
+                let home = dirs::home_dir().unwrap_or_default(); // Without a home, the relative candidate must still pass is_file before execution.
                 let root = home.join(".continuum/tools/cuda-training");
                 if cfg!(windows) {
                     root.join("Scripts/python.exe")
@@ -125,6 +126,9 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 request,
                 canonical_base,
                 memory_bytes: 0,
+                // Driver-free is not admission headroom: on Windows CUDA reported
+                // 31.8 GB free while serving occupied 25.9 GiB. The governor
+                // accounted for that residency and exposed only ~6 GB to training.
                 available_bytes: crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("CUDA training requires the resource governor"))?
                     .available_for(
@@ -134,7 +138,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 micro_batch_size: 0,
                 revision: None,
             };
-            tokio::fs::write(&config, serde_json::to_vec(&spec).map_err(failure)?)
+            tokio::fs::write(&config, serde_json::to_vec(&spec).map_err(failure)?) // Disk request.json consumed by the separate Python planner process.
                 .await
                 .map_err(failure)?;
             // Config-only meta tensors: no model weights or GPU allocation before admission.
@@ -170,7 +174,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             spec.memory_bytes = plan.memory_bytes;
             spec.micro_batch_size = plan.micro_batch_size;
             spec.revision = plan.revision;
-            tokio::fs::write(&config, serde_json::to_vec(&spec).map_err(failure)?)
+            tokio::fs::write(&config, serde_json::to_vec(&spec).map_err(failure)?) // Disk request.json carries the admitted plan to the Python trainer process.
                 .await
                 .map_err(failure)?;
             let mut command = tokio::process::Command::new(&python);
