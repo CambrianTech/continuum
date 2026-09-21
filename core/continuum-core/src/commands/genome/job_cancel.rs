@@ -1,4 +1,4 @@
-//! `genome/job-cancel` — look the adapter up by `handle.providerId`, cancel.
+//! `genome/job-cancel` — look the adapter up by `jobHandle.providerId`, cancel.
 
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ pub struct JobCancelOutcome {
 
 crate::action_command! {
     /// Cancel a fine-tuning job by its handle. The adapter is looked back up from
-    /// `handle.providerId` and asked to cancel. An unknown provider yields
+    /// `jobHandle.providerId` and asked to cancel. An unknown provider yields
     /// `success=false` with `errorKind="UnknownHandle"`; an adapter error yields its
     /// own `errorKind` slug. Routes purely by the handle — no module-side cached
     /// selection.
