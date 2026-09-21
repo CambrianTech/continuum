@@ -554,7 +554,7 @@ impl AircPersonaConversation {
                             live_since_tick = live_since_tick.saturating_add(1);
                             reopen_attempt = 0;
                             if let Ok(ev) = &item {
-                                // These headers already mean "not perception" in
+                                // These routing headers mean "not perception" in
                                 // admission and durable catch-up. Drop them BEFORE
                                 // the bounded attention inbox: a token flood must
                                 // not consume the ready-drain budget ahead of a
@@ -562,6 +562,7 @@ impl AircPersonaConversation {
                                 // seen-ring churn for traffic we will never admit.
                                 if crate::persona::airc_citizen::is_heartbeat(ev)
                                     || crate::airc::realtime_wire::is_stream_chunk(ev)
+                                    || crate::airc::realtime_wire::is_command_frame(ev)
                                 {
                                     continue;
                                 }
@@ -750,7 +751,6 @@ impl AircPersonaConversation {
                 if ready_scan_remaining == 0 {
                     return Ok(None);
                 }
-                ready_scan_remaining -= 1;
             }
             // Rejoin-replayed turns first — they are OLDER than anything the live
             // stream will yield, and ordering is what keeps an addressed kickoff
@@ -765,6 +765,11 @@ impl AircPersonaConversation {
                 if let Some(event) = self.ready_event.clone() {
                     let message = self.admit_event(event).await;
                     self.ready_event = None;
+                    // Charge an examined event, not the earlier pass that only
+                    // retained it across awaits. Cancellation retains ownership.
+                    if !wait {
+                        ready_scan_remaining -= 1;
+                    }
                     if message.is_some() {
                         return Ok(message);
                     }
@@ -1082,16 +1087,21 @@ mod tests {
         for index in 0..CATCH_UP_PAGE * 2 {
             let mut noise = event("not a completed utterance");
             noise.headers.insert(
-                if index % 2 == 0 {
-                    airc_lib::HEADER_STREAM_ID
-                } else {
-                    airc_lib::HEADER_HEARTBEAT_KIND
+                match index % 3 {
+                    0 => airc_lib::HEADER_STREAM_ID,
+                    1 => airc_lib::HEADER_HEARTBEAT_KIND,
+                    _ => airc_protocol::HEADER_AIRC_CORRELATION_ID,
                 }
                 .into(),
                 "fixture".into(),
             );
             frames.push(Ok(Arc::new(noise)));
         }
+        // Even textual RPC results are not a colleague speaking. A completed
+        // directed room message still passes below.
+        let mut rpc = event("RPC result, not speech");
+        rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
+        assert_eq!(crate::airc::realtime_wire::room_turn_from_event(&rpc), Err("command_frame"));
         let mut control = event("");
         control.kind = airc_core::TranscriptKind::System;
         control.body = None;
@@ -1132,6 +1142,23 @@ mod tests {
         assert_eq!(perceived[0].room_id, room);
         assert_eq!(perceived[0].peer_id, peer);
         assert!(perceived[0].text.contains("Shared Cargo owner"));
+
+        // A page counts examined events, not stash/admit loop iterations.
+        // Fill its first N-1 positions with legitimate non-turn control traffic.
+        let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
+            .map(|_| Ok(Arc::clone(&control)))
+            .collect();
+        page.push(Ok(Arc::new(event("last event in one admission page"))));
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(futures::stream::iter(page).chain(
+            futures::stream::once(async move {
+                drained.send(()).unwrap();
+                std::future::pending().await
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
+        let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
+        assert_eq!(last.text, "last event in one admission page");
 
         // Error frames must still reach the consumer, never disappear as noise.
         let (drained, ready) = tokio::sync::oneshot::channel();
