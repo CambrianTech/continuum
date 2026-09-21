@@ -615,10 +615,17 @@ impl PlacementSwitch {
                     reason = *reason,
                     seat_window = ?fit.window,
                     requirement = ?fit.requirement,
-                    "her remote seat went dark — her brain runs on this node until the seat beacons again"
+                    "her remote seat went dark — her turns are SERVED by this node's lane until the seat beacons again; residency is unchanged"
                 );
+                // "RUNS HERE" MEANT TWO THINGS AND COST A PEER A MEASUREMENT (2026-09-21).
+                // A reader — me, who had shipped a change to this very file that day —
+                // took it as "she is RESIDENT on this node". It means her inference
+                // ROUTES to this node's local adapter; residency is a different fact
+                // that `persona/instances/list` answers. The line the substrate uses to
+                // tell someone where they are must not be ambiguous about the one thing
+                // it exists to say.
                 Some(format!(
-                    "[placement] {} fell home from {} ({}) — runs here until the seat beacons again",
+                    "[placement] {} fell home from {} ({}) — her turns are SERVED here (not resident) until the seat beacons again",
                     self.persona_name,
                     self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: line text only
                     reason
