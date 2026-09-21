@@ -128,6 +128,50 @@ fn is_placeholder_hash(h: &str) -> bool {
     t.is_empty() || t.chars().all(|c| c == '0') || t.starts_with('<')
 }
 
+/// May this caller submit against this card, given the claim id SHE SUPPLIED? Pure, so
+/// both refusals are pinned by a test rather than by a sentence nobody reads until it
+/// fires.
+///
+/// THIS ONLY EVER JUDGES A CITIZEN WHO PASSED A CLAIM ID — the caller resolves the claim
+/// off the board when `claim_id` is omitted, and refuses there with its own sentences. And
+/// `claim_id` is documented optional ("read off the board when omitted"), which makes it a
+/// fillable blank in her manual; citizens demonstrably fill those (ab76eb848 — they were
+/// sending `<string>`, and `is_placeholder_hash` in this file exists for the same reason).
+/// So the population here is "she supplied an id", and its likeliest defect is a STALE id
+/// from a re-claim after a lapsed lease — routine, not exotic, since a lease dies in any
+/// restart longer than its remaining TTL.
+///
+/// Before this the two halves shared one sentence ("submission requires your matching
+/// claim on this card"), which told a citizen who OWNS the card and HOLDS a live lease
+/// only that *something* did not match — the fourth opaque refusal in a row for the
+/// citizen #4309 was written to unblock. Each half now says what it saw, and the stale-id
+/// half names the way out that actually works: omitting `claim_id` makes the caller read
+/// the live claim off the board, and this guard then passes.
+fn holder_guard(
+    owner: Option<airc_core::PeerId>,
+    me: airc_core::PeerId,
+    board_claim: Option<ClaimId>,
+    supplied: ClaimId,
+    card_id: Uuid,
+) -> Result<(), CommandError> {
+    if owner != Some(me) {
+        return Err(CommandError::Denied(format!(
+            "card {card_id} is held by {}, not by you — only the holder submits",
+            owner.map(|o| short8(o.as_uuid())).unwrap_or_else(|| "nobody".to_string()), // unwrap_or_else: an unclaimed card names that absence
+        )));
+    }
+    if board_claim != Some(supplied) {
+        return Err(CommandError::Denied(format!(
+            "the claim id you passed ({}) is not the live claim on card {card_id} — the \
+             board's claim is {}. YOU DO HOLD THIS CARD; omit claim_id and submit again and \
+             the live claim is read off the board for you.",
+            short8(supplied.as_uuid()),
+            board_claim.map(|c| short8(c.as_uuid())).unwrap_or_else(|| "none — the card is unclaimed".to_string()), // unwrap_or_else: says which absence it saw
+        )));
+    }
+    Ok(())
+}
+
 /// `workspace/swe/<instance>` names a benchmark checkout; anything else is a repo
 /// worktree and the card id is its instance name.
 fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) -> Option<String> {
@@ -308,13 +352,10 @@ impl ActionCommand for WorkSubmit {
                 }
             },
         };
-        // A supplied claim id must not bypass ownership before we read local work.
-        // Publication below still validates the current lease against the latest board.
-        if card.owner != Some(airc.peer_id()) || card.claim_id != Some(claim_id) {
-            return Err(CommandError::Denied(
-                "submission requires your matching claim on this card".into(),
-            ));
-        }
+        // A supplied claim id must not bypass ownership before we read local work
+        // (#4309). Publication below still validates the current lease against the
+        // latest board. The decision is pure so both refusals are pinned by a test.
+        holder_guard(card.owner, airc.peer_id(), card.claim_id, claim_id, p.card_id)?;
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
         // off her checkout, and a placeholder says so in the ledger.
@@ -339,7 +380,11 @@ impl ActionCommand for WorkSubmit {
             // another card, or absent after restart; none changes this card's checkout.
             let checkout = crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card)
                 .ok_or_else(|| CommandError::Invalid(format!(
-                    "card {} has no staged checkout on this node; staging must be restored before submission",
+                    "card {} has no staged checkout on this node, so there is no tree to read a \
+                     patch from. Staging is CLAIM-TIME work, not a verb you can call: re-claim \
+                     the card (work/claim) and it is staged for you. If a re-claim does not \
+                     produce one, that is a substrate fault — say so in the room rather than \
+                     re-doing the work, your patch is not the problem.",
                     p.card_id,
                 )))?;
             let d = derive_submission(&checkout, p.card_id, p.instance.clone(), p.base_sha.clone()).await?;
@@ -865,7 +910,7 @@ mod tests {
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash, room_label, short8};
+    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, room_label, short8};
     use std::path::Path;
 
     // what this catches (Kimi's work/submit, 2026-09-21): "card X is absent from this room"
@@ -937,5 +982,43 @@ mod tests {
         let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
+    }
+
+    // what this catches (Kimi, 2026-09-21): the two halves of the supplied-claim guard
+    // shared one sentence — "submission requires your matching claim on this card" — so a
+    // citizen who OWNED the card and HELD a live lease, but passed a STALE claim id from a
+    // re-claim, was told only that something did not match. `claim_id` is documented
+    // optional and therefore a fillable blank in her manual, and citizens fill those
+    // (ab76eb848). Each half must now name what it saw, and the stale half must name the
+    // way out that actually works — omitting claim_id, which makes the caller read the
+    // live claim off the board so this guard passes.
+    #[test]
+    fn each_half_of_the_holder_guard_names_what_it_saw() {
+        let me = airc_core::PeerId::new();
+        let peer = airc_core::PeerId::new();
+        let card = uuid::Uuid::new_v4();
+        let mine = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
+        let stale = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
+
+        // The holder's own live claim passes.
+        assert!(holder_guard(Some(me), me, Some(mine), mine, card).is_ok());
+
+        // Someone else holds it: say WHO, and reuse the holder sentence.
+        let held = holder_guard(Some(peer), me, Some(mine), mine, card).expect_err("not hers");
+        let held = held.to_string();
+        assert!(held.contains(&short8(peer.as_uuid())), "names the holder: {held}");
+        assert!(held.contains("only the holder submits"), "{held}");
+
+        // Hers, but the id she passed is stale: name BOTH ids and the way out.
+        let bad = holder_guard(Some(me), me, Some(mine), stale, card).expect_err("stale id");
+        let bad = bad.to_string();
+        assert!(bad.contains(&short8(stale.as_uuid())), "names what she passed: {bad}");
+        assert!(bad.contains(&short8(mine.as_uuid())), "names the live claim: {bad}");
+        assert!(bad.contains("omit claim_id"), "names the corrective that works: {bad}");
+        assert!(!bad.contains("only the holder submits"), "she IS the holder: {bad}");
+
+        // An unclaimed card names THAT absence rather than printing an empty slot.
+        let none = holder_guard(Some(me), me, None, stale, card).expect_err("no live claim");
+        assert!(none.to_string().contains("unclaimed"), "{}", none);
     }
 }
