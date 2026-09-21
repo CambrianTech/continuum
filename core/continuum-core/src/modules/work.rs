@@ -292,7 +292,7 @@ fn resolve_card_id_in_boards(
     // An empty candidate set is the horizon's story to tell (outage, no rooms, or
     // empty boards), not the resolver's "no cards exist".
     if candidates.is_empty() {
-        return Err(horizon.not_found(s));
+        return Err(horizon.not_found("card", s));
     }
     crate::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
@@ -313,9 +313,11 @@ async fn resolve_claim_id(
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(ClaimId::from_uuid(id));
     }
-    let candidates: Vec<Uuid> = subscribed_boards(airc)
+    let horizon = board_horizon(airc)
         .await
-        .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?
+        .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?;
+    let candidates: Vec<Uuid> = horizon
+        .boards
         .iter()
         .flat_map(|(_, board)| {
             board
@@ -326,6 +328,11 @@ async fn resolve_claim_id(
                 .collect::<Vec<_>>()
         })
         .collect();
+    // The identical outage shape as cards (Fable, #4299 review): an empty claim set
+    // during a failed walk is the horizon's story, never "no claims exist".
+    if candidates.is_empty() {
+        return Err(horizon.not_found("claim", s));
+    }
     crate::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
         .map_err(CommandError::Invalid)
@@ -451,20 +458,22 @@ impl BoardHorizon {
         self.boards.iter().map(|(room, _)| room.name.clone()).collect()
     }
 
-    /// The truthful "card not found" for this walk — see [`card_not_found_in`].
-    fn not_found(&self, requested: &str) -> CommandError {
-        card_not_found_in(&self.readable_room_names(), &self.unreadable, requested)
+    /// The truthful "not found" for this walk — see [`not_found_in`]. `label` is the
+    /// id kind the caller resolves (`"card"`, `"claim"`), the same word `id_resolve` gets.
+    fn not_found(&self, label: &str, requested: &str) -> CommandError {
+        not_found_in(&self.readable_room_names(), &self.unreadable, label, requested)
     }
 }
 
-/// One sentence per way a card can fail to be found on the boards a citizen can see,
+/// One sentence per way an id can fail to be found on the boards a citizen can see,
 /// because they call for different next moves: a read failure means RETRY, an empty
 /// subscription means JOIN the card's room, and a readable miss means the card lives
 /// in a room she has not joined. Folding all three into "no cards exist" (the
 /// resolver's empty-candidate line) sent Kimi looking for a fold bug during an outage.
-fn card_not_found_in(
+fn not_found_in(
     readable_rooms: &[String],
     unreadable: &[(String, String)],
+    label: &str,
     requested: &str,
 ) -> CommandError {
     if !unreadable.is_empty() {
@@ -479,21 +488,21 @@ fn card_not_found_in(
             readable_rooms.join(", ")
         };
         return CommandError::Internal(format!(
-            "card {requested}: board read FAILED in {} of {} subscribed room(s) — {failed}; \
+            "{label} {requested}: board read FAILED in {} of {} subscribed room(s) — {failed}; \
              readable boards searched: {searched}. This is a read failure, not an absence: \
-             the card may be on an unreadable board — retry before concluding it does not exist",
+             the {label} may be on an unreadable board — retry before concluding it does not exist",
             unreadable.len(),
             unreadable.len() + readable_rooms.len(),
         ));
     }
     if readable_rooms.is_empty() {
         return CommandError::NotFound(format!(
-            "card {requested}: you are subscribed to no rooms, so there is no board to \
-             search — join the room that holds the card and retry"
+            "{label} {requested}: you are subscribed to no rooms, so there is no board to \
+             search — join the room that holds the {label} and retry"
         ));
     }
     CommandError::NotFound(format!(
-        "card {requested}: not on the board of any room you are in ({}) — it lives in a \
+        "{label} {requested}: not on the board of any room you are in ({}) — it lives in a \
          room you have not joined",
         readable_rooms.join(", ")
     ))
@@ -3064,7 +3073,7 @@ impl WorkGet {
             .boards
             .iter()
             .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
-            .ok_or_else(|| horizon.not_found(requested))?;
+            .ok_or_else(|| horizon.not_found("card", requested))?;
         use crate::experience::ledger::LedgerStore as _;
         // Best effort: an unreadable ledger is an absence on the card, never a refusal of
         // the card itself.
@@ -3276,7 +3285,7 @@ impl ServiceModule for WorkModule {
 mod tests {
     use super::*;
 
-    // what this catches: card cb4dea0f — a board walk that FAILS (daemon outage) must
+    // what this catches: card 2609fd66 — a board walk that FAILS (daemon outage) must
     // not report as "no cards exist". Three empty-horizon shapes, three different next
     // moves, three distinct sentences: unreadable → a read failure to RETRY (and it is an
     // Internal error, not a NotFound, so the caller's error class tells the truth too);
@@ -3286,9 +3295,10 @@ mod tests {
     fn an_empty_board_walk_says_which_kind_of_empty_it_was() {
         let rooms = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
-        let outage = card_not_found_in(
+        let outage = not_found_in(
             &rooms(&["academy"]),
             &[("seed10".to_string(), "daemon socket refused".to_string())],
+            "card",
             "31c241e2",
         );
         let msg = outage.to_string();
@@ -3299,13 +3309,18 @@ mod tests {
         assert!(msg.contains("retry"), "{msg}");
         assert!(!msg.contains("no cards exist"), "{msg}");
 
-        let unjoined = card_not_found_in(&[], &[], "31c241e2");
+        let unjoined = not_found_in(&[], &[], "card", "31c241e2");
         let msg = unjoined.to_string();
         assert!(matches!(unjoined, CommandError::NotFound(_)), "{msg}");
         assert!(msg.contains("subscribed to no rooms"), "{msg}");
         assert!(msg.contains("join the room"), "{msg}");
 
-        let elsewhere = card_not_found_in(&rooms(&["academy", "continuum"]), &[], "31c241e2");
+        let elsewhere = not_found_in(&rooms(&["academy", "continuum"]), &[], "card", "31c241e2");
+        // The claim path (release/heartbeat) is the same walk with the other label.
+        let claim = not_found_in(&rooms(&["academy"]), &[("seed10".to_string(), "x".to_string())], "claim", "e0ec486b");
+        let msg = claim.to_string();
+        assert!(matches!(claim, CommandError::Internal(_)), "{msg}");
+        assert!(msg.starts_with("[internal] claim e0ec486b: board read FAILED"), "{msg}");
         let msg = elsewhere.to_string();
         assert!(matches!(elsewhere, CommandError::NotFound(_)), "{msg}");
         assert!(msg.contains("any room you are in (academy, continuum)"), "{msg}");
