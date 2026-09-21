@@ -101,14 +101,14 @@ impl CommandWork {
     }
 
     pub(crate) fn begin(mut self) -> Self {
-        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner());
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
         work.entry(self.key).or_default().active += 1;
         self.active = true;
         self
     }
 
     pub(crate) fn completed(&self, now_ms: u64) {
-        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner());
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
         if let Some(pulse) = work.get_mut(&self.key) {
             pulse.completed_at = Some(now_ms);
         }
@@ -128,7 +128,7 @@ impl Drop for CommandWork {
         if !self.active {
             return;
         }
-        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner());
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
         if let Some(pulse) = work.get_mut(&self.key) {
             pulse.active = pulse.active.saturating_sub(1);
             if pulse.active == 0 && pulse.completed_at.is_none() {
@@ -142,7 +142,7 @@ impl Drop for CommandWork {
 /// pulse. `None` asks whether ANY work can justify entering the renewal pass.
 pub(crate) fn work_idle_ms(persona: Uuid, card: Option<Uuid>, now_ms: u64) -> Option<u64> {
     let thinking = idle_ms(persona, now_ms);
-    let work = work_pulses().lock().unwrap_or_else(|e| e.into_inner());
+    let work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
     thinking
         .into_iter()
         .chain(work.iter().filter_map(|((who, which), p)| {
