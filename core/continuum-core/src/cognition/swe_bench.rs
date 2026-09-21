@@ -1995,7 +1995,13 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         .clone();
     let _held = lock.lock().await;
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
-    let py = env_dir.join("bin").join("python");
+    // uv creates a native venv: Windows puts its interpreter under Scripts,
+    // Unix under bin. Use the same path for cache reuse and initial installation.
+    let py = env_dir.join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
     if py.exists() {
         // THE EDITABLE POINTS SOMEWHERE (root cause of the "2019-pytest era" + "flask-2.2
         // era" env-void classes, glass-boxed 2026-08-12): the env is cached per INSTANCE,
@@ -2053,7 +2059,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         }
         return Ok(py);
     }
-    // ANY failure below leaves NO half-built env: `bin/python` is the "env is complete"
+    // ANY failure below leaves NO half-built env: the interpreter is the "env is complete"
     // key, so a venv whose deps never installed (the index unreachable, card cffc9c5e)
     // would otherwise be adopted as complete on the next run and grade every attempt
     // ungradeable. Each fatal site still removes on its own; this is the floor under them.
