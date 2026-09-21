@@ -3070,7 +3070,8 @@ pub struct WorkGetParams {
 pub struct WorkGetResult {
     pub id: String,
     /// The board that supplied this receipt; never the caller's current focus.
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: airc_core::RoomId,
     pub room: String,
     pub is_self: bool,
     /// Availability uses the same holder projection as work/list.
@@ -3136,7 +3137,7 @@ impl WorkGet {
         );
         WorkGetResult {
             id: short8(card.card_id.as_uuid()),
-            room_id: room.channel.as_uuid().to_string(),
+            room_id: room.channel,
             room: room.name.clone(),
             is_self: holder.is_self,
             claimable: holder.claimable(card.state),
@@ -3938,7 +3939,7 @@ mod tests {
                 .expect("read the subscribed card");
             assert_eq!(read.id, prefix);
             assert_eq!(read.title, "serve-time pin match gap");
-            assert_eq!(read.room_id, academy.channel.as_uuid().to_string());
+            assert_eq!(read.room_id, academy.channel);
             assert!(read.claimable);
             assert!(read.lease.is_none());
             assert_eq!(
