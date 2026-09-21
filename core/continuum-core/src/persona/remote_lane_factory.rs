@@ -209,9 +209,10 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         if crate::persona::self_peer::is_this_node(peer) {
             let cleared = PersonaModelOverride::clear(&home).map_err(|e| e.to_string());
             crate::probe!(
-                class = "persona.placement.self_seat_retired",
+                class = "persona.placement.seat_retired",
                 persona = %profile.persona_name,
                 peer = %peer,
+                why = crate::persona::placement_switch::SELF_SEAT_REASON,
                 cleared = cleared.is_ok(),
                 error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
                 "her durable override named THIS node as her remote seat — retired at build; she is born home"
