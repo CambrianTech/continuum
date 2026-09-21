@@ -38,3 +38,29 @@ and reconnect behavior tested. Do not implement a replay-only job table.
 The current replay command awaits fresh inference and returns its capture cursor.
 It is not yet a complete resumable command job API, nor historical full-mind
 replay. Source-owned memory/assembly snapshots remain a separate successor audit.
+
+## Every execution has an identity
+
+Short calls need an execution UUID too: a failure discovered later must still
+resolve to the exact invocation. Keep this separate from the resource HandleRef
+and the existing numeric request_id, which is only per-hop transport correlation.
+The current CommandCompletedEvent omits a handle for synchronous calls; that is
+not sufficient for this diagnostic contract.
+
+The shared dispatch boundary should mint or accept a typed execution identity
+once, carry it through Ctx and typed request/response envelopes, and retain it in
+terminal receipts. Child calls need their own execution IDs plus a parent ID;
+transport retries/hops must not mint an unrelated logical identity. These belong
+in common execution metadata, not copied fields in every command's Params struct.
+Command-specific input stays its existing typed P. Identity propagation must
+preserve authenticated caller and room scope; an ID is not authority.
+
+Capture belongs at owner boundaries: persist a reference to the submitted typed
+input, outcome, errors, timing, and relevant build/provider provenance through the
+existing recording infrastructure. Do not clone or serialize entire inputs on
+every middleware hop just to propagate an ID. Capture policy and access rules
+must account for credentials and private data. A receipt query must distinguish
+retained, expired, unavailable and incomplete evidence; it must never fabricate
+a successful completion from a vanished task. Cancellation is a request until the
+owning operation records the terminal outcome. This is a shared lifecycle follow-up,
+not implemented by the work/get lease fields in this PR.
