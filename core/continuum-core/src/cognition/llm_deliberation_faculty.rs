@@ -968,24 +968,9 @@ impl LlmDeliberationFaculty {
         measured
             .unwrap_or(Self::COMPLETION_COLD_PRIOR_TOKENS) // JUSTIFIED unwrap_or: no measurement yet = a REPLY-sized prior, never a window fraction; the honest absence has a named owner above
             .min(share)
-            .min(Self::COMPLETION_CEILING_TOKENS)
             .min(context_window.saturating_sub(mandatory))
             .max(Self::COMPLETION_FLOOR_TOKENS)
     }
-
-    /// Absolute ceiling on the reply reserve. A bare RATIO scales its waste
-    /// with the window: at the 166k lane the /2 share reserved 83,200 tokens
-    /// for replies that measure 0.2-2.5k, squeezing the PROMPT to 73k and
-    /// forcing the packer to amputate accumulated working memory mid-task
-    /// (measured 2026-08-23: demand 112-118k against the squeezed budget,
-    /// context trimmed at act 27 of a 32-act task). Derived, not declared:
-    /// 8× the smallest servable window ≈ 16k — nine minutes of decode at the
-    /// measured ~30 tok/s, far above any observed turn (a thinking model's
-    /// longest measured emission this round was ~2.5k). The honest endgame is
-    /// output-p95 measurement riding the working-set registry pattern; until
-    /// that lands this ceiling stops the ratio's unbounded growth without
-    /// ever clipping a real reply.
-    const COMPLETION_CEILING_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX * 8;
 
     /// The reply's share of the served window, as a DENOMINATOR: reply gets `window/N`.
     ///
@@ -1022,13 +1007,9 @@ impl LlmDeliberationFaculty {
     /// reserve was sized to the WINDOW instead of to the REPLY. On a big window that is a
     /// licence to spin; on a small one the person does not fit.
     ///
-    /// [`Self::COMPLETION_CEILING_TOKENS`] did not catch it. That ceiling is
-    /// `MIN_SERVE_CTX * 8` = 16,384, written against the 166k lane — and at a 32,768 window
-    /// the share IS exactly 16,384, so the guard was inert precisely where it was needed.
-    ///
     /// `MIN_SERVE_CTX` and not a new literal, deliberately: it is the same term the MEASURED
     /// branch floors at, so a mind that has never spoken reserves exactly what a mind that
-    /// has spoken is guaranteed. Measurement then grows it toward the ceiling — and a turn
+    /// has spoken is guaranteed. Measurement then grows it toward the available share — and a turn
     /// that truncates against a too-small reserve records at DOUBLE, so an act that really
     /// needs more room earns it back within a turn instead of freezing.
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
@@ -1120,11 +1101,12 @@ impl LlmDeliberationFaculty {
                     request_id: request_id.clone(),
                     persona_id: self.persona_id,
                     room_id: ws.room_id,
-                    context_window,
+                    context_window: Some(context_window),
                     cycle_id: (ws.cycle != super::workspace::CycleId::UNSTAMPED)
                         .then_some(ws.cycle.0),
                     cause: ws.cause.as_str(),
                     cause_root: ws.cause.root(),
+                    replay_of: None,
                 },
                 &request,
             )
@@ -6422,7 +6404,7 @@ mod tests {
         // AI assistant, I am currently not actively engaged in any specific project". A
         // bigger window gave her LESS context. The same fraction at the 101,120 lane
         // licensed a 100k think-only turn that wrote nothing — one defect, both ends.
-        // Note 32,768 is the exact window where COMPLETION_CEILING_TOKENS (16,384) cannot
+        // Note 32,768 is the exact window where the former absolute ceiling (16,384) cannot
         // help, because the share IS the ceiling there; that is why this survived a fix.
         #[test]
         fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
@@ -6552,6 +6534,35 @@ mod tests {
             // share (the prior is a starting point, the share is the wall).
             reg.record_emission_in_memory(persona, 5_000, 0, true, 4);
             assert_eq!(faculty.completion_reserve_within(window), share);
+        }
+
+        // Capture 932f6b81:37 ended at 16,384 tokens with no answer or tool call.
+        // Its measured need was 41,053, but an obsolete absolute ceiling prevented
+        // the existing censored-emission feedback from growing the reserve.
+        #[test]
+        fn measured_reserve_recovers_past_a_censored_large_reply() {
+            let persona = Uuid::new_v4();
+            let reg = crate::cognition::working_set::WorkingSetRegistry::new();
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Kimi",
+                "You are Kimi.",
+                Arc::new(HeuristicInferenceAdapter::new()),
+            )
+            .with_working_set(reg.clone());
+            for tick in 1..=3 {
+                reg.record_emission_in_memory(persona, 16_384, 0, true, tick);
+            }
+            // A censored sample is doubled by the registry; reserve adds headroom.
+            // The former absolute ceiling froze this at the same failed allowance.
+            let window = 131_072;
+            assert_eq!(faculty.completion_reserve_within(window), 65_536);
+            // This is not permission to overrun a smaller seat or its prompt floor.
+            for window in [8_192, 16_384, 32_768, 67_072, 131_072] {
+                let reserve = faculty.completion_reserve_within(window);
+                assert!(reserve <= window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM);
+                assert!(reserve + faculty.mandatory_prompt_floor() <= window);
+            }
         }
 
         // what this catches: KV-prefix cache locality — session-stable standing framing

@@ -25,6 +25,9 @@
 //! is available, it fails loud naming the cause — it never replays an empty
 //! burst and calls it a result ([[fallbacks-are-illegal-fail-loud]]).
 
+#[path = "request_replay.rs"]
+mod request_replay;
+
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -357,8 +360,7 @@ impl ActionCommand for CognitionReplay {
     const NAME: &'static str = "cognition/replay";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Replay ONE step of a persona's cognition in isolation, timed and \
-         deterministic. Reconstructs the workspace a faculty saw — from a captured \
+        "Replay ONE step of a persona's cognition in isolation, timed against current faculties. Reconstructs the workspace a faculty saw — from a captured \
          turn or a `world_state` you supply — forks a MEASURED COPY of her live \
          cycle (never degrades the living persona), and re-runs the faculties. \
          Isolate one with `faculty` (recall/salience/world-model/deliberation/…) \

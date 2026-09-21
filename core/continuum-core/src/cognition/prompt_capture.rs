@@ -30,9 +30,21 @@ pub struct PromptCall {
     pub persona_id: Uuid,
     pub room_id: Uuid,
     pub cycle_id: Option<u64>,
-    pub context_window: u32,
+    /// Live binding window, or unknown for a replay provider without a window receipt.
+    pub context_window: Option<u32>,
     pub cause: &'static str,
     pub cause_root: Option<Uuid>,
+    /// Present only for an isolated replay; the original record remains untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_of: Option<ReplaySource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplaySource {
+    /// Whether replay pinned an implicit model using its recorded terminal response.
+    pub model_from_response: bool,
+    pub persona_id: Uuid,
+    pub cursor: String,
 }
 #[derive(Debug, Clone)]
 pub struct CaptureToken {
@@ -94,6 +106,11 @@ impl CaptureLease {
             token,
             started: std::time::Instant::now(),
         }
+    }
+    pub fn cursor(&self) -> Option<&str> {
+        self.token
+            .as_ref()
+            .map(|token| token.header.cursor.as_str())
     }
     pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) {
         if let Some(token) = self.token.take() {
@@ -222,7 +239,7 @@ impl JsonlPromptCaptureSink {
         value: &impl Serialize,
         header: CallHeader,
         terminal: bool,
-    ) -> Option<PayloadRef> {
+    ) -> Option<CallHeader> {
         let result = self
             .store
             .lock()
@@ -264,7 +281,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         request: &TextGenerationRequest,
     ) -> Option<CaptureToken> {
         let captured_at_ms = now_ms();
-        let mut header = CallHeader {
+        let header = CallHeader {
             request_id: call.request_id.clone(),
             session_id: self.session_id,
             cycle_id: call.cycle_id,
@@ -292,7 +309,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             call,
             request,
         };
-        header.request = self.append(&record, header.clone(), false)?;
+        let header = self.append(&record, header, false)?;
         Some(CaptureToken { header })
     }
     fn terminal(
@@ -579,9 +596,10 @@ mod tests {
             persona_id: persona,
             room_id: Uuid::nil(),
             cycle_id: Some(1),
-            context_window: 8192,
+            context_window: Some(8192),
             cause: "synthetic",
             cause_root: None,
+            replay_of: None,
         };
         let request = TextGenerationRequest {
             request_id: Some("first".into()),
