@@ -26,8 +26,9 @@
 //!      persona"). A node hosts the highest-priority role it can hold at requirement:
 //!      coders go where the capability is, weak nodes host orchestration phenotypes.
 //!   2. CAPABILITY — among holding plans the most capable model ("I need my 27b").
-//!   3. SEATS — then the plan with the most lanes.
-//!   4. WINDOW — then the largest window.
+//!   3. TARGET FIT — approach measured demand within that capability, when known.
+//!   4. SEATS — then the plan with the most lanes.
+//!   5. WINDOW — then the largest window.
 //! Minds beyond the seats stay DORMANT with identity and memory intact; seats beyond the
 //! minds are OPEN — the count the spawner may mint. A mind is seated at home when home has
 //! a seat for its role, else on any node that has one: residents exist between the grid.
@@ -40,10 +41,10 @@
 use uuid::Uuid;
 
 /// What a role needs from a lane before one of its minds may sit on it. Declared by the
-/// society (a recipe), never derived from a machine.
+/// society (a recipe), with measured sizing kept separate from admission.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Requirement {
-    /// Hard minimum declared by the recipe, or the serving floor when undeclared.
+    /// Hard minimum declared by the recipe, or the bootstrap working-set floor when undeclared.
     pub window: u32,
     /// Measured sizing target, not permission to exclude every feasible seat.
     /// Among equally capable plans, prefer approaching this target before adding lanes.
@@ -147,18 +148,26 @@ impl LanePlan {
         (self.capability_rank, self.lanes, self.window)
     }
 
-    /// Is this plan STRICTLY better than `other`, and on which axis first — the
-    /// allocator's own order (capability, then lanes, then window). The opportunity
-    /// move's one comparison (card 10bba591): a mind moves for a better seat only when
-    /// this says so; equal plans are never a reason to move.
-    pub fn better_than(&self, other: &LanePlan) -> Option<BetterBy> {
-        if self.capability_rank != other.capability_rank {
-            return (self.capability_rank > other.capability_rank).then_some(BetterBy::Capability);
+    /// The single seat order shared by allocation and between-turn migration.
+    pub fn seat_key(&self, req: &Requirement) -> (u8, u32, u32, u32) {
+        (self.capability_rank, req.target_window.map_or(0, |target| self.window.min(target)), self.lanes, self.window)
+    }
+
+    /// A strictly better eligible seat, and the first improving axis.
+    pub fn better_than(&self, other: &LanePlan, req: &Requirement) -> Option<BetterBy> {
+        let (next, current) = (self.seat_key(req), other.seat_key(req));
+        if next <= current {
+            return None;
         }
-        if self.lanes != other.lanes {
-            return (self.lanes > other.lanes).then_some(BetterBy::Lanes);
-        }
-        (self.window > other.window).then_some(BetterBy::Window)
+        Some(if next.0 != current.0 {
+            BetterBy::Capability
+        } else if next.1 != current.1 {
+            BetterBy::Window
+        } else if next.2 != current.2 {
+            BetterBy::Lanes
+        } else {
+            BetterBy::Window
+        })
     }
 }
 
@@ -445,7 +454,7 @@ pub fn roles_from(
                 decode_floor_tps: r.decode_floor_tps,
             },
             None => Requirement {
-                window: super::serving_plan::MIN_SERVE_CTX,
+                window: super::serving_plan::BOOTSTRAP_WORKING_SET,
                 target_window: measured_target,
                 min_capability: 0,
                 decode_floor_tps: None,
@@ -481,9 +490,7 @@ pub fn roles_from(
 /// closest measured window target within that capability, then most lanes and width.
 /// Only declared minima gate admission. `None` when no plan holds those minima.
 pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
-    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| {
-        (p.capability_rank, req.target_window.map_or(0, |target| p.window.min(target)), p.lanes, p.window)
-    })
+    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.seat_key(req))
 }
 
 /// What each node serves: its best plan for the highest-priority role it can hold (so
@@ -1061,10 +1068,10 @@ mod tests {
         let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
         assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
         assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
-        assert_eq!(roles[1].requirement, Requirement { window: super::super::serving_plan::MIN_SERVE_CTX, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
+        assert_eq!(roles[1].requirement, Requirement { window: super::super::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
         assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
         let (roles, _) = roles_from(&[helper], None);
-        assert_eq!(roles[0].requirement.window, super::super::serving_plan::MIN_SERVE_CTX, "nothing measured yet = the serve floor");
+        assert_eq!(roles[0].requirement.window, super::super::serving_plan::BOOTSTRAP_WORKING_SET, "nothing measured yet = the bootstrap working-set floor");
         assert!(roles_from(&[], Some(1)).0.is_empty());
     }
 
@@ -1093,8 +1100,8 @@ mod tests {
         let key = inputs_key(&i);
         i.roles[0].requirement.target_window = Some(160_000);
         assert_ne!(key, inputs_key(&i), "new measurements must recompute selection");
-        i.nodes[0].plans[0].window = super::super::serving_plan::MIN_SERVE_CTX - 1;
-        assert_eq!(allocate(&i).node(node).unwrap().seats, 0, "the serving floor remains hard");
+        i.nodes[0].plans[0].window = super::super::serving_plan::BOOTSTRAP_WORKING_SET - 1;
+        assert_eq!(allocate(&i).node(node).unwrap().seats, 0, "the bootstrap working-set floor remains hard");
     }
 
     // Regression: measured targets must neither become declared gates nor loosen
@@ -1122,6 +1129,8 @@ mod tests {
                 plan("weaker-fitting", 8, 131_072, 4, Some(20.0)),
             ];
             assert_eq!(best_plan_for(&candidates, req).unwrap().model_id, "strong-wide");
+            assert_eq!(candidates[0].better_than(&candidates[1], req), Some(BetterBy::Window));
+            assert_eq!(candidates[1].better_than(&candidates[0], req), None, "migration cannot undo target-fit selection");
         }
     }
 
@@ -1131,13 +1140,14 @@ mod tests {
     #[test]
     fn a_better_seat_is_judged_in_the_allocators_own_order_and_never_on_equality() {
         let base = plan("27b", 9, 67_072, 2, None);
-        assert_eq!(base.better_than(&base), None, "equal plans: no move");
-        assert_eq!(plan("27b", 9, 67_072, 2, Some(14.0)).better_than(&base), None, "decode is not an axis of the order");
-        assert_eq!(plan("30b", 10, 2_048, 1, None).better_than(&base), Some(BetterBy::Capability), "capability beats everything below it");
-        assert_eq!(base.better_than(&plan("30b", 10, 2_048, 1, None)), None);
-        assert_eq!(plan("27b", 9, 32_768, 3, None).better_than(&base), Some(BetterBy::Lanes), "same rank: lanes before window");
-        assert_eq!(plan("27b", 9, 131_072, 1, None).better_than(&base), None, "fewer lanes: no move, however wide");
-        assert_eq!(plan("27b", 9, 131_072, 2, None).better_than(&base), Some(BetterBy::Window), "same rank and lanes: the wider window");
+        let req = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
+        assert_eq!(base.better_than(&base, &req), None, "equal plans: no move");
+        assert_eq!(plan("27b", 9, 67_072, 2, Some(14.0)).better_than(&base, &req), None, "decode is not an axis of the order");
+        assert_eq!(plan("30b", 10, 2_048, 1, None).better_than(&base, &req), Some(BetterBy::Capability), "capability beats everything below it");
+        assert_eq!(base.better_than(&plan("30b", 10, 2_048, 1, None), &req), None);
+        assert_eq!(plan("27b", 9, 32_768, 3, None).better_than(&base, &req), Some(BetterBy::Lanes), "same rank: lanes before window");
+        assert_eq!(plan("27b", 9, 131_072, 1, None).better_than(&base, &req), None, "fewer lanes: no move, however wide");
+        assert_eq!(plan("27b", 9, 131_072, 2, None).better_than(&base, &req), Some(BetterBy::Window), "same rank and lanes: the wider window");
         assert_eq!(BetterBy::Window.as_str(), "window");
     }
 

@@ -82,7 +82,7 @@ pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 /// (`modules::grid_allocator`) seats her on the node the grid's offers make best for
 /// her role, and when that is NOT where she sits and it is STRICTLY better — first a
 /// node that holds her requirement at all, then the allocator's own order (capability,
-/// lanes, window) — the switch moves her there BETWEEN turns, never mid-turn, and never
+/// target fit, lanes, window) — the switch moves her there BETWEEN turns, never mid-turn, and never
 /// inside her own cooldown. Equal seats are never a reason to move.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpportunityInputs<'a> {
@@ -93,6 +93,8 @@ pub(crate) struct OpportunityInputs<'a> {
     pub current_holds_her: bool,
     /// The plan of the seat the allocation gives her.
     pub target: &'a crate::cognition::grid_allocation::LanePlan,
+    /// The same role requirement used by the allocation being followed.
+    pub requirement: &'a crate::cognition::grid_allocation::Requirement,
     pub target_is_current: bool,
     pub turn_in_flight: bool,
     pub since_last_move_ms: u64,
@@ -105,7 +107,7 @@ pub(crate) fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cog
         return None;
     }
     match i.current {
-        Some(c) if i.current_holds_her => i.target.better_than(c),
+        Some(c) if i.current_holds_her => i.target.better_than(c, i.requirement),
         // Her node seats nobody of her role: any seat that holds her is objective 1.
         _ => Some(crate::cognition::grid_allocation::BetterBy::Requirement),
     }
@@ -1044,6 +1046,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             current: current_alloc.and_then(|n| n.plan.as_ref()),
             current_holds_her: current_alloc.is_some_and(|n| n.holds.contains(&seat.role)),
             target: target_plan,
+            requirement: &p.roles[seat.role].requirement,
             target_is_current,
             turn_in_flight: turn_in_flight(mind),
             since_last_move_ms: now_ms.saturating_sub(sw.moved_at_ms()),
@@ -1171,11 +1174,25 @@ mod tests {
         let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None };
         let (home, wide, strong) = (plan(9, 67_072, 2), plan(9, 131_072, 2), plan(12, 32_768, 1));
         fn i<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
+            const REQUIREMENT: crate::cognition::grid_allocation::Requirement = crate::cognition::grid_allocation::Requirement {
+                window: 0, target_window: None, min_capability: 0, decode_floor_tps: None,
+            };
             OpportunityInputs {
+                requirement: &REQUIREMENT,
                 current, current_holds_her: current.is_some(), target, target_is_current: false, turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000,
             }
         }
         assert_eq!(decide_opportunity(&i(Some(&home), &wide)), Some(BetterBy::Window));
+        let target_requirement = crate::cognition::grid_allocation::Requirement {
+            window: 16_384, target_window: Some(100_000), min_capability: 0, decode_floor_tps: None,
+        };
+        let narrow_many = plan(9, 32_768, 3);
+        let mut toward_fit = i(Some(&narrow_many), &home);
+        toward_fit.requirement = &target_requirement;
+        assert_eq!(decide_opportunity(&toward_fit), Some(BetterBy::Window));
+        let mut away_from_fit = i(Some(&home), &narrow_many);
+        away_from_fit.requirement = &target_requirement;
+        assert_eq!(decide_opportunity(&away_from_fit), None, "more lanes cannot reverse the allocator's target-fit choice");
         assert_eq!(decide_opportunity(&i(Some(&home), &strong)), Some(BetterBy::Capability));
         assert_eq!(decide_opportunity(&i(Some(&wide), &home)), None, "a worse seat is not an opportunity");
         assert_eq!(decide_opportunity(&i(Some(&home), &home)), None, "an equal seat is never a reason to move");
@@ -1237,6 +1254,7 @@ mod tests {
                 current: cur.and_then(|n| n.plan.as_ref()),
                 current_holds_her: cur.is_some_and(|n| n.holds.contains(&seat.role)),
                 target: a.node(seat.node).and_then(|n| n.plan.as_ref())?,
+                requirement: &inputs(vec![]).roles[seat.role].requirement,
                 target_is_current: seat.node == home,
                 turn_in_flight: false,
                 since_last_move_ms: MOVE_COOLDOWN_MS,
