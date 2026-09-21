@@ -59,6 +59,10 @@ pub const JUSTIFICATION_MARKER: &str = "derived-or-floor:";
 /// ratchet's [`super::unwrap_justification`]: a marker with nothing after it is the SHAPE
 /// of a reason, which is worse than no marker at all because it silences the guard.
 // derived-or-floor: a FLOOR on the length of a COMMENT a human types — it bounds prose, never a token, a second or a rate, and there is nothing here to measure
+// context-budget-exempt: this bounds the length of a COMMENT, not a window, prompt or
+// token budget — the de-hardcode guard matches it on the `CHARS` suffix alone, which is
+// that guard erring toward noise on purpose (same exemption its sibling in
+// `unwrap_justification` spends, for the same reason).
 const MIN_REASON_CHARS: usize = 16;
 
 /// The trees a live cognition / serving turn actually runs through. Violations are raised
@@ -328,7 +332,12 @@ mod tests {
     /// Lives inside the test mod, unlike its siblings, so it costs the production build no
     /// `never used` warning — the warning ratchet is monotonic and a new guard should not
     /// spend a slot in it just to hold a number only a test reads.
-    const BASELINE_UNDERIVED_BOUNDS: usize = 159;
+    ///
+    /// Taken on this PR's MERGE with `canary`, not on the branch alone (159 there): CI
+    /// scans the merge commit, the ratchet's slack is shared across branches in flight,
+    /// and a branch can be green alone and red on the merge. Same property the unwrap
+    /// ratchet documents.
+    const BASELINE_UNDERIVED_BOUNDS: usize = 160;
 
     /// What this catches: a new bound landing on a live path as a constant, with nothing
     /// measured behind it and no line saying why a constant is right there.
