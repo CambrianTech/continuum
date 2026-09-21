@@ -63,9 +63,19 @@ pub enum RequirementSource {
 pub struct LaneRequirement {
     pub persona: Uuid,
     /// Tokens the lane must hold for one of her turns: prompt + completion reserve.
-    /// `None` = not yet measured (`RequirementSource::Unknown`).
+    /// `None` = not yet measured (`RequirementSource::Unknown`). This is her TARGET —
+    /// the wish (untrimmed assembly) with headroom, or her declared size.
     pub window: Option<u32>,
     pub source: RequirementSource,
+    /// The FLOOR below which a lane starves her: the median post-fit size of turns the
+    /// fit HELD, no headroom (she was served at that size). `None` = no held turn
+    /// measured, and the target is the floor as before. The allocator never serves
+    /// below the need; it serves at the target when the budget holds it and at the
+    /// most it can hold ≥ need otherwise (card 70706a9e: Kimi's wish 99k × 1.25 read
+    /// as "over the grid" at a 75,776 seat her turns fitted into every time —
+    /// a requirement is a target, not a gate; the need is the gate).
+    #[serde(default)]
+    pub need: Option<u32>,
 }
 
 impl LaneRequirement {
@@ -74,13 +84,24 @@ impl LaneRequirement {
     /// declared field is wired; the allocator does not distinguish.
     pub fn from_demand(persona: Uuid, demand_tokens: u32, headroom: f64) -> Self {
         if demand_tokens == 0 {
-            return Self { persona, window: None, source: RequirementSource::Unknown };
+            return Self { persona, window: None, source: RequirementSource::Unknown, need: None };
         }
-        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand }
+        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand, need: None }
     }
 
     pub fn declared(persona: Uuid, window: u32) -> Self {
-        Self { persona, window: Some(window), source: RequirementSource::Declared }
+        Self { persona, window: Some(window), source: RequirementSource::Declared, need: None }
+    }
+
+    /// With her measured need (the floor); `0` = no held turn, no floor beyond the
+    /// target. A need above the target is clamped to it: a floor cannot exceed the
+    /// number it floors.
+    pub fn with_need(mut self, need_tokens: u32) -> Self {
+        self.need = (need_tokens > 0).then_some(match self.window {
+            Some(w) => need_tokens.min(w),
+            None => need_tokens,
+        });
+        self
     }
 
     /// The window this requirement resolves to: its own, else the largest known on
@@ -88,6 +109,12 @@ impl LaneRequirement {
     /// window bounded by the fit) — the honest cold start, not a number.
     fn resolve(&self, largest_known: Option<u32>, fp: &ModelFootprint, budget: u64, lanes: u32) -> u32 {
         self.window.or(largest_known).unwrap_or_else(|| fp.window_within(budget, lanes)) // unwrap_or_else: nothing measured on the seat = the most this model holds here, a fit not a constant
+    }
+
+    /// The floor a lane must clear for her: the need when measured, else the resolved
+    /// target (the pre-70706a9e behaviour: with no held turn the wish is the gate).
+    fn floor(&self, target: u32) -> u32 {
+        self.need.map_or(target, |n| n.min(target))
     }
 }
 
@@ -102,11 +129,16 @@ pub fn requirements_for(
     personas
         .iter()
         .map(|p| {
-            let need = working_set
-                .demand_of(*p)
-                .map(|d| crate::cognition::working_set::requirement_tokens(&d))
+            let demand = working_set.demand_of(*p);
+            let wish = demand
+                .as_ref()
+                .map(crate::cognition::working_set::requirement_tokens)
                 .unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
-            LaneRequirement::from_demand(*p, need, super::serving_plan::SENT_HEADROOM)
+            let need = demand
+                .as_ref()
+                .and_then(crate::cognition::working_set::need_tokens)
+                .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
+            LaneRequirement::from_demand(*p, wish, super::serving_plan::SENT_HEADROOM).with_need(need)
         })
         .collect()
 }
@@ -155,16 +187,24 @@ fn device_bytes(fp: &ModelFootprint, window: u32, lanes: u32) -> u64 {
 /// Returns (served count, window) or None when not even one fits.
 fn pack(fp: &ModelFootprint, sorted: &[&LaneRequirement], largest_known: Option<u32>, budget: u64, lane_cap: u32) -> Option<(u32, u32)> {
     let mut best: Option<(u32, u32)> = None;
+    // ONE window serves every mind packed so far, so it must clear the highest floor
+    // among them, not only the current mind's.
+    let mut floor_so_far = 0u32;
     for (i, req) in sorted.iter().enumerate() {
         let lanes = (i as u32) + 1;
         if lanes > lane_cap {
             break;
         }
-        let need = req.resolve(largest_known, fp, budget, lanes);
-        let window = need.min(fp.context_window);
-        if window < need {
-            // The model cannot hold this mind's turn at all; nobody after her can be
-            // served by it either (sorted ascending).
+        let target = req.resolve(largest_known, fp, budget, lanes);
+        floor_so_far = floor_so_far.max(req.floor(target));
+        // Serve at the target when the model and the budget hold it; otherwise at the
+        // most this model holds for these lanes within the budget — but NEVER below
+        // a floor. Below her floor a mind starves; between floor and target the fit
+        // trims optional history and the turn is whole.
+        let window = target.min(fp.context_window).min(fp.window_within(budget, lanes));
+        if window < floor_so_far {
+            // The model cannot hold this many lanes at every packed mind's need;
+            // nobody after her can be served by it either (sorted ascending by target).
             break;
         }
         if device_bytes(fp, window, lanes) > budget {
@@ -366,4 +406,43 @@ mod tests {
         assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, kimi));
         assert_eq!(a.unserved.len(), 1);
     }
+    // what this catches (card 70706a9e): a mind whose TARGET the budget cannot hold but
+    // whose NEED it can is served between the two — at the most the model holds for
+    // the lanes within the budget — never shed, never below the need. Without a need
+    // the target is the floor and she is shed, exactly as before. And ONE window
+    // serves every packed mind, so it must clear the highest floor among them.
+    #[test]
+    fn a_mind_is_served_between_her_need_and_her_target_never_below_the_need() {
+        let fp = small7b();
+        // A budget that holds ONE lane at ~80k by the model's own arithmetic — under
+        // the 123,870 target, over the 74,000 need.
+        let budget = HostBudget { usable_bytes: device_bytes(&fp, 80_000, 1), perf_cores: 8 };
+        assert!(fp.window_within(budget.usable_bytes, 1) < 123_870 && fp.window_within(budget.usable_bytes, 1) >= 74_000, "fixture premise");
+        let kimi = Uuid::new_v4();
+        let wish_only = [LaneRequirement::from_demand(kimi, 99_096, 1.25)];
+        let sorted: Vec<&LaneRequirement> = wish_only.iter().collect();
+        assert_eq!(pack(&fp, &sorted, largest_known(&wish_only), budget.usable_bytes, 4), None, "no need: the target is the floor, the budget cannot hold 123,870, she is shed (pre-70706a9e behaviour)");
+
+        let with_need = [LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(74_000)];
+        let sorted: Vec<&LaneRequirement> = with_need.iter().collect();
+        let (lanes, window) = pack(&fp, &sorted, largest_known(&with_need), budget.usable_bytes, 4).expect("served");
+        assert_eq!(lanes, 1);
+        assert!(window >= 74_000 && window < 123_870, "served between need and target at what the budget holds: {window}");
+        assert_eq!(window, fp.window_within(budget.usable_bytes, 1), "the window is the most the model holds here, not a constant");
+
+        // A second mind whose floor is her target: the one shared window must clear it.
+        let aiko = Uuid::new_v4();
+        let two = [
+            LaneRequirement::from_demand(aiko, 24_226, 1.0),
+            LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(74_000),
+        ];
+        let mut sorted: Vec<&LaneRequirement> = two.iter().collect();
+        sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
+        let (lanes, window) = pack(&fp, &sorted, largest_known(&two), budget.usable_bytes, 4).expect("at least aiko");
+        assert!(window >= 24_226, "aiko's floor is her target and the shared window clears it: {window}");
+        if lanes == 2 {
+            assert!(window >= 74_000, "if kimi is packed too the shared window clears her need: {window}");
+        }
+    }
+
 }

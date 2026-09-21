@@ -132,6 +132,19 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `recent`.
     #[serde(default)]
     pub recent_next: u8,
+    /// The last [`RECENT_TURNS`] post-fit sizes of turns the fit HELD — her NEED, as
+    /// opposed to `recent` (her WISH, the untrimmed assembly). A turn counts here only
+    /// when `fit_messages` kept the source's truthful minimum and something survived
+    /// the fit: dropping optional history is the fit working, not starvation. The
+    /// allocator GATES on the median of this ring (no headroom — she was served at
+    /// that size) and TARGETS the wish (card 70706a9e: Kimi's wish 99k × 1.25 read as
+    /// "over the grid" at a 75,776 seat her turns were fitting into every time).
+    /// Legacy files read empty → no need known → the wish stands in, as before.
+    #[serde(default)]
+    pub need_recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `need_recent`.
+    #[serde(default)]
+    pub need_next: u8,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -145,15 +158,41 @@ fn push_recent(d: &mut PersonaDemand, demand_tokens: u32) {
     d.recent_next = ((i + 1) % RECENT_TURNS) as u8;
 }
 
-/// The median of her recent untrimmed demands — her TYPICAL turn. `None` until one
-/// is recorded (a legacy file carries only the peak).
-pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
-    let mut v: Vec<u32> = d.recent.iter().copied().filter(|t| *t > 0).collect();
+/// Push one HELD turn's post-fit size into her need ring (newest overwrites oldest).
+fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
+    let i = (d.need_next as usize) % RECENT_TURNS;
+    d.need_recent[i] = need_tokens;
+    d.need_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
+    let mut v: Vec<u32> = ring.iter().copied().filter(|t| *t > 0).collect();
     if v.is_empty() {
         return None;
     }
     v.sort_unstable();
     Some(v[v.len() / 2])
+}
+
+/// The median of her recent untrimmed demands — her TYPICAL turn. `None` until one
+/// is recorded (a legacy file carries only the peak).
+pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
+    median_of(&d.recent)
+}
+
+/// The median post-fit size of her recent HELD turns — what a lane provably held for
+/// her. `None` until a held turn is recorded; the allocator then gates on the wish.
+pub fn need_tokens(d: &PersonaDemand) -> Option<u32> {
+    median_of(&d.need_recent)
+}
+
+/// The size a HELD turn contributes to her need ring — `None` when the turn was not
+/// held, so the ring never learns a starved window's echo (the 5090's self-sealed
+/// 2048, 2026-09-20). A turn is held when the fit kept the source's truthful minimum
+/// (`fit_ok`) AND something survived it (`sent > framing`): a fit that dropped every
+/// message and "succeeded" is the window measuring itself, not the turn. Pure.
+pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Option<u32> {
+    (fit_ok && sent_tokens > framing_tokens).then_some(sent_tokens)
 }
 
 /// What a lane must hold for her: the typical turn, else the last one — one honest
@@ -316,6 +355,8 @@ impl WorkingSetRegistry {
                     sent_peak: 0,
                     recent: [0; RECENT_TURNS],
                     recent_next: 0,
+                    need_recent: [0; RECENT_TURNS],
+                    need_next: 0,
                 };
                 push_recent(&mut d, demand_tokens);
                 d
@@ -357,8 +398,42 @@ impl WorkingSetRegistry {
                 sent_peak: sent_tokens,
                 recent: [0; RECENT_TURNS],
                 recent_next: 0,
+                need_recent: [0; RECENT_TURNS],
+                need_next: 0,
             });
         Self::save(persona, &updated);
+    }
+
+    /// Record the post-fit size of a turn the fit HELD — her need (see
+    /// [`need_sample`] for what counts). Persisted with the demand.
+    pub fn record_need(&self, persona: Uuid, need_tokens: u32, now_ms: u64) {
+        if need_tokens == 0 {
+            return;
+        }
+        let updated = self.record_need_in_memory(persona, need_tokens, now_ms);
+        Self::save(persona, &updated);
+    }
+
+    pub(crate) fn record_need_in_memory(&self, persona: Uuid, need_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
+            .observed
+            .entry(persona)
+            .and_modify(|d| push_need(d, need_tokens))
+            .or_insert_with(|| {
+                let mut d = PersonaDemand {
+                    peak_tokens: 0,
+                    last_tokens: 0,
+                    last_seen_ms: now_ms,
+                    turns: 0,
+                    sent_peak: 0,
+                    recent: [0; RECENT_TURNS],
+                    recent_next: 0,
+                    need_recent: [0; RECENT_TURNS],
+                    need_next: 0,
+                };
+                push_need(&mut d, need_tokens);
+                d
+            })
     }
 
     /// The largest untrimmed demand among `personas` (the residents), not the whole
@@ -754,7 +829,7 @@ mod tests {
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0 };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -764,6 +839,40 @@ mod tests {
         }
         let d = reg.demand_of(kimi).expect("recorded");
         assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
+    }
+
+    // what this catches (card 70706a9e): the NEED ring learns only from turns the fit
+    // HELD. Kimi's wish (untrimmed assembly) ran 99k over a 75,776 seat her turns fitted
+    // into every time; gating on the wish × 1.25 read her as "over the grid" at her own
+    // seat. The need is the post-fit size of held turns, no headroom; a starved turn
+    // (truthful minimum did not fit) or an emptied one (framing only — the 5090's
+    // self-sealed 2048) contributes nothing, so the ring can never echo a window.
+    // Legacy JSON without the ring reads as no need known.
+    #[test]
+    fn the_need_ring_learns_only_from_held_turns_and_never_a_windows_echo() {
+        // The sample rule, pinned.
+        assert_eq!(need_sample(70_000, 3_000, true), Some(70_000), "held: what was sent is the need");
+        assert_eq!(need_sample(99_000, 3_000, false), None, "starved: no sample, never the demand");
+        assert_eq!(need_sample(828, 828, true), None, "framing only survived: the window's echo, not a turn");
+        assert_eq!(need_sample(0, 0, true), None);
+
+        let reg = WorkingSetRegistry::new();
+        let kimi = Uuid::new_v4();
+        // Wish 99k on every turn; need ~70k on the held ones.
+        for i in 0..8u32 {
+            reg.record_in_memory(kimi, 99_000 + i, i as u64);
+            reg.record_need_in_memory(kimi, 70_000 + i, i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert!(typical_tokens(&d).expect("wish ring") >= 99_000, "the wish is still the wish");
+        let need = need_tokens(&d).expect("need ring");
+        assert!((70_000..70_008).contains(&need), "the need is what held: {need}");
+        // A legacy record has no need ring: None, and the caller falls back to the wish.
+        let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
+        assert_eq!(need_tokens(&ser), None);
+        // Round-trips with the ring.
+        let back: PersonaDemand = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(need_tokens(&back), Some(need));
     }
 
     #[test]
