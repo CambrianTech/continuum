@@ -110,9 +110,9 @@ fn prepare(
             "unsupported captured-request schema; replay requires schema 4".into(),
         ));
     }
-    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take())
+    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
         .map_err(|e| CommandError::Invalid(format!("captured context window: {e}")))?;
-    let mut request: TextGenerationRequest = serde_json::from_value(submitted["request"].take())
+    let mut request: TextGenerationRequest = serde_json::from_value(submitted["request"].take()) // BOUNDARY: consume the existing on-disk request payload into the adapter's typed input.
         .map_err(|e| CommandError::Invalid(format!("captured request: {e}")))?;
     if request.model.as_deref().is_none_or(str::is_empty) {
         return Err(CommandError::Invalid(
@@ -121,7 +121,7 @@ fn prepare(
     }
     let original = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
         Some(value) if !value.is_null() => {
-            let response: TextGenerationResponse = serde_json::from_value(value.take())
+            let response: TextGenerationResponse = serde_json::from_value(value.take()) // BOUNDARY: decode the persisted terminal response for the original outcome comparison.
                 .map_err(|e| CommandError::Invalid(format!("captured response: {e}")))?;
             Some(ReplayOutcome::from(&response))
         }
