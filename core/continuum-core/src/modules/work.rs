@@ -335,7 +335,20 @@ async fn resolve_claim_id(
     }
     crate::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
-        .map_err(CommandError::Invalid)
+        .map_err(|e| CommandError::Invalid(claim_gone_hint(e)))
+}
+
+/// A claim id that resolves to nothing on a readable board has one dominant cause the
+/// resolver cannot name: the lease EXPIRED (or was released) and the claim left the
+/// board. `work/heartbeat` — the verb whose purpose is to stop a lease expiring — told
+/// Kimi "no claim matches id prefix … available claim ids: …" for her own lapsed claim
+/// (2026-09-21, Fable), which reads as a typo, not as an expiry. Say the cause and the
+/// way out, on every claim miss.
+fn claim_gone_hint(resolver_error: String) -> String {
+    format!(
+        "{resolver_error}. A claim that is gone from the board has EXPIRED or been released — \
+         if it was yours, re-claim the card (work/claim) and retry — YOUR WORK IS UNTOUCHED, a lapsed claim takes nothing from your checkout"
+    )
 }
 
 fn parse_state(s: &str) -> Result<CardState, CommandError> {
@@ -499,6 +512,14 @@ fn not_found_in(
         return CommandError::NotFound(format!(
             "{label} {requested}: you are subscribed to no rooms, so there is no board to \
              search — join the room that holds the {label} and retry"
+        ));
+    }
+    if label == "claim" {
+        return CommandError::NotFound(format!(
+            "claim {requested}: no claims at all on the boards of the rooms you are in ({}) — \
+             a claim that is gone from the board has EXPIRED or been released; if it was \
+             yours, re-claim the card (work/claim) and retry — YOUR WORK IS UNTOUCHED, a lapsed claim takes nothing from your checkout",
+            readable_rooms.join(", ")
         ));
     }
     CommandError::NotFound(format!(
@@ -3321,6 +3342,12 @@ mod tests {
         let msg = claim.to_string();
         assert!(matches!(claim, CommandError::Internal(_)), "{msg}");
         assert!(msg.starts_with("[internal] claim e0ec486b: board read FAILED"), "{msg}");
+        // A claim that is simply gone (readable, empty) names expiry and the way out —
+        // work/heartbeat's one job is a lease, so its miss must say "lease".
+        let gone = not_found_in(&rooms(&["academy"]), &[], "claim", "e0ec486b").to_string();
+        assert!(gone.contains("EXPIRED") && gone.contains("work/claim"), "{gone}");
+        let hinted = claim_gone_hint("no claim matches id prefix 'e0ec486b'".into());
+        assert!(hinted.contains("EXPIRED") && hinted.contains("work/claim"), "{hinted}");
         let msg = elsewhere.to_string();
         assert!(matches!(elsewhere, CommandError::NotFound(_)), "{msg}");
         assert!(msg.contains("any room you are in (academy, continuum)"), "{msg}");
