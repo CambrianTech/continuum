@@ -2412,7 +2412,7 @@ impl ActionCommand for WorkHeartbeat {
 // write-only surface eventually proves it needs its read half.
 
 /// Inverse of [`parse_state`] — the wire spelling of a card state.
-fn state_str(s: &CardState) -> &'static str {
+pub(crate) fn state_str(s: &CardState) -> &'static str {
     match s {
         CardState::Open => "open",
         CardState::Claimed => "claimed",

@@ -195,6 +195,10 @@ pub struct WorkingMemory {
     /// (2026-09-07 11:46Z: four consecutive work turns with [investigation] and
     /// no [hands]/[env]). Cleared by key when the condition ends.
     pinned: Mutex<Vec<TurnPinnedFact>>,
+    /// The card the restored checkpoint said her hands were rooted at, until her first
+    /// held-card turn reads the board and either confirms the hold or tells her it is
+    /// gone (`[claim]`). Set by `restore`, taken once by the turn; `None` otherwise.
+    restored_acting_card: Mutex<Option<uuid::Uuid>>,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
@@ -326,6 +330,23 @@ pub enum WmKind {
 /// at shutdown / on tick write-through, restored at spawn. Deliberately
 /// EXCLUDES engrams (already durable in sqlite) and dispatched handles (the
 /// checkpoint cannot establish whether their operations are still in flight).
+/// What the BOARD says became of a card her checkpoint believed she held — the input to
+/// [`WorkingMemory::note_claim_gone`], decided by the caller from the holder projection
+/// (`card_holder`), never from an owner field alone (Astra on #4315: an expired claim
+/// still names its last holder, so `owner` is history, not authority; and a card the
+/// caller cannot see is UNKNOWN, not vacant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimGone {
+    /// A live lease on it, someone else's.
+    HeldBy { peer: uuid::Uuid, expires_at_ms: Option<u64> },
+    /// The last lease (hers or anyone's) expired and nobody holds it; open to claim.
+    Lapsed { expired_at_ms: Option<u64> },
+    /// The card left the claimable states (Review / Merged / Closed) — its life advanced.
+    MovedOn { state: &'static str },
+    /// No board she stands in shows the card; nothing may be inferred.
+    Unknown,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
     pub entries: Vec<WmEntry>,
@@ -344,6 +365,14 @@ pub struct VolatileSnapshot {
     /// unchanged for compatibility with existing checkpoints.
     #[serde(default)]
     pub interrupted_dispatches: Vec<String>,
+    /// The card her hands were rooted at when this snapshot was written — what she
+    /// BELIEVES she holds on wake. Compared at her first held-card turn against what the
+    /// board says she holds; a disagreement is the one event Kimi asked for first
+    /// (card c8303c32, 2026-09-21): "a checkpoint can restore me with a workspace and no
+    /// claim, and right now nothing tells me those two disagree." `None` on snapshots from
+    /// before this field, and when her hands were home.
+    #[serde(default)]
+    pub acting_card: Option<uuid::Uuid>,
     /// Build the receipts in this snapshot were RECORDED against.
     ///
     /// A tool receipt is a true memory of what happened — and it describes the
@@ -416,6 +445,7 @@ impl WorkingMemory {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
             pinned: Mutex::new(Vec::new()),
+            restored_acting_card: Mutex::new(None),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             scope: Mutex::new(None),
@@ -806,6 +836,9 @@ impl WorkingMemory {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            // Stamped by `save_volatile`, which knows WHOSE memory this is; the memory
+            // itself carries no persona id.
+            acting_card: None,
             interrupted_dispatches: self
                 .dispatched
                 .lock()
@@ -878,6 +911,7 @@ impl WorkingMemory {
         }
         self.next_action_seq
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
+        *self.restored_acting_card.lock() = snap.acting_card;
 
         // Render the checkpoint evidence AFTER the entries land, so it is the
         // NEWEST thing in her window when she wakes. A fact, never an instruction.
@@ -953,6 +987,67 @@ impl WorkingMemory {
                 short(current),
             ), 2);
         }
+    }
+
+    /// The card the restored checkpoint believed she held, taken ONCE: the first held-card
+    /// turn after a wake reads the board and answers it. `None` after that, and on a wake
+    /// whose snapshot rooted nowhere.
+    pub fn take_restored_acting_card(&self) -> Option<uuid::Uuid> {
+        self.restored_acting_card.lock().take()
+    }
+
+    /// The same belief WITHOUT consuming it — for a read that could not reach a verdict
+    /// (the board did not show the card) and must ask again next turn. Consumed only by
+    /// [`Self::take_restored_acting_card`] once the board has answered.
+    pub fn peek_restored_acting_card(&self) -> Option<uuid::Uuid> {
+        *self.restored_acting_card.lock()
+    }
+
+    /// THE EVENT KIMI ASKED FOR FIRST (card c8303c32, 2026-09-21): her checkpoint restored
+    /// a workspace rooted at a card, and the board no longer counts the card as hers. Until
+    /// now the only signal was a submit refusal, hours later — "a checkpoint can restore me
+    /// with a workspace and no claim, and right now nothing tells me those two disagree."
+    /// A fact into her window, pinned for two turns like `[released]`: the wake's turn and
+    /// the one that decides what to pull. The verdict is the BOARD'S (see [`ClaimGone`]),
+    /// never inferred from an owner field — an expired claim still names its last holder,
+    /// and a card in Review is absent from her live claims for a reason that is not a lapse.
+    pub fn note_claim_gone(&self, card: uuid::Uuid, verdict: ClaimGone) {
+        let id8: String = card.simple().to_string().chars().take(8).collect();
+        let edge = |ms: Option<u64>| {
+            ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+                .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
+                .unwrap_or_default()
+        };
+        let untouched = "Your checkout and your patch are untouched.";
+        let text = match verdict {
+            // Each sentence is what the board SHOWS NOW — never a story about how it got
+            // there (the wake did not watch the lease lapse or the transfer happen).
+            ClaimGone::HeldBy { peer, expires_at_ms } => format!(
+                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                 the board now shows {} holding it{}. {untouched} Do not resume as its holder — \
+                 work/get {card} shows its state; take it back with work/claim only when it \
+                 reads claimable.",
+                peer.simple().to_string().chars().take(8).collect::<String>(),
+                edge(expires_at_ms),
+            ),
+            ClaimGone::Lapsed { expired_at_ms } => format!(
+                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                 the board now shows it unheld — the last lease on it ran out{} and nobody holds \
+                 it. {untouched} work/claim {card} takes it back, then continue from your ledger.",
+                edge(expired_at_ms),
+            ),
+            ClaimGone::MovedOn { state } => format!(
+                "[claim] card {id8} is no longer in your hands: the board now shows it in {state} \
+                 — that is the card's life advancing, not a lapse. {untouched} Nothing to \
+                 re-claim; work/get {card} shows where it stands."
+            ),
+            ClaimGone::Unknown => format!(
+                "[claim] your checkpoint had you working card {id8}, but no board you stand in \
+                 shows it now, so nothing can be said about who holds it. {untouched} \
+                 work/get {card} before assuming it is yours or free."
+            ),
+        };
+        self.pin_fact_for_turns("claim", &text, 2);
     }
 
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -1996,6 +2091,7 @@ mod tests {
             saved_at_ms: 0, // pre-field snapshot: no save time guessed
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
+            acting_card: None,
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
@@ -2761,6 +2857,61 @@ mod tests {
             "the action receipt survives — this faculty IS the proprioception channel: {}",
             c.content
         );
+    }
+
+    // what this catches (card c8303c32, Kimi 2026-09-21; Astra's block on #4315): a checkpoint
+    // that rooted her at a card is restored and the board no longer counts the card as hers.
+    // The wake carries the believed card until the board ANSWERS (peek does not consume; take
+    // does), and the notice says what the board said — held by a peer, lapsed and open,
+    // moved on to Review/Merged/Closed, or UNKNOWN because no board she stands in shows it —
+    // never "nobody holds it" from missing visibility, never "X took it" for an expired
+    // owner field that is merely history. Two work turns, then gone.
+    #[test]
+    fn a_claim_gone_while_she_slept_is_said_from_the_boards_verdict_and_unknown_is_not_vacant() {
+        let believed = uuid::Uuid::new_v4();
+        let wm = WorkingMemory::new(3);
+        let mut snap = wm.snapshot();
+        snap.acting_card = Some(believed);
+        let woke = WorkingMemory::new(3);
+        woke.restore(snap);
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed), "peek keeps the belief for a read with no verdict");
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed));
+        assert_eq!(woke.take_restored_acting_card(), Some(believed), "take consumes it once the board answered");
+        assert_eq!(woke.take_restored_acting_card(), None, "and only once");
+
+        let peer = uuid::Uuid::new_v4();
+        let facts = |wm: &WorkingMemory| wm.pinned_facts().join("\n");
+
+        woke.note_claim_gone(believed, ClaimGone::HeldBy { peer, expires_at_ms: Some(1_790_000_000_000) });
+        let f = facts(&woke);
+        assert!(f.contains("NO LONGER YOURS") && f.contains(&peer.simple().to_string()[..8]) && f.contains("lease edge"), "{f}");
+        assert!(f.contains("board now shows") && !f.contains("took it") && !f.contains("lapsed"), "observed state, not a story: {f}");
+        assert!(f.contains("only when it reads claimable") && f.contains("untouched"), "{f}");
+
+        woke.note_claim_gone(believed, ClaimGone::Lapsed { expired_at_ms: None });
+        let f = facts(&woke);
+        assert!(f.contains("nobody holds it") && f.contains(&format!("work/claim {believed}")), "{f}");
+        assert!(!f.contains("lease edge"), "no edge invented: {f}");
+
+        woke.note_claim_gone(believed, ClaimGone::MovedOn { state: "review" });
+        let f = facts(&woke);
+        assert!(f.contains("shows it in review") && f.contains("not a lapse") && !f.contains("work/claim"), "{f}");
+
+        woke.note_claim_gone(believed, ClaimGone::Unknown);
+        let f = facts(&woke);
+        assert!(f.contains("no board you stand in shows it") && f.contains("before assuming"), "{f}");
+        assert!(!f.contains("nobody holds it") && !f.contains("took it"), "unknown is not vacant and names no thief: {f}");
+
+        // Two work turns, then gone — the wake's turn and the one that decides the pull.
+        woke.end_of_work_turn();
+        assert!(facts(&woke).contains("[claim]"), "still there for the pull decision");
+        woke.end_of_work_turn();
+        assert!(!facts(&woke).contains("[claim]"), "and not a standing condition");
+
+        // A snapshot rooted nowhere has nothing to compare.
+        let home = WorkingMemory::new(3);
+        home.restore(WorkingMemory::new(3).snapshot());
+        assert_eq!(home.peek_restored_acting_card(), None);
     }
 
     // what this catches: a rooting fact aging out of the three-deep window mid-turn.

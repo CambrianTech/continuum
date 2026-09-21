@@ -40,6 +40,14 @@ pub trait AircWorkReader: Send + Sync {
     /// The cards this persona currently owns/claims, across all rooms. Empty when
     /// it holds none (or no daemon, in tests).
     async fn active_claims(&self) -> Result<Vec<WorkCard>, AircError>;
+
+    /// ONE card as the board carries it now, whoever holds it — the read a wake needs
+    /// to tell a citizen what became of a card she believed she held (card c8303c32).
+    /// `None` when no subscribed board has it (or no daemon, in tests). Default `None`
+    /// so a reader that only knows its own claims still compiles; production answers.
+    async fn card(&self, _card_id: uuid::Uuid) -> Option<WorkCard> {
+        None
+    }
 }
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),

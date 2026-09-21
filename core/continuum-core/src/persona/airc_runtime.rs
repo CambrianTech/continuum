@@ -1371,6 +1371,18 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
         // the roster adds is needed to know her held work.
         board_held_by(self.airc.as_ref()).await
     }
+
+    /// The board's own row for one card, from every room she is in — the same walk
+    /// `card_in_subscribed_rooms` makes for claim staging, so a wake's "what became of my
+    /// card" reads the truth the renewal loop reads.
+    async fn card(&self, card_id: uuid::Uuid) -> Option<airc_lib::WorkCard> {
+        crate::modules::work::card_in_subscribed_rooms(
+            self.airc(),
+            airc_work::WorkCardId::from_uuid(card_id),
+        )
+        .await
+        .map(|(_, card)| card)
+    }
 }
 
 #[async_trait::async_trait]

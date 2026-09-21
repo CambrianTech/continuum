@@ -508,6 +508,7 @@ mod tests {
             next_action_seq: 4, // 3 acts happened in the old life
             saved_at_ms: 0,
             interrupted_dispatches: Vec::new(),
+            acting_card: None,
             build_sha: String::new(),
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // written before the archive existed
