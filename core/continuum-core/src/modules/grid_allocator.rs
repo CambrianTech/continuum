@@ -393,10 +393,37 @@ impl Inner {
             seated = published.allocation.seated.len() as u64,
             open_seats = published.allocation.open_total(),
             dormant = published.allocation.dormant.len() as u64,
+            // Of the dormant, the ones no node could HOLD — a seat was free somewhere
+            // and every free seat refused them. That is not "waiting for room", it is
+            // "this grid cannot serve this mind", and it is the sentence nobody said
+            // while Benchy read as a citizen who produces nothing (card b8503234).
+            unservable = published.allocation.unservable.len() as u64,
             minds = inputs.minds.len() as u64,
             roles = published.roles.len() as u64,
             "the grid allocation changed — published for the switch, the spawner and the health line"
         );
+        // A COUNT DOES NOT REACH A PERSON. The published allocation knows exactly which
+        // minds this grid cannot hold, so it says their ids rather than leaving a reader
+        // to diff two lists. Only when there ARE any — a grid that serves everyone stays
+        // silent here.
+        if !published.allocation.unservable.is_empty() {
+            crate::probe!(
+                class = "grid.mind.unservable",
+                // 8-hex prefixes, the same shape a citizen reads on a board line.
+                // Spelled here rather than borrowing `modules::work::short8`, which is
+                // private to that module — a receipt is not a reason to widen someone
+                // else's surface.
+                minds = %published
+                    .allocation
+                    .unservable
+                    .iter()
+                    .map(|m| m.to_string().chars().take(8).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                count = published.allocation.unservable.len() as u64,
+                "a seat was free and every free seat refused them — their turn exceeds this grid, and waiting cannot fix it"
+            );
+        }
         crate::probe!(
             class = "grid.dormant.oldest_turn_age_ms",
             dormant = published.dormant_by_age.len() as u64,

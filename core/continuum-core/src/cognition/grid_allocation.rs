@@ -383,6 +383,19 @@ pub struct GridAllocation {
     pub seated: Vec<Seat>,
     /// Minds with no seat anywhere on the grid: identity and memory kept, no lane.
     pub dormant: Vec<Uuid>,
+    /// The subset of [`Self::dormant`] whose ROLE no node on this grid can serve — no
+    /// node's plans meet its requirement, so there was never a seat to wait for. As
+    /// distinct from the ones the grid merely had no ROOM for right now.
+    ///
+    /// Both cases read as "dormant" and they want opposite responses: a mind with
+    /// nowhere to sit needs a wider lane, a smaller context, or an accepted slow clip
+    /// ([[dormant-is-not-off-every-mind-gets-a-slow-clip-at-any-grid-size]]); a mind
+    /// waiting for room needs patience or more hardware. Measured 2026-09-21: Benchy's
+    /// SMALLEST recent prompt (76,952) exceeded the widest lane on the entire grid
+    /// (75,776), so every refusal was individually correct and nothing said the one
+    /// sentence a human or a peer needed — she read as a citizen who produces nothing
+    /// rather than a citizen with nowhere to sit (card b8503234).
+    pub unservable: Vec<Uuid>,
     /// Seats no existing mind fills — what the spawner may mint, per node and role.
     pub open: Vec<OpenSeats>,
 }
@@ -549,6 +562,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let mut lent: Vec<u32> = vec![0; nodes.len()];
     let mut seated: Vec<Seat> = Vec::new();
     let mut dormant = Vec::new();
+    let mut unservable = Vec::new();
     // May this mind sit on node i? ONE predicate: under an exclusive hold, only its names;
     // then her owner's own node freely, another owner's within its terms.
     let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
@@ -622,7 +636,19 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
                     }
                     seated.push(Seat { mind: m.id, node: nodes[i].node, role });
                 }
-                None => dormant.push(m.id),
+                None => {
+                    // WHY she got no seat is known HERE and was thrown away. `hosts` is
+                    // the nodes whose plans MEET HER ROLE'S REQUIREMENT — the window and
+                    // capability gate. Empty means no node on this grid can serve her
+                    // role AT ALL, and no amount of waiting changes that. A non-empty
+                    // `hosts` that still seats nobody is the grid being FULL (or a hold
+                    // or lending terms refusing her, which `admits` decides) — a
+                    // different fact wanting a different response.
+                    if hosts.is_empty() {
+                        unservable.push(m.id);
+                    }
+                    dormant.push(m.id);
+                }
             }
         }
     }
@@ -655,7 +681,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             open.push(OpenSeats { node: n.node, owner: offer.owner, role: *role, count: f });
         }
     }
-    GridAllocation { nodes, seated, dormant, open }
+    GridAllocation { nodes, seated, dormant, unservable, open }
 }
 
 #[cfg(test)]
@@ -709,6 +735,46 @@ mod tests {
     }
     fn on(a: &GridAllocation, node: Uuid) -> Vec<Uuid> {
         a.seated.iter().filter(|s| s.node == node).map(|s| s.mind).collect()
+    }
+
+    // what this catches (card b8503234, measured 2026-09-21): "no seat" had ONE name for
+    // two opposite facts. Benchy's SMALLEST recent prompt (76,952) exceeded the widest
+    // lane on the entire grid (75,776), so every node correctly refused her and she
+    // landed in `dormant` beside minds who were merely waiting for room. Nothing said
+    // the one sentence a human or a peer needed — she read as a citizen who produces
+    // nothing rather than a citizen with nowhere to sit. The two want opposite
+    // responses: a wider lane / less context / an accepted slow clip, versus patience.
+    #[test]
+    fn a_mind_with_nowhere_to_sit_is_distinguished_from_one_waiting_for_room() {
+        let a_box = Uuid::new_v4();
+        // THE SAME GRID BOTH TIMES — only the requirement changes, so the contrast is
+        // the fact under test and not the fixture. `big_box` genuinely holds the coder
+        // role (capability 9 ≥ 7, a 67k and a 131k plan), which is what makes the
+        // waiting case a real wait.
+        let full = allocate(&inputs(vec![big_box(a_box)], minds(0, None, 20)));
+        assert!(!full.seated.is_empty(), "this role IS servable here");
+        assert!(!full.dormant.is_empty(), "twenty minds, far fewer seats");
+        assert!(
+            full.unservable.is_empty(),
+            "waiting for room is not unservable: {:?}",
+            full.unservable,
+        );
+
+        // Now a window no offered plan can serve: no node HOLDS the role, `hosts` is
+        // empty, and there was never a seat to wait for.
+        let mut i = inputs(vec![big_box(a_box)], minds(0, None, 1));
+        i.roles[0].requirement.window = 1_000_000;
+        let starved = allocate(&i);
+        assert!(starved.seated.is_empty(), "no plan on this grid meets her requirement");
+        assert_eq!(starved.dormant.len(), 1);
+        assert_eq!(
+            starved.unservable, starved.dormant,
+            "no node holds her role: unservable, never merely waiting",
+        );
+
+        // And a grid with room for everyone reports neither.
+        let roomy = allocate(&inputs(vec![big_box(a_box)], minds(0, None, 1)));
+        assert!(roomy.dormant.is_empty() && roomy.unservable.is_empty());
     }
 
     // what this catches (card 426a26fb): the operator's EXCLUSIVE hold as an input — on the
