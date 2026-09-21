@@ -151,10 +151,46 @@ impl ContextBudget {
         Self { total_chars: None }
     }
 
+/// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
+///
+/// Split out from [`Self::prefill_affordable_window`] so the DECISION is pinned by a test
+/// rather than by a probe nobody reads until it fires — the caller is all process globals
+/// (the serving snapshot, the audience seam, the rates map) and cannot be exercised
+/// without them.
+///
+/// Every rung that carries a number goes through the same
+/// [`crate::inference::prefill_rate::affordable_prompt_tokens`] as before; only the
+/// rung-less case is new, and it lands on the bootstrap working set, not the window.
+fn affordable_for_rate(
+    rate: crate::inference::prefill_rate::MeasuredRate,
+    served: u32,
+    audience: crate::inference::prefill_rate::Audience,
+) -> u32 {
+    match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
+        Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
+            tps,
+            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            served,
+            audience,
+        ),
+        // No rung at all — nothing measured on this box, ever. The substrate's own
+        // bootstrap working set is what it already assumes an unmeasured mind needs
+        // (`UNMEASURED_FILL_FLOOR_TOKENS`), never the window, never a second constant.
+        None => u32::try_from(crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS)
+            .unwrap_or(served) // unwrap_or: a floor that cannot be a u32 is not a floor; the window is the only other truth
+            .min(served),
+    }
+}
+
 /// The served window clamped to what the served lane can prefill inside the turn's
-/// time-to-first-token budget. `served` itself when no trusted prefill rate exists for
-/// the served model (cold, remote, unmeasured) — the served window rules until measured.
-/// One row when the clamp binds or lifts, never per call.
+/// time-to-first-token budget.
+///
+/// The rate comes off the ladder ([`crate::inference::prefill_rate::measured_rate_for`]):
+/// fresh, else stale, else the slowest curve this box holds. With no rung at all the
+/// bootstrap working set governs — never the served window, which is the one answer that
+/// cannot be right when nothing is known (card a2578811). `served` is still returned when
+/// there is no served MODEL to have a rate for: an absent subject, not an absent
+/// measurement. One row when the clamp binds, lifts, or changes rung; never per call.
 fn prefill_affordable_window(served: u32) -> u32 {
     if served == 0 {
         return 0;
@@ -162,25 +198,45 @@ fn prefill_affordable_window(served: u32) -> u32 {
     let Some(model) = crate::inference::llama_server::current_serving().active_model else {
         return served;
     };
-    let Some(tps) = crate::inference::prefill_rate::rate_for(&model) else {
-        return served;
-    };
     let audience = crate::cognition::audience::current();
-    let affordable = crate::inference::prefill_rate::affordable_prompt_tokens(
-        tps,
-        crate::cognition::serving_plan::MIN_SERVE_CTX,
-        served,
-        audience,
-    );
+    // AN UNKNOWN RATE IS NOT PERMISSION FOR THE WHOLE WINDOW (card a2578811). This read
+    // was `rate_for` — fresh-only — and its `None` fell through to `served`: the LARGEST
+    // prompt the box can be asked for, handed out in exactly the state where nothing is
+    // known about how fast it prefills.
+    //
+    // On a box slow enough to be cancelled at the client floor, that closes a loop. A
+    // cancelled generation returns no timings, so `prefill_rate::observe` (one caller, in
+    // the adapter, behind `if let Some(t) = &timing`) never fires; the point goes stale
+    // past `FRESH_MS`; `rate_for` starts answering `None`; the bound lifts to the whole
+    // window; the next prompt is that window and is cancelled again. The correction path
+    // needs the very thing it corrects, so it never fires. IntelMac, 2026-09-21: ~12.5
+    // prefill t/s against ~26k-token prompts, 945 cancelled slots, 8 residents, 0 acts.
+    //
+    // The ladder already exists and is the fix: `measured_rate_for` reads fresh → stale →
+    // the slowest curve this box holds → nothing, and its own doc says to prefer it over
+    // `rate_for` "wherever an absence would otherwise become a constant". Last hour's
+    // measured rate is still evidence about this box; the served window never was. With a
+    // stale rung the loop opens on its own — the prompt falls to the serve floor, that
+    // generation finishes inside the client floor, and finishing is what re-measures.
+    let rate = crate::inference::prefill_rate::measured_rate_for(&model);
+    let affordable = Self::affordable_for_rate(rate, served, audience);
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-    let shape = ((served as u64) << 32) | (affordable as u64) << 1 | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
+    let shape = ((served as u64) << 32)
+        | (affordable as u64) << 3
+        | (rate.source as u64) << 1
+        | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
     if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
         crate::probe!(
             class = "cognition.budget.prefill_bound",
             model = %model,
             served_window = served as u64,
             affordable_tokens = affordable as u64,
-            prefill_tps = tps,
+            // The RUNG that governed, not just the number: "stale" is the row that says
+            // the box is coasting on last hour's evidence, "none" that it is on the
+            // bootstrap floor. Both used to be indistinguishable from a fresh
+            // measurement, because both used to be the served window.
+            prefill_tps = rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 renders the absence; `rate_source` is what says it IS one
+            rate_source = rate.source.label(),
             audience = audience.as_str(),
             ttft_s = audience.ttft().as_secs(),
             bound = affordable < served,
@@ -420,6 +476,58 @@ const RECALL_DENOM: usize = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card a2578811): an UNKNOWN prefill rate buying the whole served
+    // window. `prefill_affordable_window` read `rate_for` (fresh-only) and fell through to
+    // `served` on `None` — so the slowest boxes got the LARGEST prompt, and a slow box is
+    // exactly where the rate goes unmeasured, because a generation cancelled at the client
+    // floor never returns the timings that measure it. IntelMac, 2026-09-21: ~12.5 prefill
+    // t/s, ~26k-token prompts, 945 cancelled slots, 8 residents, 0 acts.
+    //
+    // The rungs that matter, at the numbers that were measured. If any absence resolves to
+    // `served` again, the cancel loop comes back.
+    #[test]
+    fn an_unmeasured_prefill_rate_never_buys_the_whole_window() {
+        use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+        let served = 26_000;
+        let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive);
+
+        // A rung with a number governs — even a STALE one. 12.5 t/s x 60 s = 750, under
+        // MIN_SERVE_CTX, so the serve floor carries it: a prompt this box finishes well
+        // inside the client floor, and FINISHING is what re-measures the rate. This arm is
+        // what opens the loop without anyone intervening.
+        let got = afford(MeasuredRate { tps: Some(12.5), source: RateSource::Stale });
+        assert_eq!(
+            got,
+            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            "last hour's rate is still evidence about this box — it must bound the prompt, not be discarded"
+        );
+        assert!(got < served, "the whole window is what the cancel loop was made of");
+
+        // No rung at all: the bootstrap working set, never the window.
+        let got = afford(MeasuredRate::UNKNOWN);
+        assert_eq!(
+            got,
+            crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS as u32,
+            "nothing measured on this box ever — the substrate's own bootstrap working set governs"
+        );
+        assert!(got < served, "an absence must never resolve to the largest prompt available");
+
+        // A fast lane is untouched: 500 t/s x 60 s = 30,000 exceeds the window, so the
+        // window still rules and nothing about the M5 changes.
+        assert_eq!(
+            afford(MeasuredRate { tps: Some(500.0), source: RateSource::Fresh }),
+            served,
+            "a lane that prefills the window inside the budget keeps the whole window"
+        );
+
+        // A window SMALLER than the unmeasured floor clamps to the window: the floor is a
+        // floor on the prompt, never a licence to exceed the lane.
+        assert_eq!(
+            ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive),
+            1_024
+        );
+    }
 
     /// what this catches: the fractions drifting away from the constants they replaced.
     /// Every bound must still land within a few percent of the hand-tuned value on the 16k
